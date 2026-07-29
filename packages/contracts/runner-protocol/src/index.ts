@@ -36,38 +36,6 @@ export interface ObservationGraph {
   readonly nodes: readonly ObservationNode[];
 }
 
-export interface ProposedAction {
-  readonly kind: "click";
-  readonly target: {
-    readonly nodeId: ObservationNodeId;
-  };
-  readonly reason: string;
-}
-
-export interface ResolvedAction {
-  readonly kind: "click";
-  readonly target: {
-    readonly nodeId: ObservationNodeId;
-    readonly selector: string;
-  };
-  readonly graphId: ObservationGraphId;
-}
-
-export interface PolicyDecision {
-  readonly status: "allowed" | "denied";
-  readonly reason: string;
-}
-
-export interface ActionOutcome {
-  readonly status: "ok" | "failed";
-  readonly errorCode?: string;
-}
-
-export interface VerificationResult {
-  readonly status: "passed" | "failed";
-  readonly summary: string;
-}
-
 export type FindingSeverity = "info" | "low" | "medium" | "high" | "critical";
 
 export interface FindingEnvelope {
@@ -102,7 +70,7 @@ interface TraceEventEnvelope<TStage extends TraceStage, TPayload> {
   readonly payload: TPayload;
 }
 
-export interface ProposedActionPayload {
+export interface DecisionTracePayload {
   readonly kind: "click";
   readonly target: {
     readonly nodeId: ObservationNodeId;
@@ -110,7 +78,7 @@ export interface ProposedActionPayload {
   readonly reason: string;
 }
 
-export interface ResolvedActionPayload {
+export interface ResolvedActionTracePayload {
   readonly kind: "click";
   readonly target: {
     readonly nodeId: ObservationNodeId;
@@ -119,36 +87,43 @@ export interface ResolvedActionPayload {
   readonly graphId: ObservationGraphId;
 }
 
-export interface PolicyDecisionPayload {
-  readonly status: "allowed" | "denied";
+export interface AuthorizedPolicyTracePayload {
+  readonly status: "allowed";
   readonly reason: string;
 }
 
-export interface ActionOutcomePayload {
+export interface DeniedPolicyTracePayload {
+  readonly status: "denied";
+  readonly reason: string;
+}
+
+export interface ActionOutcomeTracePayload {
   readonly status: "ok" | "failed";
   readonly errorCode?: string;
 }
 
-export interface VerificationResultPayload {
+export interface VerificationTracePayload {
   readonly status: "passed" | "failed";
   readonly summary: string;
 }
 
 export type TraceEvent =
   | TraceEventEnvelope<"observation", ObservationGraph>
-  | TraceEventEnvelope<"decision", ProposedActionPayload>
-  | TraceEventEnvelope<"action_resolved", ResolvedActionPayload>
-  | TraceEventEnvelope<"policy_authorized", PolicyDecisionPayload>
-  | TraceEventEnvelope<"policy_denied", PolicyDecisionPayload>
-  | TraceEventEnvelope<"action_executed", ActionOutcomePayload>
-  | TraceEventEnvelope<"verification", VerificationResultPayload>
+  | TraceEventEnvelope<"decision", DecisionTracePayload>
+  | TraceEventEnvelope<"action_resolved", ResolvedActionTracePayload>
+  | TraceEventEnvelope<"policy_authorized", AuthorizedPolicyTracePayload>
+  | TraceEventEnvelope<"policy_denied", DeniedPolicyTracePayload>
+  | TraceEventEnvelope<"action_executed", ActionOutcomeTracePayload>
+  | TraceEventEnvelope<"verification", VerificationTracePayload>
   | TraceEventEnvelope<"finding", FindingEnvelope>;
 
-export type TraceEventSubmission = TraceEvent extends infer TEvent
+export type TraceEventHashInput = TraceEvent extends infer TEvent
   ? TEvent extends TraceEvent
-    ? Omit<TEvent, "payloadHash"> & { readonly payloadHash?: string }
+    ? Omit<TEvent, "payloadHash">
     : never
   : never;
+
+export type TraceEventSubmission = TraceEvent;
 
 export interface ExecutionCompletion {
   readonly jobId: ExecutionJobId;
@@ -161,6 +136,10 @@ export function canonicalPayloadHash(payload: unknown): string {
   return createHash("sha256")
     .update(canonicalJson(payload))
     .digest("hex");
+}
+
+export function canonicalTraceEventHash(event: TraceEventHashInput): string {
+  return canonicalPayloadHash(event);
 }
 
 function canonicalJson(value: unknown): string {

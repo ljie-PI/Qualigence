@@ -1,11 +1,16 @@
 import type {
   AcceptedExecutionJob,
+  ActionOutcomeTracePayload,
+  AuthorizedPolicyTracePayload,
+  DecisionTracePayload,
+  DeniedPolicyTracePayload,
   ExecutionCompletion,
   FindingEnvelope,
   ObservationGraph,
+  ResolvedActionTracePayload,
   RunId,
   TraceEvent,
-  TraceStage,
+  VerificationTracePayload,
 } from "@qualigence/runner-protocol";
 
 export interface ProposedAction {
@@ -25,10 +30,15 @@ export interface ResolvedAction {
   readonly graphId: string;
 }
 
-export interface PolicyDecision {
-  readonly status: "allowed" | "denied";
-  readonly reason: string;
-}
+export type PolicyDecision =
+  | {
+      readonly status: "allowed";
+      readonly reason: string;
+    }
+  | {
+      readonly status: "denied";
+      readonly reason: string;
+    };
 
 export interface ActionOutcome {
   readonly status: "ok" | "failed";
@@ -92,11 +102,11 @@ export interface TraceRecorder {
   append(event: TraceEventInput): Promise<TraceEvent>;
 }
 
-export interface TraceEventInput {
-  readonly runId: RunId;
-  readonly stage: TraceStage;
-  readonly payload: TraceEvent["payload"];
-}
+export type TraceEventInput = TraceEvent extends infer TEvent
+  ? TEvent extends TraceEvent
+    ? Pick<TEvent, "runId" | "stage" | "payload">
+    : never
+  : never;
 
 export interface ExecutionRuntimeDependencies {
   readonly observer: Observer;
@@ -129,16 +139,28 @@ export class ExecutionRuntime {
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
     const observation = await this.dependencies.observer.capture(job);
-    await this.record(job.runId, "observation", observation);
+    await this.record({
+      runId: job.runId,
+      stage: "observation",
+      payload: observation,
+    });
 
     const decision = await this.dependencies.decisionProvider.decide({
       job,
       observation,
     });
-    await this.record(job.runId, "decision", decision);
+    await this.record({
+      runId: job.runId,
+      stage: "decision",
+      payload: toDecisionTracePayload(decision),
+    });
 
     const action = await this.dependencies.resolver.resolve(decision, observation);
-    await this.record(job.runId, "action_resolved", action);
+    await this.record({
+      runId: job.runId,
+      stage: "action_resolved",
+      payload: toResolvedActionTracePayload(action),
+    });
 
     const policyDecision = await this.dependencies.policyGate.authorize(action, {
       job,
@@ -146,7 +168,11 @@ export class ExecutionRuntime {
     });
 
     if (policyDecision.status === "denied") {
-      await this.record(job.runId, "policy_denied", policyDecision);
+      await this.record({
+        runId: job.runId,
+        stage: "policy_denied",
+        payload: toDeniedPolicyTracePayload(policyDecision),
+      });
       const finding = {
         findingId: `${job.runId}:policy-denied`,
         runId: job.runId,
@@ -155,7 +181,11 @@ export class ExecutionRuntime {
         severity: "medium",
         evidenceRefs: [],
       } satisfies FindingEnvelope;
-      await this.record(job.runId, "finding", finding);
+      await this.record({
+        runId: job.runId,
+        stage: "finding",
+        payload: finding,
+      });
 
       return {
         jobId: job.jobId,
@@ -165,14 +195,26 @@ export class ExecutionRuntime {
       };
     }
 
-    await this.record(job.runId, "policy_authorized", policyDecision);
+    await this.record({
+      runId: job.runId,
+      stage: "policy_authorized",
+      payload: toAuthorizedPolicyTracePayload(policyDecision),
+    });
 
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
     const outcome = await this.dependencies.actionExecutor.execute(action, permit);
-    await this.record(job.runId, "action_executed", outcome);
+    await this.record({
+      runId: job.runId,
+      stage: "action_executed",
+      payload: toActionOutcomeTracePayload(outcome),
+    });
 
     const after = await this.dependencies.observer.capture(job);
-    await this.record(job.runId, "observation", after);
+    await this.record({
+      runId: job.runId,
+      stage: "observation",
+      payload: after,
+    });
 
     const verification = await this.dependencies.verifier.verify({
       job,
@@ -181,10 +223,18 @@ export class ExecutionRuntime {
       action,
       outcome,
     });
-    await this.record(job.runId, "verification", verification);
+    await this.record({
+      runId: job.runId,
+      stage: "verification",
+      payload: toVerificationTracePayload(verification),
+    });
 
     const finding = findingFromVerification(job.runId, verification);
-    await this.record(job.runId, "finding", finding);
+    await this.record({
+      runId: job.runId,
+      stage: "finding",
+      payload: finding,
+    });
 
     return {
       jobId: job.jobId,
@@ -194,17 +244,43 @@ export class ExecutionRuntime {
     };
   }
 
-  private async record(
-    runId: RunId,
-    stage: TraceStage,
-    payload: TraceEvent["payload"],
-  ): Promise<void> {
-    await this.dependencies.traceRecorder.append({
-      runId,
-      stage,
-      payload,
-    });
+  private async record(input: TraceEventInput): Promise<void> {
+    await this.dependencies.traceRecorder.append(input);
   }
+}
+
+function toDecisionTracePayload(action: ProposedAction): DecisionTracePayload {
+  return action;
+}
+
+function toResolvedActionTracePayload(
+  action: ResolvedAction,
+): ResolvedActionTracePayload {
+  return action;
+}
+
+function toAuthorizedPolicyTracePayload(
+  decision: Extract<PolicyDecision, { status: "allowed" }>,
+): AuthorizedPolicyTracePayload {
+  return decision;
+}
+
+function toDeniedPolicyTracePayload(
+  decision: Extract<PolicyDecision, { status: "denied" }>,
+): DeniedPolicyTracePayload {
+  return decision;
+}
+
+function toActionOutcomeTracePayload(
+  outcome: ActionOutcome,
+): ActionOutcomeTracePayload {
+  return outcome;
+}
+
+function toVerificationTracePayload(
+  verification: VerificationResult,
+): VerificationTracePayload {
+  return verification;
 }
 
 function findingFromVerification(

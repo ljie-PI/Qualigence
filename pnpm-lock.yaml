@@ -17,6 +17,12 @@ importers:
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:packages/runner-kernel
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:packages/contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:packages/shared-kernel
       '@qualigence/testkit':
         specifier: workspace:*
         version: link:packages/testkit
@@ -261,7 +267,7 @@ packages:
     engines: {node: '>=12.0.0'}
 
   fdir@6.5.0:
-    resolution: {integrity: sha1-7Sq5Z6MxreYvGNB32uGSaE1Q01A=, tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/fdir/-/fdir-6.5.0.tgz}
+    resolution: {integrity: sha1-7Sq5Z6MxreYvGNB32uGSaE1Q01A=, tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/fdir/-/fdir-6.5.0.tgz}
     engines: {node: '>=12.0.0'}
     peerDependencies:
       picomatch: ^3 || ^4
@@ -400,7 +406,7 @@ packages:
     engines: {node: '>=18'}
 
   tinyglobby@0.2.17:
-    resolution: {integrity: sha1-ViqabJ6ys7Ej05cZ+a9btE/NdjE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/tinyglobby/-/tinyglobby-0.2.17.tgz}
+    resolution: {integrity: sha1-ViqabJ6ys7Ej05cZ+a9btE/NdjE=, tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/tinyglobby/-/tinyglobby-0.2.17.tgz}
     engines: {node: '>=12.0.0'}
 
   tinyrainbow@3.1.0:

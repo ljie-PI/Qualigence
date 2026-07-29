@@ -4,7 +4,10 @@ import type {
   TraceEvent,
   TraceEventSubmission,
 } from "@qualigence/runner-protocol";
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import {
+  canonicalPayloadHash,
+  canonicalTraceEventHash,
+} from "@qualigence/runner-protocol";
 
 export type TraceIngestResult =
   | {
@@ -41,12 +44,7 @@ export type FindingIngestResult =
       readonly existingPayloadHash: string;
     };
 
-export type TraceAppendResult =
-  | TraceIngestResult
-  | {
-      readonly status: "accepted";
-      readonly nextSequenceNumber: number;
-    };
+export type TraceAppendResult = TraceIngestResult;
 
 export type FindingAppendResult = FindingIngestResult;
 
@@ -64,26 +62,19 @@ export class TraceIngestor {
   constructor(private readonly store: TraceStore) {}
 
   async ingest(submission: TraceEventSubmission): Promise<TraceIngestResult> {
-    const computedPayloadHash = canonicalPayloadHash(submission.payload);
+    const { payloadHash: declaredPayloadHash, ...hashInput } = submission;
+    const computedPayloadHash = canonicalTraceEventHash(hashInput);
 
-    if (
-      submission.payloadHash !== undefined &&
-      submission.payloadHash !== computedPayloadHash
-    ) {
+    if (declaredPayloadHash !== computedPayloadHash) {
       return {
         status: "hash_mismatch",
         code: "PayloadHashMismatch",
-        declaredPayloadHash: submission.payloadHash,
+        declaredPayloadHash,
         computedPayloadHash,
       };
     }
 
-    const event = {
-      ...submission,
-      payloadHash: computedPayloadHash,
-    } as TraceEvent;
-
-    return this.store.appendTraceEvent(event);
+    return this.store.appendTraceEvent(submission);
   }
 
   async ingestFinding(finding: FindingEnvelope): Promise<FindingIngestResult> {
