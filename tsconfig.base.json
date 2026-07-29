@@ -9,7 +9,6 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["node", "vitest/globals"]
-  },
-  "include": ["packages/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+    "types": ["node"]
+  }
 }

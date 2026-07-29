@@ -8,9 +8,13 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.base.json"
+    "typecheck": "tsc -b && tsc --noEmit -p tsconfig.test.json"
   },
   "devDependencies": {
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/testkit": "workspace:*",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0 || ^6.0.0",
     "vitest": "^4.0.0"

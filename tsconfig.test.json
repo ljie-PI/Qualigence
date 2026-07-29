@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["tests/**/*.ts", "vitest.config.ts"],
+  "references": [
+    { "path": "packages/shared-kernel" },
+    { "path": "packages/contracts/runner-protocol" },
+    { "path": "packages/runner-kernel" },
+    { "path": "packages/core-modules/evidence" },
+    { "path": "packages/adapters/in-memory-runner-protocol" },
+    { "path": "packages/testkit" }
+  ]
+}

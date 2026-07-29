@@ -1,18 +1,44 @@
-import { createHash } from "node:crypto";
 import type {
   AcceptedExecutionJob,
-  ActionOutcome,
   ExecutionCompletion,
   FindingEnvelope,
   ObservationGraph,
-  PolicyDecision,
-  ProposedAction,
-  ResolvedAction,
   RunId,
   TraceEvent,
   TraceStage,
-  VerificationResult,
-} from "../../contracts/runner-protocol/src/index.js";
+} from "@qualigence/runner-protocol";
+
+export interface ProposedAction {
+  readonly kind: "click";
+  readonly target: {
+    readonly nodeId: string;
+  };
+  readonly reason: string;
+}
+
+export interface ResolvedAction {
+  readonly kind: "click";
+  readonly target: {
+    readonly nodeId: string;
+    readonly selector: string;
+  };
+  readonly graphId: string;
+}
+
+export interface PolicyDecision {
+  readonly status: "allowed" | "denied";
+  readonly reason: string;
+}
+
+export interface ActionOutcome {
+  readonly status: "ok" | "failed";
+  readonly errorCode?: string;
+}
+
+export interface VerificationResult {
+  readonly status: "passed" | "failed";
+  readonly summary: string;
+}
 
 export interface Observer {
   capture(job: AcceptedExecutionJob): Promise<ObservationGraph>;
@@ -57,6 +83,7 @@ export interface Verifier {
 export interface VerificationContext {
   readonly job: AcceptedExecutionJob;
   readonly before: ObservationGraph;
+  readonly after: ObservationGraph;
   readonly action: ResolvedAction;
   readonly outcome: ActionOutcome;
 }
@@ -65,9 +92,11 @@ export interface TraceRecorder {
   append(event: TraceEventInput): Promise<TraceEvent>;
 }
 
-export type TraceEventInput = Omit<TraceEvent, "sequenceNumber" | "payloadHash"> & {
-  readonly payloadHash?: string;
-};
+export interface TraceEventInput {
+  readonly runId: RunId;
+  readonly stage: TraceStage;
+  readonly payload: TraceEvent["payload"];
+}
 
 export interface ExecutionRuntimeDependencies {
   readonly observer: Observer;
@@ -118,17 +147,21 @@ export class ExecutionRuntime {
 
     if (policyDecision.status === "denied") {
       await this.record(job.runId, "policy_denied", policyDecision);
+      const finding = {
+        findingId: `${job.runId}:policy-denied`,
+        runId: job.runId,
+        title: "M1 policy denied action",
+        summary: policyDecision.reason,
+        severity: "medium",
+        evidenceRefs: [],
+      } satisfies FindingEnvelope;
+      await this.record(job.runId, "finding", finding);
+
       return {
         jobId: job.jobId,
         runId: job.runId,
         status: "blocked",
-        finding: {
-          findingId: `${job.runId}:policy-denied`,
-          runId: job.runId,
-          title: "M1 policy denied action",
-          severity: "medium",
-          evidenceRefs: [],
-        },
+        finding,
       };
     }
 
@@ -138,9 +171,13 @@ export class ExecutionRuntime {
     const outcome = await this.dependencies.actionExecutor.execute(action, permit);
     await this.record(job.runId, "action_executed", outcome);
 
+    const after = await this.dependencies.observer.capture(job);
+    await this.record(job.runId, "observation", after);
+
     const verification = await this.dependencies.verifier.verify({
       job,
       before: observation,
+      after,
       action,
       outcome,
     });
@@ -160,50 +197,13 @@ export class ExecutionRuntime {
   private async record(
     runId: RunId,
     stage: TraceStage,
-    payload: unknown,
+    payload: TraceEvent["payload"],
   ): Promise<void> {
     await this.dependencies.traceRecorder.append({
       runId,
       stage,
       payload,
     });
-  }
-}
-
-export class ScriptedDecisionProvider implements ExecutionDecisionProvider {
-  constructor(private readonly action: ProposedAction) {}
-
-  async decide(): Promise<ProposedAction> {
-    return this.action;
-  }
-}
-
-export class AllowAllRunnerPolicyGate implements RunnerPolicyGate {
-  async authorize(): Promise<PolicyDecision> {
-    return { status: "allowed", reason: "allowed by test policy" };
-  }
-}
-
-export class InMemoryTraceRecorder implements TraceRecorder {
-  private readonly eventsByRun = new Map<RunId, TraceEvent[]>();
-
-  async append(input: TraceEventInput): Promise<TraceEvent> {
-    const events = this.eventsByRun.get(input.runId) ?? [];
-    const event: TraceEvent = {
-      runId: input.runId,
-      sequenceNumber: events.length + 1,
-      stage: input.stage,
-      payloadHash: input.payloadHash ?? hashPayload(input.payload),
-      payload: input.payload,
-    };
-
-    events.push(event);
-    this.eventsByRun.set(input.runId, events);
-    return event;
-  }
-
-  eventsFor(runId: RunId): readonly TraceEvent[] {
-    return [...(this.eventsByRun.get(runId) ?? [])];
   }
 }
 
@@ -218,11 +218,8 @@ function findingFromVerification(
       verification.status === "passed"
         ? "M1 verification passed"
         : "M1 verification failed",
+    summary: verification.summary,
     severity: verification.status === "passed" ? "info" : "medium",
     evidenceRefs: [],
   };
-}
-
-function hashPayload(payload: unknown): string {
-  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
