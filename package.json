@@ -1,0 +1,26 @@
+{
+  "name": "qualigence",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=24 <26"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "pnpm build && vitest run",
+    "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json",
+    "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
+  },
+  "devDependencies": {
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/testkit": "workspace:*",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0 || ^6.0.0",
+    "vitest": "^4.0.0"
+  }
+}
