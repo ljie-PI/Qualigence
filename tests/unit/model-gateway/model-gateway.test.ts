@@ -5,6 +5,7 @@ import {
   type ModelProvider,
   type StructuredOutputContract,
 } from "@qualigence/model-gateway";
+import type { ModelProviderRequest } from "@qualigence/model-provider";
 
 const decisionContract: StructuredOutputContract<{
   readonly action: { readonly kind: "click"; readonly nodeId: string };
@@ -53,6 +54,14 @@ describe("ModelGateway", () => {
     const result = await gateway.invokeStructured(request(), decisionContract);
 
     expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.messages).toEqual([
+      { role: "user", content: "choose a button" },
+      {
+        role: "user",
+        content:
+          "The previous response failed schema validation for execution-decision. Return only JSON that matches the supplied schema.",
+      },
+    ]);
     expect(result.value).toEqual({
       action: { kind: "click", nodeId: "add" },
       reason: "add item",
@@ -109,8 +118,8 @@ function fakeProvider(
   responses: unknown[] = [],
   errorCode?: "AuthenticationFailed" | "TimedOut",
 ) {
-  const requests: unknown[] = [];
-  const provider: ModelProvider & { readonly requests: unknown[] } = {
+  const requests: ModelProviderRequest[] = [];
+  const provider: ModelProvider & { readonly requests: ModelProviderRequest[] } = {
     capabilities: {
       structuredOutput: capabilities.structuredOutput,
       visionInput: false,

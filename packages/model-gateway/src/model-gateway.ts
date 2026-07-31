@@ -53,11 +53,12 @@ export class ModelGateway implements StructuredModelInvoker {
 
     let schemaAttempts = 0;
     let transientAttempts = 0;
+    let providerRequest = request;
 
     while (true) {
       try {
         const response = await this.dependencies.provider.invoke({
-          ...request,
+          ...providerRequest,
           responseSchema: output.jsonSchema,
         });
 
@@ -80,6 +81,16 @@ export class ModelGateway implements StructuredModelInvoker {
           }
 
           schemaAttempts += 1;
+          providerRequest = {
+            ...providerRequest,
+            messages: [
+              ...providerRequest.messages,
+              {
+                role: "user",
+                content: `The previous response failed schema validation for ${output.name}. Return only JSON that matches the supplied schema.`,
+              },
+            ],
+          };
         }
       } catch (error) {
         if (error instanceof ModelGatewayError) {
