@@ -60,6 +60,7 @@ describe("ExecutionRuntime", () => {
         verify: async ({ before, after }) => ({
           status: "passed",
           summary: `${before.graphId} -> ${after.graphId}`,
+          claims: [],
         }),
       },
       traceRecorder,
@@ -72,9 +73,8 @@ describe("ExecutionRuntime", () => {
       objective: "Click login",
     });
 
-    expect(completion.status).toBe("completed");
-    expect(completion.finding.title).toBe("M1 verification passed");
-    expect(completion.finding.summary).toBe("graph-before -> graph-after");
+    expect(completion.status).toBe("passed");
+    expect(completion).not.toHaveProperty("finding");
     expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).toEqual([
       "observation",
       "decision",
@@ -83,11 +83,14 @@ describe("ExecutionRuntime", () => {
       "action_executed",
       "observation",
       "verification",
-      "finding",
+      "run_completed",
     ]);
+    expect(traceRecorder.eventsFor("run-1").at(-1)?.payload).toEqual({
+      status: "passed",
+    });
   });
 
-  it("records a finding trace when policy denies the action", async () => {
+  it("records a blocked terminal event without a finding when policy denies the action", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const deniedPolicyGate: RunnerPolicyGate = {
       authorize: async () => ({
@@ -134,6 +137,7 @@ describe("ExecutionRuntime", () => {
         verify: async () => ({
           status: "passed",
           summary: "not reached",
+          claims: [],
         }),
       },
       traceRecorder,
@@ -147,26 +151,31 @@ describe("ExecutionRuntime", () => {
     });
 
     expect(completion.status).toBe("blocked");
+    expect(completion).not.toHaveProperty("finding");
     expect(executed).toBe(false);
     expect(traceRecorder.eventsFor("run-denied").map((event) => event.stage)).toEqual([
       "observation",
       "decision",
       "action_resolved",
       "policy_denied",
-      "finding",
+      "run_completed",
     ]);
+    expect(traceRecorder.eventsFor("run-denied").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "PolicyDenied",
+    });
   });
 
-  it("returns a blocked completion and finding when verification fails", async () => {
+  it("returns a finding completion with grounded evidence when verification fails", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const observations = [
       {
         graphId: "graph-before",
         nodes: [
           {
-            id: "node-login",
-            role: "button",
-            name: "Login",
+            id: "node-price",
+            role: "text",
+            text: "$19",
             confidence: 1,
           },
         ],
@@ -175,9 +184,9 @@ describe("ExecutionRuntime", () => {
         graphId: "graph-after",
         nodes: [
           {
-            id: "node-error",
-            role: "alert",
-            name: "Login failed",
+            id: "node-total",
+            role: "text",
+            text: "$29",
             confidence: 1,
           },
         ],
@@ -190,13 +199,13 @@ describe("ExecutionRuntime", () => {
       },
       decisionProvider: new ScriptedDecisionProvider({
         kind: "click",
-        target: { nodeId: "node-login" },
+        target: { nodeId: "node-price" },
         reason: "exercise failed verification",
       }),
       resolver: {
         resolve: async (action, graph) => ({
           kind: "click",
-          target: { nodeId: action.target.nodeId, selector: "text=Login" },
+          target: { nodeId: action.target.nodeId, selector: "text=Price" },
           graphId: graph.graphId,
         }),
       },
@@ -207,7 +216,22 @@ describe("ExecutionRuntime", () => {
       verifier: {
         verify: async () => ({
           status: "failed",
-          summary: "expected logout button was not observed",
+          summary: "cart total differs from the displayed price",
+          severitySuggestion: "high",
+          claims: [
+            {
+              expected: {
+                graphId: "graph-before",
+                nodeId: "node-price",
+                text: "$19",
+              },
+              observed: {
+                graphId: "graph-after",
+                nodeId: "node-total",
+                text: "$29",
+              },
+            },
+          ],
         }),
       },
       traceRecorder,
@@ -217,14 +241,18 @@ describe("ExecutionRuntime", () => {
       jobId: "job-failed",
       runId: "run-failed",
       target: { kind: "web", url: "https://example.test" },
-      objective: "Click login",
+      objective: "Verify cart total",
     });
 
-    expect(completion.status).toBe("blocked");
+    expect(completion.status).toBe("finding");
+    if (completion.status !== "finding") {
+      throw new Error("Expected a finding completion.");
+    }
     expect(completion.finding).toMatchObject({
       title: "M1 verification failed",
-      summary: "expected logout button was not observed",
-      severity: "medium",
+      summary: "cart total differs from the displayed price",
+      severity: "high",
+      evidenceRefs: ["graph-before:node-price", "graph-after:node-total"],
     });
     expect(traceRecorder.eventsFor("run-failed").map((event) => event.stage)).toEqual([
       "observation",
@@ -235,6 +263,82 @@ describe("ExecutionRuntime", () => {
       "observation",
       "verification",
       "finding",
+      "run_completed",
     ]);
+  });
+
+  it("blocks immediately when the action executor reports a failed outcome", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let captureCount = 0;
+    let verificationCalled = false;
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => {
+          captureCount += 1;
+          return {
+            graphId: "graph-before",
+            nodes: [
+              {
+                id: "node-add",
+                role: "button",
+                name: "Add to cart",
+                confidence: 1,
+              },
+            ],
+          };
+        },
+      },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-add" },
+        reason: "exercise failed action",
+      }),
+      resolver: {
+        resolve: async (action, graph) => ({
+          kind: "click",
+          target: { nodeId: action.target.nodeId, selector: "text=Add to cart" },
+          graphId: graph.graphId,
+        }),
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: {
+        execute: async () => ({ status: "failed", errorCode: "ActionTimedOut" }),
+      },
+      verifier: {
+        verify: async () => {
+          verificationCalled = true;
+          return { status: "passed", summary: "not reached", claims: [] };
+        },
+      },
+      traceRecorder,
+    });
+
+    const completion = await runtime.run({
+      jobId: "job-action-failed",
+      runId: "run-action-failed",
+      target: { kind: "web", url: "https://example.test" },
+      objective: "Add item to cart",
+    });
+
+    expect(completion).toEqual({
+      jobId: "job-action-failed",
+      runId: "run-action-failed",
+      status: "blocked",
+      errorCode: "ActionTimedOut",
+    });
+    expect(captureCount).toBe(1);
+    expect(verificationCalled).toBe(false);
+    expect(traceRecorder.eventsFor("run-action-failed").map((event) => event.stage)).toEqual([
+      "observation",
+      "decision",
+      "action_resolved",
+      "policy_authorized",
+      "action_executed",
+      "run_completed",
+    ]);
+    expect(traceRecorder.eventsFor("run-action-failed").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "ActionTimedOut",
+    });
   });
 });

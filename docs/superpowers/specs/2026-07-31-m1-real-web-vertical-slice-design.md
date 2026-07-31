@@ -308,6 +308,11 @@ interface StructuredOutputContract<T> {
   parse(value: unknown): T;
 }
 
+interface StructuredOutputValidationIssue {
+  readonly path: string;
+  readonly reason: string;
+}
+
 interface ModelGateway {
   invokeStructured<T>(
     request: StructuredModelRequest,
@@ -315,6 +320,20 @@ interface ModelGateway {
   ): Promise<ValidatedModelResult<T>>;
 }
 ~~~
+
+Contract Parser 只通过 `StructuredOutputValidationError` 暴露脱敏的 `path` 与 `reason`。Gateway 最多携带三项、限制长度并过滤字符后加入一次 correction message；任意异常消息和原始模型响应都不会进入纠错提示。
+
+Provider 调用和 Contract Parser 是两个独立的错误域。Gateway 仅在包围 `provider.invoke` 的边界内归一化 Provider 异常并应用有限重试；Parser 仅把 `StructuredOutputValidationError` 视为可修正的模型输出。其他 Parser 异常是程序或 Contract 缺陷，必须原样向上抛出，既不改写成 `ProviderUnavailable`，也不作为 Schema correction 重试。
+
+| Provider 情形 | 归一化结果 | Gateway 行为 |
+|---|---|---|
+| HTTP 401/403 | `AuthenticationFailed` | 不重试 |
+| HTTP 408 或 SDK timeout | `TimedOut` | 最多重试两次 |
+| HTTP 429 | `RateLimited` | 最多重试两次 |
+| HTTP 5xx、网络错误 | `ProviderUnavailable` | 最多重试两次 |
+| HTTP 400、404、409 及其余 4xx | `InvalidRequest` | 不重试 |
+
+`409` 在 M1 中按永久的无效请求处理；不把它纳入瞬态重试集合。
 
 Model Gateway 负责：
 
@@ -326,6 +345,8 @@ Model Gateway 负责：
 - 记录模型、用量、延迟和错误摘要。
 
 首版只注册一个 OpenAI-compatible Provider，但注册和 Profile 边界不绑定供应商。未来 Anthropic、Gemini 或 Ollama 只需实现 ModelProvider Contract。
+
+Schema 或 Evidence 校验在一次修正后仍失败时，Model Agent 将 `InvalidStructuredOutput` 转换为 Runner Kernel 定义的 `ExecutionBlockedError`。ExecutionRuntime 只捕获这一供应商无关的阻塞信号并记录 `run_completed: blocked`；鉴权、限流、超时和 Provider 不可用等基础设施错误继续向应用层传播。
 
 ### 11.3 Decision
 
@@ -339,7 +360,7 @@ interface DecisionProposal {
 }
 ~~~
 
-模型只返回 nodeId。Action Resolver 根据当前 graphId 和 Session 内映射解析 Playwright Locator。
+模型只返回 nodeId。Model Agent 在调用 Action Resolver 前验证 nodeId 属于当前 `AgentContext.observation.nodes`：第一次不存在的引用以 `StructuredOutputValidationError` 进入 Gateway 的一次 correction；第二次仍不存在则作为 `InvalidStructuredOutput` 被转换为 `ExecutionBlockedError`。Action Resolver 仍只负责根据当前 graphId 和 Session 内映射解析 Playwright Locator，并在 locator/session 已失效时阻塞执行。
 
 ### 11.4 Verification
 
@@ -520,9 +541,12 @@ Artifact 先写临时文件，完成后原子重命名，再写入带 SHA-256 �
 |---|---|
 | 缺少模型配置 | Run 创建前失败，退出码 3 |
 | Provider 401/403 | 不重试，error |
-| Provider 429、5xx 或超时 | 最多重试两次，指数退避；耗尽后 error |
+| Provider 400、404、409 或其他 4xx（不含 408/429） | 归一化为 `InvalidRequest`，不重试，error |
+| Provider 408 或 SDK timeout | 归一化为 `TimedOut`，最多重试两次；耗尽后 error |
+| Provider 429、5xx 或网络故障 | 最多重试两次，指数退避；耗尽后 error |
 | 模型输出不符合 Schema | 携带校验错误修正一次；仍失败则 blocked |
 | Decision 引用不存在的 nodeId | 拒绝执行，blocked |
+| Contract Parser 的非校验异常 | 原样向应用层传播，error；不重试、不 correction |
 | Locator 在执行前失效 | 重新观察一次，不自动重新规划，blocked |
 | 页面导航或 Action 超时 | 记录 Action Outcome，blocked |
 | Verification 引用虚假证据 | 修正一次；仍失败则 blocked |

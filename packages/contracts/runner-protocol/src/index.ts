@@ -28,11 +28,18 @@ export interface ObservationNode {
   readonly id: ObservationNodeId;
   readonly role: string;
   readonly name?: string;
+  readonly text?: string;
+  readonly value?: string;
+  readonly disabled?: boolean;
   readonly confidence: number;
 }
 
 export interface ObservationGraph {
   readonly graphId: ObservationGraphId;
+  readonly url?: string;
+  readonly title?: string;
+  readonly capturedAt?: string;
+  readonly artifactRefs?: readonly string[];
   readonly nodes: readonly ObservationNode[];
 }
 
@@ -55,7 +62,8 @@ export type TraceStage =
   | "policy_denied"
   | "action_executed"
   | "verification"
-  | "finding";
+  | "finding"
+  | "run_completed";
 
 interface TraceEventEnvelope<TStage extends TraceStage, TPayload> {
   readonly protocolVersion: RunnerProtocolVersion;
@@ -102,10 +110,46 @@ export interface ActionOutcomeTracePayload {
   readonly errorCode?: string;
 }
 
-export interface VerificationTracePayload {
-  readonly status: "passed" | "failed";
-  readonly summary: string;
+export interface VerificationEvidenceValue {
+  readonly graphId: ObservationGraphId;
+  readonly nodeId: ObservationNodeId;
+  readonly text: string;
 }
+
+export interface VerificationClaim {
+  readonly expected: VerificationEvidenceValue;
+  readonly observed: VerificationEvidenceValue;
+}
+
+export type VerificationTracePayload =
+  | {
+      readonly status: "passed";
+      readonly summary: string;
+      readonly claims: readonly [];
+    }
+  | {
+      readonly status: "failed";
+      readonly summary: string;
+      readonly severitySuggestion: "low" | "medium" | "high";
+      readonly claims: readonly [VerificationClaim, ...VerificationClaim[]];
+    };
+
+export type RunCompletedTracePayload =
+  | {
+      readonly status: "passed";
+    }
+  | {
+      readonly status: "finding";
+      readonly findingId: FindingId;
+    }
+  | {
+      readonly status: "blocked";
+      readonly errorCode?: string;
+    }
+  | {
+      readonly status: "error";
+      readonly errorCode: string;
+    };
 
 export type TraceEvent =
   | TraceEventEnvelope<"observation", ObservationGraph>
@@ -115,7 +159,8 @@ export type TraceEvent =
   | TraceEventEnvelope<"policy_denied", DeniedPolicyTracePayload>
   | TraceEventEnvelope<"action_executed", ActionOutcomeTracePayload>
   | TraceEventEnvelope<"verification", VerificationTracePayload>
-  | TraceEventEnvelope<"finding", FindingEnvelope>;
+  | TraceEventEnvelope<"finding", FindingEnvelope>
+  | TraceEventEnvelope<"run_completed", RunCompletedTracePayload>;
 
 export type TraceEventHashInput = TraceEvent extends infer TEvent
   ? TEvent extends TraceEvent
@@ -125,12 +170,30 @@ export type TraceEventHashInput = TraceEvent extends infer TEvent
 
 export type TraceEventSubmission = TraceEvent;
 
-export interface ExecutionCompletion {
-  readonly jobId: ExecutionJobId;
-  readonly runId: RunId;
-  readonly status: "completed" | "blocked";
-  readonly finding: FindingEnvelope;
-}
+export type ExecutionCompletion =
+  | {
+      readonly jobId: ExecutionJobId;
+      readonly runId: RunId;
+      readonly status: "passed";
+    }
+  | {
+      readonly jobId: ExecutionJobId;
+      readonly runId: RunId;
+      readonly status: "finding";
+      readonly finding: FindingEnvelope;
+    }
+  | {
+      readonly jobId: ExecutionJobId;
+      readonly runId: RunId;
+      readonly status: "blocked";
+      readonly errorCode?: string;
+    }
+  | {
+      readonly jobId: ExecutionJobId;
+      readonly runId: RunId;
+      readonly status: "error";
+      readonly errorCode: string;
+    };
 
 export function canonicalPayloadHash(payload: unknown): string {
   return createHash("sha256")

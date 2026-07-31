@@ -58,11 +58,10 @@ describe("M1 web walking skeleton", () => {
         execute: async () => ({ status: "ok" }),
       },
       verifier: {
-        verify: async ({ before, after }) => ({
-          status: before.graphId === "graph-before" && after.graphId === "graph-after"
-            ? "passed"
-            : "failed",
+        verify: async () => ({
+          status: "passed",
           summary: "login transition observed",
+          claims: [],
         }),
       },
       traceRecorder,
@@ -75,7 +74,7 @@ describe("M1 web walking skeleton", () => {
       objective: "Click login",
     });
 
-    expect(completion.status).toBe("completed");
+    expect(completion.status).toBe("passed");
     expect(traceStore.eventsFor("run-1").map((event) => event.stage)).toEqual([
       "observation",
       "decision",
@@ -84,17 +83,8 @@ describe("M1 web walking skeleton", () => {
       "action_executed",
       "observation",
       "verification",
-      "finding",
+      "run_completed",
     ]);
-    expect(traceStore.findingsFor("run-1")).toEqual([
-      {
-        findingId: "run-1:verification",
-        runId: "run-1",
-        title: "M1 verification passed",
-        summary: "login transition observed",
-        severity: "info",
-        evidenceRefs: [],
-      },
-    ]);
+    expect(traceStore.findingsFor("run-1")).toEqual([]);
   });
 });

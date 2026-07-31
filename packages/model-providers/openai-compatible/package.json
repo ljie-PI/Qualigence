@@ -1,0 +1,17 @@
+{
+  "name": "@qualigence/openai-compatible-model-provider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/model-provider": "workspace:*",
+    "openai": "6.48.0"
+  }
+}

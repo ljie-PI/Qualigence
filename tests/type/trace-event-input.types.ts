@@ -13,6 +13,82 @@ const observationInput: TraceEventInput = {
 
 observationInput satisfies TraceEventInput;
 
+const completedInput: TraceEventInput = {
+  runId: "run-1",
+  stage: "run_completed",
+  payload: { status: "passed" },
+};
+
+completedInput satisfies TraceEventInput;
+
+const incompleteFindingCompletion: TraceEventInput = {
+  runId: "run-1",
+  stage: "run_completed",
+  // @ts-expect-error finding terminal events require a finding id
+  payload: { status: "finding" },
+};
+
+incompleteFindingCompletion satisfies TraceEventInput;
+
+const criticalVerificationSeverity: TraceEventInput = {
+  runId: "run-1",
+  stage: "verification",
+  // @ts-expect-error model verification severity is limited to low, medium, or high
+  payload: {
+    status: "failed",
+    summary: "critical is reserved for deterministic severity policy",
+    severitySuggestion: "critical",
+    claims: [
+      {
+        expected: { graphId: "before", nodeId: "price", text: "$19" },
+        observed: { graphId: "after", nodeId: "total", text: "$29" },
+      },
+    ],
+  },
+};
+
+criticalVerificationSeverity satisfies TraceEventInput;
+
+const passedVerification: TraceEventInput = {
+  runId: "run-1",
+  stage: "verification",
+  payload: { status: "passed", summary: "objective satisfied", claims: [] },
+};
+
+passedVerification satisfies TraceEventInput;
+
+const passedVerificationWithClaims: TraceEventInput = {
+  runId: "run-1",
+  stage: "verification",
+  // @ts-expect-error passed verification cannot carry evidence claims
+  payload: {
+    status: "passed",
+    summary: "contradictory payload",
+    claims: [
+      {
+        expected: { graphId: "before", nodeId: "price", text: "$19" },
+        observed: { graphId: "after", nodeId: "total", text: "$29" },
+      },
+    ],
+  },
+};
+
+passedVerificationWithClaims satisfies TraceEventInput;
+
+const failedVerificationWithoutClaims: TraceEventInput = {
+  runId: "run-1",
+  stage: "verification",
+  // @ts-expect-error failed verification requires at least one evidence claim
+  payload: {
+    status: "failed",
+    summary: "missing grounded evidence",
+    severitySuggestion: "high",
+    claims: [],
+  },
+};
+
+failedVerificationWithoutClaims satisfies TraceEventInput;
+
 const mismatchedInput: TraceEventInput = {
   runId: "run-1",
   stage: "observation",
