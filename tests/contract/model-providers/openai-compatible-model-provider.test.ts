@@ -105,6 +105,24 @@ describe("OpenAICompatibleModelProvider", () => {
       expectedMessage: "The model provider rejected authentication.",
     },
     {
+      statusCode: 403,
+      providerCode: "forbidden",
+      expectedCode: "AuthenticationFailed",
+      expectedMessage: "The model provider rejected authentication.",
+    },
+    {
+      statusCode: 408,
+      providerCode: "request_timeout",
+      expectedCode: "TimedOut",
+      expectedMessage: "The model provider request timed out.",
+    },
+    {
+      statusCode: 409,
+      providerCode: "conflict",
+      expectedCode: "InvalidRequest",
+      expectedMessage: "The model provider rejected the request.",
+    },
+    {
       statusCode: 429,
       providerCode: "rate_limit_exceeded",
       expectedCode: "RateLimited",

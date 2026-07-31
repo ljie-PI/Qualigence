@@ -5,7 +5,7 @@ import {
   type ModelProvider,
   type StructuredOutputContract,
 } from "@qualigence/model-gateway";
-import type { ModelProviderRequest } from "@qualigence/model-provider";
+import type { JsonSchema, ModelProviderRequest } from "@qualigence/model-provider";
 
 const decisionContract: StructuredOutputContract<{
   readonly action: { readonly kind: "click"; readonly nodeId: string };
@@ -72,6 +72,45 @@ describe("ModelGateway", () => {
       action: { kind: "click", nodeId: "add" },
       reason: "add item",
     });
+  });
+
+  it("propagates a non-validation parser defect without retrying the provider", async () => {
+    const parserDefect = new TypeError("contract bug");
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [{ action: { kind: "click", nodeId: "add" }, reason: "add item" }],
+    );
+    const gateway = new ModelGateway({ provider });
+    const defectiveContract: StructuredOutputContract<never> = {
+      name: "defective-contract",
+      jsonSchema: { type: "object" },
+      parse() {
+        throw parserDefect;
+      },
+    };
+
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(parserDefect);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it("propagates a provider-request construction defect without invoking or retrying", async () => {
+    const requestConstructionDefect = new TypeError("schema getter bug");
+    const provider = fakeProvider({ structuredOutput: true });
+    const gateway = new ModelGateway({ provider });
+    const defectiveContract: StructuredOutputContract<never> = {
+      name: "defective-contract",
+      get jsonSchema(): JsonSchema {
+        throw requestConstructionDefect;
+      },
+      parse() {
+        throw new Error("parse must not run");
+      },
+    };
+
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(
+      requestConstructionDefect,
+    );
+    expect(provider.requests).toHaveLength(0);
   });
 
   it("does not retry an authentication failure", async () => {

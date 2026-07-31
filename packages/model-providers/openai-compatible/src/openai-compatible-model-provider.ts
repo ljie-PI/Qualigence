@@ -98,6 +98,9 @@ function mapProviderError(error: unknown): ModelProviderError {
   if (status === 429) {
     return modelProviderError("RateLimited", "The model provider rate limited the request.");
   }
+  if (status === 408) {
+    return modelProviderError("TimedOut", "The model provider request timed out.");
+  }
   if (typeof status === "number" && status >= 400 && status < 500) {
     return modelProviderError("InvalidRequest", "The model provider rejected the request.");
   }

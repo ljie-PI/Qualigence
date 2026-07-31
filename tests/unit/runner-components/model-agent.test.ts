@@ -40,12 +40,42 @@ describe("model-backed runner components", () => {
     expect(gateway.requests[0]?.operation).toBe("execution.decision");
   });
 
-  it("blocks the run after one correction when the decision remains invalid", async () => {
+  it("corrects a decision that references a node outside the current observation", async () => {
     const modelProvider = new ScriptedModelProvider([
-      { action: { kind: "click" }, reason: "missing node" },
-      { action: { kind: "click" }, reason: "still missing node" },
+      { action: { kind: "click", nodeId: "node-unknown" }, reason: "add the item" },
+      { action: { kind: "click", nodeId: "node-add" }, reason: "add the item" },
+    ]);
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+
+    const decision = await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add to cart", confidence: 1 },
+      ]),
+    });
+
+    expect(decision.target.nodeId).toBe("node-add");
+    expect(modelProvider.requests).toHaveLength(2);
+    expect(modelProvider.requests[1]?.messages.at(-1)?.content).toContain(
+      "action.nodeId:unknown_node_reference",
+    );
+    expect(modelProvider.requests[1]?.messages.at(-1)?.content).not.toContain(
+      "node-unknown",
+    );
+  });
+
+  it("blocks before resolution when the corrected decision still references an unknown node", async () => {
+    const modelProvider = new ScriptedModelProvider([
+      { action: { kind: "click", nodeId: "node-unknown-1" }, reason: "missing node" },
+      { action: { kind: "click", nodeId: "node-unknown-2" }, reason: "still missing node" },
     ]);
     const traceRecorder = new InMemoryTraceRecorder();
+    let resolverCalled = false;
+    let actionExecutorCalled = false;
+    let verifierCalled = false;
     const runtime = new ExecutionRuntime({
       observer: {
         capture: async () => observation("before", [
@@ -57,14 +87,27 @@ describe("model-backed runner components", () => {
         "test-model",
       ),
       resolver: {
-        resolve: async () => {
-          throw new Error("resolver must not run after an invalid decision");
+        resolve: async (action, graph) => {
+          resolverCalled = true;
+          return {
+            kind: "click",
+            target: { nodeId: action.target.nodeId, selector: "button" },
+            graphId: graph.graphId,
+          };
         },
       },
       policyGate: new AllowAllRunnerPolicyGate(),
-      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      actionExecutor: {
+        execute: async () => {
+          actionExecutorCalled = true;
+          return { status: "ok" };
+        },
+      },
       verifier: {
-        verify: async () => ({ status: "passed", summary: "not reached", claims: [] }),
+        verify: async () => {
+          verifierCalled = true;
+          return { status: "passed", summary: "not reached", claims: [] };
+        },
       },
       traceRecorder,
     });
@@ -78,6 +121,9 @@ describe("model-backed runner components", () => {
       errorCode: "InvalidStructuredOutput",
     });
     expect(modelProvider.requests).toHaveLength(2);
+    expect(resolverCalled).toBe(false);
+    expect(actionExecutorCalled).toBe(false);
+    expect(verifierCalled).toBe(false);
     expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).toEqual([
       "observation",
       "run_completed",

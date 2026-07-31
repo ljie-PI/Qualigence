@@ -107,7 +107,7 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           ],
           timeoutMs: 30_000,
         },
-        structuredContract("execution-decision", decisionSchema),
+        decisionContract(context),
       );
 
       return toProposedAction(result.value);
@@ -170,12 +170,19 @@ function throwModelExecutionError(error: unknown): never {
   throw error;
 }
 
-function structuredContract<T extends z.ZodType>(name: string, schema: T) {
+function decisionContract(context: AgentContext): StructuredOutputContract<DecisionProposal> {
   return {
-    name,
-    jsonSchema: z.toJSONSchema(schema) as JsonSchema,
-    parse(value: unknown): z.output<T> {
-      return parseSchema(schema, value);
+    name: "execution-decision",
+    jsonSchema: z.toJSONSchema(decisionSchema) as JsonSchema,
+    parse(value: unknown): DecisionProposal {
+      const proposal = parseSchema(decisionSchema, value);
+      if (!context.observation.nodes.some((node) => node.id === proposal.action.nodeId)) {
+        throw structuredOutputValidationError([
+          { path: "action.nodeId", reason: "unknown_node_reference" },
+        ]);
+      }
+
+      return proposal;
     },
   };
 }

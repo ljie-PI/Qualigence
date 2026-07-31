@@ -57,48 +57,14 @@ export class ModelGateway implements StructuredModelInvoker {
     let providerRequest = request;
 
     while (true) {
+      const providerRequestWithSchema = {
+        ...providerRequest,
+        responseSchema: output.jsonSchema,
+      };
+      let response: Awaited<ReturnType<ModelProvider["invoke"]>>;
       try {
-        const response = await this.dependencies.provider.invoke({
-          ...providerRequest,
-          responseSchema: output.jsonSchema,
-        });
-
-        try {
-          return {
-            value: output.parse(response.output),
-            model: response.model,
-            finishReason: response.finishReason,
-            ...(response.providerRequestId === undefined
-              ? {}
-              : { providerRequestId: response.providerRequestId }),
-            ...(response.usage === undefined ? {} : { usage: response.usage }),
-          };
-        } catch (error) {
-          if (schemaAttempts >= 1) {
-            throw new ModelGatewayError(
-              "InvalidStructuredOutput",
-              `The provider returned output that does not match ${output.name}.`,
-            );
-          }
-
-          schemaAttempts += 1;
-          const validationSummary = summarizeValidationIssues(error);
-          providerRequest = {
-            ...providerRequest,
-            messages: [
-              ...providerRequest.messages,
-              {
-                role: "user",
-                content: `The previous response failed schema validation for ${output.name}.${validationSummary === undefined ? "" : ` Validation issues: ${validationSummary}.`} Return only JSON that matches the supplied schema.`,
-              },
-            ],
-          };
-        }
+        response = await this.dependencies.provider.invoke(providerRequestWithSchema);
       } catch (error) {
-        if (error instanceof ModelGatewayError) {
-          throw error;
-        }
-
         const normalized = normalizeProviderError(error);
         if (!isTransient(normalized.code) || transientAttempts >= 2) {
           throw normalized;
@@ -106,6 +72,43 @@ export class ModelGateway implements StructuredModelInvoker {
 
         transientAttempts += 1;
         await this.delay(100 * 2 ** (transientAttempts - 1));
+        continue;
+      }
+
+      try {
+        return {
+          value: output.parse(response.output),
+          model: response.model,
+          finishReason: response.finishReason,
+          ...(response.providerRequestId === undefined
+            ? {}
+            : { providerRequestId: response.providerRequestId }),
+          ...(response.usage === undefined ? {} : { usage: response.usage }),
+        };
+      } catch (error) {
+        if (!isStructuredOutputValidationError(error)) {
+          throw error;
+        }
+
+        if (schemaAttempts >= 1) {
+          throw new ModelGatewayError(
+            "InvalidStructuredOutput",
+            `The provider returned output that does not match ${output.name}.`,
+          );
+        }
+
+        schemaAttempts += 1;
+        const validationSummary = summarizeValidationIssues(error);
+        providerRequest = {
+          ...providerRequest,
+          messages: [
+            ...providerRequest.messages,
+            {
+              role: "user",
+              content: `The previous response failed schema validation for ${output.name}.${validationSummary === undefined ? "" : ` Validation issues: ${validationSummary}.`} Return only JSON that matches the supplied schema.`,
+            },
+          ],
+        };
       }
     }
   }
