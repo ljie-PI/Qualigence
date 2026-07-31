@@ -40,6 +40,7 @@ export interface ModelProviderResponse {
 
 export type ModelProviderErrorCode =
   | "AuthenticationFailed"
+  | "InvalidRequest"
   | "RateLimited"
   | "TimedOut"
   | "ProviderUnavailable";
@@ -65,6 +66,16 @@ export interface StructuredOutputContract<T> {
   readonly name: string;
   readonly jsonSchema: JsonSchema;
   parse(value: unknown): T;
+}
+
+export interface StructuredOutputValidationIssue {
+  readonly path: string;
+  readonly reason: string;
+}
+
+export interface StructuredOutputValidationError extends Error {
+  readonly name: "StructuredOutputValidationError";
+  readonly issues: readonly StructuredOutputValidationIssue[];
 }
 
 export interface ValidatedModelResult<T> {

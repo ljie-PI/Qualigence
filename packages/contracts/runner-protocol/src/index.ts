@@ -130,7 +130,7 @@ export type VerificationTracePayload =
   | {
       readonly status: "failed";
       readonly summary: string;
-      readonly severitySuggestion: Exclude<FindingSeverity, "info">;
+      readonly severitySuggestion: "low" | "medium" | "high";
       readonly claims: readonly [VerificationClaim, ...VerificationClaim[]];
     };
 

@@ -188,11 +188,11 @@ Expected: failure because @qualigence/model-gateway does not exist.
 
 - [ ] **Step 3: Implement provider-neutral contracts**
 
-Define ModelCapabilities, ModelProviderRequest, ModelProviderResponse, ModelProviderError, ModelUsage, JsonSchema, ModelProvider, StructuredModelRequest, StructuredOutputContract, and ValidatedModelResult. Do not import Zod or any provider SDK in this contract package.
+Define ModelCapabilities, ModelProviderRequest, ModelProviderResponse, ModelProviderError, ModelUsage, JsonSchema, ModelProvider, StructuredModelRequest, StructuredOutputContract, StructuredOutputValidationIssue, StructuredOutputValidationError, and ValidatedModelResult. Do not import Zod or any provider SDK in this contract package.
 
 - [ ] **Step 4: Implement ModelGateway**
 
-Accept an injected provider and retry policy. Require structuredOutput capability. Invoke the provider with a JSON schema, parse with the supplied contract, retry one schema correction and retry up to two transient provider failures with an injected delay function. Return normalized error codes AuthenticationFailed, RateLimited, TimedOut, ProviderUnavailable, InvalidStructuredOutput, and CapabilityMismatch.
+Accept an injected provider and retry policy. Require structuredOutput capability. Invoke the provider with a JSON schema, parse with the supplied contract, retry one schema correction with bounded sanitized path/reason details, and retry up to two transient provider failures with an injected delay function. Return normalized error codes AuthenticationFailed, InvalidRequest, RateLimited, TimedOut, ProviderUnavailable, InvalidStructuredOutput, and CapabilityMismatch. InvalidRequest is permanent and is never retried.
 
 - [ ] **Step 5: Write and run failing model-agent tests**
 
@@ -204,7 +204,7 @@ Expected: failure because ModelBackedDecisionProvider and ModelBackedVerifier do
 
 - [ ] **Step 6: Implement model-agent components**
 
-Map AgentContext to an execution.decision structured request. Map VerificationContext to an execution.verification request. Define Zod schemas locally in the model-agent package and expose their JSON schemas through the gateway contract. Reject passed results with claims and failed results with no claims.
+Map AgentContext to an execution.decision structured request. Map VerificationContext to an execution.verification request. Define Zod schemas locally in the model-agent package and expose their JSON schemas through the gateway contract. Reject passed results with claims, failed results with no claims, and empty visible evidence. Map exhausted InvalidStructuredOutput errors to the Runner Kernel's provider-neutral ExecutionBlockedError so ExecutionRuntime records a blocked terminal event; allow infrastructure errors to propagate to Task 7.
 
 - [ ] **Step 7: Verify Task 3**
 
@@ -233,7 +233,7 @@ Expected: all commands pass.
 
 - [ ] **Step 1: Write a local HTTP contract test**
 
-Start a test HTTP server that captures the request body. Assert that the adapter sends the configured base URL, model, messages, and JSON schema, then maps a valid structured response into ModelProviderResponse. Add tests for 401, 429, 500, malformed JSON, and request abortion on timeout.
+Start a test HTTP server that captures the request body. Assert that the adapter sends the configured base URL, model, messages, and JSON schema, then maps a valid structured response into ModelProviderResponse. Add tests for permanent 400, 401, 429, 500, malformed or null content, and request abortion on timeout.
 
 - [ ] **Step 2: Run the contract test and observe adapter import failure**
 

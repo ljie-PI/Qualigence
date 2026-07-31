@@ -3,6 +3,7 @@ import type {
   ModelProviderErrorCode,
   StructuredModelRequest,
   StructuredOutputContract,
+  StructuredOutputValidationError,
   ValidatedModelResult,
 } from "@qualigence/model-provider";
 
@@ -72,7 +73,7 @@ export class ModelGateway implements StructuredModelInvoker {
               : { providerRequestId: response.providerRequestId }),
             ...(response.usage === undefined ? {} : { usage: response.usage }),
           };
-        } catch {
+        } catch (error) {
           if (schemaAttempts >= 1) {
             throw new ModelGatewayError(
               "InvalidStructuredOutput",
@@ -81,13 +82,14 @@ export class ModelGateway implements StructuredModelInvoker {
           }
 
           schemaAttempts += 1;
+          const validationSummary = summarizeValidationIssues(error);
           providerRequest = {
             ...providerRequest,
             messages: [
               ...providerRequest.messages,
               {
                 role: "user",
-                content: `The previous response failed schema validation for ${output.name}. Return only JSON that matches the supplied schema.`,
+                content: `The previous response failed schema validation for ${output.name}.${validationSummary === undefined ? "" : ` Validation issues: ${validationSummary}.`} Return only JSON that matches the supplied schema.`,
               },
             ],
           };
@@ -127,6 +129,7 @@ function isProviderError(
   const candidate = error as { readonly code?: unknown; readonly message?: unknown };
   return (
     (candidate.code === "AuthenticationFailed" ||
+      candidate.code === "InvalidRequest" ||
       candidate.code === "RateLimited" ||
       candidate.code === "TimedOut" ||
       candidate.code === "ProviderUnavailable") &&
@@ -136,6 +139,41 @@ function isProviderError(
 
 function isTransient(code: ModelGatewayErrorCode): boolean {
   return code === "RateLimited" || code === "TimedOut" || code === "ProviderUnavailable";
+}
+
+function summarizeValidationIssues(error: unknown): string | undefined {
+  if (!isStructuredOutputValidationError(error)) {
+    return undefined;
+  }
+
+  const issues = error.issues.slice(0, 3).map((issue) => {
+    const path = sanitizeValidationToken(issue.path, 96);
+    const reason = sanitizeValidationToken(issue.reason, 64);
+    return `${path}:${reason}`;
+  });
+  return issues.length === 0 ? undefined : issues.join(", ");
+}
+
+function isStructuredOutputValidationError(
+  error: unknown,
+): error is StructuredOutputValidationError {
+  if (!(error instanceof Error) || error.name !== "StructuredOutputValidationError") {
+    return false;
+  }
+
+  const issues = (error as { readonly issues?: unknown }).issues;
+  return Array.isArray(issues) && issues.every((issue) => {
+    if (typeof issue !== "object" || issue === null) {
+      return false;
+    }
+    const candidate = issue as { readonly path?: unknown; readonly reason?: unknown };
+    return typeof candidate.path === "string" && typeof candidate.reason === "string";
+  });
+}
+
+function sanitizeValidationToken(value: string, maximumLength: number): string {
+  const sanitized = value.replace(/[^A-Za-z0-9_.[\]-]/g, "_").slice(0, maximumLength);
+  return sanitized.length === 0 ? "output" : sanitized;
 }
 
 async function defaultDelay(delayMs: number): Promise<void> {

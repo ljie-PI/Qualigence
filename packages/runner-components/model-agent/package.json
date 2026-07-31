@@ -12,6 +12,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/model-gateway": "workspace:*",
+    "@qualigence/model-provider": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "zod": "4.4.3"

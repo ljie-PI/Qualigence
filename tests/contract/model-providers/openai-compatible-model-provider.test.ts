@@ -92,6 +92,7 @@ describe("OpenAICompatibleModelProvider", () => {
   });
 
   it.each([
+    { statusCode: 400, providerCode: "unsupported_response_format", expectedCode: "InvalidRequest" },
     { statusCode: 401, providerCode: "invalid_api_key", expectedCode: "AuthenticationFailed" },
     { statusCode: 429, providerCode: "rate_limit_exceeded", expectedCode: "RateLimited" },
     { statusCode: 500, providerCode: "server_error", expectedCode: "ProviderUnavailable" },
@@ -174,6 +175,46 @@ describe("OpenAICompatibleModelProvider", () => {
           timeoutMs: 1_000,
         }),
       ).resolves.toMatchObject({ output: "not-json" });
+    } finally {
+      server.closeAllConnections();
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("returns null structured content for gateway schema correction", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          id: "chatcmpl-no-content",
+          model: "compatible-model",
+          choices: [{ finish_reason: "stop", message: { content: null } }],
+        }),
+      );
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected TCP listener.");
+    }
+
+    try {
+      const provider = new OpenAICompatibleModelProvider({
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "test-key",
+      });
+
+      await expect(
+        provider.invoke({
+          operation: "execution.decision",
+          model: "compatible-model",
+          messages: [{ role: "user", content: "choose" }],
+          responseSchema: { type: "object" },
+          timeoutMs: 1_000,
+        }),
+      ).resolves.toMatchObject({ output: null });
     } finally {
       server.closeAllConnections();
       server.close();

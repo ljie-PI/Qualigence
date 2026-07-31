@@ -90,6 +90,9 @@ importers:
       '@qualigence/model-gateway':
         specifier: workspace:*
         version: link:../../model-gateway
+      '@qualigence/model-provider':
+        specifier: workspace:*
+        version: link:../../contracts/model-provider
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:../../runner-kernel

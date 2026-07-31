@@ -47,6 +47,13 @@ export interface ActionOutcome {
 
 export type VerificationResult = VerificationTracePayload;
 
+export class ExecutionBlockedError extends Error {
+  constructor(readonly errorCode: string) {
+    super(`Execution blocked: ${errorCode}`);
+    this.name = "ExecutionBlockedError";
+  }
+}
+
 export interface Observer {
   capture(job: AcceptedExecutionJob): Promise<ObservationGraph>;
 }
@@ -135,6 +142,32 @@ export class ExecutionRuntime {
   constructor(private readonly dependencies: ExecutionRuntimeDependencies) {}
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+    try {
+      return await this.runUntilCompletion(job);
+    } catch (error) {
+      if (!(error instanceof ExecutionBlockedError)) {
+        throw error;
+      }
+
+      await this.record({
+        runId: job.runId,
+        stage: "run_completed",
+        payload: {
+          status: "blocked",
+          errorCode: error.errorCode,
+        },
+      });
+
+      return {
+        jobId: job.jobId,
+        runId: job.runId,
+        status: "blocked",
+        errorCode: error.errorCode,
+      };
+    }
+  }
+
+  private async runUntilCompletion(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
     const observation = await this.dependencies.observer.capture(job);
     await this.record({
       runId: job.runId,

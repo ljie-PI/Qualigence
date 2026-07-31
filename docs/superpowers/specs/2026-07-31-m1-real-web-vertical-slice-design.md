@@ -308,6 +308,11 @@ interface StructuredOutputContract<T> {
   parse(value: unknown): T;
 }
 
+interface StructuredOutputValidationIssue {
+  readonly path: string;
+  readonly reason: string;
+}
+
 interface ModelGateway {
   invokeStructured<T>(
     request: StructuredModelRequest,
@@ -315,6 +320,8 @@ interface ModelGateway {
   ): Promise<ValidatedModelResult<T>>;
 }
 ~~~
+
+Contract Parser 只通过 `StructuredOutputValidationError` 暴露脱敏的 `path` 与 `reason`。Gateway 最多携带三项、限制长度并过滤字符后加入一次 correction message；任意异常消息和原始模型响应都不会进入纠错提示。
 
 Model Gateway 负责：
 
@@ -326,6 +333,8 @@ Model Gateway 负责：
 - 记录模型、用量、延迟和错误摘要。
 
 首版只注册一个 OpenAI-compatible Provider，但注册和 Profile 边界不绑定供应商。未来 Anthropic、Gemini 或 Ollama 只需实现 ModelProvider Contract。
+
+Schema 或 Evidence 校验在一次修正后仍失败时，Model Agent 将 `InvalidStructuredOutput` 转换为 Runner Kernel 定义的 `ExecutionBlockedError`。ExecutionRuntime 只捕获这一供应商无关的阻塞信号并记录 `run_completed: blocked`；鉴权、限流、超时和 Provider 不可用等基础设施错误继续向应用层传播。
 
 ### 11.3 Decision
 
@@ -520,6 +529,7 @@ Artifact 先写临时文件，完成后原子重命名，再写入带 SHA-256 �
 |---|---|
 | 缺少模型配置 | Run 创建前失败，退出码 3 |
 | Provider 401/403 | 不重试，error |
+| Provider 其他 4xx | 归一化为 `InvalidRequest`，不重试，error |
 | Provider 429、5xx 或超时 | 最多重试两次，指数退避；耗尽后 error |
 | 模型输出不符合 Schema | 携带校验错误修正一次；仍失败则 blocked |
 | Decision 引用不存在的 nodeId | 拒绝执行，blocked |

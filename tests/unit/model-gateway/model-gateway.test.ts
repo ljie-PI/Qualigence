@@ -23,7 +23,10 @@ const decisionContract: StructuredOutputContract<{
       typeof candidate.action.nodeId !== "string" ||
       typeof candidate.reason !== "string"
     ) {
-      throw new Error("invalid decision response");
+      throw Object.assign(new Error("raw provider output must not be repeated"), {
+        name: "StructuredOutputValidationError",
+        issues: [{ path: "action.nodeId", reason: "invalid_type" }],
+      });
     }
 
     return {
@@ -59,9 +62,12 @@ describe("ModelGateway", () => {
       {
         role: "user",
         content:
-          "The previous response failed schema validation for execution-decision. Return only JSON that matches the supplied schema.",
+          "The previous response failed schema validation for execution-decision. Validation issues: action.nodeId:invalid_type. Return only JSON that matches the supplied schema.",
       },
     ]);
+    expect(provider.requests[1]?.messages.at(-1)?.content).not.toContain(
+      "raw provider output",
+    );
     expect(result.value).toEqual({
       action: { kind: "click", nodeId: "add" },
       reason: "add item",
@@ -79,6 +85,20 @@ describe("ModelGateway", () => {
     await expect(
       gateway.invokeStructured(request(), decisionContract),
     ).rejects.toMatchObject({ code: "AuthenticationFailed" } satisfies Partial<ModelGatewayError>);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it("does not retry a permanent invalid provider request", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [new Error("unsupported response format")],
+      "InvalidRequest",
+    );
+    const gateway = new ModelGateway({ provider });
+
+    await expect(
+      gateway.invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({ code: "InvalidRequest" } satisfies Partial<ModelGatewayError>);
     expect(provider.requests).toHaveLength(1);
   });
 
@@ -116,7 +136,7 @@ function request() {
 function fakeProvider(
   capabilities: Pick<ModelProvider["capabilities"], "structuredOutput">,
   responses: unknown[] = [],
-  errorCode?: "AuthenticationFailed" | "TimedOut",
+  errorCode?: "AuthenticationFailed" | "InvalidRequest" | "TimedOut",
 ) {
   const requests: ModelProviderRequest[] = [];
   const provider: ModelProvider & { readonly requests: ModelProviderRequest[] } = {

@@ -4,6 +4,12 @@ import {
   ModelBackedVerifier,
 } from "@qualigence/model-agent";
 import { ModelGateway } from "@qualigence/model-gateway";
+import { ExecutionRuntime } from "@qualigence/runner-kernel";
+import {
+  AllowAllRunnerPolicyGate,
+  InMemoryTraceRecorder,
+  ScriptedDecisionProvider,
+} from "@qualigence/testkit";
 import type {
   ModelProvider,
   StructuredModelInvoker,
@@ -32,6 +38,50 @@ describe("model-backed runner components", () => {
     });
     expect(decision).not.toHaveProperty("selector");
     expect(gateway.requests[0]?.operation).toBe("execution.decision");
+  });
+
+  it("blocks the run after one correction when the decision remains invalid", async () => {
+    const modelProvider = new ScriptedModelProvider([
+      { action: { kind: "click" }, reason: "missing node" },
+      { action: { kind: "click" }, reason: "still missing node" },
+    ]);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => observation("before", [
+          { id: "node-add", role: "button", name: "Add", confidence: 1 },
+        ]),
+      },
+      decisionProvider: new ModelBackedDecisionProvider(
+        new ModelGateway({ provider: modelProvider }),
+        "test-model",
+      ),
+      resolver: {
+        resolve: async () => {
+          throw new Error("resolver must not run after an invalid decision");
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: {
+        verify: async () => ({ status: "passed", summary: "not reached", claims: [] }),
+      },
+      traceRecorder,
+    });
+
+    const completion = await runtime.run(job());
+
+    expect(completion).toEqual({
+      jobId: "job-1",
+      runId: "run-1",
+      status: "blocked",
+      errorCode: "InvalidStructuredOutput",
+    });
+    expect(modelProvider.requests).toHaveLength(2);
+    expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).toEqual([
+      "observation",
+      "run_completed",
+    ]);
   });
 
   it("preserves only validated graph/node evidence references in failed verification", async () => {
@@ -103,6 +153,9 @@ describe("model-backed runner components", () => {
     expect(provider.requests[1]?.messages.at(-1)?.content).toContain(
       "failed schema validation",
     );
+    expect(provider.requests[1]?.messages.at(-1)?.content).toContain(
+      "claims[0].expected:unknown_evidence_reference",
+    );
   });
 
   it("rejects claims whose expected and observed evidence use the wrong observation stages", async () => {
@@ -117,7 +170,88 @@ describe("model-backed runner components", () => {
     );
 
     await expect(verifier.verify(verificationContext())).rejects.toMatchObject({
-      code: "InvalidStructuredOutput",
+      name: "ExecutionBlockedError",
+      errorCode: "InvalidStructuredOutput",
+    });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("blocks the run after one correction when verification keeps citing invalid evidence", async () => {
+    const invalid = failedVerification({
+      expected: { graphId: "before", nodeId: "invented", text: "$19" },
+      observed: { graphId: "after", nodeId: "node-total", text: "$29" },
+    });
+    const modelProvider = new ScriptedModelProvider([invalid, invalid]);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const observations = [verificationContext().before, verificationContext().after];
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observations.shift()! },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-price" },
+        reason: "verify the cart total",
+      }),
+      resolver: {
+        resolve: async (action, graph) => ({
+          kind: "click",
+          target: { nodeId: action.target.nodeId, selector: "button" },
+          graphId: graph.graphId,
+        }),
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: new ModelBackedVerifier(
+        new ModelGateway({ provider: modelProvider }),
+        "test-model",
+      ),
+      traceRecorder,
+    });
+
+    const completion = await runtime.run(job());
+
+    expect(completion).toEqual({
+      jobId: "job-1",
+      runId: "run-1",
+      status: "blocked",
+      errorCode: "InvalidStructuredOutput",
+    });
+    expect(modelProvider.requests).toHaveLength(2);
+    expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).toEqual([
+      "observation",
+      "decision",
+      "action_resolved",
+      "policy_authorized",
+      "action_executed",
+      "observation",
+      "run_completed",
+    ]);
+    expect(traceRecorder.eventsFor("run-1").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "InvalidStructuredOutput",
+    });
+  });
+
+  it("rejects whitespace-only evidence instead of grounding it to an empty node", async () => {
+    const emptyEvidence = failedVerification({
+      expected: { graphId: "before", nodeId: "node-empty", text: "   " },
+      observed: { graphId: "after", nodeId: "node-total", text: "$29" },
+    });
+    const provider = new ScriptedModelProvider([emptyEvidence, emptyEvidence]);
+    const verifier = new ModelBackedVerifier(
+      new ModelGateway({ provider }),
+      "test-model",
+    );
+
+    await expect(
+      verifier.verify({
+        ...verificationContext(),
+        before: observation("before", [
+          { id: "node-empty", role: "generic", confidence: 1 },
+        ]),
+      }),
+    ).rejects.toMatchObject({
+      name: "ExecutionBlockedError",
+      errorCode: "InvalidStructuredOutput",
     });
     expect(provider.requests).toHaveLength(2);
   });

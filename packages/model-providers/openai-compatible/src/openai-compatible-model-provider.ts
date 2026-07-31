@@ -47,16 +47,14 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
         { timeout: request.timeoutMs },
       );
       const content = completion.choices[0]?.message.content;
-      if (typeof content !== "string") {
-        throw modelProviderError("ProviderUnavailable", "The provider returned no structured content.");
-      }
-
       let output: unknown = content;
-      try {
-        output = JSON.parse(content);
-      } catch {
-        // Preserve malformed content so the gateway can apply its single
-        // structured-output correction attempt instead of a transient retry.
+      if (typeof content === "string") {
+        try {
+          output = JSON.parse(content);
+        } catch {
+          // Preserve malformed content so the gateway can apply its single
+          // structured-output correction attempt instead of a transient retry.
+        }
       }
 
       return {
@@ -95,6 +93,9 @@ function mapProviderError(error: unknown): ModelProviderError {
   if (status === 429) {
     return modelProviderError("RateLimited", "The model provider rate limited the request.");
   }
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    return modelProviderError("InvalidRequest", "The model provider rejected the request.");
+  }
   if (error instanceof OpenAI.APIConnectionTimeoutError) {
     return modelProviderError("TimedOut", "The model provider request timed out.");
   }
@@ -114,6 +115,7 @@ function isModelProviderError(error: unknown): error is ModelProviderError {
   const candidate = error as { readonly code?: unknown; readonly message?: unknown };
   return (
     (candidate.code === "AuthenticationFailed" ||
+      candidate.code === "InvalidRequest" ||
       candidate.code === "RateLimited" ||
       candidate.code === "TimedOut" ||
       candidate.code === "ProviderUnavailable") &&

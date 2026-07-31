@@ -1,4 +1,4 @@
-export { ExecutionRuntime } from "./execution-runtime.js";
+export { ExecutionBlockedError, ExecutionRuntime } from "./execution-runtime.js";
 
 export type {
   ActionExecutor,
