@@ -186,6 +186,7 @@ Qualigence/
 ├─ packages/
 │  ├─ contracts/
 │  │  ├─ runner-protocol/
+│  │  ├─ model-provider/
 │  │  ├─ public-api/
 │  │  └─ event-schemas/
 │  ├─ shared-kernel/
@@ -198,8 +199,8 @@ Qualigence/
 │  │  ├─ review/
 │  │  ├─ policy/
 │  │  ├─ evidence/
-│  │  ├─ intelligence/
-│  │  └─ model-gateway/
+│  │  └─ intelligence/
+│  ├─ execution-application/
 │  ├─ runner-kernel/
 │  │  ├─ execution/
 │  │  ├─ observation/
@@ -208,18 +209,29 @@ Qualigence/
 │  │  ├─ trace/
 │  │  ├─ policy/
 │  │  └─ protocol/
+│  ├─ runner-components/
+│  │  └─ model-agent/
+│  ├─ model-gateway/
 │  ├─ desktop-contracts/
 │  ├─ mobile-contracts/
-│  ├─ adapters/
+│  ├─ target-adapters/
 │  │  ├─ web-playwright/
 │  │  ├─ desktop-windows-uia/
 │  │  ├─ desktop-macos-ax/
 │  │  ├─ desktop-linux-atspi/
 │  │  ├─ mobile-android-uiautomator2/
-│  │  ├─ mobile-ios-xcuitest/
-│  │  ├─ model-openai-compatible/
-│  │  └─ connector-git/
-│  ├─ providers/
+│  │  └─ mobile-ios-xcuitest/
+│  ├─ model-providers/
+│  │  ├─ openai-compatible/
+│  │  ├─ anthropic/
+│  │  ├─ gemini/
+│  │  └─ ollama/
+│  ├─ protocol-adapters/
+│  │  ├─ in-memory-runner-protocol/
+│  │  └─ grpc-runner-protocol/
+│  ├─ connectors/
+│  │  └─ git/
+│  ├─ storage-providers/
 │  │  ├─ relational-kysely/
 │  │  ├─ sqlite-runtime/
 │  │  ├─ postgres-runtime/
@@ -258,13 +270,25 @@ Qualigence/
 ```text
 apps
 ├─→ core-modules
+├─→ execution-application
 ├─→ runner-kernel
-├─→ adapters
-├─→ providers
+├─→ runner-components
+├─→ model-gateway
+├─→ target-adapters
+├─→ model-providers
+├─→ protocol-adapters
+├─→ storage-providers
+├─→ connectors
 └─→ contracts
 
-providers ─→ 模块 ports
-adapters ─→ runner-kernel 或 model-gateway ports
+execution-application ─→ runner-kernel、contracts、shared-kernel
+runner-components ─→ runner-kernel、model-gateway、contracts
+model-gateway ─→ contracts/model-provider、shared-kernel
+model-providers ─→ contracts/model-provider
+target-adapters ─→ runner-kernel ports 与 target contracts
+protocol-adapters ─→ runner-protocol contracts 与两端 ports
+storage-providers ─→ 模块持久化 ports
+connectors ─→ 对应模块 ports
 core-modules ─→ shared-kernel
 runner-kernel ─→ shared-kernel
 contracts ─→ 不依赖领域模块
@@ -274,7 +298,9 @@ contracts ─→ 不依赖领域模块
 
 - Core Domain 导入 Fastify、Kysely、Playwright、gRPC 或模型 SDK。
 - Core 模块读取其他模块的 Repository。
-- `core-modules` 导入 `providers`。
+- `core-modules` 导入 `storage-providers`。
+- Model Provider 导入 Model Gateway 实现。
+- Runner Kernel 导入具体 Model Provider、Playwright 或存储 Provider。
 - Web/CLI 使用领域实体作为 DTO。
 - Protobuf 生成类型直接进入 Domain。
 - AI Worker 持有聚合 Repository。
@@ -358,7 +384,6 @@ class CoreCommandExecutor {
 | Policy | `MissionPolicy`、`PolicyDecision` | `PolicyEngine`、`PolicyBundleSigner` |
 | Evidence | `TraceEvent`、`ArtifactManifest`、`EvidenceCapsule` | `TraceIngestor`、`EvidenceService`、`EnvelopeEncryptor` |
 | Intelligence | `IntelligenceJob`、`IntelligenceResult` | `IntelligenceDispatcher`、`IntelligenceResultApplier` |
-| Model Gateway | `ModelProfile`、`ModelRequest`、`ModelUsage` | `ModelGateway`、`ModelProfileResolver` |
 
 ### 7.4 ExecutionJob 与 IntelligenceJob
 
@@ -401,10 +426,25 @@ interface IntelligenceJobStore {
 
 ### 7.5 Model Gateway
 
+Model Gateway 是 Core、Runner 和 Intelligence Worker 共享的跨运行时能力，不属于某一个 Core Domain 模块。
+
+- `contracts/model-provider` 定义供应商无关的请求、响应、能力、错误和 `ModelProvider` port。
+- 顶层 `model-gateway` 包负责 Profile 解析、Provider 选择、预算、超时、有限重试、结构化输出校验和用量记录。
+- `model-providers/*` 只实现 `ModelProvider` contract，不依赖 Model Gateway 实现。
+- `runner-components/model-agent` 将 Model Gateway 适配成 Runner 的 Decision Provider 和 Verifier。
+- Composition Root 负责将具体 Provider 注入 Model Gateway。
+
 ```ts
 interface ModelProvider {
-  invoke(request: ModelRequest): Promise<ModelResponse>;
-  stream(request: ModelRequest): AsyncIterable<ModelChunk>;
+  readonly capabilities: ModelCapabilities;
+  invoke(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+}
+
+interface ModelGateway {
+  invokeStructured<T>(
+    request: StructuredModelRequest,
+    output: StructuredOutputContract<T>,
+  ): Promise<ValidatedModelResult<T>>;
 }
 
 interface ModelProfileResolver {
@@ -415,7 +455,7 @@ interface ModelProfileResolver {
 }
 ```
 
-模型输出只能是 Decision、Proposal 或 IntelligenceResult。模型不能直接调用 Repository 或改变聚合状态。
+模型输出只能是 Decision、Proposal 或 IntelligenceResult。模型不能直接调用 Repository、改变聚合状态、生成可执行 selector 或伪造 Evidence 引用。
 
 ## 8. Runner 设计
 
@@ -851,4 +891,5 @@ Secret 使用 `SecretProvider` 和 `credential_ref`，不得写入普通配置�
 8. 单元测试与源码目录分离。
 9. M3 暂不建设 Windows VM 自动化测试。
 10. M3 使用独立人工 Checklist 验收并留存证据。
-
+11. 外部边界实现按 Target Adapter、Model Provider、Protocol Adapter、Storage Provider 和 Connector 分类，不再混放于通用 `packages/adapters`。
+12. Model Gateway 是顶层跨运行时包；供应商中立接口位于 `contracts/model-provider`，具体 Provider 不依赖 Gateway 实现。
