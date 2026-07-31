@@ -266,4 +266,79 @@ describe("ExecutionRuntime", () => {
       "run_completed",
     ]);
   });
+
+  it("blocks immediately when the action executor reports a failed outcome", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let captureCount = 0;
+    let verificationCalled = false;
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => {
+          captureCount += 1;
+          return {
+            graphId: "graph-before",
+            nodes: [
+              {
+                id: "node-add",
+                role: "button",
+                name: "Add to cart",
+                confidence: 1,
+              },
+            ],
+          };
+        },
+      },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-add" },
+        reason: "exercise failed action",
+      }),
+      resolver: {
+        resolve: async (action, graph) => ({
+          kind: "click",
+          target: { nodeId: action.target.nodeId, selector: "text=Add to cart" },
+          graphId: graph.graphId,
+        }),
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: {
+        execute: async () => ({ status: "failed", errorCode: "ActionTimedOut" }),
+      },
+      verifier: {
+        verify: async () => {
+          verificationCalled = true;
+          return { status: "passed", summary: "not reached", claims: [] };
+        },
+      },
+      traceRecorder,
+    });
+
+    const completion = await runtime.run({
+      jobId: "job-action-failed",
+      runId: "run-action-failed",
+      target: { kind: "web", url: "https://example.test" },
+      objective: "Add item to cart",
+    });
+
+    expect(completion).toEqual({
+      jobId: "job-action-failed",
+      runId: "run-action-failed",
+      status: "blocked",
+      errorCode: "ActionTimedOut",
+    });
+    expect(captureCount).toBe(1);
+    expect(verificationCalled).toBe(false);
+    expect(traceRecorder.eventsFor("run-action-failed").map((event) => event.stage)).toEqual([
+      "observation",
+      "decision",
+      "action_resolved",
+      "policy_authorized",
+      "action_executed",
+      "run_completed",
+    ]);
+    expect(traceRecorder.eventsFor("run-action-failed").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "ActionTimedOut",
+    });
+  });
 });

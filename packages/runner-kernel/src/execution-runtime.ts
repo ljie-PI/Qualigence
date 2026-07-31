@@ -201,6 +201,25 @@ export class ExecutionRuntime {
       payload: toActionOutcomeTracePayload(outcome),
     });
 
+    if (outcome.status === "failed") {
+      const errorCode = outcome.errorCode ?? "ActionFailed";
+      await this.record({
+        runId: job.runId,
+        stage: "run_completed",
+        payload: {
+          status: "blocked",
+          errorCode,
+        },
+      });
+
+      return {
+        jobId: job.jobId,
+        runId: job.runId,
+        status: "blocked",
+        errorCode,
+      };
+    }
+
     const after = await this.dependencies.observer.capture(job);
     await this.record({
       runId: job.runId,

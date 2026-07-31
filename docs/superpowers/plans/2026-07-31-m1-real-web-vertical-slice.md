@@ -130,7 +130,7 @@ Add ObservationNode text, value, disabled, graph URL, title, capturedAt, and art
 
 - [ ] **Step 4: Update ExecutionRuntime minimally**
 
-Record run_completed on each successful, finding, and policy-blocked return path. Create a Finding only for a failed verification whose claims have been validated by its Verifier adapter. A policy denial returns blocked without a product Finding.
+Record run_completed on each passed, finding, policy-blocked, and action-failed return path. An ActionOutcome with status failed returns blocked without observing or verifying again. Create a Finding only for a failed verification whose claims have been validated by its Verifier adapter. A policy denial returns blocked without a product Finding.
 
 - [ ] **Step 5: Update recorder and type tests**
 
