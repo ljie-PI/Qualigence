@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { StructuredModelInvoker } from "@qualigence/model-gateway";
-import type { JsonSchema } from "@qualigence/model-provider";
+import type {
+  JsonSchema,
+  StructuredOutputContract,
+} from "@qualigence/model-provider";
 import type {
   AgentContext,
   ExecutionDecisionProvider,
@@ -137,21 +140,10 @@ export class ModelBackedVerifier implements Verifier {
         ],
         timeoutMs: 30_000,
       },
-      structuredContract("execution-verification", verificationSchema),
+      verificationContract(context),
     );
 
-    if (result.value.status === "passed") {
-      return { status: "passed", summary: result.value.summary, claims: [] };
-    }
-
-    const claims = asNonEmptyClaims(result.value.claims);
-    validateClaims(claims, context.before, context.after);
-    return {
-      status: "failed",
-      summary: result.value.summary,
-      severitySuggestion: result.value.severitySuggestion,
-      claims,
-    };
+    return result.value;
   }
 }
 
@@ -161,6 +153,30 @@ function structuredContract<T extends z.ZodType>(name: string, schema: T) {
     jsonSchema: z.toJSONSchema(schema) as JsonSchema,
     parse(value: unknown): z.output<T> {
       return schema.parse(value);
+    },
+  };
+}
+
+function verificationContract(
+  context: VerificationContext,
+): StructuredOutputContract<VerificationResult> {
+  return {
+    name: "execution-verification",
+    jsonSchema: z.toJSONSchema(verificationSchema) as JsonSchema,
+    parse(value: unknown): VerificationResult {
+      const parsed = verificationSchema.parse(value);
+      if (parsed.status === "passed") {
+        return { status: "passed", summary: parsed.summary, claims: [] };
+      }
+
+      const claims = asNonEmptyClaims(parsed.claims);
+      validateClaims(claims, context.before, context.after);
+      return {
+        status: "failed",
+        summary: parsed.summary,
+        severitySuggestion: parsed.severitySuggestion,
+        claims,
+      };
     },
   };
 }
@@ -178,24 +194,19 @@ function validateClaims(
   before: ObservationGraph,
   after: ObservationGraph,
 ): void {
-  const graphs = new Map([
-    [before.graphId, before],
-    [after.graphId, after],
-  ]);
-
   for (const claim of claims) {
-    validateEvidenceValue(claim.expected, graphs);
-    validateEvidenceValue(claim.observed, graphs);
+    validateEvidenceValue(claim.expected, before);
+    validateEvidenceValue(claim.observed, after);
   }
 }
 
 function validateEvidenceValue(
   value: VerificationClaim["expected"],
-  graphs: ReadonlyMap<string, ObservationGraph>,
+  graph: ObservationGraph,
 ): void {
-  const node = graphs
-    .get(value.graphId)
-    ?.nodes.find((candidate) => candidate.id === value.nodeId);
+  const node = graph.graphId === value.graphId
+    ? graph.nodes.find((candidate) => candidate.id === value.nodeId)
+    : undefined;
 
   if (
     node === undefined ||
