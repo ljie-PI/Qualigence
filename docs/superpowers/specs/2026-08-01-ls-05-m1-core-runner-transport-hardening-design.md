@@ -128,6 +128,11 @@ export interface RunnerSession {
   close(): Promise<void>;
 }
 
+export interface SpoolBatchLimit {
+  readonly maximumEvents: number;
+  readonly maximumBytes: number;
+}
+
 export interface RunnerSpool {
   append(event: TraceEvent): Promise<void>;
   pending(runId: string, fromSequence: number, limit: SpoolBatchLimit): Promise<readonly TraceEvent[]>;

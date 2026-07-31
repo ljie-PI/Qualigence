@@ -54,6 +54,12 @@ export interface LocalConfig {
 
 优先级：安全默认值 < YAML 配置 < 环境变量 < 非 Secret CLI 参数。`credentialRef` 由 `SecretProvider` 解析；YAML 不允许 `apiKey` 字段。
 
+```ts
+export interface SecretProvider {
+  resolve(credentialRef: string): Promise<{ readonly value: string; readonly expiresAt?: string }>;
+}
+```
+
 ## 4. Launcher 行为
 
 命令：
@@ -117,9 +123,23 @@ export interface ModelMessage {
   readonly content: string;
   readonly images?: readonly ModelImageInput[];
 }
+
+export interface ModelDataPolicy {
+  readonly visualInput: "disabled" | "on-demand";
+  readonly allowedImageSensitivities: readonly ModelImageInput["sensitivity"][];
+  readonly maximumImageBytes: number;
+}
+
+export interface StructuredModelRequest {
+  readonly operation: ModelOperation;
+  readonly model: string;
+  readonly messages: readonly ModelMessage[];
+  readonly timeoutMs: number;
+  readonly dataPolicy?: ModelDataPolicy;
+}
 ```
 
-视觉输入只有同时满足以下条件才发送：Profile=`on-demand`、Provider `visionInput=true`、Mission Data Policy 允许对应 sensitivity 出站、Artifact 哈希校验通过、调用方明确请求。否则继续语义路径或返回 `CapabilityMismatch`，不得暗中发送截图。
+视觉输入只有同时满足以下条件才发送：Profile=`on-demand`、Provider `visionInput=true`、`StructuredModelRequest.dataPolicy` 允许对应 sensitivity/bytes 出站、Artifact 哈希校验通过、调用方明确在 message 添加 image。请求含 image 却没有 `dataPolicy` 时返回 `VisionNotAllowed`；不得暗中发送截图。
 
 OpenAI-compatible Provider 将附件映射为供应商 DTO；Gateway 在 Provider 前完成 capability、最大 bytes、media type 和 Data Policy 校验。日志只记录 artifactId/hash/size，不记录 base64。
 
@@ -135,4 +155,3 @@ OpenAI-compatible Provider 将附件映射为供应商 DTO；Gateway 在 Provide
 ## 9. 出口 Gate
 
 Local 用户可用一个 Launcher 管理 Core/Runner；异常启动可回滚；migration 有已校验备份；health/doctor 可诊断；视觉附件只在能力与政策同时允许时发送；语义-only 配置无行为回归。
-

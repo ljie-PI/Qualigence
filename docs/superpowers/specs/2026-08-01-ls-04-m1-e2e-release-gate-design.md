@@ -24,6 +24,22 @@ tests/helpers/temp-data-dir.ts
 
 Fixture 使用 Fastify 5，绑定 `127.0.0.1` 随机端口。测试进程负责启动、health probe、终止和端口回收。
 
+测试公共 helper 只在测试 workspace 使用：
+
+```ts
+export interface FixtureHandle {
+  readonly url: string;
+  close(): Promise<void>;
+}
+
+export interface CliProcessResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+}
+```
+
 ## 3. 场景与 Oracle
 
 同一页面支持 `normal` 和 `fault` 两种启动模式：
@@ -55,6 +71,8 @@ fault  → exit 1 → status finding → expected $19 / observed $29
 - model_invocations 仅含摘要，无 Prompt、API Key 或原始响应。
 
 失败断言还必须验证 blocked 返回 2 且不写 Finding；Provider 401 返回 3 且不重试。
+
+黑盒数据流固定为：Test 启动 Fixture/Mock → health condition 成立 → spawn built CLI → 等待 close/deadline → 解析单行 JSON → 通过公开 Store 重开数据库/Artifact → 校验并清理。任何阶段失败都保存绝对诊断目录。
 
 ## 5. Live Smoke
 
@@ -96,4 +114,3 @@ M1 纵向闭环发布必须在 Windows、macOS 和受支持 Linux 的至少一�
 ## 8. 出口 Gate
 
 normal、fault、blocked 和 Provider error 黑盒结果确定；SQLite/Artifact 可重读；普通 CI 无真实 Key；README 包含安装 Chromium、配置、运行、退出码和数据位置；M1 状态台账有命令与日期证据。
-

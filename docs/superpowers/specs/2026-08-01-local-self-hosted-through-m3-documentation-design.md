@@ -85,8 +85,8 @@ docs/superpowers/plans/YYYY-MM-DD-ls-XX-<slug>.md
 | LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission 与 Execution Job | LS-03、LS-04 |
 | LS-08 | M2 | 流程录制与 Procedure Skill 生命周期 | LS-04、LS-07 |
 | LS-09 | M2 | Regression、有限探索与 Detection Benchmark v1 | LS-08 |
-| LS-10 | M2 | Reproduction、Bug Episode、Human Review 与 Evidence Capsule | LS-09 |
-| LS-11 | M2 | Self-hosted Server、Intelligence Worker 与正式私有部署 | LS-08、LS-10 |
+| LS-10 | M2 | Reproduction、Bug Episode、Human Review 与 Evidence Capsule | LS-05、LS-09 |
+| LS-11 | M2 | Self-hosted Server、Intelligence Worker 与正式私有部署 | LS-05、LS-06、LS-08、LS-10 |
 | LS-12 | M3 | Observation Graph v1 冻结与 pre-v1 资产迁移 | LS-11 |
 | LS-13 | M3 | Windows AppTarget、UIA、Desktop Companion 与人工发布验收 | LS-12 |
 

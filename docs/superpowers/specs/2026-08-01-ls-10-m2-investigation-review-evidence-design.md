@@ -2,7 +2,7 @@
 
 - 状态：批量设计草案，待整体审阅
 - Milestone：M2
-- 直接依赖：LS-09
+- 直接依赖：LS-05、LS-09
 - 下游：LS-11
 
 ## 1. 目标与边界
@@ -52,6 +52,16 @@ export interface InvestigationBudget {
   readonly maximumEnvironmentResets: number;
   readonly maximumDestructiveActions: number;
   readonly confirmationConfidenceThreshold: number;
+}
+
+export interface InvestigationBudgetUsage {
+  readonly reproductionAttempts: number;
+  readonly planningRevisions: number;
+  readonly environmentRetries: number;
+  readonly wallClockMs: number;
+  readonly modelTokens: number;
+  readonly environmentResets: number;
+  readonly destructiveActions: number;
 }
 
 export interface ReproductionAttempt {
@@ -137,6 +147,23 @@ export interface EvidenceEncryptionProfile {
   readonly expiresAt: string;
 }
 
+export interface EvidenceCapsulePayload {
+  readonly schemaVersion: "evidence-capsule/v1";
+  readonly tenantId: string;
+  readonly caseId: string;
+  readonly runId: string;
+  readonly traceSlice: readonly TraceEvent[];
+  readonly semanticSubtrees: readonly {
+    readonly observationSchemaEpoch: "pre-v1";
+    readonly graph: ObservationGraph;
+  }[];
+  readonly localScreenshotRefs: readonly string[];
+  readonly logSummaries: readonly string[];
+  readonly redactionPolicyId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
 export interface EvidenceCapsuleManifest {
   readonly capsuleId: string;
   readonly tenantId: string;
@@ -157,11 +184,76 @@ Runner 在本地按白名单、最大 bytes、Trace 时间窗口和 sensitivity 
 
 解密必须校验 tenant、case、purpose、TTL、region、policy 和 key status并写 Audit Event。KMS 不可用时 `EvidenceLimited`，不允许明文降级。TTL 到期删除密文并撤销解包许可。
 
+Key Management port 固定为：
+
+```ts
+export interface KeyManagementProvider {
+  encryptionProfile(input: {
+    readonly tenantId: string;
+    readonly caseId: string;
+    readonly region: string;
+    readonly purpose: "investigation";
+  }): Promise<EvidenceEncryptionProfile>;
+  wrapDek(profile: EvidenceEncryptionProfile, dek: Uint8Array): Promise<string>;
+  unwrapDek(input: {
+    readonly manifest: EvidenceCapsuleManifest;
+    readonly tenantId: string;
+    readonly caseId: string;
+    readonly region: string;
+    readonly purpose: "investigation";
+  }): Promise<Uint8Array>;
+  revoke(capsuleId: string, reason: string): Promise<void>;
+}
+```
+
 ## 7. Intelligence Job 边界
 
 Reproduction Planning/Bug Analysis 使用持久化 `IntelligenceJob`，Result 只含 Proposal/evidence refs/confidence/usage。Result 必须通过 Schema、Budget、Policy、idempotency 和 base aggregate version 后由确定性 Handler 应用；过期 Result 重新归并或重算。
 
-## 8. 测试与出口 Gate
+```ts
+export type IntelligenceJobType =
+  | "prd.planning"
+  | "skill.induction"
+  | "skill.evaluation"
+  | "investigation.reproduction-planning"
+  | "investigation.bug-analysis";
+
+export interface IntelligenceJob {
+  readonly jobId: string;
+  readonly jobType: IntelligenceJobType;
+  readonly schemaVersion: "intelligence-job/v1";
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly aggregateRef: { readonly type: string; readonly id: string };
+  readonly baseAggregateVersion: number;
+  readonly inputRefs: readonly string[];
+  readonly modelProfileId: string;
+  readonly dataPolicyId: string;
+  readonly budget: { readonly maximumTokens: number; readonly maximumCostMicros: number; readonly timeoutMs: number };
+  readonly priority: "low" | "normal" | "high";
+  readonly idempotencyKey: string;
+  readonly causationId: string;
+  readonly expectedResultSchema: string;
+}
+
+export interface IntelligenceResult {
+  readonly jobId: string;
+  readonly resultSchemaVersion: "intelligence-result/v1";
+  readonly proposals: readonly Readonly<Record<string, unknown>>[];
+  readonly evidenceRefs: readonly string[];
+  readonly confidence: number;
+  readonly provenance: readonly string[];
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly costMicros: number };
+  readonly terminalStatus: "succeeded" | "blocked" | "failed";
+  readonly idempotencyKey: string;
+}
+```
+
+## 8. 平台与兼容
+
+Local 和 Self-hosted 使用相同 Case/Review/Capsule schema；Local KMS 与企业 KMS 通过同一 Contract Tests。所有新增 Event/Payload 使用独立 `v1` schema，minor 只增加可选字段。关系数据库 migration 只前进，Evidence Capsule v1 密文不在原地重加密；密钥轮换通过新 wrapped DEK/Manifest revision 或 KMS 受控重包装并保留审计。
+
+## 9. 测试与出口 Gate
 
 - Unit：Case 状态机、每类预算、Attempt append、Review 并发、过期 Result。
 - Crypto Contract：加解密、篡改、错 key、跨 tenant/region、TTL、轮换、KMS 拒绝。
@@ -169,4 +261,3 @@ Reproduction Planning/Bug Analysis 使用持久化 `IntelligenceJob`，Result �
 - Offline：Runner 下线后授权 Worker 可解密已预暂存 Capsule；未预暂存时明确 Evidence Limited。
 
 出口：Finding 有可追溯调查结论；Attempt 不可变；预算停止可靠；并发认领安全；离线调查只使用策略允许的加密 Capsule；任何降级都显式且可审计。
-

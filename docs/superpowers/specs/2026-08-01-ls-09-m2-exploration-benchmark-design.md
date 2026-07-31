@@ -67,6 +67,24 @@ export interface ExplorationDecision {
   readonly expectedNovelty?: string;
 }
 
+export interface ExplorationBudgetSnapshot {
+  readonly remainingSteps: number;
+  readonly remainingWallClockMs: number;
+  readonly remainingModelTokens: number;
+  readonly remainingStateVisits: number;
+  readonly remainingRecoveries: number;
+}
+
+export type ExplorationTerminalReason =
+  | "objective_satisfied"
+  | "no_safe_action"
+  | "state_repeated"
+  | "budget_exhausted"
+  | "policy_denied"
+  | "plan_diverged"
+  | "finding_created"
+  | "error";
+
 export interface ExplorationCheckpoint {
   readonly step: number;
   readonly graphFingerprint: string;
@@ -75,7 +93,7 @@ export interface ExplorationCheckpoint {
 }
 ```
 
-Terminal Reason 固定为 `objective_satisfied`、`no_safe_action`、`state_repeated`、`budget_exhausted`、`policy_denied`、`plan_diverged`、`finding_created` 或 `error`。
+Terminal Reason 使用上述冻结 union。
 
 ## 4. 有限探索算法
 
@@ -101,12 +119,58 @@ export interface DetectionBenchmarkManifest {
   readonly thresholds: DetectionThresholds;
 }
 
+export interface ReferenceModelProfile {
+  readonly profileId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly promptVersion: string;
+  readonly policyBundleSha256: string;
+  readonly skillPackSha256: string;
+  readonly browserVersion: string;
+  readonly fixtureVersions: Readonly<Record<string, string>>;
+  readonly maximumSteps: number;
+  readonly maximumWallClockMs: number;
+  readonly maximumModelTokens: number;
+  readonly repetitions: number;
+}
+
+export interface BenchmarkScenario {
+  readonly scenarioId: string;
+  readonly fixtureId: string;
+  readonly fixtureVersion: string;
+  readonly mode: "normal" | "fault";
+  readonly missionRef: string;
+  readonly groundTruthRef: string;
+  readonly expectedDefectIds: readonly string[];
+}
+
 export interface DetectionThresholds {
   readonly p0RecallMinimum: 1;
   readonly knownBugRecallMinimum: 0.8;
   readonly findingPrecisionMinimum: 0.6;
   readonly stableReproductionRateMinimum: 0.7;
   readonly maximumHighConfidenceFalsePositivesPerNormalMission: 1;
+}
+
+export interface DetectionMetrics {
+  readonly p0Recall: { readonly numerator: number; readonly denominator: number; readonly value: number };
+  readonly knownBugRecall: { readonly numerator: number; readonly denominator: number; readonly value: number };
+  readonly findingPrecision: { readonly numerator: number; readonly denominator: number; readonly value: number };
+  readonly stableReproductionRate: { readonly numerator: number; readonly denominator: number; readonly value: number };
+  readonly highConfidenceFalsePositivesByNormalMission: Readonly<Record<string, number>>;
+}
+
+export interface DetectionBenchmarkReport {
+  readonly reportId: string;
+  readonly benchmarkVersion: string;
+  readonly manifestSha256: string;
+  readonly profileSha256: string;
+  readonly groundTruthSha256: string;
+  readonly profileStatus: "reference" | "unverified";
+  readonly attemptIds: readonly string[];
+  readonly metrics: DetectionMetrics;
+  readonly gate: { readonly status: "passed" | "failed" | "unverified"; readonly failureCodes: readonly string[] };
+  readonly createdAt: string;
 }
 ```
 
@@ -138,4 +202,3 @@ Benchmark Run ID 由 manifest hash + profile hash + repetition 组成；重复�
 - Adversarial：模型重复动作、越权动作、伪造 novelty、未知 nodeId 均被阻止。
 
 出口：Verified Skill 可回归；有限探索在预算/Policy 内可重放；Benchmark v1 的 Manifest/Ground Truth/Scorer 冻结；Reference Profile 达到上游规定的五项最低阈值。
-

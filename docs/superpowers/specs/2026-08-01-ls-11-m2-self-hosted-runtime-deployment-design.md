@@ -2,7 +2,7 @@
 
 - 状态：批量设计草案，待整体审阅
 - Milestone：M2
-- 直接依赖：LS-08、LS-10
+- 直接依赖：LS-05、LS-06、LS-08、LS-10
 - 下游：LS-12
 
 ## 1. 目标与边界
@@ -83,6 +83,53 @@ export interface RequestPrincipal {
 
 Runner gRPC 使用独立 mTLS identity，不使用用户 OIDC token。Worker 使用服务身份和最小数据库/KMS权限。
 
+Public API v1 的最小路由冻结为：
+
+| Method | Path | 权限 | 应用接口 |
+|---|---|---|---|
+| GET/POST | `/api/v1/projects` | viewer/tester | `ProjectQuery` / `CreateProject` |
+| GET/POST | `/api/v1/projects/:projectId/targets` | viewer/tester | `TargetQuery` / `CreateTarget` |
+| GET/POST | `/api/v1/projects/:projectId/prd-revisions` | viewer/tester | `PrdQuery` / `IngestPrd` |
+| GET | `/api/v1/test-plans/:planId` | viewer | `TestPlanQuery` |
+| POST | `/api/v1/test-plans/:planId/approve` | tester | `ApproveTestPlan` |
+| GET/POST | `/api/v1/missions` | viewer/tester | `MissionQuery` / `CreateMission` |
+| POST | `/api/v1/missions/:missionId/start` | tester | `StartMission` |
+| GET | `/api/v1/runs/:runId` | viewer | `RunQuery` |
+| GET | `/api/v1/runs/:runId/trace` | viewer | `TraceProjectionQuery` |
+| GET | `/api/v1/artifacts/:artifactId` | viewer + evidence policy | `EvidenceService` |
+| GET | `/api/v1/skills/:skillId/versions` | viewer | `SkillQuery` |
+| POST | `/api/v1/skills/:skillId/versions/:version/promote` | tester | `PromoteSkill` |
+| POST | `/api/v1/skills/:skillId/versions/:version/deprecate` | tester | `DeprecateSkill` |
+| GET | `/api/v1/investigations/:caseId` | viewer | `InvestigationQuery` |
+| GET | `/api/v1/review-tasks` | reviewer | `ReviewTaskQuery` |
+| POST | `/api/v1/review-tasks/:taskId/claim` | reviewer | `ClaimReviewTask` |
+| POST | `/api/v1/review-tasks/:taskId/resolve` | reviewer | `ResolveReviewTask` |
+
+列表响应统一为 `{items, nextCursor?, asOfEvent, asOfTime, lagMs}`；命令响应统一为 `{resource, version, correlationId}`；错误统一为 `{code, safeMessage, correlationId, details?}`，其中冲突 `details` 只包含当前 version/assignee 等安全字段。mutation 请求头必须包含 `Idempotency-Key`，需要乐观并发的 body 必须包含 `expectedVersion`。
+
+Public DTO 只使用以下最小资源形状；较大的 Trace/Plan/Skill Payload 通过带 `schemaVersion` 的 `payload` 字段承载，不能直接序列化 Domain class：
+
+```ts
+export interface ProjectDto { readonly projectId: string; readonly name: string; readonly version: number }
+export interface TargetDto { readonly targetId: string; readonly projectId: string; readonly kind: "web" | "app"; readonly displayName: string; readonly version: number }
+export interface PrdRevisionDto { readonly prdId: string; readonly projectId: string; readonly revision: number; readonly title: string; readonly contentSha256: string; readonly ingestedAt: string }
+export type IntentStepDto =
+  | { readonly kind: "navigate"; readonly path: string }
+  | { readonly kind: "click"; readonly target: { readonly role?: string; readonly name?: string; readonly purpose: string } }
+  | { readonly kind: "input"; readonly target: { readonly role?: string; readonly name?: string; readonly purpose: string }; readonly valueRef: string }
+  | { readonly kind: "verify"; readonly claimIds: readonly string[] };
+export interface TestCaseDto { readonly testCaseId: string; readonly title: string; readonly objective: string; readonly preconditions: readonly string[]; readonly steps: readonly IntentStepDto[]; readonly expectedClaimIds: readonly string[]; readonly priority: "low" | "medium" | "high" }
+export interface TestPlanDto { readonly planId: string; readonly prdId: string; readonly prdRevision: number; readonly status: "draft" | "approved"; readonly version: number; readonly payload: { readonly schemaVersion: "test-plan/v1"; readonly testCases: readonly TestCaseDto[] } }
+export interface MissionDto { readonly missionId: string; readonly projectId: string; readonly revision: number; readonly targetId: string; readonly status: "draft" | "approved" | "running" | "completed" | "blocked"; readonly version: number }
+export interface RunDto { readonly runId: string; readonly missionId?: string; readonly status: "running" | "passed" | "finding" | "blocked" | "error"; readonly findingIds: readonly string[]; readonly evidenceRefs: readonly string[]; readonly createdAt: string; readonly completedAt?: string }
+export interface SkillVersionDto { readonly skillId: string; readonly version: number; readonly state: "draft" | "candidate" | "verified" | "promoted" | "deprecated"; readonly contentSha256: string; readonly signatureStatus: "valid" | "invalid" | "revoked"; readonly evaluationStatus: "pending" | "passed" | "failed" }
+export interface InvestigationDto { readonly caseId: string; readonly findingId: string; readonly status: "candidate" | "investigating" | "reproducing" | "confirmed" | "refuted" | "flaky" | "needs_human" | "resolved" | "regression_verified"; readonly attemptIds: readonly string[]; readonly evidenceCompleteness: "complete" | "limited" | "unavailable"; readonly version: number }
+export interface ReviewTaskDto { readonly taskId: string; readonly caseId: string; readonly status: "open" | "claimed" | "resolved"; readonly priority: "low" | "medium" | "high" | "urgent"; readonly assigneeId?: string; readonly version: number }
+export interface ArtifactMetadataDto { readonly artifactId: string; readonly runId: string; readonly kind: string; readonly mediaType: string; readonly size: number; readonly sha256: string; readonly downloadAllowed: boolean }
+```
+
+`contracts/public-api` 不导入 Core aggregate 实现或领域包；Server mapper 显式把领域公开值转换为上列 DTO，不暴露方法/私有状态。
+
 ## 5. Web Console 边界
 
 Web Console 使用 React 19.2、Vite、TanStack Router 和 TanStack Query，唯一后端是 Public API v1。首版页面固定为：
@@ -95,6 +142,8 @@ Web Console 使用 React 19.2、Vite、TanStack Router 和 TanStack Query，唯�
 - Review Queue 的 open/claim/resolve，并显示并发冲突后的真实 assignee/version。
 
 浏览器不持有 KMS/Runner/数据库凭证，不下载未获授权的 Evidence Capsule 明文。Local 首次启动使用一次性 bootstrap token 建立 loopback session；Self-hosted 使用 OIDC Authorization Code + PKCE。Web DTO 与领域实体分离，所有 mutation 携带 idempotency key 和 expected version（适用时）。
+
+路由固定为 `/projects`、`/projects/:projectId/prd/:revision`、`/test-plans/:planId`、`/missions/:missionId`、`/runs/:runId`、`/skills/:skillId`、`/investigations/:caseId`、`/reviews` 和 `/reviews/:taskId`。
 
 ## 6. Intelligence Worker 与 Durable Work
 

@@ -110,7 +110,10 @@ export class PlaywrightWebTargetAdapter
 - Negative：未知节点、跨 graph、同名多节点、跨 origin、disabled、timeout。
 - 不在 LS-02 测试模型措辞、数据库或 CLI。
 
-## 9. 出口 Gate
+## 9. 平台与兼容
+
+Web Adapter 目标支持 Windows、macOS 和受支持 Linux 上 Playwright 1.62 自带的 Chromium。Graph 仍使用当前 `runner-protocol/v1` pre-v1 形状；新增可选 Artifact refs 不改变旧读取器。浏览器可执行文件版本随产品 lock/release 记录，跨版本 Replay 不承诺复用 Locator，只承诺重新观察和语义定位。
+
+## 10. 出口 Gate
 
 在本地 Fixture 上，真实 Chromium 能返回可用语义 Graph；模型只需 nodeId；授权 click 改变页面；截图可由应用层取得；所有负路径结构化失败；测试结束没有残留 Browser 进程。
-

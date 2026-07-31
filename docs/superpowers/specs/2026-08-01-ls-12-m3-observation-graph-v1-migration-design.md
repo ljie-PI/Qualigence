@@ -36,6 +36,14 @@ tests/migration/observation-v1/
 ## 3. Observation Graph v1
 
 ```ts
+export type ObservationJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly ObservationJsonValue[]
+  | { readonly [key: string]: ObservationJsonValue };
+
 export type ObservationSchema =
   | { readonly epoch: "pre-v1"; readonly version: string }
   | { readonly epoch: "v1"; readonly version: "observation-graph/v1" };
@@ -73,7 +81,7 @@ export interface ObservationRelationV1 {
 export interface VersionedExtension {
   readonly type: string;
   readonly version: string;
-  readonly payload: Readonly<Record<string, JsonValue>>;
+  readonly payload: Readonly<Record<string, ObservationJsonValue>>;
 }
 ```
 
@@ -156,4 +164,3 @@ Freeze 后 `observation-graph/v1` major 受兼容承诺；移动端必须扩展�
 ## 9. 出口 Gate
 
 Graph v1 Contract/Schema/版本协商存在；pre-v1 资产有不可变迁移报告；Active Skill 有明确去向；LS-13 conformance 通过后可冻结；未来 macOS/Linux/Mobile 只需新 typed extension/Target Adapter。
-

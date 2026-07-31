@@ -91,15 +91,59 @@ export interface TestMission {
   readonly executionBudget: MissionBudget;
   readonly status: "draft" | "approved" | "running" | "completed" | "blocked";
 }
+
+export interface MissionBudget {
+  readonly maximumJobs: number;
+  readonly maximumStepsPerJob: number;
+  readonly maximumWallClockMs: number;
+  readonly maximumModelTokens: number;
+  readonly stopOnBlockedTestCase: boolean;
+}
+
+export interface ExecutionJob {
+  readonly jobId: string;
+  readonly missionId: string;
+  readonly missionRevision: number;
+  readonly testCaseId: string;
+  readonly testCaseSnapshot: TestCase;
+  readonly targetId: string;
+  readonly requiredCapabilities: readonly string[];
+  readonly budget: Pick<MissionBudget, "maximumStepsPerJob" | "maximumWallClockMs" | "maximumModelTokens">;
+  readonly status: "queued" | "leased" | "completed" | "blocked" | "failed";
+  readonly idempotencyKey: string;
+}
 ```
 
-`ExecutionJob` 保存 Mission/TestCase/revision 引用、不可变步骤快照、Expected Claim IDs、预算和 required capabilities。Runner Protocol 的 `AcceptedExecutionJob` 增加可选 `plan`，不破坏 M1 单 objective Job。
+`ExecutionJob` 使用上述冻结字段。Runner Protocol 的 `AcceptedExecutionJob` 增加 `plan?: {missionId,missionRevision,testCaseId,steps,expectedClaimIds,budget}`，不破坏 M1 单 objective Job；该字段是 Job 快照的 Runner DTO，不允许 Runner 回写修改。
 
 ## 4. Planning Proposal 与确定性校验
 
 Model Operation 增加 `planning.prd-test-cases`。模型输入只包含 PRD 分段、项目/目标摘要和输出 Schema；输出：
 
 ```ts
+export interface ProposedExpectedClaim {
+  readonly semanticKey: string;
+  readonly statement: string;
+  readonly sourceRefs: readonly [PrdSourceRef, ...PrdSourceRef[]];
+  readonly confidence: number;
+}
+
+export type ProposedIntentStep =
+  | { readonly kind: "navigate"; readonly path: string }
+  | { readonly kind: "click"; readonly target: SemanticTarget }
+  | { readonly kind: "input"; readonly target: SemanticTarget; readonly valueRef: string }
+  | { readonly kind: "verify"; readonly claimSemanticKeys: readonly [string, ...string[]] };
+
+export interface ProposedTestCase {
+  readonly title: string;
+  readonly objective: string;
+  readonly preconditions: readonly string[];
+  readonly steps: readonly [ProposedIntentStep, ...ProposedIntentStep[]];
+  readonly expectedClaimSemanticKeys: readonly [string, ...string[]];
+  readonly sourceRefs: readonly [PrdSourceRef, ...PrdSourceRef[]];
+  readonly priority: "low" | "medium" | "high";
+}
+
 export interface TestPlanProposal {
   readonly expectedClaims: readonly ProposedExpectedClaim[];
   readonly testCases: readonly ProposedTestCase[];
@@ -111,7 +155,7 @@ export interface TestPlanProposal {
 - 验证 source offset 范围与 hash 对应原文。
 - 拒绝空 claim、重复 semantic key、无来源 TestCase。
 - 拒绝 CSS、XPath、坐标、脚本和 URL credential。
-- 校验每个 verify claimId 存在。
+- 校验每个 `claimSemanticKey` 和 `expectedClaimSemanticKey` 存在；确定性 Handler 创建 Claim ID 后把 Proposed verify step 编译成最终 `IntentStep.claimIds`。
 - 校验 Step kind 在 Target capability 内；M1 未支持 input 时 Plan 可保存，但执行前返回明确 `CapabilityMismatch`。
 - 将模型 confidence 限制在 `[0,1]`，但不把其当作审批。
 
@@ -163,4 +207,3 @@ Mission Orchestrator 首版按 TestCase 顺序发 Job；同一 TestCase 的 Inte
 ## 9. 出口 Gate
 
 固定 PRD 能产生有来源、无 selector 的 Test Cases；人工批准后编译为版本化 Mission/Jobs；支持能力的 Job 经共享执行接口运行；PRD revision、Plan、Claim、Job、Run 和 Finding 可全链路追溯。
-

@@ -72,6 +72,20 @@ Executable/working directory 在配置批准时 canonicalize；不接受 shell �
 ## 4. `uia/v1` Extension
 
 ```ts
+export interface UiaPatternDescriptor {
+  readonly pattern:
+    | "Invoke"
+    | "Value"
+    | "Selection"
+    | "SelectionItem"
+    | "Scroll"
+    | "ExpandCollapse"
+    | "Toggle"
+    | "Window";
+  readonly available: boolean;
+  readonly readOnly?: boolean;
+}
+
 export interface UiaExtensionV1 {
   readonly type: "uia/v1";
   readonly version: "1.0";
@@ -95,6 +109,30 @@ UIA ControlType 映射到通用 role；AutomationId/Pattern/Framework 等无损�
 ## 5. Adapter 与动作
 
 ```ts
+export interface DesktopAdapterCapabilities {
+  readonly observationExtensions: readonly ["uia/v1"];
+  readonly actionKinds: readonly ("click" | "input" | "select" | "scroll" | "window")[];
+  readonly visualFallback: boolean;
+  readonly coordinateFallback: boolean;
+  readonly localApproval: true;
+}
+
+export interface AdapterSupport {
+  readonly status: "supported" | "unsupported";
+  readonly reasonCode?: string;
+  readonly capabilities?: DesktopAdapterCapabilities;
+}
+
+// These two ports live in @qualigence/runner-kernel, not desktop-contracts.
+export interface SensorAdapter {
+  capture(session: AppSession, signal: AbortSignal): Promise<ObservationGraphV1>;
+}
+
+export interface ActionAdapter {
+  supports(action: ResolvedAction): boolean;
+  execute(action: ResolvedAction, permit: ExecutionPermit, signal: AbortSignal): Promise<ActionOutcome>;
+}
+
 export interface PlatformDesktopAdapter {
   id(): "desktop-windows-uia";
   platform(): "windows";
@@ -106,7 +144,47 @@ export interface PlatformDesktopAdapter {
 }
 ```
 
+`SensorAdapter`、`ActionAdapter`、`ExecutionPermit` 和 `ActionOutcome` 由 Runner Kernel 定义；`contracts/desktop` 不导入 Runner Kernel。Windows Action Adapter 的 `supports` 对 `targetKind:"web"` 必须返回 false。
+
 M3 动作联合扩展为 `click | input | select | scroll | window`。解析顺序固定：Semantic Node → UIA Selector → Visual Anchor（只有 LS-06 capability/policy 允许）→ Coordinates（最后降级且需明确 policy）。
+
+Runner Kernel 的动作 contract 固定为：
+
+```ts
+export type ProposedAction =
+  | { readonly kind: "click"; readonly target: { readonly nodeId: string }; readonly reason: string }
+  | { readonly kind: "input"; readonly target: { readonly nodeId: string }; readonly valueRef: string; readonly reason: string }
+  | { readonly kind: "select"; readonly target: { readonly nodeId: string }; readonly option: string; readonly reason: string }
+  | { readonly kind: "scroll"; readonly target: { readonly nodeId: string }; readonly direction: "up" | "down" | "left" | "right"; readonly amount: "page" | "small"; readonly reason: string }
+  | { readonly kind: "window"; readonly target: { readonly nodeId: string }; readonly operation: "focus" | "minimize" | "restore" | "close"; readonly reason: string };
+
+export interface ResolvedDesktopActionBase {
+  readonly targetKind: "desktop";
+  readonly actionId: string;
+  readonly graphId: string;
+  readonly nodeId: string;
+  readonly resolution: "semantic" | "uia" | "visual" | "coordinate";
+  readonly uiaPattern?: UiaPatternDescriptor["pattern"];
+}
+
+export type ResolvedDesktopAction =
+  | (ResolvedDesktopActionBase & { readonly kind: "click" })
+  | (ResolvedDesktopActionBase & { readonly kind: "input"; readonly valueRef: string })
+  | (ResolvedDesktopActionBase & { readonly kind: "select"; readonly option: string })
+  | (ResolvedDesktopActionBase & { readonly kind: "scroll"; readonly direction: "up" | "down" | "left" | "right"; readonly amount: "page" | "small" })
+  | (ResolvedDesktopActionBase & { readonly kind: "window"; readonly windowOperation: "focus" | "minimize" | "restore" | "close" });
+
+export interface ResolvedWebAction {
+  readonly targetKind: "web";
+  readonly kind: "click";
+  readonly target: { readonly nodeId: string; readonly selector: string };
+  readonly graphId: string;
+}
+
+export type ResolvedAction = ResolvedWebAction | ResolvedDesktopAction;
+```
+
+LS-13 migration 必须让现有 Playwright Resolver 在所有输出增加 `targetKind:"web"`；Trace mapper 新增可忽略字段并保持旧 M1 click 语义。所有 Action Adapter 先按 `targetKind` 再按 `kind` 穷尽分支，避免 Web click 被 UIA Executor 接收。
 
 - Invoke/Selection/Value/Scroll Pattern 优先；不支持返回 `CapabilityMismatch`。
 - 每次 Replay checkpoint 重新捕获并定位，不保存原生 UIA element 跨 Observation。
@@ -159,4 +237,3 @@ Interactive Desktop 中 ExternalSideEffect/Destructive 逐次本地批准；Prod
 ## 9. 出口 Gate
 
 Web/UIA 共用 Graph v1/Action/Trace/Finding 核心；Windows 语义通过 `uia/v1` 无损保留；App 生命周期/基础动作/审批/停止/断线可验证；pre-v1 migration Gate 完成；人工 Checklist 无安全否决失败并形成发布记录。满足后 M3 完成，其他平台通过 Adapter/extension 扩展。
-

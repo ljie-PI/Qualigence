@@ -78,6 +78,26 @@ Recorder 只记录经过 Policy Gate 的动作。密码值使用 `valueRef`；�
 ```ts
 export type SkillState = "draft" | "candidate" | "verified" | "promoted" | "deprecated";
 
+export interface TargetScope {
+  readonly targetId: string;
+  readonly minimumTargetVersion?: string;
+  readonly maximumTargetVersion?: string;
+  readonly allowedOrigins: readonly string[];
+}
+
+export interface SkillParameter {
+  readonly name: string;
+  readonly valueRef: string;
+  readonly required: boolean;
+  readonly sensitivity: "public" | "internal" | "sensitive" | "secret";
+}
+
+export type SkillAssertion =
+  | { readonly kind: "node_present"; readonly target: SemanticTarget }
+  | { readonly kind: "node_text"; readonly target: SemanticTarget; readonly expected: string }
+  | { readonly kind: "claim_satisfied"; readonly claimId: string }
+  | { readonly kind: "url_path"; readonly path: string };
+
 export interface ProcedureSkillVersion {
   readonly skillId: string;
   readonly version: number;
@@ -113,6 +133,23 @@ export interface SkillBundleManifest {
   readonly signatureBase64: string;
   readonly issuedAt: string;
   readonly expiresAt?: string;
+}
+```
+
+Skill induction 的供应商中立 Proposal 固定为：
+
+```ts
+export interface SkillInductionProposal {
+  readonly parameters: readonly SkillParameter[];
+  readonly steps: readonly [ProposedSkillStep, ...ProposedSkillStep[]];
+}
+
+export interface ProposedSkillStep {
+  readonly sourceRecordedStepOrdinal: number;
+  readonly intent: IntentStep;
+  readonly preconditions: readonly SkillAssertion[];
+  readonly checkpoint: readonly SkillAssertion[];
+  readonly recovery: "stop" | "reobserve";
 }
 ```
 
@@ -171,4 +208,3 @@ Local signer 使用数据目录中的 Ed25519 key，经 OS user-only 权限保�
 - Security：篡改 Bundle、错 key、撤销、过期、跨项目重用均拒绝。
 
 出口：一个购物车 Recording 可生成并验证 Tenant Private Procedure Skill；Runner 只执行签名有效的 Verified/Promoted Bundle；Intent Replay 在允许变化下成功，偏离时停止并给出证据。
-

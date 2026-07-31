@@ -46,7 +46,7 @@ tests/contract/sqlite
 tests/contract/artifact-fs
 ```
 
-`sqlite-runtime` 可以依赖 `@qualigence/evidence`、`@qualigence/runner-protocol` 和 `@qualigence/execution-application` 的持久化 ports；反向依赖禁止。LS-01 先在 `@qualigence/evidence` 定义通用 Artifact/Run ports，LS-03 如需增加应用字段，只能向后兼容扩展。
+`sqlite-runtime` 可以依赖 `@qualigence/evidence`、`@qualigence/runner-protocol` 和 `@qualigence/shared-kernel` 的持久化 ports/types；反向依赖禁止。LS-01 在 `@qualigence/evidence` 定义通用 Artifact/Run ports，LS-03 只消费这些 ports；如需增加应用字段，只能向后兼容扩展。
 
 ## 4. 冻结公开接口
 
@@ -65,12 +65,15 @@ export interface ExecutionRunRecord {
   readonly errorCode?: string;
 }
 
+export interface RunTerminalUpdate {
+  readonly status: Exclude<RunStatus, "running">;
+  readonly completedAt: string;
+  readonly errorCode?: string;
+}
+
 export interface RunStore {
   create(record: ExecutionRunRecord): Promise<void>;
-  complete(
-    runId: string,
-    terminal: Pick<ExecutionRunRecord, "status" | "completedAt" | "errorCode">,
-  ): Promise<"completed" | "duplicate">;
+  complete(runId: string, terminal: RunTerminalUpdate): Promise<"completed" | "duplicate">;
   get(runId: string): Promise<ExecutionRunRecord | undefined>;
 }
 
@@ -176,4 +179,3 @@ Migration 版本只单调增加。启动时事务性执行未应用 migration；
 入口：BASE-02 的 `TraceStore`、Trace hash 和 Finding 幂等语义通过。
 
 出口：所有公开 port 有真实 SQLite/FS 实现；进程重启后数据可重读；Artifact 可定位并通过哈希；普通测试无外部服务；不存在原始模型敏感内容落盘。
-

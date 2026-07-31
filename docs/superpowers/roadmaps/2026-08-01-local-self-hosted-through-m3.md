@@ -59,8 +59,8 @@ PRD Planner 不启动 CLI 子进程，也不生成 CSS/XPath selector。
 |---|---|---|---|
 | LS-08 | 录制与 Procedure Skill 生命周期 | LS-04、LS-07 | Recording 可形成经过验证、签名和版本化的 Skill |
 | LS-09 | Regression、有限探索与 Detection Benchmark v1 | LS-08 | Skill 可回归与探索，效果达到冻结的 Benchmark Gate |
-| LS-10 | Reproduction、Bug Episode、Human Review、Evidence Capsule | LS-09 | Finding 可复现或确定性转人工，证据可受控调查 |
-| LS-11 | Self-hosted Server、Worker 与正式私有部署 | LS-08、LS-10 | 单节点 Linux Compose 在私有网络完成 Server/Worker/Runner 闭环 |
+| LS-10 | Reproduction、Bug Episode、Human Review、Evidence Capsule | LS-05、LS-09 | Finding 可复现或确定性转人工，证据可受控调查 |
+| LS-11 | Self-hosted Server、Worker 与正式私有部署 | LS-05、LS-06、LS-08、LS-10 | 单节点 Linux Compose 在私有网络完成 Server/Worker/Runner 闭环 |
 
 ### M3 Windows 原生抽象验证
 
@@ -74,11 +74,12 @@ M3 不建设 Windows VM 自动化测试。自动验证保留在普通 CI；原�
 ## 4. 依赖图
 
 ```text
-BASE-01..04
-   ├── LS-01 ──┐
-   └── LS-02 ──┴── LS-03 ── LS-04 ── LS-05 ── LS-06
-                         └── LS-07 ── LS-08 ── LS-09 ── LS-10 ── LS-11
-                                                                  └── LS-12 ── LS-13
+BASE-02 + BASE-03 → LS-01 / LS-02
+LS-01 + LS-02 + BASE-03 → LS-03 → LS-04 → LS-05 → LS-06
+LS-03 + LS-04 → LS-07
+LS-04 + LS-07 → LS-08 → LS-09
+LS-05 + LS-09 → LS-10
+LS-05 + LS-06 + LS-08 + LS-10 → LS-11 → LS-12 → LS-13
 ```
 
 ## 5. M1/M2/M3 Gate
