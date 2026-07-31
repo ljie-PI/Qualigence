@@ -1,5 +1,7 @@
 # M1 Real Web Vertical Slice Implementation Plan
 
+> **实施状态说明（2026-08-01）：** Task 1–4 已在 PR #4 中实现并合并；Task 5–8 尚未实现，分别由 LS-01 至 LS-04 编号能力包继续细化。权威状态见 `docs/superpowers/implementation-status.md`，编号和依赖见 `docs/superpowers/roadmaps/2026-08-01-local-self-hosted-through-m3.md`。本文保留原始实施历史，不通过重命名或删除改写既有决策。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
 **Goal:** Build a runnable local CLI that uses Playwright and a remote OpenAI-compatible model to detect the deterministic cart-total bug, then persists its trace, finding, model summary, and evidence locally.
