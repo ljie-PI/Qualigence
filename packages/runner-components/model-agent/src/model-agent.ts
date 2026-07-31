@@ -248,7 +248,7 @@ function validateEvidenceValue(
 }
 
 function normalizeText(node: ObservationNode): string {
-  return normalizeTextValue(node.text ?? node.value ?? node.name ?? "");
+  return normalizeTextValue(node.text ?? "");
 }
 
 function normalizeTextValue(value: string): string {
