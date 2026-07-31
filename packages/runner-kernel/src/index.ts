@@ -3,6 +3,7 @@ export { ExecutionRuntime } from "./execution-runtime.js";
 export type {
   ActionExecutor,
   ActionResolver,
+  AgentContext,
   ExecutionDecisionProvider,
   ExecutionRuntimeDependencies,
   PolicyDecision,

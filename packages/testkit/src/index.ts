@@ -80,6 +80,8 @@ function withEnvelope(
       return { ...base, stage: input.stage, payload: input.payload };
     case "finding":
       return { ...base, stage: input.stage, payload: input.payload };
+    case "run_completed":
+      return { ...base, stage: input.stage, payload: input.payload };
   }
 }
 

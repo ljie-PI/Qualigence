@@ -13,6 +13,23 @@ const observationInput: TraceEventInput = {
 
 observationInput satisfies TraceEventInput;
 
+const completedInput: TraceEventInput = {
+  runId: "run-1",
+  stage: "run_completed",
+  payload: { status: "passed" },
+};
+
+completedInput satisfies TraceEventInput;
+
+const incompleteFindingCompletion: TraceEventInput = {
+  runId: "run-1",
+  stage: "run_completed",
+  // @ts-expect-error finding terminal events require a finding id
+  payload: { status: "finding" },
+};
+
+incompleteFindingCompletion satisfies TraceEventInput;
+
 const mismatchedInput: TraceEventInput = {
   runId: "run-1",
   stage: "observation",

@@ -15,6 +15,10 @@
   "devDependencies": {
     "@qualigence/evidence": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/model-gateway": "workspace:*",
+    "@qualigence/model-provider": "workspace:*",
+    "@qualigence/model-agent": "workspace:*",
+    "@qualigence/openai-compatible-model-provider": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",

@@ -1,0 +1,140 @@
+import { describe, expect, it } from "vitest";
+import {
+  ModelGateway,
+  ModelGatewayError,
+  type ModelProvider,
+  type StructuredOutputContract,
+} from "@qualigence/model-gateway";
+
+const decisionContract: StructuredOutputContract<{
+  readonly action: { readonly kind: "click"; readonly nodeId: string };
+  readonly reason: string;
+}> = {
+  name: "execution-decision",
+  jsonSchema: { type: "object" },
+  parse(value) {
+    const candidate = value as {
+      action?: { kind?: string; nodeId?: string };
+      reason?: string;
+    };
+    if (
+      candidate.action?.kind !== "click" ||
+      typeof candidate.action.nodeId !== "string" ||
+      typeof candidate.reason !== "string"
+    ) {
+      throw new Error("invalid decision response");
+    }
+
+    return {
+      action: { kind: "click", nodeId: candidate.action.nodeId },
+      reason: candidate.reason,
+    };
+  },
+};
+
+describe("ModelGateway", () => {
+  it("rejects providers without structured-output capability before invoking them", async () => {
+    const provider = fakeProvider({ structuredOutput: false });
+    const gateway = new ModelGateway({ provider });
+
+    await expect(
+      gateway.invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({ code: "CapabilityMismatch" } satisfies Partial<ModelGatewayError>);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("retries once when structured output does not match the local contract", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [{ malformed: true }, { action: { kind: "click", nodeId: "add" }, reason: "add item" }],
+    );
+    const gateway = new ModelGateway({ provider });
+
+    const result = await gateway.invokeStructured(request(), decisionContract);
+
+    expect(provider.requests).toHaveLength(2);
+    expect(result.value).toEqual({
+      action: { kind: "click", nodeId: "add" },
+      reason: "add item",
+    });
+  });
+
+  it("does not retry an authentication failure", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [new Error("unauthorized")],
+      "AuthenticationFailed",
+    );
+    const gateway = new ModelGateway({ provider });
+
+    await expect(
+      gateway.invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({ code: "AuthenticationFailed" } satisfies Partial<ModelGatewayError>);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it("normalizes a timeout after bounded transient retries", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [new Error("timed out"), new Error("timed out"), new Error("timed out")],
+      "TimedOut",
+    );
+    const delays: number[] = [];
+    const gateway = new ModelGateway({
+      provider,
+      delay: async (delayMs) => {
+        delays.push(delayMs);
+      },
+    });
+
+    await expect(
+      gateway.invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({ code: "TimedOut" } satisfies Partial<ModelGatewayError>);
+    expect(provider.requests).toHaveLength(3);
+    expect(delays).toEqual([100, 200]);
+  });
+});
+
+function request() {
+  return {
+    operation: "execution.decision" as const,
+    model: "test-model",
+    messages: [{ role: "user" as const, content: "choose a button" }],
+    timeoutMs: 1_000,
+  };
+}
+
+function fakeProvider(
+  capabilities: Pick<ModelProvider["capabilities"], "structuredOutput">,
+  responses: unknown[] = [],
+  errorCode?: "AuthenticationFailed" | "TimedOut",
+) {
+  const requests: unknown[] = [];
+  const provider: ModelProvider & { readonly requests: unknown[] } = {
+    capabilities: {
+      structuredOutput: capabilities.structuredOutput,
+      visionInput: false,
+      toolCalling: false,
+      streaming: false,
+    },
+    requests,
+    async invoke(providerRequest) {
+      requests.push(providerRequest);
+      const response = responses.shift();
+      if (response instanceof Error) {
+        throw {
+          code: errorCode,
+          message: response.message,
+        };
+      }
+
+      return {
+        output: response,
+        model: providerRequest.model,
+        finishReason: "stop",
+      };
+    },
+  };
+
+  return provider;
+}

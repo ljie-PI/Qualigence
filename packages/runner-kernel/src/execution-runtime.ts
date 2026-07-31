@@ -45,10 +45,7 @@ export interface ActionOutcome {
   readonly errorCode?: string;
 }
 
-export interface VerificationResult {
-  readonly status: "passed" | "failed";
-  readonly summary: string;
-}
+export type VerificationResult = VerificationTracePayload;
 
 export interface Observer {
   capture(job: AcceptedExecutionJob): Promise<ObservationGraph>;
@@ -173,25 +170,20 @@ export class ExecutionRuntime {
         stage: "policy_denied",
         payload: toDeniedPolicyTracePayload(policyDecision),
       });
-      const finding = {
-        findingId: `${job.runId}:policy-denied`,
-        runId: job.runId,
-        title: "M1 policy denied action",
-        summary: policyDecision.reason,
-        severity: "medium",
-        evidenceRefs: [],
-      } satisfies FindingEnvelope;
       await this.record({
         runId: job.runId,
-        stage: "finding",
-        payload: finding,
+        stage: "run_completed",
+        payload: {
+          status: "blocked",
+          errorCode: "PolicyDenied",
+        },
       });
 
       return {
         jobId: job.jobId,
         runId: job.runId,
         status: "blocked",
-        finding,
+        errorCode: "PolicyDenied",
       };
     }
 
@@ -229,17 +221,39 @@ export class ExecutionRuntime {
       payload: toVerificationTracePayload(verification),
     });
 
+    if (verification.status === "passed") {
+      await this.record({
+        runId: job.runId,
+        stage: "run_completed",
+        payload: { status: "passed" },
+      });
+
+      return {
+        jobId: job.jobId,
+        runId: job.runId,
+        status: "passed",
+      };
+    }
+
     const finding = findingFromVerification(job.runId, verification);
     await this.record({
       runId: job.runId,
       stage: "finding",
       payload: finding,
     });
+    await this.record({
+      runId: job.runId,
+      stage: "run_completed",
+      payload: {
+        status: "finding",
+        findingId: finding.findingId,
+      },
+    });
 
     return {
       jobId: job.jobId,
       runId: job.runId,
-      status: verification.status === "passed" ? "completed" : "blocked",
+      status: "finding",
       finding,
     };
   }
@@ -285,17 +299,19 @@ function toVerificationTracePayload(
 
 function findingFromVerification(
   runId: RunId,
-  verification: VerificationResult,
+  verification: Extract<VerificationResult, { status: "failed" }>,
 ): FindingEnvelope {
   return {
     findingId: `${runId}:verification`,
     runId,
-    title:
-      verification.status === "passed"
-        ? "M1 verification passed"
-        : "M1 verification failed",
+    title: "M1 verification failed",
     summary: verification.summary,
-    severity: verification.status === "passed" ? "info" : "medium",
-    evidenceRefs: [],
+    severity: verification.severitySuggestion,
+    evidenceRefs: [...new Set(
+      verification.claims.flatMap((claim) => [
+        `${claim.expected.graphId}:${claim.expected.nodeId}`,
+        `${claim.observed.graphId}:${claim.observed.nodeId}`,
+      ]),
+    )],
   };
 }
