@@ -92,13 +92,33 @@ describe("OpenAICompatibleModelProvider", () => {
   });
 
   it.each([
-    { statusCode: 400, providerCode: "unsupported_response_format", expectedCode: "InvalidRequest" },
-    { statusCode: 401, providerCode: "invalid_api_key", expectedCode: "AuthenticationFailed" },
-    { statusCode: 429, providerCode: "rate_limit_exceeded", expectedCode: "RateLimited" },
-    { statusCode: 500, providerCode: "server_error", expectedCode: "ProviderUnavailable" },
+    {
+      statusCode: 400,
+      providerCode: "InvalidRequest",
+      expectedCode: "InvalidRequest",
+      expectedMessage: "The model provider rejected the request.",
+    },
+    {
+      statusCode: 401,
+      providerCode: "invalid_api_key",
+      expectedCode: "AuthenticationFailed",
+      expectedMessage: "The model provider rejected authentication.",
+    },
+    {
+      statusCode: 429,
+      providerCode: "rate_limit_exceeded",
+      expectedCode: "RateLimited",
+      expectedMessage: "The model provider rate limited the request.",
+    },
+    {
+      statusCode: 500,
+      providerCode: "server_error",
+      expectedCode: "ProviderUnavailable",
+      expectedMessage: "The model provider request failed.",
+    },
   ])(
     "normalizes HTTP $statusCode without leaking provider code $providerCode",
-    async ({ statusCode, providerCode, expectedCode }) => {
+    async ({ statusCode, providerCode, expectedCode, expectedMessage }) => {
       const server = createServer((_request, response) => {
         response.statusCode = statusCode;
         response.setHeader("content-type", "application/json");
@@ -133,7 +153,7 @@ describe("OpenAICompatibleModelProvider", () => {
             responseSchema: { type: "object" },
             timeoutMs: 1_000,
           }),
-        ).rejects.toMatchObject({ code: expectedCode });
+        ).rejects.toMatchObject({ code: expectedCode, message: expectedMessage });
       } finally {
         server.closeAllConnections();
         server.close();

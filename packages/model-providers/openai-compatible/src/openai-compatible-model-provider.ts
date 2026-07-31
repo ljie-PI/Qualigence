@@ -11,6 +11,11 @@ export interface OpenAICompatibleModelProviderOptions {
   readonly apiKey: string;
 }
 
+const normalizedModelProviderErrorBrand: unique symbol = Symbol("NormalizedModelProviderError");
+type NormalizedModelProviderError = ModelProviderError & {
+  readonly [normalizedModelProviderErrorBrand]: true;
+};
+
 export class OpenAICompatibleModelProvider implements ModelProvider {
   readonly capabilities = {
     structuredOutput: true,
@@ -103,22 +108,17 @@ function mapProviderError(error: unknown): ModelProviderError {
   return modelProviderError("ProviderUnavailable", "The model provider request failed.");
 }
 
-function modelProviderError(code: ModelProviderError["code"], message: string): ModelProviderError {
-  return { code, message };
+function modelProviderError(
+  code: ModelProviderError["code"],
+  message: string,
+): NormalizedModelProviderError {
+  return { code, message, [normalizedModelProviderErrorBrand]: true };
 }
 
-function isModelProviderError(error: unknown): error is ModelProviderError {
+function isModelProviderError(error: unknown): error is NormalizedModelProviderError {
   if (typeof error !== "object" || error === null) {
     return false;
   }
 
-  const candidate = error as { readonly code?: unknown; readonly message?: unknown };
-  return (
-    (candidate.code === "AuthenticationFailed" ||
-      candidate.code === "InvalidRequest" ||
-      candidate.code === "RateLimited" ||
-      candidate.code === "TimedOut" ||
-      candidate.code === "ProviderUnavailable") &&
-    typeof candidate.message === "string"
-  );
+  return (error as Partial<NormalizedModelProviderError>)[normalizedModelProviderErrorBrand] === true;
 }
