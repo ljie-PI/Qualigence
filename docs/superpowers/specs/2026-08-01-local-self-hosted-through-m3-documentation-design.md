@@ -1,6 +1,6 @@
 # Local 与 Self-hosted 至 M3 实施文档设计
 
-- 状态：待用户书面审阅
+- 状态：文档结构与编号已确认；编号能力文档批量审阅中
 - 日期：2026-08-01
 - 范围：Community Local、Team Self-hosted、M1、PRD/Test Case、M2、Windows-first M3
 - 路线外：Qualigence Cloud、M4 Mobile 的具体实施
@@ -149,7 +149,7 @@ complete
 1. 创建路线索引和实施状态台账。
 2. 按 LS-01 至 LS-13 顺序编写 Design Spec；可以并行起草，但必须按依赖顺序批准。
 3. 每份 Spec 完成占位符、矛盾、范围和歧义自审。
-4. 用户批准 Spec 后，才生成对应 Implementation Plan。
+4. 默认由用户批准 Spec 后生成对应 Implementation Plan；2026-08-01 用户明确要求一次性批量起草全部 Spec/Plan，因此本批 Plan 可以先起草和自审，但在用户整体批准前不得把能力状态标为 `plan_ready`。
 5. Plan 完成 Spec Coverage、Placeholder 和 Type Consistency 自审。
 6. 代码实施前确认上游能力包满足入口条件。
 7. 每个 PR 合并后更新状态台账，不修改历史结论来掩盖偏差。
@@ -165,4 +165,4 @@ M4 Mobile 路线说明只记录 Android Emulator、Android 真机和 iOS Simulat
 - 路线索引存在且包含 LS-01 至 LS-13 的依赖和 Gate。
 - 独立状态台账准确记录已实现基础能力和待实施能力。
 - 现有 M1 Plan 明确指向 LS-01 至 LS-04 的细化关系。
-- 用户批准本文档后，再开始编写十三份详细 Design Spec 和 Implementation Plan。
+- 用户已批准本文档结构与编号；十三份详细 Design Spec 和 Implementation Plan 按批量审阅例外生成。

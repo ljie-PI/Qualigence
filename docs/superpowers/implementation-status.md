@@ -44,19 +44,19 @@
 
 | ID | Milestone | 能力 | 状态 | Spec | Plan | 代码证据 |
 |---|---|---|---|---|---|---|
-| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `backlog` | 待编写 | 待编写 | — |
-| LS-02 | M1 | Playwright Web Target Adapter | `backlog` | 待编写 | 待编写 | — |
-| LS-03 | M1 | Execution Application 与 CLI | `backlog` | 待编写 | 待编写 | — |
-| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `backlog` | 待编写 | 待编写 | — |
-| LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `backlog` | 待编写 | 待编写 | — |
-| LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `backlog` | 待编写 | 待编写 | — |
-| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `backlog` | 待编写 | 待编写 | — |
-| LS-08 | M2 | Recording 与 Procedure Skill 生命周期 | `backlog` | 待编写 | 待编写 | — |
-| LS-09 | M2 | Regression、Exploration、Detection Benchmark v1 | `backlog` | 待编写 | 待编写 | — |
-| LS-10 | M2 | Reproduction、Bug Episode、Human Review、Evidence Capsule | `backlog` | 待编写 | 待编写 | — |
-| LS-11 | M2 | Self-hosted Server、Worker 与正式部署 | `backlog` | 待编写 | 待编写 | — |
-| LS-12 | M3 | Observation Graph v1 与 pre-v1 迁移 | `backlog` | 待编写 | 待编写 | — |
-| LS-13 | M3 | Windows AppTarget、UIA、Companion 与人工验收 | `backlog` | 待编写 | 待编写 | — |
+| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | 批量起草中 | — |
+| LS-02 | M1 | Playwright Web Target Adapter | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-02-m1-playwright-web-target-design.md` | 批量起草中 | — |
+| LS-03 | M1 | Execution Application 与 CLI | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md` | 批量起草中 | — |
+| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | 批量起草中 | — |
+| LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md` | 批量起草中 | — |
+| LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md` | 批量起草中 | — |
+| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | 批量起草中 | — |
+| LS-08 | M2 | Recording 与 Procedure Skill 生命周期 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-08-m2-recording-skill-lifecycle-design.md` | 批量起草中 | — |
+| LS-09 | M2 | Regression、Exploration、Detection Benchmark v1 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-09-m2-exploration-benchmark-design.md` | 批量起草中 | — |
+| LS-10 | M2 | Reproduction、Bug Episode、Human Review、Evidence Capsule | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-10-m2-investigation-review-evidence-design.md` | 批量起草中 | — |
+| LS-11 | M2 | Self-hosted Server、Worker 与正式部署 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-11-m2-self-hosted-runtime-deployment-design.md` | 批量起草中 | — |
+| LS-12 | M3 | Observation Graph v1 与 pre-v1 迁移 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md` | 批量起草中 | — |
+| LS-13 | M3 | Windows AppTarget、UIA、Companion 与人工验收 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-13-m3-windows-desktop-target-design.md` | 批量起草中 | — |
 
 ## 5. Milestone Gate 状态
 

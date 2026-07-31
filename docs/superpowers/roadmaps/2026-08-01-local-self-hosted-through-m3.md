@@ -1,6 +1,6 @@
 # Local 与 Self-hosted 至 M3 实施路线
 
-- 状态：结构待批准
+- 状态：结构已确认；编号能力文档批量审阅中
 - 日期：2026-08-01
 - 实施状态：`docs/superpowers/implementation-status.md`
 - 文档规则：`docs/superpowers/specs/2026-08-01-local-self-hosted-through-m3-documentation-design.md`
