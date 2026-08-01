@@ -50,6 +50,9 @@ importers:
       '@qualigence/core-daemon':
         specifier: workspace:*
         version: link:apps/core-daemon
+      '@qualigence/desktop-contracts':
+        specifier: workspace:*
+        version: link:packages/contracts/desktop
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
@@ -119,6 +122,9 @@ importers:
       '@qualigence/postgres-runtime':
         specifier: workspace:*
         version: link:packages/storage-providers/postgres-runtime
+      '@qualigence/project-target':
+        specifier: workspace:*
+        version: link:packages/core-modules/project-target
       '@qualigence/public-api':
         specifier: workspace:*
         version: link:packages/contracts/public-api
@@ -527,6 +533,8 @@ importers:
         specifier: workspace:*
         version: link:../../core-modules/skill
 
+  packages/contracts/desktop: {}
+
   packages/contracts/local-control:
     dependencies:
       zod:
@@ -541,6 +549,9 @@ importers:
 
   packages/contracts/runner-protocol:
     dependencies:
+      '@qualigence/desktop-contracts':
+        specifier: workspace:*
+        version: link:../desktop
       '@qualigence/observation-contracts':
         specifier: workspace:*
         version: link:../observation
@@ -609,6 +620,12 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+
+  packages/core-modules/project-target:
+    dependencies:
+      '@qualigence/desktop-contracts':
+        specifier: workspace:*
+        version: link:../../contracts/desktop
 
   packages/core-modules/review: {}
 
