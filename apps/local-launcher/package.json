@@ -1,0 +1,28 @@
+{
+  "name": "@qualigence/local-launcher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence-local": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/local-control": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/sqlite-runtime": "workspace:*",
+    "better-sqlite3": "12.11.1",
+    "commander": "14.0.1",
+    "pino": "9.13.1",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  }
+}

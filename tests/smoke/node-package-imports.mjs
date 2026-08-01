@@ -7,6 +7,7 @@ const packages = [
   ["@qualigence/evidence", "TraceIngestor"],
   ["@qualigence/mission", "MissionCompiler"],
   ["@qualigence/in-memory-runner-protocol", "InMemoryProtocolTraceRecorder"],
+  ["@qualigence/local-control", "healthReportSchema"],
   ["@qualigence/testkit", "ScriptedDecisionProvider"],
   ["@qualigence/shared-kernel", "SystemClock"],
   ["@qualigence/artifact-fs", "LocalArtifactStore"],

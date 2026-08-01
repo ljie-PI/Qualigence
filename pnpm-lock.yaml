@@ -44,6 +44,12 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/local-control':
+        specifier: workspace:*
+        version: link:packages/contracts/local-control
+      '@qualigence/local-launcher':
+        specifier: workspace:*
+        version: link:apps/local-launcher
       '@qualigence/mission':
         specifier: workspace:*
         version: link:packages/core-modules/mission
@@ -100,7 +106,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.0.0
-        version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3))
+        version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0))
 
   apps/cli:
     dependencies:
@@ -180,6 +186,39 @@ importers:
         specifier: workspace:*
         version: link:../../packages/storage-providers/sqlite-runtime
 
+  apps/local-launcher:
+    dependencies:
+      '@qualigence/artifact-fs':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/artifact-fs
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/evidence
+      '@qualigence/local-control':
+        specifier: workspace:*
+        version: link:../../packages/contracts/local-control
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
+      '@qualigence/sqlite-runtime':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/sqlite-runtime
+      better-sqlite3:
+        specifier: 12.11.1
+        version: 12.11.1
+      commander:
+        specifier: 14.0.1
+        version: 14.0.1
+      pino:
+        specifier: 9.13.1
+        version: 9.13.1
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   apps/runner:
     dependencies:
       '@qualigence/evidence':
@@ -215,6 +254,12 @@ importers:
       '@qualigence/web-playwright':
         specifier: workspace:*
         version: link:../../packages/target-adapters/web-playwright
+
+  packages/contracts/local-control:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/contracts/model-provider: {}
 
@@ -1376,6 +1421,11 @@ packages:
     resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
     engines: {node: '>=10'}
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yargs-parser@21.1.1:
     resolution: {integrity: sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw==}
     engines: {node: '>=12'}
@@ -1597,13 +1647,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@24.13.3))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.5(@types/node@24.13.3)
+      vite: 8.1.5(@types/node@24.13.3)(yaml@2.9.0)
 
   '@vitest/pretty-format@4.1.10':
     dependencies:
@@ -2152,7 +2202,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  vite@8.1.5(@types/node@24.13.3):
+  vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
@@ -2162,11 +2212,12 @@ snapshots:
     optionalDependencies:
       '@types/node': 24.13.3
       fsevents: 2.3.3
+      yaml: 2.9.0
 
-  vitest@4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)):
+  vitest@4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@24.13.3))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -2183,7 +2234,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.5(@types/node@24.13.3)
+      vite: 8.1.5(@types/node@24.13.3)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 24.13.3
@@ -2204,6 +2255,8 @@ snapshots:
   wrappy@1.0.2: {}
 
   y18n@5.0.8: {}
+
+  yaml@2.9.0: {}
 
   yargs-parser@21.1.1: {}
 

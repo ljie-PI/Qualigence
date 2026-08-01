@@ -27,6 +27,8 @@
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/local-control": "workspace:*",
+    "@qualigence/local-launcher": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/model-agent": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
