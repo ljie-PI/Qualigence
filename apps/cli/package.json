@@ -26,7 +26,18 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
+    "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/model-agent": "workspace:*",
+    "@qualigence/model-gateway": "workspace:*",
+    "@qualigence/openai-compatible-model-provider": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/sqlite-runtime": "workspace:*",
+    "@qualigence/web-playwright": "workspace:*",
     "commander": "14.0.1",
     "pino": "9.13.1",
     "zod": "4.4.3"
