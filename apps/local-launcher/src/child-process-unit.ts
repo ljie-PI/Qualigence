@@ -44,6 +44,18 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * Like {@link sleep} but keeps the event loop alive. Used where an awaited
+ * operation must run to completion in a short-lived CLI process (e.g. process
+ * termination), rather than background polling that must never keep tests or
+ * the launcher alive on its own.
+ */
+function sleepKeepAlive(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 /** True while the OS still has a live process for `pid`. */
 export function isPidAlive(pid: number): boolean {
   try {
@@ -84,7 +96,7 @@ export async function terminateProcess(
     if (!isPidAlive(pid)) {
       return;
     }
-    await sleep(20);
+    await sleepKeepAlive(20);
   }
   killPid(pid, "SIGKILL", group);
   const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
@@ -92,7 +104,7 @@ export async function terminateProcess(
     if (!isPidAlive(pid)) {
       return;
     }
-    await sleep(20);
+    await sleepKeepAlive(20);
   }
 }
 

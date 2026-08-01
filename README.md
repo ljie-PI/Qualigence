@@ -40,6 +40,29 @@ pnpm exec playwright install chromium
 数据位置：Run 记录与 Artifact 写入 `QUALIGENCE_DATA_DIR`（默认 `.qualigence/data`），其中
 `qualigence.db` 是 SQLite 数据库，`artifacts/` 保存 Observation JSON 与截图 PNG。
 
+## 本地 Launcher（`@qualigence/local-launcher`）
+
+`apps/local-launcher` 把独立的 Core Daemon 与 Runner 包装成可日常使用的 Community Local 产品：统一的初始化、进程生命周期监督、分层 health/doctor 诊断，以及升级前强制备份。Launcher 只依赖进程/health/backup 端口，不导入领域模块、不访问业务表、不修改 Trace。
+
+命令（`qualigence-local <command>`，数据目录由 `--data-dir` 或 `QUALIGENCE_DATA_DIR` 决定）：
+
+```bash
+qualigence-local init                 # 首次安装：创建数据目录、生成本地 mTLS 证书、写入 config.yaml、初始化数据库
+qualigence-local start [--foreground] # 有监督地依次启动 Core→Runner；默认后台化并打印一次 bootstrap token
+qualigence-local status [--json]      # 输出分层 HealthReport（core 端口、数据库、Artifact、Runner、磁盘）
+qualigence-local doctor [--json]      # 一次性诊断：配置有效性、端口占用、数据库可达、磁盘余量、证书有效期
+qualigence-local stop                 # 优雅停机：先停 Runner 再停 Core（SIGTERM，超时后 SIGKILL）
+qualigence-local backup --reason <text> # 用 SQLite online backup API 生成一致、可校验的时间点备份
+```
+
+Secret 处理：任何 API Key、私钥、口令等 Secret 绝不写入 `config.yaml`。配置里只保存 `credentialRef` 引用，真实密钥在运行时从环境变量解析（`QUALIGENCE_MODEL_API_KEY` 或 `QUALIGENCE_SECRET_<REF>`）。Launcher 会拒绝加载内联了 Secret 键的配置，且日志、健康报告与备份清单中的 Secret 一律以 `[redacted]` 呈现。示例配置见 `deployments/local/config.example.yaml`。
+
+备份与迁移不变量：任何数据库 schema 迁移之前，`MigrationGuard` 都会强制先创建并校验一份新鲜备份（校验完成标记与文件哈希、并确认备份数据库可在记录的 schema 版本下重新打开）。校验失败时迁移被拒绝（`MigrationBlocked`），不存在“无备份即迁移”的路径。
+
+离线人工恢复：`restore` 不作为普通命令公开。要从 `<dataDir>/backups/<timestamp>-<version>/` 恢复，请先 `qualigence-local stop` 确保 Core 与 Runner 均已停止，另存当前 `qualigence.db` 与 `artifacts/`，再将备份目录中的 `database.db` 覆盖回 `<dataDir>/qualigence.db`；Artifact 大对象按备份清单（`backup-manifest.json` 的 `artifactInventory`）从原始位置保留或复制。恢复完成后重新 `start`。
+
+稳定错误码：`AlreadyRunning`（`start` 退出码 3）、`StartupTimedOut`、`CoreUnhealthy`、`RunnerUnhealthy`、`BackupFailed`、`BackupIntegrityFailed`、`MigrationBlocked`、`InvalidConfiguration`。
+
 ## 测试与发布 Gate
 
 | 命令 | 作用 |
