@@ -5,6 +5,8 @@ const packages = [
   ["@qualigence/in-memory-runner-protocol", "InMemoryProtocolTraceRecorder"],
   ["@qualigence/testkit", "ScriptedDecisionProvider"],
   ["@qualigence/shared-kernel", "SystemClock"],
+  ["@qualigence/artifact-fs", "LocalArtifactStore"],
+  ["@qualigence/sqlite-runtime", "SqliteRuntime"],
 ];
 
 for (const [packageName, exportName] of packages) {

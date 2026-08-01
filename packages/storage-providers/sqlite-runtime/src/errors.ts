@@ -4,7 +4,8 @@ export type SqliteErrorCode =
   | "StorageBusy"
   | "StorageClosed"
   | "TraceIntegrityViolation"
-  | "SequenceGap";
+  | "SequenceGap"
+  | "RunTerminalConflict";
 
 export class SqliteRuntimeError extends Error {
   readonly code: SqliteErrorCode;

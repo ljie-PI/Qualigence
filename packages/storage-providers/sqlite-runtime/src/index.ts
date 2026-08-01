@@ -7,6 +7,12 @@ export type {
 
 export { SqliteTraceStore } from "./sqlite-trace-store.js";
 
+export { SqliteRunStore } from "./sqlite-run-store.js";
+
+export { SqliteArtifactManifestStore } from "./sqlite-artifact-manifest-store.js";
+
+export { SqliteModelInvocationStore } from "./sqlite-model-invocation-store.js";
+
 export {
   isSqliteBusyError,
   mapBusyError,
