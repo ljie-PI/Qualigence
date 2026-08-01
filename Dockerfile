@@ -22,6 +22,13 @@ WORKDIR /workspace
 
 # ---- Dependencies -------------------------------------------------------------
 FROM base AS deps
+# Native workspace deps (e.g. better-sqlite3 used by the M1 local stack) need a
+# toolchain to compile during install. These build tools live only in this
+# builder stage; the runtime stage below starts from a clean base and never
+# ships them.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 # Copy every workspace manifest so the lockfile resolves without the sources.
 COPY packages ./packages

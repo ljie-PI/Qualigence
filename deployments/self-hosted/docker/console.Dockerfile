@@ -15,14 +15,21 @@ FROM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581e
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
+# Native workspace deps need a toolchain to compile during the workspace install;
+# it lives only in this builder stage (the Caddy runtime below is unaffected).
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages ./packages
 COPY apps ./apps
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --config.trust-lockfile=true
-COPY tsconfig.base.json tsconfig.json ./
-RUN pnpm --filter @qualigence/web-console run build
+COPY tsconfig.base.json tsconfig.json tsconfig.test.json vitest.config.ts ./
+# `pnpm build` runs `tsc -b` first (producing the dist/ of workspace packages the
+# Console imports, e.g. @qualigence/public-api) and then the Console's vite build.
+RUN pnpm build
 
 # ---- Runtime: a lightweight static file server -------------------------------
 FROM caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17 AS runtime
