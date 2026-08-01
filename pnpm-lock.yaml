@@ -165,9 +165,15 @@ importers:
 
   packages/execution-application:
     dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../core-modules/context-intake
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../core-modules/evidence
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../core-modules/mission
       '@qualigence/model-gateway':
         specifier: workspace:*
         version: link:../model-gateway
