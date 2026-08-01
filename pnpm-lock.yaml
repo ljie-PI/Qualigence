@@ -44,6 +44,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/kms-local':
+        specifier: workspace:*
+        version: link:packages/storage-providers/kms-local
       '@qualigence/local-control':
         specifier: workspace:*
         version: link:packages/contracts/local-control
@@ -480,6 +483,12 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+
+  packages/storage-providers/kms-local:
+    dependencies:
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
 
   packages/storage-providers/sqlite-runtime:
     dependencies:

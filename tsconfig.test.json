@@ -23,6 +23,7 @@
     { "path": "packages/core-modules/skill" },
     { "path": "packages/core-modules/runner-identity" },
     { "path": "packages/auth/runner-mtls" },
+    { "path": "packages/storage-providers/kms-local" },
     { "path": "packages/storage-providers/artifact-fs" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },

@@ -78,3 +78,11 @@ export {
 } from "./application/skill-compiler.js";
 
 export type { SkillCompilerErrorCode } from "./application/skill-compiler.js";
+
+export { SkillPromotionPolicy } from "./application/skill-promotion-policy.js";
+
+export type {
+  PromotionDecision,
+  PromotionPolicyInput,
+  PromotionRejectionCode,
+} from "./application/skill-promotion-policy.js";
