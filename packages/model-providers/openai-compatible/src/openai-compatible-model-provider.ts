@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 import type {
+  ModelCapabilities,
+  ModelMessage,
   ModelProvider,
   ModelProviderError,
   ModelProviderRequest,
@@ -9,6 +11,7 @@ import type {
 export interface OpenAICompatibleModelProviderOptions {
   readonly baseUrl: string;
   readonly apiKey: string;
+  readonly visionInput?: boolean;
 }
 
 const normalizedModelProviderErrorBrand: unique symbol = Symbol("NormalizedModelProviderError");
@@ -17,16 +20,17 @@ type NormalizedModelProviderError = ModelProviderError & {
 };
 
 export class OpenAICompatibleModelProvider implements ModelProvider {
-  readonly capabilities = {
-    structuredOutput: true,
-    visionInput: false,
-    toolCalling: false,
-    streaming: false,
-  } as const;
+  readonly capabilities: ModelCapabilities;
 
   private readonly client: OpenAI;
 
   constructor(options: OpenAICompatibleModelProviderOptions) {
+    this.capabilities = {
+      structuredOutput: true,
+      visionInput: options.visionInput === true,
+      toolCalling: false,
+      streaming: false,
+    };
     this.client = new OpenAI({
       baseURL: options.baseUrl,
       apiKey: options.apiKey,
@@ -39,7 +43,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       const completion = await this.client.chat.completions.create(
         {
           model: request.model,
-          messages: [...request.messages],
+          messages: request.messages.map((message) => this.mapMessage(message)),
           response_format: {
             type: "json_schema",
             json_schema: {
@@ -84,6 +88,25 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
       throw mapProviderError(error);
     }
+  }
+
+  private mapMessage(
+    message: ModelMessage,
+  ): OpenAI.Chat.Completions.ChatCompletionMessageParam {
+    const images = message.images ?? [];
+    if (images.length === 0 || !this.capabilities.visionInput || message.role !== "user") {
+      return { role: message.role, content: message.content };
+    }
+
+    const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+      { type: "text", text: message.content },
+      ...images.map((image) => ({
+        type: "image_url" as const,
+        image_url: { url: `data:${image.mediaType};base64,${image.dataBase64}` },
+      })),
+    ];
+
+    return { role: "user", content: parts };
   }
 }
 
