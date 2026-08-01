@@ -25,6 +25,20 @@ export { SqliteReviewStore } from "./sqlite-review-store.js";
 
 export { SqliteIntelligenceStore } from "./sqlite-intelligence-store.js";
 
+export {
+  SqliteEvidenceCapsuleStore,
+  EvidenceLifecycleError,
+} from "./sqlite-evidence-capsule-store.js";
+
+export type {
+  EvidenceLifecycleActor,
+  EvidenceLifecycleErrorCode,
+  LocalOnlyEvidenceRecordInput,
+  RotateKeyInput,
+  SaveRemoteCapsuleInput,
+  StoredCapsule,
+} from "./sqlite-evidence-capsule-store.js";
+
 export type {
   BenchmarkRunRecord,
   PersistedAttempt,
