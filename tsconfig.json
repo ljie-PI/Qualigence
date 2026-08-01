@@ -27,6 +27,7 @@
     { "path": "packages/contracts/public-api" },
     { "path": "packages/auth/oidc" },
     { "path": "packages/auth/runner-mtls" },
+    { "path": "packages/core-application" },
     { "path": "packages/storage-providers/relational-kysely" },
     { "path": "packages/storage-providers/postgres-runtime" },
     { "path": "packages/storage-providers/kms-local" },

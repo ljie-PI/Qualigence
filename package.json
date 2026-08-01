@@ -27,6 +27,7 @@
     "@qualigence/benchmarking-detection": "workspace:*",
     "@qualigence/cli": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/core-application": "workspace:*",
     "@qualigence/core-daemon": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/evidence-capsule": "workspace:*",

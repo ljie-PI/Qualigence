@@ -41,6 +41,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:packages/core-modules/context-intake
+      '@qualigence/core-application':
+        specifier: workspace:*
+        version: link:packages/core-application
       '@qualigence/core-daemon':
         specifier: workspace:*
         version: link:apps/core-daemon
@@ -380,6 +383,24 @@ importers:
   packages/contracts/public-api: {}
 
   packages/contracts/runner-protocol: {}
+
+  packages/core-application:
+    dependencies:
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../core-modules/intelligence
+      '@qualigence/postgres-runtime':
+        specifier: workspace:*
+        version: link:../storage-providers/postgres-runtime
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../shared-kernel
+      kysely:
+        specifier: 0.28.17
+        version: 0.28.17
+      pg:
+        specifier: 8.13.1
+        version: 8.13.1
 
   packages/core-modules/application-model:
     dependencies:
