@@ -20,6 +20,8 @@ const packages = [
   ["@qualigence/exploration", "ExplorationController"],
   ["@qualigence/benchmarking-detection", "scoreBenchmark"],
   ["@qualigence/kms-local", "LocalSkillSigner"],
+  ["@qualigence/kms-self-hosted", "InMemoryTestKms"],
+  ["@qualigence/evidence-capsule", "EvidenceCapsuleBuilder"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
   ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
