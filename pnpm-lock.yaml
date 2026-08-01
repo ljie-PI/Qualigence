@@ -53,6 +53,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:packages/core-modules/intelligence
       '@qualigence/investigation':
         specifier: workspace:*
         version: link:packages/core-modules/investigation
@@ -349,8 +352,13 @@ importers:
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
 
+  packages/core-modules/intelligence: {}
+
   packages/core-modules/investigation:
     dependencies:
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../intelligence
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../mission
@@ -492,6 +500,12 @@ importers:
       '@qualigence/exploration':
         specifier: workspace:*
         version: link:../exploration
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../../core-modules/investigation
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission

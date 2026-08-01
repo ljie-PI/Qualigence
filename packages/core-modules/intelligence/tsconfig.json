@@ -8,9 +8,5 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
-  "references": [
-    { "path": "../../shared-kernel" },
-    { "path": "../intelligence" },
-    { "path": "../mission" }
-  ]
+  "references": []
 }

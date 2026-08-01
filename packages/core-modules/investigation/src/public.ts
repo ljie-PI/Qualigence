@@ -42,3 +42,29 @@ export type {
   StartReproductionCommand,
   VerifyRegressionCommand,
 } from "./domain/investigation-case.js";
+
+export {
+  bugEpisodeDraftFromResult,
+  buildBugAnalysisJob,
+  buildReproductionPlanningJob,
+  reproducedAttemptIds,
+  ReproductionPlanError,
+  reproductionPlanFromResult,
+} from "./application/reproduction-planner.js";
+
+export type {
+  BuildIntelligenceJobInput,
+  ReproductionPlan,
+} from "./application/reproduction-planner.js";
+
+export { InvestigationCoordinator } from "./application/investigation-coordinator.js";
+
+export type {
+  BugAnalysisContext,
+  InvestigateInput,
+  InvestigationCoordinatorConfig,
+  InvestigationModelAgentPort,
+  InvestigationOutcome,
+  ReproductionPlanningContext,
+  ReproductionRunnerPort,
+} from "./application/investigation-coordinator.js";

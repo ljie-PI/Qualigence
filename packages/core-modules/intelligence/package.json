@@ -1,5 +1,5 @@
 {
-  "name": "@qualigence/investigation",
+  "name": "@qualigence/intelligence",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,5 @@
     }
   },
   "types": "./dist/index.d.ts",
-  "dependencies": {
-    "@qualigence/intelligence": "workspace:*",
-    "@qualigence/mission": "workspace:*",
-    "@qualigence/shared-kernel": "workspace:*"
-  }
+  "dependencies": {}
 }
