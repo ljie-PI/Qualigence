@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/context-intake": "workspace:*",
     "@qualigence/cli": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",

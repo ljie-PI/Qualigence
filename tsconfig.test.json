@@ -14,6 +14,7 @@
     { "path": "packages/runner-components/model-agent" },
     { "path": "packages/model-providers/openai-compatible" },
     { "path": "packages/core-modules/evidence" },
+    { "path": "packages/core-modules/context-intake" },
     { "path": "packages/storage-providers/artifact-fs" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },
