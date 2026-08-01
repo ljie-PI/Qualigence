@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The single WinUI reference window. Mirrors the WPF app's control coverage using
+  modern WinUI controls, with the SAME stable AutomationIds so both apps map to
+  the shared reference-app.fixture.json UIA tree. The high-risk "Delete all"
+  action opens a modal ContentDialog to exercise focus/window changes and the
+  per-action approval path.
+-->
+<Window
+    x:Class="WindowsReferenceWinUi.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    Title="Reference App">
+    <Grid Margin="12" AutomationProperties.AutomationId="MainWindow">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBox Grid.Row="0"
+                 x:Name="UsernameEdit"
+                 AutomationProperties.AutomationId="UsernameEdit"
+                 AutomationProperties.Name="Username" />
+
+        <PasswordBox Grid.Row="1"
+                     x:Name="PasswordEdit"
+                     AutomationProperties.AutomationId="PasswordEdit"
+                     AutomationProperties.Name="Password" />
+
+        <ComboBox Grid.Row="2"
+                  x:Name="RoleCombo"
+                  AutomationProperties.AutomationId="RoleCombo"
+                  AutomationProperties.Name="Role">
+            <ComboBoxItem Content="Viewer" />
+            <ComboBoxItem Content="Editor" />
+            <ComboBoxItem Content="Admin" />
+        </ComboBox>
+
+        <Button Grid.Row="3"
+                x:Name="SubmitButton"
+                AutomationProperties.AutomationId="SubmitButton"
+                AutomationProperties.Name="Submit"
+                Click="OnSubmit" />
+
+        <ScrollViewer Grid.Row="4"
+                      AutomationProperties.AutomationId="ResultsScroll"
+                      VerticalScrollBarVisibility="Auto">
+            <ListView x:Name="ResultsList"
+                      AutomationProperties.AutomationId="ResultsList"
+                      AutomationProperties.Name="Results" />
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal">
+            <Button x:Name="DeleteAllButton"
+                    AutomationProperties.AutomationId="DeleteAllButton"
+                    AutomationProperties.Name="Delete all records"
+                    Click="OnDeleteAll" />
+            <Button x:Name="CrashButton"
+                    AutomationProperties.AutomationId="CrashButton"
+                    AutomationProperties.Name="Trigger crash"
+                    Click="OnCrash" />
+            <Button x:Name="ResetButton"
+                    AutomationProperties.AutomationId="ResetButton"
+                    AutomationProperties.Name="Reset"
+                    Click="OnReset" />
+        </StackPanel>
+    </Grid>
+</Window>

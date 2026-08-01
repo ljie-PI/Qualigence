@@ -1,0 +1,33 @@
+<!--
+  WPF Reference App (.NET 10) for the M3 Windows UI Automation manual acceptance.
+
+  THIS PROJECT IS A SPECIFICATION + REAL SOURCE, NOT SOMETHING THIS PR COMPILES.
+  It is a genuine WPF application that a human operator compiles and runs on real
+  Windows 11 hardware while executing docs/testing/windows-m3-manual-checklist.md.
+  It CANNOT be built on the Linux CI sandbox (no Windows Desktop SDK), so the
+  automated Linux test-suite instead drives the machine-readable
+  `reference-app.fixture.json` in this directory, which is the exact synthetic
+  UIA tree/actions this app is designed to expose.
+
+  Controls exposed (mirrors reference-app.fixture.json capabilities):
+    Button, Edit (TextBox), ComboBox, List, Scroll region, modal Dialog,
+    a controlled Crash entry, a Reset entry, and one simulated high-risk action.
+
+  The app never requests administrator rights, never accesses the network, and
+  resets all state from a local JSON file only.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WindowsReferenceWpf</AssemblyName>
+    <!-- No elevation: the Companion drives this app as an ordinary interactive
+         process. requestedExecutionLevel stays asInvoker. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+</Project>

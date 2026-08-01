@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Package manifest for the WinUI 3 Reference App. Declares the ordinary
+  interactive capability set only (no elevation, no broadFileSystemAccess, no
+  network client capability) so the acceptance run confirms the app never asks
+  for privileges the Companion abstraction is designed to withhold.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="Qualigence.WindowsReferenceWinUi"
+    Publisher="CN=Qualigence"
+    Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>Reference App (WinUI)</DisplayName>
+    <PublisherDisplayName>Qualigence</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Reference App (WinUI)"
+        Description="M3 Windows UI Automation reference app"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <!-- Only the default interactive capability; nothing privileged. -->
+  <Capabilities />
+</Package>
