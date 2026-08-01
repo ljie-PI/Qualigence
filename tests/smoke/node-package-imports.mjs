@@ -5,6 +5,7 @@ const packages = [
   ["@qualigence/in-memory-runner-protocol", "InMemoryProtocolTraceRecorder"],
   ["@qualigence/testkit", "ScriptedDecisionProvider"],
   ["@qualigence/shared-kernel", "SystemClock"],
+  ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
 ];
 
 for (const [packageName, exportName] of packages) {

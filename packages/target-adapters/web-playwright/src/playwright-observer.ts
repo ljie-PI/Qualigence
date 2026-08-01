@@ -8,7 +8,21 @@ import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
+import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
+
+async function captureScreenshot(page: Page): Promise<Uint8Array> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return new Uint8Array(await page.screenshot({ timeout: 5000 }));
+    } catch (error) {
+      lastError = error;
+      await page.waitForTimeout(50);
+    }
+  }
+  throw lastError;
+}
 
 /**
  * Executed inside the page. Collects semantic candidates in DOM order without
@@ -213,7 +227,7 @@ export class PlaywrightObserver implements Observer {
         artifactRefs: artifactNames,
       };
 
-      const screenshot = new Uint8Array(await page.screenshot());
+      const screenshot = await captureScreenshot(page);
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.registerObservation(graphWithRefs.graphId, {
         descriptors,

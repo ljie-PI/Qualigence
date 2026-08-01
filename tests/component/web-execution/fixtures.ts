@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 
 export interface FixtureServer {
   readonly origin: string;

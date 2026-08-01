@@ -28,3 +28,7 @@ export { PlaywrightActionResolver } from "./playwright-action-resolver.js";
 export { PlaywrightActionExecutor } from "./playwright-action-executor.js";
 export { actionToken, isActionToken } from "./action-token.js";
 export type { CapturedArtifact, LocatorDescriptor } from "./types.js";
+export {
+  PlaywrightWebTargetAdapter,
+  type WebTargetSession,
+} from "./playwright-web-target-adapter.js";
