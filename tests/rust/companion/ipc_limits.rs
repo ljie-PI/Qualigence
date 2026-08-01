@@ -1,0 +1,97 @@
+//! Bounded IPC framing: oversized, truncated and flooded peers all fail closed.
+
+use std::io::Cursor;
+
+use companion::ipc::server::{
+    parse_request, read_frame, write_frame, FrameError, FrameLimits, RequestAdmission,
+};
+
+fn small_limits() -> FrameLimits {
+    FrameLimits {
+        max_frame_bytes: 64,
+        max_queue_depth: 4,
+        max_concurrent_requests: 2,
+    }
+}
+
+#[test]
+fn a_valid_frame_round_trips() {
+    let limits = small_limits();
+    let payload = br#"{"type":"session.pause","runId":"run-1"}"#;
+    let mut buffer = Vec::new();
+    write_frame(&mut buffer, payload, &limits).expect("write");
+
+    let mut reader = Cursor::new(buffer);
+    let body = read_frame(&mut reader, &limits).expect("read");
+    assert_eq!(body, payload);
+}
+
+#[test]
+fn an_oversized_declared_frame_is_rejected_before_allocation() {
+    let limits = small_limits();
+    // Declared length far exceeds the max, but we send no body: it must be
+    // rejected purely from the length prefix.
+    let mut framed = Vec::new();
+    framed.extend_from_slice(&(1_000_000u32).to_be_bytes());
+    let mut reader = Cursor::new(framed);
+    assert_eq!(
+        read_frame(&mut reader, &limits),
+        Err(FrameError::FrameTooLarge)
+    );
+}
+
+#[test]
+fn a_truncated_frame_is_rejected() {
+    let limits = small_limits();
+    // Prefix promises 10 bytes but only 3 follow.
+    let mut framed = Vec::new();
+    framed.extend_from_slice(&(10u32).to_be_bytes());
+    framed.extend_from_slice(b"abc");
+    let mut reader = Cursor::new(framed);
+    assert_eq!(read_frame(&mut reader, &limits), Err(FrameError::Truncated));
+}
+
+#[test]
+fn a_missing_length_prefix_is_rejected() {
+    let limits = small_limits();
+    let mut reader = Cursor::new(vec![0u8, 1u8]); // fewer than 4 prefix bytes
+    assert_eq!(read_frame(&mut reader, &limits), Err(FrameError::Truncated));
+}
+
+#[test]
+fn writing_an_oversized_payload_is_refused() {
+    let limits = small_limits();
+    let payload = vec![0u8; 65];
+    let mut buffer = Vec::new();
+    assert_eq!(
+        write_frame(&mut buffer, &payload, &limits),
+        Err(FrameError::FrameTooLarge)
+    );
+}
+
+#[test]
+fn an_unknown_request_type_is_rejected() {
+    let body = br#"{"type":"session.explode","runId":"run-1"}"#;
+    assert_eq!(parse_request(body), Err(FrameError::Malformed));
+}
+
+#[test]
+fn a_known_request_type_parses() {
+    let body = br#"{"type":"uia.capture","sessionId":"sess-1","deadlineMs":2000}"#;
+    assert!(parse_request(body).is_ok());
+}
+
+#[test]
+fn concurrent_request_flooding_is_bounded() {
+    let admission = RequestAdmission::new(2);
+    let g1 = admission.try_admit().expect("first admitted");
+    let g2 = admission.try_admit().expect("second admitted");
+    assert_eq!(admission.in_flight(), 2);
+    // A third concurrent request is rejected while the first two are in flight.
+    assert_eq!(admission.try_admit().err(), Some(FrameError::Overloaded));
+
+    drop(g1);
+    // Releasing a slot lets a new request through.
+    let _g3 = admission.try_admit().expect("admitted after release");
+    drop(g2);
+}

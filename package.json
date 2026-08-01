@@ -13,6 +13,9 @@
     "test:live": "pnpm build && vitest run tests/live",
     "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json && pnpm --filter @qualigence/web-console run typecheck",
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs",
+    "companion:build": "cargo build --manifest-path apps/companion/Cargo.toml",
+    "companion:test": "cargo test --manifest-path apps/companion/Cargo.toml",
+    "gate:companion": "cargo fmt --manifest-path apps/companion/Cargo.toml --check && cargo build --manifest-path apps/companion/Cargo.toml && cargo test --manifest-path apps/companion/Cargo.toml",
     "benchmark:detection": "pnpm build && node apps/benchmark-runner/dist/main.js run --manifest benchmarks/detection-v1"
   },
   "devDependencies": {
@@ -30,6 +33,7 @@
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/core-application": "workspace:*",
     "@qualigence/core-daemon": "workspace:*",
+    "@qualigence/desktop-contracts": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/evidence-capsule": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
@@ -54,6 +58,7 @@
     "@qualigence/public-api": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",
+    "@qualigence/project-target": "workspace:*",
     "@qualigence/recording": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/runner": "workspace:*",

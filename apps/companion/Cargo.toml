@@ -1,0 +1,53 @@
+[package]
+name = "companion"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Qualigence M3 Desktop Companion: the sole broker for desktop process lifecycle, UIA capture and UIA action execution (LS-13)."
+
+[lib]
+name = "companion"
+path = "src/lib.rs"
+
+[[bin]]
+name = "companion"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = "2"
+getrandom = "0.2"
+base64 = "0.22"
+hex = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Rust tests live outside `src/` per the repo-wide constraint: top-level
+# `tests/rust/companion/*.rs`, wired here as explicit integration-test targets
+# (no inline `#[cfg(test)] mod tests` in production files).
+[[test]]
+name = "companion_approval_state"
+path = "../../tests/rust/companion/approval_state.rs"
+
+[[test]]
+name = "companion_emergency_stop"
+path = "../../tests/rust/companion/emergency_stop.rs"
+
+[[test]]
+name = "companion_ipc_acl"
+path = "../../tests/rust/companion/ipc_acl.rs"
+
+[[test]]
+name = "companion_ipc_limits"
+path = "../../tests/rust/companion/ipc_limits.rs"
+
+[[test]]
+name = "companion_permit_binding"
+path = "../../tests/rust/companion/permit_binding.rs"
+
+[[test]]
+name = "companion_handshake"
+path = "../../tests/rust/companion/handshake.rs"

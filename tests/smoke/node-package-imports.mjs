@@ -4,6 +4,8 @@ const packages = [
   ["@qualigence/runner-protocol", "canonicalPayloadHash"],
   ["@qualigence/observation-contracts", "OBSERVATION_GRAPH_V1_VERSION"],
   ["@qualigence/observation-migration", "PreV1TraceProjector"],
+  ["@qualigence/desktop-contracts", "parseCompanionRequest"],
+  ["@qualigence/project-target", "AppTargetAggregate"],
   ["@qualigence/runner-spool", "SqliteRunnerSpool"],
   ["@qualigence/runner-kernel", "ExecutionRuntime"],
   ["@qualigence/runner-identity", "RunnerEnrollmentService"],
