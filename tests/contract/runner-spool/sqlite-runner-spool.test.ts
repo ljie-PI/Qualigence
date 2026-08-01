@@ -178,7 +178,7 @@ describe("SqliteRunnerSpool", () => {
       token_tag: Buffer;
     };
     const corrupted = Buffer.from(tag.token_tag);
-    corrupted[0] ^= 0xff;
+    corrupted.writeUInt8(corrupted.readUInt8(0) ^ 0xff, 0);
     raw.prepare("UPDATE spool_leases SET token_tag = ? WHERE job_id = ?").run(corrupted, "job-1");
     raw.close();
 
