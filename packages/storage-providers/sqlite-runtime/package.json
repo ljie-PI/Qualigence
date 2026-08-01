@@ -11,7 +11,9 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/context-intake": "workspace:*",
     "@qualigence/evidence": "workspace:*",
+    "@qualigence/mission": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "better-sqlite3": "12.11.1",

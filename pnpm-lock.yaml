@@ -257,9 +257,15 @@ importers:
 
   packages/storage-providers/sqlite-runtime:
     dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../../core-modules/context-intake
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../core-modules/evidence
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../core-modules/mission
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
