@@ -1,7 +1,8 @@
-export { ExecutionBlockedError, ExecutionRuntime } from "./execution-runtime.js";
+export { ExecutionBlockedError, ExecutionPermit, ExecutionRuntime } from "./execution-runtime.js";
 
 export type {
   ActionExecutor,
+  ActionOutcome,
   ActionResolver,
   AgentContext,
   ExecutionDecisionProvider,
