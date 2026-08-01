@@ -9,6 +9,7 @@
     { "path": "packages/shared-kernel" },
     { "path": "packages/contracts/runner-protocol" },
     { "path": "packages/contracts/model-provider" },
+    { "path": "packages/contracts/local-control" },
     { "path": "packages/runner-kernel" },
     { "path": "packages/model-gateway" },
     { "path": "packages/runner-components/model-agent" },
@@ -29,6 +30,7 @@
     { "path": "packages/execution-application" },
     { "path": "apps/cli" },
     { "path": "apps/core-daemon" },
-    { "path": "apps/runner" }
+    { "path": "apps/runner" },
+    { "path": "apps/local-launcher" }
   ]
 }
