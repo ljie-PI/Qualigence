@@ -11,6 +11,9 @@
   "references": [
     { "path": "../../model-gateway" },
     { "path": "../../runner-kernel" },
-    { "path": "../../contracts/runner-protocol" }
+    { "path": "../../contracts/runner-protocol" },
+    { "path": "../../contracts/model-provider" },
+    { "path": "../../core-modules/context-intake" },
+    { "path": "../../core-modules/application-model" }
   ]
 }

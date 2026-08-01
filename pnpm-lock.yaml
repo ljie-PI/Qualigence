@@ -216,6 +216,12 @@ importers:
 
   packages/runner-components/model-agent:
     dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../../core-modules/context-intake
       '@qualigence/model-gateway':
         specifier: workspace:*
         version: link:../../model-gateway
