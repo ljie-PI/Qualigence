@@ -18,7 +18,7 @@ import {
 const sourceRef = {
   prdId: "prd-1",
   revision: 1,
-  contentSha256: "a".repeat(64),
+  quotedTextSha256: "a".repeat(64),
   startOffset: 10,
   endOffset: 42,
 } as const;
