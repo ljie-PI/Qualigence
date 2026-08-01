@@ -13,6 +13,20 @@ export {
   InMemoryObservationMigrationStore,
 } from "./migration-runner.js";
 
+export { FileObservationMigrationStore } from "./file-migration-store.js";
+
+export {
+  OBSERVATION_FREEZE_REPORT_VERSION,
+  buildFreezeReport,
+} from "./freeze-report.js";
+
+export type {
+  ObservationGraphLifecycle,
+  ObservationFreezeCounts,
+  ObservationFreezeGate,
+  ObservationFreezeReportV1,
+} from "./freeze-report.js";
+
 export type {
   ObservationMigrationStatus,
   ObservationMigrationResult,

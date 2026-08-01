@@ -11,6 +11,7 @@
   "references": [
     { "path": "../../packages/core-modules/evidence" },
     { "path": "../../packages/observability" },
+    { "path": "../../packages/observation-migration" },
     { "path": "../../packages/storage-providers/kms-self-hosted" },
     { "path": "../../packages/storage-providers/postgres-runtime" },
     { "path": "../../packages/storage-providers/relational-kysely" },

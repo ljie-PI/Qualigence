@@ -218,6 +218,9 @@ importers:
       '@qualigence/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@qualigence/observation-migration':
+        specifier: workspace:*
+        version: link:../../packages/observation-migration
       '@qualigence/postgres-runtime':
         specifier: workspace:*
         version: link:../../packages/storage-providers/postgres-runtime
