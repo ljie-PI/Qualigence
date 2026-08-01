@@ -1,0 +1,29 @@
+{
+  "name": "@qualigence/runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence-runner": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/grpc-runner-protocol": "workspace:*",
+    "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/model-agent": "workspace:*",
+    "@qualigence/model-gateway": "workspace:*",
+    "@qualigence/openai-compatible-model-provider": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/runner-spool": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/web-playwright": "workspace:*"
+  }
+}
