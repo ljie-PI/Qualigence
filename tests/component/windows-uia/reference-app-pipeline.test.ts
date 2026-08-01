@@ -229,7 +229,7 @@ describe("Windows-UIA Reference App pipeline (Linux, synthetic UIA)", () => {
         {
           ordinal: 1,
           beforeGraphRef: graph.graphId,
-          intent: { kind: "click", target: { role: "button", name: "Submit" } },
+          intent: { kind: "click", target: { role: "button", name: "Submit", purpose: "submit the form" } },
           resolvedNode: {
             role: "button",
             name: "Submit",
@@ -249,8 +249,8 @@ describe("Windows-UIA Reference App pipeline (Linux, synthetic UIA)", () => {
       steps: [
         {
           sourceRecordedStepOrdinal: 1,
-          intent: { kind: "click", target: { role: "button", name: "Submit" } },
-          preconditions: [{ kind: "node_present", target: { role: "button", name: "Submit" } }],
+          intent: { kind: "click", target: { role: "button", name: "Submit", purpose: "submit the form" } },
+          preconditions: [{ kind: "node_present", target: { role: "button", name: "Submit", purpose: "submit the form" } }],
           checkpoint: [{ kind: "claim_satisfied", claimId: "form.submitted" }],
           recovery: "reobserve",
         },

@@ -63,3 +63,7 @@ path = "../../tests/rust/companion/uia_action_timeout.rs"
 [[test]]
 name = "companion_job_object_lifecycle"
 path = "../../tests/rust/companion/job_object_lifecycle.rs"
+
+[[test]]
+name = "companion_reference_app_scenario"
+path = "../../tests/rust/companion/reference_app_scenario.rs"
