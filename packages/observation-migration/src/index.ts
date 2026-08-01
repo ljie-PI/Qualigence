@@ -46,6 +46,18 @@ export type {
   FreezeDecision,
 } from "./freeze-decision.js";
 
+export {
+  OBSERVATION_FREEZE_GATE_REPORT_VERSION,
+  buildFreezeGateReport,
+  generateAutomatedFreezeGateReport,
+} from "./freeze-gate.js";
+
+export type {
+  FreezeGateEnvironment,
+  BuildFreezeGateReportInput,
+  FreezeGateReportV1,
+} from "./freeze-gate.js";
+
 export type {
   ObservationMigrationStatus,
   ObservationMigrationResult,
