@@ -23,6 +23,7 @@
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/sqlite-runtime": "workspace:*",
     "@qualigence/testkit": "workspace:*",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0 || ^6.0.0",

@@ -2,3 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
   - "packages/*/*"
+allowBuilds:
+  better-sqlite3: true
+minimumReleaseAgeExclude:
+  - '@types/better-sqlite3@9.6.0'
