@@ -26,3 +26,11 @@ export {
 } from "./runner/runner-resume-token-service.js";
 
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
+
+export {
+  RunnerBackedRunResourceFactory,
+  type RunnerBackedRunResourceFactoryOptions,
+  type RunnerBackedRunResources,
+} from "./runner/runner-backed-run-resource-factory.js";
+
+export type { RemoteRunnerTarget } from "./runner/remote-runner-target.js";
