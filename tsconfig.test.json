@@ -47,6 +47,7 @@
     { "path": "packages/testkit" },
     { "path": "packages/target-adapters/web-playwright" },
     { "path": "packages/execution-application" },
+    { "path": "packages/observation-migration" },
     { "path": "apps/cli" },
     { "path": "apps/core-daemon" },
     { "path": "apps/runner" },

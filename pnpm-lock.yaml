@@ -107,6 +107,9 @@ importers:
       '@qualigence/observation-contracts':
         specifier: workspace:*
         version: link:packages/contracts/observation
+      '@qualigence/observation-migration':
+        specifier: workspace:*
+        version: link:packages/observation-migration
       '@qualigence/oidc':
         specifier: workspace:*
         version: link:packages/auth/oidc
@@ -670,6 +673,24 @@ importers:
         version: 6.48.0(zod@4.4.3)
 
   packages/observability: {}
+
+  packages/observation-migration:
+    dependencies:
+      '@qualigence/observation-contracts':
+        specifier: workspace:*
+        version: link:../contracts/observation
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../runner-components/recording
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../core-modules/skill
 
   packages/protocol-adapters/grpc-runner-protocol:
     dependencies:

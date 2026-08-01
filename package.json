@@ -49,6 +49,7 @@
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/observability": "workspace:*",
     "@qualigence/observation-contracts": "workspace:*",
+    "@qualigence/observation-migration": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
     "@qualigence/public-api": "workspace:*",
     "@qualigence/oidc": "workspace:*",
