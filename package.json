@@ -33,6 +33,8 @@
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-identity": "workspace:*",
+    "@qualigence/runner-mtls": "workspace:*",
     "@qualigence/runner": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/runner-spool": "workspace:*",

@@ -4,6 +4,8 @@ const packages = [
   ["@qualigence/runner-protocol", "canonicalPayloadHash"],
   ["@qualigence/runner-spool", "SqliteRunnerSpool"],
   ["@qualigence/runner-kernel", "ExecutionRuntime"],
+  ["@qualigence/runner-identity", "RunnerEnrollmentService"],
+  ["@qualigence/runner-mtls", "SelfHostedRunnerAuthenticator"],
   ["@qualigence/evidence", "TraceIngestor"],
   ["@qualigence/mission", "MissionCompiler"],
   ["@qualigence/in-memory-runner-protocol", "InMemoryProtocolTraceRecorder"],
