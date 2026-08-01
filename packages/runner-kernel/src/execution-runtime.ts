@@ -8,10 +8,13 @@ import type {
   FindingEnvelope,
   ObservationGraph,
   ResolvedActionTracePayload,
+  ResolvedDesktopAction,
   RunId,
   TraceEvent,
   VerificationTracePayload,
 } from "@qualigence/runner-protocol";
+
+export type { ResolvedDesktopAction } from "@qualigence/runner-protocol";
 
 export interface ProposedAction {
   readonly kind: "click";
@@ -21,7 +24,16 @@ export interface ProposedAction {
   readonly reason: string;
 }
 
-export interface ResolvedAction {
+/**
+ * A resolved Web action. `targetKind` is the discriminator introduced by LS-13
+ * so the same Runner Kernel can drive Web and Desktop targets. It is optional
+ * here purely for backward compatibility: every M1 Web resolver historically
+ * emitted this shape without a `targetKind`, and those resolvers/tests must keep
+ * compiling unchanged. The Playwright adapter now emits `targetKind: "web"`
+ * explicitly, and an absent `targetKind` is treated as Web.
+ */
+export interface ResolvedWebAction {
+  readonly targetKind?: "web";
   readonly kind: "click";
   readonly target: {
     readonly nodeId: string;
@@ -30,10 +42,89 @@ export interface ResolvedAction {
   readonly graphId: string;
 }
 
+/**
+ * The cross-platform resolved-action union. A consumer MUST branch on
+ * `targetKind` before `kind` so a Web click can never be handed to a UIA
+ * executor (and vice versa). `ResolvedDesktopAction` is the frozen Desktop union
+ * owned by `@qualigence/desktop-contracts` and re-exported through Runner
+ * Protocol.
+ */
+export type ResolvedAction = ResolvedWebAction | ResolvedDesktopAction;
+
+/** True when a resolved action targets a Windows Desktop app via UIA. */
+export function isDesktopAction(
+  action: ResolvedAction,
+): action is ResolvedDesktopAction {
+  return action.targetKind === "desktop";
+}
+
+/** True when a resolved action targets a Web page (explicit or legacy). */
+export function isWebAction(action: ResolvedAction): action is ResolvedWebAction {
+  return action.targetKind !== "desktop";
+}
+
+/** The observation node id a resolved action targets, regardless of platform. */
+export function resolvedActionNodeId(action: ResolvedAction): string {
+  return isDesktopAction(action) ? action.nodeId : action.target.nodeId;
+}
+
+/**
+ * The action risk classification the Runner policy gate applies before it may
+ * mint an {@link ExecutionPermitDescriptor}. This mirrors LS-09's
+ * `ActionRiskLevel` intent for Desktop actions: read-only-ish interactions are
+ * `Normal` (auto-issuable inside an active session), state-changing input is an
+ * `ExternalSideEffect`, and a destructive window close is `Destructive`. A
+ * `ProductionForbidden` classification is never derived from the action kind
+ * alone — it is imposed by explicit policy — so it is never returned here.
+ */
+export type ExecutionRisk =
+  | "Normal"
+  | "ExternalSideEffect"
+  | "Destructive"
+  | "ProductionForbidden";
+
+/** Conservative default risk classification for a resolved Desktop action. */
+export function classifyDesktopActionRisk(
+  action: ResolvedDesktopAction,
+): Exclude<ExecutionRisk, "ProductionForbidden"> {
+  switch (action.kind) {
+    case "click":
+    case "scroll":
+      return "Normal";
+    case "input":
+    case "select":
+      return "ExternalSideEffect";
+    case "window":
+      return action.windowOperation === "close" ? "Destructive" : "Normal";
+  }
+}
+
+/**
+ * The policy-bound descriptor a branded {@link ExecutionPermit} carries. Only an
+ * allowed policy decision may construct it; it freezes the RFC 8785 action
+ * digest, the risk class, the policy/decision identity and the permit TTL so the
+ * Desktop Companion can re-verify the exact same binding before it consumes its
+ * one-time local Permit. This is structurally equal to the desktop-contracts
+ * `LocalPermitAuthorization` IPC DTO, which the Windows adapter maps it to.
+ */
+export interface ExecutionPermitDescriptor {
+  readonly decisionId: string;
+  readonly policyId: string;
+  readonly actionDigestSha256: string;
+  readonly risk: ExecutionRisk;
+  readonly expiresAt: string;
+}
+
 export type PolicyDecision =
   | {
       readonly status: "allowed";
       readonly reason: string;
+      /**
+       * Present for Desktop actions (LS-13): the policy gate computed this
+       * descriptor from the resolved action so the branded permit can bind it.
+       * Absent for the M1 Web path, which does not broker through the Companion.
+       */
+      readonly descriptor?: ExecutionPermitDescriptor;
     }
   | {
       readonly status: "denied";
@@ -127,14 +218,17 @@ const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
 export class ExecutionPermit {
   readonly [executionPermitBrand] = true;
 
-  private constructor(readonly reason: string) {}
+  private constructor(
+    readonly reason: string,
+    readonly descriptor?: ExecutionPermitDescriptor,
+  ) {}
 
   static fromAllowedDecision(decision: PolicyDecision): ExecutionPermit {
     if (decision.status !== "allowed") {
       throw new Error("ExecutionPermit requires an allowed policy decision.");
     }
 
-    return new ExecutionPermit(decision.reason);
+    return new ExecutionPermit(decision.reason, decision.descriptor);
   }
 }
 
@@ -322,6 +416,15 @@ function toDecisionTracePayload(action: ProposedAction): DecisionTracePayload {
 function toResolvedActionTracePayload(
   action: ResolvedAction,
 ): ResolvedActionTracePayload {
+  if (isDesktopAction(action)) {
+    // Desktop actions keep the M1 click trace shape with an ignorable, derived
+    // UIA locator token; richer Desktop trace fidelity is the adapter's concern.
+    return {
+      kind: "click",
+      target: { nodeId: action.nodeId, selector: `uia:${action.nodeId}` },
+      graphId: action.graphId,
+    };
+  }
   return action;
 }
 

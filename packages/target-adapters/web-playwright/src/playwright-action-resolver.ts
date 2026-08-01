@@ -50,6 +50,7 @@ export class PlaywrightActionResolver implements ActionResolver {
     }
 
     return {
+      targetKind: "web",
       kind: "click",
       target: {
         nodeId: action.target.nodeId,
