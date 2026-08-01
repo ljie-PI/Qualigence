@@ -89,6 +89,9 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:packages/shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:packages/core-modules/skill
       '@qualigence/sqlite-runtime':
         specifier: workspace:*
         version: link:packages/storage-providers/sqlite-runtime
@@ -318,6 +321,18 @@ importers:
 
   packages/core-modules/runner-identity:
     dependencies:
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
+  packages/core-modules/skill:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../application-model
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../../runner-components/recording
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
