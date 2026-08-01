@@ -34,6 +34,7 @@
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
+    "@qualigence/recording": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-identity": "workspace:*",
     "@qualigence/runner-mtls": "workspace:*",

@@ -65,6 +65,9 @@ importers:
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:packages/model-providers/openai-compatible
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:packages/runner-components/recording
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
@@ -414,6 +417,15 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/runner-components/recording:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/runner-components/runner-spool:
     dependencies:
