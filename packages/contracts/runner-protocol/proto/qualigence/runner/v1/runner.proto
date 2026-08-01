@@ -103,6 +103,56 @@ message AcceptedExecutionJob {
   string run_id = 2;
   TargetRef target = 3;
   string objective = 4;
+  // Additive (LS-07): immutable Mission plan snapshot. Absent for M1 objective-
+  // only jobs. Read-only Runner DTO; the Runner never writes it back.
+  ExecutionJobPlanSnapshot plan = 5;
+}
+
+message ExecutionPlanTarget {
+  string role = 1;
+  string name = 2;
+  string purpose = 3;
+}
+
+message ExecutionPlanStep {
+  oneof step {
+    ExecutionPlanNavigate navigate = 1;
+    ExecutionPlanClick click = 2;
+    ExecutionPlanInput input = 3;
+    ExecutionPlanVerify verify = 4;
+  }
+}
+
+message ExecutionPlanNavigate {
+  string path = 1;
+}
+
+message ExecutionPlanClick {
+  ExecutionPlanTarget target = 1;
+}
+
+message ExecutionPlanInput {
+  ExecutionPlanTarget target = 1;
+  string value_ref = 2;
+}
+
+message ExecutionPlanVerify {
+  repeated string claim_ids = 1;
+}
+
+message ExecutionPlanBudget {
+  uint32 maximum_steps_per_job = 1;
+  uint64 maximum_wall_clock_ms = 2;
+  uint64 maximum_model_tokens = 3;
+}
+
+message ExecutionJobPlanSnapshot {
+  string mission_id = 1;
+  uint32 mission_revision = 2;
+  string test_case_id = 3;
+  repeated ExecutionPlanStep steps = 4;
+  repeated string expected_claim_ids = 5;
+  ExecutionPlanBudget budget = 6;
 }
 
 message ExecutionJobOffer {
