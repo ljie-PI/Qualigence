@@ -86,6 +86,9 @@ importers:
       '@qualigence/recording':
         specifier: workspace:*
         version: link:packages/runner-components/recording
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:packages/core-modules/review
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
@@ -377,6 +380,8 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+
+  packages/core-modules/review: {}
 
   packages/core-modules/runner-identity:
     dependencies:

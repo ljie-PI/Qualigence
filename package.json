@@ -34,6 +34,7 @@
     "@qualigence/in-memory-runner-protocol": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
     "@qualigence/investigation": "workspace:*",
+    "@qualigence/review": "workspace:*",
     "@qualigence/local-control": "workspace:*",
     "@qualigence/local-launcher": "workspace:*",
     "@qualigence/mission": "workspace:*",
