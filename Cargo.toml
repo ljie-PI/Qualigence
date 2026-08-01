@@ -1,0 +1,10 @@
+# Rust workspace for the M3 Windows Desktop Companion (LS-13).
+#
+# This is an independent build unit that is NOT part of the pnpm/TypeScript
+# workspace. The pnpm workspace globs (`apps/*`) ignore `apps/companion` because
+# it has no package.json. The Companion is exercised by its own Gate command
+# (`cargo build` / `cargo test`), which the repo README/status document wires
+# alongside the TypeScript Gate.
+[workspace]
+resolver = "2"
+members = ["apps/companion"]
