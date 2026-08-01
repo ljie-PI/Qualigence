@@ -30,6 +30,7 @@
     { "path": "packages/storage-providers/kms-local" },
     { "path": "packages/storage-providers/kms-self-hosted" },
     { "path": "packages/storage-providers/artifact-fs" },
+    { "path": "packages/storage-providers/artifact-s3" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },
     { "path": "packages/protocol-adapters/grpc-runner-protocol" },
