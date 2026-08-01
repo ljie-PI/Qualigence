@@ -7,11 +7,11 @@
     "node": ">=24 <26"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && pnpm --filter @qualigence/web-console run build",
     "test": "pnpm build && vitest run",
     "test:e2e": "pnpm build && vitest run tests/e2e",
     "test:live": "pnpm build && vitest run tests/live",
-    "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json && pnpm --filter @qualigence/web-console run typecheck",
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs",
     "benchmark:detection": "pnpm build && node apps/benchmark-runner/dist/main.js run --manifest benchmarks/detection-v1"
   },
@@ -65,6 +65,7 @@
     "@qualigence/skill-replay": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*",
     "@qualigence/testkit": "workspace:*",
+    "@qualigence/web-console": "workspace:*",
     "@qualigence/web-playwright": "workspace:*",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "^24.0.0",
