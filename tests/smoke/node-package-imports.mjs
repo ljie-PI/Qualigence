@@ -12,6 +12,7 @@ const packages = [
   ["@qualigence/sqlite-runtime", "SqliteRuntime"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
+  ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
 ];
 
 for (const [packageName, exportName] of packages) {
