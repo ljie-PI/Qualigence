@@ -1,0 +1,44 @@
+{
+  "scenarioId": "cart-normal",
+  "mode": "normal",
+  "seedUrl": "https://shop.fixture.local/cart",
+  "states": [
+    {
+      "id": "cart",
+      "url": "https://shop.fixture.local/cart",
+      "title": "Shopping Cart",
+      "nodes": [
+        { "id": "cart-heading", "role": "heading", "name": "Your Cart", "confidence": 1 },
+        { "id": "cart-price", "role": "text", "text": "Unit price $19 charged", "confidence": 1 },
+        { "id": "cart-quantity", "role": "textbox", "name": "Quantity", "value": "2", "confidence": 1 },
+        { "id": "go-checkout", "role": "link", "name": "Proceed to checkout", "confidence": 1 }
+      ],
+      "advanceNodeId": "go-checkout",
+      "signals": []
+    },
+    {
+      "id": "checkout",
+      "url": "https://shop.fixture.local/checkout",
+      "title": "Checkout",
+      "nodes": [
+        { "id": "checkout-heading", "role": "heading", "name": "Checkout", "confidence": 1 },
+        { "id": "checkout-discount", "role": "text", "text": "Promo SAVE10 applied: -$3.80", "confidence": 1 },
+        { "id": "checkout-total", "role": "text", "text": "Order total $34.20", "confidence": 1 },
+        { "id": "go-confirm", "role": "link", "name": "Place order", "confidence": 1 }
+      ],
+      "advanceNodeId": "go-confirm",
+      "signals": []
+    },
+    {
+      "id": "confirmation",
+      "url": "https://shop.fixture.local/confirmation",
+      "title": "Order Confirmation",
+      "nodes": [
+        { "id": "confirmation-heading", "role": "heading", "name": "Order Confirmed", "confidence": 1 },
+        { "id": "confirmation-number", "role": "text", "text": "Confirmation #QA-100428", "confidence": 1 }
+      ],
+      "advanceNodeId": null,
+      "signals": []
+    }
+  ]
+}

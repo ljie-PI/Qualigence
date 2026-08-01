@@ -216,6 +216,45 @@ export interface SkillRevocationsTable {
   revoked_at: string;
 }
 
+export interface BenchmarkRunsTable {
+  run_id: string;
+  benchmark_version: string;
+  manifest_sha256: string;
+  profile_sha256: string;
+  ground_truth_sha256: string;
+  created_at: string;
+}
+
+export interface BenchmarkAttemptsTable {
+  attempt_id: string;
+  run_id: string;
+  profile_sha256: string;
+  scenario_id: string;
+  mode: string;
+  repetition: number;
+  terminal_reason: string;
+  findings_json: string;
+  created_at: string;
+}
+
+export interface ExplorationCheckpointsTable {
+  attempt_id: string;
+  step: number;
+  graph_fingerprint: string;
+  remaining_json: string;
+  terminal_reason: string | null;
+}
+
+export interface BenchmarkReportsTable {
+  report_id: string;
+  run_id: string;
+  profile_status: string;
+  gate_status: string;
+  failure_codes_json: string;
+  report_json: string;
+  created_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -246,5 +285,9 @@ export interface Database {
   skill_evaluations: SkillEvaluationsTable;
   skill_bundles: SkillBundlesTable;
   skill_revocations: SkillRevocationsTable;
+  benchmark_runs: BenchmarkRunsTable;
+  benchmark_attempts: BenchmarkAttemptsTable;
+  exploration_checkpoints: ExplorationCheckpointsTable;
+  benchmark_reports: BenchmarkReportsTable;
   sqlite_master: SqliteMasterTable;
 }

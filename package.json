@@ -12,7 +12,8 @@
     "test:e2e": "pnpm build && vitest run tests/e2e",
     "test:live": "pnpm build && vitest run tests/live",
     "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json",
-    "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
+    "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs",
+    "benchmark:detection": "pnpm build && node apps/benchmark-runner/dist/main.js run --manifest benchmarks/detection-v1"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.72.0",
@@ -20,6 +21,8 @@
     "@grpc/proto-loader": "^0.7.15",
     "@qualigence/application-model": "workspace:*",
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/benchmark-runner": "workspace:*",
+    "@qualigence/benchmarking-detection": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/cli": "workspace:*",
     "@qualigence/core-daemon": "workspace:*",
