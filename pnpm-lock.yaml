@@ -53,6 +53,9 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:packages/contracts/runner-protocol
+      '@qualigence/runner-spool':
+        specifier: workspace:*
+        version: link:packages/runner-components/runner-spool
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:packages/shared-kernel
@@ -65,9 +68,15 @@ importers:
       '@qualigence/web-playwright':
         specifier: workspace:*
         version: link:packages/target-adapters/web-playwright
+      '@types/better-sqlite3':
+        specifier: 9.6.0
+        version: 9.6.0
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      better-sqlite3:
+        specifier: 12.11.1
+        version: 12.11.1
       fastify:
         specifier: ^5.11.0
         version: 5.11.0
@@ -231,6 +240,22 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/runner-components/runner-spool:
+    dependencies:
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+      better-sqlite3:
+        specifier: 12.11.1
+        version: 12.11.1
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 9.6.0
+        version: 9.6.0
 
   packages/runner-kernel:
     dependencies:
