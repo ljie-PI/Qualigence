@@ -13,6 +13,7 @@
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
   },
   "devDependencies": {
+    "@qualigence/artifact-fs": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
