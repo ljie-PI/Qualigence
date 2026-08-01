@@ -17,6 +17,13 @@ export { SqlitePrdMissionStore } from "./sqlite-prd-mission-store.js";
 
 export { SqliteSkillStore } from "./sqlite-skill-store.js";
 
+export { SqliteBenchmarkStore } from "./sqlite-benchmark-store.js";
+
+export type {
+  BenchmarkRunRecord,
+  PersistedAttempt,
+} from "./sqlite-benchmark-store.js";
+
 export {
   isSqliteBusyError,
   mapBusyError,

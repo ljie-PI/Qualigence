@@ -11,6 +11,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/benchmarking-detection": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/mission": "workspace:*",

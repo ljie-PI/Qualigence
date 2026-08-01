@@ -11,6 +11,7 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../../benchmarking/detection" },
     { "path": "../../core-modules/context-intake" },
     { "path": "../../core-modules/evidence" },
     { "path": "../../core-modules/mission" },

@@ -32,6 +32,7 @@
     { "path": "apps/cli" },
     { "path": "apps/core-daemon" },
     { "path": "apps/runner" },
-    { "path": "apps/local-launcher" }
+    { "path": "apps/local-launcher" },
+    { "path": "apps/benchmark-runner" }
   ]
 }
