@@ -8,6 +8,7 @@ const packages = [
   ["@qualigence/runner-mtls", "SelfHostedRunnerAuthenticator"],
   ["@qualigence/public-api", "IDEMPOTENCY_KEY_HEADER"],
   ["@qualigence/oidc", "OidcAuthenticator"],
+  ["@qualigence/core-application", "PostgresIntelligenceQueue"],
   ["@qualigence/evidence", "TraceIngestor"],
   ["@qualigence/mission", "MissionCompiler"],
   ["@qualigence/in-memory-runner-protocol", "InMemoryProtocolTraceRecorder"],

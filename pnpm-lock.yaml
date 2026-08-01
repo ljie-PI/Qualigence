@@ -137,6 +137,9 @@ importers:
       '@qualigence/runner-spool':
         specifier: workspace:*
         version: link:packages/runner-components/runner-spool
+      '@qualigence/server':
+        specifier: workspace:*
+        version: link:apps/server
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:packages/shared-kernel
@@ -380,6 +383,39 @@ importers:
       '@qualigence/web-playwright':
         specifier: workspace:*
         version: link:../../packages/target-adapters/web-playwright
+
+  apps/server:
+    dependencies:
+      '@qualigence/oidc':
+        specifier: workspace:*
+        version: link:../../packages/auth/oidc
+      '@qualigence/postgres-runtime':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/postgres-runtime
+      '@qualigence/public-api':
+        specifier: workspace:*
+        version: link:../../packages/contracts/public-api
+      '@qualigence/relational-kysely':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/relational-kysely
+      '@qualigence/runner-identity':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/runner-identity
+      '@qualigence/runner-mtls':
+        specifier: workspace:*
+        version: link:../../packages/auth/runner-mtls
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
+      fastify:
+        specifier: 5.11.0
+        version: 5.11.0
+      kysely:
+        specifier: 0.28.17
+        version: 0.28.17
 
   packages/auth/oidc:
     dependencies:

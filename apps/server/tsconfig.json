@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/auth/oidc" },
+    { "path": "../../packages/auth/runner-mtls" },
+    { "path": "../../packages/contracts/public-api" },
+    { "path": "../../packages/contracts/runner-protocol" },
+    { "path": "../../packages/core-modules/runner-identity" },
+    { "path": "../../packages/shared-kernel" },
+    { "path": "../../packages/storage-providers/postgres-runtime" },
+    { "path": "../../packages/storage-providers/relational-kysely" }
+  ]
+}

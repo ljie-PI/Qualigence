@@ -53,6 +53,7 @@
     "@qualigence/recording": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/runner": "workspace:*",
+    "@qualigence/server": "workspace:*",
     "@qualigence/runner-identity": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
