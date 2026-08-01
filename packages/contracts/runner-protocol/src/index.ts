@@ -26,6 +26,58 @@ export interface AcceptedExecutionJob {
   readonly runId: RunId;
   readonly target: TargetRef;
   readonly objective: string;
+  /**
+   * Optional immutable Mission plan snapshot (LS-07). Purely additive: M1
+   * objective-only jobs omit it. When present it is a read-only Runner DTO —
+   * the Runner never writes it back or mutates the referenced plan.
+   */
+  readonly plan?: ExecutionJobPlanSnapshot;
+}
+
+/** A semantic action target inside a {@link ExecutionPlanStep}; never a selector. */
+export interface ExecutionPlanTarget {
+  readonly role?: string;
+  readonly name?: string;
+  readonly purpose: string;
+}
+
+/**
+ * A single compiled intent step carried in an {@link ExecutionJobPlanSnapshot}.
+ * `verify` steps reference concrete claim IDs (already compiled from semantic
+ * keys by the Core command handler), never raw semantic keys.
+ */
+export type ExecutionPlanStep =
+  | { readonly kind: "navigate"; readonly path: string }
+  | { readonly kind: "click"; readonly target: ExecutionPlanTarget }
+  | {
+      readonly kind: "input";
+      readonly target: ExecutionPlanTarget;
+      readonly valueRef: string;
+    }
+  | {
+      readonly kind: "verify";
+      readonly claimIds: readonly [string, ...string[]];
+    };
+
+/** Per-job execution budget carried alongside the plan snapshot. */
+export interface ExecutionPlanBudget {
+  readonly maximumStepsPerJob: number;
+  readonly maximumWallClockMs: number;
+  readonly maximumModelTokens: number;
+}
+
+/**
+ * An immutable snapshot of the approved Mission plan for a single Test Case.
+ * It pins the Mission revision, the compiled steps and the expected claim IDs so
+ * a later PRD update never mutates an in-flight Job. It is a Runner DTO only.
+ */
+export interface ExecutionJobPlanSnapshot {
+  readonly missionId: string;
+  readonly missionRevision: number;
+  readonly testCaseId: string;
+  readonly steps: readonly [ExecutionPlanStep, ...ExecutionPlanStep[]];
+  readonly expectedClaimIds: readonly [string, ...string[]];
+  readonly budget: ExecutionPlanBudget;
 }
 
 export interface ObservationNode {

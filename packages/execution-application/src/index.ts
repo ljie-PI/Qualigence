@@ -26,3 +26,11 @@ export {
 } from "./run-execution-use-case.js";
 
 export { PersistedModelInvocationObserver } from "./persisted-model-invocation-observer.js";
+
+export {
+  MissionExecutionUseCase,
+  type MissionExecutionResult,
+  type MissionExecutionTrace,
+  type MissionExecutionUseCaseOptions,
+  type MissionJobResult,
+} from "./mission-execution-use-case.js";

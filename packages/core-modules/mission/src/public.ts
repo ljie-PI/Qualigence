@@ -32,3 +32,15 @@ export {
   canonicalJson,
   MissionCompiler,
 } from "./application/mission-compiler.js";
+
+export type {
+  DispatchableJob,
+  DispatchableMission,
+  JobAttemptRecord,
+  JobAttemptStatus,
+  MissionDispatchDescriptor,
+  MissionExecutionRecord,
+  MissionJobExecution,
+  PrdMissionRepository,
+  SaveCompiledMissionInput,
+} from "./application/prd-mission-repository.js";

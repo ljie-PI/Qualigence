@@ -6,6 +6,7 @@ export type ExecutionApplicationErrorCode =
   | "BrowserUnavailable"
   | "PersistenceUnavailable"
   | "ArtifactUnavailable"
+  | "MissionNotFound"
   | "CleanupFailed";
 
 /**
