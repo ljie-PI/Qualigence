@@ -516,12 +516,18 @@ importers:
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../../runner-components/recording
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
       better-sqlite3:
         specifier: 12.11.1
         version: 12.11.1

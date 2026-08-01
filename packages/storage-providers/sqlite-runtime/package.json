@@ -14,8 +14,10 @@
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/mission": "workspace:*",
+    "@qualigence/recording": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/skill": "workspace:*",
     "better-sqlite3": "12.11.1",
     "kysely": "0.28.17"
   },
