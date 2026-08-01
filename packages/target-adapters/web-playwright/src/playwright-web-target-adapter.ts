@@ -10,6 +10,7 @@ import type {
   Observer,
   ProposedAction,
   ResolvedAction,
+  ResolvedWebAction,
 } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
@@ -62,7 +63,7 @@ export class PlaywrightWebTargetAdapter
   async resolve(
     action: ProposedAction,
     graph: ObservationGraph,
-  ): Promise<ResolvedAction> {
+  ): Promise<ResolvedWebAction> {
     return this.guard(() => this.resolver.resolve(action, graph));
   }
 

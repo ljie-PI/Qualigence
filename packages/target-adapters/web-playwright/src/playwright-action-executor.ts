@@ -3,7 +3,7 @@ import type {
   ActionOutcome,
   ResolvedAction,
 } from "@qualigence/runner-kernel";
-import { ExecutionPermit } from "@qualigence/runner-kernel";
+import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
   WebTargetError,
@@ -33,6 +33,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         "ConcurrentSessionOperation",
         "A valid ExecutionPermit is required to execute an action.",
       );
+    }
+
+    // The Playwright executor only drives Web targets; a Desktop/UIA action must
+    // never be executed here (it is brokered through the Companion instead).
+    if (isDesktopAction(action)) {
+      return { status: "failed", errorCode: "UnsupportedTargetKind" };
     }
 
     if (

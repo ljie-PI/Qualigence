@@ -35,6 +35,7 @@ const packages = [
   ["@qualigence/admin-cli", "runDoctor"],
   ["@qualigence/evidence-capsule", "EvidenceCapsuleBuilder"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
+  ["@qualigence/desktop-windows-uia", "mapUiaPayloadToObservationV1"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
   ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
   ["@qualigence/core-daemon", "RunnerBackedRunResourceFactory"],

@@ -34,6 +34,7 @@
     "@qualigence/core-application": "workspace:*",
     "@qualigence/core-daemon": "workspace:*",
     "@qualigence/desktop-contracts": "workspace:*",
+    "@qualigence/desktop-windows-uia": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/evidence-capsule": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
