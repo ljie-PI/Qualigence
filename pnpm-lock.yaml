@@ -20,6 +20,9 @@ importers:
       '@grpc/proto-loader':
         specifier: ^0.7.15
         version: 0.7.15
+      '@qualigence/admin-cli':
+        specifier: workspace:*
+        version: link:apps/admin-cli
       '@qualigence/application-model':
         specifier: workspace:*
         version: link:packages/core-modules/application-model
@@ -194,6 +197,40 @@ importers:
       vitest:
         specifier: ^4.0.0
         version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(yaml@2.9.0))
+
+  apps/admin-cli:
+    dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.700.0
+        version: 3.700.0
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/evidence
+      '@qualigence/kms-self-hosted':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/kms-self-hosted
+      '@qualigence/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@qualigence/postgres-runtime':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/postgres-runtime
+      '@qualigence/relational-kysely':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/relational-kysely
+      '@qualigence/server':
+        specifier: workspace:*
+        version: link:../server
+      commander:
+        specifier: 14.0.1
+        version: 14.0.1
+      pg:
+        specifier: 8.13.1
+        version: 8.13.1
+    devDependencies:
+      '@types/pg':
+        specifier: 8.11.10
+        version: 8.11.10
 
   apps/benchmark-runner:
     dependencies:

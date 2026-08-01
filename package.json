@@ -21,6 +21,7 @@
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.7.15",
     "@qualigence/application-model": "workspace:*",
+    "@qualigence/admin-cli": "workspace:*",
     "@qualigence/artifact-fs": "workspace:*",
     "@qualigence/artifact-s3": "workspace:*",
     "@qualigence/benchmark-runner": "workspace:*",

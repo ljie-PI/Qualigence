@@ -52,6 +52,7 @@
     { "path": "apps/local-launcher" },
     { "path": "apps/benchmark-runner" },
     { "path": "apps/intelligence-worker" },
-    { "path": "apps/server" }
+    { "path": "apps/server" },
+    { "path": "apps/admin-cli" }
   ]
 }
