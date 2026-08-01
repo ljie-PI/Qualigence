@@ -2,7 +2,7 @@ import type { ObservationGraph } from "@qualigence/runner-protocol";
 import type {
   ActionResolver,
   ProposedAction,
-  ResolvedAction,
+  ResolvedWebAction,
 } from "@qualigence/runner-kernel";
 import { PlaywrightBrowserSession, WebTargetError } from "./browser-session.js";
 import { locatorFor } from "./action-locator.js";
@@ -14,7 +14,7 @@ export class PlaywrightActionResolver implements ActionResolver {
   async resolve(
     action: ProposedAction,
     graph: ObservationGraph,
-  ): Promise<ResolvedAction> {
+  ): Promise<ResolvedWebAction> {
     if (!this.session.hasGraph(graph.graphId)) {
       throw new WebTargetError(
         "StaleObservation",

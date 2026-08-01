@@ -63,6 +63,10 @@ describe("windows-uia conformance", () => {
     if (button === undefined) {
       throw new Error("button node missing");
     }
+    const buttonExt = button.extensions["uia/v1"];
+    if (buttonExt === undefined) {
+      throw new Error("button uia/v1 extension missing");
+    }
     const augmented: ObservationGraphV1 = {
       ...graph,
       nodes: graph.nodes.map((n) =>
@@ -71,9 +75,9 @@ describe("windows-uia conformance", () => {
               ...n,
               extensions: {
                 "uia/v1": {
-                  ...n.extensions["uia/v1"],
+                  ...buttonExt,
                   payload: {
-                    ...n.extensions["uia/v1"].payload,
+                    ...buttonExt.payload,
                     landmarkType: "form",
                   },
                 },
@@ -84,7 +88,7 @@ describe("windows-uia conformance", () => {
     };
     const validated = validateObservationGraphV1(augmented);
     const validatedButton = validated.nodes.find((n) => n.id === "button");
-    expect(validatedButton?.extensions["uia/v1"].payload.landmarkType).toBe("form");
+    expect(validatedButton?.extensions["uia/v1"]?.payload.landmarkType).toBe("form");
   });
 
   it("fails closed when a consumer requires an unsupported uia major", () => {

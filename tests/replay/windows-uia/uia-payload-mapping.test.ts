@@ -127,6 +127,9 @@ describe("mapUiaPayloadToObservationV1", () => {
     });
     const button = node(graph, "button");
     const extension = button.extensions["uia/v1"];
+    if (extension === undefined) {
+      throw new Error("button uia/v1 extension missing");
+    }
     expect(extension.type).toBe("uia/v1");
     expect(extension.version).toBe("1.0");
     expect(extension.payload).toMatchObject({
