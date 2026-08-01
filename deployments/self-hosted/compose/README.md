@@ -1,0 +1,116 @@
+# Qualigence Team Self-hosted deployment
+
+A single-node Docker Compose topology for the **M2 Self-hosted** runtime
+(PostgreSQL + S3-compatible object store + Runner enrollment), completing LS-11.
+This is the multi-tenant Team stack — **not** the M1 single-tenant
+`apps/local-launcher` (SQLite) target, which is a separate deployment.
+
+## Topology
+
+```
+              ┌───────────────── proxy (Caddy, :443) ─────────────────┐
+   client ──▶ │  TLS · strict CSP · /healthz                          │
+              │    /api/*  ─▶ server:8080  (Public API, /v1/*)         │
+              │    else    ─▶ console:8080 (static SPA bundle)         │
+              └───────┬───────────────────────────────┬───────────────┘
+                      │ internal network only          │
+             ┌────────▼────────┐              ┌─────────▼─────────┐
+             │ server (Node)   │              │ worker (Node)     │
+             │ Fastify /v1     │              │ Intelligence loop │
+             └───┬─────────┬───┘              └────┬─────────┬────┘
+                 │         │                       │         │
+           ┌─────▼───┐ ┌───▼──────┐          ┌─────▼───┐ ┌───▼──────┐
+           │postgres │ │ (runner  │          │postgres │ │  minio   │
+           │  :5432  │ │  mTLS in)│          │  :5432  │ │  :9000   │
+           └─────────┘ └──────────┘          └─────────┘ └──────────┘
+```
+
+- **Only the proxy is published** (`:443`). PostgreSQL and MinIO have **no**
+  host ports.
+- Runners connect **into** the Server over mTLS using the enrollment CA
+  (`runner_ca_*` secrets); the Server's public routes are reached through the
+  proxy under `/api`.
+- The Console is a **static asset image** (Vite `dist/` served by Caddy), never
+  a Node process.
+
+## Security posture
+
+- Every third-party image is **pinned by digest**; `latest` is never used.
+- Application containers run **non-root**, **read-only root filesystem**,
+  `cap_drop: ALL`, `no-new-privileges:true`, with CPU/memory/PID and
+  log-rotation limits.
+- **All secrets are file mounts** at `/run/secrets/*` (see
+  [`secrets/README.md`](secrets/README.md)); no secret value is ever an
+  environment variable or an image layer.
+- The proxy sets the frozen strict CSP
+  (`default-src 'self'; …; object-src 'none'; base-uri 'none';
+  frame-ancestors 'none'`) plus `Referrer-Policy: no-referrer` and HSTS.
+
+## Build the images
+
+```sh
+# From the repository root:
+docker build -t qualigence/self-hosted:0.1.0 .
+docker build -t qualigence/self-hosted-console:0.1.0 \
+  -f deployments/self-hosted/docker/console.Dockerfile .
+```
+
+The Node image is role-dispatched by
+[`docker/entrypoint.sh`](docker/entrypoint.sh):
+`server` · `worker` · `migrate` · `doctor` · `backup` · `restore`.
+
+## First bring-up
+
+```sh
+cd deployments/self-hosted/compose
+cp .env.example .env                 # edit non-secret config
+# populate ./secrets/* per secrets/README.md, then chmod 600 secrets/*
+
+docker compose run --rm migrate      # provision schema + forced RLS + roles
+docker compose run --rm doctor       # verify DB/RLS/S3/KMS/Server health
+docker compose up -d                 # start postgres, minio, server, worker, console, proxy
+```
+
+Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness.
+
+## Backup, restore & upgrade runbook
+
+Backups are **byte-complete**: a consistent PostgreSQL snapshot plus the real
+bytes of every S3 object, content-addressed and checksummed in a signed index.
+
+```sh
+# Consistent point-in-time backup into the `backups` volume.
+docker compose run --rm backup
+
+# --- Upgrade / rollback (binary-only rollback; never migrate down) ---
+# 1. Take a fresh backup (above).
+# 2. Pull/build the new image tag, update QUALIGENCE_IMAGE_TAG in .env.
+# 3. docker compose run --rm migrate      # forward-only migration
+# 4. docker compose up -d
+# 5. docker compose run --rm doctor       # confirm green
+# If the new binary misbehaves, roll the IMAGE TAG back and `up -d` again.
+# Never run a down-migration; restore from backup instead if the schema moved.
+
+# --- Disaster recovery: restore into a clean environment ---
+docker compose down                       # stop app containers
+docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata
+docker compose up -d postgres minio        # empty DB + object store
+docker compose run --rm restore            # verifies every byte before mutating,
+                                           # then restores DB + objects and
+                                           # re-verifies byte-for-byte
+docker compose run --rm doctor
+docker compose up -d
+```
+
+`restore` validates the entire backup (SQL dump + every object checksum) **before**
+touching the target, re-uploads objects, reads each back and re-verifies its
+sha256/size, and asserts forced row-level security survived the restore.
+
+## Testing note (sandbox)
+
+The automated Gate test exercises the same real containers this Compose file
+declares (PostgreSQL + MinIO via the PR-19 Docker helpers) plus the real
+`apps/server` / `apps/intelligence-worker` code in-process, because the CI
+sandbox cannot run a privileged `docker compose up`. `tests/e2e/self-hosted/`
+additionally runs `docker compose config` to assert this topology's security
+invariants. See the PR-23 report for details.

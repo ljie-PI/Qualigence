@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.github
+tests
+benchmarks
+docs
+deployments/self-hosted/compose/secrets
+**/.qualigence-local
+**/coverage
+*.log
