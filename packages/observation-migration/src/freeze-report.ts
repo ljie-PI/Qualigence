@@ -7,13 +7,15 @@ export const OBSERVATION_FREEZE_REPORT_VERSION =
   "observation-freeze-report/v1" as const;
 
 /**
- * The lifecycle status of Observation Graph v1. This PR (LS-12) only ever emits
- * `candidate`; the `frozen` transition is reserved for LS-13 (M3 Gate) once
- * Windows/UIA conformance evidence is attached. The type is intentionally the
- * single literal `"candidate"` so the compiler forbids emitting a frozen report
- * from this package.
+ * The lifecycle status of Observation Graph v1. LS-12's migration tooling only
+ * ever emits `candidate`; the `frozen` transition is introduced by LS-13 (PR-27,
+ * the M3 Gate) and is reachable ONLY via `decideGraphFreeze` once the signed
+ * manual Windows-11 checklist evidence is attached. The `"frozen"` literal is
+ * added here so the lifecycle type can express the frozen state, but
+ * {@link buildFreezeReport} still hard-pins `candidate` — this package can never
+ * emit a frozen report on its own.
  */
-export type ObservationGraphLifecycle = "candidate";
+export type ObservationGraphLifecycle = "candidate" | "frozen";
 
 /** The tallied outcome of an inventory migration. */
 export interface ObservationFreezeCounts {
