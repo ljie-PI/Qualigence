@@ -14,6 +14,9 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
+      '@qualigence/execution-application':
+        specifier: workspace:*
+        version: link:packages/execution-application
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
@@ -66,6 +69,27 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+
+  packages/execution-application:
+    dependencies:
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../core-modules/evidence
+      '@qualigence/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
+      '@qualigence/model-provider':
+        specifier: workspace:*
+        version: link:../contracts/model-provider
+      '@qualigence/runner-kernel':
+        specifier: workspace:*
+        version: link:../runner-kernel
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../shared-kernel
 
   packages/model-gateway:
     dependencies:
