@@ -32,6 +32,7 @@
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/investigation": "workspace:*",
     "@qualigence/local-control": "workspace:*",
     "@qualigence/local-launcher": "workspace:*",
     "@qualigence/mission": "workspace:*",

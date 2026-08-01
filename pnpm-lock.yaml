@@ -53,6 +53,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:packages/core-modules/investigation
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:packages/storage-providers/kms-local
@@ -345,6 +348,15 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+
+  packages/core-modules/investigation:
+    dependencies:
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../mission
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/core-modules/mission:
     dependencies:
