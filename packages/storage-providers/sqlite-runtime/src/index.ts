@@ -5,6 +5,8 @@ export type {
   SqliteRuntimeOptions,
 } from "./database.js";
 
+export { SqliteTraceStore } from "./sqlite-trace-store.js";
+
 export {
   isSqliteBusyError,
   mapBusyError,
