@@ -2,6 +2,7 @@ const packages = [
   ["@qualigence/application-model", "TestPlanProposalValidator"],
   ["@qualigence/context-intake", "PrdIntakeService"],
   ["@qualigence/runner-protocol", "canonicalPayloadHash"],
+  ["@qualigence/runner-spool", "SqliteRunnerSpool"],
   ["@qualigence/runner-kernel", "ExecutionRuntime"],
   ["@qualigence/evidence", "TraceIngestor"],
   ["@qualigence/mission", "MissionCompiler"],
