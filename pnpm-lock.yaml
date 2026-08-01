@@ -423,12 +423,18 @@ importers:
       '@qualigence/model-provider':
         specifier: workspace:*
         version: link:../../contracts/model-provider
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../recording
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:../../runner-kernel
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
       zod:
         specifier: 4.4.3
         version: 4.4.3

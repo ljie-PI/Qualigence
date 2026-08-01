@@ -64,3 +64,17 @@ export type {
   SkillRepository,
   SkillRevocation,
 } from "./ports/skill-repository.js";
+
+export type {
+  ProposedSkillStep,
+  SkillInductionProposal,
+} from "./domain/proposal.js";
+
+export {
+  LOCATOR_SCHEMA_VERSION,
+  SKILL_COMPILER_VERSION,
+  SkillCompiler,
+  SkillCompilerError,
+} from "./application/skill-compiler.js";
+
+export type { SkillCompilerErrorCode } from "./application/skill-compiler.js";
