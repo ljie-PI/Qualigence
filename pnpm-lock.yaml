@@ -96,6 +96,9 @@ importers:
       '@qualigence/model-provider':
         specifier: workspace:*
         version: link:../contracts/model-provider
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../shared-kernel
 
   packages/model-providers/openai-compatible:
     dependencies:

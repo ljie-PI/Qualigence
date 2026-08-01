@@ -11,6 +11,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@qualigence/model-provider": "workspace:*"
+    "@qualigence/model-provider": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*"
   }
 }
