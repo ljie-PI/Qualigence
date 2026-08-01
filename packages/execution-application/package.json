@@ -1,5 +1,5 @@
 {
-  "name": "@qualigence/model-gateway",
+  "name": "@qualigence/execution-application",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,11 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*"
   }
 }

@@ -16,6 +16,16 @@ export interface ModelMessage {
   readonly content: string;
 }
 
+/**
+ * Optional per-invocation audit context. Carried on {@link StructuredModelRequest}
+ * so the Gateway can emit a single de-identified invocation report without the
+ * provider or gateway depending on the Evidence module.
+ */
+export interface ModelInvocationContext {
+  readonly runId: string;
+  readonly invocationId: string;
+}
+
 export interface ModelUsage {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
@@ -60,6 +70,7 @@ export interface StructuredModelRequest {
   readonly model: string;
   readonly messages: readonly ModelMessage[];
   readonly timeoutMs: number;
+  readonly invocation?: ModelInvocationContext;
 }
 
 export interface StructuredOutputContract<T> {

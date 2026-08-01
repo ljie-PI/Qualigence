@@ -8,6 +8,7 @@ const packages = [
   ["@qualigence/artifact-fs", "LocalArtifactStore"],
   ["@qualigence/sqlite-runtime", "SqliteRuntime"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
+  ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
 ];
 
 for (const [packageName, exportName] of packages) {
