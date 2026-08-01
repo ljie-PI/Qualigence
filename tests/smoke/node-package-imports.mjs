@@ -27,6 +27,7 @@ const packages = [
   ["@qualigence/benchmarking-detection", "scoreBenchmark"],
   ["@qualigence/kms-local", "LocalSkillSigner"],
   ["@qualigence/kms-self-hosted", "InMemoryTestKms"],
+  ["@qualigence/observability", "StructuredLogger"],
   ["@qualigence/evidence-capsule", "EvidenceCapsuleBuilder"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],

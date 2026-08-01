@@ -29,6 +29,7 @@
     { "path": "packages/core-modules/intelligence" },
     { "path": "packages/core-modules/review" },
     { "path": "packages/benchmarking/detection" },
+    { "path": "packages/observability" },
     { "path": "packages/contracts/public-api" },
     { "path": "packages/auth/oidc" },
     { "path": "packages/auth/runner-mtls" },

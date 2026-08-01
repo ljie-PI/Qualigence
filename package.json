@@ -46,6 +46,7 @@
     "@qualigence/model-agent": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
+    "@qualigence/observability": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
     "@qualigence/public-api": "workspace:*",
     "@qualigence/oidc": "workspace:*",

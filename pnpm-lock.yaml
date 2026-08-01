@@ -98,6 +98,9 @@ importers:
       '@qualigence/model-provider':
         specifier: workspace:*
         version: link:packages/contracts/model-provider
+      '@qualigence/observability':
+        specifier: workspace:*
+        version: link:packages/observability
       '@qualigence/oidc':
         specifier: workspace:*
         version: link:packages/auth/oidc
@@ -619,6 +622,8 @@ importers:
       openai:
         specifier: 6.48.0
         version: 6.48.0(zod@4.4.3)
+
+  packages/observability: {}
 
   packages/protocol-adapters/grpc-runner-protocol:
     dependencies:
