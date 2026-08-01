@@ -59,7 +59,15 @@ function newKms(audit?: KmsAuditEvent[]) {
     rootKey,
     keyStore: store,
     now: () => "2026-08-01T00:00:00.000Z",
-    audit: audit ? { record: (event) => audit.push(event) } : undefined,
+    ...(audit
+      ? {
+          audit: {
+            record: (event: KmsAuditEvent) => {
+              audit.push(event);
+            },
+          },
+        }
+      : {}),
   });
   return { kms, store };
 }
