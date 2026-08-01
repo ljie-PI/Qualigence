@@ -9,6 +9,8 @@
   "scripts": {
     "build": "tsc -b",
     "test": "pnpm build && vitest run",
+    "test:e2e": "pnpm build && vitest run tests/e2e",
+    "test:live": "pnpm build && vitest run tests/live",
     "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json",
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
   },
