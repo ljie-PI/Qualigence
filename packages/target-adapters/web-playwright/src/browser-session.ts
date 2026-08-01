@@ -1,4 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 
 export type WebTargetErrorCode =
   | "BrowserLaunchFailed"
@@ -64,6 +65,11 @@ export function isOriginAllowed(
 
 type SessionState = "new" | "starting" | "started" | "closing" | "closed";
 
+export interface StoredObservation {
+  readonly descriptors: ReadonlyMap<string, LocatorDescriptor>;
+  readonly artifacts: readonly CapturedArtifact[];
+}
+
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
@@ -71,6 +77,9 @@ export class PlaywrightBrowserSession {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private operation: Promise<unknown> = Promise.resolve();
+  private observationOrdinal = 0;
+  private latestGraph: string | undefined;
+  private readonly observations = new Map<string, StoredObservation>();
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -83,6 +92,39 @@ export class PlaywrightBrowserSession {
 
   get actionTimeoutMs(): number {
     return this.options.actionTimeoutMs;
+  }
+
+  get latestGraphId(): string | undefined {
+    return this.latestGraph;
+  }
+
+  nextObservationOrdinal(): number {
+    this.observationOrdinal += 1;
+    return this.observationOrdinal;
+  }
+
+  registerObservation(graphId: string, observation: StoredObservation): void {
+    this.observations.set(graphId, observation);
+    this.latestGraph = graphId;
+  }
+
+  hasGraph(graphId: string): boolean {
+    return this.observations.has(graphId);
+  }
+
+  descriptorFor(graphId: string, nodeId: string): LocatorDescriptor | undefined {
+    return this.observations.get(graphId)?.descriptors.get(nodeId);
+  }
+
+  artifactsFor(graphId: string): readonly CapturedArtifact[] {
+    const observation = this.observations.get(graphId);
+    if (!observation) {
+      throw new WebTargetError(
+        "StaleObservation",
+        `No observation registered for graph ${graphId}.`,
+      );
+    }
+    return observation.artifacts;
   }
 
   async start(): Promise<void> {

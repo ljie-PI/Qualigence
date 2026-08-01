@@ -13,6 +13,15 @@ export {
   isOriginAllowed,
   normalizeOrigin,
   type BrowserLauncher,
+  type StoredObservation,
   type WebSessionOptions,
   type WebTargetErrorCode,
 } from "./browser-session.js";
+export {
+  buildObservationGraph,
+  normalizeVisibleText,
+  type BuiltObservation,
+  type ObservationCandidate,
+} from "./observation-builder.js";
+export { PlaywrightObserver } from "./playwright-observer.js";
+export type { CapturedArtifact, LocatorDescriptor } from "./types.js";
