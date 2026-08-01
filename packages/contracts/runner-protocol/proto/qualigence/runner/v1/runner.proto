@@ -1,0 +1,177 @@
+// runner-protocol v1 wire schema.
+//
+// Protobuf DTOs live only in this schema and in the grpc-runner-protocol
+// adapter; the stable domain messages in src/messages.ts never import them.
+// Field numbers are frozen once published and are never reused. Reserved ranges
+// guard forward evolution within protocol major 1.
+syntax = "proto3";
+
+package qualigence.runner.v1;
+
+// Runner -> Server: outbound connection is always initiated by the Runner.
+// Server -> Runner: the server never dials back to a Runner.
+service RunnerService {
+  rpc Connect(stream RunnerFrame) returns (stream ServerFrame);
+}
+
+// Envelope for every Runner-originated message on the bidirectional stream.
+message RunnerFrame {
+  string correlation_id = 1;
+  reserved 12 to 19;
+  oneof payload {
+    RunnerHello hello = 2;
+    AcceptOffer accept_offer = 3;
+    RenewLease renew_lease = 4;
+    ExecutionEventBatch event_batch = 5;
+    CompleteExecution complete_execution = 6;
+  }
+}
+
+// Envelope for every Server-originated message on the bidirectional stream.
+message ServerFrame {
+  string correlation_id = 1;
+  reserved 12 to 19;
+  oneof payload {
+    RunnerWelcome welcome = 2;
+    ProtocolVersionMismatch protocol_version_mismatch = 3;
+    ExecutionJobOffer offer = 4;
+    ExecutionJobLease lease = 5;
+    CapabilityMismatch capability_mismatch = 6;
+    ExecutionEventAck event_ack = 7;
+    TraceGap trace_gap = 8;
+    TraceIntegrityViolation trace_integrity_violation = 9;
+  }
+}
+
+message RunnerModelCapabilities {
+  bool structured_output = 1;
+  bool vision_input = 2;
+}
+
+message RunnerCapabilities {
+  string operating_system = 1;
+  string architecture = 2;
+  repeated string target_adapters = 3;
+  repeated string observation_extensions = 4;
+  repeated string action_kinds = 5;
+  RunnerModelCapabilities model = 6;
+  uint64 maximum_artifact_bytes = 7;
+}
+
+message RunnerHello {
+  string runner_id = 1;
+  string runner_version = 2;
+  repeated uint32 supported_protocol_majors = 3;
+  RunnerCapabilities capabilities = 4;
+  string resume_token = 5;
+}
+
+message RunnerWelcome {
+  string session_id = 1;
+  string resume_token = 2;
+  uint32 selected_protocol_major = 3;
+  string server_version = 4;
+  uint64 heartbeat_interval_ms = 5;
+  uint64 lease_duration_ms = 6;
+  uint32 trace_batch_maximum_events = 7;
+  uint64 trace_batch_maximum_bytes = 8;
+  uint32 maximum_in_flight_batches = 9;
+  uint64 maximum_pending_write_bytes = 10;
+}
+
+message ProtocolVersionMismatch {
+  repeated uint32 offered_protocol_majors = 1;
+  repeated uint32 supported_protocol_majors = 2;
+}
+
+message CapabilityMismatch {
+  repeated string missing_capabilities = 1;
+}
+
+message WebTarget {
+  string url = 1;
+}
+
+message TargetRef {
+  oneof target {
+    WebTarget web = 1;
+  }
+}
+
+message AcceptedExecutionJob {
+  string job_id = 1;
+  string run_id = 2;
+  TargetRef target = 3;
+  string objective = 4;
+}
+
+message ExecutionJobOffer {
+  string offer_id = 1;
+  AcceptedExecutionJob job = 2;
+  repeated string required_capabilities = 3;
+  uint64 lease_duration_ms = 4;
+}
+
+message AcceptOffer {
+  string offer_id = 1;
+}
+
+message ExecutionJobLease {
+  string job_id = 1;
+  string run_id = 2;
+  string lease_token = 3;
+  uint64 lease_epoch = 4;
+  string expires_at = 5;
+}
+
+message RenewLease {
+  string job_id = 1;
+  string run_id = 2;
+  uint64 lease_epoch = 3;
+}
+
+// The strongly typed domain payload is canonical JSON whose SHA-256 is
+// payload_hash; the domain layer owns the closed payload union.
+message TraceEventEnvelope {
+  string protocol_version = 1;
+  string schema_version = 2;
+  string message_id = 3;
+  string idempotency_key = 4;
+  string run_id = 5;
+  uint64 sequence_number = 6;
+  string stage = 7;
+  string occurred_at = 8;
+  string payload_hash = 9;
+  string payload_json = 10;
+}
+
+message ExecutionEventBatch {
+  string batch_id = 1;
+  string run_id = 2;
+  uint64 first_sequence_number = 3;
+  repeated TraceEventEnvelope events = 4;
+}
+
+message ExecutionEventAck {
+  string batch_id = 1;
+  string run_id = 2;
+  uint64 next_expected_sequence_number = 3;
+}
+
+message TraceGap {
+  string run_id = 1;
+  uint64 next_expected_sequence_number = 2;
+}
+
+message TraceIntegrityViolation {
+  string run_id = 1;
+  uint64 sequence_number = 2;
+}
+
+message CompleteExecution {
+  string job_id = 1;
+  string run_id = 2;
+  string status = 3;
+  string error_code = 4;
+  string finding_json = 5;
+}
