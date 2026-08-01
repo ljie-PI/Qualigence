@@ -7,6 +7,7 @@ const packages = [
   ["@qualigence/shared-kernel", "SystemClock"],
   ["@qualigence/artifact-fs", "LocalArtifactStore"],
   ["@qualigence/sqlite-runtime", "SqliteRuntime"],
+  ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
 ];
 
 for (const [packageName, exportName] of packages) {
