@@ -95,6 +95,9 @@ importers:
       '@qualigence/skill':
         specifier: workspace:*
         version: link:packages/core-modules/skill
+      '@qualigence/skill-replay':
+        specifier: workspace:*
+        version: link:packages/runner-components/skill-replay
       '@qualigence/sqlite-runtime':
         specifier: workspace:*
         version: link:packages/storage-providers/sqlite-runtime
@@ -466,6 +469,18 @@ importers:
       '@types/better-sqlite3':
         specifier: 9.6.0
         version: 9.6.0
+
+  packages/runner-components/skill-replay:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
 
   packages/runner-kernel:
     dependencies:

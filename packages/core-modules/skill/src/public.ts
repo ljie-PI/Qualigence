@@ -86,3 +86,20 @@ export type {
   PromotionPolicyInput,
   PromotionRejectionCode,
 } from "./application/skill-promotion-policy.js";
+
+export {
+  REQUIRED_REPLAY_ORACLES,
+  SKILL_REPLAY_ORACLES,
+  SkillVerifier,
+} from "./application/skill-verifier.js";
+
+export type {
+  SkillVerifierDependencies,
+  VerifyBundleInput,
+} from "./application/skill-verifier.js";
+
+export type {
+  SkillReplayFixture,
+  SkillReplayPort,
+  SkillReplayResult,
+} from "./ports/skill-replay-port.js";

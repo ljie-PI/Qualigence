@@ -44,6 +44,7 @@
     "@qualigence/runner-spool": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/skill": "workspace:*",
+    "@qualigence/skill-replay": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*",
     "@qualigence/testkit": "workspace:*",
     "@qualigence/web-playwright": "workspace:*",
