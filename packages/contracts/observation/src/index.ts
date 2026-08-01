@@ -32,3 +32,18 @@ export type {
   ObservationErrorCode,
   ParsedExtensionKey,
 } from "./extensions.js";
+
+export {
+  canonicalObservationJson,
+  canonicalObservationHash,
+} from "./canonical.js";
+
+export {
+  validateObservationGraphV1,
+  observationGraphHash,
+} from "./validator.js";
+
+export type {
+  EvidenceResolver,
+  ValidateOptions,
+} from "./validator.js";
