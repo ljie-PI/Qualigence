@@ -17,9 +17,11 @@ pub mod clock;
 pub mod emergency_stop;
 pub mod ipc;
 pub mod permit;
+pub mod process;
 pub mod random;
 pub mod risk;
 pub mod tray;
+pub mod uia;
 
 use std::sync::Arc;
 
