@@ -35,7 +35,7 @@
 | Task 2：Runner Protocol 与终态语义 | 已实现 | BASE-02 |
 | Task 3：Model contract、Gateway、Model Agent | 已实现 | BASE-03、BASE-04 |
 | Task 4：OpenAI-compatible Provider | 已实现 | BASE-03、BASE-04 |
-| Task 5：SQLite 与 Artifact | 未实现 | LS-01 |
+| Task 5：SQLite 与 Artifact | 已实现 | LS-01 |
 | Task 6：Playwright Web Adapter | 未实现 | LS-02 |
 | Task 7：Application 与 CLI | 未实现 | LS-03 |
 | Task 8：Fixture 与 CLI E2E | 未实现 | LS-04 |
@@ -48,7 +48,7 @@
 
 | ID | Milestone | 能力 | 状态 | Spec | Plan | 代码证据 |
 |---|---|---|---|---|---|---|
-| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | — |
+| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `implemented` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | `packages/storage-providers/sqlite-runtime/**`、`packages/storage-providers/artifact-fs/**`、`packages/core-modules/evidence/src/persistence-ports.ts` |
 | LS-02 | M1 | Playwright Web Target Adapter | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-02-m1-playwright-web-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-02-m1-playwright-web-target.md` | — |
 | LS-03 | M1 | Execution Application 与 CLI | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md` | `docs/superpowers/plans/2026-08-01-ls-03-m1-execution-application-cli.md` | — |
 | LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | — |

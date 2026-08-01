@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../core-modules/evidence" },
+    { "path": "../../contracts/runner-protocol" },
+    { "path": "../../shared-kernel" }
+  ]
+}
