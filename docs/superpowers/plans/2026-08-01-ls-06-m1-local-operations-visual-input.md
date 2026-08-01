@@ -31,6 +31,7 @@
 - Create: `packages/contracts/local-control/src/index.ts`
 - Create: `apps/local-launcher/src/config.ts`
 - Test: `tests/unit/local-launcher/config.test.ts`
+- Modify: `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Produces `LocalConfig`, `HealthReport`, `HealthCheck`; config loader implements default < YAML < env < non-secret CLI.
 
@@ -66,10 +67,14 @@ export function loadLocalConfig(input: ConfigSources): LocalConfig {
 
 Run Task 1 command; expect precedence, unknown key, secret and invalid limits pass.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`local-control` is a new public contracts package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/local-control", "healthReportSchema"]` (bind `exportName` to the package's stable runtime export from `src/health.ts` — a Zod schema or guard, not an erased type). Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/contracts/local-control apps/local-launcher/src/config.ts tests/unit/local-launcher/config.test.ts
+git add packages/contracts/local-control apps/local-launcher/src/config.ts tests/unit/local-launcher/config.test.ts tests/smoke/node-package-imports.mjs
 git commit -m "feat(local): define launcher configuration"
 ```
 
