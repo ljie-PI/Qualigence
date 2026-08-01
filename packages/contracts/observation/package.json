@@ -1,5 +1,5 @@
 {
-  "name": "@qualigence/runner-protocol",
+  "name": "@qualigence/observation-contracts",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,10 +7,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./schema": "./schemas/observation-graph-v1.schema.json"
   },
-  "types": "./dist/index.d.ts",
-  "dependencies": {
-    "@qualigence/observation-contracts": "workspace:*"
-  }
+  "types": "./dist/index.d.ts"
 }

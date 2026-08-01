@@ -3,6 +3,43 @@ import { createHash } from "node:crypto";
 export * from "./capabilities.js";
 export * from "./messages.js";
 
+/**
+ * Observation Graph v1 candidate contract (LS-12).
+ *
+ * The v1 Graph lives in `@qualigence/observation-contracts`, which is the single
+ * source of truth. Runner Protocol re-exports it for a compatibility cycle so
+ * consumers have one canonical import surface. This is purely additive: the
+ * existing pre-v1 {@link ObservationGraph}/{@link ObservationNode} types below
+ * are unchanged and remain the shape the live runtime uses until a later PR
+ * (LS-13) migrates consumers over.
+ */
+export type {
+  ObservationJsonValue,
+  ObservationSchema,
+  ObservationTarget,
+  ObservationRelationType,
+  ObservationRelationV1,
+  ObservationNodeSource,
+  ObservationBounds,
+  ObservationSensitivity,
+  VersionedExtension,
+  ObservationNodeV1,
+  ObservationGraphV1,
+  PreV1AssetMetadata,
+  ObservationErrorCode,
+  ParsedExtensionKey,
+} from "@qualigence/observation-contracts";
+
+export {
+  OBSERVATION_GRAPH_V1_VERSION,
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  ObservationError,
+  observationError,
+  parseExtensionKey,
+  requireExtensionMajor,
+  findExtensionMajor,
+} from "@qualigence/observation-contracts";
+
 
 export type ExecutionJobId = string;
 export type RunId = string;

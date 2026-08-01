@@ -104,6 +104,9 @@ importers:
       '@qualigence/observability':
         specifier: workspace:*
         version: link:packages/observability
+      '@qualigence/observation-contracts':
+        specifier: workspace:*
+        version: link:packages/contracts/observation
       '@qualigence/oidc':
         specifier: workspace:*
         version: link:packages/auth/oidc
@@ -526,9 +529,15 @@ importers:
 
   packages/contracts/model-provider: {}
 
+  packages/contracts/observation: {}
+
   packages/contracts/public-api: {}
 
-  packages/contracts/runner-protocol: {}
+  packages/contracts/runner-protocol:
+    dependencies:
+      '@qualigence/observation-contracts':
+        specifier: workspace:*
+        version: link:../observation
 
   packages/core-application:
     dependencies:
