@@ -24,3 +24,5 @@ export type {
   RunStore,
   RunTerminalUpdate,
 } from "./persistence-ports.js";
+
+export * from "./capsule/index.js";
