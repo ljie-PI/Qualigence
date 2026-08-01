@@ -9,6 +9,8 @@
   "scripts": {
     "build": "tsc -b",
     "test": "pnpm build && vitest run",
+    "test:e2e": "pnpm build && vitest run tests/e2e",
+    "test:live": "pnpm build && vitest run tests/live",
     "typecheck": "pnpm build && tsc --noEmit -p tsconfig.test.json",
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
   },
@@ -18,17 +20,18 @@
     "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/model-agent": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
-    "@qualigence/model-agent": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
-    "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*",
     "@qualigence/testkit": "workspace:*",
     "@qualigence/web-playwright": "workspace:*",
     "@types/node": "^24.0.0",
+    "fastify": "^5.11.0",
     "typescript": "^5.9.0 || ^6.0.0",
     "vitest": "^4.0.0"
   }

@@ -38,7 +38,7 @@
 | Task 5：SQLite 与 Artifact | 已实现 | LS-01 |
 | Task 6：Playwright Web Adapter | 未实现 | LS-02 |
 | Task 7：Application 与 CLI | 已实现 | LS-03 |
-| Task 8：Fixture 与 CLI E2E | 未实现 | LS-04 |
+| Task 8：Fixture 与 CLI E2E | 已实现 | LS-04 |
 
 ## 4. 待实施能力包
 
@@ -46,12 +46,14 @@
 
 2026-08-01（PR-00 对齐）：PR-00「Align authoritative Specs and Plans」修复了上述审阅与跨文档分析识别出的剩余缺口（历史文档清单、跨文档章节引用、LS-03→LS-05 `RunResourceFactory`/`RunnerConnectionPort` 交接、LS-08 表计数、LS-11 target/PRD 路由与迁移 001–005 抽取、LS-05/LS-06/LS-07 smoke-import 步骤）。据此，LS-01 至 LS-13 由 `spec_draft` 统一切换为 `plan_ready`；BASE 能力与 Milestone Gate 状态不变。
 
+2026-08-01（PR-04 / LS-04）：在 `feat/ls-04-e2e-release-gate` 分支实现确定性购物车 Fixture、本地 OpenAI-compatible 模拟 Endpoint、CLI 黑盒 E2E（normal→exit 0/passed、fault→exit 1/finding 且 `$19` vs `$29`、blocked→exit 2、Provider 401→exit 3/`ModelAuthenticationFailed` 且不重试）、进程/临时目录诊断 helper，以及显式 opt-in 的 Live Smoke（`pnpm test:live`，默认跳过）。验证证据：`pnpm build`、`pnpm test`、`pnpm test:e2e`、`pnpm typecheck`、`pnpm smoke:node-imports`、`git diff --check` 均通过；Live Smoke 需 `QUALIGENCE_LIVE_MODEL_SMOKE=true` 加四个模型变量方运行，不进入普通 Gate。
+
 | ID | Milestone | 能力 | 状态 | Spec | Plan | 代码证据 |
 |---|---|---|---|---|---|---|
 | LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `implemented` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | `packages/storage-providers/sqlite-runtime/**`、`packages/storage-providers/artifact-fs/**`、`packages/core-modules/evidence/src/persistence-ports.ts` |
 | LS-02 | M1 | Playwright Web Target Adapter | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-02-m1-playwright-web-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-02-m1-playwright-web-target.md` | — |
 | LS-03 | M1 | Execution Application 与 CLI | `implemented` | `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md` | `docs/superpowers/plans/2026-08-01-ls-03-m1-execution-application-cli.md` | `packages/execution-application/**`、`apps/cli/**` |
-| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | — |
+| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `implemented` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | `tests/fixtures/**`、`tests/helpers/**`、`tests/e2e/cli-web-cart.test.ts`、`tests/live/remote-model-smoke.test.ts` |
 | LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md` | `docs/superpowers/plans/2026-08-01-ls-05-m1-core-runner-transport-hardening.md` | — |
 | LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md` | `docs/superpowers/plans/2026-08-01-ls-06-m1-local-operations-visual-input.md` | — |
 | LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | `docs/superpowers/plans/2026-08-01-ls-07-prd-test-planning.md` | — |
