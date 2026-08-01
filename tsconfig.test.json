@@ -16,6 +16,7 @@
     { "path": "packages/core-modules/evidence" },
     { "path": "packages/core-modules/context-intake" },
     { "path": "packages/core-modules/application-model" },
+    { "path": "packages/core-modules/mission" },
     { "path": "packages/storage-providers/artifact-fs" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },

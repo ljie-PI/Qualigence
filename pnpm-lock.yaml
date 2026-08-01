@@ -29,6 +29,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:packages/core-modules/mission
       '@qualigence/model-agent':
         specifier: workspace:*
         version: link:packages/runner-components/model-agent
@@ -144,6 +147,18 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+
+  packages/core-modules/mission:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../application-model
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../context-intake
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/execution-application:
     dependencies:
