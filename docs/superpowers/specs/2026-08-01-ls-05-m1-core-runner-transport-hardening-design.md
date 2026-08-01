@@ -149,6 +149,19 @@ export interface RunnerSpool {
 
 `RunExecutionUseCase` 的远程实现通过 `RunnerConnectionPort.offer` 调度，不感知 gRPC。
 
+### 4.1 与 LS-03 RunResourceFactory 的集成
+
+LS-03 的 `RunResourceFactory` 在本轮**保留而非替换**，它是 `RunExecutionUseCase` 唯一的资源构造缝（seam）。`RunExecutionUseCase` 始终只调用 `RunResourceFactory.open(runId, request)` 拿到 `RunResourceScope` 并驱动其 `runtime: ExecutionRuntime`，它不导入任何传输类型（`RunnerConnectionPort`、`RunnerSession`、`grpc-runner-protocol` DTO 或 Protobuf）。因此从 LS-03 的进程内资源切换到 LS-05 的远程 Runner 时，`RunExecutionUseCase` 的公开接口（`execute(RunExecutionRequest): Promise<RunExecutionResult>`）不变。
+
+(a) **保留还是替换**：`RunResourceFactory` 保留。它不被 `RunnerConnectionPort` 替换，而是**包裹**后者——工厂在 Core Daemon 侧的实现内部持有 `RunnerConnectionPort`，并把它封装进返回的 `RunResourceScope`。
+
+(b) **精确的缝**：切换仅发生在工厂产出的 `RunResourceScope.runtime`（`ExecutionRuntime`）内部：
+
+- LS-03 进程内实现：`RunResourceFactory` 返回的 `RunResourceScope.runtime` 是直接驱动进程内 Playwright Target Adapter 的 `ExecutionRuntime`。
+- LS-05 远程实现：Core Daemon 侧的 `RunResourceFactory` 返回的 `RunResourceScope.runtime` 是一个由 `RunnerConnectionPort` 支撑的远程 `ExecutionRuntime`——它通过 `RunnerConnectionPort.offer(job, requirements)` 把执行尝试派发给远程 Runner，并把远程回传的 `ExecutionEventBatch` 经 `TraceIngestor` 写入 `RunResourceScope.traces`；`ExecutionRuntime` 完成后返回同样的 `ExecutionCompletion`。
+
+`RunnerConnectionPort`、`RunnerSession` 与 gRPC DTO 全部位于该工厂产出的 `RunResourceScope` 背后，`RunExecutionUseCase`、Model Agent 与应用层其它代码都不引用它们。`RunStore`、`TraceStore`、`ArtifactStore`、`ArtifactManifestStore` 的接口在两种实现下保持一致，Component Test 仍可用进程内内存实现替换该缝。
+
 ## 5. Lease、断线和交付语义
 
 - Server 是 Job/Lease 状态的唯一写者；Runner 只能 accept、renew、complete。

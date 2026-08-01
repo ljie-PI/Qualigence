@@ -65,7 +65,7 @@ Expected: shared/PostgreSQL providers missing.
 
 - [ ] **Step 3: Extract without changing SQLite behavior**
 
-Move logical table definitions/migration metadata/query helpers; keep JSON structured columns/constraints; PostgreSQL 17 schema version equals SQLite logical version. Give every tenant-owned table a composite tenant key and every intra-tenant reference a composite foreign key. Enable and force RLS. `withTenant` opens a transaction and issues parameterized `set_config('app.tenant_id', tenantId, true)` before any query. Create separate non-owner Server, Worker and offline migration/backup roles; only the offline role may bypass application RLS. Keep `FOR UPDATE SKIP LOCKED` for the dedicated Worker tables.
+Move migrations 001 through 005 (introduced by LS-01, LS-07, LS-08, LS-09, LS-10 respectively) into `packages/storage-providers/relational-kysely/src/migrations/`, verify byte-for-byte identical SQLite schema/behavior via the existing contract tests from those LS packages, then add PostgreSQL-specific RLS/tenant-key extensions on top — this is a refactor, not a new migration number. Move logical table definitions/migration metadata/query helpers; keep JSON structured columns/constraints; PostgreSQL 17 schema version equals SQLite logical version. Give every tenant-owned table a composite tenant key and every intra-tenant reference a composite foreign key. Enable and force RLS. `withTenant` opens a transaction and issues parameterized `set_config('app.tenant_id', tenantId, true)` before any query. Create separate non-owner Server, Worker and offline migration/backup roles; only the offline role may bypass application RLS. Keep `FOR UPDATE SKIP LOCKED` for the dedicated Worker tables.
 
 ```ts
 export function createPostgresRuntime(config: PostgresRuntimeConfig): TenantTransactionProvider {
@@ -219,6 +219,8 @@ git commit -m "feat(self-hosted): enroll and authenticate runners"
 - Create: `apps/server/package.json`
 - Create: `apps/server/tsconfig.json`
 - Create: `apps/server/src/routes/projects.ts`
+- Create: `apps/server/src/routes/targets.ts`
+- Create: `apps/server/src/routes/prd-revisions.ts`
 - Create: `apps/server/src/routes/runner-enrollments.ts`
 - Create: `apps/server/src/routes/test-plans.ts`
 - Create: `apps/server/src/routes/missions.ts`
