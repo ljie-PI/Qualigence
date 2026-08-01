@@ -133,7 +133,7 @@ Run Task 2 command on Windows 11. Expected: Rust and process contract tests pass
 - [ ] **Step 5: Commit**
 
 ```text
-git add Cargo.toml apps/companion tests/contract/desktop/companion-process.test.ts
+git add Cargo.toml apps/companion tests/rust/companion tests/contract/desktop/companion-process.test.ts
 git commit -m "feat(companion): enforce local desktop approvals"
 ```
 

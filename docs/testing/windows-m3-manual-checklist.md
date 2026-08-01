@@ -3,7 +3,8 @@
 - 适用范围：M3 Windows UI Automation、AppTarget、Desktop Companion
 - 执行方式：人工
 - 自动化 VM Gate：不适用
-- 上游设计：`docs/superpowers/specs/2026-07-28-local-self-hosted-implementation-design.md`
+- 上游设计：`docs/superpowers/specs/2026-08-01-ls-13-m3-windows-desktop-target-design.md`
+- Graph v1 迁移：`docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md`
 
 ## 1. 使用说明
 

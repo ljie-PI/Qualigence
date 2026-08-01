@@ -87,12 +87,16 @@ Public API v1 的最小路由冻结为：
 
 | Method | Path | 权限 | 应用接口 |
 |---|---|---|---|
-| GET/POST | `/api/v1/projects` | viewer/tester | `ProjectQuery` / `CreateProject` |
-| GET/POST | `/api/v1/projects/:projectId/targets` | viewer/tester | `TargetQuery` / `CreateTarget` |
-| GET/POST | `/api/v1/projects/:projectId/prd-revisions` | viewer/tester | `PrdQuery` / `IngestPrd` |
+| GET | `/api/v1/projects` | viewer | `ProjectQuery` |
+| POST | `/api/v1/projects` | tester | `CreateProject` |
+| GET | `/api/v1/projects/:projectId/targets` | viewer | `TargetQuery` |
+| POST | `/api/v1/projects/:projectId/targets` | tester | `CreateTarget` |
+| GET | `/api/v1/projects/:projectId/prd-revisions` | viewer | `PrdQuery` |
+| POST | `/api/v1/projects/:projectId/prd-revisions` | tester | `IngestPrd` |
 | GET | `/api/v1/test-plans/:planId` | viewer | `TestPlanQuery` |
 | POST | `/api/v1/test-plans/:planId/approve` | tester | `ApproveTestPlan` |
-| GET/POST | `/api/v1/missions` | viewer/tester | `MissionQuery` / `CreateMission` |
+| GET | `/api/v1/missions` | viewer | `MissionQuery` |
+| POST | `/api/v1/missions` | tester | `CreateMission` |
 | POST | `/api/v1/missions/:missionId/start` | tester | `StartMission` |
 | GET | `/api/v1/runs/:runId` | viewer | `RunQuery` |
 | GET | `/api/v1/runs/:runId/trace` | viewer | `TraceProjectionQuery` |

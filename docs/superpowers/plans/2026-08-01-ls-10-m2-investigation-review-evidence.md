@@ -229,7 +229,7 @@ Canonicalize/redact selected Trace slice/semantic subtree/local screenshot/log s
 const dek = randomBytes(32);
 try {
   const encrypted = aes256GcmEncrypt(dek, randomBytes(12), canonicalPayload, aad(manifest));
-  return { manifest, encrypted, wrappedDek: await kms.wrapDek(profile.keyRef, dek) };
+  return { manifest, encrypted, wrappedDek: await kms.wrapDek(profile, dek) };
 } finally {
   dek.fill(0);
 }
