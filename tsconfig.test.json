@@ -25,6 +25,8 @@
     { "path": "packages/testkit" },
     { "path": "packages/target-adapters/web-playwright" },
     { "path": "packages/execution-application" },
-    { "path": "apps/cli" }
+    { "path": "apps/cli" },
+    { "path": "apps/core-daemon" },
+    { "path": "apps/runner" }
   ]
 }
