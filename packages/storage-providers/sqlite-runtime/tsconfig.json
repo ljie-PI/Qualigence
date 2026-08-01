@@ -20,6 +20,7 @@
     { "path": "../../core-modules/skill" },
     { "path": "../../core-modules/review" },
     { "path": "../../runner-components/recording" },
+    { "path": "../relational-kysely" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../../shared-kernel" }
   ]
