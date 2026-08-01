@@ -15,6 +15,7 @@
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
   },
   "devDependencies": {
+    "@qualigence/application-model": "workspace:*",
     "@qualigence/artifact-fs": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/cli": "workspace:*",

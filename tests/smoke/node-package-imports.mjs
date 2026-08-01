@@ -1,4 +1,5 @@
 const packages = [
+  ["@qualigence/application-model", "TestPlanProposalValidator"],
   ["@qualigence/context-intake", "PrdIntakeService"],
   ["@qualigence/runner-protocol", "canonicalPayloadHash"],
   ["@qualigence/runner-kernel", "ExecutionRuntime"],

@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:packages/core-modules/application-model
       '@qualigence/artifact-fs':
         specifier: workspace:*
         version: link:packages/storage-providers/artifact-fs
@@ -120,6 +123,15 @@ importers:
   packages/contracts/model-provider: {}
 
   packages/contracts/runner-protocol: {}
+
+  packages/core-modules/application-model:
+    dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../context-intake
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/core-modules/context-intake:
     dependencies:

@@ -1,0 +1,17 @@
+{
+  "name": "@qualigence/application-model",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/context-intake": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*"
+  }
+}
