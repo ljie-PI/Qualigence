@@ -92,12 +92,18 @@ importers:
       '@qualigence/model-provider':
         specifier: workspace:*
         version: link:packages/contracts/model-provider
+      '@qualigence/oidc':
+        specifier: workspace:*
+        version: link:packages/auth/oidc
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:packages/model-providers/openai-compatible
       '@qualigence/postgres-runtime':
         specifier: workspace:*
         version: link:packages/storage-providers/postgres-runtime
+      '@qualigence/public-api':
+        specifier: workspace:*
+        version: link:packages/contracts/public-api
       '@qualigence/recording':
         specifier: workspace:*
         version: link:packages/runner-components/recording
@@ -339,6 +345,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/target-adapters/web-playwright
 
+  packages/auth/oidc:
+    dependencies:
+      '@qualigence/public-api':
+        specifier: workspace:*
+        version: link:../../contracts/public-api
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
   packages/auth/runner-mtls:
     dependencies:
       '@qualigence/runner-identity':
@@ -361,6 +376,8 @@ importers:
         version: 4.4.3
 
   packages/contracts/model-provider: {}
+
+  packages/contracts/public-api: {}
 
   packages/contracts/runner-protocol: {}
 
