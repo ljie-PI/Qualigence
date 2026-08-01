@@ -23,6 +23,9 @@ importers:
       '@qualigence/artifact-fs':
         specifier: workspace:*
         version: link:packages/storage-providers/artifact-fs
+      '@qualigence/benchmarking-detection':
+        specifier: workspace:*
+        version: link:packages/benchmarking/detection
       '@qualigence/cli':
         specifier: workspace:*
         version: link:apps/cli
@@ -284,6 +287,12 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+
+  packages/benchmarking/detection:
+    dependencies:
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
 
   packages/contracts/local-control:
     dependencies:

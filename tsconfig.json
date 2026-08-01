@@ -19,6 +19,7 @@
     { "path": "packages/core-modules/mission" },
     { "path": "packages/core-modules/skill" },
     { "path": "packages/core-modules/runner-identity" },
+    { "path": "packages/benchmarking/detection" },
     { "path": "packages/auth/runner-mtls" },
     { "path": "packages/storage-providers/kms-local" },
     { "path": "packages/storage-providers/artifact-fs" },

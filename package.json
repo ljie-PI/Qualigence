@@ -20,6 +20,7 @@
     "@grpc/proto-loader": "^0.7.15",
     "@qualigence/application-model": "workspace:*",
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/benchmarking-detection": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/cli": "workspace:*",
     "@qualigence/core-daemon": "workspace:*",
