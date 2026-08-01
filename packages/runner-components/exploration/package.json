@@ -13,7 +13,6 @@
   "dependencies": {
     "@qualigence/application-model": "workspace:*",
     "@qualigence/mission": "workspace:*",
-    "@qualigence/model-agent": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/skill": "workspace:*",

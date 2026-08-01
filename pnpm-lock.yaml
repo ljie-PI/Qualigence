@@ -426,9 +426,6 @@ importers:
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
-      '@qualigence/model-agent':
-        specifier: workspace:*
-        version: link:../model-agent
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
@@ -450,6 +447,12 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../core-modules/context-intake
+      '@qualigence/exploration':
+        specifier: workspace:*
+        version: link:../exploration
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../core-modules/mission
       '@qualigence/model-gateway':
         specifier: workspace:*
         version: link:../../model-gateway

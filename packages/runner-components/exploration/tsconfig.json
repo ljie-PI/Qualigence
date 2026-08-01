@@ -14,7 +14,6 @@
     { "path": "../../core-modules/application-model" },
     { "path": "../../core-modules/mission" },
     { "path": "../../core-modules/skill" },
-    { "path": "../model-agent" },
     { "path": "../skill-replay" }
   ]
 }

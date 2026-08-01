@@ -13,7 +13,8 @@ export type ModelOperation =
   | "execution.decision"
   | "execution.verification"
   | "planning.prd-test-cases"
-  | "skill.induction";
+  | "skill.induction"
+  | "exploration.next-action";
 
 export interface ModelCapabilities {
   readonly structuredOutput: boolean;

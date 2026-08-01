@@ -13,6 +13,8 @@
   "dependencies": {
     "@qualigence/application-model": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/exploration": "workspace:*",
+    "@qualigence/mission": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/recording": "workspace:*",

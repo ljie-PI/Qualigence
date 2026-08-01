@@ -15,7 +15,9 @@
     { "path": "../../contracts/model-provider" },
     { "path": "../../core-modules/context-intake" },
     { "path": "../../core-modules/application-model" },
+    { "path": "../../core-modules/mission" },
     { "path": "../../core-modules/skill" },
-    { "path": "../recording" }
+    { "path": "../recording" },
+    { "path": "../exploration" }
   ]
 }
