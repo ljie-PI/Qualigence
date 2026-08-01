@@ -3,13 +3,13 @@
 - 日期：2026-08-01
 - 范围：协议与交付语义、密码学与 KMS、Self-hosted 部署安全、Windows/Rust/UIA
 - 审查对象：四份 Design Spec、对应 Implementation Plan、现有 Runner/Trace contracts
-- 状态：存在 P1 架构确认项；确认并修订前不建议切换为 `plan_ready`
+- 状态：推荐路线已获用户接受并写入 Spec/Plan；四份文档仍待整体审阅，不提前切换为 `plan_ready`
 
 ## 1. 结论
 
 四个能力包的分层方向正确：协议 DTO 被限制在 Adapter、模型与确定性状态分离、Self-hosted Provider 不进入 Domain、Windows 平台语义通过 typed extension 表达。当前主要问题不是模块归属，而是若干安全边界尚未冻结，编码者仍会被迫自行决定交付、密钥绑定、服务身份和本地审批的真实执行语义。
 
-本轮未发现需要推翻总体分层的缺陷，但发现 11 组 P1 问题，必须在相应能力包实现前完成架构选择。另有 4 个非架构文档错误已直接修正。
+本轮未发现需要推翻总体分层的缺陷，但发现 11 组 P1 问题。用户已接受第 6 节的四条合并路线，LS-05/10/11/13 的 Design Spec、Implementation Plan 和 Windows 人工 Checklist 已按这些路线修订。另有 4 个非架构文档错误已直接修正。
 
 严重度：P0 表示当前已实现代码存在立即风险；P1 表示实施前必须解决；P2 表示对应 Task 合并前必须补齐；P3 表示可维护性改进。本轮没有 P0。
 
@@ -110,16 +110,36 @@ Microsoft 要求 desktop-wide UIA client 在无窗口的独立 MTA thread 上调
 - 默认 `uiAccess=false`，不自动提权；elevated target、secure desktop、locked/RDP-disconnected desktop 返回 `UiaAccessDenied`/`CompanionUnavailable`，不建议关闭 UIPI。
 - Task 2 的提交命令已补上 `tests/rust/companion`；人工 Checklist 的上游链接已更新为 LS-12/13。
 
-## 6. 需要用户确认的架构选择
+## 6. 已确认的架构选择
 
-建议一次性批准以下推荐路线，再统一修订四份 Spec/Plan：
+用户已接受以下推荐路线，并已统一写入四份 Spec/Plan：
 
 1. LeaseLost 后同一 runId 永不自动换 Runner；重试创建新 runId，旧 Run 只允许原 identity 补传 Trace。
 2. Evidence Capsule v1 增加 canonical protected header/AAD、scope-bound profile、encrypted attachment entries，并把 local-only 设计为显式联合。
 3. Self-hosted 增加 RunnerPrincipal/enrollment；Worker 使用 PostgreSQL Job/Result inbox；PostgreSQL 使用复合 tenant keys + FORCE RLS；MinIO 备份包含真实 object bytes。
 4. Companion 成为唯一 UIA action broker，签发一次性 local permit；App 用 Job Object 管理；UIA COM 放入可终止重启的 child worker process。
 
-这些修改会扩展公开 contract 和部署/进程语义，但不会改变既定的 Core、Runner、Provider、Adapter 分层，也不引入 Cloud、消息队列或 Windows VM。
+这些修改扩展公开 contract 和部署/进程语义，但不改变既定的 Core、Runner、Provider、Adapter 分层，也不引入 Cloud、消息队列或 Windows VM。
+
+修订落点：
+
+| Finding | 已冻结的 Spec/Plan 落点 |
+|---|---|
+| T-01 | `runId` 单次尝试、单 Runner ownership、新 run recovery、单调时钟 action deadline、旧 identity 只补传 Trace |
+| T-02 | mandatory mTLS、certificate-bound runnerId、single-use resume token、canonical Spool AEAD、应用层在途上限 |
+| C-01 | scope-bound profile、RFC 8785 protected header/AAD、A256GCM/RSA-OAEP-256 精确参数 |
+| C-02 | Trace/Graph/Screenshot/Log 的实际 bytes 进入 encrypted entries，offline test 删除本地源后还原 |
+| C-03 | `remote_capsule | local_only` 显式联合，local-only 无 Manifest/upload row |
+| C-04 | immutable rewrap revision、revoke-before-delete、失败保留 ciphertext、审计字段 |
+| D-01 | RunnerPrincipal、单次 enrollment、CSR/SAN/fingerprint/scope、gRPC pre-payload authorization |
+| D-02 | Worker PostgreSQL Job lease/Result Inbox，Server 独占 deterministic apply |
+| D-03 | composite tenant keys/FKs、FORCE RLS、non-owner roles、transaction-local tenant context |
+| D-04 | PostgreSQL + 全量 object bytes backup，空环境 clean restore 后逐对象 hash/size 校验 |
+| D-05 | OIDC state/nonce/PKCE、memory token、CSP、Compose secret files、container limits、digest/SBOM |
+| W-01 | Companion sole action broker、完整 IPC、一次性 action-bound LocalExecutionPermit |
+| W-02 | Create-suspended + Job Object、PID creation-time/membership 校验、禁止按名称 kill |
+| W-03 | hidden MTA UIA worker child、deadline kill/restart、Companion/deny latch 保持存活 |
+| W-04 | logon-SID DACL、first-instance/local-only pipe、PID/token/session + certificate proof、uiAccess=false/locked/elevated/RDP fail closed |
 
 ## 7. 本轮直接修正
 

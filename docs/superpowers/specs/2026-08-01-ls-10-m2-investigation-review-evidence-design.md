@@ -139,50 +139,117 @@ export interface ClaimReviewTaskCommand {
 ```ts
 export interface EvidenceEncryptionProfile {
   readonly profileId: string;
+  readonly tenantId: string;
+  readonly caseId: string;
   readonly recipient: string;
   readonly region: string;
+  readonly purpose: "investigation";
+  readonly policyId: string;
   readonly wrappingKeyId: string;
   readonly wrappingPublicKeyPem: string;
-  readonly allowedAlgorithms: readonly ["AES-256-GCM+RSA-OAEP-256"];
+  readonly contentEncryptionAlgorithm: "A256GCM";
+  readonly keyWrappingAlgorithm: "RSA-OAEP-256";
+  readonly aadSchemaVersion: "evidence-capsule-aad/v1";
+  readonly allowedEntryKinds: readonly EvidenceCapsuleEntry["kind"][];
+  readonly maximumEntryBytes: number;
+  readonly maximumPlaintextBytes: number;
+  readonly maximumCiphertextBytes: number;
   readonly expiresAt: string;
+}
+
+export interface EvidenceCapsuleEntry {
+  readonly entryId: string;
+  readonly kind: "trace" | "semantic_graph" | "screenshot" | "log_summary";
+  readonly mediaType: "application/json" | "image/png" | "image/jpeg" | "text/plain";
+  readonly plaintextSha256: string;
+  readonly plaintextBytes: number;
+  readonly dataBase64: string;
 }
 
 export interface EvidenceCapsulePayload {
   readonly schemaVersion: "evidence-capsule/v1";
+  readonly runId: string;
+  readonly entries: readonly EvidenceCapsuleEntry[];
+}
+
+export interface EvidenceCapsuleProtectedHeader {
+  readonly schemaVersion: "evidence-capsule-aad/v1";
+  readonly capsuleId: string;
+  readonly profileId: string;
+  readonly payloadSchemaVersion: "evidence-capsule/v1";
   readonly tenantId: string;
   readonly caseId: string;
-  readonly runId: string;
-  readonly traceSlice: readonly TraceEvent[];
-  readonly semanticSubtrees: readonly {
-    readonly observationSchemaEpoch: "pre-v1";
-    readonly graph: ObservationGraph;
-  }[];
-  readonly localScreenshotRefs: readonly string[];
-  readonly logSummaries: readonly string[];
-  readonly redactionPolicyId: string;
+  readonly recipient: string;
+  readonly region: string;
+  readonly purpose: "investigation";
+  readonly policyId: string;
+  readonly contentEncryptionAlgorithm: "A256GCM";
+  readonly keyWrappingAlgorithm: "RSA-OAEP-256";
+  readonly wrappingKeyId: string;
+  readonly plaintextSha256: string;
+  readonly plaintextBytes: number;
   readonly createdAt: string;
   readonly expiresAt: string;
 }
 
-export interface EvidenceCapsuleManifest {
-  readonly capsuleId: string;
-  readonly tenantId: string;
-  readonly caseId: string;
-  readonly policyId: string;
+export interface RemoteEvidenceCapsuleManifest {
+  readonly protectedHeader: EvidenceCapsuleProtectedHeader;
   readonly ciphertextSha256: string;
   readonly ciphertextBytes: number;
   readonly wrappedDekBase64: string;
-  readonly wrappingKeyId: string;
   readonly nonceBase64: string;
   readonly authTagBase64: string;
+}
+
+export interface LocalOnlyEvidenceRecord {
+  readonly localRecordId: string;
+  readonly tenantId: string;
+  readonly caseId: string;
+  readonly runId: string;
+  readonly disposition: "local_only";
+  readonly reason: string;
+  readonly localContentRefs: readonly string[];
   readonly createdAt: string;
   readonly expiresAt: string;
 }
+
+export type EvidenceCapsuleBuildResult =
+  | {
+      readonly disposition: "remote_capsule";
+      readonly manifest: RemoteEvidenceCapsuleManifest;
+      readonly ciphertext: Uint8Array;
+    }
+  | {
+      readonly disposition: "local_only";
+      readonly record: LocalOnlyEvidenceRecord;
+    };
+
+export interface EvidenceAuditEvent {
+  readonly auditId: string;
+  readonly actorType: "user" | "service";
+  readonly actorId: string;
+  readonly tenantId: string;
+  readonly caseId: string;
+  readonly capsuleId: string;
+  readonly keyVersion: string;
+  readonly purpose: "investigation";
+  readonly operation: "profile" | "wrap" | "unwrap" | "rewrap" | "revoke" | "delete";
+  readonly decision: "allowed" | "denied" | "failed";
+  readonly reasonCode: string;
+  readonly correlationId: string;
+  readonly occurredAt: string;
+}
 ```
 
-Runner 在本地按白名单、最大 bytes、Trace 时间窗口和 sensitivity 选择内容，先脱敏，再生成一次性 256-bit DEK，使用 AES-256-GCM 加密；DEK 用目标 KMS RSA-OAEP-256 公钥包装。明文/DEK 不上传、不落普通日志。`local_only` 不创建远端 wrapped DEK。
+Runner 在本地按 profile 白名单、最大 entry/总明文/总密文 bytes、Trace 时间窗口和 sensitivity 选择内容，先脱敏，再把 Trace、Semantic Graph、Screenshot 和 Log Summary 的实际内容编码为 `EvidenceCapsuleEntry.dataBase64`。外部 Artifact ref 只作 provenance，不能作为离线解密后的必需内容；构建器必须在读取实际 bytes 后校验每项与总量上限，并重新计算 entry 与 protected header 的 `plaintextSha256/plaintextBytes`。
 
-解密必须校验 tenant、case、purpose、TTL、region、policy 和 key status并写 Audit Event。KMS 不可用时 `EvidenceLimited`，不允许明文降级。TTL 到期删除密文并撤销解包许可。
+远端 Capsule 使用 RFC 8785 canonical JSON 编码 Payload 和完整 `EvidenceCapsuleProtectedHeader`。每个 Capsule 生成一次性 32-byte DEK 和随机 12-byte nonce，以 AES-256-GCM 加密 Payload；唯一 AAD 是 canonical protected-header bytes，tag 固定 16 bytes。DEK 使用 RSA-OAEP-256 包装：OAEP hash 与 MGF1 hash 均为 SHA-256，label 为空。Profile 必须来自已认证的 KMS 调用，并逐项绑定 tenant、case、recipient、region、purpose、policy、algorithms、key 和 TTL；Builder 不接受调用方覆盖这些字段。
+
+明文/DEK 不上传、不落普通日志。`local_only` 返回显式 `LocalOnlyEvidenceRecord`，不创建 Manifest、ciphertext、wrapped DEK 或任何可进入远端 upload queue 的对象。Remote 与 local-only 不能通过 optional fields 表示。
+
+解密顺序固定为：解析并限制 Manifest 大小与字段 → 根据认证上下文校验 protected header 的 tenant/case/recipient/region/purpose/policy/TTL/algorithm → 检查 key status → 解包 DEK → 以 canonical protected header 作为 AAD 验证并解密 → 校验 Payload schema 和每个 Entry 的 hash/size → 写 Audit Event → 返回明文。任何 header 替换、ciphertext/tag/wrapped-key 变更都在返回明文前失败。KMS 不可用时 `EvidenceLimited`，不允许明文降级。
+
+TTL 到期先调用 `revoke` 使解包许可失效并持久化成功审计，再删除 ciphertext；撤销失败时保留 ciphertext 并重试，不能出现“数据已删但解包许可状态未知”。密钥轮换创建不可变 Manifest revision（或由 KMS 受控 rewrap）并保留原 revision、父 revision、actor、reason、old/new key id 和时间审计。
 
 Key Management port 固定为：
 
@@ -196,7 +263,7 @@ export interface KeyManagementProvider {
   }): Promise<EvidenceEncryptionProfile>;
   wrapDek(profile: EvidenceEncryptionProfile, dek: Uint8Array): Promise<string>;
   unwrapDek(input: {
-    readonly manifest: EvidenceCapsuleManifest;
+    readonly manifest: RemoteEvidenceCapsuleManifest;
     readonly tenantId: string;
     readonly caseId: string;
     readonly region: string;
@@ -256,8 +323,8 @@ Local 和 Self-hosted 使用相同 Case/Review/Capsule schema；Local KMS 与企
 ## 9. 测试与出口 Gate
 
 - Unit：Case 状态机、每类预算、Attempt append、Review 并发、过期 Result。
-- Crypto Contract：加解密、篡改、错 key、跨 tenant/region、TTL、轮换、KMS 拒绝。
+- Crypto Contract：canonical header/AAD、nonce 唯一性、加解密、header/ciphertext/tag/wrapped-key 篡改、错 key、跨 tenant/case/recipient/region/purpose/policy、TTL、轮换、KMS 拒绝。
 - Component：Finding→reproduction→Confirmed Bug Episode；预算耗尽→Needs Human/ReviewTask。
-- Offline：Runner 下线后授权 Worker 可解密已预暂存 Capsule；未预暂存时明确 Evidence Limited。
+- Offline：Runner 下线且本地 Artifact 已删除后，授权 Worker 仍能从 Capsule 内实际 Entry bytes 还原 Screenshot/Trace/Graph/Log；未预暂存时明确 Evidence Limited。
 
 出口：Finding 有可追溯调查结论；Attempt 不可变；预算停止可靠；并发认领安全；离线调查只使用策略允许的加密 Capsule；任何降级都显式且可审计。

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Split Core and Runner into independent processes with versioned gRPC, capability negotiation, leases, acknowledged Trace batches and a durable encrypted Runner Spool.
+**Goal:** Split Core and Runner into independent processes with versioned mutually authenticated gRPC, capability negotiation, single-owner execution leases, acknowledged Trace batches and a durable encrypted Runner Spool.
 
 **Architecture:** Stable TypeScript domain messages live in runner-protocol; Protobuf DTO mapping lives only in grpc-runner-protocol. Server owns leases, Runner writes Trace to Spool before network, and existing ExecutionRuntime remains unchanged.
 
@@ -16,6 +16,8 @@
 - Local transport still uses TLS and an outbound Runner connection.
 - At-least-once messages must be idempotent; Trace remains ordered per Run.
 - Lease expiry stops new actions but never discards already-created Trace.
+- A `runId` is one execution attempt. Lease loss never transfers that `runId` to another Runner; a retry creates a new `runId` and records `recoveryOfRunId`.
+- Session resume restores protocol identity and upload position only. It never extends a Lease or authorizes new actions.
 - Tests stay under top-level `tests/` and ordinary CI uses no external service.
 - Every Task creating a TypeScript package/app also modifies root `package.json`, `pnpm-lock.yaml`, `tsconfig.json` and `tsconfig.test.json` in that Task; a public library package also adds a `tests/smoke/node-package-imports.mjs` import.
 
@@ -40,7 +42,7 @@ The exact directory map is the one in the LS-05 Design Spec. Add focused files; 
 - Test: `tests/type/runner-protocol-v1.types.ts`
 - Test: `tests/conformance/runner-protocol/proto-schema.test.ts`
 
-**Interfaces:** Produces `RunnerHello`, `RunnerCapabilities`, `RunnerWelcome`, Offer/Lease/EventBatch/Ack and protocol major 1 exactly as specified.
+**Interfaces:** Produces `RunnerHello`, `RunnerCapabilities`, `RunnerWelcome`, Offer/Lease/EventBatch/Ack and protocol major 1 exactly as specified. `RunnerWelcome` carries the rotated resume token plus negotiated in-flight/write-byte limits. `ExecutionJobLease` includes ownership `leaseEpoch`; `AcceptedExecutionJob.runId` identifies one execution attempt.
 
 - [ ] **Step 1: Write type/schema failures**
 
@@ -50,6 +52,11 @@ const hello: RunnerHello = {
   capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
 };
 hello satisfies RunnerHello;
+const lease: ExecutionJobLease = {
+  jobId: "job-1", runId: "run-attempt-1", leaseToken: "secret",
+  leaseEpoch: 3, expiresAt: "2026-08-01T10:00:00.000Z",
+};
+lease satisfies ExecutionJobLease;
 ```
 
 Conformance test parses proto descriptors and asserts published field numbers are unique and reserved fields are not reused.
@@ -92,6 +99,7 @@ git commit -m "feat(protocol): define runner transport v1"
 - Create: `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`
 - Create: `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`
 - Create: `packages/protocol-adapters/grpc-runner-protocol/src/client.ts`
+- Create: `packages/protocol-adapters/grpc-runner-protocol/src/tls-runner-identity.ts`
 - Create: `packages/protocol-adapters/grpc-runner-protocol/src/index.ts`
 - Test: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
 - Test: `tests/conformance/runner-protocol/grpc-tls.test.ts`
@@ -101,12 +109,14 @@ git commit -m "feat(protocol): define runner transport v1"
 
 - [ ] **Step 1: Write round-trip and rejection tests**
 
-Connect with protocol `[1]`, assert selected 1; connect with `[2]`, assert `ProtocolVersionMismatch`; send unknown optional proto field, assert accepted; use wrong CA, assert TLS failure.
+Connect with protocol `[1]`, assert selected 1; connect with `[2]`, assert `ProtocolVersionMismatch`; send unknown optional proto field, assert accepted. Assert that missing, wrong-CA and expired client certificates fail before `RunnerWelcome`, and that a valid certificate whose runner identity differs from `hello.runnerId` fails with `RunnerIdentityMismatch`. Fill the outbound queue past both negotiated batch-count and byte limits and assert the producer blocks without dropping a batch.
 
 ```ts
 expect((await connect(client([1]), server)).selectedProtocolMajor).toBe(1);
 await expect(connect(client([2]), server)).rejects.toMatchObject({ code: "ProtocolVersionMismatch" });
 await expect(connectWithCa(wrongCa)).rejects.toMatchObject({ code: "TlsPeerRejected" });
+await expect(connectAs(certFor("runner-2"), helloFor("runner-1")))
+  .rejects.toMatchObject({ code: "RunnerIdentityMismatch" });
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -117,18 +127,21 @@ Expected: gRPC adapter package missing.
 
 - [ ] **Step 3: Implement adapter**
 
-Install gRPC libraries, load schema, validate each frame with an explicit discriminant mapper, set receive/send byte limits and deadlines, and redact token/cert/Payload in interceptors. Export ports/domain values only.
+Install gRPC libraries, load schema, validate each frame with an explicit discriminant mapper, set receive/send byte limits and deadlines, and redact token/cert/Payload in interceptors. Require client and server certificates. `TlsRunnerIdentity` validates trust chain, validity, EKU and the certificate-bound `runnerId` before the application handshake. Add an application queue bounded by `maximumInFlightBatches` and `maximumPendingBytes`; gRPC flow control is not an Ack. Export ports/domain values only.
 
 ```ts
 export class GrpcRunnerProtocolServer implements RunnerConnectionPort {}
 export class GrpcRunnerProtocolClient implements RunnerClientPort {
   connect(hello: RunnerHello): Promise<RunnerSession>;
 }
+export interface TlsRunnerIdentity {
+  authenticate(peer: PeerCertificate, claimedRunnerId: string): Promise<AuthenticatedRunnerIdentity>;
+}
 ```
 
 - [ ] **Step 4: Confirm GREEN**
 
-Run the Task 2 command; expect handshake, unknown minor, version rejection, TLS and size-limit cases pass.
+Run the Task 2 command; expect handshake, unknown minor, version rejection, mutual-TLS identity, queue backpressure and size-limit cases pass.
 
 - [ ] **Step 5: Commit**
 
@@ -144,6 +157,8 @@ git commit -m "feat(protocol): add grpc runner adapter"
 - Create: `packages/runner-components/runner-spool/package.json`
 - Create: `packages/runner-components/runner-spool/tsconfig.json`
 - Create: `packages/runner-components/runner-spool/src/spool-key.ts`
+- Create: `packages/runner-components/runner-spool/src/spool-crypto.ts`
+- Create: `packages/runner-components/runner-spool/src/migrations.ts`
 - Create: `packages/runner-components/runner-spool/src/sqlite-runner-spool.ts`
 - Create: `packages/runner-components/runner-spool/src/index.ts`
 - Test: `tests/contract/runner-spool/sqlite-runner-spool.test.ts`
@@ -162,7 +177,7 @@ expect(await spool.pending("r", 1, limits)).toEqual([event(2)]);
 expect(readDatabaseBytes()).not.toContain(Buffer.from("lease-secret"));
 ```
 
-Add duplicate/different-hash, restart, lost key, 512 MiB logical soft and 1 GiB hard states using injected size accounting.
+Add duplicate/different-hash, restart, lost key, 512 MiB logical soft and 1 GiB hard states using injected size accounting. Save two lease records and assert different 96-bit nonces. Flip one AAD field and one authentication-tag byte independently and assert `SpoolLeaseIntegrityViolation`. On Unix assert mode `0600`; on Windows assert an explicit DACL grants only the current logon SID.
 
 - [ ] **Step 2: Confirm RED**
 
@@ -172,13 +187,17 @@ Expected: Spool package missing.
 
 - [ ] **Step 3: Implement Spool**
 
-Use the three Design Spec tables. Write event before returning to TraceRecorder; encrypt lease token with AES-256-GCM and user-only key file; Ack deletes only sequence `< nextExpected`. Lost key drops lease metadata, preserves events and returns `SpoolKeyUnavailable`.
+Use the three Design Spec tables, including `lease_epoch`, `token_nonce` and `token_tag`. Write event before returning to TraceRecorder; Ack deletes only sequence `< nextExpected`. `SpoolCrypto` encrypts each token with AES-256-GCM, a random 12-byte nonce, a 16-byte tag and canonical UTF-8 JSON AAD `{schemaVersion,jobId,runId,leaseEpoch,expiresAt}`. The 32-byte key file is user-only. Lost key drops lease metadata, preserves events and returns `SpoolKeyUnavailable`.
 
 ```ts
 export class SqliteRunnerSpool implements RunnerSpool {
   append(event: TraceEvent): Promise<void>;
   pending(runId: string, from: number, limit: SpoolBatchLimit): Promise<readonly TraceEvent[]>;
   acknowledge(runId: string, nextExpected: number): Promise<void>;
+}
+export interface SpoolCrypto {
+  encryptLease(input: LeaseSecretInput): Promise<EncryptedLeaseSecret>;
+  decryptLease(input: EncryptedLeaseSecret): Promise<string>;
 }
 ```
 
@@ -201,20 +220,27 @@ git commit -m "feat(runner): add durable encrypted spool"
 - Create: `apps/core-daemon/tsconfig.json`
 - Create: `apps/core-daemon/src/runner/runner-session-service.ts`
 - Create: `apps/core-daemon/src/runner/execution-job-service.ts`
+- Create: `apps/core-daemon/src/runner/run-ownership-service.ts`
+- Create: `apps/core-daemon/src/runner/runner-resume-token-service.ts`
 - Create: `apps/core-daemon/src/main.ts`
 - Test: `tests/unit/core-daemon/runner-session-service.test.ts`
 - Test: `tests/unit/core-daemon/execution-job-service.test.ts`
+- Test: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Test: `tests/unit/core-daemon/runner-resume-token-service.test.ts`
 
-**Interfaces:** Server matches required capabilities, owns Offer/accept/renew/complete, and sends Trace batches through `TraceIngestor`.
+**Interfaces:** Server matches required capabilities, owns Offer/accept/renew/complete, and sends Trace batches through `TraceIngestor`. `RunOwnershipService` binds a lease to `runId + runnerId + sessionId + leaseEpoch`; `RunnerResumeTokenService` issues single-use rotating credentials bound to the authenticated certificate.
 
 - [ ] **Step 1: Write state machine tests**
 
-Assert a web Job is offered only to web-playwright; duplicate accept returns same Lease; renew with wrong token returns `LeaseLost`; expired Lease cannot complete; duplicate Event batch returns same Ack; hash conflict isolates Session.
+Assert a web Job is offered only to web-playwright; duplicate accept returns the same Lease; renew with wrong token returns `LeaseLost`; expired Lease cannot complete; duplicate Event batch returns the same Ack; hash conflict isolates Session. After Lease loss, assert the same `runId` is never assigned to another Runner, a recovery Job receives a new `runId` with `recoveryOfRunId`, the old identity can upload existing Trace only, and another identity/session cannot upload. Assert a resume token is stored hashed, expires, is bound to certificate fingerprint/runner/session/protocol major, and cannot be replayed after rotation.
 
 ```ts
 expect(await sessions.offer(webJob, ["web-playwright"])).toMatchObject({ jobId: webJob.jobId });
 expect(await sessions.accept(offer.id)).toEqual(await sessions.accept(offer.id));
 await expect(sessions.renew({ ...lease, leaseToken: "wrong" })).rejects.toMatchObject({ code: "LeaseLost" });
+expect(await ownership.mayStartAction(lostLease)).toBe(false);
+expect((await ownership.createRecovery(lostLease.runId)).runId).not.toBe(lostLease.runId);
+await expect(resume.use(previousToken, differentCertificate)).rejects.toMatchObject({ code: "RunnerResumeRejected" });
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -225,12 +251,16 @@ Expected: services missing.
 
 - [ ] **Step 3: Implement deterministic services**
 
-Keep state behind repository/clock ports; do not put it in gRPC callbacks. Compare capabilities before payload offer. Hash lease tokens at rest Server-side and use constant-time comparison. Ingest batch sequentially and return first expected sequence.
+Keep state behind repository/clock ports; do not put it in gRPC callbacks. Compare capabilities before payload offer. Hash lease and resume tokens at rest Server-side and use constant-time comparison. Rotate a valid resume token atomically on use. `RunOwnershipService` denies new actions after Lease loss and never changes the owning Runner for an existing run. It exposes a separate `createRecoveryRun` operation that creates a new execution attempt. Ingest batches sequentially and return the first expected sequence; after Lease loss accept them only from the original authenticated Runner identity for records already committed to its Spool before the safe action deadline.
 
 ```ts
 export class RunnerSessionService {
   register(hello: RunnerHello): Promise<RunnerWelcome>;
   ingest(sessionId: string, batch: ExecutionEventBatch): Promise<ExecutionEventAck>;
+}
+export class RunOwnershipService {
+  createRecoveryRun(lostRunId: string): Promise<AcceptedExecutionJob>;
+  authorizeTraceUpload(identity: AuthenticatedRunnerIdentity, batch: ExecutionEventBatch): Promise<void>;
 }
 ```
 
@@ -257,18 +287,20 @@ git commit -m "feat(core): manage runner sessions and leases"
 - Test: `tests/unit/runner/runner-client.test.ts`
 - Test: `tests/unit/runner/job-executor.test.ts`
 
-**Interfaces:** Runner accepts compatible Offers, writes Trace to Spool, batches/Acks, renews at lease/3 and stops new actions after expiry.
+**Interfaces:** Runner accepts compatible Offers, writes Trace to Spool, batches/Acks, renews at lease/3 and stops new actions before the conservative monotonic deadline. Its upload loop may continue only for already-spooled Trace.
 
 - [ ] **Step 1: Write fake-clock disconnect tests**
 
-Run a Job, disconnect after action event, advance beyond lease, assert no next action starts; reconnect, assert Trace from last Ack is resent and completion reports LeaseLost without deletion.
+Run a Job, disconnect after an action event, advance a monotonic fake clock beyond the safety-adjusted deadline, and assert no next action starts. Independently roll the wall clock backward and simulate process pause/resume; both must prevent an unsafe action window. Reconnect as the original identity and assert Trace from the last Ack is resent while completion reports `LeaseLost`; reconnect with another identity and assert upload is rejected.
 
 ```ts
 transport.disconnectAfterAck(3);
 await executor.start(job, lease);
-clock.advanceTo(lease.expiresAt);
-expect(target.actionsAfter(clock.now())).toHaveLength(0);
+monotonicClock.advanceBy(leaseDurationMs - actionDeadlineSafetyMarginMs + 1);
+expect(target.actionsAfter(monotonicClock.now())).toHaveLength(0);
 expect(await spool.pending(job.runId, 4, limits)).not.toHaveLength(0);
+wallClock.set("2026-07-31T00:00:00.000Z");
+expect(await executor.mayStartNextAction()).toBe(false);
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -279,7 +311,7 @@ Expected: Runner client missing.
 
 - [ ] **Step 3: Implement client/executor**
 
-Wrap Runtime TraceRecorder with Spool-first append. Batch by negotiated event/byte limits. Renew on fake-clock schedule; feed AbortSignal to job executor when lease expires/cancel arrives; allow upload loop to continue.
+Wrap Runtime TraceRecorder with Spool-first append. Batch by negotiated event/byte limits. At Lease receipt, derive a conservative deadline from a monotonic clock and subtract `actionDeadlineSafetyMarginMs`; never convert a later wall-clock reading back into action permission. Renew on the monotonic schedule; feed `AbortSignal` to the job executor when renew misses its deadline, the process resumes outside the window, Lease expires or cancel arrives. Keep a separate upload loop for already-spooled Trace, but never resume execution from a transport resume token.
 
 ```ts
 export class RunnerClient {
@@ -311,17 +343,19 @@ git commit -m "feat(runner): execute leased jobs over durable transport"
 - Modify: `tests/smoke/node-package-imports.mjs`
 - Modify: `docs/superpowers/implementation-status.md`
 
-**Interfaces:** Adds no new public contract; proves the frozen Core/Runner gRPC handshake, capability negotiation, lease, spool recovery and terminal semantics across independent processes.
+**Interfaces:** Adds no new public contract; proves the frozen Core/Runner mutual-TLS handshake, capability negotiation, single-owner Lease, Spool recovery and terminal semantics across independent processes.
 
 - [ ] **Step 1: Write child-process E2E**
 
-Spawn Core and Runner with temporary TLS/data, wait for health/session condition, submit cart Job, assert result. Second test kills transport after first batch, restarts Core, and asserts exact Trace/no duplicate.
+Spawn Core and Runner with temporary CA/server/client certificates and data, wait for health/session condition, submit a cart Job and assert the result. A second test kills transport after the first batch, restarts Core, and asserts exact Trace/no duplicate. A third loses the Lease, starts a recovery attempt and proves the first `runId` is not assigned to the second Runner. Add wrong/expired certificate and resume-token replay cases.
 
 ```ts
 const system = await startCoreRunnerProcessPair(tempConfig);
 const result = await system.submit(cartJob);
 expect(result.status).toBe("finding");
 expect(uniqueSequences(await system.trace(cartJob.runId))).toBe(true);
+expect(await system.ownersFor(cartJob.runId)).toEqual([system.runner1.runnerId]);
+expect((await system.recover(cartJob.runId)).runId).not.toBe(cartJob.runId);
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -353,7 +387,7 @@ pnpm exec buf lint
 git diff --check
 ```
 
-Expected: all commands exit 0 and disconnect recovery contains every sequence exactly once.
+Expected: all commands exit 0; disconnect recovery contains every sequence exactly once; no `runId` crosses Runner ownership; mTLS and resume replay failures are stable errors.
 
 - [ ] **Step 5: Commit/status**
 
@@ -364,6 +398,6 @@ git commit -m "feat(runtime): harden local core runner transport"
 
 ## Plan Self-Review
 
-- Spec coverage: messages/proto, mapping, TLS, Capability, Lease, Spool encryption/capacity, disconnect and processes map to Tasks 1–6.
+- Spec coverage: messages/proto, mutual TLS identity, Capability, Lease/run ownership, rotating resume credentials, canonical Spool AEAD, monotonic deadline, disconnect and processes map to Tasks 1–6.
 - Placeholder scan: every state transition and failure oracle is explicit.
 - Type consistency: gRPC maps to runner-protocol domain messages; Core/Runner consume only ports.

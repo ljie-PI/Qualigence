@@ -4,9 +4,9 @@
 
 **Goal:** Turn Findings into budgeted reproduction outcomes, Bug Episodes or Needs Human, with concurrent Review tasks and offline-safe encrypted Evidence Capsules.
 
-**Architecture:** Core aggregates own state and budgets; Workers/Runner submit immutable Attempts/Results. Review uses expected-version commands. Runner encrypts bounded evidence for a declared recipient KMS; all decrypts are policy-checked/audited.
+**Architecture:** Core aggregates own state and budgets; Workers/Runner submit immutable Attempts/Results. Review uses expected-version commands. Runner builds a closed evidence payload containing the actual selected bytes, binds a canonical protected header as AEAD AAD, and encrypts for a scope-bound recipient KMS profile; all decrypts are policy-checked/audited. Local-only evidence is a separate non-uploadable result type.
 
-**Tech Stack:** TypeScript, Kysely stores, Node AES-256-GCM/RSA-OAEP-256 crypto, Model Gateway Intelligence Jobs, Vitest/fast-check.
+**Tech Stack:** TypeScript, Kysely stores, Node AES-256-GCM/RSA-OAEP-256 crypto, `json-canonicalize` for RFC 8785 bytes, Model Gateway Intelligence Jobs, Vitest/fast-check.
 
 **Direct Dependencies:** LS-05 and LS-09.
 
@@ -16,6 +16,8 @@
 - Attempts and dispositions are append-only.
 - Environment failures consume only environment budgets.
 - KMS failure never degrades to plaintext.
+- `RemoteEvidenceCapsuleManifest` and `LocalOnlyEvidenceRecord` are disjoint; local-only data cannot enter an upload queue.
+- Capsule Payloads contain actual bounded evidence bytes. A local path or Artifact ref alone is never sufficient for offline evidence.
 - Tests stay under top-level `tests/`.
 - Every Task creating a TypeScript package/app also modifies root `package.json`, `pnpm-lock.yaml`, `tsconfig.json` and `tsconfig.test.json` in that Task; a public library package also adds a `tests/smoke/node-package-imports.mjs` import.
 
@@ -193,6 +195,8 @@ git commit -m "feat(review): add concurrent human review queue"
 **Files:**
 
 - Create: `packages/core-modules/evidence/src/capsule/contracts.ts`
+- Create: `packages/core-modules/evidence/src/capsule/protected-header.ts`
+- Create: `packages/core-modules/evidence/src/capsule/capsule-entry.ts`
 - Create: `packages/core-modules/evidence/src/capsule/envelope-encryptor.ts`
 - Create: `packages/runner-components/evidence-capsule/package.json`
 - Create: `packages/runner-components/evidence-capsule/tsconfig.json`
@@ -203,16 +207,19 @@ git commit -m "feat(review): add concurrent human review queue"
 - Test: `tests/contract/evidence-crypto/evidence-capsule.test.ts`
 - Test: `tests/contract/evidence-crypto/evidence-policy.test.ts`
 
-**Interfaces:** Exact `EvidenceEncryptionProfile`/`EvidenceCapsulePayload`/`EvidenceCapsuleManifest`; `KeyManagementProvider.encryptionProfile/wrapDek/unwrapDek/revoke`; builder selects/redacts/bounds.
+**Interfaces:** Exact `EvidenceEncryptionProfile`, `EvidenceCapsuleProtectedHeader`, `EvidenceCapsuleEntry`, `EvidenceCapsulePayload`, `RemoteEvidenceCapsuleManifest`, `LocalOnlyEvidenceRecord`, `EvidenceCapsuleBuildResult` and `EvidenceAuditEvent`; `KeyManagementProvider.encryptionProfile/wrapDek/unwrapDek/revoke`; builder selects/redacts/bounds actual content.
 
 - [ ] **Step 1: Write crypto/policy matrix**
 
-Round trip allowed capsule; mutate ciphertext/tag/wrapped key; wrong tenant/case/purpose/region; expired TTL/revoked key; KMS unavailable; local_only. Every denial occurs before plaintext return and writes audit outcome.
+Round trip an allowed capsule. Independently mutate every protected-header scope/profile/plaintext field, ciphertext, tag and wrapped key; use wrong tenant/case/recipient/purpose/region/policy, expired TTL/revoked key, KMS unavailable and `local_only`. Exceed allowed kinds, per-entry, total plaintext and ciphertext limits. Assert two capsules use distinct 12-byte nonces, tags are 16 bytes, semantically equal headers canonicalize to identical bytes, and no caller value can override a profile-bound field. Every denial occurs before plaintext return and writes one exact `EvidenceAuditEvent`. Decode a screenshot Entry and compare its bytes/hash after its source file has been deleted.
 
 ```ts
 const encrypted = await encryptor.encrypt(payload, profile);
 expect(await decryptor.decrypt(encrypted, authorizedContext)).toEqual(payload);
 await expect(decryptor.decrypt(tamper(encrypted), authorizedContext)).rejects.toMatchObject({ code: "EvidenceIntegrityViolation" });
+expect(canonicalProtectedHeader(encrypted.manifest.protectedHeader))
+  .toEqual(canonicalProtectedHeader(reorderedHeader(encrypted.manifest.protectedHeader)));
+expect(await builder.build(localOnlyInput)).toMatchObject({ disposition: "local_only", record: { disposition: "local_only" } });
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -223,13 +230,18 @@ Expected: contracts/encryptor missing.
 
 - [ ] **Step 3: Implement bounded envelope crypto**
 
-Canonicalize/redact selected Trace slice/semantic subtree/local screenshot/log summary; enforce whitelist/window/max bytes; generate random 32-byte DEK/12-byte nonce; AES-256-GCM; RSA-OAEP-256 wrap; zero temporary DEK buffer in finally. Store ciphertext and Manifest only.
+Read, redact and encode the actual selected Trace slice, semantic graph, screenshot and log-summary bytes as `EvidenceCapsuleEntry`; recompute every entry hash/size and enforce per-entry plus total plaintext/ciphertext limits before allocation or upload. Use `json-canonicalize` for both Payload bytes and the complete protected header. Build the header only from the authenticated profile plus server-issued capsule ID/timestamps; reject profile/request scope mismatch.
+
+For `remote_capsule`, generate a random 32-byte DEK and 12-byte nonce, AES-256-GCM encrypt with canonical protected-header bytes as the only AAD and require a 16-byte tag. Wrap with RSA-OAEP whose OAEP and MGF1 hashes are SHA-256 and label is empty; zero the temporary DEK buffer in `finally`. Store ciphertext and immutable Manifest only. For `local_only`, return only `LocalOnlyEvidenceRecord` and make the upload port accept `RemoteEvidenceCapsuleManifest` so the compiler rejects the local branch.
 
 ```ts
 const dek = randomBytes(32);
 try {
-  const encrypted = aes256GcmEncrypt(dek, randomBytes(12), canonicalPayload, aad(manifest));
-  return { manifest, encrypted, wrappedDek: await kms.wrapDek(profile, dek) };
+  const nonce = randomBytes(12);
+  const protectedHeader = headerFromProfile(profile, serverFields);
+  const aad = canonicalProtectedHeader(protectedHeader);
+  const encrypted = aes256GcmEncrypt(dek, nonce, canonicalPayload(payload), aad, 16);
+  return remoteCapsule(protectedHeader, encrypted, await kms.wrapDek(profile, dek));
 } finally {
   dek.fill(0);
 }
@@ -237,7 +249,7 @@ try {
 
 - [ ] **Step 4: Confirm GREEN**
 
-Run Task 4 command; expect round-trip/tamper/scope/TTL/KMS/local_only and audit cases pass.
+Run Task 4 command; expect canonicalization, attachment closure, round-trip/tamper/scope/TTL/KMS/local-only and audit cases pass.
 
 - [ ] **Step 5: Commit**
 
@@ -257,17 +269,19 @@ git commit -m "feat(evidence): encrypt bounded investigation capsules"
 - Test: `tests/component/investigation/offline-capsule-flow.test.ts`
 - Modify: `docs/superpowers/implementation-status.md`
 
-**Interfaces:** `SqliteInvestigationStore` and `SqliteReviewStore` implement the frozen repositories; the integration path exposes only encrypted Capsule manifests/artifact refs while Runner is offline.
+**Interfaces:** `SqliteInvestigationStore` and `SqliteReviewStore` implement the frozen repositories; the integration path exposes only remote Capsule manifests/ciphertext while Runner is offline. Local-only records stay in a separate table/store and are never returned by the remote upload query.
 
 - [ ] **Step 1: Write two end-to-end paths**
 
-Finding→Attempts→Confirmed→BugEpisode; Finding→budget exhausted→Needs Human+ReviewTask. Prestage encrypted Capsule, disconnect Runner, decrypt as authorized Worker; without prestage assert `evidenceCompleteness:"limited"`.
+Finding→Attempts→Confirmed→BugEpisode; Finding→budget exhausted→Needs Human+ReviewTask. Prestage an encrypted Capsule containing Trace, Graph, Screenshot and Log Summary bytes, disconnect Runner, delete its source Artifact directory, then decrypt and compare all bytes as an authorized Worker. Without prestage assert `evidenceCompleteness:"limited"`. Build a local-only record and assert neither manifest nor upload-queue row exists. Expire a remote Capsule and assert KMS revocation plus audit commit happens before ciphertext deletion; inject revoke failure and assert ciphertext is retained.
 
 ```ts
 const confirmed = await harness.investigate(reproducibleFinding);
 expect(confirmed).toMatchObject({ status: "confirmed", bugEpisodeId: expect.any(String) });
 runner.disconnect();
 expect(await harness.openCapsule(confirmed.caseId)).toMatchObject({ schemaVersion: "evidence-capsule/v1" });
+expect(await harness.recoveredScreenshot(confirmed.caseId)).toEqual(originalScreenshotBytes);
+expect(await harness.remoteUploads(localOnlyCase.caseId)).toEqual([]);
 ```
 
 - [ ] **Step 2: Confirm RED**
@@ -278,7 +292,7 @@ Expected: persistence/integration missing.
 
 - [ ] **Step 3: Implement stores and transactional handoff**
 
-Store Case version/status/budget structured; Attempts/BugEpisode/Handoff/Review/Capsule/Audit append-only; transition Needs Human and create ReviewTask in one transaction; ciphertext Artifact referenced by Manifest.
+Store Case version/status/budget structured; Attempts/BugEpisode/Handoff/Review/Capsule/Audit append-only; transition Needs Human and create ReviewTask in one transaction. Store protected header, ciphertext and immutable Manifest revision together. Rotation appends a revision with parent revision, actor, reason and old/new key IDs. Expiry first commits successful KMS revocation/audit, then deletes ciphertext in a retryable cleanup step. Store local-only records separately and never hand them to the remote upload repository.
 
 ```ts
 await db.transaction().execute(async (trx) => {
@@ -299,7 +313,7 @@ pnpm vitest run tests/component/investigation tests/component/review tests/contr
 git diff --check
 ```
 
-Expected: all exit 0; Runner-offline authorized flow works only for prestaged ciphertext and no plaintext/DEK appears in logs/database.
+Expected: all exit 0; Runner-offline authorized flow works from Capsule-contained bytes after local source deletion; local-only records never upload; revoke precedes delete; no plaintext/DEK appears in logs/database.
 
 - [ ] **Step 5: Commit/status**
 
@@ -310,6 +324,6 @@ git commit -m "feat(investigation): complete review and evidence loop"
 
 ## Plan Self-Review
 
-- Spec coverage: state/budgets, Intelligence Result, Attempts/BugEpisode/Handoff, concurrent Review, envelope crypto/KMS/audit/offline flow map to Tasks 1–5.
+- Spec coverage: state/budgets, Intelligence Result, Attempts/BugEpisode/Handoff, concurrent Review, scope-bound profile, canonical header/AAD, encrypted attachment bytes, explicit local-only branch, revoke-before-delete and offline flow map to Tasks 1–5.
 - Placeholder scan: every budget/crypto/concurrency outcome is named.
 - Type consistency: Workers submit Results; deterministic handlers update Case/Review; Capsule manifest references ciphertext only.
