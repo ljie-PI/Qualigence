@@ -33,6 +33,25 @@ export {
   MissionCompiler,
 } from "./application/mission-compiler.js";
 
+export {
+  isWithinRiskCeiling,
+  riskRank,
+  validateExplorationPolicy,
+} from "./exploration-policy.js";
+
+export type {
+  ActionRiskLevel,
+  ExplorationActionKind,
+  ExplorationBudgetSnapshot,
+  ExplorationCheckpoint,
+  ExplorationDecision,
+  ExplorationPolicy,
+  ExplorationRiskCeiling,
+  ExplorationTerminalReason,
+  ProposedExplorationAction,
+  RegressionJobPlan,
+} from "./exploration-policy.js";
+
 export type {
   DispatchableJob,
   DispatchableMission,

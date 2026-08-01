@@ -1,5 +1,5 @@
 {
-  "name": "@qualigence/model-agent",
+  "name": "@qualigence/exploration",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,15 +12,10 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/application-model": "workspace:*",
-    "@qualigence/context-intake": "workspace:*",
-    "@qualigence/exploration": "workspace:*",
     "@qualigence/mission": "workspace:*",
-    "@qualigence/model-gateway": "workspace:*",
-    "@qualigence/model-provider": "workspace:*",
-    "@qualigence/recording": "workspace:*",
-    "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/skill": "workspace:*",
-    "zod": "4.4.3"
+    "@qualigence/skill-replay": "workspace:*"
   }
 }
