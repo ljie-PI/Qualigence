@@ -92,6 +92,9 @@ importers:
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:packages/model-providers/openai-compatible
+      '@qualigence/postgres-runtime':
+        specifier: workspace:*
+        version: link:packages/storage-providers/postgres-runtime
       '@qualigence/recording':
         specifier: workspace:*
         version: link:packages/runner-components/recording
@@ -628,6 +631,22 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../core-modules/evidence
+
+  packages/storage-providers/postgres-runtime:
+    dependencies:
+      '@qualigence/relational-kysely':
+        specifier: workspace:*
+        version: link:../relational-kysely
+      kysely:
+        specifier: 0.28.17
+        version: 0.28.17
+      pg:
+        specifier: 8.13.1
+        version: 8.13.1
+    devDependencies:
+      '@types/pg':
+        specifier: 8.11.10
+        version: 8.11.10
 
   packages/storage-providers/relational-kysely:
     dependencies:

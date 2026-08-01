@@ -44,6 +44,7 @@
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/openai-compatible-model-provider": "workspace:*",
+    "@qualigence/postgres-runtime": "workspace:*",
     "@qualigence/recording": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/runner": "workspace:*",
