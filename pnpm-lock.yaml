@@ -41,6 +41,9 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
+      '@qualigence/evidence-capsule':
+        specifier: workspace:*
+        version: link:packages/runner-components/evidence-capsule
       '@qualigence/execution-application':
         specifier: workspace:*
         version: link:packages/execution-application
@@ -56,6 +59,9 @@ importers:
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:packages/storage-providers/kms-local
+      '@qualigence/kms-self-hosted':
+        specifier: workspace:*
+        version: link:packages/storage-providers/kms-self-hosted
       '@qualigence/local-control':
         specifier: workspace:*
         version: link:packages/contracts/local-control
@@ -448,6 +454,12 @@ importers:
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
 
+  packages/runner-components/evidence-capsule:
+    dependencies:
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../core-modules/evidence
+
   packages/runner-components/exploration:
     dependencies:
       '@qualigence/application-model':
@@ -564,6 +576,12 @@ importers:
       '@qualigence/skill':
         specifier: workspace:*
         version: link:../../core-modules/skill
+
+  packages/storage-providers/kms-self-hosted:
+    dependencies:
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../core-modules/evidence
 
   packages/storage-providers/sqlite-runtime:
     dependencies:
