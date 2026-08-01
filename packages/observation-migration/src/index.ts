@@ -20,3 +20,16 @@ export type {
   ObservationMigrationStore,
   ObservationMigrationRunnerOptions,
 } from "./migration-runner.js";
+
+export {
+  SkillRecompiler,
+  migrateRecordingToV1,
+} from "./skill-recompiler.js";
+
+export type {
+  PreV1SkillReference,
+  PreV1SkillAsset,
+  RecompiledSkillReverifier,
+  RecompileStatus,
+  RecompileOutcome,
+} from "./skill-recompiler.js";
