@@ -18,6 +18,7 @@
     "@qualigence/evidence": "workspace:*",
     "@qualigence/kms-self-hosted": "workspace:*",
     "@qualigence/observability": "workspace:*",
+    "@qualigence/observation-migration": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/server": "workspace:*",

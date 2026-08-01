@@ -1,0 +1,20 @@
+{
+  "name": "@qualigence/observation-migration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/observation-contracts": "workspace:*",
+    "@qualigence/recording": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/skill": "workspace:*"
+  }
+}

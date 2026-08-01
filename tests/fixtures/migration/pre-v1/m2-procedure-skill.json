@@ -1,0 +1,132 @@
+{
+  "assetId": "skill-m2-cart",
+  "kind": "skill",
+  "sourceSchemaVersion": "trace-event/v1",
+  "target": {
+    "kind": "web",
+    "targetId": "web-shop"
+  },
+  "adapterId": "web-playwright",
+  "sourceKind": "accessibility",
+  "capturedAt": "2026-08-01T10:00:00.000Z",
+  "locatorSchemaVersion": "semantic-locator/v1",
+  "skillCompilerVersion": "skill-compiler/v1",
+  "observation": {
+    "graphId": "run-m2-product:observation:0",
+    "nodes": [
+      {
+        "id": "n-0-410ae9c2",
+        "role": "heading",
+        "confidence": 1,
+        "name": "Wireless Mouse",
+        "text": "Wireless Mouse"
+      },
+      {
+        "id": "n-1-b74e1449",
+        "role": "button",
+        "confidence": 1,
+        "name": "Add to cart"
+      },
+      {
+        "id": "n-2-b7ada195",
+        "role": "link",
+        "confidence": 1,
+        "name": "Back to catalog"
+      }
+    ],
+    "url": "https://shop.example/product/mouse",
+    "title": "Wireless Mouse — Shop",
+    "capturedAt": "2026-08-01T10:00:00.000Z",
+    "artifactRefs": [
+      "artifact://axtree/product-0"
+    ]
+  },
+  "recording": {
+    "recordingId": "rec-m2-cart",
+    "projectId": "proj-shop",
+    "targetId": "web-shop",
+    "targetVersion": "2026.08.01",
+    "observationSchemaEpoch": "pre-v1",
+    "startedAt": "2026-08-01T10:00:00.000Z",
+    "completedAt": "2026-08-01T10:01:00.000Z",
+    "steps": [
+      {
+        "ordinal": 1,
+        "beforeGraphRef": "run-m2-product:observation:0",
+        "intent": {
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "name": "Add to cart",
+            "purpose": "add the product to the cart"
+          }
+        },
+        "resolvedNode": {
+          "role": "button",
+          "name": "Add to cart",
+          "purpose": "add the product to the cart",
+          "sourceNodeId": "n-1-b74e1449"
+        },
+        "outcome": {
+          "status": "ok"
+        },
+        "afterGraphRef": "run-m2-product:observation:1",
+        "checkpoint": {
+          "requiredClaims": [
+            "cart.count>=1"
+          ],
+          "stateFingerprint": "fp-cart-1"
+        }
+      }
+    ],
+    "sourceTraceRefs": [
+      "run-m2-product"
+    ]
+  },
+  "proposal": {
+    "parameters": [],
+    "steps": [
+      {
+        "sourceRecordedStepOrdinal": 1,
+        "intent": {
+          "kind": "click",
+          "target": {
+            "role": "button",
+            "name": "Add to cart",
+            "purpose": "add the product to the cart"
+          }
+        },
+        "preconditions": [
+          {
+            "kind": "url_path",
+            "path": "/product/mouse"
+          }
+        ],
+        "checkpoint": [
+          {
+            "kind": "url_path",
+            "path": "/cart"
+          }
+        ],
+        "recovery": "stop"
+      }
+    ]
+  },
+  "previous": {
+    "skillId": "skill-cart",
+    "projectId": "proj-shop",
+    "version": 2,
+    "state": "promoted",
+    "targetScope": {
+      "targetId": "web-shop",
+      "allowedOrigins": [
+        "https://shop.example"
+      ]
+    },
+    "contentSha256": "45d9b5375c487ab8bc07dbed2421bbc50f0a9628d12d11a39cc40d6af808f163",
+    "observationSchemaEpoch": "pre-v1",
+    "locatorSchemaVersion": "semantic-locator/v1",
+    "compilerVersion": "skill-compiler/v1"
+  },
+  "declaredSourceHash": "af893a7e7c776e295c9c5a939e81e78c6c060e17748608e94811e43ce1ec44d1"
+}
