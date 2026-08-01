@@ -11,3 +11,5 @@ export type { TargetCapabilitySummary } from "./prd-planning-agent.js";
 export { SkillInductionAgent } from "./skill-induction-agent.js";
 
 export { ExplorationAgent } from "./exploration-agent.js";
+
+export { InvestigationAgent } from "./investigation-agent.js";

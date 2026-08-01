@@ -17,6 +17,8 @@
     { "path": "../../core-modules/application-model" },
     { "path": "../../core-modules/mission" },
     { "path": "../../core-modules/skill" },
+    { "path": "../../core-modules/intelligence" },
+    { "path": "../../core-modules/investigation" },
     { "path": "../recording" },
     { "path": "../exploration" }
   ]

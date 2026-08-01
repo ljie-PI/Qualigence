@@ -19,6 +19,12 @@ export { SqliteSkillStore } from "./sqlite-skill-store.js";
 
 export { SqliteBenchmarkStore } from "./sqlite-benchmark-store.js";
 
+export { SqliteInvestigationStore } from "./sqlite-investigation-store.js";
+
+export { SqliteReviewStore } from "./sqlite-review-store.js";
+
+export { SqliteIntelligenceStore } from "./sqlite-intelligence-store.js";
+
 export type {
   BenchmarkRunRecord,
   PersistedAttempt,

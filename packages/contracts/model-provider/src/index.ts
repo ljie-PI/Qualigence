@@ -14,7 +14,9 @@ export type ModelOperation =
   | "execution.verification"
   | "planning.prd-test-cases"
   | "skill.induction"
-  | "exploration.next-action";
+  | "exploration.next-action"
+  | "investigation.reproduction-planning"
+  | "investigation.bug-analysis";
 
 export interface ModelCapabilities {
   readonly structuredOutput: boolean;

@@ -255,6 +255,218 @@ export interface BenchmarkReportsTable {
   created_at: string;
 }
 
+export interface InvestigationCasesTable {
+  case_id: string;
+  finding_id: string;
+  project_id: string;
+  status: string;
+  version: number;
+  plan_revision: number;
+  budget_json: string;
+  usage_json: string;
+  bug_episode_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestigationAttemptsTable {
+  attempt_id: string;
+  case_id: string;
+  ordinal: number;
+  plan_revision: number;
+  outcome: string;
+  attempt_json: string;
+  created_at: string;
+}
+
+export interface InvestigationBugEpisodesTable {
+  episode_id: string;
+  case_id: string;
+  finding_id: string;
+  confidence: number;
+  episode_json: string;
+  created_at: string;
+}
+
+export interface InvestigationHandoffsTable {
+  case_id: string;
+  handoff_json: string;
+  created_at: string;
+}
+
+export interface ReviewTasksTable {
+  task_id: string;
+  case_id: string;
+  status: string;
+  reason: string;
+  priority: string;
+  evidence_completeness: string;
+  assignee_id: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewClaimsTable {
+  idempotency_key: string;
+  task_id: string;
+  reviewer_id: string;
+  claimed_version: number;
+  created_at: string;
+}
+
+export interface ReviewResolutionsTable {
+  idempotency_key: string;
+  task_id: string;
+  case_id: string;
+  reviewer_id: string;
+  disposition: string;
+  evidence_refs_json: string;
+  resolved_version: number;
+  created_at: string;
+}
+
+export interface IntelligenceJobsTable {
+  job_id: string;
+  job_type: string;
+  schema_version: string;
+  tenant_id: string;
+  project_id: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  base_aggregate_version: number;
+  model_profile_id: string;
+  data_policy_id: string;
+  priority: string;
+  idempotency_key: string;
+  causation_id: string;
+  expected_result_schema: string;
+  job_json: string;
+  created_at: string;
+}
+
+export interface IntelligenceResultsTable {
+  idempotency_key: string;
+  job_id: string;
+  terminal_status: string;
+  confidence: number;
+  result_json: string;
+  created_at: string;
+}
+
+export interface IntelligenceAppliedResultsTable {
+  idempotency_key: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  new_version: number;
+  summary: string;
+  created_at: string;
+}
+
+export interface EvidenceEncryptionProfilesTable {
+  profile_id: string;
+  tenant_id: string;
+  case_id: string;
+  recipient: string;
+  region: string;
+  purpose: string;
+  policy_id: string;
+  wrapping_key_id: string;
+  wrapping_public_key_pem: string;
+  content_encryption_algorithm: string;
+  key_wrapping_algorithm: string;
+  aad_schema_version: string;
+  allowed_entry_kinds_json: string;
+  maximum_entry_bytes: number;
+  maximum_plaintext_bytes: number;
+  maximum_ciphertext_bytes: number;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface EvidenceCapsuleManifestsTable {
+  capsule_id: string;
+  revision: number;
+  parent_revision: number | null;
+  profile_id: string;
+  payload_schema_version: string;
+  aad_schema_version: string;
+  tenant_id: string;
+  case_id: string;
+  recipient: string;
+  region: string;
+  purpose: string;
+  policy_id: string;
+  content_encryption_algorithm: string;
+  key_wrapping_algorithm: string;
+  wrapping_key_id: string;
+  plaintext_sha256: string;
+  plaintext_bytes: number;
+  ciphertext_sha256: string;
+  ciphertext_bytes: number;
+  ciphertext: Uint8Array | null;
+  wrapped_dek_base64: string;
+  nonce_base64: string;
+  auth_tag_base64: string;
+  protected_header_json: string;
+  revocation_state: string;
+  revoked_at: string | null;
+  revoked_reason: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface EvidenceCapsuleEntriesTable {
+  entry_id: string;
+  capsule_id: string;
+  revision: number;
+  kind: string;
+  media_type: string;
+  plaintext_sha256: string;
+  plaintext_bytes: number;
+  created_at: string;
+}
+
+export interface EvidenceKeyRotationsTable {
+  rotation_id: string;
+  capsule_id: string;
+  parent_revision: number;
+  new_revision: number;
+  actor_id: string;
+  reason: string;
+  old_key_id: string;
+  new_key_id: string;
+  occurred_at: string;
+}
+
+export interface EvidenceLocalOnlyRecordsTable {
+  local_record_id: string;
+  tenant_id: string;
+  case_id: string;
+  run_id: string;
+  disposition: string;
+  reason: string;
+  local_content_refs_json: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface EvidenceAuditEventsTable {
+  audit_id: string;
+  actor_type: string;
+  actor_id: string;
+  tenant_id: string;
+  case_id: string;
+  capsule_id: string;
+  key_version: string;
+  purpose: string;
+  operation: string;
+  decision: string;
+  reason_code: string;
+  correlation_id: string;
+  occurred_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -289,5 +501,21 @@ export interface Database {
   benchmark_attempts: BenchmarkAttemptsTable;
   exploration_checkpoints: ExplorationCheckpointsTable;
   benchmark_reports: BenchmarkReportsTable;
+  investigation_cases: InvestigationCasesTable;
+  investigation_attempts: InvestigationAttemptsTable;
+  investigation_bug_episodes: InvestigationBugEpisodesTable;
+  investigation_handoffs: InvestigationHandoffsTable;
+  review_tasks: ReviewTasksTable;
+  review_claims: ReviewClaimsTable;
+  review_resolutions: ReviewResolutionsTable;
+  intelligence_jobs: IntelligenceJobsTable;
+  intelligence_results: IntelligenceResultsTable;
+  intelligence_applied_results: IntelligenceAppliedResultsTable;
+  evidence_encryption_profiles: EvidenceEncryptionProfilesTable;
+  evidence_capsule_manifests: EvidenceCapsuleManifestsTable;
+  evidence_capsule_entries: EvidenceCapsuleEntriesTable;
+  evidence_key_rotations: EvidenceKeyRotationsTable;
+  evidence_local_only_records: EvidenceLocalOnlyRecordsTable;
+  evidence_audit_events: EvidenceAuditEventsTable;
   sqlite_master: SqliteMasterTable;
 }
