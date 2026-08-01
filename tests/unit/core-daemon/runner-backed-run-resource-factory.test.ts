@@ -12,14 +12,16 @@ import { RunExecutionUseCaseImpl, type RunExecutionRequest } from "@qualigence/e
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
 import type {
   AcceptedExecutionJob,
-  ActionOutcome,
   ExecutionJobLease,
   ObservationGraph,
+  RunId,
+} from "@qualigence/runner-protocol";
+import type {
+  ActionOutcome,
   ProposedAction,
   ResolvedAction,
-  RunId,
   VerificationResult,
-} from "@qualigence/runner-protocol";
+} from "@qualigence/runner-kernel";
 import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
 import {
   RunnerBackedRunResourceFactory,
