@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/cli": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",

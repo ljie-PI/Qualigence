@@ -1,0 +1,34 @@
+{
+  "name": "@qualigence/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./output": {
+      "types": "./dist/output.d.ts",
+      "import": "./dist/output.js"
+    },
+    "./exit-code": {
+      "types": "./dist/exit-code.d.ts",
+      "import": "./dist/exit-code.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/execution-application": "workspace:*",
+    "commander": "14.0.1",
+    "pino": "9.13.1",
+    "zod": "4.4.3"
+  }
+}
