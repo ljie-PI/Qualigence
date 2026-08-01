@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/shared-kernel" },
+    { "path": "../../packages/contracts/runner-protocol" },
+    { "path": "../../packages/runner-kernel" },
+    { "path": "../../packages/core-modules/evidence" },
+    { "path": "../../packages/storage-providers/artifact-fs" },
+    { "path": "../../packages/storage-providers/sqlite-runtime" },
+    { "path": "../../packages/protocol-adapters/in-memory-runner-protocol" },
+    { "path": "../../packages/protocol-adapters/grpc-runner-protocol" },
+    { "path": "../../packages/execution-application" }
+  ]
+}

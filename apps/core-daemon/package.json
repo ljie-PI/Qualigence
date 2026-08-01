@@ -1,0 +1,27 @@
+{
+  "name": "@qualigence/core-daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence-core-daemon": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
+    "@qualigence/execution-application": "workspace:*",
+    "@qualigence/grpc-runner-protocol": "workspace:*",
+    "@qualigence/in-memory-runner-protocol": "workspace:*",
+    "@qualigence/runner-kernel": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/sqlite-runtime": "workspace:*"
+  }
+}

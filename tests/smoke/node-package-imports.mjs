@@ -14,6 +14,8 @@ const packages = [
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
   ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
+  ["@qualigence/core-daemon", "RunnerBackedRunResourceFactory"],
+  ["@qualigence/runner", "RunnerClient"],
 ];
 
 for (const [packageName, exportName] of packages) {

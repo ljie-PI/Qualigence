@@ -29,6 +29,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:packages/core-modules/context-intake
+      '@qualigence/core-daemon':
+        specifier: workspace:*
+        version: link:apps/core-daemon
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
@@ -56,6 +59,9 @@ importers:
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:packages/model-providers/openai-compatible
+      '@qualigence/runner':
+        specifier: workspace:*
+        version: link:apps/runner
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:packages/runner-kernel
@@ -143,6 +149,72 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  apps/core-daemon:
+    dependencies:
+      '@qualigence/artifact-fs':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/artifact-fs
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/evidence
+      '@qualigence/execution-application':
+        specifier: workspace:*
+        version: link:../../packages/execution-application
+      '@qualigence/grpc-runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol-adapters/grpc-runner-protocol
+      '@qualigence/in-memory-runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/runner-kernel':
+        specifier: workspace:*
+        version: link:../../packages/runner-kernel
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
+      '@qualigence/sqlite-runtime':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/sqlite-runtime
+
+  apps/runner:
+    dependencies:
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/evidence
+      '@qualigence/grpc-runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol-adapters/grpc-runner-protocol
+      '@qualigence/in-memory-runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/model-agent':
+        specifier: workspace:*
+        version: link:../../packages/runner-components/model-agent
+      '@qualigence/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@qualigence/openai-compatible-model-provider':
+        specifier: workspace:*
+        version: link:../../packages/model-providers/openai-compatible
+      '@qualigence/runner-kernel':
+        specifier: workspace:*
+        version: link:../../packages/runner-kernel
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/contracts/runner-protocol
+      '@qualigence/runner-spool':
+        specifier: workspace:*
+        version: link:../../packages/runner-components/runner-spool
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
+      '@qualigence/web-playwright':
+        specifier: workspace:*
+        version: link:../../packages/target-adapters/web-playwright
 
   packages/contracts/model-provider: {}
 
