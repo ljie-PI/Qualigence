@@ -123,6 +123,11 @@ export class InvestigationBudgetLedger {
     };
   }
 
+  /** The immutable budget limits this ledger accounts against. */
+  limits(): InvestigationBudget {
+    return this.budget;
+  }
+
   /** Consume a single planning revision (issuing or revising a reproduction plan). */
   consumePlanRevision(): BudgetConsumeResult {
     this.planningRevisions += 1;

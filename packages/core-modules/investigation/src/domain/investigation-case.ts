@@ -265,6 +265,11 @@ export class InvestigationCase {
     return this.ledger.usage();
   }
 
+  /** The immutable budget limits configured for this investigation. */
+  budget(): InvestigationBudget {
+    return this.ledger.limits();
+  }
+
   reproductionAttempts(): readonly ReproductionAttempt[] {
     return [...this.attempts];
   }

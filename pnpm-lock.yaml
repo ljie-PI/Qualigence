@@ -607,12 +607,21 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../core-modules/evidence
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../../core-modules/investigation
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
       '@qualigence/recording':
         specifier: workspace:*
         version: link:../../runner-components/recording
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:../../core-modules/review
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
