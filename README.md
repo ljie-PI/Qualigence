@@ -29,3 +29,55 @@ qualigence run --url "https://example.com" --objective "add one item" --output j
 
 退出码：`0` 通过、`1` 存在 Finding、`2` 被阻断（blocked）、`3` 配置或执行错误（error）。
 
+### 安装 Chromium
+
+Playwright Web Target 使用 Chromium。首次使用前安装浏览器：
+
+```bash
+pnpm exec playwright install chromium
+```
+
+数据位置：Run 记录与 Artifact 写入 `QUALIGENCE_DATA_DIR`（默认 `.qualigence/data`），其中
+`qualigence.db` 是 SQLite 数据库，`artifacts/` 保存 Observation JSON 与截图 PNG。
+
+## 测试与发布 Gate
+
+| 命令 | 作用 |
+|---|---|
+| `pnpm build` | 增量 TypeScript 构建（`tsc -b`） |
+| `pnpm test` | 构建后运行全部默认 Vitest 套件（含 E2E；不含 Live Smoke） |
+| `pnpm test:e2e` | 只运行 `tests/e2e` 的 CLI 黑盒场景（normal/fault/blocked/401） |
+| `pnpm typecheck` | 对测试工程做 `tsc --noEmit` |
+| `pnpm smoke:node-imports` | 校验公开包的 Node 导入 |
+
+E2E 用确定性本地 Fixture 与本地 OpenAI-compatible 模拟 Endpoint（Fastify，绑定 `127.0.0.1`
+随机端口），普通 CI 不需要真实 API Key，也不访问公网。
+
+发布 Gate（普通 PR，全部需退出 0）：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm build
+pnpm test
+pnpm typecheck
+pnpm smoke:node-imports
+pnpm test:e2e
+git diff --check
+```
+
+### Live Smoke（显式 opt-in，不在普通 Gate）
+
+`pnpm test:live` 默认全部跳过，只有同时满足以下条件才对真实远程 Provider 运行 fault Fixture：
+
+```bash
+export QUALIGENCE_LIVE_MODEL_SMOKE=true
+export QUALIGENCE_MODEL_BASE_URL="https://api.example.com/v1"
+export QUALIGENCE_MODEL_API_KEY="…"
+export QUALIGENCE_MODEL_NAME="gpt-4o-mini"
+export QUALIGENCE_DATA_DIR=".qualigence/live"
+pnpm test:live
+```
+
+Live Smoke 只断言结果可解析、Decision 引用当前 Observation 节点、Finding 证据真实、无伪造
+Artifact，且 API Key 绝不出现在输出或持久化数据中；它不断言模型措辞，缺少凭据时不失败（跳过）。
