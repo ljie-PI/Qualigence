@@ -14,6 +14,8 @@
     { "path": "../../contracts/runner-protocol" },
     { "path": "../../contracts/model-provider" },
     { "path": "../../core-modules/context-intake" },
-    { "path": "../../core-modules/application-model" }
+    { "path": "../../core-modules/application-model" },
+    { "path": "../../core-modules/skill" },
+    { "path": "../recording" }
   ]
 }

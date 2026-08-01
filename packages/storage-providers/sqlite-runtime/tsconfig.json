@@ -14,6 +14,8 @@
     { "path": "../../core-modules/context-intake" },
     { "path": "../../core-modules/evidence" },
     { "path": "../../core-modules/mission" },
+    { "path": "../../core-modules/skill" },
+    { "path": "../../runner-components/recording" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../../shared-kernel" }
   ]

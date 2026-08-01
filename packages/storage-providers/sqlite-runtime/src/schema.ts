@@ -148,6 +148,74 @@ export interface ExecutionJobAttemptsTable {
   created_at: string;
 }
 
+export interface RecordingsTable {
+  recording_id: string;
+  project_id: string;
+  target_id: string;
+  target_version: string;
+  observation_schema_epoch: string;
+  started_at: string;
+  completed_at: string;
+  source_trace_refs_json: string;
+}
+
+export interface RecordingStepsTable {
+  recording_id: string;
+  ordinal: number;
+  step_json: string;
+}
+
+export interface SkillsTable {
+  skill_id: string;
+  project_id: string;
+  target_id: string;
+  current_version: number;
+  current_state: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillVersionsTable {
+  skill_id: string;
+  version: number;
+  state: string;
+  project_id: string;
+  source_recording_id: string;
+  content_sha256: string;
+  content_json: string;
+  created_at: string;
+}
+
+export interface SkillEvaluationsTable {
+  evaluation_id: string;
+  skill_id: string;
+  skill_version: number;
+  outcome: string;
+  signature_valid: number;
+  oracles_json: string;
+  created_at: string;
+}
+
+export interface SkillBundlesTable {
+  skill_id: string;
+  skill_version: number;
+  bundle_id: string;
+  signer_key_id: string;
+  signature_algorithm: string;
+  content_sha256: string;
+  manifest_json: string;
+  payload_json: string;
+  issued_at: string;
+}
+
+export interface SkillRevocationsTable {
+  revocation_id: string;
+  skill_id: string;
+  skill_version: number;
+  reason: string;
+  revoked_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -171,5 +239,12 @@ export interface Database {
   mission_revisions: MissionRevisionsTable;
   execution_jobs: ExecutionJobsTable;
   execution_job_attempts: ExecutionJobAttemptsTable;
+  recordings: RecordingsTable;
+  recording_steps: RecordingStepsTable;
+  skills: SkillsTable;
+  skill_versions: SkillVersionsTable;
+  skill_evaluations: SkillEvaluationsTable;
+  skill_bundles: SkillBundlesTable;
+  skill_revocations: SkillRevocationsTable;
   sqlite_master: SqliteMasterTable;
 }
