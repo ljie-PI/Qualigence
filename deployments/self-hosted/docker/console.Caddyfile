@@ -1,0 +1,14 @@
+# Internal static file server for the Web Console SPA. TLS, CSP and /api routing
+# are the edge proxy's responsibility; this server only serves the immutable
+# bundle with a single-page-application fallback.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	root * /srv
+	encode gzip
+	try_files {path} /index.html
+	file_server
+}

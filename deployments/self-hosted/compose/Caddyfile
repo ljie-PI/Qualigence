@@ -1,0 +1,50 @@
+# Qualigence Self-hosted edge reverse proxy.
+#
+# The proxy is the ONLY public entrypoint. It terminates TLS, routes /api/* to
+# the Server (stripping the /api prefix so `/api/v1/...` reaches the Server's
+# `/v1/...` routes) and serves everything else from the static Web Console
+# image. The Console responses carry the frozen strict CSP and never expose
+# authorization codes/tokens in proxy logs.
+
+{
+	admin off
+	# TLS is mandatory. For a real deployment, replace the internal cert with
+	# your CA-issued certificate or an ACME issuer; the bundled dev cert is for
+	# private-network bring-up only and must never be advertised as production.
+	auto_https off
+	# Strip authorization code/token query parameters from access logs.
+	log {
+		output stderr
+		format json
+	}
+}
+
+# The public HTTPS site. `{$QUALIGENCE_SITE_ADDRESS}` defaults to :443 with the
+# internal TLS material mounted from secrets.
+{$QUALIGENCE_SITE_ADDRESS::443} {
+	tls /run/secrets/tls_cert /run/secrets/tls_key
+
+	# Liveness/health endpoint an operator or the Compose stack can query
+	# without authenticating; it never touches the database.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Public API — forward to the Server, stripping the /api prefix.
+	handle_path /api/* {
+		reverse_proxy server:8080
+	}
+
+	# Everything else is the static SPA, served with the strict CSP + security
+	# headers required by the design.
+	handle {
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+			Referrer-Policy "no-referrer"
+			X-Content-Type-Options "nosniff"
+			Strict-Transport-Security "max-age=31536000"
+			-Server
+		}
+		reverse_proxy console:8080
+	}
+}

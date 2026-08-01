@@ -1,0 +1,4 @@
+# Never commit real secrets or local environment overrides.
+.env
+secrets/
+!secrets/README.md
