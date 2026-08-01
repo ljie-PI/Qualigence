@@ -36,6 +36,8 @@ export interface RenewInput {
 export interface IntelligenceJobStore {
   lease(input: LeaseInput): Promise<{ readonly job: IntelligenceJob; readonly lease: IntelligenceJobLease } | undefined>;
   renew(input: RenewInput): Promise<IntelligenceJobLease>;
+  /** Release a held lease without appending a Result (e.g. after a processing failure) so the Job can be re-leased. */
+  abandon(jobId: string): Promise<void>;
 }
 
 export interface AppendResultInput {

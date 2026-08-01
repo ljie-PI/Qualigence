@@ -68,6 +68,9 @@ importers:
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:packages/core-modules/intelligence
+      '@qualigence/intelligence-worker':
+        specifier: workspace:*
+        version: link:apps/intelligence-worker
       '@qualigence/investigation':
         specifier: workspace:*
         version: link:packages/core-modules/investigation
@@ -278,6 +281,36 @@ importers:
       '@qualigence/sqlite-runtime':
         specifier: workspace:*
         version: link:../../packages/storage-providers/sqlite-runtime
+
+  apps/intelligence-worker:
+    dependencies:
+      '@aws-sdk/client-s3':
+        specifier: 3.700.0
+        version: 3.700.0
+      '@qualigence/artifact-s3':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/artifact-s3
+      '@qualigence/core-application':
+        specifier: workspace:*
+        version: link:../../packages/core-application
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/investigation
+      '@qualigence/model-agent':
+        specifier: workspace:*
+        version: link:../../packages/runner-components/model-agent
+      '@qualigence/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@qualigence/openai-compatible-model-provider':
+        specifier: workspace:*
+        version: link:../../packages/model-providers/openai-compatible
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
 
   apps/local-launcher:
     dependencies:

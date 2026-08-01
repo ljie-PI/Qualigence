@@ -49,6 +49,7 @@
     { "path": "apps/core-daemon" },
     { "path": "apps/runner" },
     { "path": "apps/local-launcher" },
-    { "path": "apps/benchmark-runner" }
+    { "path": "apps/benchmark-runner" },
+    { "path": "apps/intelligence-worker" }
   ]
 }

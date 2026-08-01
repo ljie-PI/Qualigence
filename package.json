@@ -36,6 +36,7 @@
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
+    "@qualigence/intelligence-worker": "workspace:*",
     "@qualigence/investigation": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
     "@qualigence/kms-self-hosted": "workspace:*",

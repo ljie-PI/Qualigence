@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/storage-providers/artifact-s3" },
+    { "path": "../../packages/core-application" },
+    { "path": "../../packages/core-modules/intelligence" },
+    { "path": "../../packages/core-modules/investigation" },
+    { "path": "../../packages/runner-components/model-agent" },
+    { "path": "../../packages/model-gateway" },
+    { "path": "../../packages/model-providers/openai-compatible" }
+  ]
+}
