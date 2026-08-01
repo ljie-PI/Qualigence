@@ -3,7 +3,8 @@
 - 适用范围：M3 Windows UI Automation、AppTarget、Desktop Companion
 - 执行方式：人工
 - 自动化 VM Gate：不适用
-- 上游设计：`docs/superpowers/specs/2026-07-28-local-self-hosted-implementation-design.md`
+- 上游设计：`docs/superpowers/specs/2026-08-01-ls-13-m3-windows-desktop-target-design.md`
+- Graph v1 迁移：`docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md`
 
 ## 1. 使用说明
 
@@ -47,6 +48,9 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 | DPI/缩放 | |
 | 系统语言 | |
 | 测试账号 | |
+| 交互会话类型（本地/RDP） | |
+| Runner certificate fingerprint | |
+| Companion pipe / logon SID | |
 | Model Provider/Profile | |
 | 执行人 | |
 | 执行日期 | |
@@ -80,25 +84,40 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 - [ ] Core 只监听 loopback。
 - [ ] Runner 能主动连接 Core。
 - [ ] Companion 启动后不出现第二套项目管理 UI。
-- [ ] 启动 AppTarget 后记录正确的进程 ID、窗口和版本。
-- [ ] AppTarget 退出命令只终止目标进程及已声明子进程。
+- [ ] Companion manifest 的 `uiAccess=false`，普通流程不请求管理员权限。
+- [ ] 启动 AppTarget 后记录正确的进程 ID、creation time、opaque process group、窗口和版本。
+- [ ] AppTarget 主进程和已声明子进程都属于该 Session 的 Job Object。
+- [ ] AppTarget 退出命令只终止该 Job 内、身份匹配的目标进程及已声明子进程。
+- [ ] 启动同名无关进程后执行 shutdown，该无关进程保持运行。
+- [ ] PID reuse/creation-time 不匹配时 Companion 拒绝操作，不误杀进程。
 - [ ] Reset 命令可以恢复 Reference App 的初始状态。
 - [ ] Core 重启后 Mission、Job 和 ReviewTask 状态可以恢复。
 - [ ] Runner 重启后未确认 Trace 仍存在于本地 Spool。
 
 ## 6. Windows 权限与 Companion
 
+- [ ] Named Pipe 使用当前 logon SID 名称、`FILE_FLAG_FIRST_PIPE_INSTANCE` 和 `PIPE_REJECT_REMOTE_CLIENTS`。
+- [ ] Pipe DACL 只允许当前 logon SID 与 LocalSystem；其他本地用户和 remote client 被拒绝。
+- [ ] 错 client PID/token/session/image 或未允许的 Runner binary 被拒绝。
+- [ ] Runner 使用 client certificate 私钥完成 nonce challenge；只声明 fingerprint、错误签名或重放 challenge 均失败。
+- [ ] 超大/不完整/flooded IPC frame 被有界拒绝，Companion 保持可用。
 - [ ] Companion 清楚显示当前 Runner、Run 和目标应用。
 - [ ] Companion 可以显示暂停、继续和紧急停止。
-- [ ] ReadOnly 动作按 Policy 无需额外审批。
+- [ ] Normal/ReadOnly 动作无需弹窗，但仍取得并消费一个 Companion 本地 Permit。
 - [ ] ExternalSideEffect 动作触发逐次本地审批。
 - [ ] Destructive 动作触发逐次本地审批。
 - [ ] ProductionForbidden 动作被拒绝。
 - [ ] 服务端批准不能绕过 Companion 的本地限制。
 - [ ] 拒绝审批后动作未执行且 Trace 记录拒绝原因。
 - [ ] 审批超时后动作未执行。
+- [ ] Permit 绑定 session/run/action/action digest/graph/risk/TTL，任一字段变化后动作不执行。
+- [ ] 已消费或过期 Permit 不能重放，且动作只执行一次。
+- [ ] 暂停状态不签发 Permit、不执行新动作；继续后只能使用新 Permit。
 - [ ] 紧急停止可以中止当前执行循环并阻止新动作。
-- [ ] Companion 退出或 IPC 中断时，高风险动作默认拒绝。
+- [ ] Companion 退出或 IPC 中断时，所有新 Windows 动作默认拒绝。
+- [ ] 锁屏时返回 `InteractiveSessionUnavailable`，不在不可见桌面继续动作。
+- [ ] elevated/其他用户 Session 目标返回 `UiaAccessDenied`，不尝试提升或绕过 UIPI。
+- [ ] RDP 环境按已声明支持策略工作或明确拒绝，不静默切换 Session/Desktop。
 
 ## 7. UIA Observation
 
@@ -114,6 +133,7 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 - [ ] 隐藏、禁用和不可交互元素的状态正确。
 - [ ] 模态对话框出现后 Observation Graph 能反映焦点和窗口变化。
 - [ ] 目标应用无响应时返回结构化错误，不永久阻塞 Runner。
+- [ ] 强制 UIA worker hang 后仅 worker 被终止并重建，Companion tray、审批状态和 App Job 保持存活。
 
 ## 8. Action Resolution
 
@@ -139,6 +159,8 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 - [ ] 模态对话框中的确认与取消可执行。
 - [ ] 不支持的 Control Pattern 返回结构化错误。
 - [ ] ActionOutcome 包含实际目标、结果和证据引用。
+- [ ] UIA action timeout 返回 `ActionOutcomeUnknown`，不会使用新 Permit 自动重放。
+- [ ] Trace 可证明每个 Windows action 都经 Companion 消费一个本地 Permit；不存在 TypeScript 直接 UIA 路径。
 
 ## 10. 执行循环与验证
 
@@ -213,10 +235,15 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 以下任一失败均阻塞 M3 发布：
 
+- [ ] 无 Permit、错绑定 Permit、已消费 Permit 和过期 Permit 均未执行动作。
 - [ ] ExternalSideEffect、Destructive 和 ProductionForbidden 均未被未授权执行。
 - [ ] 紧急停止能够阻止后续新动作。
 - [ ] Password、Token 和 Evidence 明文均未出现在普通日志。
 - [ ] Runner 无法绕过本地 Companion 审批。
+- [ ] Runner/TypeScript 无法绕过 Companion 直接执行 UIA 或管理目标 PID。
+- [ ] Named Pipe 无法被其他用户、remote client 或无证书私钥证明的进程接入。
+- [ ] UIA hang 未拖死 Companion，且未知动作结果未自动重放。
+- [ ] shutdown/reset 未终止 Job 外的同名或 PID-reuse 进程。
 - [ ] Trace 完整性冲突未被静默忽略。
 - [ ] Skill 签名失败后未被执行。
 - [ ] 高置信崩溃和数据损坏信号未被 Oracle 屏蔽。
