@@ -169,7 +169,7 @@ describe("evidence capsule envelope crypto", () => {
 
   it("rejects a flipped auth tag", async () => {
     const tag = Buffer.from(encrypted.manifest.authTagBase64, "base64");
-    tag[0] ^= 0xff;
+    tag[0] = (tag[0] ?? 0) ^ 0xff;
     const tampered: EncryptedCapsule = {
       ciphertext: encrypted.ciphertext,
       manifest: {
@@ -200,7 +200,7 @@ describe("evidence capsule envelope crypto", () => {
 
   it("rejects a flipped wrapped DEK", async () => {
     const wrapped = Buffer.from(encrypted.manifest.wrappedDekBase64, "base64");
-    wrapped[0] ^= 0xff;
+    wrapped[0] = (wrapped[0] ?? 0) ^ 0xff;
     const tampered: EncryptedCapsule = {
       ciphertext: encrypted.ciphertext,
       manifest: {
@@ -279,7 +279,7 @@ function reorderKeys(
 
 function tamperCiphertext(encrypted: EncryptedCapsule): EncryptedCapsule {
   const bytes = Buffer.from(encrypted.ciphertext);
-  bytes[0] ^= 0xff;
+  bytes[0] = (bytes[0] ?? 0) ^ 0xff;
   const digest = createHash("sha256").update(bytes).digest("hex");
   return {
     ciphertext: bytes,
