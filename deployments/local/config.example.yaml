@@ -1,0 +1,34 @@
+# Qualigence Local — example configuration
+#
+# Copy this file to <dataDir>/config.yaml (the default dataDir is
+# ./.qualigence-local) or point the launcher at it with QUALIGENCE_DATA_DIR.
+# `qualigence-local init` writes a file like this automatically.
+#
+# SECURITY: never place a secret (API key, private key, passphrase) in this
+# file. Secrets are referenced by `credentialRef` and resolved at runtime from
+# the environment (QUALIGENCE_MODEL_API_KEY or QUALIGENCE_SECRET_<REF>). The
+# launcher refuses to load a config that inlines a secret-bearing key.
+
+# Absolute or relative path where the database, artifacts, certs and logs live.
+dataDir: ./.qualigence-local
+
+core:
+  # Local mode always binds Core to loopback; the host is forced to 127.0.0.1.
+  host: 127.0.0.1
+  port: 50555
+
+runner:
+  id: qualigence-local-runner
+  # Encrypted spool soft/hard byte ceilings (soft must be < hard).
+  spoolSoftBytes: 67108864   # 64 MiB
+  spoolHardBytes: 134217728  # 128 MiB
+
+modelProfile:
+  provider: openai-compatible
+  baseUrl: http://127.0.0.1:11434/v1
+  model: qwen2.5
+  # A reference, not a secret. Resolve the real key from the environment.
+  credentialRef: local-model-credential
+  # "disabled" keeps the pure-semantic path; "on-demand" allows visual input
+  # when the provider capability and data policy both permit it.
+  visualInput: disabled
