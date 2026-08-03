@@ -15,6 +15,8 @@ export { SqliteModelInvocationStore } from "./sqlite-model-invocation-store.js";
 
 export { SqlitePrdMissionStore } from "./sqlite-prd-mission-store.js";
 
+export { SqliteSkillStore } from "./sqlite-skill-store.js";
+
 export {
   isSqliteBusyError,
   mapBusyError,

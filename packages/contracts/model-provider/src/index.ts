@@ -12,7 +12,8 @@ export { base64ByteLength, describeImage } from "./content.js";
 export type ModelOperation =
   | "execution.decision"
   | "execution.verification"
-  | "planning.prd-test-cases";
+  | "planning.prd-test-cases"
+  | "skill.induction";
 
 export interface ModelCapabilities {
   readonly structuredOutput: boolean;

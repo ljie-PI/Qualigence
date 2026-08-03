@@ -15,8 +15,10 @@
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
+    "@qualigence/recording": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/skill": "workspace:*",
     "zod": "4.4.3"
   }
 }

@@ -44,6 +44,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/kms-local':
+        specifier: workspace:*
+        version: link:packages/storage-providers/kms-local
       '@qualigence/local-control':
         specifier: workspace:*
         version: link:packages/contracts/local-control
@@ -65,6 +68,9 @@ importers:
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:packages/model-providers/openai-compatible
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:packages/runner-components/recording
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
@@ -86,6 +92,12 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:packages/shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:packages/core-modules/skill
+      '@qualigence/skill-replay':
+        specifier: workspace:*
+        version: link:packages/runner-components/skill-replay
       '@qualigence/sqlite-runtime':
         specifier: workspace:*
         version: link:packages/storage-providers/sqlite-runtime
@@ -319,6 +331,18 @@ importers:
         specifier: workspace:*
         version: link:../../shared-kernel
 
+  packages/core-modules/skill:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../application-model
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../../runner-components/recording
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
   packages/execution-application:
     dependencies:
       '@qualigence/context-intake':
@@ -405,15 +429,30 @@ importers:
       '@qualigence/model-provider':
         specifier: workspace:*
         version: link:../../contracts/model-provider
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../recording
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:../../runner-kernel
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/runner-components/recording:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/runner-components/runner-spool:
     dependencies:
@@ -430,6 +469,18 @@ importers:
       '@types/better-sqlite3':
         specifier: 9.6.0
         version: 9.6.0
+
+  packages/runner-components/skill-replay:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
 
   packages/runner-kernel:
     dependencies:
@@ -448,6 +499,12 @@ importers:
         specifier: workspace:*
         version: link:../../shared-kernel
 
+  packages/storage-providers/kms-local:
+    dependencies:
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
+
   packages/storage-providers/sqlite-runtime:
     dependencies:
       '@qualigence/context-intake':
@@ -459,12 +516,18 @@ importers:
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
+      '@qualigence/recording':
+        specifier: workspace:*
+        version: link:../../runner-components/recording
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
       better-sqlite3:
         specifier: 12.11.1
         version: 12.11.1
