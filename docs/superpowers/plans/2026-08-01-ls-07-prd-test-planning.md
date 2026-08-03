@@ -32,7 +32,7 @@
 - Create: `packages/core-modules/context-intake/src/public.ts`
 - Create: `packages/core-modules/context-intake/src/index.ts`
 - Test: `tests/unit/core-modules/context-intake/prd-document.test.ts`
-- Modify: `tsconfig.json`
+- Modify: `tsconfig.json`, `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Produces `PrdDocument`, `PrdSourceRef`, `PrdIntakeService.ingest` and `verifySourceRef`.
 
@@ -67,10 +67,14 @@ export function verifySourceRef(document: PrdDocument, ref: PrdSourceRef): boole
 
 Run Task 1 command; expect Unicode/offset/hash/idempotency/revision cases pass.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`context-intake` is a new public package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/context-intake", "PrdIntakeService"]`. Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/core-modules/context-intake tests/unit/core-modules/context-intake tsconfig.json
+git add packages/core-modules/context-intake tests/unit/core-modules/context-intake tsconfig.json tests/smoke/node-package-imports.mjs
 git commit -m "feat(prd): ingest immutable prd revisions"
 ```
 
@@ -85,6 +89,7 @@ git commit -m "feat(prd): ingest immutable prd revisions"
 - Create: `packages/core-modules/application-model/src/public.ts`
 - Create: `packages/core-modules/application-model/src/index.ts`
 - Test: `tests/unit/core-modules/application-model/test-plan-proposal-validator.test.ts`
+- Modify: `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Consumes `PrdDocument` and provider-neutral `TestPlanProposal` with `ProposedIntentStep.claimSemanticKeys`; produces validated Claims/TestCases without IDs.
 
@@ -118,10 +123,14 @@ export class TestPlanProposalValidator {
 
 Run Task 2 command; expect every matrix row returns its exact code.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`application-model` is a new public package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/application-model", "TestPlanProposalValidator"]`. Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/core-modules/application-model tests/unit/core-modules/application-model
+git add packages/core-modules/application-model tests/unit/core-modules/application-model tests/smoke/node-package-imports.mjs
 git commit -m "feat(prd): validate grounded test plan proposals"
 ```
 
@@ -187,6 +196,7 @@ git commit -m "feat(prd): propose test plans through model gateway"
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Test: `tests/unit/core-modules/mission/test-plan-approval.test.ts`
 - Test: `tests/unit/core-modules/mission/mission-compiler.test.ts`
+- Modify: `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Produces Approved Plan revisions, `TestMission`, `MissionBudget`, core `ExecutionJob`; adds exact optional `{missionId,missionRevision,testCaseId,steps,expectedClaimIds,budget}` plan snapshot to `AcceptedExecutionJob`.
 
@@ -221,10 +231,14 @@ export class MissionCompiler {
 
 Run Task 4 command and `pnpm typecheck`; expect old protocol consumers plus new Job tests compile/pass.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`mission` is a new public package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/mission", "MissionCompiler"]`. Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/core-modules/mission packages/contracts/runner-protocol tests/unit/core-modules/mission
+git add packages/core-modules/mission packages/contracts/runner-protocol tests/unit/core-modules/mission tests/smoke/node-package-imports.mjs
 git commit -m "feat(mission): approve and compile prd test plans"
 ```
 

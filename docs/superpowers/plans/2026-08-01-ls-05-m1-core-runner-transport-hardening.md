@@ -103,7 +103,7 @@ git commit -m "feat(protocol): define runner transport v1"
 - Create: `packages/protocol-adapters/grpc-runner-protocol/src/index.ts`
 - Test: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
 - Test: `tests/conformance/runner-protocol/grpc-tls.test.ts`
-- Modify: `package.json`, `pnpm-lock.yaml`, `tsconfig.json`
+- Modify: `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Implements `RunnerConnectionPort`/`RunnerClientPort`; maps every v1 frame explicitly.
 
@@ -143,10 +143,14 @@ export interface TlsRunnerIdentity {
 
 Run the Task 2 command; expect handshake, unknown minor, version rejection, mutual-TLS identity, queue backpressure and size-limit cases pass.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`grpc-runner-protocol` is a new public package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"]`. Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/protocol-adapters/grpc-runner-protocol tests/conformance/runner-protocol package.json pnpm-lock.yaml tsconfig.json
+git add packages/protocol-adapters/grpc-runner-protocol tests/conformance/runner-protocol tests/smoke/node-package-imports.mjs package.json pnpm-lock.yaml tsconfig.json
 git commit -m "feat(protocol): add grpc runner adapter"
 ```
 
@@ -163,6 +167,7 @@ git commit -m "feat(protocol): add grpc runner adapter"
 - Create: `packages/runner-components/runner-spool/src/index.ts`
 - Test: `tests/contract/runner-spool/sqlite-runner-spool.test.ts`
 - Test: `tests/contract/runner-spool/spool-capacity.test.ts`
+- Modify: `tests/smoke/node-package-imports.mjs`
 
 **Interfaces:** Implements `RunnerSpool`; consumes exact `SpoolBatchLimit {maximumEvents,maximumBytes}`; exports soft/hard capacity state and encrypted lease save/load.
 
@@ -205,10 +210,14 @@ export interface SpoolCrypto {
 
 Run Task 3 command; expect restart/order/encryption/capacity tests pass.
 
+- [ ] **Step 4b: Register public package smoke import**
+
+`runner-spool` is a new public package. Append one `[packageName, exportName]` pair to the `packages` array in `tests/smoke/node-package-imports.mjs`, keeping the array ordered alphabetically by package name: add `["@qualigence/runner-spool", "SqliteRunnerSpool"]`. Match the existing pair syntax; the smoke loader imports the package and asserts the named runtime export exists.
+
 - [ ] **Step 5: Commit**
 
 ```text
-git add packages/runner-components/runner-spool tests/contract/runner-spool
+git add packages/runner-components/runner-spool tests/contract/runner-spool tests/smoke/node-package-imports.mjs
 git commit -m "feat(runner): add durable encrypted spool"
 ```
 

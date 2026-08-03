@@ -97,7 +97,7 @@ export interface ModelInvocationObserver {
 }
 ```
 
-`RunResourceFactory` 让 Component Test 注入内存依赖，也让 LS-05 在不改用例接口的情况下切换到远程 Runner。
+`RunResourceFactory` 让 Component Test 注入内存依赖，也让 LS-05 在不改用例接口的情况下切换到远程 Runner：LS-05 保留 `RunResourceFactory` 作为唯一构造缝，并让工厂产出的 `RunResourceScope.runtime`（`ExecutionRuntime`）改由 `RunnerConnectionPort` 支撑（详见 LS-05 设计第 4.1 节），因此 `RunExecutionUseCase` 自身永不导入传输类型。
 
 `ModelInvocationContext` 随 `StructuredModelRequest` 放在 `contracts/model-provider`；`ModelInvocationReport/Observer` 放在顶层 `model-gateway`，不依赖 Evidence 模块。Decision/Verification Model Agent 从 `AcceptedExecutionJob.runId` 生成每次调用的 UUIDv7 invocationId。Model Gateway 在成功或最终失败时记录一次脱敏 Report；`execution-application` 的 `PersistedModelInvocationObserver` 把 Report 映射为 LS-01 `ModelInvocationSummary` 并调用 Store。重试 attempt 不生成多个逻辑 invocation 记录，但内部 metrics 可以记录 attempt 数。
 

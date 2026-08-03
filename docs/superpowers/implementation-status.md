@@ -42,25 +42,64 @@
 
 ## 4. 待实施能力包
 
-2026-08-01 已按用户要求批量起草并自审全部 Plan；LS-05、LS-10、LS-11、LS-13 又完成协议、密码学、部署安全和 Windows/Rust 专项审查，用户已接受推荐路线并将修订写回对应 Spec/Plan。由于十三份 Spec/Plan 仍待整体审阅，状态继续保持 `spec_draft`；用户批准本批文档后才统一切换为 `plan_ready`，不能因文件或专项修订已存在而提前标记批准。
+2026-08-01 已按用户要求批量起草并自审全部 Plan；LS-05、LS-10、LS-11、LS-13 又完成协议、密码学、部署安全和 Windows/Rust 专项审查，用户已接受推荐路线并将修订写回对应 Spec/Plan。两份审阅文档（`docs/superpowers/reviews/2026-08-01-local-self-hosted-through-m3-readiness-review.md` 与 `docs/superpowers/reviews/2026-08-01-ls-05-ls-10-ls-11-ls-13-specialist-review.md`）均判定 Spec/Plan 可实施且发现项已写回。
+
+2026-08-01（PR-00 对齐）：PR-00「Align authoritative Specs and Plans」修复了上述审阅与跨文档分析识别出的剩余缺口（历史文档清单、跨文档章节引用、LS-03→LS-05 `RunResourceFactory`/`RunnerConnectionPort` 交接、LS-08 表计数、LS-11 target/PRD 路由与迁移 001–005 抽取、LS-05/LS-06/LS-07 smoke-import 步骤）。据此，LS-01 至 LS-13 由 `spec_draft` 统一切换为 `plan_ready`；BASE 能力与 Milestone Gate 状态不变。
 
 | ID | Milestone | 能力 | 状态 | Spec | Plan | 代码证据 |
 |---|---|---|---|---|---|---|
-| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | — |
-| LS-02 | M1 | Playwright Web Target Adapter | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-02-m1-playwright-web-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-02-m1-playwright-web-target.md` | — |
-| LS-03 | M1 | Execution Application 与 CLI | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md` | `docs/superpowers/plans/2026-08-01-ls-03-m1-execution-application-cli.md` | — |
-| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | — |
-| LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md` | `docs/superpowers/plans/2026-08-01-ls-05-m1-core-runner-transport-hardening.md` | — |
-| LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md` | `docs/superpowers/plans/2026-08-01-ls-06-m1-local-operations-visual-input.md` | — |
-| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | `docs/superpowers/plans/2026-08-01-ls-07-prd-test-planning.md` | — |
-| LS-08 | M2 | Recording 与 Procedure Skill 生命周期 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-08-m2-recording-skill-lifecycle-design.md` | `docs/superpowers/plans/2026-08-01-ls-08-m2-recording-skill-lifecycle.md` | — |
-| LS-09 | M2 | Regression、Exploration、Detection Benchmark v1 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-09-m2-exploration-benchmark-design.md` | `docs/superpowers/plans/2026-08-01-ls-09-m2-exploration-benchmark.md` | — |
-| LS-10 | M2 | Reproduction、Bug Episode、Human Review、Evidence Capsule | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-10-m2-investigation-review-evidence-design.md` | `docs/superpowers/plans/2026-08-01-ls-10-m2-investigation-review-evidence.md` | — |
-| LS-11 | M2 | Self-hosted Server、Worker 与正式部署 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-11-m2-self-hosted-runtime-deployment-design.md` | `docs/superpowers/plans/2026-08-01-ls-11-m2-self-hosted-runtime-deployment.md` | — |
-| LS-12 | M3 | Observation Graph v1 与 pre-v1 迁移 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md` | `docs/superpowers/plans/2026-08-01-ls-12-m3-observation-graph-v1-migration.md` | — |
-| LS-13 | M3 | Windows AppTarget、UIA、Companion 与人工验收 | `spec_draft` | `docs/superpowers/specs/2026-08-01-ls-13-m3-windows-desktop-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-13-m3-windows-desktop-target.md` | — |
+| LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | — |
+| LS-02 | M1 | Playwright Web Target Adapter | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-02-m1-playwright-web-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-02-m1-playwright-web-target.md` | — |
+| LS-03 | M1 | Execution Application 与 CLI | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md` | `docs/superpowers/plans/2026-08-01-ls-03-m1-execution-application-cli.md` | — |
+| LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | — |
+| LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md` | `docs/superpowers/plans/2026-08-01-ls-05-m1-core-runner-transport-hardening.md` | — |
+| LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md` | `docs/superpowers/plans/2026-08-01-ls-06-m1-local-operations-visual-input.md` | — |
+| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | `docs/superpowers/plans/2026-08-01-ls-07-prd-test-planning.md` | — |
+| LS-08 | M2 | Recording 与 Procedure Skill 生命周期 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-08-m2-recording-skill-lifecycle-design.md` | `docs/superpowers/plans/2026-08-01-ls-08-m2-recording-skill-lifecycle.md` | — |
+| LS-09 | M2 | Regression、Exploration、Detection Benchmark v1 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-09-m2-exploration-benchmark-design.md` | `docs/superpowers/plans/2026-08-01-ls-09-m2-exploration-benchmark.md` | — |
+| LS-10 | M2 | Reproduction、Bug Episode、Human Review、Evidence Capsule | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-10-m2-investigation-review-evidence-design.md` | `docs/superpowers/plans/2026-08-01-ls-10-m2-investigation-review-evidence.md` | — |
+| LS-11 | M2 | Self-hosted Server、Worker 与正式部署 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-11-m2-self-hosted-runtime-deployment-design.md` | `docs/superpowers/plans/2026-08-01-ls-11-m2-self-hosted-runtime-deployment.md` | — |
+| LS-12 | M3 | Observation Graph v1 与 pre-v1 迁移 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md` | `docs/superpowers/plans/2026-08-01-ls-12-m3-observation-graph-v1-migration.md` | — |
+| LS-13 | M3 | Windows AppTarget、UIA、Companion 与人工验收 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-13-m3-windows-desktop-target-design.md` | `docs/superpowers/plans/2026-08-01-ls-13-m3-windows-desktop-target.md` | — |
 
-## 5. Milestone Gate 状态
+## 5. PR 分解与归属（28-PR 模型）
+
+本仓库采用会话计划文件 `.copilot/session-state/67dc9af5-a9f1-4323-8162-78f0350aeb9f/plan.md`（"Local/Self-hosted Through M3 PR Implementation Plan"）确定的 28-PR 分解为既定 PR 拆分方案。PR-00 是先行文档/契约对齐 PR；LS-05、LS-07、LS-10、LS-11、LS-13 因契约、传输、密码学、部署安全或 Windows/Rust 风险被拆成多个 PR。下表把 `docs/superpowers/plans/2026-08-01-ls-*.md` 映射到具体 PR 编号，供后续贡献者定位归属；完整依赖波次、合并顺序与 Gate 见会话计划文件，不在此重复。
+
+| PR | 归属 LS / Plan | 说明 |
+|---|---|---|
+| PR-00 | 全部（本对齐 PR） | 对齐权威 Spec/Plan、修复跨文档缺口 |
+| PR-01 | LS-01 | 本地持久化 |
+| PR-02 | LS-02 | Playwright Web Target |
+| PR-03 | LS-03 | Execution Application 与 CLI |
+| PR-04 | LS-04 | E2E 发布 Gate |
+| PR-05 | LS-05 | 协议契约基础 |
+| PR-06 | LS-05 | gRPC 传输 |
+| PR-07 | LS-05 | 加密 Runner Spool |
+| PR-08 | LS-05 | 进程集成 Gate |
+| PR-09 | LS-06 | 视觉输入契约 |
+| PR-10 | LS-06 | 本地运维 Gate |
+| PR-11 | LS-07 | 无冲突领域基础 |
+| PR-12 | LS-07 | 规划/执行集成 Gate |
+| PR-13 | LS-08 | Recording 与 Skill 生命周期 |
+| PR-14 | LS-09 | 探索引擎 |
+| PR-15 | LS-09 | Benchmark 与发布 Gate |
+| PR-16 | LS-10 | 调查/审阅领域 |
+| PR-17 | LS-10 | Evidence Capsule 密码学 |
+| PR-18 | LS-10 | 集成 Gate |
+| PR-19 | LS-11 | 存储基础（迁移 001–005 抽取） |
+| PR-20 | LS-11 | Runner 身份基础 |
+| PR-21 | LS-11 | Service Plane |
+| PR-22 | LS-11 | Web Console |
+| PR-23 | LS-11 | 部署与 M2 Gate |
+| PR-24 | LS-12 | Observation Graph v1 candidate 与迁移 |
+| PR-25 | LS-13 | Desktop 契约与 Companion 安全 |
+| PR-26 | LS-13 | UIA Adapter 与生命周期 |
+| PR-27 | LS-13 | Windows 发布与 Graph 冻结 Gate |
+
+拆分 LS 只在其最终 Gate PR 更新本台账状态行；一次性单 PR 的 LS 更新自身行。
+
+## 6. Milestone Gate 状态
 
 | Gate | 状态 | 未满足条件 |
 |---|---|---|
@@ -70,7 +109,7 @@
 | M2 Web Skill 与调查闭环 | 未完成 | LS-08、LS-09、LS-10、LS-11 |
 | M3 Windows 原生抽象验证 | 未完成 | LS-12、LS-13 |
 
-## 6. 路线外能力
+## 7. 路线外能力
 
 | 能力 | 当前处理 |
 |---|---|
@@ -79,7 +118,7 @@
 | macOS/Linux 原生 Desktop | 保留 Adapter 边界；当前 M3 只实施 Windows |
 | Windows VM 自动化 | 当前不建设；使用普通 CI 与人工 Checklist |
 
-## 7. 更新规则
+## 8. 更新规则
 
 - Spec 文件创建时，将状态改为 `spec_draft` 并填写路径。
 - 用户批准 Spec 后改为 `spec_approved`。

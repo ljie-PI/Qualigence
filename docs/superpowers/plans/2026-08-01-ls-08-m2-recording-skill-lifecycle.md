@@ -332,9 +332,9 @@ Run: `pnpm vitest run tests/contract/sqlite/skill-store.test.ts tests/component/
 
 Expected: migration/store missing.
 
-- [ ] **Step 3: Implement six logical tables/store**
+- [ ] **Step 3: Implement seven logical tables/store**
 
-Use structured ID/version/state/hash/key columns and versioned JSON payload; optimistic expected version; immutable evaluations/Bundle; revocation append only.
+Implement the seven logical tables defined by the Design Spec section 8: `recordings`, `recording_steps`, `skills`, `skill_versions`, `skill_evaluations`, `skill_bundles`, `skill_revocations`. Use structured ID/version/state/hash/key columns and versioned JSON payload; optimistic expected version; immutable evaluations/Bundle; revocation append only.
 
 ```ts
 await db.transaction().execute(async (trx) => {

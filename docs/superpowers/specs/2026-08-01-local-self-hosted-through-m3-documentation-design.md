@@ -30,6 +30,7 @@ Qualigence Cloud 和 M4 Mobile 只在路线文档中记录边界、前置条件�
 
 - `docs/superpowers/specs/2026-07-28-local-self-hosted-implementation-design.md`
 - `docs/superpowers/specs/2026-07-31-m1-real-web-vertical-slice-design.md`
+- `docs/superpowers/plans/2026-07-28-m1-web-walking-skeleton.md`（产出 BASE-01：内存版 M1 Walking Skeleton，已完成）
 - `docs/superpowers/plans/2026-07-31-m1-real-web-vertical-slice.md`
 - `docs/superpowers/plans/2026-08-01-model-error-state-machine-hardening.md`
 
@@ -38,8 +39,8 @@ Qualigence Cloud 和 M4 Mobile 只在路线文档中记录边界、前置条件�
 - 不修改已经冻结的 Runner Kernel、Runner Protocol、Model Provider、Model Gateway、Model Agent、Target Adapter、Storage Provider 和 RunExecutionUseCase 分层方向。
 - 不创建与现有公开类型同义但不同名的第二套接口。
 - LS-01 至 LS-04 是现有 M1 Plan Task 5 至 Task 8 的代码级细化，不是替代实现。
-- LS-05 至 LS-06 对应现有 M1 Design 第 23 节的后续硬化。
-- LS-07 对应现有 M1 Design 第 21 节的未来 PRD 流程。
+- LS-05 至 LS-06 对应 `docs/superpowers/specs/2026-07-31-m1-real-web-vertical-slice-design.md` 第 23 节「后续 M1 硬化」的后续硬化。
+- LS-07 对应 `docs/superpowers/specs/2026-07-31-m1-real-web-vertical-slice-design.md` 第 21 节「未来 PRD 流程」的未来 PRD 流程。
 - LS-08 至 LS-11 实现现有 M2 设计。
 - LS-12 至 LS-13 实现现有 Windows-first M3 设计。
 - 发现冲突时先修订上游 Design Spec 并记录决策，不能在下游 Plan 中静默改变架构。
