@@ -40,6 +40,54 @@ export {
   findExtensionMajor,
 } from "@qualigence/observation-contracts";
 
+/**
+ * Desktop / Windows Target action contract additions (LS-13, PR-25).
+ *
+ * The desktop action union and Companion IPC DTOs live in
+ * `@qualigence/desktop-contracts`, which is their single source of truth. Runner
+ * Protocol re-exports them additively so consumers keep one canonical import
+ * surface — the same pattern used above for the Observation Graph v1 types. This
+ * is purely additive: the existing pre-desktop `TraceEvent`/`ObservationGraph`
+ * shapes are unchanged, and the branded `ExecutionPermit`/Sensor/Action runtime
+ * wiring in `@qualigence/runner-kernel` is untouched by this PR (that is PR-26).
+ */
+export type {
+  AppTarget,
+  AppSession,
+  DesktopEnvironmentProvider,
+  DesktopPlatform,
+  UiaPattern,
+  UiaPatternDescriptor,
+  UiaExtensionV1,
+  DesktopActionKind,
+  DesktopAdapterCapabilities,
+  AdapterSupport,
+  LocalActionRisk,
+  DesktopActionResolution,
+  ResolvedDesktopActionBase,
+  ResolvedDesktopAction,
+  ResolvedWebAction,
+  ResolvedAction,
+  LocalPermitAuthorization,
+  LocalPermitRequest,
+  LocalApprovalStatus,
+  LocalApprovalDecision,
+  LocalExecutionPermit,
+  CompanionRequest,
+  CompanionRequestType,
+} from "@qualigence/desktop-contracts";
+
+export {
+  UIA_EXTENSION_TYPE,
+  UIA_EXTENSION_VERSION,
+  COMPANION_REQUEST_TYPES,
+  parseCompanionRequest,
+  parseCompanionDecision,
+  parseResolvedDesktopAction,
+  classifyLocalAuthorization,
+  isLocalPermitExpired,
+} from "@qualigence/desktop-contracts";
+
 
 export type ExecutionJobId = string;
 export type RunId = string;

@@ -7,6 +7,5 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "references": [{ "path": "../observation" }, { "path": "../desktop" }],
   "include": ["src/**/*.ts"]
 }

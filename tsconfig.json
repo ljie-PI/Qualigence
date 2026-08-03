@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/shared-kernel" },
     { "path": "packages/contracts/observation" },
+    { "path": "packages/contracts/desktop" },
     { "path": "packages/contracts/runner-protocol" },
     { "path": "packages/contracts/model-provider" },
     { "path": "packages/contracts/local-control" },
@@ -20,6 +21,7 @@
     { "path": "packages/core-modules/application-model" },
     { "path": "packages/core-modules/mission" },
     { "path": "packages/core-modules/skill" },
+    { "path": "packages/core-modules/project-target" },
     { "path": "packages/core-modules/runner-identity" },
     { "path": "packages/core-modules/investigation" },
     { "path": "packages/core-modules/intelligence" },
