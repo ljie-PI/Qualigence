@@ -41,3 +41,33 @@ Only when every box above is checked — in the LS-13 M3 Gate PR — may the gra
 lifecycle move from `candidate` to `frozen`. After freeze, the
 `observation-graph/v1` major is under a compatibility promise and platform
 targets must extend (via typed extensions) rather than modify the common core.
+
+## LS-13 wiring: how the checklist above is enforced in code
+
+LS-13 (PR-27) delivered the auditable machinery that turns the boxes above into
+a pure, testable decision — but it deliberately does **not** flip the status.
+The `frozen` transition is only reachable through
+`decideGraphFreeze(candidateReport, windowsChecklistEvidence, schemaConformanceEvidence)`
+in `packages/observation-migration/src/freeze-decision.ts`, which returns
+`status: "frozen"` **only** when all three inputs are present and valid:
+
+1. **Candidate Freeze Report** (LS-12) with zero unexplained migration failures.
+2. **`WindowsChecklistEvidence`** — the signed result of a human running
+   `docs/testing/windows-m3-manual-checklist.md` on real Windows 11 hardware
+   (see that file's Section 18 for the exact record shape and the Section 16
+   security-veto item ids that must all be `pass`).
+3. **`SchemaConformanceEvidence`** — proof that both Web (PR-02/M1) and Desktop
+   (PR-27 Reference App tests) validate the SAME v1 schema on the shared core
+   fields (`role`, `name`, `value`, `state`, `relations`).
+
+Any missing/invalid input yields `status: "candidate"` with `blockingReasons[]`.
+
+> **This automated environment reports `candidate`, always.** No real signed
+> `WindowsChecklistEvidence` exists in this repository, so
+> `generateAutomatedFreezeGateReport()`
+> (`packages/observation-migration/src/freeze-gate.ts`) is structurally unable to
+> emit `frozen` — it has no parameter to inject Windows evidence. A dedicated
+> test asserts the generated artifact never contains `"status":"frozen"` (the
+> "cannot lie about being frozen" invariant). v1 becomes `frozen` only after a
+> human completes the manual checklist and someone invokes `decideGraphFreeze`
+> with that real evidence in a follow-up action.

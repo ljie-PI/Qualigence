@@ -1,0 +1,270 @@
+{
+  "$comment": "Machine-readable specification of the WinUI 3 Reference App used by the Linux-runnable Windows-UIA pipeline tests. It is the SYNTHETIC-BUT-REALISTIC UIA data that stands in for a real UIA capture of the compiled WindowsReferenceWinUi app, field-for-field matching the @qualigence/desktop-windows-uia UiaSource DTO. A REAL Windows-11 run of the compiled app (see manualWindowsVerification) is a separate, human/operator-performed step this PR cannot execute on Linux.",
+  "app": {
+    "name": "Windows Reference App (WinUI 3)",
+    "technology": "winui",
+    "frameworkId": "WinUI",
+    "dotnetTargetFramework": "net10.0-windows10.0.19041.0",
+    "executableImageName": "WindowsReferenceWinUi.exe",
+    "requiresAdmin": false,
+    "usesNetwork": false,
+    "resetSource": "local-json"
+  },
+  "capabilities": [
+    "Button",
+    "Edit",
+    "ComboBox",
+    "List",
+    "Scroll",
+    "Dialog",
+    "Crash",
+    "Reset",
+    "HighRisk"
+  ],
+  "appTarget": {
+    "targetId": "windows-reference-winui",
+    "platform": "windows",
+    "launch": {
+      "executable": "C:\\Qualigence\\ReferenceApps\\WindowsReferenceWinUi.exe",
+      "args": ["--reference-mode"],
+      "workingDirectory": "C:\\Qualigence\\ReferenceApps"
+    },
+    "process": {
+      "expectedImageName": "WindowsReferenceWinUi.exe",
+      "allowedChildImageNames": []
+    },
+    "window": {
+      "titlePattern": "Reference App",
+      "automationId": "MainWindow"
+    },
+    "reset": {
+      "command": "C:\\Qualigence\\ReferenceApps\\reset-reference-state.exe",
+      "args": ["--app", "winui"],
+      "timeoutMs": 10000
+    },
+    "shutdown": {
+      "gracefulTimeoutMs": 5000,
+      "forceAfterTimeout": true
+    }
+  },
+  "uiaSource": {
+    "sessionId": "sess-winui-ref",
+    "capturedAt": "2026-08-02T00:00:00.000Z",
+    "rootNodeIds": ["window"],
+    "nodes": [
+      {
+        "nodeId": "window",
+        "role": "window",
+        "controlTypeId": 50032,
+        "name": "Reference App",
+        "automationId": "MainWindow",
+        "frameworkId": "WinUI",
+        "className": "WinUIDesktopWin32WindowClass",
+        "nativeWindowHandle": "0x00020",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": false,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Window", "available": true, "readOnly": false }],
+        "children": [
+          "username",
+          "password",
+          "roleCombo",
+          "submitButton",
+          "resultsScroll",
+          "deleteAllButton",
+          "crashButton",
+          "resetButton"
+        ]
+      },
+      {
+        "nodeId": "username",
+        "role": "textbox",
+        "controlTypeId": 50004,
+        "name": "Username",
+        "value": "alice",
+        "automationId": "UsernameEdit",
+        "frameworkId": "WinUI",
+        "className": "TextBox",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": true,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Value", "available": true, "readOnly": false }],
+        "children": []
+      },
+      {
+        "nodeId": "password",
+        "role": "textbox",
+        "controlTypeId": 50004,
+        "name": "Password",
+        "value": "\u2022\u2022\u2022\u2022",
+        "automationId": "PasswordEdit",
+        "frameworkId": "WinUI",
+        "className": "PasswordBox",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": true,
+        "patterns": [{ "pattern": "Value", "available": true, "readOnly": false }],
+        "children": []
+      },
+      {
+        "nodeId": "roleCombo",
+        "role": "combobox",
+        "controlTypeId": 50003,
+        "name": "Role",
+        "value": "Viewer",
+        "automationId": "RoleCombo",
+        "frameworkId": "WinUI",
+        "className": "ComboBox",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [
+          { "pattern": "Selection", "available": true, "readOnly": false },
+          { "pattern": "ExpandCollapse", "available": true }
+        ],
+        "children": []
+      },
+      {
+        "nodeId": "submitButton",
+        "role": "button",
+        "controlTypeId": 50000,
+        "name": "Submit",
+        "automationId": "SubmitButton",
+        "frameworkId": "WinUI",
+        "className": "Button",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Invoke", "available": true }],
+        "children": []
+      },
+      {
+        "nodeId": "resultsScroll",
+        "role": "pane",
+        "controlTypeId": 50033,
+        "name": "Results",
+        "automationId": "ResultsScroll",
+        "frameworkId": "WinUI",
+        "className": "ScrollViewer",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": false,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Scroll", "available": true }],
+        "children": ["resultsList"]
+      },
+      {
+        "nodeId": "resultsList",
+        "role": "list",
+        "controlTypeId": 50008,
+        "name": "Results",
+        "automationId": "ResultsList",
+        "frameworkId": "WinUI",
+        "className": "ListView",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [
+          { "pattern": "Selection", "available": true, "readOnly": false },
+          { "pattern": "Scroll", "available": true }
+        ],
+        "children": []
+      },
+      {
+        "nodeId": "deleteAllButton",
+        "role": "button",
+        "controlTypeId": 50000,
+        "name": "Delete all records",
+        "automationId": "DeleteAllButton",
+        "frameworkId": "WinUI",
+        "className": "Button",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Invoke", "available": true }],
+        "children": []
+      },
+      {
+        "nodeId": "crashButton",
+        "role": "button",
+        "controlTypeId": 50000,
+        "name": "Trigger crash",
+        "automationId": "CrashButton",
+        "frameworkId": "WinUI",
+        "className": "Button",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Invoke", "available": true }],
+        "children": []
+      },
+      {
+        "nodeId": "resetButton",
+        "role": "button",
+        "controlTypeId": 50000,
+        "name": "Reset",
+        "automationId": "ResetButton",
+        "frameworkId": "WinUI",
+        "className": "Button",
+        "processId": 5353,
+        "isOffscreen": false,
+        "isKeyboardFocusable": true,
+        "hasKeyboardFocus": false,
+        "isPassword": false,
+        "patterns": [{ "pattern": "Invoke", "available": true }],
+        "children": []
+      }
+    ]
+  },
+  "expectedActions": [
+    {
+      "actionId": "act-submit",
+      "description": "Normal-risk click that appends the username to the results list.",
+      "proposal": { "kind": "click", "target": { "nodeId": "submitButton" }, "reason": "submit the form" },
+      "expectedResolution": "semantic",
+      "expectedUiaPattern": "Invoke",
+      "kindRisk": "Normal",
+      "policyRisk": "Normal",
+      "requiresLocalApproval": false
+    },
+    {
+      "actionId": "act-delete-all",
+      "description": "Simulated high-risk destructive click behind a modal ContentDialog. Policy imposes Destructive risk so the Companion must prompt for a per-action local approval.",
+      "proposal": { "kind": "click", "target": { "nodeId": "deleteAllButton" }, "reason": "delete all records" },
+      "expectedResolution": "semantic",
+      "expectedUiaPattern": "Invoke",
+      "kindRisk": "Normal",
+      "policyRisk": "Destructive",
+      "requiresLocalApproval": true
+    }
+  ],
+  "manualWindowsVerification": {
+    "$comment": "These checks CANNOT run on Linux. A human operator must perform them on real Windows 11 hardware against the COMPILED WindowsReferenceWinUi app, recording evidence per docs/testing/windows-m3-manual-checklist.md.",
+    "steps": [
+      "Build WindowsReferenceWinUi.csproj on Windows 11 with the Windows App SDK and confirm it launches without elevation.",
+      "Confirm a real UIA capture of the running app produces the AutomationIds and control types in uiaSource above.",
+      "Confirm the PasswordEdit value is captured masked, never in cleartext.",
+      "Confirm the DeleteAll ContentDialog is reflected in the Observation Graph focus/window change and that a denial leaves the list unchanged.",
+      "Confirm the crash entry yields a deterministic crash Finding that the Oracle does not suppress.",
+      "Confirm the Reset entry restores the initial local-JSON state.",
+      "Confirm Job Object cleanup via Task Manager / Process Explorer and that an unrelated same-name process outside the Job is untouched after shutdown."
+    ]
+  }
+}

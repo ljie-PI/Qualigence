@@ -27,6 +27,37 @@ export type {
   ObservationFreezeReportV1,
 } from "./freeze-report.js";
 
+export {
+  FREEZE_DECISION_VERSION,
+  WINDOWS_M3_CHECKLIST_VERSION,
+  REQUIRED_SECURITY_VETO_ITEM_IDS,
+  REQUIRED_SHARED_CORE_FIELDS,
+  decideGraphFreeze,
+} from "./freeze-decision.js";
+
+export type {
+  WindowsChecklistItemResult,
+  WindowsChecklistItemEvidence,
+  WindowsChecklistEvidence,
+  SchemaConformanceEvidence,
+  FreezeDecisionStatus,
+  FreezeDecisionInputs,
+  FreezeDecisionSignoff,
+  FreezeDecision,
+} from "./freeze-decision.js";
+
+export {
+  OBSERVATION_FREEZE_GATE_REPORT_VERSION,
+  buildFreezeGateReport,
+  generateAutomatedFreezeGateReport,
+} from "./freeze-gate.js";
+
+export type {
+  FreezeGateEnvironment,
+  BuildFreezeGateReportInput,
+  FreezeGateReportV1,
+} from "./freeze-gate.js";
+
 export type {
   ObservationMigrationStatus,
   ObservationMigrationResult,

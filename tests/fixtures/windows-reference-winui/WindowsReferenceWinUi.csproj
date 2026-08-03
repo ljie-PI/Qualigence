@@ -1,0 +1,33 @@
+<!--
+  WinUI 3 Reference App (Windows App SDK) for the M3 Windows UI Automation manual
+  acceptance. Like the WPF sibling, THIS IS A SPECIFICATION + REAL SOURCE, not a
+  project this PR compiles: it targets the Windows App SDK and can only be built
+  and run by a human operator on real Windows 11 hardware. The Linux CI suite
+  instead drives this app's machine-readable `reference-app.fixture.json`.
+
+  It exposes the same control coverage as the WPF app through modern WinUI
+  controls (Button, TextBox, PasswordBox, ComboBox, ListView, ScrollViewer,
+  ContentDialog), plus a controlled crash and a simulated high-risk action, so
+  the two apps together cover both a classic and a modern Windows UI stack.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>WindowsReferenceWinUi</RootNamespace>
+    <AssemblyName>WindowsReferenceWinUi</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.*" />
+  </ItemGroup>
+
+</Project>
