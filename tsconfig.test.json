@@ -18,6 +18,8 @@
     { "path": "packages/core-modules/context-intake" },
     { "path": "packages/core-modules/application-model" },
     { "path": "packages/core-modules/mission" },
+    { "path": "packages/core-modules/runner-identity" },
+    { "path": "packages/auth/runner-mtls" },
     { "path": "packages/storage-providers/artifact-fs" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },

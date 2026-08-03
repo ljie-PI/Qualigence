@@ -62,9 +62,15 @@ importers:
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
+      '@qualigence/runner-identity':
+        specifier: workspace:*
+        version: link:packages/core-modules/runner-identity
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:packages/runner-kernel
+      '@qualigence/runner-mtls':
+        specifier: workspace:*
+        version: link:packages/auth/runner-mtls
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:packages/contracts/runner-protocol
@@ -216,6 +222,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/target-adapters/web-playwright
 
+  packages/auth/runner-mtls:
+    dependencies:
+      '@qualigence/runner-identity':
+        specifier: workspace:*
+        version: link:../../core-modules/runner-identity
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
+
   packages/contracts/model-provider: {}
 
   packages/contracts/runner-protocol: {}
@@ -249,6 +264,12 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../context-intake
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
+  packages/core-modules/runner-identity:
+    dependencies:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
