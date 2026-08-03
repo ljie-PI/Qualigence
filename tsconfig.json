@@ -12,6 +12,7 @@
     { "path": "packages/storage-providers/artifact-fs" },
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },
-    { "path": "packages/testkit" }
+    { "path": "packages/testkit" },
+    { "path": "packages/target-adapters/web-playwright" }
   ]
 }
