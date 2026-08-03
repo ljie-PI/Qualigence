@@ -9,15 +9,11 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
-    { "path": "../../model-gateway" },
-    { "path": "../../runner-kernel" },
+    { "path": "../../shared-kernel" },
     { "path": "../../contracts/runner-protocol" },
-    { "path": "../../contracts/model-provider" },
-    { "path": "../../core-modules/context-intake" },
     { "path": "../../core-modules/application-model" },
     { "path": "../../core-modules/mission" },
     { "path": "../../core-modules/skill" },
-    { "path": "../recording" },
-    { "path": "../exploration" }
+    { "path": "../skill-replay" }
   ]
 }

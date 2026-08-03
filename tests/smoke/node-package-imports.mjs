@@ -17,6 +17,7 @@ const packages = [
   ["@qualigence/recording", "RecordingRecorder"],
   ["@qualigence/skill", "TestSkill"],
   ["@qualigence/skill-replay", "SkillReplayController"],
+  ["@qualigence/exploration", "ExplorationController"],
   ["@qualigence/kms-local", "LocalSkillSigner"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],

@@ -38,6 +38,9 @@ importers:
       '@qualigence/execution-application':
         specifier: workspace:*
         version: link:packages/execution-application
+      '@qualigence/exploration':
+        specifier: workspace:*
+        version: link:packages/runner-components/exploration
       '@qualigence/grpc-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/grpc-runner-protocol
@@ -415,6 +418,27 @@ importers:
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
 
+  packages/runner-components/exploration:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../../core-modules/application-model
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../core-modules/mission
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
+      '@qualigence/skill-replay':
+        specifier: workspace:*
+        version: link:../skill-replay
+
   packages/runner-components/model-agent:
     dependencies:
       '@qualigence/application-model':
@@ -423,6 +447,12 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../core-modules/context-intake
+      '@qualigence/exploration':
+        specifier: workspace:*
+        version: link:../exploration
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../core-modules/mission
       '@qualigence/model-gateway':
         specifier: workspace:*
         version: link:../../model-gateway
