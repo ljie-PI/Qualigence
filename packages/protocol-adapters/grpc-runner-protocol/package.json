@@ -1,0 +1,19 @@
+{
+  "name": "@qualigence/grpc-runner-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.7.15",
+    "@qualigence/runner-protocol": "workspace:*",
+    "protobufjs": "^7.2.5"
+  }
+}
