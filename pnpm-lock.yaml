@@ -53,6 +53,12 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:packages/core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:packages/core-modules/investigation
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:packages/storage-providers/kms-local
@@ -80,6 +86,9 @@ importers:
       '@qualigence/recording':
         specifier: workspace:*
         version: link:packages/runner-components/recording
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:packages/core-modules/review
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
@@ -346,6 +355,20 @@ importers:
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
 
+  packages/core-modules/intelligence: {}
+
+  packages/core-modules/investigation:
+    dependencies:
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../intelligence
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../mission
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
   packages/core-modules/mission:
     dependencies:
       '@qualigence/application-model':
@@ -357,6 +380,8 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
+
+  packages/core-modules/review: {}
 
   packages/core-modules/runner-identity:
     dependencies:
@@ -480,6 +505,12 @@ importers:
       '@qualigence/exploration':
         specifier: workspace:*
         version: link:../exploration
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../../core-modules/investigation
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
@@ -576,12 +607,21 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../core-modules/evidence
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../../core-modules/investigation
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
       '@qualigence/recording':
         specifier: workspace:*
         version: link:../../runner-components/recording
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:../../core-modules/review
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol

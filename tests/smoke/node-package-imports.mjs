@@ -25,6 +25,9 @@ const packages = [
   ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
   ["@qualigence/core-daemon", "RunnerBackedRunResourceFactory"],
   ["@qualigence/runner", "RunnerClient"],
+  ["@qualigence/investigation", "InvestigationCase"],
+  ["@qualigence/intelligence", "IntelligenceResultApplier"],
+  ["@qualigence/review", "ClaimReviewTaskHandler"],
 ];
 
 for (const [packageName, exportName] of packages) {
