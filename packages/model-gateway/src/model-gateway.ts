@@ -1,4 +1,5 @@
 import type {
+  ModelInvocationContext,
   ModelProvider,
   ModelProviderErrorCode,
   StructuredModelRequest,
@@ -6,6 +7,8 @@ import type {
   StructuredOutputValidationError,
   ValidatedModelResult,
 } from "@qualigence/model-provider";
+import type { Clock } from "@qualigence/shared-kernel";
+import { SystemClock } from "@qualigence/shared-kernel";
 
 export type ModelGatewayErrorCode =
   | ModelProviderErrorCode
@@ -22,9 +25,33 @@ export class ModelGatewayError extends Error {
   }
 }
 
+/**
+ * A de-identified, provider-neutral summary of one logical model invocation
+ * (all retry attempts collapse into a single report). It never carries prompt
+ * messages or raw model output.
+ */
+export interface ModelInvocationReport {
+  readonly context: ModelInvocationContext;
+  readonly operation: string;
+  readonly model: string;
+  readonly status: "succeeded" | "failed";
+  readonly latencyMs: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly providerRequestId?: string;
+  readonly errorCode?: string;
+  readonly occurredAt: string;
+}
+
+export interface ModelInvocationObserver {
+  record(report: ModelInvocationReport): Promise<void>;
+}
+
 export interface ModelGatewayDependencies {
   readonly provider: ModelProvider;
   readonly delay?: (delayMs: number) => Promise<void>;
+  readonly invocationObserver?: ModelInvocationObserver;
+  readonly clock?: Clock;
 }
 
 export interface StructuredModelInvoker {
@@ -36,12 +63,45 @@ export interface StructuredModelInvoker {
 
 export class ModelGateway implements StructuredModelInvoker {
   private readonly delay: (delayMs: number) => Promise<void>;
+  private readonly clock: Clock;
 
   constructor(private readonly dependencies: ModelGatewayDependencies) {
     this.delay = dependencies.delay ?? defaultDelay;
+    this.clock = dependencies.clock ?? new SystemClock();
   }
 
   async invokeStructured<T>(
+    request: StructuredModelRequest,
+    output: StructuredOutputContract<T>,
+  ): Promise<ValidatedModelResult<T>> {
+    const startedAtMs = Date.now();
+    try {
+      const result = await this.runStructured(request, output);
+      await this.report(request, startedAtMs, {
+        status: "succeeded",
+        model: result.model,
+        ...(result.providerRequestId === undefined
+          ? {}
+          : { providerRequestId: result.providerRequestId }),
+        ...(result.usage?.inputTokens === undefined
+          ? {}
+          : { inputTokens: result.usage.inputTokens }),
+        ...(result.usage?.outputTokens === undefined
+          ? {}
+          : { outputTokens: result.usage.outputTokens }),
+      });
+      return result;
+    } catch (error) {
+      await this.report(request, startedAtMs, {
+        status: "failed",
+        model: request.model,
+        errorCode: errorCodeOf(error),
+      });
+      throw error;
+    }
+  }
+
+  private async runStructured<T>(
     request: StructuredModelRequest,
     output: StructuredOutputContract<T>,
   ): Promise<ValidatedModelResult<T>> {
@@ -112,6 +172,39 @@ export class ModelGateway implements StructuredModelInvoker {
       }
     }
   }
+
+  private async report(
+    request: StructuredModelRequest,
+    startedAtMs: number,
+    fields: {
+      readonly status: "succeeded" | "failed";
+      readonly model: string;
+      readonly inputTokens?: number;
+      readonly outputTokens?: number;
+      readonly providerRequestId?: string;
+      readonly errorCode?: string;
+    },
+  ): Promise<void> {
+    const observer = this.dependencies.invocationObserver;
+    if (observer === undefined || request.invocation === undefined) {
+      return;
+    }
+
+    await observer.record({
+      context: request.invocation,
+      operation: request.operation,
+      latencyMs: Math.max(0, Date.now() - startedAtMs),
+      occurredAt: this.clock.now(),
+      ...fields,
+    });
+  }
+}
+
+function errorCodeOf(error: unknown): string {
+  if (error instanceof ModelGatewayError) {
+    return error.code;
+  }
+  return "ProviderUnavailable";
 }
 
 function normalizeProviderError(error: unknown): ModelGatewayError {

@@ -287,7 +287,7 @@ export class ExecutionRuntime {
       };
     }
 
-    const finding = findingFromVerification(job.runId, verification);
+    const finding = findingFromVerification(job.runId, verification, observation, after);
     await this.record({
       runId: job.runId,
       stage: "finding",
@@ -352,18 +352,23 @@ function toVerificationTracePayload(
 function findingFromVerification(
   runId: RunId,
   verification: Extract<VerificationResult, { status: "failed" }>,
+  before: ObservationGraph,
+  after: ObservationGraph,
 ): FindingEnvelope {
+  const claimRefs = verification.claims.flatMap((claim) => [
+    `${claim.expected.graphId}:${claim.expected.nodeId}`,
+    `${claim.observed.graphId}:${claim.observed.nodeId}`,
+  ]);
+  const artifactRefs = [
+    ...(before.artifactRefs ?? []),
+    ...(after.artifactRefs ?? []),
+  ];
   return {
     findingId: `${runId}:verification`,
     runId,
     title: "M1 verification failed",
     summary: verification.summary,
     severity: verification.severitySuggestion,
-    evidenceRefs: [...new Set(
-      verification.claims.flatMap((claim) => [
-        `${claim.expected.graphId}:${claim.expected.nodeId}`,
-        `${claim.observed.graphId}:${claim.observed.nodeId}`,
-      ]),
-    )],
+    evidenceRefs: [...new Set([...claimRefs, ...artifactRefs])],
   };
 }

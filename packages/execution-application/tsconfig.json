@@ -10,6 +10,10 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../shared-kernel" },
-    { "path": "../contracts/model-provider" }
+    { "path": "../contracts/runner-protocol" },
+    { "path": "../contracts/model-provider" },
+    { "path": "../runner-kernel" },
+    { "path": "../model-gateway" },
+    { "path": "../core-modules/evidence" }
   ]
 }

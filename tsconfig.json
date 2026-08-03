@@ -13,6 +13,8 @@
     { "path": "packages/storage-providers/sqlite-runtime" },
     { "path": "packages/protocol-adapters/in-memory-runner-protocol" },
     { "path": "packages/testkit" },
-    { "path": "packages/target-adapters/web-playwright" }
+    { "path": "packages/target-adapters/web-playwright" },
+    { "path": "packages/execution-application" },
+    { "path": "apps/cli" }
   ]
 }

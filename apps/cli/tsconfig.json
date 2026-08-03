@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/shared-kernel" },
+    { "path": "../../packages/contracts/runner-protocol" },
+    { "path": "../../packages/contracts/model-provider" },
+    { "path": "../../packages/runner-kernel" },
+    { "path": "../../packages/model-gateway" },
+    { "path": "../../packages/runner-components/model-agent" },
+    { "path": "../../packages/model-providers/openai-compatible" },
+    { "path": "../../packages/core-modules/evidence" },
+    { "path": "../../packages/storage-providers/artifact-fs" },
+    { "path": "../../packages/storage-providers/sqlite-runtime" },
+    { "path": "../../packages/protocol-adapters/in-memory-runner-protocol" },
+    { "path": "../../packages/target-adapters/web-playwright" },
+    { "path": "../../packages/execution-application" }
+  ]
+}
