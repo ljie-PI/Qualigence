@@ -1,4 +1,5 @@
 import type {
+  ModelCapabilities,
   ModelInvocationContext,
   ModelProvider,
   ModelProviderErrorCode,
@@ -9,11 +10,14 @@ import type {
 } from "@qualigence/model-provider";
 import type { Clock } from "@qualigence/shared-kernel";
 import { SystemClock } from "@qualigence/shared-kernel";
+import { assertVisualInputAllowed, VisualInputPolicyError } from "./data-policy.js";
+import type { VisualInputErrorCode } from "./data-policy.js";
 
 export type ModelGatewayErrorCode =
   | ModelProviderErrorCode
   | "InvalidStructuredOutput"
-  | "CapabilityMismatch";
+  | "CapabilityMismatch"
+  | VisualInputErrorCode;
 
 export class ModelGatewayError extends Error {
   constructor(
@@ -112,6 +116,8 @@ export class ModelGateway implements StructuredModelInvoker {
       );
     }
 
+    this.assertVisualInputAllowed(request, this.dependencies.provider.capabilities);
+
     let schemaAttempts = 0;
     let transientAttempts = 0;
     let providerRequest = request;
@@ -197,6 +203,20 @@ export class ModelGateway implements StructuredModelInvoker {
       occurredAt: this.clock.now(),
       ...fields,
     });
+  }
+
+  private assertVisualInputAllowed(
+    request: StructuredModelRequest,
+    capabilities: ModelCapabilities,
+  ): void {
+    try {
+      assertVisualInputAllowed(request, capabilities);
+    } catch (error) {
+      if (error instanceof VisualInputPolicyError) {
+        throw new ModelGatewayError(error.code, error.message);
+      }
+      throw error;
+    }
   }
 }
 
