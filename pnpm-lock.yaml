@@ -11,12 +11,18 @@ importers:
       '@bufbuild/buf':
         specifier: ^1.72.0
         version: 1.72.0
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:packages/core-modules/application-model
       '@qualigence/artifact-fs':
         specifier: workspace:*
         version: link:packages/storage-providers/artifact-fs
       '@qualigence/cli':
         specifier: workspace:*
         version: link:apps/cli
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:packages/core-modules/context-intake
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
@@ -26,6 +32,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:packages/core-modules/mission
       '@qualigence/model-agent':
         specifier: workspace:*
         version: link:packages/runner-components/model-agent
@@ -121,11 +130,38 @@ importers:
 
   packages/contracts/runner-protocol: {}
 
+  packages/core-modules/application-model:
+    dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../context-intake
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
+  packages/core-modules/context-intake:
+    dependencies:
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
+
   packages/core-modules/evidence:
     dependencies:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+
+  packages/core-modules/mission:
+    dependencies:
+      '@qualigence/application-model':
+        specifier: workspace:*
+        version: link:../application-model
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../context-intake
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/execution-application:
     dependencies:
