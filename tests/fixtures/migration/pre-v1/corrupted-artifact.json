@@ -1,0 +1,69 @@
+{
+  "assetId": "trace-corrupt-1",
+  "kind": "observation",
+  "sourceSchemaVersion": "trace-event/v1",
+  "target": {
+    "kind": "web",
+    "targetId": "web-shop"
+  },
+  "adapterId": "web-playwright",
+  "sourceKind": "accessibility",
+  "capturedAt": "2026-08-01T09:05:00.000Z",
+  "observation": {
+    "graphId": "run-m1-login:observation:0",
+    "nodes": [
+      {
+        "id": "n-0-d25fa162",
+        "role": "heading",
+        "confidence": 1,
+        "name": "Sign in",
+        "text": "Sign in"
+      },
+      {
+        "id": "n-1-34fdb43e",
+        "role": "textbox",
+        "confidence": 1,
+        "name": "Email"
+      },
+      {
+        "id": "n-2-b76c6d2c",
+        "role": "textbox",
+        "confidence": 1,
+        "name": "Password"
+      },
+      {
+        "id": "n-3-42367ff6",
+        "role": "checkbox",
+        "confidence": 1,
+        "name": "Remember me"
+      },
+      {
+        "id": "n-4-20b687b5",
+        "role": "button",
+        "confidence": 1,
+        "name": "Log in"
+      },
+      {
+        "id": "n-5-bbdc58c8",
+        "role": "link",
+        "confidence": 1,
+        "name": "Forgot password?"
+      },
+      {
+        "id": "n-6-e834c860",
+        "role": "button",
+        "confidence": 1,
+        "name": "Disabled promo",
+        "disabled": true
+      }
+    ],
+    "url": "https://shop.example/login",
+    "title": "Sign in — Shop",
+    "capturedAt": "2026-08-01T09:00:00.000Z",
+    "artifactRefs": [
+      "artifact://screenshot/login-0",
+      "artifact://axtree/login-0"
+    ]
+  },
+  "declaredSourceHash": "0000000000000000000000000000000000000000000000000000000000000000"
+}

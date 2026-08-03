@@ -59,3 +59,11 @@ export {
   type RestoreResult,
   type RestoreVerification,
 } from "./commands/restore.js";
+export {
+  runMigrateObservation,
+  DirectoryObservationMigrationSource,
+  type ObservationMigrationSource,
+  type MigrateObservationOptions,
+  type MigrateObservationDeps,
+  type MigrateObservationResult,
+} from "./commands/migrate-observation.js";

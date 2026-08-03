@@ -8,6 +8,7 @@ import { runMigrate } from "./commands/migrate.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runBackup } from "./commands/backup.js";
 import { runRestore } from "./commands/restore.js";
+import { runMigrateObservation } from "./commands/migrate-observation.js";
 
 const VERSION = "0.1.0";
 
@@ -116,8 +117,50 @@ export async function run(
       }),
     );
 
+  program
+    .command("migrate-observation")
+    .description(
+      "migrate pre-v1 Observation assets to the Graph v1 CANDIDATE and write a Freeze Report",
+    )
+    .requiredOption("--input <dir>", "directory of pre-v1 asset JSON envelopes")
+    .option("--ledger <path>", "durable JSONL migration ledger (required to execute)")
+    .option("--report <path>", "path to write the candidate Freeze Report JSON")
+    .option("--dry-run", "project and classify but persist nothing", false)
+    .option("--execute", "persist the migration to the durable ledger", false)
+    .action(
+      (options: {
+        input: string;
+        ledger?: string;
+        report?: string;
+        dryRun?: boolean;
+        execute?: boolean;
+      }) =>
+        guard(async () => {
+          const dryRun = options.execute !== true;
+          const result = await runMigrateObservation({
+            dryRun,
+            inputDir: options.input,
+            ...(options.ledger !== undefined ? { ledgerPath: options.ledger } : {}),
+            ...(options.report !== undefined ? { reportPath: options.report } : {}),
+          });
+          const { counts } = result.report;
+          io.out(`migrate-observation: status ${result.report.status}`);
+          io.out(`  inventory:   ${counts.inventory}`);
+          io.out(`  migrated:    ${counts.migrated}`);
+          io.out(`  deprecated:  ${counts.deprecated}`);
+          io.out(`  needs_human: ${counts.needsHuman}`);
+          io.out(`  failed:      ${counts.failed}`);
+          io.out(`  writes:      ${result.writes}`);
+          if (result.report.unexplainedFailures.length > 0) {
+            io.err(
+              `unexplained failures: ${result.report.unexplainedFailures.join(", ")}`,
+            );
+            io.exit(2);
+          }
+        })(),
+    );
+
   try {
-    await program.parseAsync([...argv], { from: "user" });
   } catch (error) {
     const code = (error as { exitCode?: number }).exitCode ?? 1;
     if (code !== 0) {

@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/shared-kernel" },
+    { "path": "packages/contracts/observation" },
     { "path": "packages/contracts/runner-protocol" },
     { "path": "packages/contracts/model-provider" },
     { "path": "packages/contracts/local-control" },
@@ -41,6 +42,7 @@
     { "path": "packages/testkit" },
     { "path": "packages/target-adapters/web-playwright" },
     { "path": "packages/execution-application" },
+    { "path": "packages/observation-migration" },
     { "path": "apps/cli" },
     { "path": "apps/core-daemon" },
     { "path": "apps/runner" },
