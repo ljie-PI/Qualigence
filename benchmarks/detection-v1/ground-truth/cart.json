@@ -1,0 +1,35 @@
+{
+  "benchmarkVersion": "detection-v1",
+  "defects": [
+    {
+      "scenarioId": "cart-known-bugs",
+      "defectId": "cart-price-mismatch",
+      "severity": "P0",
+      "stable": true
+    },
+    {
+      "scenarioId": "cart-known-bugs",
+      "defectId": "cart-quantity-overflow",
+      "severity": "P1",
+      "stable": true
+    },
+    {
+      "scenarioId": "cart-known-bugs",
+      "defectId": "cart-discount-not-applied",
+      "severity": "P1",
+      "stable": true
+    },
+    {
+      "scenarioId": "cart-known-bugs",
+      "defectId": "cart-total-rounding",
+      "severity": "P2",
+      "stable": true
+    },
+    {
+      "scenarioId": "cart-known-bugs",
+      "defectId": "cart-checkout-500",
+      "severity": "P1",
+      "stable": false
+    }
+  ]
+}

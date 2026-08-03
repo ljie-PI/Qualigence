@@ -1,0 +1,23 @@
+{
+  "name": "@qualigence/benchmark-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence-benchmark": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/benchmarking-detection": "workspace:*",
+    "@qualigence/exploration": "workspace:*",
+    "@qualigence/mission": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/sqlite-runtime": "workspace:*"
+  }
+}

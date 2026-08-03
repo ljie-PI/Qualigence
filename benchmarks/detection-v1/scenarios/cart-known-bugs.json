@@ -1,0 +1,52 @@
+{
+  "scenarioId": "cart-known-bugs",
+  "mode": "fault",
+  "seedUrl": "https://shop.fixture.local/cart",
+  "states": [
+    {
+      "id": "cart",
+      "url": "https://shop.fixture.local/cart",
+      "title": "Shopping Cart",
+      "nodes": [
+        { "id": "cart-heading", "role": "heading", "name": "Your Cart", "confidence": 1 },
+        { "id": "cart-price", "role": "text", "text": "Unit price $29 charged (catalog lists $19)", "confidence": 1 },
+        { "id": "cart-quantity", "role": "textbox", "name": "Quantity", "value": "2147483648", "confidence": 1 },
+        { "id": "go-checkout", "role": "link", "name": "Proceed to checkout", "confidence": 1 }
+      ],
+      "advanceNodeId": "go-checkout",
+      "signals": [
+        { "defectId": "cart-price-mismatch", "confidence": "high" },
+        { "defectId": "cart-quantity-overflow", "confidence": "high" }
+      ]
+    },
+    {
+      "id": "checkout",
+      "url": "https://shop.fixture.local/checkout",
+      "title": "Checkout",
+      "nodes": [
+        { "id": "checkout-heading", "role": "heading", "name": "Checkout", "confidence": 1 },
+        { "id": "checkout-discount", "role": "text", "text": "Promo SAVE10 accepted but discount not applied", "confidence": 1 },
+        { "id": "checkout-total", "role": "text", "text": "Order total $58.005 (rounding error)", "confidence": 1 },
+        { "id": "go-confirm", "role": "link", "name": "Place order", "confidence": 1 }
+      ],
+      "advanceNodeId": "go-confirm",
+      "signals": [
+        { "defectId": "cart-discount-not-applied", "confidence": "high" },
+        { "defectId": "cart-total-rounding", "confidence": "high" }
+      ]
+    },
+    {
+      "id": "confirmation",
+      "url": "https://shop.fixture.local/confirmation",
+      "title": "Order Confirmation",
+      "nodes": [
+        { "id": "confirmation-heading", "role": "heading", "name": "Order Status", "confidence": 1 },
+        { "id": "confirmation-error", "role": "alert", "text": "500 Internal Server Error while confirming order", "confidence": 1 }
+      ],
+      "advanceNodeId": null,
+      "signals": [
+        { "defectId": "cart-checkout-500", "confidence": "high" }
+      ]
+    }
+  ]
+}

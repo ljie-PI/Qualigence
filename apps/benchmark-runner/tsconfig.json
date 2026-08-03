@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/benchmarking/detection" },
+    { "path": "../../packages/runner-components/exploration" },
+    { "path": "../../packages/core-modules/mission" },
+    { "path": "../../packages/contracts/runner-protocol" },
+    { "path": "../../packages/storage-providers/sqlite-runtime" }
+  ]
+}

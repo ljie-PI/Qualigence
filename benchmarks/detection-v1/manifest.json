@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "detection-benchmark/v1",
+  "benchmarkVersion": "detection-v1",
+  "referenceProfile": {
+    "profileId": "detection-reference-v1",
+    "providerId": "qualigence-deterministic",
+    "modelId": "qualigence-reference-detector-1",
+    "promptVersion": "prompt/2026-08-01",
+    "policyBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "skillPackSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "browserVersion": "deterministic-target/1.0.0",
+    "fixtureVersions": {
+      "cart": "cart/1.0.0"
+    },
+    "maximumSteps": 40,
+    "maximumWallClockMs": 1800000,
+    "maximumModelTokens": 200000,
+    "repetitions": 3
+  },
+  "scenarios": [
+    {
+      "scenarioId": "cart-normal",
+      "fixtureId": "cart",
+      "fixtureVersion": "cart/1.0.0",
+      "mode": "normal",
+      "missionRef": "scenarios/cart-normal.json",
+      "groundTruthRef": "ground-truth/cart.json",
+      "expectedDefectIds": []
+    },
+    {
+      "scenarioId": "cart-known-bugs",
+      "fixtureId": "cart",
+      "fixtureVersion": "cart/1.0.0",
+      "mode": "fault",
+      "missionRef": "scenarios/cart-known-bugs.json",
+      "groundTruthRef": "ground-truth/cart.json",
+      "expectedDefectIds": [
+        "cart-price-mismatch",
+        "cart-quantity-overflow",
+        "cart-discount-not-applied",
+        "cart-total-rounding",
+        "cart-checkout-500"
+      ]
+    }
+  ],
+  "thresholds": {
+    "p0RecallMinimum": 1,
+    "knownBugRecallMinimum": 0.8,
+    "findingPrecisionMinimum": 0.6,
+    "stableReproductionRateMinimum": 0.7,
+    "maximumHighConfidenceFalsePositivesPerNormalMission": 1
+  }
+}

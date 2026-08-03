@@ -18,6 +18,7 @@ const packages = [
   ["@qualigence/skill", "TestSkill"],
   ["@qualigence/skill-replay", "SkillReplayController"],
   ["@qualigence/exploration", "ExplorationController"],
+  ["@qualigence/benchmarking-detection", "scoreBenchmark"],
   ["@qualigence/kms-local", "LocalSkillSigner"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
