@@ -1,4 +1,12 @@
-export { ExecutionBlockedError, ExecutionPermit, ExecutionRuntime } from "./execution-runtime.js";
+export {
+  ExecutionBlockedError,
+  ExecutionPermit,
+  ExecutionRuntime,
+  classifyDesktopActionRisk,
+  isDesktopAction,
+  isWebAction,
+  resolvedActionNodeId,
+} from "./execution-runtime.js";
 
 export type {
   ActionExecutor,
@@ -6,11 +14,15 @@ export type {
   ActionResolver,
   AgentContext,
   ExecutionDecisionProvider,
+  ExecutionPermitDescriptor,
+  ExecutionRisk,
   ExecutionRuntimeDependencies,
   PolicyDecision,
   ProposedAction,
   Observer,
   ResolvedAction,
+  ResolvedDesktopAction,
+  ResolvedWebAction,
   RunnerPolicyContext,
   RunnerPolicyGate,
   TraceEventInput,

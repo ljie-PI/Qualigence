@@ -2,7 +2,7 @@ import { z } from "zod";
 import { randomBytes } from "node:crypto";
 import { ModelGatewayError } from "@qualigence/model-gateway";
 import type { StructuredModelInvoker } from "@qualigence/model-gateway";
-import { ExecutionBlockedError } from "@qualigence/runner-kernel";
+import { ExecutionBlockedError, resolvedActionNodeId } from "@qualigence/runner-kernel";
 import type {
   JsonSchema,
   StructuredOutputContract,
@@ -145,7 +145,7 @@ export class ModelBackedVerifier implements Verifier {
                 after: context.after,
                 action: {
                   kind: context.action.kind,
-                  nodeId: context.action.target.nodeId,
+                  nodeId: resolvedActionNodeId(context.action),
                   graphId: context.action.graphId,
                 },
                 outcome: context.outcome,

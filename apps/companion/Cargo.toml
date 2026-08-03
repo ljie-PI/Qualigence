@@ -51,3 +51,15 @@ path = "../../tests/rust/companion/permit_binding.rs"
 [[test]]
 name = "companion_handshake"
 path = "../../tests/rust/companion/handshake.rs"
+
+[[test]]
+name = "companion_uia_worker_protocol"
+path = "../../tests/rust/companion/uia_worker_protocol.rs"
+
+[[test]]
+name = "companion_uia_action_timeout"
+path = "../../tests/rust/companion/uia_action_timeout.rs"
+
+[[test]]
+name = "companion_job_object_lifecycle"
+path = "../../tests/rust/companion/job_object_lifecycle.rs"

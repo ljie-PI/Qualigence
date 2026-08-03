@@ -48,6 +48,7 @@
     { "path": "packages/protocol-adapters/grpc-runner-protocol" },
     { "path": "packages/testkit" },
     { "path": "packages/target-adapters/web-playwright" },
+    { "path": "packages/target-adapters/desktop-windows-uia" },
     { "path": "packages/execution-application" },
     { "path": "packages/observation-migration" },
     { "path": "apps/cli" },

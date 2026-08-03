@@ -53,6 +53,9 @@ importers:
       '@qualigence/desktop-contracts':
         specifier: workspace:*
         version: link:packages/contracts/desktop
+      '@qualigence/desktop-windows-uia':
+        specifier: workspace:*
+        version: link:packages/target-adapters/desktop-windows-uia
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:packages/core-modules/evidence
@@ -956,6 +959,21 @@ importers:
       '@types/better-sqlite3':
         specifier: 9.6.0
         version: 9.6.0
+
+  packages/target-adapters/desktop-windows-uia:
+    dependencies:
+      '@qualigence/desktop-contracts':
+        specifier: workspace:*
+        version: link:../../contracts/desktop
+      '@qualigence/observation-contracts':
+        specifier: workspace:*
+        version: link:../../contracts/observation
+      '@qualigence/runner-kernel':
+        specifier: workspace:*
+        version: link:../../runner-kernel
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
 
   packages/target-adapters/web-playwright:
     dependencies:
