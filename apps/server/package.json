@@ -1,0 +1,28 @@
+{
+  "name": "@qualigence/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qualigence-server": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/oidc": "workspace:*",
+    "@qualigence/postgres-runtime": "workspace:*",
+    "@qualigence/public-api": "workspace:*",
+    "@qualigence/relational-kysely": "workspace:*",
+    "@qualigence/runner-identity": "workspace:*",
+    "@qualigence/runner-mtls": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "fastify": "5.11.0",
+    "kysely": "0.28.17"
+  }
+}

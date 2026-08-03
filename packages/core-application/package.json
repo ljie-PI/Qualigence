@@ -1,0 +1,20 @@
+{
+  "name": "@qualigence/core-application",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@qualigence/intelligence": "workspace:*",
+    "@qualigence/postgres-runtime": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*",
+    "kysely": "0.28.17",
+    "pg": "8.13.1"
+  }
+}

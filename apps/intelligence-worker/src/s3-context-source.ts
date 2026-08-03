@@ -1,0 +1,73 @@
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import type { IntelligenceJob } from "@qualigence/intelligence";
+import type {
+  BugAnalysisContext,
+  ReproductionPlanningContext,
+} from "@qualigence/investigation";
+import { JobProcessingError } from "./job-processor.js";
+import type { IntelligenceContextSource } from "./investigation-job-processor.js";
+
+export interface S3ContextSourceConfig {
+  readonly region: string;
+  readonly endpoint?: string;
+  readonly bucket: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly forcePathStyle: boolean;
+}
+
+/**
+ * Loads a Job's deterministically pre-assembled context from S3. The Server
+ * serialises the context JSON as an artifact when it enqueues the Job and
+ * records the object key in the Job's first `inputRef`; the Worker — which is
+ * denied direct access to aggregate tables — reads only that artifact.
+ */
+export class S3ContextSource implements IntelligenceContextSource {
+  private readonly client: S3Client;
+
+  constructor(private readonly config: S3ContextSourceConfig) {
+    this.client = new S3Client({
+      region: config.region,
+      ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
+      forcePathStyle: config.forcePathStyle,
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+      },
+    });
+  }
+
+  loadReproductionPlanning(job: IntelligenceJob): Promise<ReproductionPlanningContext> {
+    return this.load<ReproductionPlanningContext>(job);
+  }
+
+  loadBugAnalysis(job: IntelligenceJob): Promise<BugAnalysisContext> {
+    return this.load<BugAnalysisContext>(job);
+  }
+
+  private async load<T>(job: IntelligenceJob): Promise<T> {
+    const key = job.inputRefs[0];
+    if (key === undefined) {
+      throw new JobProcessingError("ContextUnavailable", `job ${job.jobId} has no context inputRef`);
+    }
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+      );
+      const body = await response.Body?.transformToString();
+      if (body === undefined) {
+        throw new JobProcessingError("ContextUnavailable", `context artifact ${key} is empty`);
+      }
+      return JSON.parse(body) as T;
+    } catch (error) {
+      if (error instanceof JobProcessingError) {
+        throw error;
+      }
+      throw new JobProcessingError(
+        "ContextUnavailable",
+        `failed to load context artifact ${key} for job ${job.jobId}`,
+        { cause: error },
+      );
+    }
+  }
+}

@@ -24,7 +24,10 @@
     { "path": "packages/core-modules/intelligence" },
     { "path": "packages/core-modules/review" },
     { "path": "packages/benchmarking/detection" },
+    { "path": "packages/contracts/public-api" },
+    { "path": "packages/auth/oidc" },
     { "path": "packages/auth/runner-mtls" },
+    { "path": "packages/core-application" },
     { "path": "packages/storage-providers/relational-kysely" },
     { "path": "packages/storage-providers/postgres-runtime" },
     { "path": "packages/storage-providers/kms-local" },
@@ -41,6 +44,8 @@
     { "path": "apps/core-daemon" },
     { "path": "apps/runner" },
     { "path": "apps/local-launcher" },
-    { "path": "apps/benchmark-runner" }
+    { "path": "apps/benchmark-runner" },
+    { "path": "apps/intelligence-worker" },
+    { "path": "apps/server" }
   ]
 }
