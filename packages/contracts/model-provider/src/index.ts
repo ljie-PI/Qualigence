@@ -1,3 +1,14 @@
+import type { ModelDataPolicy, ModelImageInput } from "./content.js";
+
+export type {
+  ModelDataPolicy,
+  ModelImageInput,
+  ModelImageMediaType,
+  ModelImageSensitivity,
+  SafeImageMetadata,
+} from "./content.js";
+export { base64ByteLength, describeImage } from "./content.js";
+
 export type ModelOperation = "execution.decision" | "execution.verification";
 
 export interface ModelCapabilities {
@@ -14,6 +25,7 @@ export type JsonSchema = { readonly [key: string]: JsonValue };
 export interface ModelMessage {
   readonly role: "system" | "user" | "assistant";
   readonly content: string;
+  readonly images?: readonly ModelImageInput[];
 }
 
 /**
@@ -71,6 +83,7 @@ export interface StructuredModelRequest {
   readonly messages: readonly ModelMessage[];
   readonly timeoutMs: number;
   readonly invocation?: ModelInvocationContext;
+  readonly dataPolicy?: ModelDataPolicy;
 }
 
 export interface StructuredOutputContract<T> {

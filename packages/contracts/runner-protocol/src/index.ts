@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+export * from "./capabilities.js";
+export * from "./messages.js";
+
+
 export type ExecutionJobId = string;
 export type RunId = string;
 export type ObservationGraphId = string;

@@ -15,6 +15,7 @@
     "smoke:node-imports": "pnpm build && node tests/smoke/node-package-imports.mjs"
   },
   "devDependencies": {
+    "@bufbuild/buf": "^1.72.0",
     "@qualigence/application-model": "workspace:*",
     "@qualigence/artifact-fs": "workspace:*",
     "@qualigence/context-intake": "workspace:*",

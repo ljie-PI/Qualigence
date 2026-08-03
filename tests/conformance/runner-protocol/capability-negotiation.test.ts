@@ -1,0 +1,70 @@
+import { describe, expect, it } from "vitest";
+import {
+  advertisedCapabilityTokens,
+  capabilities,
+  negotiateCapabilities,
+  negotiateProtocolMajor,
+} from "@qualigence/runner-protocol";
+
+describe("protocol major negotiation", () => {
+  it("selects the shared major without downgrading", () => {
+    expect(negotiateProtocolMajor([1])).toEqual({ outcome: "selected", selectedProtocolMajor: 1 });
+  });
+
+  it("selects only a supported major even when newer majors are offered first", () => {
+    expect(negotiateProtocolMajor([2, 1])).toEqual({
+      outcome: "selected",
+      selectedProtocolMajor: 1,
+    });
+  });
+
+  it("rejects an unsupported major instead of silently falling back", () => {
+    expect(negotiateProtocolMajor([2])).toEqual({
+      outcome: "rejected",
+      rejection: {
+        code: "ProtocolVersionMismatch",
+        offeredProtocolMajors: [2],
+        supportedProtocolMajors: [1],
+      },
+    });
+  });
+
+  it("rejects an empty offer", () => {
+    const result = negotiateProtocolMajor([]);
+    expect(result.outcome).toBe("rejected");
+  });
+});
+
+describe("capability negotiation", () => {
+  const runnerCapabilities = capabilities({
+    targetAdapters: ["web-playwright"],
+    actionKinds: ["click"],
+    model: { structuredOutput: true, visionInput: false },
+  });
+
+  it("advertises namespaced capability tokens", () => {
+    const tokens = advertisedCapabilityTokens(runnerCapabilities);
+    expect(tokens.has("target:web-playwright")).toBe(true);
+    expect(tokens.has("action:click")).toBe(true);
+    expect(tokens.has("model:structured-output")).toBe(true);
+    expect(tokens.has("model:vision-input")).toBe(false);
+  });
+
+  it("accepts a requirement the runner satisfies", () => {
+    expect(
+      negotiateCapabilities(runnerCapabilities, ["target:web-playwright", "action:click"]),
+    ).toEqual({ outcome: "accepted" });
+  });
+
+  it("rejects a missing capability with a structured mismatch, never a downgrade", () => {
+    expect(
+      negotiateCapabilities(runnerCapabilities, ["target:web-playwright", "model:vision-input"]),
+    ).toEqual({
+      outcome: "rejected",
+      rejection: {
+        code: "CapabilityMismatch",
+        missingCapabilities: ["model:vision-input"],
+      },
+    });
+  });
+});
