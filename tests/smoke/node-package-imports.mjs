@@ -2,6 +2,7 @@ const packages = [
   ["@qualigence/application-model", "TestPlanProposalValidator"],
   ["@qualigence/context-intake", "PrdIntakeService"],
   ["@qualigence/runner-protocol", "canonicalPayloadHash"],
+  ["@qualigence/runner-spool", "SqliteRunnerSpool"],
   ["@qualigence/runner-kernel", "ExecutionRuntime"],
   ["@qualigence/evidence", "TraceIngestor"],
   ["@qualigence/mission", "MissionCompiler"],
@@ -12,6 +13,7 @@ const packages = [
   ["@qualigence/sqlite-runtime", "SqliteRuntime"],
   ["@qualigence/web-playwright", "PlaywrightWebTargetAdapter"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
+  ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
 ];
 
 for (const [packageName, exportName] of packages) {
