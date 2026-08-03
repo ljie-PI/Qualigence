@@ -48,6 +48,8 @@
 
 2026-08-01（PR-04 / LS-04）：在 `feat/ls-04-e2e-release-gate` 分支实现确定性购物车 Fixture、本地 OpenAI-compatible 模拟 Endpoint、CLI 黑盒 E2E（normal→exit 0/passed、fault→exit 1/finding 且 `$19` vs `$29`、blocked→exit 2、Provider 401→exit 3/`ModelAuthenticationFailed` 且不重试）、进程/临时目录诊断 helper，以及显式 opt-in 的 Live Smoke（`pnpm test:live`，默认跳过）。验证证据：`pnpm build`、`pnpm test`、`pnpm test:e2e`、`pnpm typecheck`、`pnpm smoke:node-imports`、`git diff --check` 均通过；Live Smoke 需 `QUALIGENCE_LIVE_MODEL_SMOKE=true` 加四个模型变量方运行，不进入普通 Gate。
 
+2026-08-01（PR-12 / LS-07）：在 `feat/ls-07-prd-integration` 分支完成 LS-07 规划/执行集成 Gate，接续 PR-11 已合并的领域基础（`context-intake`、`application-model`、`mission`）。新增：`PrdPlanningAgent`（`packages/runner-components/model-agent/src/prd-planning-agent.ts`，`model-provider` 追加 `planning.prd-test-cases` 操作，模型仅产出 proposal，绝不生成 ID / 写 Repository / 绕过确定性 `TestPlanProposalValidator`）；`runner-protocol` 的 `AcceptedExecutionJob` 追加可选 `plan?`（不可变 Mission 计划快照，纯增量、向后兼容）；SQLite 迁移 `002-prd-mission`（八张 PRD/Plan/Mission/Job 表，不改动迁移 001）与 `SqlitePrdMissionStore`；`execution-application` 的 `MissionExecutionUseCase`——将已批准的 `CompiledMission` 逐 Job 组合进既有 `RunExecutionUseCase`（不启动任何 CLI 子进程），并把结果聚合为可复读、可追溯回 PRD source range 的 Mission 执行记录。Component E2E `tests/component/prd-planning/prd-to-run.test.ts` 用真实 Playwright + SQLite 走通 PRD 文本→intake→proposal→校验→批准编译 Mission→执行→durable provenance 全链路。验证证据：`pnpm build`、`pnpm test`（236 passed / 1 skipped，含 PR-01 的 `tests/contract/sqlite/**` 未改动通过）、`pnpm typecheck`、`pnpm smoke:node-imports`、`git diff --check` 均通过。偏差：因引入版本化迁移 002，`SUPPORTED_SCHEMA_VERSION` 升为 2，仅相应更新了 `tests/contract/sqlite/sqlite-runtime.test.ts` 中与版本号强耦合的两处断言（改为引用 `SUPPORTED_SCHEMA_VERSION`），迁移 001 的表结构未被触碰。
+
 | ID | Milestone | 能力 | 状态 | Spec | Plan | 代码证据 |
 |---|---|---|---|---|---|---|
 | LS-01 | M1 | SQLite 与 Artifact 本地持久化 | `implemented` | `docs/superpowers/specs/2026-08-01-ls-01-m1-local-persistence-design.md` | `docs/superpowers/plans/2026-08-01-ls-01-m1-local-persistence.md` | `packages/storage-providers/sqlite-runtime/**`、`packages/storage-providers/artifact-fs/**`、`packages/core-modules/evidence/src/persistence-ports.ts` |
@@ -56,7 +58,7 @@
 | LS-04 | M1 | Fixture、CLI E2E 与发布 Gate | `implemented` | `docs/superpowers/specs/2026-08-01-ls-04-m1-e2e-release-gate-design.md` | `docs/superpowers/plans/2026-08-01-ls-04-m1-e2e-release-gate.md` | `tests/fixtures/**`、`tests/helpers/**`、`tests/e2e/cli-web-cart.test.ts`、`tests/live/remote-model-smoke.test.ts` |
 | LS-05 | M1 Hardening | Core/Runner 进程、gRPC、Capability、Spool | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md` | `docs/superpowers/plans/2026-08-01-ls-05-m1-core-runner-transport-hardening.md` | — |
 | LS-06 | M1 Hardening | Launcher、健康检查、备份升级、视觉输入 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md` | `docs/superpowers/plans/2026-08-01-ls-06-m1-local-operations-visual-input.md` | — |
-| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | `docs/superpowers/plans/2026-08-01-ls-07-prd-test-planning.md` | — |
+| LS-07 | PRD Bridge | PRD、Expected Claims、Test Case、Mission、Execution Job | `implemented` | `docs/superpowers/specs/2026-08-01-ls-07-prd-test-planning-design.md` | `docs/superpowers/plans/2026-08-01-ls-07-prd-test-planning.md` | `packages/core-modules/{context-intake,application-model,mission}/**`、`packages/runner-components/model-agent/src/prd-planning-agent.ts`、`packages/contracts/{model-provider,runner-protocol}/src/index.ts`、`packages/storage-providers/sqlite-runtime/src/{migrations/002-prd-mission.ts,sqlite-prd-mission-store.ts}`、`packages/execution-application/src/mission-execution-use-case.ts`、`tests/component/prd-planning/prd-to-run.test.ts` |
 | LS-08 | M2 | Recording 与 Procedure Skill 生命周期 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-08-m2-recording-skill-lifecycle-design.md` | `docs/superpowers/plans/2026-08-01-ls-08-m2-recording-skill-lifecycle.md` | — |
 | LS-09 | M2 | Regression、Exploration、Detection Benchmark v1 | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-09-m2-exploration-benchmark-design.md` | `docs/superpowers/plans/2026-08-01-ls-09-m2-exploration-benchmark.md` | — |
 | LS-10 | M2 | Reproduction、Bug Episode、Human Review、Evidence Capsule | `plan_ready` | `docs/superpowers/specs/2026-08-01-ls-10-m2-investigation-review-evidence-design.md` | `docs/superpowers/plans/2026-08-01-ls-10-m2-investigation-review-evidence.md` | — |
@@ -107,7 +109,7 @@
 |---|---|---|
 | M1 真实 Web 纵向闭环 | 未完成 | LS-01、LS-02、LS-03、LS-04 |
 | M1 硬化 | 未完成 | LS-05、LS-06 |
-| PRD 到执行 | 未完成 | LS-07 |
+| PRD 到执行 | 已完成 | — |
 | M2 Web Skill 与调查闭环 | 未完成 | LS-08、LS-09、LS-10、LS-11 |
 | M3 Windows 原生抽象验证 | 未完成 | LS-12、LS-13 |
 

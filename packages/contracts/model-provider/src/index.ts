@@ -9,7 +9,10 @@ export type {
 } from "./content.js";
 export { base64ByteLength, describeImage } from "./content.js";
 
-export type ModelOperation = "execution.decision" | "execution.verification";
+export type ModelOperation =
+  | "execution.decision"
+  | "execution.verification"
+  | "planning.prd-test-cases";
 
 export interface ModelCapabilities {
   readonly structuredOutput: boolean;

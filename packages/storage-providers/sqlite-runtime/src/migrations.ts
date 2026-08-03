@@ -1,8 +1,9 @@
 import type { Kysely } from "kysely";
 import { sql } from "kysely";
 import type { Database } from "./schema.js";
+import { migration002 } from "./migrations/002-prd-mission.js";
 
-export const SUPPORTED_SCHEMA_VERSION = 1;
+export const SUPPORTED_SCHEMA_VERSION = 2;
 
 export interface Migration {
   readonly version: number;
@@ -120,4 +121,4 @@ const migration001: Migration = {
   },
 };
 
-export const MIGRATIONS: readonly Migration[] = [migration001];
+export const MIGRATIONS: readonly Migration[] = [migration001, migration002];

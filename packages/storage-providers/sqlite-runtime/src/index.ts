@@ -13,6 +13,8 @@ export { SqliteArtifactManifestStore } from "./sqlite-artifact-manifest-store.js
 
 export { SqliteModelInvocationStore } from "./sqlite-model-invocation-store.js";
 
+export { SqlitePrdMissionStore } from "./sqlite-prd-mission-store.js";
+
 export {
   isSqliteBusyError,
   mapBusyError,

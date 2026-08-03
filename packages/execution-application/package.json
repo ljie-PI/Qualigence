@@ -11,7 +11,9 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/context-intake": "workspace:*",
     "@qualigence/evidence": "workspace:*",
+    "@qualigence/mission": "workspace:*",
     "@qualigence/model-gateway": "workspace:*",
     "@qualigence/model-provider": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
