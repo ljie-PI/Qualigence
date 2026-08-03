@@ -4,8 +4,9 @@ import type { Database } from "./schema.js";
 import { migration002 } from "./migrations/002-prd-mission.js";
 import { migration003 } from "./migrations/003-skill.js";
 import { migration004 } from "./migrations/004-exploration-benchmark.js";
+import { migration005 } from "./migrations/005-investigation-review.js";
 
-export const SUPPORTED_SCHEMA_VERSION = 4;
+export const SUPPORTED_SCHEMA_VERSION = 5;
 
 export interface Migration {
   readonly version: number;
@@ -128,4 +129,5 @@ export const MIGRATIONS: readonly Migration[] = [
   migration002,
   migration003,
   migration004,
+  migration005,
 ];

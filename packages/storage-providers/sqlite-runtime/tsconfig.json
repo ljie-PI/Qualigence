@@ -14,8 +14,11 @@
     { "path": "../../benchmarking/detection" },
     { "path": "../../core-modules/context-intake" },
     { "path": "../../core-modules/evidence" },
+    { "path": "../../core-modules/intelligence" },
+    { "path": "../../core-modules/investigation" },
     { "path": "../../core-modules/mission" },
     { "path": "../../core-modules/skill" },
+    { "path": "../../core-modules/review" },
     { "path": "../../runner-components/recording" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../../shared-kernel" }
