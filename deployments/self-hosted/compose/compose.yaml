@@ -1,0 +1,380 @@
+# Qualigence Team Self-hosted — Linux single-node Docker Compose topology.
+#
+# The reverse proxy is the only public entrypoint. PostgreSQL and MinIO stay on
+# the internal network with NO host-published ports. Every secret is mounted
+# from a file under /run/secrets (never baked into an image layer or passed as a
+# plaintext environment value). All third-party images are pinned by digest and
+# `latest` is never used. Runtime application containers are non-root, run with a
+# read-only root filesystem, drop all Linux capabilities, forbid privilege
+# escalation and carry CPU/memory/PID and log-rotation limits.
+
+name: qualigence-self-hosted
+
+x-node-image: &node-image
+  image: qualigence/self-hosted:${QUALIGENCE_IMAGE_TAG:-0.1.0}
+  build:
+    context: ../../..
+    dockerfile: Dockerfile
+
+x-hardening: &hardening
+  read_only: true
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+    environment:
+      POSTGRES_USER: qualigence_owner
+      POSTGRES_DB: qualigence
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_admin_password
+    secrets:
+      - pg_admin_password
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - internal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qualigence_owner -d qualigence"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+          pids: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3
+    # Read the root credentials from mounted secret files so no secret value
+    # ever appears in this service's environment.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        export MINIO_ROOT_USER="$$(cat /run/secrets/s3_access_key_id)"
+        export MINIO_ROOT_PASSWORD="$$(cat /run/secrets/s3_secret_access_key)"
+        exec minio server /data --console-address :9001
+    secrets:
+      - s3_access_key_id
+      - s3_secret_access_key
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - internal
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot: provision the schema, forced RLS and least-privilege roles. Run
+  # explicitly (`docker compose run --rm migrate`) before starting the stack and
+  # again before any upgrade. Never runs implicitly at Server startup.
+  migrate:
+    <<: [*node-image, *hardening]
+    command: ["migrate"]
+    profiles: ["setup"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &admin-env
+      ADMIN_PG_HOST: postgres
+      ADMIN_PG_PORT: "5432"
+      ADMIN_PG_DATABASE: qualigence
+      ADMIN_PG_USER: qualigence_owner
+      ADMIN_PG_PASSWORD_FILE: /run/secrets/pg_admin_password
+      ADMIN_SERVER_PG_USER: qualigence_server
+      ADMIN_SERVER_PG_PASSWORD_FILE: /run/secrets/pg_server_password
+      ADMIN_WORKER_PG_USER: qualigence_worker
+      ADMIN_WORKER_PG_PASSWORD_FILE: /run/secrets/pg_worker_password
+      ADMIN_S3_ENDPOINT: http://minio:9000
+      ADMIN_S3_REGION: us-east-1
+      ADMIN_S3_BUCKET: qualigence-artifacts
+      ADMIN_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id
+      ADMIN_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key
+      ADMIN_S3_FORCE_PATH_STYLE: "true"
+      ADMIN_KMS_ROOT_KEY_FILE: /run/secrets/kms_root_key
+      ADMIN_SERVER_BASE_URL: http://server:8080
+      ADMIN_BACKUP_DIR: /var/lib/qualigence/backups
+    secrets:
+      - pg_admin_password
+      - pg_server_password
+      - pg_worker_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - kms_root_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    volumes:
+      - backups:/var/lib/qualigence/backups
+
+  # Operator maintenance one-shots. Usage:
+  #   docker compose run --rm doctor
+  #   docker compose run --rm backup
+  #   docker compose run --rm restore
+  doctor:
+    <<: [*node-image, *hardening]
+    command: ["doctor", "--json"]
+    profiles: ["ops"]
+    environment: *admin-env
+    secrets:
+      - pg_admin_password
+      - pg_server_password
+      - pg_worker_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - kms_root_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    volumes:
+      - backups:/var/lib/qualigence/backups
+
+  backup:
+    <<: [*node-image, *hardening]
+    command: ["backup"]
+    profiles: ["ops"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *admin-env
+    secrets:
+      - pg_admin_password
+      - pg_server_password
+      - pg_worker_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - kms_root_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    volumes:
+      - backups:/var/lib/qualigence/backups
+
+  restore:
+    <<: [*node-image, *hardening]
+    command: ["restore"]
+    profiles: ["ops"]
+    environment: *admin-env
+    secrets:
+      - pg_admin_password
+      - pg_server_password
+      - pg_worker_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - kms_root_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    volumes:
+      - backups:/var/lib/qualigence/backups
+
+  server:
+    <<: [*node-image, *hardening]
+    command: ["server"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8080"
+      SERVER_PG_HOST: postgres
+      SERVER_PG_PORT: "5432"
+      SERVER_PG_DATABASE: qualigence
+      SERVER_PG_USER: qualigence_server
+      SERVER_PG_PASSWORD_FILE: /run/secrets/pg_server_password
+      SERVER_OIDC_ISSUER: ${QUALIGENCE_OIDC_ISSUER:?set the OIDC issuer}
+      SERVER_OIDC_AUDIENCE: ${QUALIGENCE_OIDC_AUDIENCE:?set the OIDC audience}
+      SERVER_OIDC_ALGORITHMS: "RS256,ES256"
+      SERVER_OIDC_JWKS_FILE: /run/secrets/oidc_jwks
+      SERVER_OIDC_CLAIM_MAP_FILE: /run/secrets/oidc_claim_map
+      SERVER_RUNNER_CA_CERT_FILE: /run/secrets/runner_ca_cert
+      SERVER_RUNNER_CA_KEY_FILE: /run/secrets/runner_ca_key
+    secrets:
+      - pg_server_password
+      - oidc_jwks
+      - oidc_claim_map
+      - runner_ca_cert
+      - runner_ca_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 768M
+          pids: 512
+
+  worker:
+    <<: [*node-image, *hardening]
+    command: ["worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      WORKER_PG_HOST: postgres
+      WORKER_PG_PORT: "5432"
+      WORKER_PG_DATABASE: qualigence
+      WORKER_PG_USER: qualigence_worker
+      WORKER_PG_PASSWORD_FILE: /run/secrets/pg_worker_password
+      WORKER_S3_ENDPOINT: http://minio:9000
+      WORKER_S3_REGION: us-east-1
+      WORKER_S3_BUCKET: qualigence-artifacts
+      WORKER_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id
+      WORKER_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key
+      WORKER_S3_FORCE_PATH_STYLE: "true"
+      WORKER_MODEL_BASE_URL: ${QUALIGENCE_MODEL_BASE_URL:?set the model base URL}
+      WORKER_MODEL_API_KEY_FILE: /run/secrets/worker_model_api_key
+      WORKER_MODEL_NAME: ${QUALIGENCE_MODEL_NAME:?set the model name}
+    secrets:
+      - pg_worker_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - worker_model_api_key
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 768M
+          pids: 512
+
+  console:
+    image: qualigence/self-hosted-console:${QUALIGENCE_IMAGE_TAG:-0.1.0}
+    build:
+      context: ../../..
+      dockerfile: deployments/self-hosted/docker/console.Dockerfile
+    <<: *hardening
+    networks:
+      - internal
+    tmpfs:
+      - /tmp
+      - /config
+      - /data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+          pids: 128
+
+  proxy:
+    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    depends_on:
+      - server
+      - console
+    ports:
+      - "443:443"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      QUALIGENCE_SITE_ADDRESS: ${QUALIGENCE_SITE_ADDRESS:-:443}
+    secrets:
+      - tls_cert
+      - tls_key
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    networks:
+      - internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+          pids: 256
+
+networks:
+  internal:
+    driver: bridge
+    internal: false
+
+volumes:
+  pgdata:
+  miniodata:
+  backups:
+  caddydata:
+  caddyconfig:
+
+# Every secret is a file mounted at /run/secrets/<name>. The files live under
+# ./secrets and are git-ignored (see ./secrets/README.md for generation). No
+# secret value is ever placed in an environment variable or image layer.
+secrets:
+  pg_admin_password:
+    file: ./secrets/pg_admin_password
+  pg_server_password:
+    file: ./secrets/pg_server_password
+  pg_worker_password:
+    file: ./secrets/pg_worker_password
+  s3_access_key_id:
+    file: ./secrets/s3_access_key_id
+  s3_secret_access_key:
+    file: ./secrets/s3_secret_access_key
+  kms_root_key:
+    file: ./secrets/kms_root_key
+  oidc_jwks:
+    file: ./secrets/oidc_jwks.json
+  oidc_claim_map:
+    file: ./secrets/oidc_claim_map.json
+  runner_ca_cert:
+    file: ./secrets/runner_ca_cert.pem
+  runner_ca_key:
+    file: ./secrets/runner_ca_key.pem
+  worker_model_api_key:
+    file: ./secrets/worker_model_api_key
+  tls_cert:
+    file: ./secrets/tls_cert.pem
+  tls_key:
+    file: ./secrets/tls_key.pem
