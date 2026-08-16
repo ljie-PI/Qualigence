@@ -55,3 +55,10 @@ were run without credentials, tokens, or connection strings.
   Task 2 (`603439b`) had only 5 of 7 smoke cases GREEN for the same reason.
   The clean-worktree results above supersede those verification blocks without
   rewriting their implementation commits.
+- 2026-08-16 — PR 1 isolation RED: `corepack pnpm install
+  --frozen-lockfile` exited 1 because the main-branch lockfile referenced Vite
+  8.1.5 without its exact peer-dependency snapshot. `corepack pnpm install
+  --lockfile-only --fix-lockfile --ignore-scripts` through the explicit local
+  proxy repaired only the locked peer graph; no manifest changed and TLS
+  verification remained enabled. A subsequent `corepack pnpm install
+  --frozen-lockfile` exited 0 and installed 326 locked packages.

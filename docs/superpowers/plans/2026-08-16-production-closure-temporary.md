@@ -138,7 +138,7 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, lockfile consistency, and their clean black-box Gate | ready for review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
@@ -423,6 +423,7 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 **Files:**
 - Create: `docs/production-closure-status.md`
+- Modify only when the frozen-install RED proves the existing lock inconsistent: `pnpm-lock.yaml`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/main.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/commands/doctor.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/core-daemon/src/main.ts`
@@ -453,6 +454,12 @@ corepack pnpm exec playwright --version
 ```
 
 Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction.
+
+PR packaging correction: when Task 4 was separated from Task 3, the frozen
+install exposed a pre-existing missing Vite 8.1.5 peer snapshot. Repair only
+that inconsistent lock graph with pnpm's `--fix-lockfile --lockfile-only`
+mode, review the exact lock diff, and prove the result with a subsequent frozen
+install. Do not change any manifest or select newer direct dependency versions.
 
 - [x] **Step 2: Preserve the earlier incomplete verification as RED evidence**
 
