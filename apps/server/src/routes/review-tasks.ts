@@ -55,13 +55,14 @@ function taskToDto(task: ReviewTask): ReviewTaskDto {
   };
 }
 
-function rethrowSafeReviewError(error: unknown): never {
+function rethrowSafeReviewError(error: unknown, expectedVersion: number): never {
   if (!(error instanceof ReviewTaskError)) {
     throw error;
   }
   throw versionConflict(
     {
-      ...(error.currentVersion === undefined ? {} : { currentVersion: error.currentVersion }),
+      expectedVersion,
+      ...(error.currentVersion === undefined ? {} : { actualVersion: error.currentVersion }),
       ...(error.assigneeId === undefined ? {} : { assigneeId: error.assigneeId }),
     },
   );
@@ -104,7 +105,7 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
           });
           return taskToDto(task);
         } catch (error) {
-          return rethrowSafeReviewError(error);
+          return rethrowSafeReviewError(error, body.expectedVersion as number);
         }
       });
 
@@ -142,7 +143,7 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
           });
           return taskToDto(task);
         } catch (error) {
-          return rethrowSafeReviewError(error);
+          return rethrowSafeReviewError(error, body.expectedVersion as number);
         }
       });
 

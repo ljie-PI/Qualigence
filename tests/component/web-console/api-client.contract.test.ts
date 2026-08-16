@@ -184,8 +184,12 @@ describeMaybe("Web Console API client ↔ real Public API", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiClientError);
     expect((error as ApiClientError).code).toBe("VersionConflict");
-    // The safe conflict details carry the real actual version, never internals.
-    expect((error as ApiClientError).details).toMatchObject({ actualVersion: 3 });
+    // The public conflict contract preserves both submitted and actual versions;
+    // domain-only field names must not leak through the API.
+    expect((error as ApiClientError).details).toMatchObject({
+      expectedVersion: 1,
+      actualVersion: 3,
+    });
   });
 
   it("enforces RBAC: a viewer cannot create a project (Forbidden)", async () => {
