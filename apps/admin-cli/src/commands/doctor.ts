@@ -45,7 +45,7 @@ export async function runDoctor(
   checks.push(...(await checkRlsEnforced(config)));
   checks.push(await checkWorkerLeastPrivilege(config));
   checks.push(await checkObjectStore(config));
-  checks.push(checkKms(config, options.kmsAvailable ?? true));
+  checks.push(await checkKms(config, options.kmsAvailable ?? true));
   checks.push(await checkServer(config, httpProbe));
   checks.push(...checkSecretFiles(config));
 
@@ -199,13 +199,13 @@ async function checkObjectStore(config: SelfHostedAdminConfig): Promise<DoctorCh
   }
 }
 
-function checkKms(config: SelfHostedAdminConfig, available: boolean): DoctorCheck {
+async function checkKms(config: SelfHostedAdminConfig, available: boolean): Promise<DoctorCheck> {
   try {
     const kms = new SelfHostedKms({ rootKey: config.kms.rootKey });
     kms.setAvailable(available);
     // A real profile issuance proves the root key is valid and the provider is
     // functional; when unavailable it throws and the check fails closed.
-    void kms.encryptionProfile({
+    await kms.encryptionProfile({
       tenantId: "doctor",
       caseId: "doctor",
       region: "self-hosted",
