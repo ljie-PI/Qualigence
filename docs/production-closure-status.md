@@ -1,148 +1,203 @@
-# Production Closure Status Ledger
+# Production closure status
 
-This committed ledger records independently repeatable closure evidence. A
-passing component test alone never upgrades `production_wiring`; the named
-composition root and its black-box Gate must both be evidenced. Commands below
-were run without credentials, tokens, or connection strings.
+## Task 0 — Windows test quarantine (2026-08-16)
 
-## Current capability status
+component: complete
+production_wiring: missing
+verification: blocked
+introducing_pr: Q / `codex/pr-preflight-windows-quarantine`
 
-| capability | component | production_wiring | verification | evidence | commit |
+Q is intentionally test-only and adds no production Composition Root wiring.
+This `missing` value does not imply that any product wiring is complete.
+
+### Windows RED evidence
+
+Platform: Windows; Node `v24.16.0`; Corepack pnpm `11.7.0`.
+
+The unquarantined four-file command was run in the disposable detached worktree
+`D:\Workspace\Qualigence\.worktrees\task0-baseline-validation` at `0713b8d`.
+That tree had the exact tracked `pnpm-lock.yaml` from
+`D:\Workspace\Qualigence\.worktrees\pr0-lockfile-repair` copied in as an
+uncommitted validation-only replacement (SHA-256
+`F1467CC5C66BF09B134336AB1C223757EEC77B8E03591470BA44C4B6768954B8`), then
+completed `corepack pnpm install --frozen-lockfile` and `corepack pnpm build`.
+`C:\Program Files\Git\usr\bin` was prepended only for the test command so the
+known Git OpenSSL executable was available.
+
+Command:
+
+```powershell
+$env:PATH = 'C:\Program Files\Git\usr\bin;' + $env:PATH
+corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts
+```
+
+Result: `4` failed files; `4` failed, `19` passed, `23` total tests; `0` skipped.
+
+| File | Exact test | Windows RED | Task 21 remediation | Introducing commit / PR | Windows evidence | Linux evidence | removal_state |
+|---|---|---|---|---|---|---|---|
+| `tests/component/local-launcher/start-stop.test.ts` | `escalates SIGTERM to SIGKILL for a process that ignores SIGTERM` | `AssertionError: expected 0 to be greater than or equal to 300` — Windows process termination makes the minimum elapsed-time assertion non-portable. | Use observable process lifecycle events for SIGTERM request, grace expiry, forced termination request, and child exit. | `6bc2857f2e45720a85abff7a8f507adef7a81a92`; PR: pending (`codex/pr-preflight-windows-quarantine`) | RED command above: one named failure; post-commit command: skipped. | `LinuxExecutorUnavailable` | pending |
+| `tests/component/skill-lifecycle/recording-to-replay.test.ts` | `records, induces, compiles, verifies, signs, promotes, reopens and replays` | `EBUSY: resource busy or locked, unlink ...qualigence.db-wal` — reopened SQLite runtime remains open during Windows temporary-tree cleanup. | Deterministically close every reopened `SqliteRuntime` before cleanup. | `6bc2857f2e45720a85abff7a8f507adef7a81a92`; PR: pending (`codex/pr-preflight-windows-quarantine`) | RED command above: one named failure; post-commit command: skipped. | `LinuxExecutorUnavailable` | pending |
+| `tests/component/web-execution/playwright-web-target.test.ts` | `runs observe -> resolve -> execute -> artifacts -> close and reaps the browser` | `ENOENT: no such file or directory, scandir 'D:\\proc'` — process-leak assertion enumerates Linux `/proc`. | Replace `/proc` enumeration with a cross-platform owned browser-process lifecycle seam. | `6bc2857f2e45720a85abff7a8f507adef7a81a92`; PR: pending (`codex/pr-preflight-windows-quarantine`) | RED command above: one named failure; post-commit command: skipped. | `LinuxExecutorUnavailable` | pending |
+| `tests/contract/kms-local/skill-signing.test.ts` | `generates a user-only private key and a publishable keyId` | `AssertionError: expected 438 to be 384` (`0o666` received vs `0o600`) — POSIX mode bits are not a Windows ACL contract. | Assert Windows ACL protection on Windows and POSIX `0600` mode bits on POSIX. | `6bc2857f2e45720a85abff7a8f507adef7a81a92`; PR: pending (`codex/pr-preflight-windows-quarantine`) | RED command above: one named failure; post-commit command: skipped. | `LinuxExecutorUnavailable` | pending |
+
+### Validation dependency disclosure
+
+Q starts from the frozen-lock failure whose P0 repair is intentionally separate.
+The Q branch neither changes nor stages `pnpm-lock.yaml`. Post-commit validation
+uses a new disposable detached tree based on Q with the exact tracked P0 lock
+copied in as an uncommitted replacement; results are recorded here after that
+validation completes.
+
+### Post-commit Windows validation
+
+The disposable detached worktree
+`D:\Workspace\Qualigence\.worktrees\task0-6bc-validation` was based on the
+stable implementation commit `6bc2857f2e45720a85abff7a8f507adef7a81a92`.
+Its only source diff was the uncommitted P0 lock replacement above; that lock
+was never staged on Q.
+
+With the same command and Git OpenSSL-only PATH addition as the RED command,
+the focused run passed with `3` files passed, `1` file skipped; `19` tests
+passed, `4` skipped, `23` total. The four skips were the four ledger entries
+above; no other focused test skipped.
+
+`corepack pnpm install --frozen-lockfile`, `corepack pnpm build`, and
+`corepack pnpm typecheck` passed. `git diff --check` passed in the validation
+tree; `git diff --name-only` reported only `pnpm-lock.yaml`. `corepack pnpm test`
+reported `134` files passed, `1` failed, `1` skipped; `808` tests passed, `1`
+failed, `6` skipped, `815` total. Its only failure was the unrelated
+`tests/e2e/local-launcher.test.ts` assertion that `config.yaml` exists after
+`init`; none of the four quarantined tests failed.
+
+Linux execution is blocked as `LinuxExecutorUnavailable`; this Windows-only Q
+remains release-blocking until Linux evidence and Task 21 remove the four skips.
+
+### Review and bounded merge waiver
+
+Standards review and Spec/architecture review passed after commit `1e0fb06`;
+both reported zero remaining Critical or Important findings. On 2026-08-16 the
+user approved merging Q and P0 with the one disclosed pre-existing Local
+Launcher `init` E2E failure. The waiver covers no other failure or skip and does
+not change `verification: blocked`. Product PR 1 must merge next after P0 and
+restore the full Windows suite to zero failures; otherwise the stack stops.
+
+## Tasks 1, 2, and 4 — Runtime operations
+
+The evidence below was produced in a clean detached worktree and is retained
+separately from Task 0's release-blocking Windows quarantine.
+
+| capability | component | production_wiring | verification | evidence | implementation commit |
 |---|---|---|---|---|---|
-| Admin CLI | complete | complete | passed | clean built-binary help, unknown-command, parsing, and fail-closed KMS checks | `f200d6d` |
-| Direct Node entrypoints | complete | complete | passed | all seven built binaries execute their direct-entry guard; configuration-dependent daemons reject missing configuration | `603439b` |
-| Local Launcher process gate | complete | complete | passed | clean built-binary init/start/status/doctor/backup/stop path with explicit Git OpenSSL discovery on Windows | `603439b` |
-| Review task repository | complete | complete | passed | one shared contract passed against SQLite and tenant-scoped PostgreSQL, including idempotency-key binding and two-writer claim races | `3071da0` |
-| Web Console OIDC ID Token | complete | complete | passed | real RS256 signatures and a local JWKS endpoint prove verification happens before claims are trusted; failure paths clear transient callback state | this commit |
-| Root Playwright CLI exposure | partial | partial | failed | `corepack pnpm exec playwright --version` cannot find the root executable; use the filtered adapter command until Task 21 defines root Gates | `d07c2eb` |
+| Admin CLI | complete | complete | passed | built-binary help, unknown-command, parsing, and fail-closed KMS checks | `f200d6d` / restacked `2f34d25` |
+| Direct Node entrypoints | complete | complete | passed | all seven built binaries execute their canonical direct-entry guard; configuration-dependent daemons reject missing configuration | `603439b` / restacked `140b4ac` |
+| Local Launcher process Gate | complete | complete | passed | built-binary init/start/status/doctor/backup/stop with explicit Git OpenSSL discovery on Windows | `603439b` / restacked `140b4ac` |
+| Root Playwright CLI exposure | partial | partial | failed | root `pnpm exec playwright` cannot find the adapter-owned executable; Task 21 owns the corrected filtered Gate | `d07c2eb` |
 
-## Append-only evidence log
+### Runtime operations evidence log
 
-- 2026-08-16 — host: Microsoft Windows 11 Enterprise 10.0.26200 (build
-  26200); clean detached worktree
-  `D:\Workspace\Qualigence\.worktrees\production-closure-task4-gate`;
-  `node --version` exited 0 (`v24.16.0`); `corepack pnpm --version` exited 0
-  (`11.7.0`).
-- 2026-08-16 — `corepack pnpm install --frozen-lockfile` exited 0; 326
-  packages installed from the locked store; no lockfile change. This is the
-  clean-install baseline, not the historical shared `node_modules` Junction.
-- 2026-08-16 — `corepack pnpm exec playwright --version` exited 1 with
-  `Command "playwright" not found`. The adapter owns `playwright`; the root
-  package does not expose that executable. This is a documented root-Gate
-  defect for Task 21, not a skipped browser check.
-- 2026-08-16 — `corepack pnpm build` exited 0; TypeScript project build and
-  Web Console Vite build both passed.
-- 2026-08-16 — initial `tests/e2e/local-launcher.test.ts` run exited 1: 0
-  passed, 1 failed. Root cause was `spawnSync openssl ENOENT` during local
-  certificate creation. Git OpenSSL was present at
-  `C:\Program Files\Git\usr\bin\openssl.exe` but absent from `PATH`.
-- 2026-08-16 — after explicitly prepending
-  `C:\Program Files\Git\usr\bin` to the Windows Gate `PATH`, the same Local
-  Launcher E2E exited 0: 1 passed, 0 failed, 0 skipped. This follows the
-  plan's required Windows OpenSSL resolution; it is not an infrastructure
-  skip.
-- 2026-08-16 — with that explicit Gate environment,
-  `corepack pnpm vitest run tests/smoke/node-entrypoints.test.ts
+- Node `v24.16.0` and Corepack pnpm `11.7.0` were used in the clean Task 4
+  validation worktree; frozen install and build passed without a lock change.
+- Root `corepack pnpm exec playwright --version` failed with `Command
+  "playwright" not found`; this remains explicit failed evidence and is not an
+  infrastructure skip. The adapter-filtered install command is owned by Task 21.
+- The first Local Launcher E2E run failed because `openssl` was absent from
+  `PATH`. Prepending `C:\Program Files\Git\usr\bin` made the same real E2E pass;
+  no test or certificate check was skipped.
+- `corepack pnpm vitest run tests/smoke/node-entrypoints.test.ts
   tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
-  tests/migration/observation-v1/admin-command.test.ts` exited 0: 4 files,
-  17 passed, 0 failed, 0 skipped. The smoke file covered Admin CLI, Local
-  Launcher, Core Daemon, Runner, Server, Intelligence Worker, and Benchmark
-  Runner.
-- 2026-08-16 — `corepack pnpm typecheck` exited 0; `tsc -b`, test-project
-  checking, and Web Console typecheck passed.
-- 2026-08-16 — final focused repeat with the same four files exited 0: 4
-  files, 17 passed, 0 failed, 0 skipped.
-- Historical RED evidence retained: Task 1 (`f200d6d`) had no clean focused
-  GREEN because the original worktree dependency Junction was incomplete;
-  Task 2 (`603439b`) had only 5 of 7 smoke cases GREEN for the same reason.
-  The clean-worktree results above supersede those verification blocks without
-  rewriting their implementation commits.
-- 2026-08-16 — Task 5 RED: the provider-neutral contract showed that SQLite
-  returned the second task's aggregate when a claim or resolution idempotency
-  key had already been bound to a different task. PostgreSQL already rejected
-  those mismatches. The Windows Gate explicitly resolved Git OpenSSL and used
-  Docker; no PostgreSQL case was skipped.
-- 2026-08-16 — after SQLite bound replay to the stored `task_id`,
-  `corepack pnpm vitest run tests/contract/review/sqlite-review-task-repository.test.ts
-  tests/contract/review/postgres-review-task-repository.test.ts` exited 0:
-  2 files, 18 passed, 0 failed, 0 skipped. Each PostgreSQL runner constructed
-  its repository inside a separate `withTenant("tenant-a", ...)` callback;
-  the concurrent claim assertion therefore used two real pool transactions.
-- 2026-08-16 — with the same Docker and explicit OpenSSL Gate environment,
+  tests/migration/observation-v1/admin-command.test.ts` passed 4 files and 17
+  tests with 0 failed and 0 skipped.
+- `corepack pnpm typecheck` passed, including project, test, and Web Console
+  type checking.
+- A cold-worktree Runner subprocess once exceeded the original 10-second hang
+  guard. Three direct launches failed closed correctly in 564–640 ms and three
+  isolated smoke runs passed in 1.00 seconds each; the non-production hang guard
+  was widened to 30 seconds. The 17-test focused Gate then passed again.
+- Historical RED is retained: Tasks 1 and 2 originally lacked clean GREEN due
+  to an incomplete shared dependency junction. The clean detached evidence
+  above supersedes that environment block without rewriting product behavior.
+
+### Restacked Product PR 1 verification (2026-08-17)
+
+- Branch `codex/pr1-runtime-ops-restack` was created from merged P0 commit
+  `7e24a9f`; `origin/main...HEAD` contains only Tasks 1, 2, and 4 source/tests
+  plus this plan/status update, with no lockfile or quarantine change.
+- `corepack pnpm install --frozen-lockfile` passed with pnpm `11.7.0`.
+- `corepack pnpm build` and `corepack pnpm typecheck` both exited 0.
+- With `C:\Program Files\Git\usr\bin` prepended to `PATH`, the four-file
+  focused Gate passed 4 files and 17 tests with 0 failed and 0 skipped.
+- The same environment ran `corepack pnpm test`: 137 files passed, 1 skipped;
+  820 tests passed, 6 skipped, 826 total, 0 failed. The Q/P0 bounded baseline
+  failure is therefore closed on the Product PR 1 tree. The six skips are the
+  four documented Task 21 Windows quarantines plus two pre-existing explicit
+  skips; no new skip was added.
+- Task 21 and Linux evidence remain open. This Product PR 1 result closes only
+  the temporary Local Launcher merge waiver; it is not release completion.
+- Restacked Standards and Spec/architecture reviews passed after commit
+  `19b3d8a`; both timeout-cleanup and plan-scope findings were addressed, with
+  zero remaining Critical or Important findings.
+
+## Tasks 3 and 5 - Review invariants
+
+| capability | component | production_wiring | verification | evidence | implementation commit |
+|---|---|---|---|---|---|
+| Review HTTP mutations | complete | complete | passed | claim and resolve use aggregate handlers and preserve the safe version-conflict envelope | `7a5d4d7`, `bcdf329` |
+| Review repository provider contract | complete | complete | passed | one shared contract runs against SQLite and tenant-scoped PostgreSQL with explicit tenant scope, complete-command idempotency, rollback injection, and two-writer races | `5cc3380`, `06877d6`, `d25076d`, `0a00a71`, `f4ec623` |
+
+### Review invariants evidence log
+
+- The initial provider-neutral contract exposed SQLite idempotency keys being
+  replayed onto a different task. PostgreSQL already rejected that mismatch.
+- After binding replay to the stored task and making SQLite transition plus
+  audit persistence one transaction, the shared provider contract passed 28
+  tests, including concurrent replay and audit-failure rollback.
+- Advisory-lock trigger barriers then forced two independent PostgreSQL tenant
+  transactions to overlap. Four RED cases reproduced same-command replay and
+  unique-violation failures for claim and resolve.
+- After merging PR #38, the dual-axis review found four blockers: repository
+  tenant scope was implicit, idempotency replay was bound only to task ID,
+  PostgreSQL lacked rollback injection evidence, and one required Docker E2E
+  could skip silently. The follow-up made tenant ID explicit through the port,
+  bound replay to every persisted command field, moved PostgreSQL persistence
+  into the storage-provider package, added cross-tenant and rollback tests, and
+  made Docker absence fail as `DockerUnavailable`.
+- On the corrected merged tree, frozen install, build, and root typecheck passed.
+  The complete focused Review command passed 6 files and 67 tests with 0 failed
+  and 0 skipped, including real PostgreSQL two-writer overlap and both-provider
+  complete-command replay cases.
+- 2026-08-17 - host: Microsoft Windows 11 Enterprise; Node `v24.16.0`;
+  Corepack pnpm `11.7.0`; implementation commit `f4ec623`.
+- `corepack pnpm install --frozen-lockfile` exited 0 with no lockfile change.
+- `corepack pnpm build` exited 0; root TypeScript build and Web Console Vite
+  production build passed.
+- `corepack pnpm typecheck` exited 0; production projects, test project, and Web
+  Console typecheck passed.
+- With `C:\Program Files\Git\usr\bin` prepended to the command `PATH`,
   `corepack pnpm vitest run tests/contract/review
   tests/contract/sqlite/investigation-review-store.test.ts
   tests/component/review/concurrent-claim.test.ts
   tests/e2e/web-console/review-conflict.test.ts
-  tests/contract/public-api/api-v1.test.ts` exited 0: 6 files, 46 passed,
-  0 failed, 0 skipped.
-- 2026-08-16 — `corepack pnpm typecheck` exited 0 after the provider contract
-  and adapter update.
-- 2026-08-16 — PR 2 Standards and Spec/architecture review both found the
-  SQLite Review adapter advanced the aggregate and wrote its idempotency audit
-  in separate autocommit statements. New shared concurrent replay/key-reuse
-  cases and SQLite audit-failure injection reproduced 3 claim failures and,
-  after reverting the provisional resolution change, 3 equivalent resolution
-  failures. The observed defects were duplicate task transitions, missing
-  concurrent replay, and an aggregate left advanced after a rejected audit.
-- 2026-08-16 — after reserving the idempotency key before compare-and-set in one
-  SQLite transaction, deleting a losing reservation, and making one bounded
-  `SQLITE_BUSY` replay attempt, the provider contract exited 0: 2 files,
-  28 passed, 0 failed, 0 skipped. This closed SQLite atomicity but did not yet
-  force both PostgreSQL transactions past the initial ledger decision.
-- 2026-08-16 — the complete Task 5 regression command exited 0: 6 files,
-  56 passed, 0 failed, 0 skipped. `corepack pnpm typecheck` then exited 0,
-  including TypeScript project build, test-project checking, and Web Console
-  production/type builds.
-- 2026-08-16 — second Spec/architecture review used a PostgreSQL code audit to
-  identify the remaining schedule-dependent gap. Advisory-lock trigger barriers
-  then forced two real tenant transactions to overlap as ReviewTask writers.
-  Four focused RED cases reproduced missing same-command replay and
-  unique-violation rejection for both claim and resolve.
-- 2026-08-16 — after PostgreSQL adopted the same reservation-first ordering,
-  all 4 controlled race cases passed. The complete Task 5 regression exited 0:
-  6 files, 60 passed, 0 failed, 0 skipped; `corepack pnpm typecheck` exited 0.
-- 2026-08-16 — Task 6 dependency precondition: direct registry access did not
-  complete in the diagnostic window. With the user-provided local HTTP proxy,
-  an HTTPS registry request returned 200 and `corepack pnpm view jose version
-  --json` exited 0 with `6.2.9`. `corepack pnpm --filter
-  @qualigence/web-console add jose` then exited 0. TLS verification remained
-  enabled and no permanent proxy or registry setting was written.
-- 2026-08-16 — Task 6 security RED: the focused OIDC suite accepted an ID
-  Token whose payload was changed after signing and returned subject
-  `attacker` (1 failed, 6 passed). A second RED proved the verifier constructor
-  initially accepted a runtime `HS256` allowlist (1 failed, 13 passed).
-- 2026-08-16 — after adding the cached remote-JWKS verifier and runtime
-  asymmetric-algorithm allowlist, `corepack pnpm vitest run
-  tests/component/web-console/oidc-flow.test.ts --reporter=verbose` exited 0:
-  1 file, 15 passed, 0 failed. The cases cover valid RS256 and ES256, payload tampering,
-  unknown `kid`, disallowed ES256, rejected HS256 configuration, expiry,
-  unavailable JWKS, wrong issuer/audience/nonce, tenant rejection, PKCE, and
-  in-memory token/logout behavior.
-- 2026-08-16 — `corepack pnpm --filter @qualigence/web-console typecheck`
-  exited 0. `corepack pnpm typecheck` also exited 0, including the TypeScript
-  project build, production Vite bundle, test project, and Web Console checks.
-- 2026-08-16 — PR 3 Spec/architecture review confirmed the fail-closed verifier
-  boundary but found the advertised ES256 success path untested. A real P-256
-  issuer/JWKS callback case was added with `allowedAlgorithms: ["ES256"]`;
-  production verification code was unchanged.
-- 2026-08-16 — highest-stack full Gate with Docker, Chromium, and Git OpenSSL
-  available built successfully, then exited 1: 140 files total (136 passed,
-  4 failed), 868 tests total (862 passed, 4 failed, 2 skipped). Failures are the
-  pre-existing Task 21 Windows baselines: launcher SIGTERM timing, an unclosed
-  reopened SQLite handle during cleanup, Linux-only `/proc` process discovery,
-  and a POSIX `0600` mode assertion on Windows. These are not environment skips
-  and block PR publication under the full-suite completion rule.
-- 2026-08-16 — PR 1 isolation RED: `corepack pnpm install
-  --frozen-lockfile` exited 1 because the main-branch lockfile referenced Vite
-  8.1.5 without its exact peer-dependency snapshot. `corepack pnpm install
-  --lockfile-only --fix-lockfile --ignore-scripts` through the explicit local
-  proxy repaired only the locked peer graph; no manifest changed and TLS
-  verification remained enabled. A subsequent `corepack pnpm install
-  --frozen-lockfile` exited 0 and installed 326 locked packages.
-- 2026-08-16 — PR 1 final focused Gate initially exited 1 with 16 passed and
-  one Runner entrypoint timeout at the 10-second hang guard. Three direct
-  Runner launches then failed closed correctly in 564–640 ms, and three
-  isolated smoke cases passed in 1.00 seconds each. The deadline was therefore
-  documented and widened to a 30-second hang guard for cold Windows worktrees;
-  no production startup logic changed. The original four-file Gate then exited
-  0 with 4 files and 17 tests passed, 0 failed, 0 skipped.
+  tests/contract/public-api/api-v1.test.ts` exited 0: 6 files, 67 passed,
+  0 failed, 0 skipped. Docker and PostgreSQL executed; no required suite skipped.
+
+## Task 6 - Web Console OIDC ID Token verification
+
+component: partial
+production_wiring: partial
+verification: failed
+
+### OIDC evidence log
+
+- 2026-08-16 - the initial security RED proved a signed token whose payload was
+  modified after signing reached claim mapping. A second RED proved a symmetric
+  `HS256` runtime allowlist was accepted.
+- The cached remote-JWKS verifier and asymmetric `RS256 | ES256` allowlist then
+  passed 15 focused tests covering real RSA/P-256 signatures, payload tampering,
+  unknown keys, disallowed algorithms, expiry, issuer/audience/nonce, tenant
+  rejection, cold-start JWKS outage, PKCE, and in-memory access-token storage.
+- Post-merge dual-axis review found the production callback boundary incomplete:
+  malformed transient/token responses and exchange failures did not always
+  consume transient state; `sub` and token response fields were not fail-closed;
+  runtime URLs/redirect binding were unvalidated; cached JWKS rotation lacked
+  evidence. Task 6 remains partial until these findings and their black-box tests
+  are complete.

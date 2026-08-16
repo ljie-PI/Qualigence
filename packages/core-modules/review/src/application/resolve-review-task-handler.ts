@@ -13,14 +13,17 @@ import {
  * truth; a duplicate idempotency key returns the already-resolved aggregate.
  */
 export class ResolveReviewTaskHandler {
-  constructor(private readonly repository: ReviewTaskRepository) {}
+  constructor(
+    private readonly repository: ReviewTaskRepository,
+    private readonly tenantId: string,
+  ) {}
 
   async handle(command: ResolveReviewTaskCommand): Promise<ReviewTask> {
-    const updated = await this.repository.resolve(command);
+    const updated = await this.repository.resolve(this.tenantId, command);
     if (updated !== undefined) {
       return updated;
     }
-    const current = await this.repository.find(command.taskId);
+    const current = await this.repository.find(this.tenantId, command.taskId);
     if (current === undefined) {
       throw new ReviewTaskVersionConflict(0, undefined);
     }

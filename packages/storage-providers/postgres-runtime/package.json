@@ -12,6 +12,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/relational-kysely": "workspace:*",
+    "@qualigence/review": "workspace:*",
     "kysely": "0.28.17",
     "pg": "8.13.1"
   },

@@ -1,4 +1,4 @@
-import { PostgresReviewTaskRepository } from "@qualigence/server";
+import { PostgresReviewTaskRepository } from "@qualigence/postgres-runtime";
 import { openReviewTask, type ReviewTask } from "@qualigence/review";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
@@ -6,7 +6,9 @@ import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupServerFixture } from "../../helpers/server-fixture.js";
 import {
   reviewTaskRepositoryContract,
+  scopeReviewRepository,
   type ReviewRepositoryContractHarness,
+  type ScopedReviewTaskRepository,
 } from "./review-task-repository.contract.js";
 
 async function createHarness(): Promise<ReviewRepositoryContractHarness> {
@@ -14,9 +16,9 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
     throw new Error("DockerUnavailable: Review repository PostgreSQL contract requires Docker.");
   }
   const fixture = await setupServerFixture();
-  const withRepository = <T>(operation: (repository: PostgresReviewTaskRepository) => Promise<T>) =>
+  const withRepository = <T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>) =>
     fixture.provider.withTenant("tenant-a", ({ db }) =>
-      operation(new PostgresReviewTaskRepository(db)),
+      operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
     );
 
   return {
@@ -61,6 +63,157 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
 }
 
 reviewTaskRepositoryContract("PostgreSQL", createHarness);
+
+describe("PostgreSQL review tenant and transaction boundaries", () => {
+  it("keeps the same task id isolated between explicit tenant scopes", async () => {
+    const fixture = await setupServerFixture();
+    try {
+      for (const tenantId of ["tenant-a", "tenant-b"] as const) {
+        await fixture.provider.withTenant(tenantId, async ({ db }) => {
+          const repository = new PostgresReviewTaskRepository(db);
+          await repository.create(tenantId, {
+            ...openReviewTask({
+              taskId: "shared-task-id",
+              caseId: `${tenantId}:case`,
+              reason: "needs_human",
+              priority: "high",
+              evidenceCompleteness: "limited",
+            }),
+          });
+        });
+      }
+
+      await expect(
+        fixture.provider.withTenant("tenant-a", ({ db }) =>
+          new PostgresReviewTaskRepository(db).find("tenant-a", "shared-task-id"),
+        ),
+      ).resolves.toMatchObject({ caseId: "tenant-a:case" });
+      await expect(
+        fixture.provider.withTenant("tenant-b", ({ db }) =>
+          new PostgresReviewTaskRepository(db).find("tenant-b", "shared-task-id"),
+        ),
+      ).resolves.toMatchObject({ caseId: "tenant-b:case" });
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("rolls back a claim when its audit reservation fails", async () => {
+    const fixture = await setupServerFixture();
+    const admin = new Client({
+      host: fixture.container.host,
+      port: fixture.container.port,
+      database: fixture.container.database,
+      user: fixture.container.superuser,
+      password: fixture.container.password,
+    });
+    const task = openReviewTask({
+      taskId: "postgres-claim-audit-failure",
+      caseId: "postgres-claim-audit-failure:case",
+      reason: "needs_human",
+      priority: "high",
+      evidenceCompleteness: "limited",
+    });
+    try {
+      await fixture.provider.withTenant("tenant-a", ({ db }) =>
+        new PostgresReviewTaskRepository(db).create("tenant-a", task),
+      );
+      await admin.connect();
+      await admin.query(`
+        CREATE FUNCTION reject_review_claim_audit() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'simulated claim audit failure'; END;
+        $$ LANGUAGE plpgsql
+      `);
+      await admin.query(`
+        CREATE TRIGGER reject_review_claim_audit
+        BEFORE INSERT ON review_claims
+        FOR EACH ROW EXECUTE FUNCTION reject_review_claim_audit()
+      `);
+
+      await expect(
+        fixture.provider.withTenant("tenant-a", ({ db }) =>
+          new PostgresReviewTaskRepository(db).claim("tenant-a", {
+            taskId: task.taskId,
+            expectedVersion: 1,
+            reviewerId: "alice",
+            idempotencyKey: "postgres-claim-audit-failure-key",
+          }),
+        ),
+      ).rejects.toThrow("simulated claim audit failure");
+      await expect(
+        fixture.provider.withTenant("tenant-a", ({ db }) =>
+          new PostgresReviewTaskRepository(db).find("tenant-a", task.taskId),
+        ),
+      ).resolves.toEqual(task);
+    } finally {
+      await admin.end().catch(() => undefined);
+      await fixture.stop();
+    }
+  });
+
+  it("rolls back a resolution when its audit reservation fails", async () => {
+    const fixture = await setupServerFixture();
+    const admin = new Client({
+      host: fixture.container.host,
+      port: fixture.container.port,
+      database: fixture.container.database,
+      user: fixture.container.superuser,
+      password: fixture.container.password,
+    });
+    const task = openReviewTask({
+      taskId: "postgres-resolution-audit-failure",
+      caseId: "postgres-resolution-audit-failure:case",
+      reason: "needs_human",
+      priority: "high",
+      evidenceCompleteness: "limited",
+    });
+    let claimed: ReviewTask | undefined;
+    try {
+      claimed = await fixture.provider.withTenant("tenant-a", async ({ db }) => {
+        const repository = new PostgresReviewTaskRepository(db);
+        await repository.create("tenant-a", task);
+        return repository.claim("tenant-a", {
+          taskId: task.taskId,
+          expectedVersion: 1,
+          reviewerId: "alice",
+          idempotencyKey: "postgres-resolution-audit-failure-claim-key",
+        });
+      });
+      await admin.connect();
+      await admin.query(`
+        CREATE FUNCTION reject_review_resolution_audit() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'simulated resolution audit failure'; END;
+        $$ LANGUAGE plpgsql
+      `);
+      await admin.query(`
+        CREATE TRIGGER reject_review_resolution_audit
+        BEFORE INSERT ON review_resolutions
+        FOR EACH ROW EXECUTE FUNCTION reject_review_resolution_audit()
+      `);
+
+      await expect(
+        fixture.provider.withTenant("tenant-a", ({ db }) =>
+          new PostgresReviewTaskRepository(db).resolve("tenant-a", {
+            taskId: task.taskId,
+            expectedVersion: 2,
+            reviewerId: "alice",
+            disposition: "accepted",
+            evidenceRefs: ["evidence-a"],
+            idempotencyKey: "postgres-resolution-audit-failure-key",
+          }),
+        ),
+      ).rejects.toThrow("simulated resolution audit failure");
+      await expect(
+        fixture.provider.withTenant("tenant-a", ({ db }) =>
+          new PostgresReviewTaskRepository(db).find("tenant-a", task.taskId),
+        ),
+      ).resolves.toEqual(claimed);
+    } finally {
+      await admin.end().catch(() => undefined);
+      await fixture.stop();
+    }
+  });
+});
 
 async function waitForConcurrentReviewWriters(
   client: Client,
@@ -126,9 +279,9 @@ describe("PostgreSQL review idempotency races", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    const run = (operation: (repository: PostgresReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
+    const run = (operation: (repository: ScopedReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
       fixture.provider.withTenant("tenant-a", ({ db }) =>
-        operation(new PostgresReviewTaskRepository(db)),
+        operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
       );
     await run(async (repository) => {
       await repository.create(task);
@@ -174,9 +327,9 @@ describe("PostgreSQL review idempotency races", () => {
       password: fixture.container.password,
     });
     const taskIds = ["postgres-forced-key-first", "postgres-forced-key-second"] as const;
-    const run = (operation: (repository: PostgresReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
+    const run = (operation: (repository: ScopedReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
       fixture.provider.withTenant("tenant-a", ({ db }) =>
-        operation(new PostgresReviewTaskRepository(db)),
+        operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
       );
     await run(async (repository) => {
       for (const taskId of taskIds) {
@@ -243,9 +396,9 @@ describe("PostgreSQL review idempotency races", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    const run = (operation: (repository: PostgresReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
+    const run = (operation: (repository: ScopedReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
       fixture.provider.withTenant("tenant-a", ({ db }) =>
-        operation(new PostgresReviewTaskRepository(db)),
+        operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
       );
     await run(async (repository) => {
       await repository.create(task);
@@ -298,9 +451,9 @@ describe("PostgreSQL review idempotency races", () => {
       password: fixture.container.password,
     });
     const taskIds = ["postgres-forced-resolution-first", "postgres-forced-resolution-second"] as const;
-    const run = (operation: (repository: PostgresReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
+    const run = (operation: (repository: ScopedReviewTaskRepository) => Promise<ReviewTask | undefined>) =>
       fixture.provider.withTenant("tenant-a", ({ db }) =>
-        operation(new PostgresReviewTaskRepository(db)),
+        operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
       );
     await run(async (repository) => {
       for (const taskId of taskIds) {

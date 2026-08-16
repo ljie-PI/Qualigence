@@ -29,3 +29,4 @@ export {
 export type { PostgresRuntimeRoles } from "./migrations/row-level-security.js";
 
 export { createTenantSchema } from "./postgres-schema.js";
+export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";

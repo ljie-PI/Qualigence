@@ -22,7 +22,8 @@ import type { Database } from "./schema.js";
 export class SqliteReviewStore implements ReviewTaskRepository {
   constructor(private readonly runtime: SqliteRuntime) {}
 
-  async create(task: ReviewTask): Promise<void> {
+  async create(tenantId: string, task: ReviewTask): Promise<void> {
+    this.requireLocalTenant(tenantId);
     const now = new Date().toISOString();
     await this.runtime.db
       .insertInto("review_tasks")
@@ -45,15 +46,20 @@ export class SqliteReviewStore implements ReviewTaskRepository {
   /** Convenience: open a fresh task from a draft and persist it. */
   async open(draft: ReviewTaskDraft): Promise<ReviewTask> {
     const task = openReviewTask(draft);
-    await this.create(task);
+    await this.create("local", task);
     return task;
   }
 
-  async find(taskId: string): Promise<ReviewTask | undefined> {
+  async find(tenantId: string, taskId: string): Promise<ReviewTask | undefined> {
+    this.requireLocalTenant(tenantId);
     return this.findWith(this.runtime.db, taskId);
   }
 
-  async claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined> {
+  async claim(
+    tenantId: string,
+    command: ClaimReviewTaskCommand,
+  ): Promise<ReviewTask | undefined> {
+    this.requireLocalTenant(tenantId);
     return this.withWriteTransaction(async (db) => {
       const now = new Date().toISOString();
       const reservation = await db
@@ -72,10 +78,12 @@ export class SqliteReviewStore implements ReviewTaskRepository {
       if (reservation === undefined) {
         const replay = await db
           .selectFrom("review_claims")
-          .select("task_id")
+          .select(["task_id", "reviewer_id", "claimed_version"])
           .where("idempotency_key", "=", command.idempotencyKey)
           .executeTakeFirst();
-        return replay?.task_id === command.taskId
+        return replay?.task_id === command.taskId &&
+          replay.reviewer_id === command.reviewerId &&
+          replay.claimed_version === command.expectedVersion + 1
           ? this.findWith(db, command.taskId)
           : undefined;
       }
@@ -107,9 +115,11 @@ export class SqliteReviewStore implements ReviewTaskRepository {
   }
 
   async resolve(
+    tenantId: string,
     command: ResolveReviewTaskCommand,
   ): Promise<ReviewTask | undefined> {
-    const current = await this.find(command.taskId);
+    this.requireLocalTenant(tenantId);
+    const current = await this.find(tenantId, command.taskId);
     if (current === undefined) {
       return undefined;
     }
@@ -135,10 +145,20 @@ export class SqliteReviewStore implements ReviewTaskRepository {
       if (reservation === undefined) {
         const replay = await db
           .selectFrom("review_resolutions")
-          .select("task_id")
+          .select([
+            "task_id",
+            "reviewer_id",
+            "disposition",
+            "evidence_refs_json",
+            "resolved_version",
+          ])
           .where("idempotency_key", "=", command.idempotencyKey)
           .executeTakeFirst();
-        return replay?.task_id === command.taskId
+        return replay?.task_id === command.taskId &&
+          replay.reviewer_id === command.reviewerId &&
+          replay.disposition === command.disposition &&
+          replay.evidence_refs_json === JSON.stringify(command.evidenceRefs) &&
+          replay.resolved_version === command.expectedVersion + 1
           ? this.findWith(db, command.taskId)
           : undefined;
       }
@@ -198,6 +218,12 @@ export class SqliteReviewStore implements ReviewTaskRepository {
       .where("task_id", "=", taskId)
       .executeTakeFirst();
     return row === undefined ? undefined : this.rowToTask(row);
+  }
+
+  private requireLocalTenant(tenantId: string): void {
+    if (tenantId !== "local") {
+      throw new Error("SQLite review storage only supports the local tenant.");
+    }
   }
 
   private rowToTask(row: {

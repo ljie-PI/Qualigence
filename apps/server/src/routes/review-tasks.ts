@@ -97,7 +97,10 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
       }
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
         try {
-          const task = await new ClaimReviewTaskHandler(deps.reviewRepository(stores)).handle({
+          const task = await new ClaimReviewTaskHandler(
+            deps.reviewRepository(stores),
+            principal.tenantId,
+          ).handle({
             taskId: request.params.taskId,
             expectedVersion: body.expectedVersion as number,
             reviewerId: body.reviewerId as string,
@@ -129,11 +132,21 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
       if (typeof body.disposition !== "string" || body.disposition.length === 0) {
         throw validationFailed("disposition is required");
       }
-      const evidenceRefs = Array.isArray(body.evidenceRefs) ? body.evidenceRefs : [];
+      if (
+        body.evidenceRefs !== undefined &&
+        (!Array.isArray(body.evidenceRefs) ||
+          !body.evidenceRefs.every((reference) => typeof reference === "string"))
+      ) {
+        throw validationFailed("evidenceRefs must contain only strings");
+      }
+      const evidenceRefs = body.evidenceRefs ?? [];
 
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
         try {
-          const task = await new ResolveReviewTaskHandler(deps.reviewRepository(stores)).handle({
+          const task = await new ResolveReviewTaskHandler(
+            deps.reviewRepository(stores),
+            principal.tenantId,
+          ).handle({
             taskId: request.params.taskId,
             expectedVersion: body.expectedVersion as number,
             reviewerId: body.reviewerId as string,

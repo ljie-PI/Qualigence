@@ -9,6 +9,9 @@ const repoRoot = join(here, "..", "..");
 // worktree can spend several seconds loading the larger binary dependency
 // graphs while the focused Gate runs its other files in parallel.
 const DEADLINE_MS = 30_000;
+// Vitest must outlive runCli's deadline so the child is terminated and awaited
+// before Vitest aborts the test.
+const ENTRYPOINT_SUITE_TIMEOUT_MS = DEADLINE_MS + 5_000;
 
 function entrypoint(path: string): string {
   return join(repoRoot, path);
@@ -22,7 +25,7 @@ function without(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.Proce
   return childEnv;
 }
 
-describe("Node binary entrypoints", () => {
+describe("Node binary entrypoints", { timeout: ENTRYPOINT_SUITE_TIMEOUT_MS }, () => {
   it.each([
     { file: "apps/admin-cli/dist/main.js", args: ["--help"], expected: /migrate/ },
     { file: "apps/local-launcher/dist/main.js", args: ["--help"], expected: /init|start/ },
