@@ -5,6 +5,12 @@ import type {
   ReviewTaskDto,
 } from "@qualigence/public-api";
 import {
+  ClaimReviewTaskHandler,
+  ResolveReviewTaskHandler,
+  ReviewTaskError,
+  type ReviewTask,
+} from "@qualigence/review";
+import {
   authenticateOidc,
   requireIdempotencyKey,
   requireRole,
@@ -14,7 +20,6 @@ import {
 import { commandEnvelope, listEnvelope } from "../envelopes.js";
 import {
   newCorrelationId,
-  notFound,
   validationFailed,
   versionConflict,
 } from "../errors.js";
@@ -39,6 +44,29 @@ function toDto(row: TaskRow): ReviewTaskDto {
   };
 }
 
+function taskToDto(task: ReviewTask): ReviewTaskDto {
+  return {
+    taskId: task.taskId,
+    caseId: task.caseId,
+    status: task.status,
+    priority: task.priority,
+    ...(task.assigneeId === undefined ? {} : { assigneeId: task.assigneeId }),
+    version: task.version,
+  };
+}
+
+function rethrowSafeReviewError(error: unknown, expectedVersion: number): never {
+  if (!(error instanceof ReviewTaskError)) {
+    throw error;
+  }
+  throw versionConflict(
+    {
+      expectedVersion,
+      ...(error.currentVersion === undefined ? {} : { actualVersion: error.currentVersion }),
+      ...(error.assigneeId === undefined ? {} : { assigneeId: error.assigneeId }),
+    },
+  );
+}
 
 export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get("/v1/review-tasks", async (request, reply) => {
@@ -67,55 +95,21 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
       if (typeof body.reviewerId !== "string" || body.reviewerId.length === 0) {
         throw validationFailed("reviewerId is required");
       }
-      const now = deps.clock.now();
-
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
-        const existingClaim = await stores.db
-          .selectFrom("review_claims")
-          .select("task_id")
-          .where("idempotency_key", "=", idempotencyKey)
-          .executeTakeFirst();
-        const current = (await stores.db
-          .selectFrom("review_tasks")
-          .select(["task_id", "case_id", "status", "priority", "assignee_id", "version"])
-          .where("task_id", "=", request.params.taskId)
-          .executeTakeFirst()) as TaskRow | undefined;
-        if (current === undefined) {
-          throw notFound("review task not found");
+        try {
+          const task = await new ClaimReviewTaskHandler(
+            deps.reviewRepository(stores),
+            principal.tenantId,
+          ).handle({
+            taskId: request.params.taskId,
+            expectedVersion: body.expectedVersion as number,
+            reviewerId: body.reviewerId as string,
+            idempotencyKey,
+          });
+          return taskToDto(task);
+        } catch (error) {
+          return rethrowSafeReviewError(error, body.expectedVersion as number);
         }
-        // Idempotent replay: the same key returns the already-applied state.
-        if (existingClaim !== undefined) {
-          return toDto(current);
-        }
-        if (current.version !== body.expectedVersion) {
-          throw versionConflict({ expectedVersion: body.expectedVersion, actualVersion: current.version });
-        }
-        const nextVersion = current.version + 1;
-        await stores.db
-          .updateTable("review_tasks")
-          .set({ status: "claimed", assignee_id: body.reviewerId as string, version: nextVersion, updated_at: now })
-          .where("task_id", "=", request.params.taskId)
-          .where("version", "=", body.expectedVersion as number)
-          .execute();
-        await stores.db
-          .insertInto("review_claims")
-          .values({
-            tenant_id: principal.tenantId,
-            idempotency_key: idempotencyKey,
-            task_id: request.params.taskId,
-            reviewer_id: body.reviewerId as string,
-            claimed_version: nextVersion,
-            created_at: now,
-          } as never)
-          .execute();
-        return {
-          taskId: current.task_id,
-          caseId: current.case_id,
-          status: "claimed" as const,
-          priority: current.priority as ReviewTaskDto["priority"],
-          assigneeId: body.reviewerId as string,
-          version: nextVersion,
-        } satisfies ReviewTaskDto;
       });
 
       return reply.send(commandEnvelope(dto, dto.version, newCorrelationId()));
@@ -138,58 +132,32 @@ export function registerReviewTaskRoutes(app: FastifyInstance, deps: ServerDeps)
       if (typeof body.disposition !== "string" || body.disposition.length === 0) {
         throw validationFailed("disposition is required");
       }
-      const now = deps.clock.now();
-      const evidenceRefs = Array.isArray(body.evidenceRefs) ? body.evidenceRefs : [];
+      if (
+        body.evidenceRefs !== undefined &&
+        (!Array.isArray(body.evidenceRefs) ||
+          !body.evidenceRefs.every((reference) => typeof reference === "string"))
+      ) {
+        throw validationFailed("evidenceRefs must contain only strings");
+      }
+      const evidenceRefs = body.evidenceRefs ?? [];
 
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
-        const existing = await stores.db
-          .selectFrom("review_resolutions")
-          .select("task_id")
-          .where("idempotency_key", "=", idempotencyKey)
-          .executeTakeFirst();
-        const current = (await stores.db
-          .selectFrom("review_tasks")
-          .select(["task_id", "case_id", "status", "priority", "assignee_id", "version"])
-          .where("task_id", "=", request.params.taskId)
-          .executeTakeFirst()) as TaskRow | undefined;
-        if (current === undefined) {
-          throw notFound("review task not found");
-        }
-        if (existing !== undefined) {
-          return toDto(current);
-        }
-        if (current.version !== body.expectedVersion) {
-          throw versionConflict({ expectedVersion: body.expectedVersion, actualVersion: current.version });
-        }
-        const nextVersion = current.version + 1;
-        await stores.db
-          .updateTable("review_tasks")
-          .set({ status: "resolved", version: nextVersion, updated_at: now })
-          .where("task_id", "=", request.params.taskId)
-          .where("version", "=", body.expectedVersion as number)
-          .execute();
-        await stores.db
-          .insertInto("review_resolutions")
-          .values({
-            tenant_id: principal.tenantId,
-            idempotency_key: idempotencyKey,
-            task_id: request.params.taskId,
-            case_id: current.case_id,
-            reviewer_id: body.reviewerId as string,
+        try {
+          const task = await new ResolveReviewTaskHandler(
+            deps.reviewRepository(stores),
+            principal.tenantId,
+          ).handle({
+            taskId: request.params.taskId,
+            expectedVersion: body.expectedVersion as number,
+            reviewerId: body.reviewerId as string,
             disposition: body.disposition as string,
-            evidence_refs_json: JSON.stringify(evidenceRefs),
-            resolved_version: nextVersion,
-            created_at: now,
-          } as never)
-          .execute();
-        return {
-          taskId: current.task_id,
-          caseId: current.case_id,
-          status: "resolved" as const,
-          priority: current.priority as ReviewTaskDto["priority"],
-          ...(current.assignee_id !== null ? { assigneeId: current.assignee_id } : {}),
-          version: nextVersion,
-        } satisfies ReviewTaskDto;
+            evidenceRefs,
+            idempotencyKey,
+          });
+          return taskToDto(task);
+        } catch (error) {
+          return rethrowSafeReviewError(error, body.expectedVersion as number);
+        }
       });
 
       return reply.send(commandEnvelope(dto, dto.version, newCorrelationId()));

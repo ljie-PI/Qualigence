@@ -7,8 +7,9 @@ import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-toke
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
 
-const skip = !dockerAvailable();
-const describeMaybe = skip ? describe.skip : describe;
+if (!dockerAvailable()) {
+  throw new Error("DockerUnavailable: Web Console API contract requires Docker.");
+}
 
 async function seedProject(
   admin: PostgresConnectionConfig,
@@ -48,7 +49,13 @@ async function seedInvestigation(
 
 async function seedReviewTask(
   admin: PostgresConnectionConfig,
-  input: { tenantId: string; taskId: string; caseId: string; version: number },
+  input: {
+    tenantId: string;
+    taskId: string;
+    caseId: string;
+    version: number;
+    assigneeId?: string;
+  },
 ): Promise<void> {
   const client = new pg.Client(admin);
   await client.connect();
@@ -57,8 +64,15 @@ async function seedReviewTask(
       `insert into review_tasks
         (tenant_id, task_id, case_id, status, reason, priority, evidence_completeness,
          assignee_id, version, created_at, updated_at)
-       values ($1,$2,$3,'open','needs review','high','limited',null,$4,now(),now())`,
-      [input.tenantId, input.taskId, input.caseId, input.version],
+        values ($1,$2,$3,$4,'needs review','high','limited',$5,$6,now(),now())`,
+      [
+        input.tenantId,
+        input.taskId,
+        input.caseId,
+        input.assigneeId === undefined ? "open" : "claimed",
+        input.assigneeId ?? null,
+        input.version,
+      ],
     );
   } finally {
     await client.end();
@@ -72,7 +86,7 @@ async function seedReviewTask(
  * methods, headers and response shapes match the Server the Console must call —
  * no mocked responses.
  */
-describeMaybe("Web Console API client ↔ real Public API", () => {
+describe("Web Console API client ↔ real Public API", () => {
   let fx: ServerFixture;
   let admin: PostgresConnectionConfig;
 
@@ -173,6 +187,7 @@ describeMaybe("Web Console API client ↔ real Public API", () => {
       taskId: "wc-task-conflict",
       caseId: "wc-case-1",
       version: 3,
+      assigneeId: "existing-reviewer",
     });
     const client = clientFor("tenant-a", ["reviewer"]);
     const error = await client
@@ -184,8 +199,13 @@ describeMaybe("Web Console API client ↔ real Public API", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiClientError);
     expect((error as ApiClientError).code).toBe("VersionConflict");
-    // The safe conflict details carry the real actual version, never internals.
-    expect((error as ApiClientError).details).toMatchObject({ actualVersion: 3 });
+    // The public conflict contract preserves both submitted and actual versions;
+    // domain-only field names must not leak through the API.
+    expect((error as ApiClientError).details).toMatchObject({
+      expectedVersion: 1,
+      actualVersion: 3,
+      assigneeId: "existing-reviewer",
+    });
   });
 
   it("enforces RBAC: a viewer cannot create a project (Forbidden)", async () => {

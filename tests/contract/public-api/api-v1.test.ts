@@ -6,8 +6,9 @@ import { generateRunnerCsr } from "../../helpers/runner-identity-pki.js";
 import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
 
 const { Client } = pg;
-const skip = !dockerAvailable();
-const describeMaybe = skip ? describe.skip : describe;
+if (!dockerAvailable()) {
+  throw new Error("DockerUnavailable: Public API v1 contract requires Docker.");
+}
 
 const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
@@ -47,7 +48,28 @@ async function seedReviewTask(
   }
 }
 
-describeMaybe("Public API v1 contract", () => {
+async function readReviewTask(
+  admin: PostgresConnectionConfig,
+  taskId: string,
+): Promise<{ status: string; assignee_id: string | null; version: number }> {
+  const client = new Client(admin);
+  await client.connect();
+  try {
+    const result = await client.query<{
+      status: string;
+      assignee_id: string | null;
+      version: number;
+    }>(
+      "select status, assignee_id, version from review_tasks where task_id = $1",
+      [taskId],
+    );
+    return result.rows[0] as { status: string; assignee_id: string | null; version: number };
+  } finally {
+    await client.end();
+  }
+}
+
+describe("Public API v1 contract", () => {
   let fx: ServerFixture;
   let admin: PostgresConnectionConfig;
 
@@ -238,6 +260,114 @@ describeMaybe("Public API v1 contract", () => {
       const body = (await res.json()) as { resource: { status: string; version: number } };
       expect(body.resource.status).toBe("claimed");
       expect(body.resource.version).toBe(2);
+    });
+
+    it("rejects resolving an open task and preserves its row", async () => {
+      await seedReviewTask(admin, {
+        tenantId: "tenant-a",
+        taskId: "task-open-resolve",
+        caseId: "case-1",
+        version: 1,
+      });
+      const token = fx.token("tenant-a", ["reviewer"]);
+      const res = await fetch(url("/v1/review-tasks/task-open-resolve/resolve"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [IDEMPOTENCY_KEY_HEADER]: "resolve-open",
+        },
+        body: JSON.stringify({
+          expectedVersion: 1,
+          reviewerId: "rev-1",
+          disposition: "confirmed_bug",
+          evidenceRefs: [],
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json() as { code: string }).code).toBe("VersionConflict");
+      await expect(readReviewTask(admin, "task-open-resolve")).resolves.toEqual({
+        status: "open",
+        assignee_id: null,
+        version: 1,
+      });
+    });
+
+    it("rejects a non-assignee resolve and preserves the claimed row", async () => {
+      await seedReviewTask(admin, {
+        tenantId: "tenant-a",
+        taskId: "task-non-assignee",
+        caseId: "case-1",
+        version: 1,
+      });
+      const token = fx.token("tenant-a", ["reviewer"]);
+      const claimed = await fetch(url("/v1/review-tasks/task-non-assignee/claim"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [IDEMPOTENCY_KEY_HEADER]: "claim-alice",
+        },
+        body: JSON.stringify({ expectedVersion: 1, reviewerId: "alice" }),
+      });
+      expect(claimed.status).toBe(200);
+
+      const res = await fetch(url("/v1/review-tasks/task-non-assignee/resolve"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [IDEMPOTENCY_KEY_HEADER]: "resolve-bob",
+        },
+        body: JSON.stringify({
+          expectedVersion: 2,
+          reviewerId: "bob",
+          disposition: "confirmed_bug",
+          evidenceRefs: [],
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json() as { code: string }).code).toBe("VersionConflict");
+      await expect(readReviewTask(admin, "task-non-assignee")).resolves.toEqual({
+        status: "claimed",
+        assignee_id: "alice",
+        version: 2,
+      });
+    });
+
+    it("replays an idempotency key without another version increment", async () => {
+      await seedReviewTask(admin, {
+        tenantId: "tenant-a",
+        taskId: "task-idempotent",
+        caseId: "case-1",
+        version: 1,
+      });
+      const token = fx.token("tenant-a", ["reviewer"]);
+      const send = () => fetch(url("/v1/review-tasks/task-idempotent/claim"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [IDEMPOTENCY_KEY_HEADER]: "claim-idempotent",
+        },
+        body: JSON.stringify({ expectedVersion: 1, reviewerId: "alice" }),
+      });
+
+      const first = await send();
+      const firstBody = await first.json() as { resource: { version: number; status: string; assigneeId?: string } };
+      const replay = await send();
+      const replayBody = await replay.json() as { resource: { version: number; status: string; assigneeId?: string } };
+
+      expect(first.status).toBe(200);
+      expect(replay.status).toBe(200);
+      expect(replayBody.resource).toEqual(firstBody.resource);
+      await expect(readReviewTask(admin, "task-idempotent")).resolves.toEqual({
+        status: "claimed",
+        assignee_id: "alice",
+        version: 2,
+      });
     });
   });
 

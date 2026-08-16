@@ -10,5 +10,8 @@
     "verbatimModuleSyntax": false
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../relational-kysely" }]
+  "references": [
+    { "path": "../../core-modules/review" },
+    { "path": "../relational-kysely" }
+  ]
 }

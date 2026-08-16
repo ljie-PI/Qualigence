@@ -459,6 +459,9 @@ importers:
       '@qualigence/relational-kysely':
         specifier: workspace:*
         version: link:../../packages/storage-providers/relational-kysely
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/review
       '@qualigence/runner-identity':
         specifier: workspace:*
         version: link:../../packages/core-modules/runner-identity
@@ -894,6 +897,9 @@ importers:
       '@qualigence/relational-kysely':
         specifier: workspace:*
         version: link:../relational-kysely
+      '@qualigence/review':
+        specifier: workspace:*
+        version: link:../../core-modules/review
       kysely:
         specifier: 0.28.17
         version: 0.28.17

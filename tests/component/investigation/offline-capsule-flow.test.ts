@@ -103,9 +103,9 @@ describe("offline investigation persistence handoff", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    await reviewStore.create(reviewTask);
+    await reviewStore.create("local", reviewTask);
 
-    const claimHandler = new ClaimReviewTaskHandler(reviewStore);
+    const claimHandler = new ClaimReviewTaskHandler(reviewStore, "local");
     const claimed = await claimHandler.handle({
       taskId: "review-offline",
       expectedVersion: 1,
@@ -114,7 +114,7 @@ describe("offline investigation persistence handoff", () => {
     });
     expect(claimed).toMatchObject({ status: "claimed", assigneeId: "reviewer-1" });
 
-    const resolveHandler = new ResolveReviewTaskHandler(reviewStore);
+    const resolveHandler = new ResolveReviewTaskHandler(reviewStore, "local");
     const resolved = await resolveHandler.handle({
       taskId: "review-offline",
       expectedVersion: 2,

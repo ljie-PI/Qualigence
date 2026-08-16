@@ -474,9 +474,9 @@ describe("LS-10 offline investigation Gate", () => {
       // No Capsule was prestaged for a non-reproduction: evidence is limited.
       evidenceCompleteness: "limited",
     });
-    await reviewStore.create(task);
+    await reviewStore.create("local", task);
 
-    const persisted = await reviewStore.find("review-2");
+    const persisted = await reviewStore.find("local", "review-2");
     expect(persisted).toMatchObject({
       status: "open",
       caseId: "case-2",
