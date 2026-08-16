@@ -246,7 +246,7 @@ tests on Windows and Linux.
 
 ---
 
-### Prerequisite Q: Quarantine four known Windows baseline tests
+### Task 0: Prerequisite Q — quarantine four known Windows baseline tests
 
 **Execution status:** approved for implementation. This is a temporary
 integration prerequisite and remains release-blocking until Task 21 removes it.

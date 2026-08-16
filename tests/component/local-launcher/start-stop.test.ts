@@ -117,7 +117,10 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
-  it("escalates SIGTERM to SIGKILL for a process that ignores SIGTERM", async () => {
+  // TODO(Task 21): remove this Windows quarantine after lifecycle assertions use observable process events instead of minimum elapsed time.
+  it.skipIf(process.platform === "win32")(
+    "escalates SIGTERM to SIGKILL for a process that ignores SIGTERM",
+    async () => {
     const dir = await scratchDir("stubborn");
     const unit = new ChildProcessUnit({
       name: "runner",
@@ -138,7 +141,8 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     await unit.stop();
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(300);
     expect(isPidAlive(pid)).toBe(false);
-  });
+    },
+  );
 
   it("restarts a crashing process with bounded backoff, then gives up", async () => {
     const dir = await scratchDir("crash");
