@@ -12,6 +12,7 @@ were run without credentials, tokens, or connection strings.
 | Admin CLI | complete | complete | passed | clean built-binary help, unknown-command, parsing, and fail-closed KMS checks | `f200d6d` |
 | Direct Node entrypoints | complete | complete | passed | all seven built binaries execute their direct-entry guard; configuration-dependent daemons reject missing configuration | `603439b` |
 | Local Launcher process gate | complete | complete | passed | clean built-binary init/start/status/doctor/backup/stop path with explicit Git OpenSSL discovery on Windows | `603439b` |
+| Review task repository | complete | complete | passed | one shared contract passed against SQLite and tenant-scoped PostgreSQL, including idempotency-key binding and two-writer claim races | `3071da0` |
 | Root Playwright CLI exposure | partial | partial | failed | `corepack pnpm exec playwright --version` cannot find the root executable; use the filtered adapter command until Task 21 defines root Gates | `d07c2eb` |
 
 ## Append-only evidence log
@@ -55,3 +56,23 @@ were run without credentials, tokens, or connection strings.
   Task 2 (`603439b`) had only 5 of 7 smoke cases GREEN for the same reason.
   The clean-worktree results above supersede those verification blocks without
   rewriting their implementation commits.
+- 2026-08-16 — Task 5 RED: the provider-neutral contract showed that SQLite
+  returned the second task's aggregate when a claim or resolution idempotency
+  key had already been bound to a different task. PostgreSQL already rejected
+  those mismatches. The Windows Gate explicitly resolved Git OpenSSL and used
+  Docker; no PostgreSQL case was skipped.
+- 2026-08-16 — after SQLite bound replay to the stored `task_id`,
+  `corepack pnpm vitest run tests/contract/review/sqlite-review-task-repository.test.ts
+  tests/contract/review/postgres-review-task-repository.test.ts` exited 0:
+  2 files, 18 passed, 0 failed, 0 skipped. Each PostgreSQL runner constructed
+  its repository inside a separate `withTenant("tenant-a", ...)` callback;
+  the concurrent claim assertion therefore used two real pool transactions.
+- 2026-08-16 — with the same Docker and explicit OpenSSL Gate environment,
+  `corepack pnpm vitest run tests/contract/review
+  tests/contract/sqlite/investigation-review-store.test.ts
+  tests/component/review/concurrent-claim.test.ts
+  tests/e2e/web-console/review-conflict.test.ts
+  tests/contract/public-api/api-v1.test.ts` exited 0: 6 files, 46 passed,
+  0 failed, 0 skipped.
+- 2026-08-16 — `corepack pnpm typecheck` exited 0 after the provider contract
+  and adapter update.

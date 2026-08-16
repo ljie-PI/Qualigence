@@ -42,9 +42,9 @@ The word `implemented` in the status ledger means only that some planned files o
 |---|---|---|
 | 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
-| 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 adds the missing reusable provider/concurrency contract required by architecture. |
+| 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
-| 5 Review provider contract | ready | Requires Docker and two independent PostgreSQL connections. |
+| 5 Review provider contract | complete | One provider-neutral contract passed against SQLite and PostgreSQL (18 tests), including concurrent two-transaction claim and cross-task idempotency-key rejection; the focused regression set adds 46 passing tests. |
 | 6 OIDC signature verification | environmentally blocked | `jose` is not in the lockfile/store and the configured npm-compatible registry currently fails TLS. Resume only with a trusted registry; never vendor or download an unverified package. |
 | 7-18 | pending | May proceed in dependency order while Task 6 waits, except a dependent Console release Gate cannot pass. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
@@ -62,7 +62,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
 - Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
 - Server does not register Mission/Run/Trace/Skill routes, does not start a Runner gRPC endpoint, and does not run `ServerIntelligenceResultConsumer`.
-- Review HTTP mutations now use the aggregate handlers, preserve the public conflict envelope, and pass focused PostgreSQL tests; reusable provider-contract and true two-writer concurrency coverage remain Task 5.
+- Review HTTP mutations use the aggregate handlers and preserve the public conflict envelope. Task 5's shared SQLite/PostgreSQL contract proves idempotency-key binding, audit persistence, and true two-writer claim behavior.
 - Web Console decodes ID Token claims without verifying the signature.
 - Live Web/Runner code uses the pre-v1 `ObservationGraph`; Windows adapter code uses `ObservationGraphV1`.
 - `TargetRef` is Web-only and Runner always constructs `PlaywrightWebTargetAdapter`.
@@ -518,7 +518,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** ready after Task 4 creates the committed status ledger. This task closes the architecture requirement that local and external providers pass the same contract and that ReviewTask claim is tested under concurrency.
+**Execution status:** complete. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite now rejects idempotency-key replays that are bound to another task without changing the production repository port.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`
@@ -535,7 +535,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 - The test-only harness exposes repository operations as callbacks so a PostgreSQL repository never escapes its tenant transaction.
 - Preserves the production `ReviewTaskRepository` interface and its documented atomic compare-and-set/idempotent-replay semantics.
 
-- [ ] **Step 1: Define the provider-neutral harness and shared cases**
+- [x] **Step 1: Define the provider-neutral harness and shared cases**
 
 In `tests/contract/review/review-task-repository.contract.ts`, define:
 
@@ -566,7 +566,7 @@ export function reviewTaskRepositoryContract(
 
 Both runners must be usable at the same time. For PostgreSQL, each runner calls `provider.withTenant("tenant-a", ...)` and constructs `PostgresReviewTaskRepository` inside that callback; two concurrent calls therefore hold two independent pool connections/transactions. For SQLite, open two `SqliteRuntime` instances on the same temporary database file.
 
-- [ ] **Step 2: Add the complete shared RED suite**
+- [x] **Step 2: Add the complete shared RED suite**
 
 The suite must execute these cases against both providers:
 
@@ -582,7 +582,7 @@ The suite must execute these cases against both providers:
 
 Use `ClaimReviewTaskHandler` and `ResolveReviewTaskHandler` for cases that assert public domain errors. Read the final row in a new callback after both concurrent transactions have settled. Do not serialize the race with a test mutex or reuse the same PostgreSQL transaction.
 
-- [ ] **Step 3: Prove both current implementations fail the same contract where they diverge**
+- [x] **Step 3: Prove both current implementations fail the same contract where they diverge**
 
 Run:
 
@@ -592,13 +592,13 @@ corepack pnpm vitest run tests/contract/review/sqlite-review-task-repository.tes
 
 Expected RED: at minimum, the SQLite implementation treats an idempotency key previously bound to another task as a successful replay. Any PostgreSQL race/audit failure must remain a real failure; do not add retries to the contract.
 
-- [ ] **Step 4: Align both adapters without moving domain rules into storage**
+- [x] **Step 4: Align both adapters without moving domain rules into storage**
 
 For both `claim` and `resolve`, when the idempotency ledger contains the key, compare its stored `task_id` with `command.taskId`; return `undefined` on mismatch. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve). Preserve tenant scoping and same-transaction audit writes. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
 
 Move the Review-specific SQLite cases out of `tests/contract/sqlite/investigation-review-store.test.ts` once the shared suite covers them; leave Investigation and Intelligence provider cases in that file.
 
-- [ ] **Step 5: Verify and commit provider parity evidence**
+- [x] **Step 5: Verify and commit provider parity evidence**
 
 Run with Docker available:
 

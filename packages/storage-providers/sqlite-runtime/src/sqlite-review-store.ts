@@ -66,7 +66,7 @@ export class SqliteReviewStore implements ReviewTaskRepository {
       .where("idempotency_key", "=", command.idempotencyKey)
       .executeTakeFirst();
     if (replay !== undefined) {
-      return this.find(command.taskId);
+      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
     }
 
     // Single atomic compare-and-set; only one concurrent claimant can match.
@@ -112,7 +112,7 @@ export class SqliteReviewStore implements ReviewTaskRepository {
       .where("idempotency_key", "=", command.idempotencyKey)
       .executeTakeFirst();
     if (replay !== undefined) {
-      return this.find(command.taskId);
+      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
     }
 
     const result = await db

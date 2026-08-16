@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   SqliteRuntime,
   SqliteInvestigationStore,
-  SqliteReviewStore,
   SqliteIntelligenceStore,
 } from "@qualigence/sqlite-runtime";
 import {
@@ -13,10 +12,6 @@ import {
   type InvestigationBudget,
 } from "@qualigence/investigation";
 import {
-  ClaimReviewTaskHandler,
-  openReviewTask,
-  ReviewTaskVersionConflict,
-  type ReviewTask,
 } from "@qualigence/review";
 import type {
   AppliedEffect,
@@ -54,17 +49,7 @@ function openCase(caseId = "case-1"): InvestigationCase {
   });
 }
 
-function openTask(taskId = "task-1"): ReviewTask {
-  return openReviewTask({
-    taskId,
-    caseId: "case-1",
-    reason: "needs_human",
-    priority: "high",
-    evidenceCompleteness: "limited",
-  });
-}
-
-describe("SqliteInvestigationStore / SqliteReviewStore / SqliteIntelligenceStore", () => {
+describe("SqliteInvestigationStore / SqliteIntelligenceStore", () => {
   let dir: string;
   let filename: string;
   let runtime: SqliteRuntime;
@@ -167,76 +152,6 @@ describe("SqliteInvestigationStore / SqliteReviewStore / SqliteIntelligenceStore
     expect(loaded?.status()).toBe("needs_human");
     expect(loaded?.handoff()).toBeDefined();
     expect(loaded?.usage().reproductionAttempts).toBe(1);
-  });
-
-  it("allows exactly one of two concurrent claims across two connections", async () => {
-    const seed = new SqliteReviewStore(runtime);
-    await seed.create(openTask());
-
-    const runtimeB = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
-    try {
-      const handlerA = new ClaimReviewTaskHandler(new SqliteReviewStore(runtime));
-      const handlerB = new ClaimReviewTaskHandler(new SqliteReviewStore(runtimeB));
-
-      const results = await Promise.allSettled([
-        handlerA.handle({
-          taskId: "task-1",
-          expectedVersion: 1,
-          reviewerId: "alice",
-          idempotencyKey: "alice-key",
-        }),
-        handlerB.handle({
-          taskId: "task-1",
-          expectedVersion: 1,
-          reviewerId: "bob",
-          idempotencyKey: "bob-key",
-        }),
-      ]);
-
-      const fulfilled = results.filter((r) => r.status === "fulfilled");
-      const rejected = results.filter((r) => r.status === "rejected");
-      expect(fulfilled).toHaveLength(1);
-      expect(rejected).toHaveLength(1);
-
-      const winner = (fulfilled[0] as PromiseFulfilledResult<ReviewTask>).value;
-      expect(winner.version).toBe(2);
-      expect(winner.status).toBe("claimed");
-
-      const conflict = (rejected[0] as PromiseRejectedResult).reason;
-      expect(conflict).toBeInstanceOf(ReviewTaskVersionConflict);
-      expect(conflict).toMatchObject({
-        code: "ReviewTaskVersionConflict",
-        currentVersion: 2,
-        assigneeId: winner.assigneeId,
-      });
-
-      const persisted = await new SqliteReviewStore(runtime).find("task-1");
-      expect(persisted?.assigneeId).toBe(winner.assigneeId);
-      expect(persisted?.version).toBe(2);
-    } finally {
-      await runtimeB.close();
-    }
-  });
-
-  it("replays a duplicate claim idempotency key without a second write", async () => {
-    const store = new SqliteReviewStore(runtime);
-    await store.create(openTask());
-    const handler = new ClaimReviewTaskHandler(store);
-
-    const first = await handler.handle({
-      taskId: "task-1",
-      expectedVersion: 1,
-      reviewerId: "alice",
-      idempotencyKey: "alice-key",
-    });
-    const replay = await handler.handle({
-      taskId: "task-1",
-      expectedVersion: 1,
-      reviewerId: "alice",
-      idempotencyKey: "alice-key",
-    });
-    expect(replay).toEqual(first);
-    expect((await store.find("task-1"))?.version).toBe(2);
   });
 
   it("applies an intelligence result idempotently via the ledger", async () => {
