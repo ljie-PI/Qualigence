@@ -107,7 +107,10 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     };
   }
 
-  it("runs observe -> resolve -> execute -> artifacts -> close and reaps the browser", async () => {
+  // TODO(Task 21): remove this Windows quarantine after browser-process leak checks use a cross-platform lifecycle seam instead of /proc.
+  it.skipIf(process.platform === "win32")(
+    "runs observe -> resolve -> execute -> artifacts -> close and reaps the browser",
+    async () => {
     adapter = new PlaywrightWebTargetAdapter(options());
 
     const before = childBrowserPids();
@@ -149,7 +152,8 @@ describe("PlaywrightWebTargetAdapter facade", () => {
 
     await expect(adapter.capture(job)).rejects.toBeInstanceOf(Error);
     await expect(adapter.captureArtifacts(observed.graphId)).rejects.toBeInstanceOf(Error);
-  });
+    },
+  );
 
   it("rejects captureArtifacts for an unknown graph id", async () => {
     adapter = new PlaywrightWebTargetAdapter(options());
