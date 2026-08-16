@@ -17,6 +17,7 @@ import {
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
 } from "./runner-stores.js";
+import { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 import type { ServerDeps, TenantStores } from "./server-context.js";
 
 interface JwksEntry {
@@ -60,6 +61,7 @@ export async function main(): Promise<void> {
     clock: systemClock,
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
+    reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
   };
 
   const app = buildServer(deps);

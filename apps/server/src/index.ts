@@ -14,6 +14,7 @@ export {
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
 } from "./runner-stores.js";
+export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 export {
   ApiError,
   toErrorEnvelope,

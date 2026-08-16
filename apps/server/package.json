@@ -17,6 +17,7 @@
     "@qualigence/oidc": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",
     "@qualigence/public-api": "workspace:*",
+    "@qualigence/review": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/runner-identity": "workspace:*",
     "@qualigence/runner-mtls": "workspace:*",

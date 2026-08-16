@@ -31,6 +31,27 @@ async function seedReviewTask(
   }
 }
 
+async function readReviewTask(
+  admin: PostgresConnectionConfig,
+  taskId: string,
+): Promise<{ status: string; assignee_id: string | null; version: number }> {
+  const client = new pg.Client(admin);
+  await client.connect();
+  try {
+    const result = await client.query<{
+      status: string;
+      assignee_id: string | null;
+      version: number;
+    }>(
+      "select status, assignee_id, version from review_tasks where task_id = $1",
+      [taskId],
+    );
+    return result.rows[0] as { status: string; assignee_id: string | null; version: number };
+  } finally {
+    await client.end();
+  }
+}
+
 /**
  * Simulates the design's concurrent-claim scenario: two reviewers claim the
  * same task. The first wins; the second's stale `expectedVersion` yields a real
@@ -89,16 +110,23 @@ describeMaybe("Web Console review-task concurrent claim conflict", () => {
     expect(aliceResult.resource.assigneeId).toBe("alice");
     expect(aliceResult.resource.version).toBe(2);
 
-    // Bob's claim at the stale version must conflict.
+    // Even at the new version, a claimed task cannot be reassigned.
     const bobError = await bob
       .claimReviewTask(
         "conflict-task",
-        { expectedVersion: observedVersion, reviewerId: "bob" },
+        { expectedVersion: 2, reviewerId: "bob" },
         { idempotencyKey: randomUUID() },
       )
       .catch((e: unknown) => e);
     expect(bobError).toBeInstanceOf(ApiClientError);
     expect((bobError as ApiClientError).code).toBe("VersionConflict");
+
+    const persistedAfterRejectedClaim = await readReviewTask(admin, "conflict-task");
+    expect(persistedAfterRejectedClaim).toEqual({
+      status: "claimed",
+      assignee_id: "alice",
+      version: 2,
+    });
 
     // The Console's conflict handler re-reads the queue to replace stale state.
     const queue = await bob.listReviewTasks();

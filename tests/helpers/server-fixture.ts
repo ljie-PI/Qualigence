@@ -8,6 +8,7 @@ import {
   buildServer,
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
+  PostgresReviewTaskRepository,
   type ServerDeps,
   type TenantStores,
 } from "@qualigence/server";
@@ -103,6 +104,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     clock: fixedClock,
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
+    reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
   };
 
   const app = buildServer(deps);

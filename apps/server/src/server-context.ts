@@ -17,6 +17,7 @@ import type {
   PostgresDatabase,
   TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
+import type { ReviewTaskRepository } from "@qualigence/review";
 import type { AuxDatabase } from "./aux-schema.js";
 import {
   ApiError,
@@ -42,6 +43,8 @@ export interface ServerDeps {
   /** Factories so the Runner identity stores bind to the request's tenant tx. */
   readonly enrollmentStore: (stores: TenantStores) => RunnerEnrollmentStore;
   readonly principalStore: (stores: TenantStores) => RunnerPrincipalStore;
+  /** Factory so review aggregate writes use the request's tenant transaction. */
+  readonly reviewRepository: (stores: TenantStores) => ReviewTaskRepository;
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */
