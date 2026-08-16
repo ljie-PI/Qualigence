@@ -40,8 +40,8 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
-| Q Windows test quarantine | implementation and dual review complete; merge approved with bounded baseline waiver; Linux verification blocked | Windows focused validation passed 19 tests with exactly 4 Task 0 skips; Standards and Spec/architecture reviews passed. `LinuxExecutorUnavailable` is recorded, so non-Windows coverage is not claimed. Task 21 must remove every marker before release closure. |
-| P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
+| Q Windows test quarantine | merged as PR #36; Linux verification blocked | Merge commit `ceeb857`; Windows focused validation passed 19 tests with exactly 4 Task 0 skips and both review axes passed. `LinuxExecutorUnavailable` remains release-blocking until Task 21 removes every marker. |
+| P0 Frozen lock consistency | merged as PR #37 | Merge commit `7e24a9f`; frozen install RED proved a missing Vite 8.1.5 peer snapshot and the lock-only repair passed two clean frozen installs with no manifest change. |
 | 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
@@ -145,9 +145,9 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | dual review passed; merge approved with bounded baseline waiver; Linux verification blocked |
-| 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for restack and review |
-| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for restack and review |
+| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | merged as PR #36 (`ceeb857`); Linux/Task 21 release block remains |
+| 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | merged as PR #37 (`7e24a9f`) |
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | restacked verification and dual review passed: focused 17/17 and full Windows 820 passed/6 expected skips/0 failures; merge pending |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
@@ -205,7 +205,7 @@ authority only and does not convert the failing Gate into passed evidence.
 
 ### Through-Task-6 review and merge checkpoint
 
-- [ ] **Merge checkpoint 1: Q**
+- [x] **Merge checkpoint 1: Q**
 
 Create `codex/pr-preflight-windows-quarantine` from current `origin/main`, apply
 Prerequisite Q, push it, and open it against `main`. Verify the three-dot diff
@@ -214,7 +214,7 @@ complete Standards and Spec/architecture review, resolve every Critical or
 Important finding, rerun affected Gates, and merge Q. Record the remote PR URL,
 merge commit, counts, active skips, and Linux evidence/block in the ledger.
 
-- [ ] **Merge checkpoint 2: P0**
+- [x] **Merge checkpoint 2: P0**
 
 Restack `codex/pr0-lockfile-repair` on the merged Q commit. Verify
 `main...codex/pr0-lockfile-repair` changes only `pnpm-lock.yaml`, run frozen
@@ -695,8 +695,11 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 **Execution status:** complete. This verification closure passed in a clean detached worktree; the committed evidence ledger records the exact commands, Windows OpenSSL resolution, and the remaining root Playwright CLI defect. Commits `f200d6d` and `603439b` remain the implementation sources; do not reopen them without a new behavior regression.
 
+**Scope approval (2026-08-17):** The user approved updating this plan after every Task/PR, limited to checkbox, PR-state, and verification-evidence updates only; this does not authorize behavior or specification expansion.
+
 **Files:**
 - Create: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/main.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/commands/doctor.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/core-daemon/src/main.ts`
