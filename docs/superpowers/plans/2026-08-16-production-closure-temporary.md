@@ -47,7 +47,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
-| 6 OIDC signature verification | complete pending final dual review | `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, and cached JWKS rotation pass 34 focused tests; full Windows Gate passes 888 tests with 6 expected skips. |
+| 6 OIDC signature verification | complete pending final dual review | `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy pass 39 focused tests; full Windows Gate passes 888 tests with 6 expected skips. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
@@ -59,7 +59,10 @@ The word `implemented` in the status ledger means only that some planned files o
 - Cargo is not installed, so native Companion Tasks 19-20 cannot be completed on this host yet.
 - The lockfile is synchronized through Task 6. The trusted registry was reachable through the explicit local HTTP proxy without disabling TLS; `jose` 6.2.9 is a direct Web Console dependency.
 - Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
-- The reviewed Task 1-6 stack's full Windows run reports 140 files: 136 passed and 4 failed; 868 tests: 862 passed, 4 failed, and 2 pre-existing skips. The four failures are the launcher SIGTERM timing case, recording-to-replay SQLite cleanup case, Playwright `/proc` process case, and Local KMS POSIX-mode case. They are owned by Prerequisite Q and Task 21 below, not evidence that the full release Gate passes.
+- Historical pre-quarantine Task 1-6 evidence reported four Windows baseline
+  failures. The current Task 6 full Windows Gate supersedes that run: 140 files,
+  139 passed and 1 skipped; 894 tests, 888 passed, 0 failed, and 6 expected
+  skips. Four skips remain owned by Task 21 and are not release completion.
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.

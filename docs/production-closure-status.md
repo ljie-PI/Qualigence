@@ -208,7 +208,9 @@ verification: passed
   redirect binding; scrubbed callback values on failure; and proved cached JWKS
   rotation with a newly signed token.
 - `corepack pnpm vitest run tests/component/web-console/oidc-flow.test.ts
-  --reporter=verbose` exited 0: 1 file, 34 passed, 0 failed, 0 skipped.
+  --reporter=verbose` exited 0 after review fixes: 1 file, 39 passed, 0 failed,
+  0 skipped. The added cases cover JWKS network failure, OIDC error callbacks,
+  exact static redirect queries, malformed roles, and bootstrap loopback policy.
 - `corepack pnpm install --frozen-lockfile`, `corepack pnpm build`,
   `corepack pnpm --filter @qualigence/web-console typecheck`, and
   `corepack pnpm typecheck` all exited 0; `git diff --check` passed.

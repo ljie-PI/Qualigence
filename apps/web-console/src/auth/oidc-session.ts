@@ -80,7 +80,8 @@ export class OidcSessionError extends Error {
       | "TokenExchangeFailed"
       | "TokenMalformed"
       | "TokenSignatureInvalid"
-      | "JwksUnavailable",
+      | "JwksUnavailable"
+      | "AuthorizationFailed",
     message: string,
   ) {
     super(message);
@@ -98,11 +99,11 @@ function mapPrincipal(
   }
   const rawRoles = claims[config.rolesClaim];
   const values = typeof rawRoles === "string" ? [rawRoles] : Array.isArray(rawRoles) ? rawRoles : [];
+  if (values.length === 0 || !values.every((value) => typeof value === "string")) {
+    throw new OidcSessionError("RoleNotAllowed", "role claim is missing or malformed");
+  }
   const roles: PublicApiRole[] = [];
   for (const value of values) {
-    if (typeof value !== "string") {
-      continue;
-    }
     const mapped = config.roleMap[value];
     if (mapped === undefined) {
       throw new OidcSessionError("RoleNotAllowed", "an ID Token role is not allowed");

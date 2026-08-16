@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, errors, jwtVerify } from "jose";
+import { createRemoteJWKSet, customFetch, errors, jwtVerify } from "jose";
 
 export type IdTokenAlgorithm = "RS256" | "ES256";
 
@@ -30,7 +30,10 @@ export interface RemoteJwksIdTokenVerifierConfig {
   readonly timeoutDuration?: number;
   readonly cooldownDuration?: number;
   readonly cacheMaxAge?: number;
+  readonly fetcher?: typeof fetch;
 }
+
+class JwksNetworkError extends Error {}
 
 /**
  * Browser-compatible ID Token verifier bound to one deployment-pinned JWKS
@@ -46,10 +49,18 @@ export class RemoteJwksIdTokenVerifier implements IdTokenVerifier {
       throw new Error("ID Token algorithms must contain only RS256 or ES256");
     }
     this.allowedAlgorithms = config.allowedAlgorithms;
+    const fetcher = config.fetcher ?? fetch;
     this.jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       timeoutDuration: config.timeoutDuration ?? 5_000,
       cooldownDuration: config.cooldownDuration ?? 30_000,
       cacheMaxAge: config.cacheMaxAge ?? 10 * 60 * 1000,
+      [customFetch]: async (...args) => {
+        try {
+          return await fetcher(...args);
+        } catch {
+          throw new JwksNetworkError();
+        }
+      },
     });
   }
 
@@ -91,7 +102,7 @@ function mapVerificationError(error: unknown): IdTokenVerificationError {
         return new IdTokenVerificationError("token_malformed");
     }
   }
-  if (error instanceof errors.JWKSTimeout) {
+  if (error instanceof errors.JWKSTimeout || error instanceof JwksNetworkError) {
     return new IdTokenVerificationError("jwks_unavailable");
   }
   if (error instanceof errors.JOSEError) {

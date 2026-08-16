@@ -428,6 +428,26 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     expect(transient.size()).toBe(0);
   });
 
+  it("maps a JWKS network failure to JwksUnavailable", async () => {
+    const verifier = new RemoteJwksIdTokenVerifier({
+      jwksUri: "https://jwks.invalid/keys",
+      allowedAlgorithms: ["RS256"],
+      fetcher: async () => {
+        throw new TypeError("network down");
+      },
+    });
+    const token = jwt.sign({
+      iss: ISSUER,
+      aud: CLIENT_ID,
+      sub: "user-42",
+      exp: Math.floor(Date.now() / 1000) + 60,
+    });
+
+    await expect(
+      verifier.verify(token, { issuer: ISSUER, audience: CLIENT_ID }),
+    ).rejects.toMatchObject({ failure: "jwks_unavailable" });
+  });
+
   it("refreshes a cached JWKS when the issuer rotates to a new key", async () => {
     const transient = new FakeTransientStore();
     const session = makeSession(transient);
@@ -524,6 +544,22 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     expect(transient.size()).toBe(0);
   });
 
+  it("fails closed when a role claim contains a malformed value", async () => {
+    const transient = new FakeTransientStore();
+    const session = makeSession(transient);
+    const begin = await session.beginAuthorization();
+    const record = JSON.parse(transient.get(`oidc.tx.${begin.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = record.nonce;
+    issueIdToken = (claims) => jwt.sign({ ...claims, [ROLES_CLAIM]: ["qa-reviewer", 42] });
+
+    await expect(
+      session.completeAuthorization({ code: "bad-role", state: begin.state }),
+    ).rejects.toMatchObject({ reason: "RoleNotAllowed" });
+    expect(transient.size()).toBe(0);
+  });
+
   it("clears the in-memory session on logout", () => {
     const store = new MemoryTokenStore();
     store.set({
@@ -611,6 +647,73 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
       Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
     }
   });
+
+  it("consumes and scrubs an OIDC error callback", async () => {
+    const globals = globalThis as { window?: unknown; document?: unknown };
+    const originalWindow = globals.window;
+    const originalDocument = globals.document;
+    const transient = new FakeTransientStore();
+    transient.set(
+      "oidc.tx.denied-state",
+      JSON.stringify({ state: "denied-state", nonce: "n", codeVerifier: "v", createdAtMs: Date.now() }),
+    );
+    const replacements: string[] = [];
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          href: "https://console.test/callback?error=access_denied&state=denied-state",
+          pathname: "/callback",
+          search: "?error=access_denied&state=denied-state",
+        },
+        history: { replaceState: (_s: unknown, _t: string, path: string) => replacements.push(path) },
+        sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+      },
+    });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { title: "Q" } });
+    try {
+      const controller = new BrowserOidcController(
+        { apiBaseUrl: "https://console.test/api", authMode: "oidc", oidc: makeConfig() },
+        new MemoryTokenStore(),
+        transient,
+      );
+      await expect(controller.handleCallbackIfPresent()).rejects.toMatchObject({
+        reason: "AuthorizationFailed",
+      });
+      expect(transient.size()).toBe(0);
+      expect(replacements).toEqual(["/callback"]);
+    } finally {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+      Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    }
+  });
+
+  it("requires the configured static redirect query to match exactly", () => {
+    const globals = globalThis as { window?: unknown; document?: unknown };
+    const originalWindow = globals.window;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          href: "https://console.test/callback?code=a&state=b",
+          pathname: "/callback",
+          search: "?code=a&state=b",
+        },
+        sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+      },
+    });
+    try {
+      const config = { ...makeConfig(), redirectUri: "https://console.test/callback?deployment=a" };
+      const controller = new BrowserOidcController(
+        { apiBaseUrl: "https://console.test/api", authMode: "oidc", oidc: config },
+        new MemoryTokenStore(),
+        new FakeTransientStore(),
+      );
+      expect(controller.isCallback()).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+  });
 });
 
 describe("Web Console runtime OIDC configuration", () => {
@@ -645,5 +748,11 @@ describe("Web Console runtime OIDC configuration", () => {
       {},
     );
     expect(config.apiBaseUrl).toBe("http://127.0.0.1:50555/api");
+  });
+
+  it("rejects bootstrap mode outside loopback", () => {
+    expect(() =>
+      resolveRuntimeConfig({ authMode: "bootstrap" }, "https://console.example", {}),
+    ).toThrow(/bootstrap/);
   });
 });

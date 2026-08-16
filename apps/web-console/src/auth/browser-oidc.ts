@@ -1,5 +1,5 @@
 import { MemoryTokenStore } from "./memory-token-store.js";
-import { OidcSession, type TransientStore } from "./oidc-session.js";
+import { OidcSession, OidcSessionError, type TransientStore } from "./oidc-session.js";
 import { RemoteJwksIdTokenVerifier } from "./id-token-verifier.js";
 import type { ConsoleRuntimeConfig } from "../config.js";
 
@@ -111,11 +111,15 @@ export class BrowserOidcController {
     const runtime = browser();
     const current = new URL(runtime.location.href);
     const redirect = new URL(this.config.oidc.redirectUri);
-    if (current.origin !== redirect.origin || current.pathname !== redirect.pathname) {
+    if (
+      current.origin !== redirect.origin ||
+      current.pathname !== redirect.pathname ||
+      !staticQueryMatches(current, redirect)
+    ) {
       return false;
     }
     const params = new URLSearchParams(runtime.location.search);
-    return params.has("code") && params.has("state");
+    return params.has("state") && (params.has("code") || params.has("error"));
   }
 
   async handleCallbackIfPresent(): Promise<boolean> {
@@ -124,10 +128,19 @@ export class BrowserOidcController {
     }
     const runtime = browser();
     const params = new URLSearchParams(runtime.location.search);
+    const state = params.get("state") as string;
+    if (params.has("error")) {
+      try {
+        this.transient.remove(`oidc.tx.${state}`);
+        throw new OidcSessionError("AuthorizationFailed", "authorization was denied");
+      } finally {
+        runtime.history.replaceState({}, documentTitle(), runtime.location.pathname);
+      }
+    }
     try {
       const consoleSession = await this.session.completeAuthorization({
         code: params.get("code") as string,
-        state: params.get("state") as string,
+        state,
       });
       this.tokens.set(consoleSession);
       return true;
@@ -140,4 +153,13 @@ export class BrowserOidcController {
   logout(): void {
     this.tokens.clear();
   }
+}
+
+function staticQueryMatches(current: URL, redirect: URL): boolean {
+  for (const [key, value] of redirect.searchParams) {
+    if (current.searchParams.getAll(key).length !== 1 || current.searchParams.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -120,6 +120,10 @@ export function resolveRuntimeConfig(
 }
 
 function validateRuntimeConfig(config: ConsoleRuntimeConfig, consoleOrigin: string): void {
+  const consoleUrl = new URL(consoleOrigin);
+  if (config.authMode === "bootstrap" && !isLoopback(consoleUrl.hostname)) {
+    throw new Error("bootstrap authMode is allowed only on loopback");
+  }
   const api = parseUrl(config.apiBaseUrl, "apiBaseUrl", ["https:", "http:"]);
   if (api.protocol === "http:" && !isLoopback(api.hostname)) {
     throw new Error("apiBaseUrl permits HTTP only on loopback");
