@@ -62,16 +62,19 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
 
 reviewTaskRepositoryContract("PostgreSQL", createHarness);
 
-async function waitForBlockedReviewUpdates(client: Client, expected: number): Promise<void> {
+async function waitForConcurrentReviewWriters(
+  client: Client,
+  expected: number,
+): Promise<readonly string[]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const result = await client.query<{ count: string }>(`
-      SELECT count(*)::text AS count
+    const result = await client.query<{ wait_event: string }>(`
+      SELECT wait_event
       FROM pg_stat_activity
       WHERE usename = 'qualigence_server'
         AND wait_event_type = 'Lock'
     `);
-    if (Number(result.rows[0]?.count ?? 0) >= expected) {
-      return;
+    if (result.rows.length >= expected) {
+      return result.rows.map((row) => row.wait_event);
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -85,9 +88,7 @@ async function waitForBlockedReviewUpdates(client: Client, expected: number): Pr
     FROM pg_stat_activity
     WHERE pid <> pg_backend_pid()
   `);
-  throw new Error(
-    `Timed out waiting for ${expected} blocked ReviewTask updates: ${JSON.stringify(activity.rows)}`,
-  );
+  throw new Error(`Timed out waiting for ${expected} concurrent ReviewTask writers: ${JSON.stringify(activity.rows)}`);
 }
 
 async function installReviewUpdateBarrier(client: Client, lockId: number): Promise<void> {
@@ -109,7 +110,7 @@ async function installReviewUpdateBarrier(client: Client, lockId: number): Promi
 }
 
 describe("PostgreSQL review idempotency races", () => {
-  it("replays a duplicate claim after both transactions passed the initial ledger lookup", async () => {
+  it("replays a duplicate claim when both attempts race before aggregate update", async () => {
     const fixture = await setupServerFixture();
     const blocker = new Client({
       host: fixture.container.host,
@@ -148,7 +149,8 @@ describe("PostgreSQL review idempotency races", () => {
         run((repository) => repository.claim(command)),
         run((repository) => repository.claim(command)),
       );
-      await waitForBlockedReviewUpdates(blocker, 2);
+      const waits = await waitForConcurrentReviewWriters(blocker, 2);
+      expect(waits).toEqual(expect.arrayContaining(["advisory", "transactionid"]));
       await blocker.query("SELECT pg_advisory_unlock($1)", [lockId]);
 
       const [first, replay] = await Promise.all(operations);
@@ -207,7 +209,8 @@ describe("PostgreSQL review idempotency races", () => {
           idempotencyKey: "postgres-forced-shared-key",
         })),
       );
-      await waitForBlockedReviewUpdates(blocker, 2);
+      const waits = await waitForConcurrentReviewWriters(blocker, 2);
+      expect(waits).toEqual(expect.arrayContaining(["advisory", "transactionid"]));
       await blocker.query("SELECT pg_advisory_unlock($1)", [lockId]);
 
       const outcomes = await Promise.allSettled(operations);
@@ -224,7 +227,7 @@ describe("PostgreSQL review idempotency races", () => {
     }
   });
 
-  it("replays a duplicate resolution after both transactions passed the initial ledger lookup", async () => {
+  it("replays a duplicate resolution when both attempts race before aggregate update", async () => {
     const fixture = await setupServerFixture();
     const blocker = new Client({
       host: fixture.container.host,
@@ -270,7 +273,8 @@ describe("PostgreSQL review idempotency races", () => {
         run((repository) => repository.resolve(command)),
         run((repository) => repository.resolve(command)),
       );
-      await waitForBlockedReviewUpdates(blocker, 2);
+      const waits = await waitForConcurrentReviewWriters(blocker, 2);
+      expect(waits).toEqual(expect.arrayContaining(["advisory", "transactionid"]));
       await blocker.query("SELECT pg_advisory_unlock($1)", [lockId]);
 
       const [first, replay] = await Promise.all(operations);
@@ -339,7 +343,8 @@ describe("PostgreSQL review idempotency races", () => {
           idempotencyKey: "postgres-forced-resolution-shared-key",
         })),
       );
-      await waitForBlockedReviewUpdates(blocker, 2);
+      const waits = await waitForConcurrentReviewWriters(blocker, 2);
+      expect(waits).toEqual(expect.arrayContaining(["advisory", "transactionid"]));
       await blocker.query("SELECT pg_advisory_unlock($1)", [lockId]);
 
       const outcomes = await Promise.allSettled(operations);

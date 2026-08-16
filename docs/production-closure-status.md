@@ -95,9 +95,9 @@ were run without credentials, tokens, or connection strings.
   production/type builds.
 - 2026-08-16 — second Spec/architecture review used a PostgreSQL code audit to
   identify the remaining schedule-dependent gap. Advisory-lock trigger barriers
-  then forced two real tenant transactions to reach the ReviewTask update after
-  their ledger decision. Four focused RED cases reproduced missing same-command
-  replay and unique-violation rejection for both claim and resolve.
+  then forced two real tenant transactions to overlap as ReviewTask writers.
+  Four focused RED cases reproduced missing same-command replay and
+  unique-violation rejection for both claim and resolve.
 - 2026-08-16 — after PostgreSQL adopted the same reservation-first ordering,
   all 4 controlled race cases passed. The complete Task 5 regression exited 0:
   6 files, 60 passed, 0 failed, 0 skipped; `corepack pnpm typecheck` exited 0.
