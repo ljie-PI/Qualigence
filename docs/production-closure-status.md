@@ -86,12 +86,20 @@ were run without credentials, tokens, or connection strings.
 - 2026-08-16 — after reserving the idempotency key before compare-and-set in one
   SQLite transaction, deleting a losing reservation, and making one bounded
   `SQLITE_BUSY` replay attempt, the provider contract exited 0: 2 files,
-  28 passed, 0 failed, 0 skipped. PostgreSQL passed the same shared cases without
-  an adapter change because its repository is already transaction-bound.
+  28 passed, 0 failed, 0 skipped. This closed SQLite atomicity but did not yet
+  force both PostgreSQL transactions past the initial ledger decision.
 - 2026-08-16 — the complete Task 5 regression command exited 0: 6 files,
   56 passed, 0 failed, 0 skipped. `corepack pnpm typecheck` then exited 0,
   including TypeScript project build, test-project checking, and Web Console
   production/type builds.
+- 2026-08-16 — second Spec/architecture review used a PostgreSQL code audit to
+  identify the remaining schedule-dependent gap. Advisory-lock trigger barriers
+  then forced two real tenant transactions to reach the ReviewTask update after
+  their ledger decision. Four focused RED cases reproduced missing same-command
+  replay and unique-violation rejection for both claim and resolve.
+- 2026-08-16 — after PostgreSQL adopted the same reservation-first ordering,
+  all 4 controlled race cases passed. The complete Task 5 regression exited 0:
+  6 files, 60 passed, 0 failed, 0 skipped; `corepack pnpm typecheck` exited 0.
 - 2026-08-16 — PR 1 isolation RED: `corepack pnpm install
   --frozen-lockfile` exited 1 because the main-branch lockfile referenced Vite
   8.1.5 without its exact peer-dependency snapshot. `corepack pnpm install

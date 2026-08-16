@@ -45,7 +45,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
-| 5 Review provider contract | complete after PR review | One provider-neutral contract plus SQLite failure injection passed against both adapters (28 tests), including simultaneous replay, cross-task idempotency-key competition, audit rollback, and real two-transaction PostgreSQL claims; the focused regression set passes 56 tests. |
+| 5 Review provider contract | complete after PR review | Shared provider cases plus SQLite failure injection and PostgreSQL advisory-lock barriers pass 32 tests, including simultaneous replay, cross-task idempotency-key competition, audit rollback, and forced two-transaction races; the focused regression set passes 60 tests. |
 | 6 OIDC signature verification | environmentally blocked | `jose` is not in the lockfile/store and the configured npm-compatible registry currently fails TLS. Resume only with a trusted registry; never vendor or download an unverified package. |
 | 7-18 | pending | May proceed in dependency order while Task 6 waits, except a dependent Console release Gate cannot pass. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
@@ -568,7 +568,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** complete after PR review remediation. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite reserves the audit key before compare-and-set inside one transaction, replays simultaneous copies from the durable ledger, rejects cross-task key competition, and rolls the aggregate back when audit insertion fails, without changing the production repository port.
+**Execution status:** complete after two PR review remediation rounds. One provider-neutral contract passes against SQLite and PostgreSQL, while PostgreSQL-specific advisory-lock barriers force both transactions beyond their initial scheduling point. Both adapters reserve the audit key before compare-and-set inside the existing transaction, replay simultaneous copies from the durable ledger, reject cross-task key competition, and roll aggregate state back with audit failure, without changing the production repository port.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`
@@ -632,6 +632,7 @@ The suite must execute these cases against both providers:
 10. Two simultaneous copies of the same claim or resolution command/key both return the one applied aggregate and increment only once.
 11. Concurrent reuse of one claim or resolution idempotency key across different tasks advances exactly one task and binds the audit to that winner.
 12. SQLite-only failure injection makes claim/resolution audit insertion fail and proves that the matching aggregate transition is rolled back.
+13. PostgreSQL-only advisory-lock triggers hold both transactions at the aggregate update after the ledger decision, proving claim and resolve replay/cross-task behavior under a controlled race rather than relying on `Promise.all` scheduling.
 
 Use `ClaimReviewTaskHandler` and `ResolveReviewTaskHandler` for cases that assert public domain errors. Read the final row in a new callback after both concurrent transactions have settled. Do not serialize the race with a test mutex or reuse the same PostgreSQL transaction.
 
@@ -647,7 +648,7 @@ Expected RED: at minimum, the SQLite implementation treats an idempotency key pr
 
 - [x] **Step 4: Align both adapters without moving domain rules into storage**
 
-For both `claim` and `resolve`, reserve the idempotency ledger key before the conditional aggregate write. If the reservation already exists, compare its stored `task_id` with `command.taskId`; replay the stored task only on a match and return `undefined` on mismatch. If compare-and-set fails after a new reservation, delete that reservation before commit. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve), tenant scoping, and same-transaction audit writes. SQLite may make one bounded retry after `SQLITE_BUSY` so the lock holder can commit and the retry can read its durable ledger; it must map a repeated busy error to `StorageBusy` and must never retry indefinitely. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
+For both adapters and both `claim` and `resolve`, reserve the idempotency ledger key before the conditional aggregate write. If the reservation already exists, compare its stored `task_id` with `command.taskId`; replay the stored task only on a match and return `undefined` on mismatch. If compare-and-set fails after a new reservation, delete that reservation before commit. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve), PostgreSQL tenant scoping, and same-transaction audit writes. SQLite may make one bounded retry after `SQLITE_BUSY` so the lock holder can commit and the retry can read its durable ledger; it must map a repeated busy error to `StorageBusy` and must never retry indefinitely. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
 
 Move the Review-specific SQLite cases out of `tests/contract/sqlite/investigation-review-store.test.ts` once the shared suite covers them; leave Investigation and Intelligence provider cases in that file.
 
