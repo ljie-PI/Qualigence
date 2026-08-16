@@ -71,3 +71,12 @@ failed, `6` skipped, `815` total. Its only failure was the unrelated
 
 Linux execution is blocked as `LinuxExecutorUnavailable`; this Windows-only Q
 remains release-blocking until Linux evidence and Task 21 remove the four skips.
+
+### Review and bounded merge waiver
+
+Standards review and Spec/architecture review passed after commit `1e0fb06`;
+both reported zero remaining Critical or Important findings. On 2026-08-16 the
+user approved merging Q and P0 with the one disclosed pre-existing Local
+Launcher `init` E2E failure. The waiver covers no other failure or skip and does
+not change `verification: blocked`. Product PR 1 must merge next after P0 and
+restore the full Windows suite to zero failures; otherwise the stack stops.

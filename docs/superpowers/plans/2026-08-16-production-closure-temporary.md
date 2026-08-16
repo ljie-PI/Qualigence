@@ -40,7 +40,7 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
-| Q Windows test quarantine | implementation complete; PR review pending; Linux verification blocked | Windows focused validation passed 19 tests with exactly 4 Task 0 skips; `LinuxExecutorUnavailable` is recorded, so non-Windows coverage is not claimed. Task 21 must remove every marker before release closure. |
+| Q Windows test quarantine | implementation and dual review complete; merge approved with bounded baseline waiver; Linux verification blocked | Windows focused validation passed 19 tests with exactly 4 Task 0 skips; Standards and Spec/architecture reviews passed. `LinuxExecutorUnavailable` is recorded, so non-Windows coverage is not claimed. Task 21 must remove every marker before release closure. |
 | P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
 | 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
@@ -145,7 +145,7 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | implementation complete; PR review pending; Linux verification blocked |
+| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | dual review passed; merge approved with bounded baseline waiver; Linux verification blocked |
 | 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for restack and review |
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for restack and review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
@@ -193,6 +193,15 @@ While Q is active, every affected PR description must also list the four exact
 Windows skips, their Task 21 ownership, the latest platform counts, and the
 statement “quarantined green is not release completion.” No new failure may be
 added to Q without a new reviewed plan change.
+
+**User-approved bounded baseline waiver (2026-08-16):** Q and P0 may merge while
+the sole full-suite failure is the pre-existing Local Launcher `init` E2E that
+Product PR 1 already fixes. The waiver does not cover any second failure, any
+additional skip, a focused/typecheck/build/frozen-install failure, or a change
+to the four Task 21 quarantine cases. Product PR 1 must be the next product
+merge after Q and P0 and must restore the full Windows suite to zero failures;
+otherwise stop the stack and reopen this checkpoint. This waiver is integration
+authority only and does not convert the failing Gate into passed evidence.
 
 ### Through-Task-6 review and merge checkpoint
 
@@ -248,9 +257,10 @@ tests on Windows and Linux.
 
 ### Task 0: Prerequisite Q — quarantine four known Windows baseline tests
 
-**Execution status:** implementation complete; PR review pending; Linux
-verification blocked. This is a temporary integration prerequisite and remains
-release-blocking until Task 21 removes it.
+**Execution status:** implementation and dual PR review complete; merge approved
+under the bounded baseline waiver above; Linux verification blocked. This is a
+temporary integration prerequisite and remains release-blocking until Task 21
+removes it.
 
 **Files:**
 - Modify: `tests/component/local-launcher/start-stop.test.ts`
@@ -383,7 +393,7 @@ git add tests/component/local-launcher/start-stop.test.ts tests/component/skill-
 git commit -m "test(windows): quarantine four task 21 portability cases"
 ```
 
-- [ ] **Step 6: Review Q before restacking P0**
+- [x] **Step 6: Review Q before restacking P0**
 
 Run Standards review and Spec/architecture review against `main...Q`. Critical
 or Important findings block merge. The review must explicitly confirm four and
