@@ -123,6 +123,56 @@ Task 15
     → Task 22 (status reconciliation and Graph freeze decision)
 ```
 
+## Pull request delivery plan
+
+The 22 implementation tasks ship as 17 reviewable pull requests. A pull request
+may contain more than one task only where the tasks form one architectural
+boundary or one evidence-producing release unit. Every task still has its own
+commit, focused RED/GREEN evidence, status-ledger update, and completion marker.
+
+PRs are stacked in the order below. A stacked PR targets the immediately
+preceding PR branch until that PR merges; then its base is updated to `main`
+without rewriting already-reviewed task commits. Critical or Important findings
+from either the Standards review or the Spec/architecture review block pushing
+or merging. No PR may claim a production Gate from a skipped dependency.
+
+| PR | Tasks | Branch | Initial base | Review unit | State |
+|---|---:|---|---|---|---|
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
+| 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
+| 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
+| 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
+| 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
+| 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
+| 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
+| 8 | 12 | `codex/pr8-self-hosted-resources` | `main` | Mission, Run, Trace, and Skill public resources | pending |
+| 9 | 13 | `codex/pr9-intelligence-consumer` | `main` | Production Intelligence Result Inbox consumer | pending |
+| 10 | 14 | `codex/pr10-self-hosted-runner-data-plane` | `main` | External Runner gRPC data plane and full Compose loop | pending |
+| 11 | 15 | `codex/pr11-execution-policy` | `main` | Immutable deterministic Job policy snapshot | pending |
+| 12 | 16 | `codex/pr12-multistep-web` | `main` | Bounded multi-step Web execution and safe `valueRef` resolution | pending |
+| 13 | 17 | `codex/pr13-observation-graph-v1` | `main` | Live Graph v1 producer/consumer migration | pending |
+| 14 | 18 | `codex/pr14-desktop-runner-client` | `main` | Desktop Target dispatch and TypeScript Named Pipe client | pending |
+| 15 | 19 | `codex/pr15-windows-pipe-server` | `main` | Native Named Pipe identity and authenticated Companion server | blocked by `CargoUnavailable` |
+| 16 | 20 | `codex/pr16-windows-uia-daemon` | `main` | Native UIA worker, Job Object host, and Companion daemon | blocked by PR 15 and `CargoUnavailable` |
+| 17 | 21, 22 | `codex/pr17-release-closure` | `main` | Cross-platform release evidence, CI/SBOM/provenance, documentation reconciliation, and evidence-gated Graph freeze | pending |
+
+For PRs 4-17, `Initial base: main` means the branch is created from the latest
+merged prerequisite, not today's `main`. The dependency graph above remains
+authoritative; the table is a packaging plan, not permission to bypass an
+unfinished prerequisite.
+
+Each PR description must include:
+
+1. the covered Task numbers and exact plan section;
+2. architectural boundaries changed and boundaries intentionally unchanged;
+3. RED evidence followed by focused GREEN commands and counts;
+4. full typecheck/build status plus every explicit environmental block;
+5. Standards and Spec/architecture review results and the commits that resolve
+   any blocking findings;
+6. deployment, migration, security, rollback, and compatibility impact;
+7. the next stacked PR and whether reviewers should review it before the base
+   PR merges.
+
 ---
 
 ### Task 1: Make Admin CLI commands execute and Doctor fail closed
