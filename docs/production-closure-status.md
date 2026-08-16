@@ -80,3 +80,39 @@ user approved merging Q and P0 with the one disclosed pre-existing Local
 Launcher `init` E2E failure. The waiver covers no other failure or skip and does
 not change `verification: blocked`. Product PR 1 must merge next after P0 and
 restore the full Windows suite to zero failures; otherwise the stack stops.
+
+## Tasks 1, 2, and 4 — Runtime operations
+
+The evidence below was produced in a clean detached worktree and is retained
+separately from Task 0's release-blocking Windows quarantine.
+
+| capability | component | production_wiring | verification | evidence | implementation commit |
+|---|---|---|---|---|---|
+| Admin CLI | complete | complete | passed | built-binary help, unknown-command, parsing, and fail-closed KMS checks | `f200d6d` / restacked `2f34d25` |
+| Direct Node entrypoints | complete | complete | passed | all seven built binaries execute their canonical direct-entry guard; configuration-dependent daemons reject missing configuration | `603439b` / restacked `140b4ac` |
+| Local Launcher process Gate | complete | complete | passed | built-binary init/start/status/doctor/backup/stop with explicit Git OpenSSL discovery on Windows | `603439b` / restacked `140b4ac` |
+| Root Playwright CLI exposure | partial | partial | failed | root `pnpm exec playwright` cannot find the adapter-owned executable; Task 21 owns the corrected filtered Gate | `d07c2eb` |
+
+### Runtime operations evidence log
+
+- Node `v24.16.0` and Corepack pnpm `11.7.0` were used in the clean Task 4
+  validation worktree; frozen install and build passed without a lock change.
+- Root `corepack pnpm exec playwright --version` failed with `Command
+  "playwright" not found`; this remains explicit failed evidence and is not an
+  infrastructure skip. The adapter-filtered install command is owned by Task 21.
+- The first Local Launcher E2E run failed because `openssl` was absent from
+  `PATH`. Prepending `C:\Program Files\Git\usr\bin` made the same real E2E pass;
+  no test or certificate check was skipped.
+- `corepack pnpm vitest run tests/smoke/node-entrypoints.test.ts
+  tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
+  tests/migration/observation-v1/admin-command.test.ts` passed 4 files and 17
+  tests with 0 failed and 0 skipped.
+- `corepack pnpm typecheck` passed, including project, test, and Web Console
+  type checking.
+- A cold-worktree Runner subprocess once exceeded the original 10-second hang
+  guard. Three direct launches failed closed correctly in 564–640 ms and three
+  isolated smoke runs passed in 1.00 seconds each; the non-production hang guard
+  was widened to 30 seconds. The 17-test focused Gate then passed again.
+- Historical RED is retained: Tasks 1 and 2 originally lacked clean GREEN due
+  to an incomplete shared dependency junction. The clean detached evidence
+  above supersedes that environment block without rewriting product behavior.
