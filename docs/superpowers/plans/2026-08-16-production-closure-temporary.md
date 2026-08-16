@@ -40,7 +40,7 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
-| Q Windows test quarantine | approved, not implemented | Create one independent prerequisite PR that conditionally skips exactly four named tests only on Windows. Non-Windows coverage remains active; Task 21 must remove every marker before release closure. |
+| Q Windows test quarantine | implementation complete; PR review pending; Linux verification blocked | Windows focused validation passed 19 tests with exactly 4 Task 0 skips; `LinuxExecutorUnavailable` is recorded, so non-Windows coverage is not claimed. Task 21 must remove every marker before release closure. |
 | P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
 | 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
@@ -248,8 +248,9 @@ tests on Windows and Linux.
 
 ### Task 0: Prerequisite Q — quarantine four known Windows baseline tests
 
-**Execution status:** approved for implementation. This is a temporary
-integration prerequisite and remains release-blocking until Task 21 removes it.
+**Execution status:** implementation complete; PR review pending; Linux
+verification blocked. This is a temporary integration prerequisite and remains
+release-blocking until Task 21 removes it.
 
 **Files:**
 - Modify: `tests/component/local-launcher/start-stop.test.ts`
@@ -270,7 +271,7 @@ integration prerequisite and remains release-blocking until Task 21 removes it.
 - Does not change production code, package manifests, TypeScript configuration,
   dependency versions, migrations, generated output, or `pnpm-lock.yaml`.
 
-- [ ] **Step 1: Capture the four-case Windows RED without editing tests**
+- [x] **Step 1: Capture the four-case Windows RED without editing tests**
 
 Run from a clean worktree on Windows:
 
@@ -294,7 +295,7 @@ RED is limited to:
 Any fifth failure, different exception, missing dependency, or infrastructure
 failure is outside this prerequisite and stops the task for review.
 
-- [ ] **Step 2: Add four individual Windows-only quarantine markers**
+- [x] **Step 2: Add four individual Windows-only quarantine markers**
 
 Change only the four named cases. Keep their callbacks unchanged and place the
 specific marker immediately above each declaration:
@@ -336,7 +337,7 @@ it.skipIf(process.platform === "win32")(
 The comments inside the callbacks above are plan notation only: the implementer
 must retain the existing callback bodies, not replace them with comments.
 
-- [ ] **Step 3: Prove the quarantine is exact on Windows**
+- [x] **Step 3: Prove the quarantine is exact on Windows**
 
 Run the four-file command from Step 1 and then the full suite:
 
@@ -351,7 +352,7 @@ Expected: the four named cases are reported as skips only on Windows; no other
 test becomes skipped; the full suite has no failure previously attributed to
 the four cases. Record actual counts rather than assuming the previous total.
 
-- [ ] **Step 4: Prove non-Windows coverage remains active**
+- [x] **Step 4: Prove non-Windows coverage remains active**
 
 On a Linux executor, run the Step 1 four-file command. Expected: all four named
 cases execute rather than skip. If Linux execution is unavailable, record
@@ -359,7 +360,10 @@ cases execute rather than skip. If Linux execution is unavailable, record
 both reviews explicitly accept that block, but it cannot claim cross-platform
 or release completion.
 
-- [ ] **Step 5: Record debt ownership and commit only the authorized scope**
+Execution result: `LinuxExecutorUnavailable`; no Linux test execution or pass
+is claimed.
+
+- [x] **Step 5: Record debt ownership and commit only the authorized scope**
 
 Add four ledger rows to `docs/production-closure-status.md`, each containing the
 file, exact test name, Windows reason, Task 21 remediation, introducing commit/
