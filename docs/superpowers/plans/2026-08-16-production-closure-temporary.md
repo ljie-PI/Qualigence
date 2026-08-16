@@ -47,7 +47,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
-| 6 OIDC signature verification | complete after PR review | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256 and ES256/JWKS success paths pass, while tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS fail before claim mapping. |
+| 6 OIDC signature verification | complete pending final dual review | `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy pass 39 focused tests; final Windows Gate passes 893 tests with 6 expected skips. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
@@ -59,7 +59,10 @@ The word `implemented` in the status ledger means only that some planned files o
 - Cargo is not installed, so native Companion Tasks 19-20 cannot be completed on this host yet.
 - The lockfile is synchronized through Task 6. The trusted registry was reachable through the explicit local HTTP proxy without disabling TLS; `jose` 6.2.9 is a direct Web Console dependency.
 - Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
-- The reviewed Task 1-6 stack's full Windows run reports 140 files: 136 passed and 4 failed; 868 tests: 862 passed, 4 failed, and 2 pre-existing skips. The four failures are the launcher SIGTERM timing case, recording-to-replay SQLite cleanup case, Playwright `/proc` process case, and Local KMS POSIX-mode case. They are owned by Prerequisite Q and Task 21 below, not evidence that the full release Gate passes.
+- Historical pre-quarantine Task 1-6 evidence reported four Windows baseline
+  failures. The current Task 6 full Windows Gate supersedes that run: 140 files,
+  139 passed and 1 skipped; 899 tests, 893 passed, 0 failed, and 6 expected
+  skips. Four skips remain owned by Task 21 and are not release completion.
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
@@ -148,8 +151,8 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | merged as PR #36 (`ceeb857`); Linux/Task 21 release block remains |
 | 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | merged as PR #37 (`7e24a9f`) |
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | merged as PR #38 (`0820fd5`) |
-| 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
-| 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
+| 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | merged as PR #39 (`89002cc`) |
+| 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | security fixes and Gates complete; final dual review pending |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
@@ -901,7 +904,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 
 ### Task 6: Verify Web Console ID Token signatures before using claims
 
-**Execution status:** complete. The trusted registry was reached through the user-provided local HTTP proxy without disabling TLS. `jose` 6.2.9 is locked, focused cryptographic tests pass, and both Web Console and root typechecks pass.
+**Execution status:** implementation and Gates complete after merging PR #39; final dual review pending. `jose` 6.2.9 is locked. Real RS256/ES256 signatures, complete callback cleanup, fail-closed token/config validation, exact redirect binding, and cached JWKS rotation pass the focused Gate. The full Windows suite has no failures beyond the six expected explicit skips.
 
 **Files:**
 - Modify: `apps/web-console/package.json`

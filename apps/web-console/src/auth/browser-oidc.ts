@@ -1,8 +1,38 @@
 import { MemoryTokenStore } from "./memory-token-store.js";
-import { OidcSession, type TransientStore } from "./oidc-session.js";
+import { OidcSession, OidcSessionError, type TransientStore } from "./oidc-session.js";
+import { RemoteJwksIdTokenVerifier } from "./id-token-verifier.js";
 import type { ConsoleRuntimeConfig } from "../config.js";
 
 const TTL_MS = 10 * 60 * 1000;
+
+interface BrowserRuntime {
+  readonly location: {
+    readonly href: string;
+    readonly pathname: string;
+    readonly search: string;
+    assign(url: string): void;
+  };
+  readonly history: {
+    replaceState(state: unknown, title: string, url: string): void;
+  };
+  readonly sessionStorage: {
+    setItem(key: string, value: string): void;
+    getItem(key: string): string | null;
+    removeItem(key: string): void;
+  };
+}
+
+function browser(): BrowserRuntime {
+  const runtime = (globalThis as { readonly window?: BrowserRuntime }).window;
+  if (runtime === undefined) {
+    throw new Error("Browser runtime is unavailable");
+  }
+  return runtime;
+}
+
+function documentTitle(): string {
+  return (globalThis as { readonly document?: { readonly title: string } }).document?.title ?? "";
+}
 
 /**
  * Transient store backed by the browser's `sessionStorage`, used ONLY for the
@@ -13,29 +43,40 @@ const TTL_MS = 10 * 60 * 1000;
  */
 export class SessionStorageTransientStore implements TransientStore {
   set(key: string, value: string): void {
-    window.sessionStorage.setItem(key, JSON.stringify({ value, storedAtMs: Date.now() }));
+    browser().sessionStorage.setItem(key, JSON.stringify({ value, storedAtMs: Date.now() }));
   }
 
   get(key: string): string | undefined {
-    const raw = window.sessionStorage.getItem(key);
+    const storage = browser().sessionStorage;
+    const raw = storage.getItem(key);
     if (raw === null) {
       return undefined;
     }
     try {
-      const { value, storedAtMs } = JSON.parse(raw) as { value: string; storedAtMs: number };
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        typeof parsed !== "object" || parsed === null ||
+        typeof (parsed as { value?: unknown }).value !== "string" ||
+        typeof (parsed as { storedAtMs?: unknown }).storedAtMs !== "number" ||
+        !Number.isFinite((parsed as { storedAtMs: number }).storedAtMs)
+      ) {
+        storage.removeItem(key);
+        return undefined;
+      }
+      const { value, storedAtMs } = parsed as { value: string; storedAtMs: number };
       if (Date.now() - storedAtMs > TTL_MS) {
-        window.sessionStorage.removeItem(key);
+        storage.removeItem(key);
         return undefined;
       }
       return value;
     } catch {
-      window.sessionStorage.removeItem(key);
+      storage.removeItem(key);
       return undefined;
     }
   }
 
   remove(key: string): void {
-    window.sessionStorage.removeItem(key);
+    browser().sessionStorage.removeItem(key);
   }
 }
 
@@ -54,35 +95,71 @@ export class BrowserOidcController {
     private readonly tokens: MemoryTokenStore,
     private readonly transient: TransientStore = new SessionStorageTransientStore(),
   ) {
-    this.session = new OidcSession(config.oidc, transient);
+    const verifier = new RemoteJwksIdTokenVerifier({
+      jwksUri: config.oidc.jwksUri,
+      allowedAlgorithms: config.oidc.allowedAlgorithms,
+    });
+    this.session = new OidcSession(config.oidc, transient, verifier);
   }
 
   async beginLogin(): Promise<void> {
     const { authorizationUrl } = await this.session.beginAuthorization();
-    window.location.assign(authorizationUrl);
+    browser().location.assign(authorizationUrl);
   }
 
   isCallback(): boolean {
-    const params = new URLSearchParams(window.location.search);
-    return params.has("code") && params.has("state");
+    const runtime = browser();
+    const current = new URL(runtime.location.href);
+    const redirect = new URL(this.config.oidc.redirectUri);
+    if (
+      current.origin !== redirect.origin ||
+      current.pathname !== redirect.pathname ||
+      !staticQueryMatches(current, redirect)
+    ) {
+      return false;
+    }
+    const params = new URLSearchParams(runtime.location.search);
+    return params.has("state") && (params.has("code") || params.has("error"));
   }
 
   async handleCallbackIfPresent(): Promise<boolean> {
     if (!this.isCallback()) {
       return false;
     }
-    const params = new URLSearchParams(window.location.search);
-    const consoleSession = await this.session.completeAuthorization({
-      code: params.get("code") as string,
-      state: params.get("state") as string,
-    });
-    this.tokens.set(consoleSession);
-    // Scrub the sensitive code/state from the address bar and history.
-    window.history.replaceState({}, document.title, window.location.pathname);
-    return true;
+    const runtime = browser();
+    const params = new URLSearchParams(runtime.location.search);
+    const state = params.get("state") as string;
+    if (params.has("error")) {
+      try {
+        this.transient.remove(`oidc.tx.${state}`);
+        throw new OidcSessionError("AuthorizationFailed", "authorization was denied");
+      } finally {
+        runtime.history.replaceState({}, documentTitle(), runtime.location.pathname);
+      }
+    }
+    try {
+      const consoleSession = await this.session.completeAuthorization({
+        code: params.get("code") as string,
+        state,
+      });
+      this.tokens.set(consoleSession);
+      return true;
+    } finally {
+      // Scrub sensitive callback values even when validation fails.
+      runtime.history.replaceState({}, documentTitle(), runtime.location.pathname);
+    }
   }
 
   logout(): void {
     this.tokens.clear();
   }
+}
+
+function staticQueryMatches(current: URL, redirect: URL): boolean {
+  for (const [key, value] of redirect.searchParams) {
+    if (current.searchParams.getAll(key).length !== 1 || current.searchParams.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
 }

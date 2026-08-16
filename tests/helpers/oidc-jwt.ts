@@ -9,6 +9,9 @@ export interface TestJwtIssuer {
   readonly kid: string;
   readonly alg: OidcAlgorithm;
   readonly signingKey: OidcSigningKey;
+  readonly jwks: {
+    readonly keys: readonly Readonly<Record<string, unknown>>[];
+  };
   sign(claims: Readonly<Record<string, unknown>>, header?: Readonly<Record<string, unknown>>): string;
 }
 
@@ -46,7 +49,29 @@ export function createTestJwtIssuer(
     return `${signingInput}.${base64url(signature)}`;
   }
 
-  return { kid, alg, signingKey, sign };
+  const jwk = publicKey.export({ format: "jwk" });
+  const jwks = {
+    keys: [{ ...jwk, kid, alg, use: "sig" }],
+  };
+
+  return { kid, alg, signingKey, jwks, sign };
+}
+
+/** Change a signed JWT payload while preserving its original signature bytes. */
+export function tamperJwtPayload(
+  token: string,
+  mutate: (claims: Record<string, unknown>) => Record<string, unknown>,
+): string {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("test JWT is not compact JWS");
+  }
+  const [header, payload, signature] = parts as [string, string, string];
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+    string,
+    unknown
+  >;
+  return `${header}.${base64url(JSON.stringify(mutate(claims)))}.${signature}`;
 }
 
 /** Standard registered claims for a valid token, seconds-based exp/nbf. */

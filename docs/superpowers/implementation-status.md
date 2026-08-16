@@ -42,6 +42,15 @@
 
 ## 4. 待实施能力包
 
+2026-08-17（Production Closure Task 6）：Web Console OIDC callback boundary
+完成 fail-closed 加固。浏览器在使用 claim 前通过部署固定的远程 JWKS 验证
+`RS256 | ES256` ID Token；所有 callback outcome 消费临时 state，并校验
+token response、subject、tenant/role、精确 redirect、runtime URL 与 Local
+bootstrap loopback 约束。真实 RS256/ES256、JWKS rotation/network failure、
+malformed token/transient/role 与 callback error 均有 focused evidence；access
+token 继续只保存在内存中。该工作不关闭 Task 21 的 Windows quarantine 或
+最终 release Gate。
+
 2026-08-01 已按用户要求批量起草并自审全部 Plan；LS-05、LS-10、LS-11、LS-13 又完成协议、密码学、部署安全和 Windows/Rust 专项审查，用户已接受推荐路线并将修订写回对应 Spec/Plan。两份审阅文档（`docs/superpowers/reviews/2026-08-01-local-self-hosted-through-m3-readiness-review.md` 与 `docs/superpowers/reviews/2026-08-01-ls-05-ls-10-ls-11-ls-13-specialist-review.md`）均判定 Spec/Plan 可实施且发现项已写回。
 
 2026-08-01（PR-00 对齐）：PR-00「Align authoritative Specs and Plans」修复了上述审阅与跨文档分析识别出的剩余缺口（历史文档清单、跨文档章节引用、LS-03→LS-05 `RunResourceFactory`/`RunnerConnectionPort` 交接、LS-08 表计数、LS-11 target/PRD 路由与迁移 001–005 抽取、LS-05/LS-06/LS-07 smoke-import 步骤）。据此，LS-01 至 LS-13 由 `spec_draft` 统一切换为 `plan_ready`；BASE 能力与 Milestone Gate 状态不变。

@@ -179,3 +179,44 @@ separately from Task 0's release-blocking Windows quarantine.
   tests/e2e/web-console/review-conflict.test.ts
   tests/contract/public-api/api-v1.test.ts` exited 0: 6 files, 67 passed,
   0 failed, 0 skipped. Docker and PostgreSQL executed; no required suite skipped.
+
+## Task 6 - Web Console OIDC ID Token verification
+
+component: complete
+production_wiring: complete
+verification: passed
+
+### OIDC evidence log
+
+- 2026-08-16 - the initial security RED proved a signed token whose payload was
+  modified after signing reached claim mapping. A second RED proved a symmetric
+  `HS256` runtime allowlist was accepted.
+- The cached remote-JWKS verifier and asymmetric `RS256 | ES256` allowlist then
+  passed 15 focused tests covering real RSA/P-256 signatures, payload tampering,
+  unknown keys, disallowed algorithms, expiry, issuer/audience/nonce, tenant
+  rejection, cold-start JWKS outage, PKCE, and in-memory access-token storage.
+- Post-merge dual-axis review found the production callback boundary incomplete:
+  malformed transient/token responses and exchange failures did not always
+  consume transient state; `sub` and token response fields were not fail-closed;
+  runtime URLs/redirect binding were unvalidated; cached JWKS rotation lacked
+  evidence. These findings defined the follow-up RED cases below.
+- 2026-08-17 - host: Microsoft Windows 11 Enterprise; Node `v24.16.0`;
+  Corepack pnpm `11.7.0`; Docker `29.6.1`; final implementation commit
+  `4f9695c`.
+- The follow-up required non-empty `sub`; validated access/ID token, Bearer type,
+  and positive expiry; consumed transient state on every callback outcome;
+  validated deployment URLs, algorithms, tenant/role mappings, and exact
+  redirect binding; scrubbed callback values on failure; and proved cached JWKS
+  rotation with a newly signed token.
+- `corepack pnpm vitest run tests/component/web-console/oidc-flow.test.ts
+  --reporter=verbose` exited 0 after review fixes: 1 file, 39 passed, 0 failed,
+  0 skipped. The added cases cover JWKS network failure, OIDC error callbacks,
+  exact static redirect queries, malformed roles, and bootstrap loopback policy.
+- `corepack pnpm install --frozen-lockfile`, `corepack pnpm build`,
+  `corepack pnpm --filter @qualigence/web-console typecheck`, and
+  `corepack pnpm typecheck` all exited 0; `git diff --check` passed.
+- With `C:\Program Files\Git\usr\bin` prepended to `PATH`, `corepack pnpm test`
+  exited 0 on the final implementation commit: 140 files total, 139 passed and
+  1 skipped; 899 tests total, 893 passed, 0 failed, and 6 expected skips. Four
+  skips remain the reviewed
+  Task 21 Windows quarantines; quarantined green is not release completion.

@@ -1,6 +1,11 @@
 import type { PublicApiRole } from "@qualigence/public-api";
 import { createPkceMaterial } from "./pkce.js";
 import type { ConsoleSession } from "./memory-token-store.js";
+import {
+  IdTokenVerificationError,
+  type IdTokenAlgorithm,
+  type IdTokenVerifier,
+} from "./id-token-verifier.js";
 
 /**
  * A minimal transient store for the short-lived, per-authorization `state` /
@@ -19,6 +24,8 @@ export interface OidcClientConfig {
   readonly issuer: string;
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
+  readonly jwksUri: string;
+  readonly allowedAlgorithms: readonly IdTokenAlgorithm[];
   readonly clientId: string;
   readonly redirectUri: string;
   readonly scope: string;
@@ -51,7 +58,7 @@ interface TokenResponse {
   readonly access_token: string;
   readonly id_token: string;
   readonly token_type: string;
-  readonly expires_in?: number;
+  readonly expires_in: number;
 }
 
 const TRANSIENT_PREFIX = "oidc.tx.";
@@ -71,31 +78,14 @@ export class OidcSessionError extends Error {
       | "TenantNotAllowed"
       | "RoleNotAllowed"
       | "TokenExchangeFailed"
-      | "TokenMalformed",
+      | "TokenMalformed"
+      | "TokenSignatureInvalid"
+      | "JwksUnavailable"
+      | "AuthorizationFailed",
     message: string,
   ) {
     super(message);
     this.name = "OidcSessionError";
-  }
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw new OidcSessionError("TokenMalformed", "id_token is not a JWT");
-  }
-  const segment = parts[1] as string;
-  const pad = segment.length % 4 === 0 ? "" : "=".repeat(4 - (segment.length % 4));
-  const b64 = segment.replace(/-/g, "+").replace(/_/g, "/") + pad;
-  try {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-  } catch {
-    throw new OidcSessionError("TokenMalformed", "id_token payload is not valid JSON");
   }
 }
 
@@ -109,14 +99,14 @@ function mapPrincipal(
   }
   const rawRoles = claims[config.rolesClaim];
   const values = typeof rawRoles === "string" ? [rawRoles] : Array.isArray(rawRoles) ? rawRoles : [];
+  if (values.length === 0 || !values.every((value) => typeof value === "string")) {
+    throw new OidcSessionError("RoleNotAllowed", "role claim is missing or malformed");
+  }
   const roles: PublicApiRole[] = [];
   for (const value of values) {
-    if (typeof value !== "string") {
-      continue;
-    }
     const mapped = config.roleMap[value];
     if (mapped === undefined) {
-      throw new OidcSessionError("RoleNotAllowed", `role ${value} is not allowed`);
+      throw new OidcSessionError("RoleNotAllowed", "an ID Token role is not allowed");
     }
     if (!roles.includes(mapped)) {
       roles.push(mapped);
@@ -141,6 +131,7 @@ export class OidcSession {
   constructor(
     private readonly config: OidcClientConfig,
     private readonly transient: TransientStore,
+    private readonly idTokenVerifier: IdTokenVerifier,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly now: () => number = () => Date.now(),
   ) {}
@@ -173,42 +164,43 @@ export class OidcSession {
     if (raw === undefined) {
       throw new OidcSessionError("TransientMissing", "no transient record for the returned state");
     }
-    const record = JSON.parse(raw) as TransientRecord;
-    if (record.state !== params.state) {
-      throw new OidcSessionError("StateMismatch", "state does not match the transient record");
-    }
-    if (this.now() - record.createdAtMs > TRANSIENT_TTL_MS) {
+    try {
+      const record = parseTransientRecord(raw);
+      if (record.state !== params.state) {
+        throw new OidcSessionError("StateMismatch", "state does not match the transient record");
+      }
+      if (this.now() - record.createdAtMs > TRANSIENT_TTL_MS) {
+        throw new OidcSessionError("TransientExpired", "the authorization request expired");
+      }
+
+      const token = await this.exchangeCode(params.code, record.codeVerifier);
+      const claims = await this.idTokenVerifier.verify(token.id_token, {
+        issuer: this.config.issuer,
+        audience: this.config.clientId,
+      });
+      if (claims.nonce !== record.nonce) {
+        throw new OidcSessionError("NonceMismatch", "id_token nonce does not match");
+      }
+
+      const { tenantId, roles } = mapPrincipal(this.config, claims);
+      const nowMs = this.now();
+      const subject = typeof claims.sub === "string" ? claims.sub.trim() : "";
+      if (subject.length === 0) {
+        throw new OidcSessionError("TokenMalformed", "id_token subject is missing");
+      }
+      const expiresAtMs = nowMs + token.expires_in * 1000;
+      return { subject, tenantId, roles, accessToken: token.access_token, expiresAtMs };
+    } catch (error) {
+      if (error instanceof IdTokenVerificationError) {
+        throw toSessionVerificationError(error);
+      }
+      if (error instanceof OidcSessionError) {
+        throw error;
+      }
+      throw new OidcSessionError("TokenMalformed", "the authorization response is malformed");
+    } finally {
       this.transient.remove(key);
-      throw new OidcSessionError("TransientExpired", "the authorization request expired");
     }
-
-    const token = await this.exchangeCode(params.code, record.codeVerifier);
-    const claims = decodeJwtPayload(token.id_token);
-
-    if (claims.nonce !== record.nonce) {
-      throw new OidcSessionError("NonceMismatch", "id_token nonce does not match");
-    }
-    if (claims.iss !== this.config.issuer) {
-      throw new OidcSessionError("IssuerMismatch", "id_token issuer is not trusted");
-    }
-    const aud = claims.aud;
-    const audiences = Array.isArray(aud) ? aud : typeof aud === "string" ? [aud] : [];
-    if (!audiences.includes(this.config.clientId)) {
-      throw new OidcSessionError("AudienceMismatch", "id_token audience does not include this client");
-    }
-    const nowMs = this.now();
-    if (typeof claims.exp === "number" && nowMs >= claims.exp * 1000) {
-      throw new OidcSessionError("TokenExpired", "id_token has expired");
-    }
-
-    const { tenantId, roles } = mapPrincipal(this.config, claims);
-    // The transient secrets have served their purpose — clear them immediately.
-    this.transient.remove(key);
-
-    const subject = typeof claims.sub === "string" ? claims.sub : "";
-    const expiresAtMs =
-      token.expires_in !== undefined ? nowMs + token.expires_in * 1000 : nowMs + 3600 * 1000;
-    return { subject, tenantId, roles, accessToken: token.access_token, expiresAtMs };
   }
 
   private async exchangeCode(code: string, codeVerifier: string): Promise<TokenResponse> {
@@ -219,17 +211,101 @@ export class OidcSession {
       client_id: this.config.clientId,
       code_verifier: codeVerifier,
     });
-    const response = await this.fetchImpl(this.config.tokenEndpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json",
-      },
-      body: body.toString(),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.config.tokenEndpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+        },
+        body: body.toString(),
+      });
+    } catch {
+      throw new OidcSessionError("TokenExchangeFailed", "token endpoint is unavailable");
+    }
     if (!response.ok) {
       throw new OidcSessionError("TokenExchangeFailed", `token endpoint returned ${response.status}`);
     }
-    return (await response.json()) as TokenResponse;
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new OidcSessionError("TokenMalformed", "token endpoint returned malformed JSON");
+    }
+    return parseTokenResponse(payload);
+  }
+}
+
+function parseTransientRecord(raw: string): TransientRecord {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  if (!isRecord(value)) {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  const { state, nonce, codeVerifier, createdAtMs } = value;
+  if (
+    typeof state !== "string" || state.length === 0 ||
+    typeof nonce !== "string" || nonce.length === 0 ||
+    typeof codeVerifier !== "string" || codeVerifier.length === 0 ||
+    typeof createdAtMs !== "number" || !Number.isFinite(createdAtMs)
+  ) {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  return { state, nonce, codeVerifier, createdAtMs };
+}
+
+function parseTokenResponse(value: unknown): TokenResponse {
+  if (!isRecord(value)) {
+    throw new OidcSessionError("TokenMalformed", "token endpoint response is malformed");
+  }
+  const accessToken = value.access_token;
+  const idToken = value.id_token;
+  const tokenType = value.token_type;
+  const expiresIn = value.expires_in;
+  if (
+    typeof accessToken !== "string" || accessToken.length === 0 ||
+    typeof idToken !== "string" || idToken.length === 0 ||
+    tokenType !== "Bearer" ||
+    typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0
+  ) {
+    throw new OidcSessionError("TokenMalformed", "token endpoint response is malformed");
+  }
+  return {
+    access_token: accessToken,
+    id_token: idToken,
+    token_type: tokenType,
+    expires_in: expiresIn,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toSessionVerificationError(error: IdTokenVerificationError): OidcSessionError {
+  switch (error.failure) {
+    case "jwks_unavailable":
+      return new OidcSessionError("JwksUnavailable", "the ID Token key set is unavailable");
+    case "issuer_mismatch":
+      return new OidcSessionError("IssuerMismatch", "id_token issuer is not trusted");
+    case "audience_mismatch":
+      return new OidcSessionError(
+        "AudienceMismatch",
+        "id_token audience does not include this client",
+      );
+    case "token_expired":
+      return new OidcSessionError("TokenExpired", "id_token has expired");
+    case "token_malformed":
+      return new OidcSessionError("TokenMalformed", "id_token is malformed");
+    case "signature_invalid":
+      return new OidcSessionError(
+        "TokenSignatureInvalid",
+        "id_token signature or signing key is not valid",
+      );
   }
 }
