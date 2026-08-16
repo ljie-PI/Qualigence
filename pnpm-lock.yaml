@@ -492,6 +492,9 @@ importers:
       '@tanstack/react-router':
         specifier: 1.170.18
         version: 1.170.18(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      jose:
+        specifier: ^6.2.9
+        version: 6.2.9
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -2022,6 +2025,9 @@ packages:
   isbot@5.2.1:
     resolution: {integrity: sha512-dJ+LpKyClQZ7NG+j3OensC/mAZkGpukE9YUrgPYvAZj2doVL0edfDgywTUh5CXa0o+nW9a1V9e5+CJTX8+SxRw==}
     engines: {node: '>=18'}
+
+  jose@6.2.9:
+    resolution: {integrity: sha512-XrchZOFZUl/T3vTwRe8XK+cJrGtMF4th1ARnDfwbBXFKThGhlsxEE4Zu03AD/bjJSt/9jT/mxrOCkJWOg77aPA==}
 
   json-schema-ref-resolver@3.0.0:
     resolution: {integrity: sha512-hOrZIVL5jyYFjzk7+y7n5JDzGlU8rfWDuYyHwGa2WA8/pcmMHezp2xsVwxrebD/Q9t8Nc5DboieySDpCp4WG4A==}
@@ -4068,6 +4074,8 @@ snapshots:
   is-fullwidth-code-point@3.0.0: {}
 
   isbot@5.2.1: {}
+
+  jose@6.2.9: {}
 
   json-schema-ref-resolver@3.0.0:
     dependencies:

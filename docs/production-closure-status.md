@@ -13,6 +13,7 @@ were run without credentials, tokens, or connection strings.
 | Direct Node entrypoints | complete | complete | passed | all seven built binaries execute their direct-entry guard; configuration-dependent daemons reject missing configuration | `603439b` |
 | Local Launcher process gate | complete | complete | passed | clean built-binary init/start/status/doctor/backup/stop path with explicit Git OpenSSL discovery on Windows | `603439b` |
 | Review task repository | complete | complete | passed | one shared contract passed against SQLite and tenant-scoped PostgreSQL, including idempotency-key binding and two-writer claim races | `3071da0` |
+| Web Console OIDC ID Token | complete | complete | passed | real RS256 signatures and a local JWKS endpoint prove verification happens before claims are trusted; failure paths clear transient callback state | this commit |
 | Root Playwright CLI exposure | partial | partial | failed | `corepack pnpm exec playwright --version` cannot find the root executable; use the filtered adapter command until Task 21 defines root Gates | `d07c2eb` |
 
 ## Append-only evidence log
@@ -76,3 +77,23 @@ were run without credentials, tokens, or connection strings.
   0 failed, 0 skipped.
 - 2026-08-16 — `corepack pnpm typecheck` exited 0 after the provider contract
   and adapter update.
+- 2026-08-16 — Task 6 dependency precondition: direct registry access did not
+  complete in the diagnostic window. With the user-provided local HTTP proxy,
+  an HTTPS registry request returned 200 and `corepack pnpm view jose version
+  --json` exited 0 with `6.2.9`. `corepack pnpm --filter
+  @qualigence/web-console add jose` then exited 0. TLS verification remained
+  enabled and no permanent proxy or registry setting was written.
+- 2026-08-16 — Task 6 security RED: the focused OIDC suite accepted an ID
+  Token whose payload was changed after signing and returned subject
+  `attacker` (1 failed, 6 passed). A second RED proved the verifier constructor
+  initially accepted a runtime `HS256` allowlist (1 failed, 13 passed).
+- 2026-08-16 — after adding the cached remote-JWKS verifier and runtime
+  asymmetric-algorithm allowlist, `corepack pnpm vitest run
+  tests/component/web-console/oidc-flow.test.ts --reporter=verbose` exited 0:
+  1 file, 14 passed, 0 failed. The cases cover valid RS256, payload tampering,
+  unknown `kid`, disallowed ES256, rejected HS256 configuration, expiry,
+  unavailable JWKS, wrong issuer/audience/nonce, tenant rejection, PKCE, and
+  in-memory token/logout behavior.
+- 2026-08-16 — `corepack pnpm --filter @qualigence/web-console typecheck`
+  exited 0. `corepack pnpm typecheck` also exited 0, including the TypeScript
+  project build, production Vite bundle, test project, and Web Console checks.

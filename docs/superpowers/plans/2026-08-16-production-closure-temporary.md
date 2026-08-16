@@ -45,17 +45,17 @@ The word `implemented` in the status ledger means only that some planned files o
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete | One provider-neutral contract passed against SQLite and PostgreSQL (18 tests), including concurrent two-transaction claim and cross-task idempotency-key rejection; the focused regression set adds 46 passing tests. |
-| 6 OIDC signature verification | environmentally blocked | `jose` is not in the lockfile/store and the configured npm-compatible registry currently fails TLS. Resume only with a trusted registry; never vendor or download an unverified package. |
-| 7-18 | pending | May proceed in dependency order while Task 6 waits, except a dependent Console release Gate cannot pass. |
+| 6 OIDC signature verification | complete | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256/JWKS tests reject tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS before claim mapping. |
+| 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
-| 21-22 CI/docs | pending | Task 21 release completion waits for Tasks 6 and 19-20 plus all platform CI artifacts. |
+| 21-22 CI/docs | pending | Task 21 release completion now waits for Tasks 19-20 plus all platform CI artifacts; its Task 6 dependency is complete. |
 
 ## Current verified baseline
 
 - Docker 29.6.1 and Chromium are available on the current Windows host.
 - Git's OpenSSL exists at `C:\Program Files\Git\usr\bin\openssl.exe` but is not on `PATH`; Gates must resolve it explicitly or report `OpenSslUnavailable`.
 - Cargo is not installed, so native Companion Tasks 19-20 cannot be completed on this host yet.
-- The lockfile is synchronized after Task 3. A trusted npm-compatible registry is still TLS-blocked; Task 6 cannot add `jose` until that external condition changes.
+- The lockfile is synchronized through Task 6. The trusted registry was reachable through the explicit local HTTP proxy without disabling TLS; `jose` 6.2.9 is a direct Web Console dependency.
 - Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
@@ -63,7 +63,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
 - Server does not register Mission/Run/Trace/Skill routes, does not start a Runner gRPC endpoint, and does not run `ServerIntelligenceResultConsumer`.
 - Review HTTP mutations use the aggregate handlers and preserve the public conflict envelope. Task 5's shared SQLite/PostgreSQL contract proves idempotency-key binding, audit persistence, and true two-writer claim behavior.
-- Web Console decodes ID Token claims without verifying the signature.
+- Web Console verifies ID Token signatures against its deployment-pinned remote JWKS and an RS256/ES256 allowlist before nonce, tenant, role, or subject processing.
 - Live Web/Runner code uses the pre-v1 `ObservationGraph`; Windows adapter code uses `ObservationGraphV1`.
 - `TargetRef` is Web-only and Runner always constructs `PlaywrightWebTargetAdapter`.
 - Windows `NamedPipePeer`, `WindowsUiaCapture`, `WindowsDesktopProcessHost`, and Companion binary entrypoint are non-functional production seams.
@@ -98,7 +98,7 @@ The word `implemented` in the status ledger means only that some planned files o
 Tasks 1-3 (already implemented)
     ├── Task 4 (close entrypoint Gates + create committed status ledger)
     ├── Task 5 (Review provider/concurrency contract)
-    ├── Task 6 (Console ID Token verification; waits for trusted registry)
+    ├── Task 6 (Console ID Token verification; complete)
     └── Task 7 (Runner renew)
 
 Task 8 (gRPC application port)
@@ -621,7 +621,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 
 ### Task 6: Verify Web Console ID Token signatures before using claims
 
-**Execution status:** blocked until a trusted npm-compatible registry is reachable. `jose` is absent from both lockfile and local store. Do not bypass TLS, copy a package from an untrusted source, or implement cryptography locally.
+**Execution status:** complete. The trusted registry was reached through the user-provided local HTTP proxy without disabling TLS. `jose` 6.2.9 is locked, focused cryptographic tests pass, and both Web Console and root typechecks pass.
 
 **Files:**
 - Modify: `apps/web-console/package.json`
@@ -639,7 +639,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 - Produces `IdTokenVerifier.verify(token, expected): Promise<Record<string, unknown>>`.
 - Extends `OidcClientConfig` with `jwksUri` and `allowedAlgorithms: readonly ("RS256" | "ES256")[]`.
 
-- [ ] **Step 1: Add failing cryptographic validation tests**
+- [x] **Step 1: Add failing cryptographic validation tests**
 
 Extend the test IdP/JWT fixture with a JWKS endpoint. Add cases for:
 
@@ -652,13 +652,13 @@ Extend the test IdP/JWT fixture with a JWKS endpoint. Add cases for:
 
 Use real signing keys from `tests/helpers/oidc-jwt.ts`; do not mock the verifier in these contract cases.
 
-- [ ] **Step 2: Confirm tampered tokens currently pass signature validation**
+- [x] **Step 2: Confirm tampered tokens currently pass signature validation**
 
 Run: `corepack pnpm vitest run tests/component/web-console/oidc-flow.test.ts`
 
 Expected before implementation: a token with a valid-looking payload and tampered signature reaches claim mapping.
 
-- [ ] **Step 3: Add the browser-compatible verifier**
+- [x] **Step 3: Add the browser-compatible verifier**
 
 After the registry precondition is satisfied, install with `corepack pnpm --filter @qualigence/web-console add jose` and review the exact manifest/lock diff before proceeding. Implement:
 
@@ -673,15 +673,15 @@ export interface IdTokenVerifier {
 
 `RemoteJwksIdTokenVerifier` must construct one cached `createRemoteJWKSet(new URL(jwksUri), { timeoutDuration, cooldownDuration, cacheMaxAge })` and call `jwtVerify` with exact issuer, audience, and the configured `RS256 | ES256` allowlist. Do not accept `none`, symmetric algorithms, token-supplied JWKS URLs, or arbitrary algorithms.
 
-- [ ] **Step 4: Replace payload decoding with verified claims**
+- [x] **Step 4: Replace payload decoding with verified claims**
 
 Inject an `IdTokenVerifier` into `OidcSession` or construct it from config in `BrowserOidcController`. In `completeAuthorization`, await verification before nonce, tenant, role, or subject processing. Convert signature/key/algorithm/JWKS errors to stable `OidcSessionError` reasons `TokenSignatureInvalid` or `JwksUnavailable`; do not expose library error text to the UI.
 
-- [ ] **Step 5: Preserve transient and in-memory-token guarantees**
+- [x] **Step 5: Preserve transient and in-memory-token guarantees**
 
 Keep state/nonce/verifier in TTL-bounded session storage and access tokens only in `MemoryTokenStore`. On any verification failure, remove the used transient record so an invalid callback cannot be replayed.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 

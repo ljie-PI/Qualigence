@@ -1,3 +1,4 @@
+import type { IdTokenAlgorithm } from "./auth/id-token-verifier.js";
 import type { OidcClientConfig } from "./auth/oidc-session.js";
 
 /**
@@ -27,19 +28,42 @@ function env(key: string, fallback: string): string {
 
 let cached: ConsoleRuntimeConfig | undefined;
 
+function isIdTokenAlgorithm(value: string): value is IdTokenAlgorithm {
+  return value === "RS256" || value === "ES256";
+}
+
+function parseAllowedAlgorithms(raw: string): readonly IdTokenAlgorithm[] {
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (values.length === 0 || !values.every(isIdTokenAlgorithm)) {
+    throw new Error("VITE_OIDC_ALLOWED_ALGORITHMS must contain only RS256 or ES256");
+  }
+  return values;
+}
+
 export function loadRuntimeConfig(): ConsoleRuntimeConfig {
   if (cached !== undefined) {
     return cached;
   }
   const injected = window.__QUALIGENCE_CONFIG__ ?? {};
   const origin = window.location.origin;
+  const issuer = env("VITE_OIDC_ISSUER", "https://oidc.example.test/");
   const defaults: ConsoleRuntimeConfig = {
     apiBaseUrl: env("VITE_API_BASE_URL", `${origin}/api`),
     authMode: (env("VITE_AUTH_MODE", "oidc") as ConsoleRuntimeConfig["authMode"]),
     oidc: {
-      issuer: env("VITE_OIDC_ISSUER", "https://oidc.example.test/"),
+      issuer,
       authorizationEndpoint: env("VITE_OIDC_AUTHORIZE", "https://oidc.example.test/authorize"),
       tokenEndpoint: env("VITE_OIDC_TOKEN", "https://oidc.example.test/token"),
+      jwksUri: env(
+        "VITE_OIDC_JWKS_URI",
+        new URL(".well-known/jwks.json", issuer).toString(),
+      ),
+      allowedAlgorithms: parseAllowedAlgorithms(
+        env("VITE_OIDC_ALLOWED_ALGORITHMS", "RS256"),
+      ),
       clientId: env("VITE_OIDC_CLIENT_ID", "qualigence-console"),
       redirectUri: env("VITE_OIDC_REDIRECT_URI", `${origin}/auth/callback`),
       scope: env("VITE_OIDC_SCOPE", "openid profile email"),

@@ -1,5 +1,6 @@
 import { MemoryTokenStore } from "./memory-token-store.js";
 import { OidcSession, type TransientStore } from "./oidc-session.js";
+import { RemoteJwksIdTokenVerifier } from "./id-token-verifier.js";
 import type { ConsoleRuntimeConfig } from "../config.js";
 
 const TTL_MS = 10 * 60 * 1000;
@@ -54,7 +55,11 @@ export class BrowserOidcController {
     private readonly tokens: MemoryTokenStore,
     private readonly transient: TransientStore = new SessionStorageTransientStore(),
   ) {
-    this.session = new OidcSession(config.oidc, transient);
+    const verifier = new RemoteJwksIdTokenVerifier({
+      jwksUri: config.oidc.jwksUri,
+      allowedAlgorithms: config.oidc.allowedAlgorithms,
+    });
+    this.session = new OidcSession(config.oidc, transient, verifier);
   }
 
   async beginLogin(): Promise<void> {

@@ -1,6 +1,11 @@
 import type { PublicApiRole } from "@qualigence/public-api";
 import { createPkceMaterial } from "./pkce.js";
 import type { ConsoleSession } from "./memory-token-store.js";
+import {
+  IdTokenVerificationError,
+  type IdTokenAlgorithm,
+  type IdTokenVerifier,
+} from "./id-token-verifier.js";
 
 /**
  * A minimal transient store for the short-lived, per-authorization `state` /
@@ -19,6 +24,8 @@ export interface OidcClientConfig {
   readonly issuer: string;
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
+  readonly jwksUri: string;
+  readonly allowedAlgorithms: readonly IdTokenAlgorithm[];
   readonly clientId: string;
   readonly redirectUri: string;
   readonly scope: string;
@@ -71,31 +78,13 @@ export class OidcSessionError extends Error {
       | "TenantNotAllowed"
       | "RoleNotAllowed"
       | "TokenExchangeFailed"
-      | "TokenMalformed",
+      | "TokenMalformed"
+      | "TokenSignatureInvalid"
+      | "JwksUnavailable",
     message: string,
   ) {
     super(message);
     this.name = "OidcSessionError";
-  }
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> {
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw new OidcSessionError("TokenMalformed", "id_token is not a JWT");
-  }
-  const segment = parts[1] as string;
-  const pad = segment.length % 4 === 0 ? "" : "=".repeat(4 - (segment.length % 4));
-  const b64 = segment.replace(/-/g, "+").replace(/_/g, "/") + pad;
-  try {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-  } catch {
-    throw new OidcSessionError("TokenMalformed", "id_token payload is not valid JSON");
   }
 }
 
@@ -141,6 +130,7 @@ export class OidcSession {
   constructor(
     private readonly config: OidcClientConfig,
     private readonly transient: TransientStore,
+    private readonly idTokenVerifier: IdTokenVerifier,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly now: () => number = () => Date.now(),
   ) {}
@@ -183,32 +173,31 @@ export class OidcSession {
     }
 
     const token = await this.exchangeCode(params.code, record.codeVerifier);
-    const claims = decodeJwtPayload(token.id_token);
+    try {
+      const claims = await this.idTokenVerifier.verify(token.id_token, {
+        issuer: this.config.issuer,
+        audience: this.config.clientId,
+      });
+      if (claims.nonce !== record.nonce) {
+        throw new OidcSessionError("NonceMismatch", "id_token nonce does not match");
+      }
 
-    if (claims.nonce !== record.nonce) {
-      throw new OidcSessionError("NonceMismatch", "id_token nonce does not match");
+      const { tenantId, roles } = mapPrincipal(this.config, claims);
+      const nowMs = this.now();
+      const subject = typeof claims.sub === "string" ? claims.sub : "";
+      const expiresAtMs =
+        token.expires_in !== undefined
+          ? nowMs + token.expires_in * 1000
+          : nowMs + 3600 * 1000;
+      this.transient.remove(key);
+      return { subject, tenantId, roles, accessToken: token.access_token, expiresAtMs };
+    } catch (error) {
+      this.transient.remove(key);
+      if (error instanceof IdTokenVerificationError) {
+        throw toSessionVerificationError(error);
+      }
+      throw error;
     }
-    if (claims.iss !== this.config.issuer) {
-      throw new OidcSessionError("IssuerMismatch", "id_token issuer is not trusted");
-    }
-    const aud = claims.aud;
-    const audiences = Array.isArray(aud) ? aud : typeof aud === "string" ? [aud] : [];
-    if (!audiences.includes(this.config.clientId)) {
-      throw new OidcSessionError("AudienceMismatch", "id_token audience does not include this client");
-    }
-    const nowMs = this.now();
-    if (typeof claims.exp === "number" && nowMs >= claims.exp * 1000) {
-      throw new OidcSessionError("TokenExpired", "id_token has expired");
-    }
-
-    const { tenantId, roles } = mapPrincipal(this.config, claims);
-    // The transient secrets have served their purpose — clear them immediately.
-    this.transient.remove(key);
-
-    const subject = typeof claims.sub === "string" ? claims.sub : "";
-    const expiresAtMs =
-      token.expires_in !== undefined ? nowMs + token.expires_in * 1000 : nowMs + 3600 * 1000;
-    return { subject, tenantId, roles, accessToken: token.access_token, expiresAtMs };
   }
 
   private async exchangeCode(code: string, codeVerifier: string): Promise<TokenResponse> {
@@ -231,5 +220,28 @@ export class OidcSession {
       throw new OidcSessionError("TokenExchangeFailed", `token endpoint returned ${response.status}`);
     }
     return (await response.json()) as TokenResponse;
+  }
+}
+
+function toSessionVerificationError(error: IdTokenVerificationError): OidcSessionError {
+  switch (error.failure) {
+    case "jwks_unavailable":
+      return new OidcSessionError("JwksUnavailable", "the ID Token key set is unavailable");
+    case "issuer_mismatch":
+      return new OidcSessionError("IssuerMismatch", "id_token issuer is not trusted");
+    case "audience_mismatch":
+      return new OidcSessionError(
+        "AudienceMismatch",
+        "id_token audience does not include this client",
+      );
+    case "token_expired":
+      return new OidcSessionError("TokenExpired", "id_token has expired");
+    case "token_malformed":
+      return new OidcSessionError("TokenMalformed", "id_token is malformed");
+    case "signature_invalid":
+      return new OidcSessionError(
+        "TokenSignatureInvalid",
+        "id_token signature or signing key is not valid",
+      );
   }
 }
