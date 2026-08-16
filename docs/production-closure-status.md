@@ -127,7 +127,7 @@ were run without credentials, tokens, or connection strings.
   production verification code was unchanged.
 - 2026-08-16 — highest-stack full Gate with Docker, Chromium, and Git OpenSSL
   available built successfully, then exited 1: 140 files total (136 passed,
-  4 failed), 864 tests total (858 passed, 4 failed, 2 skipped). Failures are the
+  4 failed), 868 tests total (862 passed, 4 failed, 2 skipped). Failures are the
   pre-existing Task 21 Windows baselines: launcher SIGTERM timing, an unclosed
   reopened SQLite handle during cleanup, Linux-only `/proc` process discovery,
   and a POSIX `0600` mode assertion on Windows. These are not environment skips
