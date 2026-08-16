@@ -568,7 +568,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** complete after two PR review remediation rounds. One provider-neutral contract passes against SQLite and PostgreSQL, while PostgreSQL-specific advisory-lock barriers force both transactions beyond their initial scheduling point. Both adapters reserve the audit key before compare-and-set inside the existing transaction, replay simultaneous copies from the durable ledger, reject cross-task key competition, and roll aggregate state back with audit failure, without changing the production repository port.
+**Execution status:** complete after two PR review remediation rounds. One provider-neutral contract passes against SQLite and PostgreSQL, while PostgreSQL-specific advisory-lock barriers force deterministic writer overlap: the winner reaches the aggregate-update advisory lock and the loser waits on the reservation transaction. Both adapters reserve the audit key before compare-and-set inside the existing transaction, replay simultaneous copies from the durable ledger, reject cross-task key competition, and roll aggregate state back with audit failure, without changing the production repository port.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`
@@ -632,7 +632,7 @@ The suite must execute these cases against both providers:
 10. Two simultaneous copies of the same claim or resolution command/key both return the one applied aggregate and increment only once.
 11. Concurrent reuse of one claim or resolution idempotency key across different tasks advances exactly one task and binds the audit to that winner.
 12. SQLite-only failure injection makes claim/resolution audit insertion fail and proves that the matching aggregate transition is rolled back.
-13. PostgreSQL-only advisory-lock triggers hold both transactions at the aggregate update after the ledger decision, proving claim and resolve replay/cross-task behavior under a controlled race rather than relying on `Promise.all` scheduling.
+13. PostgreSQL-only advisory-lock triggers hold the winning transaction at aggregate update while the losing transaction waits on the idempotency reservation. Assert both `advisory` and `transactionid` waits before releasing the barrier, proving claim and resolve replay/cross-task behavior under controlled writer overlap rather than relying on `Promise.all` scheduling.
 
 Use `ClaimReviewTaskHandler` and `ResolveReviewTaskHandler` for cases that assert public domain errors. Read the final row in a new callback after both concurrent transactions have settled. Do not serialize the race with a test mutex or reuse the same PostgreSQL transaction.
 
