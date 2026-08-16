@@ -133,3 +133,6 @@ separately from Task 0's release-blocking Windows quarantine.
   skips; no new skip was added.
 - Task 21 and Linux evidence remain open. This Product PR 1 result closes only
   the temporary Local Launcher merge waiver; it is not release completion.
+- Restacked Standards and Spec/architecture reviews passed after commit
+  `19b3d8a`; both timeout-cleanup and plan-scope findings were addressed, with
+  zero remaining Critical or Important findings.
