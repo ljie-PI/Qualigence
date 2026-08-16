@@ -61,7 +61,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
 - Historical pre-quarantine Task 1-6 evidence reported four Windows baseline
   failures. The current Task 6 full Windows Gate supersedes that run: 140 files,
-  139 passed and 1 skipped; 894 tests, 888 passed, 0 failed, and 6 expected
+  139 passed and 1 skipped; 899 tests, 893 passed, 0 failed, and 6 expected
   skips. Four skips remain owned by Task 21 and are not release completion.
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
