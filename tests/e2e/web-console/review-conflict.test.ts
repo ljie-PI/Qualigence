@@ -9,8 +9,9 @@ import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-toke
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
 
-const skip = !dockerAvailable();
-const describeMaybe = skip ? describe.skip : describe;
+if (!dockerAvailable()) {
+  throw new Error("DockerUnavailable: Web Console Review conflict E2E requires Docker.");
+}
 
 async function seedReviewTask(
   admin: PostgresConnectionConfig,
@@ -58,7 +59,7 @@ async function readReviewTask(
  * 409 VersionConflict. The Console then re-reads the queue and replaces its
  * stale view with the true assignee/version — exactly what the UI must show.
  */
-describeMaybe("Web Console review-task concurrent claim conflict", () => {
+describe("Web Console review-task concurrent claim conflict", () => {
   let fx: ServerFixture;
   let admin: PostgresConnectionConfig;
 
@@ -120,6 +121,11 @@ describeMaybe("Web Console review-task concurrent claim conflict", () => {
       .catch((e: unknown) => e);
     expect(bobError).toBeInstanceOf(ApiClientError);
     expect((bobError as ApiClientError).code).toBe("VersionConflict");
+    expect((bobError as ApiClientError).details).toMatchObject({
+      expectedVersion: 2,
+      actualVersion: 2,
+      assigneeId: "alice",
+    });
 
     const persistedAfterRejectedClaim = await readReviewTask(admin, "conflict-task");
     expect(persistedAfterRejectedClaim).toEqual({

@@ -209,8 +209,8 @@ export function resolveReviewTask(
  * current aggregate truth as a conflict.
  */
 export interface ReviewTaskRepository {
-  create(task: ReviewTask): Promise<void>;
-  find(taskId: string): Promise<ReviewTask | undefined>;
-  claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined>;
-  resolve(command: ResolveReviewTaskCommand): Promise<ReviewTask | undefined>;
+  create(tenantId: string, task: ReviewTask): Promise<void>;
+  find(tenantId: string, taskId: string): Promise<ReviewTask | undefined>;
+  claim(tenantId: string, command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined>;
+  resolve(tenantId: string, command: ResolveReviewTaskCommand): Promise<ReviewTask | undefined>;
 }

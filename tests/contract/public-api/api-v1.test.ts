@@ -6,8 +6,9 @@ import { generateRunnerCsr } from "../../helpers/runner-identity-pki.js";
 import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
 
 const { Client } = pg;
-const skip = !dockerAvailable();
-const describeMaybe = skip ? describe.skip : describe;
+if (!dockerAvailable()) {
+  throw new Error("DockerUnavailable: Public API v1 contract requires Docker.");
+}
 
 const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
@@ -68,7 +69,7 @@ async function readReviewTask(
   }
 }
 
-describeMaybe("Public API v1 contract", () => {
+describe("Public API v1 contract", () => {
   let fx: ServerFixture;
   let admin: PostgresConnectionConfig;
 

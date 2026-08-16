@@ -4,13 +4,24 @@ import {
   ResolveReviewTaskHandler,
   ReviewTaskVersionConflict,
   openReviewTask,
+  type ClaimReviewTaskCommand,
+  type ResolveReviewTaskCommand,
   type ReviewTask,
   type ReviewTaskRepository,
 } from "@qualigence/review";
 
+export interface ScopedReviewTaskRepository {
+  create(task: ReviewTask): Promise<void>;
+  find(taskId: string): Promise<ReviewTask | undefined>;
+  claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined>;
+  resolve(command: ResolveReviewTaskCommand): Promise<ReviewTask | undefined>;
+  claimWithHandler(command: ClaimReviewTaskCommand): Promise<ReviewTask>;
+  resolveWithHandler(command: ResolveReviewTaskCommand): Promise<ReviewTask>;
+}
+
 export interface ReviewRepositoryContractHarness {
-  runPrimary<T>(operation: (repository: ReviewTaskRepository) => Promise<T>): Promise<T>;
-  runConcurrent<T>(operation: (repository: ReviewTaskRepository) => Promise<T>): Promise<T>;
+  runPrimary<T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>): Promise<T>;
+  runConcurrent<T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>): Promise<T>;
   readClaimAudit(idempotencyKey: string): Promise<{
     readonly taskId: string;
     readonly reviewerId: string;
@@ -26,6 +37,22 @@ export interface ReviewRepositoryContractHarness {
   close(): Promise<void>;
 }
 
+export function scopeReviewRepository(
+  repository: ReviewTaskRepository,
+  tenantId: string,
+): ScopedReviewTaskRepository {
+  return {
+    create: (reviewTask) => repository.create(tenantId, reviewTask),
+    find: (taskId) => repository.find(tenantId, taskId),
+    claim: (command) => repository.claim(tenantId, command),
+    resolve: (command) => repository.resolve(tenantId, command),
+    claimWithHandler: (command) =>
+      new ClaimReviewTaskHandler(repository, tenantId).handle(command),
+    resolveWithHandler: (command) =>
+      new ResolveReviewTaskHandler(repository, tenantId).handle(command),
+  };
+}
+
 function task(taskId: string): ReviewTask {
   return openReviewTask({
     taskId,
@@ -36,7 +63,10 @@ function task(taskId: string): ReviewTask {
   });
 }
 
-async function create(repository: ReviewTaskRepository, taskId: string): Promise<ReviewTask> {
+async function create(
+  repository: ScopedReviewTaskRepository,
+  taskId: string,
+): Promise<ReviewTask> {
   const reviewTask = task(taskId);
   await repository.create(reviewTask);
   return reviewTask;
@@ -76,7 +106,7 @@ export function reviewTaskRepositoryContract(
     it("claims an open task once and writes the matching audit", async () => {
       const claimed = await harness!.runPrimary(async (repository) => {
         await create(repository, "claim-once");
-        return new ClaimReviewTaskHandler(repository).handle({
+        return repository.claimWithHandler({
           taskId: "claim-once",
           expectedVersion: 1,
           reviewerId: "alice",
@@ -113,6 +143,34 @@ export function reviewTaskRepositoryContract(
 
       expect(result.first).toEqual(result.replay);
       expect(result.persisted).toMatchObject({ status: "claimed", version: 2 });
+    });
+
+    it("rejects a claim idempotency key reused with different command fields", async () => {
+      const result = await harness!.runPrimary(async (repository) => {
+        await create(repository, "claim-command-mismatch");
+        await repository.claim({
+          taskId: "claim-command-mismatch",
+          expectedVersion: 1,
+          reviewerId: "alice",
+          idempotencyKey: "claim-command-mismatch-key",
+        });
+        const reviewerMismatch = await repository.claim({
+          taskId: "claim-command-mismatch",
+          expectedVersion: 1,
+          reviewerId: "bob",
+          idempotencyKey: "claim-command-mismatch-key",
+        });
+        const versionMismatch = await repository.claim({
+          taskId: "claim-command-mismatch",
+          expectedVersion: 2,
+          reviewerId: "alice",
+          idempotencyKey: "claim-command-mismatch-key",
+        });
+        return { reviewerMismatch, versionMismatch };
+      });
+
+      expect(result.reviewerMismatch).toBeUndefined();
+      expect(result.versionMismatch).toBeUndefined();
     });
 
     it("replays simultaneous copies of the same claim command", async () => {
@@ -216,7 +274,7 @@ export function reviewTaskRepositoryContract(
           reviewerId: "alice",
           idempotencyKey: "resolve-once-claim-key",
         });
-        return new ResolveReviewTaskHandler(repository).handle({
+        return repository.resolveWithHandler({
           taskId: "resolve-once",
           expectedVersion: 2,
           reviewerId: "alice",
@@ -260,6 +318,46 @@ export function reviewTaskRepositoryContract(
 
       expect(result.first).toEqual(result.replay);
       expect(result.persisted).toMatchObject({ status: "resolved", version: 3 });
+    });
+
+    it("rejects a resolution idempotency key reused with different command fields", async () => {
+      const result = await harness!.runPrimary(async (repository) => {
+        await create(repository, "resolve-command-mismatch");
+        await repository.claim({
+          taskId: "resolve-command-mismatch",
+          expectedVersion: 1,
+          reviewerId: "alice",
+          idempotencyKey: "resolve-command-mismatch-claim-key",
+        });
+        await repository.resolve({
+          taskId: "resolve-command-mismatch",
+          expectedVersion: 2,
+          reviewerId: "alice",
+          disposition: "accepted",
+          evidenceRefs: ["evidence-a"],
+          idempotencyKey: "resolve-command-mismatch-key",
+        });
+        const dispositionMismatch = await repository.resolve({
+          taskId: "resolve-command-mismatch",
+          expectedVersion: 2,
+          reviewerId: "alice",
+          disposition: "rejected",
+          evidenceRefs: ["evidence-a"],
+          idempotencyKey: "resolve-command-mismatch-key",
+        });
+        const evidenceMismatch = await repository.resolve({
+          taskId: "resolve-command-mismatch",
+          expectedVersion: 2,
+          reviewerId: "alice",
+          disposition: "accepted",
+          evidenceRefs: ["evidence-b"],
+          idempotencyKey: "resolve-command-mismatch-key",
+        });
+        return { dispositionMismatch, evidenceMismatch };
+      });
+
+      expect(result.dispositionMismatch).toBeUndefined();
+      expect(result.evidenceMismatch).toBeUndefined();
     });
 
     it("replays simultaneous copies of the same resolution command", async () => {
@@ -436,7 +534,7 @@ export function reviewTaskRepositoryContract(
       await harness!.runPrimary((repository) => create(repository, "concurrent-claim"));
       const outcomes = await Promise.allSettled([
         harness!.runPrimary((repository) =>
-          new ClaimReviewTaskHandler(repository).handle({
+          repository.claimWithHandler({
             taskId: "concurrent-claim",
             expectedVersion: 1,
             reviewerId: "alice",
@@ -444,7 +542,7 @@ export function reviewTaskRepositoryContract(
           }),
         ),
         harness!.runConcurrent((repository) =>
-          new ClaimReviewTaskHandler(repository).handle({
+          repository.claimWithHandler({
             taskId: "concurrent-claim",
             expectedVersion: 1,
             reviewerId: "bob",

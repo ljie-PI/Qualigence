@@ -8,7 +8,10 @@ import {
   type OidcSigningKey,
 } from "@qualigence/oidc";
 import { pathToFileURL } from "node:url";
-import { createPostgresRuntime } from "@qualigence/postgres-runtime";
+import {
+  createPostgresRuntime,
+  PostgresReviewTaskRepository,
+} from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import type { Clock } from "@qualigence/shared-kernel";
 import { loadServerConfig } from "./config.js";
@@ -17,7 +20,6 @@ import {
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
 } from "./runner-stores.js";
-import { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 import type { ServerDeps, TenantStores } from "./server-context.js";
 
 interface JwksEntry {

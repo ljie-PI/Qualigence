@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { ClaimMapper, OidcAuthenticator, RbacAuthorizer, StaticJwksResolver } from "@qualigence/oidc";
-import { createPostgresRuntime, type TenantTransactionProvider } from "@qualigence/postgres-runtime";
+import {
+  createPostgresRuntime,
+  PostgresReviewTaskRepository,
+  type TenantTransactionProvider,
+} from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import type { Clock } from "@qualigence/shared-kernel";
 import {
@@ -8,7 +12,6 @@ import {
   buildServer,
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
-  PostgresReviewTaskRepository,
   type ServerDeps,
   type TenantStores,
 } from "@qualigence/server";

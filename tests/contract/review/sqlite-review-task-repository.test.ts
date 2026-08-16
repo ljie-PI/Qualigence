@@ -6,6 +6,7 @@ import { SqliteReviewStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { openReviewTask } from "@qualigence/review";
 import {
   reviewTaskRepositoryContract,
+  scopeReviewRepository,
   type ReviewRepositoryContractHarness,
 } from "./review-task-repository.contract.js";
 
@@ -16,8 +17,8 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
   const concurrent = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
 
   return {
-    runPrimary: (operation) => operation(new SqliteReviewStore(primary)),
-    runConcurrent: (operation) => operation(new SqliteReviewStore(concurrent)),
+    runPrimary: (operation) => operation(scopeReviewRepository(new SqliteReviewStore(primary), "local")),
+    runConcurrent: (operation) => operation(scopeReviewRepository(new SqliteReviewStore(concurrent), "local")),
     async readClaimAudit(idempotencyKey) {
       const row = await primary.db
         .selectFrom("review_claims")
@@ -84,7 +85,7 @@ describe("SQLite review audit atomicity", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    await repository.create(reviewTask);
+    await repository.create("local", reviewTask);
     await sql`
       CREATE TRIGGER reject_review_claim_audits
       BEFORE INSERT ON review_claims
@@ -94,14 +95,14 @@ describe("SQLite review audit atomicity", () => {
     `.execute(runtime.db);
 
     await expect(
-      repository.claim({
+      repository.claim("local", {
         taskId: reviewTask.taskId,
         expectedVersion: 1,
         reviewerId: "alice",
         idempotencyKey: "claim-audit-failure-key",
       }),
     ).rejects.toThrow("simulated audit failure");
-    await expect(repository.find(reviewTask.taskId)).resolves.toEqual(reviewTask);
+    await expect(repository.find("local", reviewTask.taskId)).resolves.toEqual(reviewTask);
   });
 
   it("rolls back a resolution when its audit record cannot be written", async () => {
@@ -122,8 +123,8 @@ describe("SQLite review audit atomicity", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    await repository.create(reviewTask);
-    const claimed = await repository.claim({
+    await repository.create("local", reviewTask);
+    const claimed = await repository.claim("local", {
       taskId: reviewTask.taskId,
       expectedVersion: 1,
       reviewerId: "alice",
@@ -138,7 +139,7 @@ describe("SQLite review audit atomicity", () => {
     `.execute(runtime.db);
 
     await expect(
-      repository.resolve({
+      repository.resolve("local", {
         taskId: reviewTask.taskId,
         expectedVersion: 2,
         reviewerId: "alice",
@@ -147,6 +148,6 @@ describe("SQLite review audit atomicity", () => {
         idempotencyKey: "resolution-audit-failure-key",
       }),
     ).rejects.toThrow("simulated resolution audit failure");
-    await expect(repository.find(reviewTask.taskId)).resolves.toEqual(claimed);
+    await expect(repository.find("local", reviewTask.taskId)).resolves.toEqual(claimed);
   });
 });

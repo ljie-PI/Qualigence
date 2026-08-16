@@ -25,15 +25,18 @@ class InMemoryReviewTaskRepository implements ReviewTaskRepository {
   private readonly claimIdempotency = new Map<string, ReviewTask>();
   private readonly resolveIdempotency = new Map<string, ReviewTask>();
 
-  async create(task: ReviewTask): Promise<void> {
+  async create(_tenantId: string, task: ReviewTask): Promise<void> {
     this.tasks.set(task.taskId, task);
   }
 
-  async find(taskId: string): Promise<ReviewTask | undefined> {
+  async find(_tenantId: string, taskId: string): Promise<ReviewTask | undefined> {
     return this.tasks.get(taskId);
   }
 
-  async claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined> {
+  async claim(
+    _tenantId: string,
+    command: ClaimReviewTaskCommand,
+  ): Promise<ReviewTask | undefined> {
     // Simulate contention: yield before the atomic section so a concurrent
     // claim can interleave here.
     await Promise.resolve();
@@ -58,6 +61,7 @@ class InMemoryReviewTaskRepository implements ReviewTaskRepository {
   }
 
   async resolve(
+    _tenantId: string,
     command: ResolveReviewTaskCommand,
   ): Promise<ReviewTask | undefined> {
     await Promise.resolve();
@@ -83,6 +87,7 @@ class InMemoryReviewTaskRepository implements ReviewTaskRepository {
 
 function seedTask(repo: InMemoryReviewTaskRepository): Promise<void> {
   return repo.create(
+    "local",
     openReviewTask({
       taskId: "task-1",
       caseId: "case-1",
@@ -97,7 +102,7 @@ describe("concurrent review claim", () => {
   it("allows exactly one of two concurrent claimants to win", async () => {
     const repo = new InMemoryReviewTaskRepository();
     await seedTask(repo);
-    const handler = new ClaimReviewTaskHandler(repo);
+    const handler = new ClaimReviewTaskHandler(repo, "local");
 
     const results = await Promise.allSettled([
       handler.handle({
@@ -132,7 +137,7 @@ describe("concurrent review claim", () => {
       assigneeId: winner.assigneeId,
     });
 
-    const persisted = await repo.find("task-1");
+    const persisted = await repo.find("local", "task-1");
     expect(persisted?.assigneeId).toBe(winner.assigneeId);
     expect(persisted?.version).toBe(2);
   });
@@ -140,7 +145,7 @@ describe("concurrent review claim", () => {
   it("returns the original claim for a duplicate idempotency key", async () => {
     const repo = new InMemoryReviewTaskRepository();
     await seedTask(repo);
-    const handler = new ClaimReviewTaskHandler(repo);
+    const handler = new ClaimReviewTaskHandler(repo, "local");
 
     const first = await handler.handle({
       taskId: "task-1",
@@ -156,15 +161,15 @@ describe("concurrent review claim", () => {
     });
 
     expect(replay).toEqual(first);
-    const persisted = await repo.find("task-1");
+    const persisted = await repo.find("local", "task-1");
     expect(persisted?.version).toBe(2);
   });
 
   it("rejects resolution by a non-assignee", async () => {
     const repo = new InMemoryReviewTaskRepository();
     await seedTask(repo);
-    const claimHandler = new ClaimReviewTaskHandler(repo);
-    const resolveHandler = new ResolveReviewTaskHandler(repo);
+    const claimHandler = new ClaimReviewTaskHandler(repo, "local");
+    const resolveHandler = new ResolveReviewTaskHandler(repo, "local");
 
     await claimHandler.handle({
       taskId: "task-1",
@@ -188,8 +193,8 @@ describe("concurrent review claim", () => {
   it("resolves for the assignee and is idempotent on replay", async () => {
     const repo = new InMemoryReviewTaskRepository();
     await seedTask(repo);
-    const claimHandler = new ClaimReviewTaskHandler(repo);
-    const resolveHandler = new ResolveReviewTaskHandler(repo);
+    const claimHandler = new ClaimReviewTaskHandler(repo, "local");
+    const resolveHandler = new ResolveReviewTaskHandler(repo, "local");
 
     await claimHandler.handle({
       taskId: "task-1",
@@ -221,8 +226,8 @@ describe("concurrent review claim", () => {
   it("rejects a stale resolve version with a conflict", async () => {
     const repo = new InMemoryReviewTaskRepository();
     await seedTask(repo);
-    const claimHandler = new ClaimReviewTaskHandler(repo);
-    const resolveHandler = new ResolveReviewTaskHandler(repo);
+    const claimHandler = new ClaimReviewTaskHandler(repo, "local");
+    const resolveHandler = new ResolveReviewTaskHandler(repo, "local");
 
     await claimHandler.handle({
       taskId: "task-1",
