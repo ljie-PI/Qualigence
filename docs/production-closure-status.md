@@ -116,3 +116,20 @@ separately from Task 0's release-blocking Windows quarantine.
 - Historical RED is retained: Tasks 1 and 2 originally lacked clean GREEN due
   to an incomplete shared dependency junction. The clean detached evidence
   above supersedes that environment block without rewriting product behavior.
+
+### Restacked Product PR 1 verification (2026-08-17)
+
+- Branch `codex/pr1-runtime-ops-restack` was created from merged P0 commit
+  `7e24a9f`; `origin/main...HEAD` contains only Tasks 1, 2, and 4 source/tests
+  plus this plan/status update, with no lockfile or quarantine change.
+- `corepack pnpm install --frozen-lockfile` passed with pnpm `11.7.0`.
+- `corepack pnpm build` and `corepack pnpm typecheck` both exited 0.
+- With `C:\Program Files\Git\usr\bin` prepended to `PATH`, the four-file
+  focused Gate passed 4 files and 17 tests with 0 failed and 0 skipped.
+- The same environment ran `corepack pnpm test`: 137 files passed, 1 skipped;
+  820 tests passed, 6 skipped, 826 total, 0 failed. The Q/P0 bounded baseline
+  failure is therefore closed on the Product PR 1 tree. The six skips are the
+  four documented Task 21 Windows quarantines plus two pre-existing explicit
+  skips; no new skip was added.
+- Task 21 and Linux evidence remain open. This Product PR 1 result closes only
+  the temporary Local Launcher merge waiver; it is not release completion.
