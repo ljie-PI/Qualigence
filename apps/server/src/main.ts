@@ -7,6 +7,7 @@ import {
   type OidcAlgorithm,
   type OidcSigningKey,
 } from "@qualigence/oidc";
+import { pathToFileURL } from "node:url";
 import { createPostgresRuntime } from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import type { Clock } from "@qualigence/shared-kernel";
@@ -75,7 +76,7 @@ export async function main(): Promise<void> {
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
   main().catch((error) => {

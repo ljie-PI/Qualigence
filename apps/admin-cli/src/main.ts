@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { pathToFileURL } from "node:url";
 import { StructuredLogger } from "@qualigence/observability";
 import { loadAdminConfig } from "./config.js";
 import { AdminCliError } from "./errors.js";
@@ -176,7 +177,7 @@ export async function run(
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   void run(process.argv.slice(2));
