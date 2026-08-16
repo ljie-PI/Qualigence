@@ -23,7 +23,7 @@ The word `implemented` in the status ledger means only that some planned files o
 ## Global Constraints
 
 - Use Node.js 24 and exactly `corepack pnpm --version` = `11.7.0`. Do not use an ambient/fallback `pnpm` binary.
-- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency.
+- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency or the separately reviewed P0 lock-consistency repair below.
 - Preserve strict TypeScript settings and project references; no `any`, unsafe double assertions, or domain imports from Fastify/gRPC/Playwright/Win32 adapters.
 - Models only produce proposals/results. Deterministic code owns authorization, budgets, state transitions, IDs, persistence, and idempotency.
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
@@ -40,6 +40,7 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
+| P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
 | 1 Admin CLI | implementation committed; verification incomplete | Commit `f200d6d`; focused GREEN was blocked by the incomplete worktree dependency junction. Do not reimplement. Task 4 must rerun the black-box CLI Gate in a clean install. |
 | 2 Node entrypoints | implementation committed; verification incomplete | Commit `603439b`; 5/7 smoke cases passed after rebuilding, while Admin/Launcher remained dependency-blocked. Do not reimplement. Task 4 closes all seven cases and Launcher E2E. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 adds the missing reusable provider/concurrency contract required by architecture. |
@@ -125,7 +126,8 @@ Task 15
 
 ## Pull request delivery plan
 
-The 22 implementation tasks ship as 17 reviewable pull requests. A pull request
+The 22 implementation tasks plus the P0 build prerequisite ship as 18
+reviewable pull requests. A pull request
 may contain more than one task only where the tasks form one architectural
 boundary or one evidence-producing release unit. Every task still has its own
 commit, focused RED/GREEN evidence, status-ledger update, and completion marker.
@@ -138,7 +140,8 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
+| 0 | P0 | `codex/pr0-lockfile-repair` | `main` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for review |
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
@@ -172,6 +175,54 @@ Each PR description must include:
 6. deployment, migration, security, rollback, and compatibility impact;
 7. the next stacked PR and whether reviewers should review it before the base
    PR merges.
+
+---
+
+### Prerequisite P0: Restore the frozen lock graph
+
+**Execution status:** complete. This is an independently reviewable build
+prerequisite, not part of Task 4 and not authority for future lock regeneration.
+
+**Files:**
+- Modify: `pnpm-lock.yaml`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+
+**Interfaces:**
+- Preserves every package manifest and selected direct dependency version.
+- Restores the exact peer-dependency snapshot already referenced by importers.
+- Does not change runtime code, migrations, public contracts, or deployment configuration.
+
+- [x] **Step 1: Capture the isolated frozen-install RED**
+
+In a fresh worktree run `corepack pnpm install --frozen-lockfile`. The qualifying
+RED is `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY` naming the already-referenced Vite
+8.1.5 peer snapshot. Any registry, manifest, integrity, or platform error is not
+authority to edit the lockfile.
+
+- [x] **Step 2: Repair only the inconsistent graph**
+
+With TLS verification enabled and the trusted local HTTP proxy set only for the
+command environment, run:
+
+```bash
+corepack pnpm install --lockfile-only --fix-lockfile --ignore-scripts
+```
+
+Review the exact diff. It may add only the missing Vite/Rolldown transitive peer
+graph; it must not change a manifest, select a different direct dependency, or
+run package scripts.
+
+- [x] **Step 3: Prove the repaired lock is consumable**
+
+Run:
+
+```bash
+corepack pnpm install --frozen-lockfile
+git diff --check
+```
+
+Commit the lock repair separately from Tasks 1, 2, and 4. PR 1 must target the
+P0 branch so its three-dot diff contains no lockfile repair.
 
 ---
 
@@ -452,7 +503,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm exec playwright --version
 ```
 
-Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction.
+Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction. A frozen-lock inconsistency belongs to P0 and blocks Task 4; Task 4 must not repair it.
 
 - [ ] **Step 2: Preserve the earlier incomplete verification as RED evidence**
 
