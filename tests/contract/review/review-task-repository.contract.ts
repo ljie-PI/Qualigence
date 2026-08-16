@@ -115,6 +115,34 @@ export function reviewTaskRepositoryContract(
       expect(result.persisted).toMatchObject({ status: "claimed", version: 2 });
     });
 
+    it("replays simultaneous copies of the same claim command", async () => {
+      await harness!.runPrimary((repository) => create(repository, "claim-concurrent-replay"));
+      const command = {
+        taskId: "claim-concurrent-replay",
+        expectedVersion: 1,
+        reviewerId: "alice",
+        idempotencyKey: "claim-concurrent-replay-key",
+      };
+
+      const [primary, concurrent] = await Promise.all([
+        harness!.runPrimary((repository) => repository.claim(command)),
+        harness!.runConcurrent((repository) => repository.claim(command)),
+      ]);
+
+      expect(primary).toEqual({
+        ...task("claim-concurrent-replay"),
+        status: "claimed",
+        assigneeId: "alice",
+        version: 2,
+      });
+      expect(concurrent).toEqual(primary);
+      await expect(harness!.readClaimAudit(command.idempotencyKey)).resolves.toEqual({
+        taskId: command.taskId,
+        reviewerId: command.reviewerId,
+        claimedVersion: 2,
+      });
+    });
+
     it("does not replay a claim idempotency key onto a different task", async () => {
       const result = await harness!.runPrimary(async (repository) => {
         await create(repository, "claim-first");
@@ -136,6 +164,47 @@ export function reviewTaskRepositoryContract(
 
       expect(result.wrongTaskReplay).toBeUndefined();
       expect(result.second).toEqual(task("claim-second"));
+    });
+
+    it("lets only one task consume a concurrently reused claim idempotency key", async () => {
+      await harness!.runPrimary(async (repository) => {
+        await create(repository, "claim-shared-first");
+        await create(repository, "claim-shared-second");
+      });
+      const idempotencyKey = "claim-concurrent-shared-key";
+
+      const outcomes = await Promise.all([
+        harness!.runPrimary((repository) =>
+          repository.claim({
+            taskId: "claim-shared-first",
+            expectedVersion: 1,
+            reviewerId: "alice",
+            idempotencyKey,
+          }),
+        ),
+        harness!.runConcurrent((repository) =>
+          repository.claim({
+            taskId: "claim-shared-second",
+            expectedVersion: 1,
+            reviewerId: "bob",
+            idempotencyKey,
+          }),
+        ),
+      ]);
+
+      const applied = outcomes.filter((outcome): outcome is ReviewTask => outcome !== undefined);
+      expect(applied).toHaveLength(1);
+      const persisted = await Promise.all([
+        harness!.runPrimary((repository) => repository.find("claim-shared-first")),
+        harness!.runPrimary((repository) => repository.find("claim-shared-second")),
+      ]);
+      expect(persisted.filter((reviewTask) => reviewTask?.status === "claimed")).toHaveLength(1);
+      expect(persisted.find((reviewTask) => reviewTask?.status === "claimed")?.taskId).toBe(
+        applied[0]?.taskId,
+      );
+      await expect(harness!.readClaimAudit(idempotencyKey)).resolves.toMatchObject({
+        taskId: applied[0]!.taskId,
+      });
     });
 
     it("resolves only the claimed current assignee and records its audit", async () => {
@@ -193,6 +262,39 @@ export function reviewTaskRepositoryContract(
       expect(result.persisted).toMatchObject({ status: "resolved", version: 3 });
     });
 
+    it("replays simultaneous copies of the same resolution command", async () => {
+      await harness!.runPrimary(async (repository) => {
+        await create(repository, "resolve-concurrent-replay");
+        await repository.claim({
+          taskId: "resolve-concurrent-replay",
+          expectedVersion: 1,
+          reviewerId: "alice",
+          idempotencyKey: "resolve-concurrent-replay-claim-key",
+        });
+      });
+      const command = {
+        taskId: "resolve-concurrent-replay",
+        expectedVersion: 2,
+        reviewerId: "alice",
+        disposition: "accepted",
+        evidenceRefs: ["evidence-a"],
+        idempotencyKey: "resolve-concurrent-replay-key",
+      };
+
+      const [primary, concurrent] = await Promise.all([
+        harness!.runPrimary((repository) => repository.resolve(command)),
+        harness!.runConcurrent((repository) => repository.resolve(command)),
+      ]);
+
+      expect(primary).toMatchObject({ status: "resolved", version: 3 });
+      expect(concurrent).toEqual(primary);
+      await expect(harness!.readResolutionAudit(command.idempotencyKey)).resolves.toMatchObject({
+        taskId: command.taskId,
+        reviewerId: command.reviewerId,
+        resolvedVersion: 3,
+      });
+    });
+
     it("does not replay a resolution idempotency key onto a different task", async () => {
       const result = await harness!.runPrimary(async (repository) => {
         await create(repository, "resolve-first");
@@ -226,6 +328,58 @@ export function reviewTaskRepositoryContract(
 
       expect(result.wrongTaskReplay).toBeUndefined();
       expect(result.second).toMatchObject({ status: "claimed", version: 2, assigneeId: "alice" });
+    });
+
+    it("lets only one task consume a concurrently reused resolution idempotency key", async () => {
+      await harness!.runPrimary(async (repository) => {
+        for (const taskId of ["resolve-shared-first", "resolve-shared-second"]) {
+          await create(repository, taskId);
+          await repository.claim({
+            taskId,
+            expectedVersion: 1,
+            reviewerId: "alice",
+            idempotencyKey: `${taskId}-claim-key`,
+          });
+        }
+      });
+      const idempotencyKey = "resolve-concurrent-shared-key";
+
+      const outcomes = await Promise.all([
+        harness!.runPrimary((repository) =>
+          repository.resolve({
+            taskId: "resolve-shared-first",
+            expectedVersion: 2,
+            reviewerId: "alice",
+            disposition: "accepted",
+            evidenceRefs: ["evidence-a"],
+            idempotencyKey,
+          }),
+        ),
+        harness!.runConcurrent((repository) =>
+          repository.resolve({
+            taskId: "resolve-shared-second",
+            expectedVersion: 2,
+            reviewerId: "alice",
+            disposition: "rejected",
+            evidenceRefs: ["evidence-b"],
+            idempotencyKey,
+          }),
+        ),
+      ]);
+
+      const applied = outcomes.filter((outcome): outcome is ReviewTask => outcome !== undefined);
+      expect(applied).toHaveLength(1);
+      const persisted = await Promise.all([
+        harness!.runPrimary((repository) => repository.find("resolve-shared-first")),
+        harness!.runPrimary((repository) => repository.find("resolve-shared-second")),
+      ]);
+      expect(persisted.filter((reviewTask) => reviewTask?.status === "resolved")).toHaveLength(1);
+      expect(persisted.find((reviewTask) => reviewTask?.status === "resolved")?.taskId).toBe(
+        applied[0]?.taskId,
+      );
+      await expect(harness!.readResolutionAudit(idempotencyKey)).resolves.toMatchObject({
+        taskId: applied[0]!.taskId,
+      });
     });
 
     it("leaves stale, open-task, and non-assignee resolution attempts unchanged", async () => {

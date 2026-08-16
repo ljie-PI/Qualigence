@@ -77,6 +77,22 @@ were run without credentials, tokens, or connection strings.
   0 failed, 0 skipped.
 - 2026-08-16 — `corepack pnpm typecheck` exited 0 after the provider contract
   and adapter update.
+- 2026-08-16 — PR 2 Standards and Spec/architecture review both found the
+  SQLite Review adapter advanced the aggregate and wrote its idempotency audit
+  in separate autocommit statements. New shared concurrent replay/key-reuse
+  cases and SQLite audit-failure injection reproduced 3 claim failures and,
+  after reverting the provisional resolution change, 3 equivalent resolution
+  failures. The observed defects were duplicate task transitions, missing
+  concurrent replay, and an aggregate left advanced after a rejected audit.
+- 2026-08-16 — after reserving the idempotency key before compare-and-set in one
+  SQLite transaction, deleting a losing reservation, and making one bounded
+  `SQLITE_BUSY` replay attempt, the provider contract exited 0: 2 files,
+  28 passed, 0 failed, 0 skipped. PostgreSQL passed the same shared cases without
+  an adapter change because its repository is already transaction-bound.
+- 2026-08-16 — the complete Task 5 regression command exited 0: 6 files,
+  56 passed, 0 failed, 0 skipped. `corepack pnpm typecheck` then exited 0,
+  including TypeScript project build, test-project checking, and Web Console
+  production/type builds.
 - 2026-08-16 — Task 6 dependency precondition: direct registry access did not
   complete in the diagnostic window. With the user-provided local HTTP proxy,
   an HTTPS registry request returned 200 and `corepack pnpm view jose version

@@ -23,7 +23,7 @@ The word `implemented` in the status ledger means only that some planned files o
 ## Global Constraints
 
 - Use Node.js 24 and exactly `corepack pnpm --version` = `11.7.0`. Do not use an ambient/fallback `pnpm` binary.
-- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency.
+- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency or the separately reviewed P0 lock-consistency repair below.
 - Preserve strict TypeScript settings and project references; no `any`, unsafe double assertions, or domain imports from Fastify/gRPC/Playwright/Win32 adapters.
 - Models only produce proposals/results. Deterministic code owns authorization, budgets, state transitions, IDs, persistence, and idempotency.
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
@@ -40,11 +40,12 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
+| P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
 | 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
-| 5 Review provider contract | complete | One provider-neutral contract passed against SQLite and PostgreSQL (18 tests), including concurrent two-transaction claim and cross-task idempotency-key rejection; the focused regression set adds 46 passing tests. |
+| 5 Review provider contract | complete after PR review | One provider-neutral contract plus SQLite failure injection passed against both adapters (28 tests), including simultaneous replay, cross-task idempotency-key competition, audit rollback, and real two-transaction PostgreSQL claims; the focused regression set passes 56 tests. |
 | 6 OIDC signature verification | complete | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256/JWKS tests reject tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS before claim mapping. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
@@ -125,7 +126,8 @@ Task 15
 
 ## Pull request delivery plan
 
-The 22 implementation tasks ship as 17 reviewable pull requests. A pull request
+The 22 implementation tasks plus the P0 build prerequisite ship as 18
+reviewable pull requests. A pull request
 may contain more than one task only where the tasks form one architectural
 boundary or one evidence-producing release unit. Every task still has its own
 commit, focused RED/GREEN evidence, status-ledger update, and completion marker.
@@ -138,7 +140,8 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, lockfile consistency, and their clean black-box Gate | ready for review |
+| 0 | P0 | `codex/pr0-lockfile-repair` | `main` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for review |
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
@@ -172,6 +175,54 @@ Each PR description must include:
 6. deployment, migration, security, rollback, and compatibility impact;
 7. the next stacked PR and whether reviewers should review it before the base
    PR merges.
+
+---
+
+### Prerequisite P0: Restore the frozen lock graph
+
+**Execution status:** complete. This is an independently reviewable build
+prerequisite, not part of Task 4 and not authority for future lock regeneration.
+
+**Files:**
+- Modify: `pnpm-lock.yaml`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+
+**Interfaces:**
+- Preserves every package manifest and selected direct dependency version.
+- Restores the exact peer-dependency snapshot already referenced by importers.
+- Does not change runtime code, migrations, public contracts, or deployment configuration.
+
+- [x] **Step 1: Capture the isolated frozen-install RED**
+
+In a fresh worktree run `corepack pnpm install --frozen-lockfile`. The qualifying
+RED is `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY` naming the already-referenced Vite
+8.1.5 peer snapshot. Any registry, manifest, integrity, or platform error is not
+authority to edit the lockfile.
+
+- [x] **Step 2: Repair only the inconsistent graph**
+
+With TLS verification enabled and the trusted local HTTP proxy set only for the
+command environment, run:
+
+```bash
+corepack pnpm install --lockfile-only --fix-lockfile --ignore-scripts
+```
+
+Review the exact diff. It may add only the missing Vite/Rolldown transitive peer
+graph; it must not change a manifest, select a different direct dependency, or
+run package scripts.
+
+- [x] **Step 3: Prove the repaired lock is consumable**
+
+Run:
+
+```bash
+corepack pnpm install --frozen-lockfile
+git diff --check
+```
+
+Commit the lock repair separately from Tasks 1, 2, and 4. PR 1 must target the
+P0 branch so its three-dot diff contains no lockfile repair.
 
 ---
 
@@ -423,7 +474,6 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 **Files:**
 - Create: `docs/production-closure-status.md`
-- Modify only when the frozen-install RED proves the existing lock inconsistent: `pnpm-lock.yaml`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/main.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/commands/doctor.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/core-daemon/src/main.ts`
@@ -453,13 +503,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm exec playwright --version
 ```
 
-Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction.
-
-PR packaging correction: when Task 4 was separated from Task 3, the frozen
-install exposed a pre-existing missing Vite 8.1.5 peer snapshot. Repair only
-that inconsistent lock graph with pnpm's `--fix-lockfile --lockfile-only`
-mode, review the exact lock diff, and prove the result with a subsequent frozen
-install. Do not change any manifest or select newer direct dependency versions.
+Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction. A frozen-lock inconsistency belongs to P0 and blocks Task 4; Task 4 must not repair it.
 
 - [x] **Step 2: Preserve the earlier incomplete verification as RED evidence**
 
@@ -513,7 +557,6 @@ Path correction recorded during execution: `tests/unit/admin-cli` does not
 exist in this repository. The actual Admin CLI parsing and Doctor unit boundary
 is `tests/migration/observation-v1/admin-command.test.ts`, which is the focused
 file run above.
-
 Commit:
 
 ```bash
@@ -525,7 +568,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** complete. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite now rejects idempotency-key replays that are bound to another task without changing the production repository port.
+**Execution status:** complete after PR review remediation. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite reserves the audit key before compare-and-set inside one transaction, replays simultaneous copies from the durable ledger, rejects cross-task key competition, and rolls the aggregate back when audit insertion fails, without changing the production repository port.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`
@@ -586,6 +629,9 @@ The suite must execute these cases against both providers:
 7. Reusing a resolution idempotency key for a different task returns `undefined` and leaves that second task claimed.
 8. Stale version, open-task resolve, and non-assignee resolve return `undefined` and do not modify the persisted row.
 9. Two same-version claims from `runPrimary` and `runConcurrent`, started by the same `Promise.allSettled`, yield exactly one fulfilled handler result and one `ReviewTaskVersionConflict`; the persisted version is 2 and the assignee is the winner.
+10. Two simultaneous copies of the same claim or resolution command/key both return the one applied aggregate and increment only once.
+11. Concurrent reuse of one claim or resolution idempotency key across different tasks advances exactly one task and binds the audit to that winner.
+12. SQLite-only failure injection makes claim/resolution audit insertion fail and proves that the matching aggregate transition is rolled back.
 
 Use `ClaimReviewTaskHandler` and `ResolveReviewTaskHandler` for cases that assert public domain errors. Read the final row in a new callback after both concurrent transactions have settled. Do not serialize the race with a test mutex or reuse the same PostgreSQL transaction.
 
@@ -601,7 +647,7 @@ Expected RED: at minimum, the SQLite implementation treats an idempotency key pr
 
 - [x] **Step 4: Align both adapters without moving domain rules into storage**
 
-For both `claim` and `resolve`, when the idempotency ledger contains the key, compare its stored `task_id` with `command.taskId`; return `undefined` on mismatch. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve). Preserve tenant scoping and same-transaction audit writes. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
+For both `claim` and `resolve`, reserve the idempotency ledger key before the conditional aggregate write. If the reservation already exists, compare its stored `task_id` with `command.taskId`; replay the stored task only on a match and return `undefined` on mismatch. If compare-and-set fails after a new reservation, delete that reservation before commit. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve), tenant scoping, and same-transaction audit writes. SQLite may make one bounded retry after `SQLITE_BUSY` so the lock holder can commit and the retry can read its durable ledger; it must map a repeated busy error to `StorageBusy` and must never retry indefinitely. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
 
 Move the Review-specific SQLite cases out of `tests/contract/sqlite/investigation-review-store.test.ts` once the shared suite covers them; leave Investigation and Intelligence provider cases in that file.
 
