@@ -40,10 +40,10 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
-| 1 Admin CLI | implementation committed; verification incomplete | Commit `f200d6d`; focused GREEN was blocked by the incomplete worktree dependency junction. Do not reimplement. Task 4 must rerun the black-box CLI Gate in a clean install. |
-| 2 Node entrypoints | implementation committed; verification incomplete | Commit `603439b`; 5/7 smoke cases passed after rebuilding, while Admin/Launcher remained dependency-blocked. Do not reimplement. Task 4 closes all seven cases and Launcher E2E. |
+| 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
+| 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 adds the missing reusable provider/concurrency contract required by architecture. |
-| 4 Gate/status closure | ready | Docker and Chromium are available. Use a clean worktree install; do not reuse the temporary root `node_modules` junction. |
+| 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | ready | Requires Docker and two independent PostgreSQL connections. |
 | 6 OIDC signature verification | environmentally blocked | `jose` is not in the lockfile/store and the configured npm-compatible registry currently fails TLS. Resume only with a trusted registry; never vendor or download an unverified package. |
 | 7-18 | pending | May proceed in dependency order while Task 6 waits, except a dependent Console release Gate cannot pass. |
@@ -56,8 +56,8 @@ The word `implemented` in the status ledger means only that some planned files o
 - Git's OpenSSL exists at `C:\Program Files\Git\usr\bin\openssl.exe` but is not on `PATH`; Gates must resolve it explicitly or report `OpenSslUnavailable`.
 - Cargo is not installed, so native Companion Tasks 19-20 cannot be completed on this host yet.
 - The lockfile is synchronized after Task 3. A trusted npm-compatible registry is still TLS-blocked; Task 6 cannot add `jose` until that external condition changes.
-- Full test, build, and typecheck remain unproven from a clean worktree install. Task 4 owns this baseline closure rather than treating environmental skips as success.
-- `apps/admin-cli/src/main.ts` now parses `argv` and Doctor awaits KMS; black-box verification remains pending as recorded above.
+- Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
+- `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
 - Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
@@ -369,7 +369,7 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 ### Task 4: Close Tasks 1-2 black-box Gates and create the committed evidence ledger
 
-**Execution status:** ready. This is a verification-closure task; commits `f200d6d` and `603439b` already contain the intended implementation. Do not rewrite those changes unless a clean black-box Gate proves a behavior defect.
+**Execution status:** complete. This verification closure passed in a clean detached worktree; the committed evidence ledger records the exact commands, Windows OpenSSL resolution, and the remaining root Playwright CLI defect. Commits `f200d6d` and `603439b` remain the implementation sources; do not reopen them without a new behavior regression.
 
 **Files:**
 - Create: `docs/production-closure-status.md`
@@ -391,7 +391,7 @@ git commit -m "fix(server): enforce review aggregate invariants"
 - Preserves the public Admin `run(argv, io, env)` API and all application entrypoint APIs.
 - Establishes a clean-worktree black-box baseline for the exact built JavaScript binaries, not TypeScript source imports.
 
-- [ ] **Step 1: Establish a clean, reproducible toolchain before testing**
+- [x] **Step 1: Establish a clean, reproducible toolchain before testing**
 
 Use a fresh isolated worktree with no shared or junctioned `node_modules`. Record all four preflight results in the status ledger:
 
@@ -404,7 +404,7 @@ corepack pnpm exec playwright --version
 
 Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction.
 
-- [ ] **Step 2: Preserve the earlier incomplete verification as RED evidence**
+- [x] **Step 2: Preserve the earlier incomplete verification as RED evidence**
 
 In `docs/production-closure-status.md`, record that Task 1 had no focused GREEN in the original worktree and Task 2 reached only 5/7 smoke cases. This is the RED/blocked starting evidence for this verification-only task. Do not manufacture a failing source test when the implemented behavior already passes in the clean environment.
 
@@ -418,7 +418,7 @@ Create the ledger with this exact schema:
 
 Allowed values are `missing | partial | complete` for the first two dimensions and `not_run | blocked | failed | passed` for verification. Add an append-only evidence log containing date, host OS, command, exit code, pass/fail/skip counts, and environmental block. Never place secrets, tokens, or connection strings in this file.
 
-- [ ] **Step 3: Build and run every direct binary as a child process**
+- [x] **Step 3: Build and run every direct binary as a child process**
 
 Run:
 
@@ -429,7 +429,7 @@ corepack pnpm vitest run tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cl
 
 The smoke suite must cover all seven direct-entrypoint guards: Admin CLI, Local Launcher, Core Daemon, Runner, Server, Intelligence Worker, and Benchmark Runner. Admin/Launcher help must print their command surface. Core/Runner/Server/Worker must run their real `main` and fail non-zero on deliberately missing configuration. Benchmark must show help or a stable invalid-profile error. No case may accept silent exit 0 as success.
 
-- [ ] **Step 4: Diagnose only real behavior failures**
+- [x] **Step 4: Diagnose only real behavior failures**
 
 If a child cannot resolve a package, return to Step 1; that is not an entrypoint code defect. If a built child silently exits or Doctor reports KMS healthy after an awaited rejection, first add or tighten the failing case in the listed test file, then make the smallest correction in the matching listed source file. Preserve the canonical direct invocation predicate:
 
@@ -440,17 +440,22 @@ process.argv[1] !== undefined &&
 
 Do not broaden the source scope to unrelated applications.
 
-- [ ] **Step 5: Verify and commit the baseline evidence**
+- [x] **Step 5: Verify and commit the baseline evidence**
 
 Run:
 
 ```bash
 corepack pnpm typecheck
-corepack pnpm vitest run tests/unit/admin-cli tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
+corepack pnpm vitest run tests/migration/observation-v1/admin-command.test.ts tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
 git diff --check
 ```
 
 Update the Admin CLI and Node entrypoint ledger rows to `verification: passed` only when these commands exit 0 without infrastructure skips. Keep unrelated full-suite failures as separate evidence rather than changing these two rows.
+
+Path correction recorded during execution: `tests/unit/admin-cli` does not
+exist in this repository. The actual Admin CLI parsing and Doctor unit boundary
+is `tests/migration/observation-v1/admin-command.test.ts`, which is the focused
+file run above.
 
 Commit:
 
