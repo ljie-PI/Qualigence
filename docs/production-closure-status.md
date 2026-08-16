@@ -182,9 +182,9 @@ separately from Task 0's release-blocking Windows quarantine.
 
 ## Task 6 - Web Console OIDC ID Token verification
 
-component: partial
-production_wiring: partial
-verification: failed
+component: complete
+production_wiring: complete
+verification: passed
 
 ### OIDC evidence log
 
@@ -199,5 +199,20 @@ verification: failed
   malformed transient/token responses and exchange failures did not always
   consume transient state; `sub` and token response fields were not fail-closed;
   runtime URLs/redirect binding were unvalidated; cached JWKS rotation lacked
-  evidence. Task 6 remains partial until these findings and their black-box tests
-  are complete.
+  evidence. These findings defined the follow-up RED cases below.
+- 2026-08-17 - host: Microsoft Windows 11 Enterprise; Node `v24.16.0`;
+  Corepack pnpm `11.7.0`; Docker `29.6.1`.
+- The follow-up required non-empty `sub`; validated access/ID token, Bearer type,
+  and positive expiry; consumed transient state on every callback outcome;
+  validated deployment URLs, algorithms, tenant/role mappings, and exact
+  redirect binding; scrubbed callback values on failure; and proved cached JWKS
+  rotation with a newly signed token.
+- `corepack pnpm vitest run tests/component/web-console/oidc-flow.test.ts
+  --reporter=verbose` exited 0: 1 file, 34 passed, 0 failed, 0 skipped.
+- `corepack pnpm install --frozen-lockfile`, `corepack pnpm build`,
+  `corepack pnpm --filter @qualigence/web-console typecheck`, and
+  `corepack pnpm typecheck` all exited 0; `git diff --check` passed.
+- With `C:\Program Files\Git\usr\bin` prepended to `PATH`, `corepack pnpm test`
+  exited 0: 140 files total, 139 passed and 1 skipped; 894 tests total,
+  888 passed, 0 failed, and 6 expected skips. Four skips remain the reviewed
+  Task 21 Windows quarantines; quarantined green is not release completion.

@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-token-store.js";
+import { BrowserOidcController } from "../../../apps/web-console/src/auth/browser-oidc.js";
 import { RemoteJwksIdTokenVerifier } from "../../../apps/web-console/src/auth/id-token-verifier.js";
 import {
   OidcSession,
@@ -9,6 +10,7 @@ import {
   type TransientStore,
 } from "../../../apps/web-console/src/auth/oidc-session.js";
 import { computeS256Challenge } from "../../../apps/web-console/src/auth/pkce.js";
+import { resolveRuntimeConfig } from "../../../apps/web-console/src/config.js";
 import {
   createTestJwtIssuer,
   tamperJwtPayload,
@@ -53,6 +55,8 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
   let issueIdToken: (claims: Readonly<Record<string, unknown>>) => string;
   let servedJwks: TestJwtIssuer["jwks"];
   let jwksStatus: number;
+  let tokenStatus: number;
+  let tokenResponseMutator: ((response: Record<string, unknown>) => unknown) | undefined;
 
   function makeConfig(): OidcClientConfig {
     return {
@@ -119,15 +123,14 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
           [TENANT_CLAIM]: "tenant-a",
           [ROLES_CLAIM]: ["qa-reviewer"],
         });
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            access_token: issuedAccessToken,
-            id_token: idToken,
-            token_type: "Bearer",
-            expires_in: 3600,
-          }),
-        );
+        res.writeHead(tokenStatus, { "content-type": "application/json" });
+        const tokenResponse = {
+          access_token: issuedAccessToken,
+          id_token: idToken,
+          token_type: "Bearer",
+          expires_in: 3600,
+        };
+        res.end(JSON.stringify(tokenResponseMutator?.(tokenResponse) ?? tokenResponse));
       });
     });
     await new Promise<void>((resolve) => tokenServer.listen(0, "127.0.0.1", resolve));
@@ -141,6 +144,8 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     issueIdToken = (claims) => jwt.sign(claims);
     servedJwks = jwt.jwks;
     jwksStatus = 200;
+    tokenStatus = 200;
+    tokenResponseMutator = undefined;
     idTokenNonce = "";
   });
 
@@ -263,6 +268,88 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     expect(transient.size()).toBe(0);
   });
 
+  it("rejects an ID Token without a non-empty subject and clears transient state", async () => {
+    const transient = new FakeTransientStore();
+    const session = makeSession(transient);
+    const begin = await session.beginAuthorization();
+    const record = JSON.parse(transient.get(`oidc.tx.${begin.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = record.nonce;
+    issueIdToken = (claims) => {
+      const { sub: _sub, ...withoutSubject } = claims;
+      return jwt.sign(withoutSubject);
+    };
+
+    await expect(
+      session.completeAuthorization({ code: "missing-sub", state: begin.state }),
+    ).rejects.toMatchObject({ reason: "TokenMalformed" });
+    expect(transient.size()).toBe(0);
+  });
+
+  it.each([
+    [(response: Record<string, unknown>) => ({ ...response, access_token: undefined }), "missing access token"],
+    [(response: Record<string, unknown>) => ({ ...response, id_token: undefined }), "missing ID token"],
+    [(response: Record<string, unknown>) => ({ ...response, token_type: "MAC" }), "wrong token type"],
+    [(response: Record<string, unknown>) => ({ ...response, expires_in: 0 }), "non-positive expiry"],
+  ])("rejects a malformed token response ($1) and clears transient state", async (mutate, _caseName) => {
+    const transient = new FakeTransientStore();
+    const session = makeSession(transient);
+    const begin = await session.beginAuthorization();
+    const record = JSON.parse(transient.get(`oidc.tx.${begin.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = record.nonce;
+    tokenResponseMutator = mutate;
+
+    await expect(
+      session.completeAuthorization({ code: "bad-token-response", state: begin.state }),
+    ).rejects.toMatchObject({ reason: "TokenMalformed" });
+    expect(transient.size()).toBe(0);
+  });
+
+  it("clears transient state when token exchange fails", async () => {
+    const transient = new FakeTransientStore();
+    const session = makeSession(transient);
+    const begin = await session.beginAuthorization();
+    tokenStatus = 503;
+
+    await expect(
+      session.completeAuthorization({ code: "exchange-failure", state: begin.state }),
+    ).rejects.toMatchObject({ reason: "TokenExchangeFailed" });
+    expect(transient.size()).toBe(0);
+  });
+
+  it("rejects malformed transient state and consumes it", async () => {
+    const transient = new FakeTransientStore();
+    transient.set("oidc.tx.malformed", JSON.stringify({ state: "malformed" }));
+    const session = makeSession(transient);
+
+    await expect(
+      session.completeAuthorization({ code: "x", state: "malformed" }),
+    ).rejects.toMatchObject({ reason: "TokenMalformed" });
+    expect(transient.size()).toBe(0);
+  });
+
+  it("consumes transient state when the stored state does not match", async () => {
+    const transient = new FakeTransientStore();
+    transient.set(
+      "oidc.tx.returned-state",
+      JSON.stringify({
+        state: "different-state",
+        nonce: "nonce",
+        codeVerifier: "verifier",
+        createdAtMs: Date.now(),
+      }),
+    );
+    const session = makeSession(transient);
+
+    await expect(
+      session.completeAuthorization({ code: "x", state: "returned-state" }),
+    ).rejects.toMatchObject({ reason: "StateMismatch" });
+    expect(transient.size()).toBe(0);
+  });
+
   it("rejects an ID Token signed by an unknown kid", async () => {
     const transient = new FakeTransientStore();
     const session = makeSession(transient);
@@ -338,6 +425,31 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     await expect(
       session.completeAuthorization({ code: "jwks-down-code", state: begin.state }),
     ).rejects.toMatchObject({ reason: "JwksUnavailable" });
+    expect(transient.size()).toBe(0);
+  });
+
+  it("refreshes a cached JWKS when the issuer rotates to a new key", async () => {
+    const transient = new FakeTransientStore();
+    const session = makeSession(transient);
+    const first = await session.beginAuthorization();
+    const firstRecord = JSON.parse(transient.get(`oidc.tx.${first.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = firstRecord.nonce;
+    await session.completeAuthorization({ code: "before-rotation", state: first.state });
+
+    const rotated = createTestJwtIssuer("RS256", "rotated-key");
+    servedJwks = rotated.jwks;
+    issueIdToken = (claims) => rotated.sign(claims);
+    const second = await session.beginAuthorization();
+    const secondRecord = JSON.parse(transient.get(`oidc.tx.${second.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = secondRecord.nonce;
+
+    await expect(
+      session.completeAuthorization({ code: "after-rotation", state: second.state }),
+    ).resolves.toMatchObject({ subject: "user-42" });
     expect(transient.size()).toBe(0);
   });
 
@@ -425,5 +537,113 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     store.clear();
     expect(store.isAuthenticated()).toBe(false);
     expect(store.accessToken()).toBeUndefined();
+  });
+
+  it("recognizes callbacks only at the exact configured redirect URL", () => {
+    const globals = globalThis as { window?: unknown; document?: unknown };
+    const originalWindow = globals.window;
+    const originalDocument = globals.document;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          href: "https://console.test/not-the-callback?code=a&state=b",
+          origin: "https://console.test",
+          pathname: "/not-the-callback",
+          search: "?code=a&state=b",
+        },
+        sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+      },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { title: "Qualigence" },
+    });
+    try {
+      const controller = new BrowserOidcController(
+        { apiBaseUrl: "https://console.test/api", authMode: "oidc", oidc: makeConfig() },
+        new MemoryTokenStore(),
+        new FakeTransientStore(),
+      );
+      expect(controller.isCallback()).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+      Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    }
+  });
+
+  it("scrubs callback parameters even when callback validation fails", async () => {
+    const globals = globalThis as { window?: unknown; document?: unknown };
+    const originalWindow = globals.window;
+    const originalDocument = globals.document;
+    const replacements: string[] = [];
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          href: "https://console.test/callback?code=secret-code&state=missing",
+          origin: "https://console.test",
+          pathname: "/callback",
+          search: "?code=secret-code&state=missing",
+        },
+        history: {
+          replaceState: (_state: unknown, _title: string, path: string) => replacements.push(path),
+        },
+        sessionStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+      },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: { title: "Qualigence" },
+    });
+    try {
+      const controller = new BrowserOidcController(
+        { apiBaseUrl: "https://console.test/api", authMode: "oidc", oidc: makeConfig() },
+        new MemoryTokenStore(),
+        new FakeTransientStore(),
+      );
+      await expect(controller.handleCallbackIfPresent()).rejects.toMatchObject({
+        reason: "TransientMissing",
+      });
+      expect(replacements).toEqual(["/callback"]);
+    } finally {
+      Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+      Object.defineProperty(globalThis, "document", { configurable: true, value: originalDocument });
+    }
+  });
+});
+
+describe("Web Console runtime OIDC configuration", () => {
+  const origin = "https://console.test";
+
+  it("derives JWKS from the final injected issuer", () => {
+    const config = resolveRuntimeConfig(
+      { oidc: { issuer: "https://identity.example/" } },
+      origin,
+      {},
+    );
+
+    expect(config.oidc.issuer).toBe("https://identity.example/");
+    expect(config.oidc.jwksUri).toBe("https://identity.example/.well-known/jwks.json");
+  });
+
+  it.each([
+    [{ authMode: "unknown" }, /authMode/],
+    [{ oidc: { tokenEndpoint: "http://identity.example/token" } }, /tokenEndpoint/],
+    [{ oidc: { redirectUri: "https://attacker.example/callback" } }, /redirectUri/],
+    [{ oidc: { allowedAlgorithms: ["HS256"] } }, /allowedAlgorithms/],
+    [{ oidc: { allowedTenants: [] } }, /allowedTenants/],
+    [{ oidc: { roleMap: { unknown: "owner" } } }, /roleMap/],
+  ])("rejects unsafe injected runtime configuration %s", (injected, expected) => {
+    expect(() => resolveRuntimeConfig(injected, origin, {})).toThrow(expected);
+  });
+
+  it("allows HTTP only for a loopback Local Console and API", () => {
+    const config = resolveRuntimeConfig(
+      { apiBaseUrl: "http://127.0.0.1:50555/api", oidc: { redirectUri: "http://127.0.0.1:5173/auth/callback" } },
+      "http://127.0.0.1:5173",
+      {},
+    );
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:50555/api");
   });
 });

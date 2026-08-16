@@ -58,7 +58,7 @@ interface TokenResponse {
   readonly access_token: string;
   readonly id_token: string;
   readonly token_type: string;
-  readonly expires_in?: number;
+  readonly expires_in: number;
 }
 
 const TRANSIENT_PREFIX = "oidc.tx.";
@@ -105,7 +105,7 @@ function mapPrincipal(
     }
     const mapped = config.roleMap[value];
     if (mapped === undefined) {
-      throw new OidcSessionError("RoleNotAllowed", `role ${value} is not allowed`);
+      throw new OidcSessionError("RoleNotAllowed", "an ID Token role is not allowed");
     }
     if (!roles.includes(mapped)) {
       roles.push(mapped);
@@ -163,17 +163,16 @@ export class OidcSession {
     if (raw === undefined) {
       throw new OidcSessionError("TransientMissing", "no transient record for the returned state");
     }
-    const record = JSON.parse(raw) as TransientRecord;
-    if (record.state !== params.state) {
-      throw new OidcSessionError("StateMismatch", "state does not match the transient record");
-    }
-    if (this.now() - record.createdAtMs > TRANSIENT_TTL_MS) {
-      this.transient.remove(key);
-      throw new OidcSessionError("TransientExpired", "the authorization request expired");
-    }
-
-    const token = await this.exchangeCode(params.code, record.codeVerifier);
     try {
+      const record = parseTransientRecord(raw);
+      if (record.state !== params.state) {
+        throw new OidcSessionError("StateMismatch", "state does not match the transient record");
+      }
+      if (this.now() - record.createdAtMs > TRANSIENT_TTL_MS) {
+        throw new OidcSessionError("TransientExpired", "the authorization request expired");
+      }
+
+      const token = await this.exchangeCode(params.code, record.codeVerifier);
       const claims = await this.idTokenVerifier.verify(token.id_token, {
         issuer: this.config.issuer,
         audience: this.config.clientId,
@@ -184,19 +183,22 @@ export class OidcSession {
 
       const { tenantId, roles } = mapPrincipal(this.config, claims);
       const nowMs = this.now();
-      const subject = typeof claims.sub === "string" ? claims.sub : "";
-      const expiresAtMs =
-        token.expires_in !== undefined
-          ? nowMs + token.expires_in * 1000
-          : nowMs + 3600 * 1000;
-      this.transient.remove(key);
+      const subject = typeof claims.sub === "string" ? claims.sub.trim() : "";
+      if (subject.length === 0) {
+        throw new OidcSessionError("TokenMalformed", "id_token subject is missing");
+      }
+      const expiresAtMs = nowMs + token.expires_in * 1000;
       return { subject, tenantId, roles, accessToken: token.access_token, expiresAtMs };
     } catch (error) {
-      this.transient.remove(key);
       if (error instanceof IdTokenVerificationError) {
         throw toSessionVerificationError(error);
       }
-      throw error;
+      if (error instanceof OidcSessionError) {
+        throw error;
+      }
+      throw new OidcSessionError("TokenMalformed", "the authorization response is malformed");
+    } finally {
+      this.transient.remove(key);
     }
   }
 
@@ -208,19 +210,80 @@ export class OidcSession {
       client_id: this.config.clientId,
       code_verifier: codeVerifier,
     });
-    const response = await this.fetchImpl(this.config.tokenEndpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json",
-      },
-      body: body.toString(),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.config.tokenEndpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+        },
+        body: body.toString(),
+      });
+    } catch {
+      throw new OidcSessionError("TokenExchangeFailed", "token endpoint is unavailable");
+    }
     if (!response.ok) {
       throw new OidcSessionError("TokenExchangeFailed", `token endpoint returned ${response.status}`);
     }
-    return (await response.json()) as TokenResponse;
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new OidcSessionError("TokenMalformed", "token endpoint returned malformed JSON");
+    }
+    return parseTokenResponse(payload);
   }
+}
+
+function parseTransientRecord(raw: string): TransientRecord {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  if (!isRecord(value)) {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  const { state, nonce, codeVerifier, createdAtMs } = value;
+  if (
+    typeof state !== "string" || state.length === 0 ||
+    typeof nonce !== "string" || nonce.length === 0 ||
+    typeof codeVerifier !== "string" || codeVerifier.length === 0 ||
+    typeof createdAtMs !== "number" || !Number.isFinite(createdAtMs)
+  ) {
+    throw new OidcSessionError("TokenMalformed", "transient authorization state is malformed");
+  }
+  return { state, nonce, codeVerifier, createdAtMs };
+}
+
+function parseTokenResponse(value: unknown): TokenResponse {
+  if (!isRecord(value)) {
+    throw new OidcSessionError("TokenMalformed", "token endpoint response is malformed");
+  }
+  const accessToken = value.access_token;
+  const idToken = value.id_token;
+  const tokenType = value.token_type;
+  const expiresIn = value.expires_in;
+  if (
+    typeof accessToken !== "string" || accessToken.length === 0 ||
+    typeof idToken !== "string" || idToken.length === 0 ||
+    tokenType !== "Bearer" ||
+    typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0
+  ) {
+    throw new OidcSessionError("TokenMalformed", "token endpoint response is malformed");
+  }
+  return {
+    access_token: accessToken,
+    id_token: idToken,
+    token_type: tokenType,
+    expires_in: expiresIn,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toSessionVerificationError(error: IdTokenVerificationError): OidcSessionError {

@@ -62,7 +62,7 @@ export class RemoteJwksIdTokenVerifier implements IdTokenVerifier {
         issuer: expected.issuer,
         audience: expected.audience,
         algorithms: [...this.allowedAlgorithms],
-        requiredClaims: ["iss", "aud", "exp"],
+        requiredClaims: ["iss", "aud", "exp", "sub"],
       });
       return { ...result.payload };
     } catch (error) {
@@ -91,7 +91,7 @@ function mapVerificationError(error: unknown): IdTokenVerificationError {
         return new IdTokenVerificationError("token_malformed");
     }
   }
-  if (error instanceof errors.JWKSTimeout || error instanceof TypeError) {
+  if (error instanceof errors.JWKSTimeout) {
     return new IdTokenVerificationError("jwks_unavailable");
   }
   if (error instanceof errors.JOSEError) {
