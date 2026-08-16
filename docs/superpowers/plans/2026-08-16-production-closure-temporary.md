@@ -23,12 +23,12 @@ The word `implemented` in the status ledger means only that some planned files o
 ## Global Constraints
 
 - Use Node.js 24 and exactly `corepack pnpm --version` = `11.7.0`. Do not use an ambient/fallback `pnpm` binary.
-- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency.
+- In a fresh worktree run `corepack pnpm install --frozen-lockfile`. If a trusted registry is unavailable, `corepack pnpm install --offline --frozen-lockfile` is permitted only when the pnpm store already contains every locked package. Do not regenerate the lockfile except in a task that explicitly adds a dependency or the separately reviewed P0 lock-consistency repair below.
 - Preserve strict TypeScript settings and project references; no `any`, unsafe double assertions, or domain imports from Fastify/gRPC/Playwright/Win32 adapters.
 - Models only produce proposals/results. Deterministic code owns authorization, budgets, state transitions, IDs, persistence, and idempotency.
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
 - Do not modify historical migration files 001-005. New relational state uses migration 006 or later.
-- Do not silently skip a required Gate. Report an explicit environmental block such as `ChromiumUnavailable`, `OpenSslUnavailable`, `DockerUnavailable`, `CargoUnavailable`, or `Windows11Unavailable`.
+- Do not silently skip a required Gate. Report an explicit environmental block such as `ChromiumUnavailable`, `OpenSslUnavailable`, `DockerUnavailable`, `CargoUnavailable`, or `Windows11Unavailable`. The only temporary exception is Prerequisite Q: exactly four named individual tests may use Windows-only `it.skipIf`; each skip must carry the exact Task 21 removal marker and remains release-blocking.
 - Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
 - A Terra worker executes one task per fresh context. It must read every file in the task's **Files** block before editing and must not edit files outside that block without stopping for review.
 - At the end of every task, update `docs/production-closure-status.md` in the same task commit with `component`, `production_wiring`, `verification`, exact command, date, and commit. Never use the ignored SDD ledger as the only completion evidence.
@@ -40,30 +40,33 @@ The word `implemented` in the status ledger means only that some planned files o
 
 | Task | State | Evidence and required next action |
 |---|---|---|
-| 1 Admin CLI | implementation committed; verification incomplete | Commit `f200d6d`; focused GREEN was blocked by the incomplete worktree dependency junction. Do not reimplement. Task 4 must rerun the black-box CLI Gate in a clean install. |
-| 2 Node entrypoints | implementation committed; verification incomplete | Commit `603439b`; 5/7 smoke cases passed after rebuilding, while Admin/Launcher remained dependency-blocked. Do not reimplement. Task 4 closes all seven cases and Launcher E2E. |
-| 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 adds the missing reusable provider/concurrency contract required by architecture. |
-| 4 Gate/status closure | ready | Docker and Chromium are available. Use a clean worktree install; do not reuse the temporary root `node_modules` junction. |
-| 5 Review provider contract | ready | Requires Docker and two independent PostgreSQL connections. |
-| 6 OIDC signature verification | environmentally blocked | `jose` is not in the lockfile/store and the configured npm-compatible registry currently fails TLS. Resume only with a trusted registry; never vendor or download an unverified package. |
-| 7-18 | pending | May proceed in dependency order while Task 6 waits, except a dependent Console release Gate cannot pass. |
+| Q Windows test quarantine | approved, not implemented | Create one independent prerequisite PR that conditionally skips exactly four named tests only on Windows. Non-Windows coverage remains active; Task 21 must remove every marker before release closure. |
+| P0 Frozen lock consistency | complete and verified | Frozen install RED proved a missing Vite 8.1.5 peer snapshot; the exact lock-only repair passes frozen install with no manifest change. |
+| 1 Admin CLI | complete and verified | Commit `f200d6d`; Task 4 clean-worktree built-binary verification passed for help, unknown command, command parsing, and fail-closed KMS behavior. |
+| 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
+| 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
+| 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
+| 5 Review provider contract | complete after PR review | Shared provider cases plus SQLite failure injection and PostgreSQL advisory-lock barriers pass 32 tests, including simultaneous replay, cross-task idempotency-key competition, audit rollback, and forced two-transaction races; the focused regression set passes 60 tests. |
+| 6 OIDC signature verification | complete after PR review | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256 and ES256/JWKS success paths pass, while tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS fail before claim mapping. |
+| 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
-| 21-22 CI/docs | pending | Task 21 release completion waits for Tasks 6 and 19-20 plus all platform CI artifacts. |
+| 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
 ## Current verified baseline
 
 - Docker 29.6.1 and Chromium are available on the current Windows host.
 - Git's OpenSSL exists at `C:\Program Files\Git\usr\bin\openssl.exe` but is not on `PATH`; Gates must resolve it explicitly or report `OpenSslUnavailable`.
 - Cargo is not installed, so native Companion Tasks 19-20 cannot be completed on this host yet.
-- The lockfile is synchronized after Task 3. A trusted npm-compatible registry is still TLS-blocked; Task 6 cannot add `jose` until that external condition changes.
-- Full test, build, and typecheck remain unproven from a clean worktree install. Task 4 owns this baseline closure rather than treating environmental skips as success.
-- `apps/admin-cli/src/main.ts` now parses `argv` and Doctor awaits KMS; black-box verification remains pending as recorded above.
+- The lockfile is synchronized through Task 6. The trusted registry was reachable through the explicit local HTTP proxy without disabling TLS; `jose` 6.2.9 is a direct Web Console dependency.
+- Clean-worktree build and typecheck pass. Task 4's Admin CLI, seven-entrypoint, Local Launcher, and observation-admin focused Gate passes 17 tests without skips; broader release Gates remain separate tasks.
+- The reviewed Task 1-6 stack's full Windows run reports 140 files: 136 passed and 4 failed; 868 tests: 862 passed, 4 failed, and 2 pre-existing skips. The four failures are the launcher SIGTERM timing case, recording-to-replay SQLite cleanup case, Playwright `/proc` process case, and Local KMS POSIX-mode case. They are owned by Prerequisite Q and Task 21 below, not evidence that the full release Gate passes.
+- `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
 - Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
 - Server does not register Mission/Run/Trace/Skill routes, does not start a Runner gRPC endpoint, and does not run `ServerIntelligenceResultConsumer`.
-- Review HTTP mutations now use the aggregate handlers, preserve the public conflict envelope, and pass focused PostgreSQL tests; reusable provider-contract and true two-writer concurrency coverage remain Task 5.
-- Web Console decodes ID Token claims without verifying the signature.
+- Review HTTP mutations use the aggregate handlers and preserve the public conflict envelope. Task 5's shared SQLite/PostgreSQL contract proves idempotency-key binding, audit persistence, and true two-writer claim behavior.
+- Web Console verifies ID Token signatures against its deployment-pinned remote JWKS and an RS256/ES256 allowlist before nonce, tenant, role, or subject processing.
 - Live Web/Runner code uses the pre-v1 `ObservationGraph`; Windows adapter code uses `ObservationGraphV1`.
 - `TargetRef` is Web-only and Runner always constructs `PlaywrightWebTargetAdapter`.
 - Windows `NamedPipePeer`, `WindowsUiaCapture`, `WindowsDesktopProcessHost`, and Companion binary entrypoint are non-functional production seams.
@@ -98,7 +101,7 @@ The word `implemented` in the status ledger means only that some planned files o
 Tasks 1-3 (already implemented)
     ├── Task 4 (close entrypoint Gates + create committed status ledger)
     ├── Task 5 (Review provider/concurrency contract)
-    ├── Task 6 (Console ID Token verification; waits for trusted registry)
+    ├── Task 6 (Console ID Token verification; complete)
     └── Task 7 (Runner renew)
 
 Task 8 (gRPC application port)
@@ -125,10 +128,14 @@ Task 15
 
 ## Pull request delivery plan
 
-The 22 implementation tasks ship as 17 reviewable pull requests. A pull request
-may contain more than one task only where the tasks form one architectural
-boundary or one evidence-producing release unit. Every task still has its own
-commit, focused RED/GREEN evidence, status-ledger update, and completion marker.
+The 22 implementation tasks plus Prerequisite Q and the P0 build prerequisite
+ship as 19 reviewable pull requests: two independently reviewed prerequisites
+and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
+the ordered merge queue through Task 6 contains five GitHub PRs because Q and
+P0 may not be absorbed into a product diff. A pull request may contain more
+than one task only where the tasks form one architectural boundary or one
+evidence-producing release unit. Every task still has its own commit, focused
+RED/GREEN evidence, status-ledger update, and completion marker.
 
 PRs are stacked in the order below. A stacked PR targets the immediately
 preceding PR branch until that PR merges; then its base is updated to `main`
@@ -138,7 +145,9 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `main` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for review |
+| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | approved, implementation pending |
+| 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for restack and review |
+| 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for restack and review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | ready for review |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
@@ -156,6 +165,13 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 16 | 20 | `codex/pr16-windows-uia-daemon` | `main` | Native UIA worker, Job Object host, and Companion daemon | blocked by PR 15 and `CargoUnavailable` |
 | 17 | 21, 22 | `codex/pr17-release-closure` | `main` | Cross-platform release evidence, CI/SBOM/provenance, documentation reconciliation, and evidence-gated Graph freeze | pending |
 
+Merge Q, P0, Product PR 1, Product PR 2, and Product PR 3 in exactly that order.
+After each merge, rebase/restack the next branch onto updated `main`, rerun all
+required Gates, inspect its three-dot diff, and repeat both review axes whenever
+the diff changes. A green Windows run while Q is active proves only that no
+additional Windows regression was introduced; it does not satisfy Task 21 or
+the release Gate.
+
 For PRs 4-17, `Initial base: main` means the branch is created from the latest
 merged prerequisite, not today's `main`. The dependency graph above remains
 authoritative; the table is a packaging plan, not permission to bypass an
@@ -172,6 +188,250 @@ Each PR description must include:
 6. deployment, migration, security, rollback, and compatibility impact;
 7. the next stacked PR and whether reviewers should review it before the base
    PR merges.
+
+While Q is active, every affected PR description must also list the four exact
+Windows skips, their Task 21 ownership, the latest platform counts, and the
+statement “quarantined green is not release completion.” No new failure may be
+added to Q without a new reviewed plan change.
+
+### Through-Task-6 review and merge checkpoint
+
+- [ ] **Merge checkpoint 1: Q**
+
+Create `codex/pr-preflight-windows-quarantine` from current `origin/main`, apply
+Prerequisite Q, push it, and open it against `main`. Verify the three-dot diff
+contains only Q's six authorized files. Run Q's Windows/focused/typecheck Gates,
+complete Standards and Spec/architecture review, resolve every Critical or
+Important finding, rerun affected Gates, and merge Q. Record the remote PR URL,
+merge commit, counts, active skips, and Linux evidence/block in the ledger.
+
+- [ ] **Merge checkpoint 2: P0**
+
+Restack `codex/pr0-lockfile-repair` on the merged Q commit. Verify
+`main...codex/pr0-lockfile-repair` changes only `pnpm-lock.yaml`, run frozen
+install twice from a clean worktree, complete both review axes, and merge P0.
+Any manifest, plan, runtime, generated-file, or selected direct-version diff
+blocks the merge.
+
+- [ ] **Merge checkpoint 3: Product PR 1 — Tasks 1, 2, and 4**
+
+Restack `codex/pr1-runtime-ops` on merged P0. Run the 17-test focused black-box
+Gate, build, typecheck, and the full Windows suite with exactly Q's four skips.
+Inspect `main...codex/pr1-runtime-ops`, complete both review axes, resolve and
+reverify blocking findings, then merge. Confirm Admin CLI command parsing,
+Doctor fail-closed behavior, seven direct-entrypoint cases, and Launcher E2E
+remain in the final diff/evidence.
+
+- [ ] **Merge checkpoint 4: Product PR 2 — Tasks 3 and 5**
+
+Restack `codex/pr2-review-invariants` on merged Product PR 1. With Docker
+running, execute the focused 60-test Review set, server typecheck, root
+typecheck, and full Windows suite with no skip beyond Q. Inspect the three-dot
+diff, complete both review axes, and merge only after SQLite and PostgreSQL both
+prove reservation-first idempotency, transaction-bound CAS/audit rollback, and
+the public `actualVersion` conflict contract.
+
+- [ ] **Merge checkpoint 5: Product PR 3 — Task 6**
+
+Restack `codex/pr3-console-oidc` on merged Product PR 2. Run its 15 focused OIDC
+tests, Web Console/root typecheck, build, and full Windows suite with no skip
+beyond Q. Inspect the three-dot diff, complete both review axes, and merge only
+after RS256 and ES256 success plus tampered token, unknown key, disallowed
+algorithm, wrong issuer/audience, expiry, and unavailable JWKS failure paths all
+prove verification precedes nonce/claim use and clears transient state on error.
+
+After checkpoint 5, update the ledger to say Tasks 1-6 are merged. Keep Task 21
+and the release Gate open; Q remains visible until Task 21 restores all four
+tests on Windows and Linux.
+
+---
+
+### Prerequisite Q: Quarantine four known Windows baseline tests
+
+**Execution status:** approved for implementation. This is a temporary
+integration prerequisite and remains release-blocking until Task 21 removes it.
+
+**Files:**
+- Modify: `tests/component/local-launcher/start-stop.test.ts`
+- Modify: `tests/component/skill-lifecycle/recording-to-replay.test.ts`
+- Modify: `tests/component/web-execution/playwright-web-target.test.ts`
+- Modify: `tests/contract/kms-local/skill-signing.test.ts`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Produces exactly four individual `it.skipIf(process.platform === "win32")`
+  declarations; no `describe.skipIf`, file-level guard, environment probe, or
+  non-Windows skip is allowed.
+- Preserves every original test body and assertion for Linux/POSIX execution.
+- Produces one source marker per skip in the exact form
+  `TODO(Task 21): remove this Windows quarantine after ...` with the remediation
+  text defined below.
+- Does not change production code, package manifests, TypeScript configuration,
+  dependency versions, migrations, generated output, or `pnpm-lock.yaml`.
+
+- [ ] **Step 1: Capture the four-case Windows RED without editing tests**
+
+Run from a clean worktree on Windows:
+
+```bash
+corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts
+```
+
+Record the exact four failing test names, error messages, command, platform,
+Node/pnpm versions, and counts in `docs/production-closure-status.md`. Qualifying
+RED is limited to:
+
+- `escalates SIGTERM to SIGKILL for a process that ignores SIGTERM`: portable
+  lifecycle behavior cannot be inferred from an elapsed-time minimum on Windows;
+- `records, induces, compiles, verifies, signs, promotes, reopens and replays`:
+  the reopened SQLite runtime remains open when Windows removes the temp tree;
+- `runs observe -> resolve -> execute -> artifacts -> close and reaps the browser`:
+  the process-leak assertion enumerates Linux `/proc`;
+- `generates a user-only private key and a publishable keyId`: the assertion
+  treats POSIX `0600` mode bits as a Windows ACL contract.
+
+Any fifth failure, different exception, missing dependency, or infrastructure
+failure is outside this prerequisite and stops the task for review.
+
+- [ ] **Step 2: Add four individual Windows-only quarantine markers**
+
+Change only the four named cases. Keep their callbacks unchanged and place the
+specific marker immediately above each declaration:
+
+```ts
+// TODO(Task 21): remove this Windows quarantine after lifecycle assertions use observable process events instead of minimum elapsed time.
+it.skipIf(process.platform === "win32")(
+  "escalates SIGTERM to SIGKILL for a process that ignores SIGTERM",
+  async () => {
+    // Existing test body remains byte-for-byte unchanged.
+  },
+);
+
+// TODO(Task 21): remove this Windows quarantine after every reopened SQLite runtime closes before temporary-directory cleanup.
+it.skipIf(process.platform === "win32")(
+  "records, induces, compiles, verifies, signs, promotes, reopens and replays",
+  async () => {
+    // Existing test body remains byte-for-byte unchanged.
+  },
+);
+
+// TODO(Task 21): remove this Windows quarantine after browser-process leak checks use a cross-platform lifecycle seam instead of /proc.
+it.skipIf(process.platform === "win32")(
+  "runs observe -> resolve -> execute -> artifacts -> close and reaps the browser",
+  async () => {
+    // Existing test body remains byte-for-byte unchanged.
+  },
+);
+
+// TODO(Task 21): remove this Windows quarantine after key protection is asserted with Windows ACLs and POSIX mode bits per platform.
+it.skipIf(process.platform === "win32")(
+  "generates a user-only private key and a publishable keyId",
+  () => {
+    // Existing test body remains byte-for-byte unchanged.
+  },
+);
+```
+
+The comments inside the callbacks above are plan notation only: the implementer
+must retain the existing callback bodies, not replace them with comments.
+
+- [ ] **Step 3: Prove the quarantine is exact on Windows**
+
+Run the four-file command from Step 1 and then the full suite:
+
+```bash
+corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts
+corepack pnpm test
+corepack pnpm typecheck
+git diff --check
+```
+
+Expected: the four named cases are reported as skips only on Windows; no other
+test becomes skipped; the full suite has no failure previously attributed to
+the four cases. Record actual counts rather than assuming the previous total.
+
+- [ ] **Step 4: Prove non-Windows coverage remains active**
+
+On a Linux executor, run the Step 1 four-file command. Expected: all four named
+cases execute rather than skip. If Linux execution is unavailable, record
+`LinuxExecutorUnavailable`; Q may be merged for Windows integration only after
+both reviews explicitly accept that block, but it cannot claim cross-platform
+or release completion.
+
+- [ ] **Step 5: Record debt ownership and commit only the authorized scope**
+
+Add four ledger rows to `docs/production-closure-status.md`, each containing the
+file, exact test name, Windows reason, Task 21 remediation, introducing commit/
+PR, Windows evidence, Linux evidence, and `removal_state: pending`.
+
+Run:
+
+```bash
+git diff --name-only
+git diff --check
+```
+
+Expected changed files are exactly the six paths in **Files**. Commit:
+
+```bash
+git add tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
+git commit -m "test(windows): quarantine four task 21 portability cases"
+```
+
+- [ ] **Step 6: Review Q before restacking P0**
+
+Run Standards review and Spec/architecture review against `main...Q`. Critical
+or Important findings block merge. The review must explicitly confirm four and
+only four individual Windows skips, unchanged test bodies, Linux execution or
+its named block, no product/manifest/lockfile diff, and Task 21 removal coverage.
+
+---
+
+### Prerequisite P0: Restore the frozen lock graph
+
+**Execution status:** complete. This is an independently reviewable build
+prerequisite, not part of Task 4 and not authority for future lock regeneration.
+
+**Files:**
+- Modify: `pnpm-lock.yaml`
+
+**Interfaces:**
+- Preserves every package manifest and selected direct dependency version.
+- Restores the exact peer-dependency snapshot already referenced by importers.
+- Does not change runtime code, migrations, public contracts, or deployment configuration.
+
+- [x] **Step 1: Capture the isolated frozen-install RED**
+
+In a fresh worktree run `corepack pnpm install --frozen-lockfile`. The qualifying
+RED is `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY` naming the already-referenced Vite
+8.1.5 peer snapshot. Any registry, manifest, integrity, or platform error is not
+authority to edit the lockfile.
+
+- [x] **Step 2: Repair only the inconsistent graph**
+
+With TLS verification enabled and the trusted local HTTP proxy set only for the
+command environment, run:
+
+```bash
+corepack pnpm install --lockfile-only --fix-lockfile --ignore-scripts
+```
+
+Review the exact diff. It may add only the missing Vite/Rolldown transitive peer
+graph; it must not change a manifest, select a different direct dependency, or
+run package scripts.
+
+- [x] **Step 3: Prove the repaired lock is consumable**
+
+Run:
+
+```bash
+corepack pnpm install --frozen-lockfile
+git diff --check
+```
+
+Commit the lock repair separately from Tasks 1, 2, and 4. Product PR 1 must
+target the P0 branch so its three-dot diff contains no lockfile repair.
 
 ---
 
@@ -419,7 +679,7 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 ### Task 4: Close Tasks 1-2 black-box Gates and create the committed evidence ledger
 
-**Execution status:** ready. This is a verification-closure task; commits `f200d6d` and `603439b` already contain the intended implementation. Do not rewrite those changes unless a clean black-box Gate proves a behavior defect.
+**Execution status:** complete. This verification closure passed in a clean detached worktree; the committed evidence ledger records the exact commands, Windows OpenSSL resolution, and the remaining root Playwright CLI defect. Commits `f200d6d` and `603439b` remain the implementation sources; do not reopen them without a new behavior regression.
 
 **Files:**
 - Create: `docs/production-closure-status.md`
@@ -441,7 +701,7 @@ git commit -m "fix(server): enforce review aggregate invariants"
 - Preserves the public Admin `run(argv, io, env)` API and all application entrypoint APIs.
 - Establishes a clean-worktree black-box baseline for the exact built JavaScript binaries, not TypeScript source imports.
 
-- [ ] **Step 1: Establish a clean, reproducible toolchain before testing**
+- [x] **Step 1: Establish a clean, reproducible toolchain before testing**
 
 Use a fresh isolated worktree with no shared or junctioned `node_modules`. Record all four preflight results in the status ledger:
 
@@ -454,7 +714,7 @@ corepack pnpm exec playwright --version
 
 Required: Node major `24`, pnpm exactly `11.7.0`, and a successful frozen install. If the trusted registry is unavailable, retry once with `corepack pnpm install --offline --frozen-lockfile`; if the store is incomplete, stop and record `RegistryUnavailable`. Do not change registry trust, disable TLS verification, regenerate the lock, or reuse the known temporary dependency junction.
 
-- [ ] **Step 2: Preserve the earlier incomplete verification as RED evidence**
+- [x] **Step 2: Preserve the earlier incomplete verification as RED evidence**
 
 In `docs/production-closure-status.md`, record that Task 1 had no focused GREEN in the original worktree and Task 2 reached only 5/7 smoke cases. This is the RED/blocked starting evidence for this verification-only task. Do not manufacture a failing source test when the implemented behavior already passes in the clean environment.
 
@@ -468,7 +728,7 @@ Create the ledger with this exact schema:
 
 Allowed values are `missing | partial | complete` for the first two dimensions and `not_run | blocked | failed | passed` for verification. Add an append-only evidence log containing date, host OS, command, exit code, pass/fail/skip counts, and environmental block. Never place secrets, tokens, or connection strings in this file.
 
-- [ ] **Step 3: Build and run every direct binary as a child process**
+- [x] **Step 3: Build and run every direct binary as a child process**
 
 Run:
 
@@ -479,7 +739,7 @@ corepack pnpm vitest run tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cl
 
 The smoke suite must cover all seven direct-entrypoint guards: Admin CLI, Local Launcher, Core Daemon, Runner, Server, Intelligence Worker, and Benchmark Runner. Admin/Launcher help must print their command surface. Core/Runner/Server/Worker must run their real `main` and fail non-zero on deliberately missing configuration. Benchmark must show help or a stable invalid-profile error. No case may accept silent exit 0 as success.
 
-- [ ] **Step 4: Diagnose only real behavior failures**
+- [x] **Step 4: Diagnose only real behavior failures**
 
 If a child cannot resolve a package, return to Step 1; that is not an entrypoint code defect. If a built child silently exits or Doctor reports KMS healthy after an awaited rejection, first add or tighten the failing case in the listed test file, then make the smallest correction in the matching listed source file. Preserve the canonical direct invocation predicate:
 
@@ -490,17 +750,22 @@ process.argv[1] !== undefined &&
 
 Do not broaden the source scope to unrelated applications.
 
-- [ ] **Step 5: Verify and commit the baseline evidence**
+- [x] **Step 5: Verify and commit the baseline evidence**
 
 Run:
 
 ```bash
 corepack pnpm typecheck
-corepack pnpm vitest run tests/unit/admin-cli tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
+corepack pnpm vitest run tests/migration/observation-v1/admin-command.test.ts tests/smoke/node-entrypoints.test.ts tests/e2e/admin-cli.test.ts tests/e2e/local-launcher.test.ts
 git diff --check
 ```
 
 Update the Admin CLI and Node entrypoint ledger rows to `verification: passed` only when these commands exit 0 without infrastructure skips. Keep unrelated full-suite failures as separate evidence rather than changing these two rows.
+
+Path correction recorded during execution: `tests/unit/admin-cli` does not
+exist in this repository. The actual Admin CLI parsing and Doctor unit boundary
+is `tests/migration/observation-v1/admin-command.test.ts`, which is the focused
+file run above.
 
 Commit:
 
@@ -513,7 +778,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** ready after Task 4 creates the committed status ledger. This task closes the architecture requirement that local and external providers pass the same contract and that ReviewTask claim is tested under concurrency.
+**Execution status:** complete. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite now rejects idempotency-key replays that are bound to another task without changing the production repository port.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`
@@ -530,7 +795,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 - The test-only harness exposes repository operations as callbacks so a PostgreSQL repository never escapes its tenant transaction.
 - Preserves the production `ReviewTaskRepository` interface and its documented atomic compare-and-set/idempotent-replay semantics.
 
-- [ ] **Step 1: Define the provider-neutral harness and shared cases**
+- [x] **Step 1: Define the provider-neutral harness and shared cases**
 
 In `tests/contract/review/review-task-repository.contract.ts`, define:
 
@@ -561,7 +826,7 @@ export function reviewTaskRepositoryContract(
 
 Both runners must be usable at the same time. For PostgreSQL, each runner calls `provider.withTenant("tenant-a", ...)` and constructs `PostgresReviewTaskRepository` inside that callback; two concurrent calls therefore hold two independent pool connections/transactions. For SQLite, open two `SqliteRuntime` instances on the same temporary database file.
 
-- [ ] **Step 2: Add the complete shared RED suite**
+- [x] **Step 2: Add the complete shared RED suite**
 
 The suite must execute these cases against both providers:
 
@@ -577,7 +842,7 @@ The suite must execute these cases against both providers:
 
 Use `ClaimReviewTaskHandler` and `ResolveReviewTaskHandler` for cases that assert public domain errors. Read the final row in a new callback after both concurrent transactions have settled. Do not serialize the race with a test mutex or reuse the same PostgreSQL transaction.
 
-- [ ] **Step 3: Prove both current implementations fail the same contract where they diverge**
+- [x] **Step 3: Prove both current implementations fail the same contract where they diverge**
 
 Run:
 
@@ -587,13 +852,13 @@ corepack pnpm vitest run tests/contract/review/sqlite-review-task-repository.tes
 
 Expected RED: at minimum, the SQLite implementation treats an idempotency key previously bound to another task as a successful replay. Any PostgreSQL race/audit failure must remain a real failure; do not add retries to the contract.
 
-- [ ] **Step 4: Align both adapters without moving domain rules into storage**
+- [x] **Step 4: Align both adapters without moving domain rules into storage**
 
 For both `claim` and `resolve`, when the idempotency ledger contains the key, compare its stored `task_id` with `command.taskId`; return `undefined` on mismatch. Preserve conditional writes over task ID + allowed status + expected version (+ assignee for resolve). Preserve tenant scoping and same-transaction audit writes. Do not catch unique violations and report success unless the stored ledger row proves it is the same command/task replay.
 
 Move the Review-specific SQLite cases out of `tests/contract/sqlite/investigation-review-store.test.ts` once the shared suite covers them; leave Investigation and Intelligence provider cases in that file.
 
-- [ ] **Step 5: Verify and commit provider parity evidence**
+- [x] **Step 5: Verify and commit provider parity evidence**
 
 Run with Docker available:
 
@@ -616,7 +881,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 
 ### Task 6: Verify Web Console ID Token signatures before using claims
 
-**Execution status:** blocked until a trusted npm-compatible registry is reachable. `jose` is absent from both lockfile and local store. Do not bypass TLS, copy a package from an untrusted source, or implement cryptography locally.
+**Execution status:** complete. The trusted registry was reached through the user-provided local HTTP proxy without disabling TLS. `jose` 6.2.9 is locked, focused cryptographic tests pass, and both Web Console and root typechecks pass.
 
 **Files:**
 - Modify: `apps/web-console/package.json`
@@ -634,7 +899,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 - Produces `IdTokenVerifier.verify(token, expected): Promise<Record<string, unknown>>`.
 - Extends `OidcClientConfig` with `jwksUri` and `allowedAlgorithms: readonly ("RS256" | "ES256")[]`.
 
-- [ ] **Step 1: Add failing cryptographic validation tests**
+- [x] **Step 1: Add failing cryptographic validation tests**
 
 Extend the test IdP/JWT fixture with a JWKS endpoint. Add cases for:
 
@@ -647,13 +912,13 @@ Extend the test IdP/JWT fixture with a JWKS endpoint. Add cases for:
 
 Use real signing keys from `tests/helpers/oidc-jwt.ts`; do not mock the verifier in these contract cases.
 
-- [ ] **Step 2: Confirm tampered tokens currently pass signature validation**
+- [x] **Step 2: Confirm tampered tokens currently pass signature validation**
 
 Run: `corepack pnpm vitest run tests/component/web-console/oidc-flow.test.ts`
 
 Expected before implementation: a token with a valid-looking payload and tampered signature reaches claim mapping.
 
-- [ ] **Step 3: Add the browser-compatible verifier**
+- [x] **Step 3: Add the browser-compatible verifier**
 
 After the registry precondition is satisfied, install with `corepack pnpm --filter @qualigence/web-console add jose` and review the exact manifest/lock diff before proceeding. Implement:
 
@@ -668,15 +933,15 @@ export interface IdTokenVerifier {
 
 `RemoteJwksIdTokenVerifier` must construct one cached `createRemoteJWKSet(new URL(jwksUri), { timeoutDuration, cooldownDuration, cacheMaxAge })` and call `jwtVerify` with exact issuer, audience, and the configured `RS256 | ES256` allowlist. Do not accept `none`, symmetric algorithms, token-supplied JWKS URLs, or arbitrary algorithms.
 
-- [ ] **Step 4: Replace payload decoding with verified claims**
+- [x] **Step 4: Replace payload decoding with verified claims**
 
 Inject an `IdTokenVerifier` into `OidcSession` or construct it from config in `BrowserOidcController`. In `completeAuthorization`, await verification before nonce, tenant, role, or subject processing. Convert signature/key/algorithm/JWKS errors to stable `OidcSessionError` reasons `TokenSignatureInvalid` or `JwksUnavailable`; do not expose library error text to the UI.
 
-- [ ] **Step 5: Preserve transient and in-memory-token guarantees**
+- [x] **Step 5: Preserve transient and in-memory-token guarantees**
 
 Keep state/nonce/verifier in TTL-bounded session storage and access tokens only in `MemoryTokenStore`. On any verification failure, remove the used transient record so an invalid callback cannot be replayed.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -2097,10 +2362,48 @@ git commit -m "feat(companion): run native windows desktop target"
 - Produces root scripts `gate:fast`, `gate:linux`, `gate:windows`, `gate:self-hosted`, and `gate:release`; every script invokes tools through Corepack and missing infrastructure exits non-zero with a stable block code.
 - Produces a browser-rendered Console E2E rather than a PublicApiClient-only test.
 - CI jobs install and prove required dependencies instead of using availability-based skips.
+- Removes all four Prerequisite Q `it.skipIf` declarations and exact Task 21
+  quarantine markers; no release artifact is valid while one remains.
 
-- [ ] **Step 1: Fix the five known cross-platform tests**
+- [ ] **Step 1: Restore the four quarantined cross-platform tests**
 
-Replace `/proc` browser-process inspection with Playwright/process APIs available on Windows and Linux; assert key-file ACL/mode per platform; use scoped process termination assertions on Windows; close every reopened SQLite handle before temp cleanup; use event-driven launcher shutdown waits. Keep the security intent of each test.
+Use TDD independently for each file: temporarily remove its `it.skipIf`, run the
+named case on Windows to reproduce the original RED, implement only that case's
+portable seam, rerun it GREEN on Windows, and then run the same case on Linux.
+
+1. In `tests/component/local-launcher/start-stop.test.ts`, replace the 300 ms
+   elapsed-time assertion with observable process lifecycle events from
+   `ChildProcessUnit`: prove SIGTERM was requested, the grace timer expired,
+   SIGKILL/forced termination was requested, and the child is no longer alive.
+   Do not accept “process exited quickly on Windows” as proof of escalation.
+2. In `tests/component/skill-lifecycle/recording-to-replay.test.ts`, put the
+   reopened `SqliteRuntime` under deterministic `try/finally` ownership and
+   `await runtime.close()` after replay assertions and on every thrown path.
+   Prove `afterEach` can immediately delete the temporary directory on Windows.
+3. In `tests/component/web-execution/playwright-web-target.test.ts`, replace
+   `/proc` enumeration with a repository-owned adapter/process lifecycle seam
+   available on Windows and Linux. Capture the launched browser identity through
+   that seam, call `adapter.close()`, and prove the owned browser exits; do not
+   scan or terminate unrelated system processes.
+4. In `tests/contract/kms-local/skill-signing.test.ts`, retain the POSIX `0600`
+   assertion on POSIX and add a Windows assertion that the key file's ACL grants
+   read/write only to the current user plus required system/administrator
+   principals and grants no broad Users/Everyone access. Put the platform probe
+   behind a small test helper with a stable failure message; never make Windows
+   key protection a no-op.
+
+After each remediation, remove its adjacent marker and convert its declaration
+back to ordinary `it(...)`. When all four are GREEN, run:
+
+```bash
+rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests
+corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts
+```
+
+Expected: `rg` returns no matches and exits 1; all four cases execute rather
+than skip. Update their status-ledger rows to `removal_state: complete` with
+separate Windows and Linux command evidence. The full release Gate remains
+blocked if either platform evidence is absent.
 
 - [ ] **Step 2: Add a real Console browser workflow**
 
