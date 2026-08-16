@@ -695,8 +695,11 @@ git commit -m "fix(server): enforce review aggregate invariants"
 
 **Execution status:** complete. This verification closure passed in a clean detached worktree; the committed evidence ledger records the exact commands, Windows OpenSSL resolution, and the remaining root Playwright CLI defect. Commits `f200d6d` and `603439b` remain the implementation sources; do not reopen them without a new behavior regression.
 
+**Scope approval (2026-08-17):** The user approved updating this plan after every Task/PR, limited to checkbox, PR-state, and verification-evidence updates only; this does not authorize behavior or specification expansion.
+
 **Files:**
 - Create: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/main.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/admin-cli/src/commands/doctor.ts`
 - Modify only if a Gate proves the corresponding behavior is wrong: `apps/core-daemon/src/main.ts`
