@@ -46,6 +46,11 @@ export async function run(
     .version(VERSION)
     .exitOverride();
 
+  program.configureOutput({
+    writeOut: (value: string) => io.out(value.trimEnd()),
+    writeErr: (value: string) => io.err(value.trimEnd()),
+  });
+
   const logger = new StructuredLogger({ service: "admin-cli" });
 
   const guard = (handler: () => Promise<void>): (() => Promise<void>) => {
@@ -161,6 +166,7 @@ export async function run(
     );
 
   try {
+    await program.parseAsync([...argv], { from: "user" });
   } catch (error) {
     const code = (error as { exitCode?: number }).exitCode ?? 1;
     if (code !== 0) {
