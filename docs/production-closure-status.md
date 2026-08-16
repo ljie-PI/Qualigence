@@ -220,3 +220,10 @@ verification: passed
   1 skipped; 899 tests total, 893 passed, 0 failed, and 6 expected skips. Four
   skips remain the reviewed
   Task 21 Windows quarantines; quarantined green is not release completion.
+- Standards and Spec/architecture final reviews on commit `acde9f4` reported no
+  findings after the final Gate counts were reconciled; the focused OIDC Gate
+  was rerun and passed 39 tests.
+- PR #40 merged Task 6 into `main` as merge commit `0753be7` on 2026-08-17.
+  Together with PR #36 (`ceeb857`), PR #37 (`7e24a9f`), PR #38 (`0820fd5`),
+  and PR #39 (`89002cc`), Tasks 1-6 are now merged. Task 21 and release closure
+  remain open for the four Windows quarantines and all other pending Tasks 7-22.
