@@ -104,3 +104,10 @@ were run without credentials, tokens, or connection strings.
   proxy repaired only the locked peer graph; no manifest changed and TLS
   verification remained enabled. A subsequent `corepack pnpm install
   --frozen-lockfile` exited 0 and installed 326 locked packages.
+- 2026-08-16 — PR 1 final focused Gate initially exited 1 with 16 passed and
+  one Runner entrypoint timeout at the 10-second hang guard. Three direct
+  Runner launches then failed closed correctly in 564–640 ms, and three
+  isolated smoke cases passed in 1.00 seconds each. The deadline was therefore
+  documented and widened to a 30-second hang guard for cold Windows worktrees;
+  no production startup logic changed. The original four-file Gate then exited
+  0 with 4 files and 17 tests passed, 0 failed, 0 skipped.
