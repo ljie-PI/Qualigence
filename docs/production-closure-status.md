@@ -3,9 +3,12 @@
 ## Task 0 — Windows test quarantine (2026-08-16)
 
 component: complete
-production_wiring: not_applicable
+production_wiring: missing
 verification: blocked
 introducing_pr: Q / `codex/pr-preflight-windows-quarantine`
+
+Q is intentionally test-only and adds no production Composition Root wiring.
+This `missing` value does not imply that any product wiring is complete.
 
 ### Windows RED evidence
 
@@ -48,15 +51,17 @@ validation completes.
 ### Post-commit Windows validation
 
 The disposable detached worktree
-`D:\Workspace\Qualigence\.worktrees\task0-q-validation` was based on Q commit
-`53db3f6c8ce5a258f2382db017749ebc7a66c86e`. Its only source diff was the
-uncommitted P0 lock replacement above; that lock was never staged on Q.
+`D:\Workspace\Qualigence\.worktrees\task0-6bc-validation` was based on the
+stable implementation commit `6bc2857f2e45720a85abff7a8f507adef7a81a92`.
+Its only source diff was the uncommitted P0 lock replacement above; that lock
+was never staged on Q.
 
 With the same command and Git OpenSSL-only PATH addition as the RED command,
 the focused run passed with `3` files passed, `1` file skipped; `19` tests
 passed, `4` skipped, `23` total. The four skips were the four ledger entries
 above; no other focused test skipped.
 
+`corepack pnpm install --frozen-lockfile`, `corepack pnpm build`, and
 `corepack pnpm typecheck` passed. `git diff --check` passed in the validation
 tree; `git diff --name-only` reported only `pnpm-lock.yaml`. `corepack pnpm test`
 reported `134` files passed, `1` failed, `1` skipped; `808` tests passed, `1`

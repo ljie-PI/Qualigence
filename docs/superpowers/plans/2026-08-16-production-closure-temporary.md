@@ -145,7 +145,7 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 
 | PR | Tasks | Branch | Initial base | Review unit | State |
 |---|---:|---|---|---|---|
-| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | approved, implementation pending |
+| Q | Prerequisite Q | `codex/pr-preflight-windows-quarantine` | `main` | Exactly four Windows-only individual test quarantines plus Task 21 removal ledger; no product/lock/manifest change | implementation complete; PR review pending; Linux verification blocked |
 | 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | ready for restack and review |
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | ready for restack and review |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | ready for review |
