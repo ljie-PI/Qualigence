@@ -6,18 +6,18 @@ import {
   type ReviewTaskDraft,
   type ReviewTaskRepository,
 } from "@qualigence/review";
+import type { Kysely, Transaction } from "kysely";
 import type { SqliteRuntime } from "./database.js";
+import { isSqliteBusyError, mapBusyError } from "./errors.js";
+import type { Database } from "./schema.js";
 
 /**
  * SQLite-backed {@link ReviewTaskRepository}. Claims and resolutions are applied
- * by a single atomic conditional write (`UPDATE ... WHERE version = ? AND
- * status = ?`) executed in autocommit — the statement acquires and releases the
- * write lock synchronously, so two concurrent claimants on the same task can
- * never both win. The losing writer's UPDATE matches zero rows and the store
- * returns `undefined`, letting the handler surface the current aggregate truth
- * as an explicit conflict rather than a silent overwrite. The idempotency ledger
- * (`review_claims` / `review_resolutions`) makes a duplicate command replay the
- * original result instead of applying a second time.
+ * inside one transaction with its idempotency audit. The audit key is reserved
+ * before the compare-and-set so simultaneous retries either apply once or replay
+ * the committed result, while reuse of a key for a different task cannot advance
+ * both aggregates. A failed compare-and-set removes its reservation before the
+ * transaction commits.
  */
 export class SqliteReviewStore implements ReviewTaskRepository {
   constructor(private readonly runtime: SqliteRuntime) {}
@@ -50,105 +50,154 @@ export class SqliteReviewStore implements ReviewTaskRepository {
   }
 
   async find(taskId: string): Promise<ReviewTask | undefined> {
-    const row = await this.runtime.db
-      .selectFrom("review_tasks")
-      .selectAll()
-      .where("task_id", "=", taskId)
-      .executeTakeFirst();
-    return row === undefined ? undefined : this.rowToTask(row);
+    return this.findWith(this.runtime.db, taskId);
   }
 
   async claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined> {
-    const db = this.runtime.db;
-    const replay = await db
-      .selectFrom("review_claims")
-      .select("task_id")
-      .where("idempotency_key", "=", command.idempotencyKey)
-      .executeTakeFirst();
-    if (replay !== undefined) {
-      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
-    }
+    return this.withWriteTransaction(async (db) => {
+      const now = new Date().toISOString();
+      const reservation = await db
+        .insertInto("review_claims")
+        .values({
+          idempotency_key: command.idempotencyKey,
+          task_id: command.taskId,
+          reviewer_id: command.reviewerId,
+          claimed_version: command.expectedVersion + 1,
+          created_at: now,
+        })
+        .onConflict((oc) => oc.column("idempotency_key").doNothing())
+        .returning("idempotency_key")
+        .executeTakeFirst();
 
-    // Single atomic compare-and-set; only one concurrent claimant can match.
-    const result = await db
-      .updateTable("review_tasks")
-      .set({
-        status: "claimed",
-        assignee_id: command.reviewerId,
-        version: command.expectedVersion + 1,
-        updated_at: new Date().toISOString(),
-      })
-      .where("task_id", "=", command.taskId)
-      .where("status", "=", "open")
-      .where("version", "=", command.expectedVersion)
-      .executeTakeFirst();
+      if (reservation === undefined) {
+        const replay = await db
+          .selectFrom("review_claims")
+          .select("task_id")
+          .where("idempotency_key", "=", command.idempotencyKey)
+          .executeTakeFirst();
+        return replay?.task_id === command.taskId
+          ? this.findWith(db, command.taskId)
+          : undefined;
+      }
 
-    if (result.numUpdatedRows === 0n) {
-      return undefined;
-    }
+      const result = await db
+        .updateTable("review_tasks")
+        .set({
+          status: "claimed",
+          assignee_id: command.reviewerId,
+          version: command.expectedVersion + 1,
+          updated_at: now,
+        })
+        .where("task_id", "=", command.taskId)
+        .where("status", "=", "open")
+        .where("version", "=", command.expectedVersion)
+        .executeTakeFirst();
 
-    await db
-      .insertInto("review_claims")
-      .values({
-        idempotency_key: command.idempotencyKey,
-        task_id: command.taskId,
-        reviewer_id: command.reviewerId,
-        claimed_version: command.expectedVersion + 1,
-        created_at: new Date().toISOString(),
-      })
-      .onConflict((oc) => oc.column("idempotency_key").doNothing())
-      .execute();
+      if (result.numUpdatedRows === 0n) {
+        await db
+          .deleteFrom("review_claims")
+          .where("idempotency_key", "=", command.idempotencyKey)
+          .where("task_id", "=", command.taskId)
+          .execute();
+        return undefined;
+      }
 
-    return this.find(command.taskId);
+      return this.findWith(db, command.taskId);
+    });
   }
 
   async resolve(
     command: ResolveReviewTaskCommand,
   ): Promise<ReviewTask | undefined> {
-    const db = this.runtime.db;
-    const replay = await db
-      .selectFrom("review_resolutions")
-      .select("task_id")
-      .where("idempotency_key", "=", command.idempotencyKey)
-      .executeTakeFirst();
-    if (replay !== undefined) {
-      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
-    }
-
-    const result = await db
-      .updateTable("review_tasks")
-      .set({
-        status: "resolved",
-        version: command.expectedVersion + 1,
-        updated_at: new Date().toISOString(),
-      })
-      .where("task_id", "=", command.taskId)
-      .where("status", "=", "claimed")
-      .where("version", "=", command.expectedVersion)
-      .where("assignee_id", "=", command.reviewerId)
-      .executeTakeFirst();
-
-    if (result.numUpdatedRows === 0n) {
+    const current = await this.find(command.taskId);
+    if (current === undefined) {
       return undefined;
     }
 
-    const current = await this.find(command.taskId);
-    await db
-      .insertInto("review_resolutions")
-      .values({
-        idempotency_key: command.idempotencyKey,
-        task_id: command.taskId,
-        case_id: current?.caseId ?? "",
-        reviewer_id: command.reviewerId,
-        disposition: command.disposition,
-        evidence_refs_json: JSON.stringify(command.evidenceRefs),
-        resolved_version: command.expectedVersion + 1,
-        created_at: new Date().toISOString(),
-      })
-      .onConflict((oc) => oc.column("idempotency_key").doNothing())
-      .execute();
+    return this.withWriteTransaction(async (db) => {
+      const now = new Date().toISOString();
+      const reservation = await db
+        .insertInto("review_resolutions")
+        .values({
+          idempotency_key: command.idempotencyKey,
+          task_id: command.taskId,
+          case_id: current.caseId,
+          reviewer_id: command.reviewerId,
+          disposition: command.disposition,
+          evidence_refs_json: JSON.stringify(command.evidenceRefs),
+          resolved_version: command.expectedVersion + 1,
+          created_at: now,
+        })
+        .onConflict((oc) => oc.column("idempotency_key").doNothing())
+        .returning("idempotency_key")
+        .executeTakeFirst();
 
-    return current;
+      if (reservation === undefined) {
+        const replay = await db
+          .selectFrom("review_resolutions")
+          .select("task_id")
+          .where("idempotency_key", "=", command.idempotencyKey)
+          .executeTakeFirst();
+        return replay?.task_id === command.taskId
+          ? this.findWith(db, command.taskId)
+          : undefined;
+      }
+
+      const result = await db
+        .updateTable("review_tasks")
+        .set({
+          status: "resolved",
+          version: command.expectedVersion + 1,
+          updated_at: now,
+        })
+        .where("task_id", "=", command.taskId)
+        .where("status", "=", "claimed")
+        .where("version", "=", command.expectedVersion)
+        .where("assignee_id", "=", command.reviewerId)
+        .executeTakeFirst();
+
+      if (result.numUpdatedRows === 0n) {
+        await db
+          .deleteFrom("review_resolutions")
+          .where("idempotency_key", "=", command.idempotencyKey)
+          .where("task_id", "=", command.taskId)
+          .execute();
+        return undefined;
+      }
+
+      return this.findWith(db, command.taskId);
+    });
+  }
+
+  private async withWriteTransaction<TResult>(
+    operation: (db: Transaction<Database>) => Promise<TResult>,
+  ): Promise<TResult> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.runtime.db.transaction().execute(operation);
+      } catch (error) {
+        if (!isSqliteBusyError(error) || attempt === 1) {
+          throw isSqliteBusyError(error) ? mapBusyError(error) : error;
+        }
+        // better-sqlite3 blocks the event loop while its busy timeout runs. Let
+        // the transaction that already owns the write lock commit before the
+        // single bounded replay attempt reads the durable idempotency record.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+    throw new Error("Unreachable SQLite review transaction retry state.");
+  }
+
+  private async findWith(
+    db: Kysely<Database> | Transaction<Database>,
+    taskId: string,
+  ): Promise<ReviewTask | undefined> {
+    const row = await db
+      .selectFrom("review_tasks")
+      .selectAll()
+      .where("task_id", "=", taskId)
+      .executeTakeFirst();
+    return row === undefined ? undefined : this.rowToTask(row);
   }
 
   private rowToTask(row: {
