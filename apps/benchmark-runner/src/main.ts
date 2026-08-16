@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { pathToFileURL } from "node:url";
 import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { loadBenchmark } from "./loader.js";
 import { runBenchmark, type BenchmarkStore } from "./run.js";
@@ -113,7 +114,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   main(process.argv.slice(2))

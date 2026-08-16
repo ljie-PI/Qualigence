@@ -1,4 +1,5 @@
 import { InvestigationAgent } from "@qualigence/model-agent";
+import { pathToFileURL } from "node:url";
 import { ModelGateway } from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
 import { PostgresIntelligenceQueue } from "@qualigence/core-application";
@@ -68,7 +69,7 @@ export async function main(): Promise<void> {
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
   main().catch((error) => {

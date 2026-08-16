@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -555,7 +556,7 @@ export async function run(
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   void run(process.argv.slice(2));

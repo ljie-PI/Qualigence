@@ -2,6 +2,7 @@ import {
   CertificateRunnerIdentity,
   GrpcRunnerProtocolServer,
 } from "@qualigence/grpc-runner-protocol";
+import { pathToFileURL } from "node:url";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
 
 export interface StartedCoreDaemon {
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
   main().catch((error: unknown) => {
