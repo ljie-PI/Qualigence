@@ -5,7 +5,10 @@ import { runCli } from "../helpers/cli-process.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const DEADLINE_MS = 10_000;
+// This is a hang guard, not a startup-performance assertion. A cold Windows
+// worktree can spend several seconds loading the larger binary dependency
+// graphs while the focused Gate runs its other files in parallel.
+const DEADLINE_MS = 30_000;
 
 function entrypoint(path: string): string {
   return join(repoRoot, path);
