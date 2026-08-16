@@ -214,6 +214,35 @@ describe("Web Console OIDC Authorization Code + PKCE flow", () => {
     expect(lastTokenRequestBody).toContain("grant_type=authorization_code");
   });
 
+  it("accepts a valid ES256 ID Token when ES256 is deployment-allowlisted", async () => {
+    const transient = new FakeTransientStore();
+    const config: OidcClientConfig = {
+      ...makeConfig(),
+      allowedAlgorithms: ["ES256"],
+    };
+    const es256 = createTestJwtIssuer("ES256", "allowed-es256-key");
+    servedJwks = es256.jwks;
+    issueIdToken = (claims) => es256.sign(claims);
+    const session = makeSession(transient, config);
+    const begin = await session.beginAuthorization();
+    const record = JSON.parse(transient.get(`oidc.tx.${begin.state}`) as string) as {
+      nonce: string;
+    };
+    idTokenNonce = record.nonce;
+
+    const consoleSession = await session.completeAuthorization({
+      code: "es256-auth-code",
+      state: begin.state,
+    });
+
+    expect(consoleSession).toMatchObject({
+      subject: "user-42",
+      tenantId: "tenant-a",
+      roles: ["reviewer"],
+    });
+    expect(transient.size()).toBe(0);
+  });
+
   it("rejects an ID Token whose payload changed after signing and clears the transient record", async () => {
     const transient = new FakeTransientStore();
     const session = makeSession(transient);

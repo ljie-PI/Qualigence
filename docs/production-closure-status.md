@@ -106,13 +106,17 @@ were run without credentials, tokens, or connection strings.
 - 2026-08-16 — after adding the cached remote-JWKS verifier and runtime
   asymmetric-algorithm allowlist, `corepack pnpm vitest run
   tests/component/web-console/oidc-flow.test.ts --reporter=verbose` exited 0:
-  1 file, 14 passed, 0 failed. The cases cover valid RS256, payload tampering,
+  1 file, 15 passed, 0 failed. The cases cover valid RS256 and ES256, payload tampering,
   unknown `kid`, disallowed ES256, rejected HS256 configuration, expiry,
   unavailable JWKS, wrong issuer/audience/nonce, tenant rejection, PKCE, and
   in-memory token/logout behavior.
 - 2026-08-16 — `corepack pnpm --filter @qualigence/web-console typecheck`
   exited 0. `corepack pnpm typecheck` also exited 0, including the TypeScript
   project build, production Vite bundle, test project, and Web Console checks.
+- 2026-08-16 — PR 3 Spec/architecture review confirmed the fail-closed verifier
+  boundary but found the advertised ES256 success path untested. A real P-256
+  issuer/JWKS callback case was added with `allowedAlgorithms: ["ES256"]`;
+  production verification code was unchanged.
 - 2026-08-16 — PR 1 isolation RED: `corepack pnpm install
   --frozen-lockfile` exited 1 because the main-branch lockfile referenced Vite
   8.1.5 without its exact peer-dependency snapshot. `corepack pnpm install
