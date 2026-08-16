@@ -55,16 +55,33 @@ export class PostgresReviewTaskRepository implements ReviewTaskRepository {
   }
 
   async claim(command: ClaimReviewTaskCommand): Promise<ReviewTask | undefined> {
-    const replay = await this.db
-      .selectFrom("review_claims")
-      .select("task_id")
-      .where("idempotency_key", "=", command.idempotencyKey)
+    const now = new Date().toISOString();
+    const reservation = await this.db
+      .insertInto("review_claims")
+      .values({
+        tenant_id: this.currentTenant(),
+        idempotency_key: command.idempotencyKey,
+        task_id: command.taskId,
+        reviewer_id: command.reviewerId,
+        claimed_version: command.expectedVersion + 1,
+        created_at: now,
+      })
+      .onConflict((oc) =>
+        oc.columns(["tenant_id", "idempotency_key"]).doNothing(),
+      )
+      .returning("idempotency_key")
       .executeTakeFirst();
-    if (replay !== undefined) {
-      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
+    if (reservation === undefined) {
+      const replay = await this.db
+        .selectFrom("review_claims")
+        .select("task_id")
+        .where("idempotency_key", "=", command.idempotencyKey)
+        .executeTakeFirst();
+      return replay?.task_id === command.taskId
+        ? this.find(command.taskId)
+        : undefined;
     }
 
-    const now = new Date().toISOString();
     const result = await this.db
       .updateTable("review_tasks")
       .set({
@@ -78,35 +95,53 @@ export class PostgresReviewTaskRepository implements ReviewTaskRepository {
       .where("version", "=", command.expectedVersion)
       .executeTakeFirst();
     if (result.numUpdatedRows !== 1n) {
+      await this.db
+        .deleteFrom("review_claims")
+        .where("idempotency_key", "=", command.idempotencyKey)
+        .where("task_id", "=", command.taskId)
+        .execute();
       return undefined;
     }
-
-    await this.db
-      .insertInto("review_claims")
-      .values({
-        tenant_id: this.currentTenant(),
-        idempotency_key: command.idempotencyKey,
-        task_id: command.taskId,
-        reviewer_id: command.reviewerId,
-        claimed_version: command.expectedVersion + 1,
-        created_at: now,
-      })
-      .execute();
 
     return this.find(command.taskId);
   }
 
   async resolve(command: ResolveReviewTaskCommand): Promise<ReviewTask | undefined> {
-    const replay = await this.db
-      .selectFrom("review_resolutions")
-      .select("task_id")
-      .where("idempotency_key", "=", command.idempotencyKey)
-      .executeTakeFirst();
-    if (replay !== undefined) {
-      return replay.task_id === command.taskId ? this.find(replay.task_id) : undefined;
+    const current = await this.find(command.taskId);
+    if (current === undefined) {
+      return undefined;
     }
 
     const now = new Date().toISOString();
+    const reservation = await this.db
+      .insertInto("review_resolutions")
+      .values({
+        tenant_id: this.currentTenant(),
+        idempotency_key: command.idempotencyKey,
+        task_id: command.taskId,
+        case_id: current.caseId,
+        reviewer_id: command.reviewerId,
+        disposition: command.disposition,
+        evidence_refs_json: JSON.stringify(command.evidenceRefs),
+        resolved_version: command.expectedVersion + 1,
+        created_at: now,
+      })
+      .onConflict((oc) =>
+        oc.columns(["tenant_id", "idempotency_key"]).doNothing(),
+      )
+      .returning("idempotency_key")
+      .executeTakeFirst();
+    if (reservation === undefined) {
+      const replay = await this.db
+        .selectFrom("review_resolutions")
+        .select("task_id")
+        .where("idempotency_key", "=", command.idempotencyKey)
+        .executeTakeFirst();
+      return replay?.task_id === command.taskId
+        ? this.find(command.taskId)
+        : undefined;
+    }
+
     const result = await this.db
       .updateTable("review_tasks")
       .set({
@@ -120,6 +155,11 @@ export class PostgresReviewTaskRepository implements ReviewTaskRepository {
       .where("assignee_id", "=", command.reviewerId)
       .executeTakeFirst();
     if (result.numUpdatedRows !== 1n) {
+      await this.db
+        .deleteFrom("review_resolutions")
+        .where("idempotency_key", "=", command.idempotencyKey)
+        .where("task_id", "=", command.taskId)
+        .execute();
       return undefined;
     }
 
@@ -127,21 +167,6 @@ export class PostgresReviewTaskRepository implements ReviewTaskRepository {
     if (task === undefined) {
       throw new Error("Claimed review task disappeared before its resolution was audited.");
     }
-    await this.db
-      .insertInto("review_resolutions")
-      .values({
-        tenant_id: this.currentTenant(),
-        idempotency_key: command.idempotencyKey,
-        task_id: command.taskId,
-        case_id: task.caseId,
-        reviewer_id: command.reviewerId,
-        disposition: command.disposition,
-        evidence_refs_json: JSON.stringify(command.evidenceRefs),
-        resolved_version: command.expectedVersion + 1,
-        created_at: now,
-      })
-      .execute();
-
     return task;
   }
 
