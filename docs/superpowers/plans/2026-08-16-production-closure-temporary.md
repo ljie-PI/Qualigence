@@ -47,7 +47,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
-| 6 OIDC signature verification | complete pending final dual review | `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy pass 39 focused tests; final Windows Gate passes 893 tests with 6 expected skips. |
+| 6 OIDC signature verification | merged as PR #40 | Merge commit `0753be7`; `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy passed 39 focused tests and both final review axes; the final Windows Gate passed 893 tests with 6 expected skips. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
@@ -152,7 +152,7 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 0 | P0 | `codex/pr0-lockfile-repair` | `codex/pr-preflight-windows-quarantine` | Frozen-lock consistency only: no manifest, runtime, or product behavior changes | merged as PR #37 (`7e24a9f`) |
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | merged as PR #38 (`0820fd5`) |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | merged as PR #39 (`89002cc`) |
-| 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | security fixes and Gates complete; final dual review pending |
+| 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | merged as PR #40 (`0753be7`) |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
@@ -237,7 +237,7 @@ remain in the final diff/evidence.
 Completed as PR #38 with merge commit `0820fd5` after focused, full Windows,
 build, typecheck, and both review axes passed.
 
-- [ ] **Merge checkpoint 4: Product PR 2 — Tasks 3 and 5**
+- [x] **Merge checkpoint 4: Product PR 2 — Tasks 3 and 5**
 
 Restack `codex/pr2-review-invariants` on merged Product PR 1. With Docker
 running, execute the focused 60-test Review set, server typecheck, root
@@ -246,7 +246,10 @@ diff, complete both review axes, and merge only after SQLite and PostgreSQL both
 prove reservation-first idempotency, transaction-bound CAS/audit rollback, and
 the public `actualVersion` conflict contract.
 
-- [ ] **Merge checkpoint 5: Product PR 3 — Task 6**
+Completed as PR #39 with merge commit `89002cc` after the 67-test focused Review
+Gate, full Windows Gate, build, typecheck, and both review axes passed.
+
+- [x] **Merge checkpoint 5: Product PR 3 — Task 6**
 
 Restack `codex/pr3-console-oidc` on merged Product PR 2. Run its 15 focused OIDC
 tests, Web Console/root typecheck, build, and full Windows suite with no skip
@@ -255,9 +258,14 @@ after RS256 and ES256 success plus tampered token, unknown key, disallowed
 algorithm, wrong issuer/audience, expiry, and unavailable JWKS failure paths all
 prove verification precedes nonce/claim use and clears transient state on error.
 
-After checkpoint 5, update the ledger to say Tasks 1-6 are merged. Keep Task 21
-and the release Gate open; Q remains visible until Task 21 restores all four
-tests on Windows and Linux.
+Completed as PR #40 with merge commit `0753be7` after the 39-test focused OIDC
+Gate, full Windows Gate, frozen install, build, typecheck, and both final review
+axes passed. Tasks 1-6 are merged into `main`; Task 21 and the release Gate stay
+open until all four Windows quarantines are removed and verified on Windows and
+Linux.
+
+The ledger now records Tasks 1-6 as merged. Task 21 and the release Gate remain
+open; Q stays visible until Task 21 restores all four tests on Windows and Linux.
 
 ---
 
@@ -904,7 +912,7 @@ git commit -m "test(review): enforce provider and concurrency contract"
 
 ### Task 6: Verify Web Console ID Token signatures before using claims
 
-**Execution status:** implementation and Gates complete after merging PR #39; final dual review pending. `jose` 6.2.9 is locked. Real RS256/ES256 signatures, complete callback cleanup, fail-closed token/config validation, exact redirect binding, and cached JWKS rotation pass the focused Gate. The full Windows suite has no failures beyond the six expected explicit skips.
+**Execution status:** merged as PR #40 with merge commit `0753be7` after both final review axes passed. `jose` 6.2.9 is locked. Real RS256/ES256 signatures, complete callback cleanup, fail-closed token/config validation, exact redirect binding, and cached JWKS rotation pass the focused Gate. The full Windows suite has no failures beyond the six expected explicit skips.
 
 **Files:**
 - Modify: `apps/web-console/package.json`
