@@ -46,7 +46,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 2 Node entrypoints | complete and verified | Commit `603439b`; Task 4 passed all seven direct-entrypoint smoke cases and the Local Launcher E2E in a clean install. |
 | 3 Review routes | complete and reviewed | Commits `3071da0` + `fd788df`; PostgreSQL route/component tests passed with Docker, and the public `actualVersion` conflict contract was restored. Task 5 now adds provider parity and two-writer contract evidence. |
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
-| 5 Review provider contract | complete after PR review | Shared provider cases plus SQLite failure injection and PostgreSQL advisory-lock barriers pass 32 tests, including simultaneous replay, cross-task idempotency-key competition, audit rollback, and forced two-transaction races; the focused regression set passes 60 tests. |
+| 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
 | 6 OIDC signature verification | complete after PR review | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256 and ES256/JWKS success paths pass, while tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS fail before claim mapping. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
@@ -798,7 +798,7 @@ git commit -m "test(runtime): close entrypoint production gates"
 
 ### Task 5: Add one Review repository contract and true PostgreSQL writer concurrency
 
-**Execution status:** complete. One provider-neutral contract now passes against SQLite and PostgreSQL, and its concurrent PostgreSQL case runs two independent tenant transactions. SQLite now rejects idempotency-key replays that are bound to another task without changing the production repository port.
+**Execution status:** complete after post-merge dual-axis review fixes. One provider-neutral contract passes against SQLite and PostgreSQL, its concurrent PostgreSQL case runs two independent tenant transactions, tenant scope is explicit at the persistence port, and idempotency replay requires the complete persisted command to match.
 
 **Files:**
 - Create: `tests/contract/review/review-task-repository.contract.ts`

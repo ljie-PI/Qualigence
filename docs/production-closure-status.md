@@ -142,7 +142,7 @@ separately from Task 0's release-blocking Windows quarantine.
 | capability | component | production_wiring | verification | evidence | implementation commit |
 |---|---|---|---|---|---|
 | Review HTTP mutations | complete | complete | passed | claim and resolve use aggregate handlers and preserve the safe version-conflict envelope | `7a5d4d7`, `bcdf329` |
-| Review repository provider contract | complete | complete | passed | one shared contract runs against SQLite and tenant-scoped PostgreSQL with reservation-first idempotency and two-writer races | `5cc3380`, `06877d6`, `d25076d`, `0a00a71` |
+| Review repository provider contract | complete | complete | passed | one shared contract runs against SQLite and tenant-scoped PostgreSQL with explicit tenant scope, complete-command idempotency, rollback injection, and two-writer races | `5cc3380`, `06877d6`, `d25076d`, `0a00a71`, `f4ec623` |
 
 ### Review invariants evidence log
 
@@ -154,8 +154,28 @@ separately from Task 0's release-blocking Windows quarantine.
 - Advisory-lock trigger barriers then forced two independent PostgreSQL tenant
   transactions to overlap. Four RED cases reproduced same-command replay and
   unique-violation failures for claim and resolve.
-- After PostgreSQL adopted reservation-first ordering, the complete focused
-  Review command passed 6 files and 60 tests with 0 failed and 0 skipped;
-  `corepack pnpm typecheck` also passed.
-- These counts predate the merge of PR #38. The merged tree must rerun the Task
-  5 Gate before this branch is eligible to merge.
+- After merging PR #38, the dual-axis review found four blockers: repository
+  tenant scope was implicit, idempotency replay was bound only to task ID,
+  PostgreSQL lacked rollback injection evidence, and one required Docker E2E
+  could skip silently. The follow-up made tenant ID explicit through the port,
+  bound replay to every persisted command field, moved PostgreSQL persistence
+  into the storage-provider package, added cross-tenant and rollback tests, and
+  made Docker absence fail as `DockerUnavailable`.
+- On the corrected merged tree, frozen install, build, and root typecheck passed.
+  The complete focused Review command passed 6 files and 67 tests with 0 failed
+  and 0 skipped, including real PostgreSQL two-writer overlap and both-provider
+  complete-command replay cases.
+- 2026-08-17 - host: Microsoft Windows 11 Enterprise; Node `v24.16.0`;
+  Corepack pnpm `11.7.0`; implementation commit `f4ec623`.
+- `corepack pnpm install --frozen-lockfile` exited 0 with no lockfile change.
+- `corepack pnpm build` exited 0; root TypeScript build and Web Console Vite
+  production build passed.
+- `corepack pnpm typecheck` exited 0; production projects, test project, and Web
+  Console typecheck passed.
+- With `C:\Program Files\Git\usr\bin` prepended to the command `PATH`,
+  `corepack pnpm vitest run tests/contract/review
+  tests/contract/sqlite/investigation-review-store.test.ts
+  tests/component/review/concurrent-claim.test.ts
+  tests/e2e/web-console/review-conflict.test.ts
+  tests/contract/public-api/api-v1.test.ts` exited 0: 6 files, 67 passed,
+  0 failed, 0 skipped. Docker and PostgreSQL executed; no required suite skipped.
