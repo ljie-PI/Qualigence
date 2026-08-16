@@ -49,7 +49,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 6 OIDC signature verification | complete after PR review | The explicit local HTTP proxy restored the trusted TLS registry path; `jose` 6.2.9 is locked. Real RS256 and ES256/JWKS success paths pass, while tampering, unknown keys, disallowed algorithms, wrong claims, expiry, and unavailable JWKS fail before claim mapping. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
-| 21-22 CI/docs | pending | Task 21 release completion now waits for Tasks 19-20 plus all platform CI artifacts; its Task 6 dependency is complete. |
+| 21-22 CI/docs | pending with Windows RED captured | The current full Gate passes 858 tests, skips 2, and fails the four known Windows baseline files assigned to Task 21. Release completion still waits for Tasks 19-20 plus all platform CI artifacts. |
 
 ## Current verified baseline
 
@@ -2120,6 +2120,14 @@ git commit -m "feat(companion): run native windows desktop target"
 ---
 
 ### Task 21: Add real browser E2E, cross-platform CI, SBOM/provenance, and non-skippable release Gates
+
+**Execution status:** pending; current Windows RED captured. With Docker,
+Chromium, and Git OpenSSL available, the highest reviewed stack builds and runs
+the full suite: 136 files pass, 4 fail, with 858 tests passed, 4 failed, and 2
+skipped. The failures are exactly the four listed test files below (`/proc`,
+POSIX key mode, launcher SIGTERM timing, and an unclosed reopened SQLite handle).
+Do not treat the focused PR 0-3 Gates as a release Gate until this task closes
+those failures on Windows and Linux.
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
