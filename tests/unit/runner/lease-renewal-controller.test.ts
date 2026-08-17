@@ -227,8 +227,7 @@ describe("LeaseRenewalController", () => {
     const window = makeWindow();
     session.close = async () => {
       session.closeCalls += 1;
-      expect(window.mayStartAction()).toBe(true);
-      throw new Error("transport close failed");
+      return new Promise<void>(() => {});
     };
     const controller = new LeaseRenewalController({
       session,
@@ -244,7 +243,13 @@ describe("LeaseRenewalController", () => {
     await viWaitFor(() => expect(delay.waits).toEqual([20_000, 20_000]));
     delay.release();
 
-    await expect(running).rejects.toMatchObject({
+    let outcome: { readonly status: "rejected"; readonly error: unknown } | undefined;
+    running.catch((error: unknown) => {
+      outcome = { status: "rejected", error };
+    });
+    await viWaitFor(() => expect(outcome).toBeDefined());
+
+    expect(outcome?.error).toMatchObject({
       name: "LeaseRenewalTimeoutError",
       code: "LeaseRenewalTimeout",
       message: "lease renewal timed out after 20000ms",

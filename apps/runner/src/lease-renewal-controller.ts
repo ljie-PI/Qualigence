@@ -88,12 +88,16 @@ export class LeaseRenewalController {
       deadlineAbort.abort();
 
       if (result.kind === "timeout") {
-        try {
-          await this.deps.session.close();
-        } catch {
-          // Preserve the authoritative renewal timeout after best-effort transport cancellation.
-        }
-        this.fail(new LeaseRenewalTimeoutError(intervalMs));
+        const error = new LeaseRenewalTimeoutError(intervalMs);
+        this.deps.window.close();
+        this.deps.executionAbort.abort(error);
+        void Promise.resolve()
+          .then(() => this.deps.session.close())
+          .then(
+            () => ({ status: "fulfilled" as const }),
+            (closeError: unknown) => ({ status: "rejected" as const, error: closeError }),
+          );
+        throw error;
       }
       if (result.kind === "failed") this.fail(result.error);
       if (result.kind === "renewed") {

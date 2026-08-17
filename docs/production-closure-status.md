@@ -316,5 +316,22 @@ implementation_commit: `a28da60`
   closed, and even an `undefined` rejection propagates.
 - After the second-review fix, `corepack pnpm typecheck` and `git diff --check`
   exited 0. `verification` remains `not_run` pending final exact-head review.
+- 2026-08-17 third-review RED: `corepack pnpm vitest run
+  tests/unit/runner/lease-renewal-controller.test.ts` exited 1 with 1 failed and
+  4 passed tests. When renew and subsequent `session.close()` both never
+  settled, the renewal deadline fired but `run()` remained pending instead of
+  failing closed immediately.
+- 2026-08-17 third-review GREEN: with `C:\Program Files\Git\usr\bin` prepended
+  to `PATH` and `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
+  `corepack pnpm vitest run tests/unit/runner/lease-window.test.ts
+  tests/unit/runner/lease-renewal-controller.test.ts
+  tests/unit/runner/job-executor.test.ts
+  tests/component/core-runner/disconnect-recovery.test.ts` exited 0: 4 files,
+  21 passed, 0 failed, 0 skipped. Timeout now closes the action window and
+  aborts execution before fire-and-forget transport cleanup, then rejects with
+  the same stable `LeaseRenewalTimeout`; a hanging or late-rejecting close cannot
+  delay failure or create an unhandled rejection.
+- After the third-review fix, `corepack pnpm typecheck` and `git diff --check`
+  exited 0. `verification` remains `not_run` pending final exact-head review.
 - The final exact-head Standards and Spec/architecture reviews must pass before
   a post-merge closure changes `verification` to `passed`.
