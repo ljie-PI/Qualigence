@@ -1,24 +1,26 @@
 # Production closure status
 
-## SETUP-00 — Engineering context and review guidance (2026-08-17)
+## SETUP-00 — Engineering context, issue tracker, and review guidance (2026-08-17)
 
 component: complete
 production_wiring: missing
-verification: passed
+verification: not_run
 introducing_pr: SETUP-00 / `codex/pr-preflight-production-closure-plan`
 
-SETUP-00 is documentation-only engineering infrastructure. It adds the ignored
-project worktree location, GitHub Issue review-finding workflow, and
-multi-context navigation. It changes no product Composition Root, runtime
-behavior, migration, manifest, or lockfile.
+SETUP-00 establishes repository engineering infrastructure: the ignored
+project worktree location, GitHub Issue review-finding workflow, multi-context
+navigation, and stabilized baseline contract fixture execution under parallel
+load. It changes no product Composition Root, runtime behavior, migration,
+manifest, or lockfile.
 
 Evidence:
 
 - `git check-ignore -v .worktrees/probe` resolves through `.gitignore`.
-- `git diff --check` passed for the documentation diff.
-- Standards and Spec/architecture review passed against the exact fixed point
-  `7e2a33db145615e5436661185eb2bd6f0ec931d4...8e4d58ba9cbb9cc36002f1eeb90a2af679037986`
-  with zero Critical and zero Important findings.
+- `corepack pnpm test` passed with 139 passed files, 1 skipped (live), 894 passed tests, and 6 expected skips.
+- `corepack pnpm typecheck` passed without error.
+- `git diff --check` passed.
+- The final Standards and Spec/architecture review must record the exact base
+  and head SHA, commands, and result before this row changes to `passed`.
 
 ## Task 0 — Windows test quarantine (2026-08-16)
 

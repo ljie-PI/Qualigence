@@ -30,7 +30,7 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
   if (fixture === undefined) {
     throw new Error("PostgreSQL Review contract fixture was not initialized.");
   }
-  await fixture.resetReviewContractState();
+  await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
   const withRepository = <T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>) =>
     fixture.provider.withTenant("tenant-a", ({ db }) =>
       operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
@@ -92,12 +92,12 @@ describe("PostgreSQL review contract fixture", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    await fixture.resetReviewContractState();
+    await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
     await fixture.provider.withTenant("tenant-a", ({ db }) =>
       new PostgresReviewTaskRepository(db).create("tenant-a", reviewTask),
     );
 
-    await fixture.resetReviewContractState();
+    await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
 
     await expect(
       fixture.provider.withTenant("tenant-a", ({ db }) =>

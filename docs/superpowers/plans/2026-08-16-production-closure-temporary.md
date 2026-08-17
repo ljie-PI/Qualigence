@@ -289,6 +289,10 @@ open; Q stays visible until Task 21 restores all four tests on Windows and Linux
 - Create: `docs/contexts/storage/CONTEXT.md`
 - Create: `docs/contexts/windows/CONTEXT.md`
 - Modify: `.gitignore`
+- Modify: `vitest.config.ts`
+- Modify: `tests/helpers/server-fixture.ts`
+- Modify: `tests/contract/review/postgres-review-task-repository.test.ts`
+- Modify: `tests/component/local-launcher/start-stop.test.ts`
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
 - Modify: `docs/production-closure-status.md`
 
@@ -298,6 +302,7 @@ open; Q stays visible until Task 21 restores all four tests on Windows and Linux
 - Produces `CONTEXT-MAP.md` routing execution, product, protocol, intelligence, evidence, storage, deployment, and windows domains to `docs/contexts/*/CONTEXT.md`.
 - Produces eight domain `CONTEXT.md` files defining stable terms, ownership, seams, invariants, entrypoints, cited architecture/spec references, and verification commands.
 - Ignores `.worktrees/` in `.gitignore` without altering build manifests, runtime packages, lockfiles, or product code.
+- Stabilizes parallel test baseline execution by reusing provisioned PostgreSQL test fixtures across contract test runs and aligning supervisor test timeouts under full suite concurrency.
 
 - [ ] **Step 1: Write context, tracker, and ignore definitions**
 
