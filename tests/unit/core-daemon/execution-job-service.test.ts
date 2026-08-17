@@ -140,6 +140,7 @@ function batch(runId: string, first: number, events: TraceEvent[]): ExecutionEve
 }
 
 class BarrierTraceStore extends InMemoryTraceStore {
+  readonly entered: number[] = [];
   private barrier: Promise<void> = Promise.resolve();
   private releaseHold: (() => void) | undefined;
 
@@ -156,6 +157,7 @@ class BarrierTraceStore extends InMemoryTraceStore {
   }
 
   override async appendTraceEvent(event: TraceEvent) {
+    this.entered.push(event.sequenceNumber);
     await this.barrier;
     return super.appendTraceEvent(event);
   }
@@ -244,14 +246,18 @@ describe("CoreRunnerProtocolApplication", () => {
 
   it("returns LeaseLost for an expired lease and does not mint a new epoch", async () => {
     let now = 1_000;
-    const { application } = makeApplication({ now: () => now });
+    const { application, ownership } = makeApplication({ now: () => now });
     const session = await application.openSession(hello("runner-1"), identity1);
     const offer = await application.createOffer(session.sessionId, job("run-1"), ["target:web-playwright"]);
     const lease = await application.accept(session.sessionId, offer.offerId);
     now += welcome.leaseDurationMs + 1;
     await expect(application.renew(session.sessionId, lease)).rejects.toMatchObject({ code: "LeaseLost" });
     await expect(application.renew(session.sessionId, lease)).rejects.toMatchObject({ code: "LeaseLost" });
-    expect(lease.leaseEpoch).toBe(1);
+    expect(ownership.mayStartAction(lease)).toBe(false);
+    expect(ownership.ownerOf("run-1")).toEqual({
+      runnerId: "runner-1",
+      sessionId: session.sessionId,
+    });
   });
 
   it("rejects renew after completion and records a replayed completion once", async () => {
@@ -275,11 +281,16 @@ describe("CoreRunnerProtocolApplication", () => {
 
     store.startHold();
     const first = application.ingest(session.sessionId, batch("run-1", 1, [observationEvent("run-1", 1)]));
+    await expect.poll(() => store.entered.slice()).toEqual([1]);
     const second = application.ingest(session.sessionId, batch("run-1", 2, [observationEvent("run-1", 2)]));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.entered).toEqual([1]);
     expect(store.eventsFor("run-1")).toHaveLength(0);
     store.endHold();
     await expect(first).resolves.toMatchObject({ nextExpectedSequenceNumber: 2 });
     await expect(second).resolves.toMatchObject({ nextExpectedSequenceNumber: 3 });
+    expect(store.entered).toEqual([1, 2]);
     expect(store.eventsFor("run-1")).toHaveLength(2);
   });
 
@@ -295,6 +306,8 @@ describe("CoreRunnerProtocolApplication", () => {
     await expect(
       application.createOffer(interrupted.sessionId, job("run-2"), ["target:web-playwright"]),
     ).rejects.toMatchObject({ code: "UnknownSession" });
+    await application.closeSession(existing.sessionId);
+    expect(sessions.session(existing.sessionId)).toBeUndefined();
     expect(ownership.ownerOf("run-1")).toEqual({ runnerId: "runner-1", sessionId: existing.sessionId });
 
     const replacement = await application.openSession(hello("runner-2"), identity2);
