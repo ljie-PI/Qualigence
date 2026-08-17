@@ -105,4 +105,11 @@ export class ExecutionJobService {
   completionOf(runId: string): ExecutionCompletion | undefined {
     return this.completions.get(runId);
   }
+
+  leaseOf(runId: string): ExecutionJobLease | undefined {
+    for (const pending of this.offers.values()) {
+      if (pending.lease?.runId === runId) return pending.lease;
+    }
+    return undefined;
+  }
 }

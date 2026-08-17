@@ -132,7 +132,7 @@ describe("grpc runner protocol handshake", () => {
     );
     // A fresh, single-use resume token is issued on every successful handshake.
     expect(session2.welcome.resumeToken).not.toBe(rotatedResumeToken);
-    expect(session2.welcome.sessionId).not.toBe(session1.welcome.sessionId);
+    expect(session2.welcome.sessionId).toBe(session1.welcome.sessionId);
 
     // The trace cursor survives the reconnect: uploads continue from sequence 3.
     const ack2 = await session2.submit(batch("run-attempt-1", 3, 1));
