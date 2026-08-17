@@ -1297,20 +1297,20 @@ against the exact merge-base/head. Critical or Important findings block PR5.
 - Changes no runtime code, protocol schema, package manifest, lockfile,
   migration, or product Composition Root.
 
-- [ ] **Step 1: Record the packaging RED**
+- [x] **Step 1: Record the packaging RED**
 
 Record that the forensic 11-commit branch cannot merge under the current
 single-commit rule, and that Issues `#48`-`#51` are architecture-level
 admission/ownership/waiter defects rather than local patches.
 
-- [ ] **Step 2: Publish the delivery document and amend packaging only**
+- [x] **Step 2: Publish the delivery document and amend packaging only**
 
 Add `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`
 as the stacked-delivery authority. Update this plan's execution table,
 dependency order, PR table, Task 8-9 delivery steps, and Terra protocol
 without editing either Files union or public interface block.
 
-- [ ] **Step 3: Verify, commit, and review**
+- [x] **Step 3: Verify, commit, and review**
 
 Run `git diff --check`, update the status ledger, commit the three
 declared Files, and run both review axes against the exact merge-base and

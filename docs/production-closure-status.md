@@ -443,7 +443,7 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-r0-protocol-authority`
 date: 2026-08-17
-implementation_commits: pending
+implementation_commits: `d591f79`
 
 The forensic implementation branch `codex/pr5-core-protocol-application`
 at `230b6cd` is 11 commits ahead of `origin/main` and remains unpushed.
@@ -459,6 +459,6 @@ scope, or the ban on fake production composition.
 
 - Forensic head `230b6cd` is frozen as reference only. No cherry-pick of
   a whole commit is authorized.
-- `git diff --check` evidence is recorded after the implementation commit.
+- `git diff --check` exited 0 before commit `d591f79`.
 - Exact-head Standards and Spec/architecture reviews must pass before
   PR5-R1 starts.
