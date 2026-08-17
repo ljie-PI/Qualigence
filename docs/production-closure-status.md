@@ -4,7 +4,7 @@
 
 component: complete
 production_wiring: missing
-verification: passed
+verification: not_run
 introducing_pr: SETUP-00 / `codex/pr-preflight-production-closure-plan`
 
 SETUP-00 establishes repository engineering infrastructure: the ignored
@@ -19,9 +19,8 @@ Evidence:
 - `corepack pnpm test` passed with 139 passed files, 1 skipped (live), 894 passed tests, and 6 expected skips.
 - `corepack pnpm typecheck` passed without error.
 - `git diff --check` passed.
-- Standards and Spec/architecture review passed against the exact fixed point
-  `7e2a33db145615e5436661185eb2bd6f0ec931d4...305079957432f0363843bee66251a0c590e4452a`
-  with zero Critical and zero Important findings.
+- The GitHub PR must record Standards and Spec/architecture review against its
+  exact final head before a post-merge closure changes this row to `passed`.
 
 ## Task 0 — Windows test quarantine (2026-08-16)
 

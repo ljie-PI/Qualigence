@@ -14,6 +14,9 @@ import {
 let sharedContractFixture: Awaited<ReturnType<typeof setupServerFixture>> | undefined;
 
 beforeAll(async () => {
+  if (!dockerAvailable()) {
+    throw new Error("DockerUnavailable: Review repository PostgreSQL contract requires Docker.");
+  }
   sharedContractFixture = await setupServerFixture();
 }, 120_000);
 
