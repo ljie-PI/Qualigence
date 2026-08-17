@@ -490,7 +490,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r1-wire-client`
 date: 2026-08-17
 exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts`
-implementation_commits: pending
+implementation_commits: `7408edc`
 
 Adds the existing domain `ExecutionJobLease.leaseToken` to `RenewLease`,
 exports the renew mapper, maps application `LeaseLost` as a stable client
