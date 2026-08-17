@@ -254,8 +254,8 @@ verification: passed
 
 component: complete
 production_wiring: complete
-verification: passed
-implementation_commit: `PENDING (Task 7 commit)`
+verification: not_run
+implementation_commit: `a28da60`
 
 ### Runner lease renewal evidence log
 
@@ -284,3 +284,5 @@ implementation_commit: `PENDING (Task 7 commit)`
   newest lease token.
 - `corepack pnpm typecheck` exited 0 after the final implementation.
 - `git diff --check` exited 0 after the final implementation.
+- The final exact-head Standards and Spec/architecture reviews must pass before
+  a post-merge closure changes `verification` to `passed`.
