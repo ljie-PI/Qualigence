@@ -38,8 +38,6 @@ export interface ServerFixture {
   readonly container: StartedPostgres;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
-  /** Truncate the specified tables using the administrative connection. */
-  truncateTables(tables: readonly string[]): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -149,19 +147,6 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     provider,
     container,
     token,
-    async truncateTables(tables: readonly string[]) {
-      if (tables.length === 0) {
-        return;
-      }
-      const admin = new (await import("pg")).Client(adminConfig);
-      try {
-        await admin.connect();
-        const tableList = tables.map((t) => `"${t.replace(/"/g, '""')}"`).join(", ");
-        await admin.query(`TRUNCATE TABLE ${tableList}`);
-      } finally {
-        await admin.end().catch(() => undefined);
-      }
-    },
     async stop() {
       await app.close();
       await provider.close();

@@ -13,6 +13,24 @@ import {
 
 let sharedContractFixture: Awaited<ReturnType<typeof setupServerFixture>> | undefined;
 
+async function resetReviewContractState(
+  fixture: Awaited<ReturnType<typeof setupServerFixture>>,
+): Promise<void> {
+  const admin = new Client({
+    host: fixture.container.host,
+    port: fixture.container.port,
+    database: fixture.container.database,
+    user: fixture.container.superuser,
+    password: fixture.container.password,
+  });
+  try {
+    await admin.connect();
+    await admin.query("TRUNCATE TABLE review_resolutions, review_claims, review_tasks");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+}
+
 beforeAll(async () => {
   if (!dockerAvailable()) {
     throw new Error("DockerUnavailable: Review repository PostgreSQL contract requires Docker.");
@@ -33,7 +51,7 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
   if (fixture === undefined) {
     throw new Error("PostgreSQL Review contract fixture was not initialized.");
   }
-  await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
+  await resetReviewContractState(fixture);
   const withRepository = <T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>) =>
     fixture.provider.withTenant("tenant-a", ({ db }) =>
       operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
@@ -95,12 +113,12 @@ describe("PostgreSQL review contract fixture", () => {
       priority: "high",
       evidenceCompleteness: "limited",
     });
-    await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
+    await resetReviewContractState(fixture);
     await fixture.provider.withTenant("tenant-a", ({ db }) =>
       new PostgresReviewTaskRepository(db).create("tenant-a", reviewTask),
     );
 
-    await fixture.truncateTables(["review_resolutions", "review_claims", "review_tasks"]);
+    await resetReviewContractState(fixture);
 
     await expect(
       fixture.provider.withTenant("tenant-a", ({ db }) =>

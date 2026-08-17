@@ -312,7 +312,24 @@ Create `.gitignore` entry `.worktrees/`, `AGENTS.md`, `docs/agents/issue-tracker
 
 Run `git diff --check` and verify `git check-ignore -v .worktrees/probe`.
 
-- [ ] **Step 3: Run two-axis `/code-review`**
+- [ ] **Step 3: Stabilize and verify the required baseline Gate**
+
+Capture the failing full-suite hook/timeout behavior before changing the test
+harness. Reuse one provisioned PostgreSQL fixture across the Review provider
+contract while truncating only its three Review tables between cases. Keep
+trigger and race tests on isolated fixtures. Align the full-suite Vitest ceiling
+and the local supervisor exhaustion wait without weakening their behavior.
+
+Run:
+
+```bash
+corepack pnpm vitest run tests/contract/review/postgres-review-task-repository.test.ts tests/component/local-launcher/start-stop.test.ts tests/e2e/admin-cli.test.ts
+corepack pnpm test
+corepack pnpm typecheck
+git diff --check
+```
+
+- [ ] **Step 4: Run two-axis `/code-review`**
 
 Execute `/code-review` for Standards and Spec/architecture axes against the exact merge-base SHA. Resolve any Critical or Important findings with dedicated fix commits and re-review before merge.
 

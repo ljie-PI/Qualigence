@@ -36,4 +36,4 @@
 
 ## Verification
 
-Use `tests/unit/runner`, `tests/unit/core-daemon`, `tests/component/core-runner`, `tests/component/web-execution`, and Runner Protocol conformance tests.
+Run `corepack pnpm vitest run tests/unit/runner tests/unit/core-daemon tests/component/core-runner tests/component/web-execution tests/conformance/runner-protocol`.

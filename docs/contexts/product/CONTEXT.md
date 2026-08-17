@@ -35,4 +35,4 @@
 
 ## Verification
 
-Use domain unit tests, public API contracts, Web Console components, browser E2E, and product workflow tests.
+Run `corepack pnpm vitest run tests/unit/core-modules tests/contract/public-api tests/component/web-console tests/e2e/web-console`.

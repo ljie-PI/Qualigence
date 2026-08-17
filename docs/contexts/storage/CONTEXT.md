@@ -36,4 +36,4 @@
 
 ## Verification
 
-Use relational schema conformance, SQLite/PostgreSQL provider contracts, tenant isolation tests, and backup/restore E2E.
+Run `corepack pnpm vitest run tests/conformance/storage tests/contract/sqlite tests/contract/postgres tests/e2e/self-hosted/backup-restore.test.ts`.

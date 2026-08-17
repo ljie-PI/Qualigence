@@ -39,4 +39,4 @@
 
 ## Verification
 
-Use Local Launcher E2E, Self-hosted Compose/backup tests, Node entrypoint smoke, browser E2E, and release Gate scripts.
+Run `corepack pnpm vitest run tests/e2e/local-launcher.test.ts tests/e2e/self-hosted tests/e2e/web-console tests/smoke/node-entrypoints.test.ts`.

@@ -36,4 +36,4 @@
 
 ## Verification
 
-Use `tests/conformance/runner-protocol`, `tests/contract/runner-spool`, and `tests/component/core-runner`.
+Run `corepack pnpm vitest run tests/conformance/runner-protocol tests/contract/runner-spool tests/component/core-runner`.

@@ -36,4 +36,4 @@
 
 ## Verification
 
-Use Trace/Artifact contracts, Evidence crypto tests, offline capsule restoration, and S3/KMS tests.
+Run `corepack pnpm vitest run tests/contract/artifact-fs tests/contract/artifact-s3 tests/contract/evidence-crypto tests/contract/kms-self-hosted tests/component/investigation`.

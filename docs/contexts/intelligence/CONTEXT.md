@@ -35,4 +35,4 @@
 
 ## Verification
 
-Use Worker unit/component tests, PostgreSQL queue contracts, Result inbox tests, and application-model/investigation contracts.
+Run `corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/component/investigation`.

@@ -37,4 +37,4 @@
 
 ## Verification
 
-Use desktop contracts, Rust tests, Windows UIA components, observation conformance, and the manual checklist.
+Run `corepack pnpm vitest run tests/contract/desktop tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` and `corepack pnpm gate:companion`. Native completion also requires `docs/testing/windows-m3-manual-checklist.md`.
