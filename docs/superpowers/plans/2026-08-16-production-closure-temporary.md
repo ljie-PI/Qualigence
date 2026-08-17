@@ -290,7 +290,6 @@ open; Q stays visible until Task 21 restores all four tests on Windows and Linux
 - Create: `docs/contexts/windows/CONTEXT.md`
 - Modify: `.gitignore`
 - Modify: `vitest.config.ts`
-- Modify: `tests/helpers/server-fixture.ts`
 - Modify: `tests/contract/review/postgres-review-task-repository.test.ts`
 - Modify: `tests/component/local-launcher/start-stop.test.ts`
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
@@ -322,7 +321,9 @@ and the local supervisor exhaustion wait without weakening their behavior.
 
 Run:
 
-```bash
+```powershell
+$env:PATH = 'C:\Program Files\Git\usr\bin;' + $env:PATH
+$env:OPENSSL_CONF = 'C:\Program Files\Git\usr\ssl\openssl.cnf'
 corepack pnpm vitest run tests/contract/review/postgres-review-task-repository.test.ts tests/component/local-launcher/start-stop.test.ts tests/e2e/admin-cli.test.ts
 corepack pnpm test
 corepack pnpm typecheck
