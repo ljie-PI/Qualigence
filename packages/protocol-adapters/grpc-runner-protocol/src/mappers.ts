@@ -216,21 +216,16 @@ export function acceptOfferFromWire(wire: Wire): string {
 }
 
 export function renewLeaseToWire(lease: ExecutionJobLease): Wire {
-  return { job_id: lease.jobId, run_id: lease.runId, lease_epoch: lease.leaseEpoch };
-}
-
-export interface RenewLeaseRequest {
-  readonly jobId: string;
-  readonly runId: string;
-  readonly leaseEpoch: number;
-}
-
-export function renewLeaseFromWire(wire: Wire): RenewLeaseRequest {
   return {
-    jobId: asString(wire.job_id),
-    runId: asString(wire.run_id),
-    leaseEpoch: asNumber(wire.lease_epoch),
+    job_id: lease.jobId,
+    run_id: lease.runId,
+    lease_epoch: lease.leaseEpoch,
+    lease_token: lease.leaseToken,
   };
+}
+
+export function renewLeaseFromWire(wire: Wire): ExecutionJobLease {
+  return leaseFromWire(wire);
 }
 
 // --- TraceEvent / ExecutionEventBatch -------------------------------------

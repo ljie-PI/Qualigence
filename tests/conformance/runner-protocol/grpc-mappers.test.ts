@@ -22,6 +22,8 @@ import {
   leaseToWire,
   offerFromWire,
   offerToWire,
+  renewLeaseFromWire,
+  renewLeaseToWire,
   welcomeFromWire,
   welcomeToWire,
 } from "@qualigence/grpc-runner-protocol";
@@ -108,6 +110,21 @@ describe("grpc runner protocol mappers", () => {
       expiresAt: "2026-08-01T10:00:00.000Z",
     };
     expect(wireRoundTrip("ExecutionJobLease", leaseToWire, leaseFromWire, lease)).toEqual(lease);
+  });
+
+  it("round-trips the exact lease token in RenewLease", () => {
+    const lease: ExecutionJobLease = {
+      jobId: "job-1",
+      runId: "run-attempt-1",
+      leaseToken: "lease-secret",
+      leaseEpoch: 3,
+      expiresAt: "2026-08-01T10:00:00.000Z",
+    };
+    const back = wireRoundTrip("RenewLease", renewLeaseToWire, renewLeaseFromWire, lease);
+    expect(back.jobId).toBe(lease.jobId);
+    expect(back.runId).toBe(lease.runId);
+    expect(back.leaseEpoch).toBe(lease.leaseEpoch);
+    expect(back.leaseToken).toBe(lease.leaseToken);
   });
 
   it("round-trips an ExecutionEventBatch with trace events", () => {

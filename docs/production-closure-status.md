@@ -481,3 +481,29 @@ scope, or the ban on fake production composition.
 - Stop rule updated: five review rounds that still leave an Important
   finding open the GitHub PR without merge and post each remaining
   Important finding as a PR comment.
+
+## PR5-R1 - Task 8 wire and client waiter registry
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-r1-wire-client`
+date: 2026-08-17
+exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts`
+implementation_commits: `7408edc`
+
+Adds the existing domain `ExecutionJobLease.leaseToken` to `RenewLease`,
+exports the renew mapper, maps application `LeaseLost` as a stable client
+error code, and shares one waiter for a duplicate in-flight
+`correlationId`. Production Core/gRPC composition stays pre-activation.
+
+RED: the focused Gate failed 3 of 20 tests because `RenewLease` lacked
+`lease_token`, the renew mapper was not exported, and a second renew with
+the same correlation id overwrote the waiter.
+
+GREEN: the same command passed 3 files and 20 tests. `corepack pnpm
+smoke:node-imports` and `corepack pnpm typecheck` exited 0. `git
+diff --check` evidence is recorded after the implementation commit.
+
+Exact-head Standards and Spec/architecture reviews must pass before
+PR5-R2 starts.

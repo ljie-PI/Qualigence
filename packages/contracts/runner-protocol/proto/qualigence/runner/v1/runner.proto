@@ -178,6 +178,7 @@ message RenewLease {
   string job_id = 1;
   string run_id = 2;
   uint64 lease_epoch = 3;
+  string lease_token = 4;
 }
 
 // The strongly typed domain payload is canonical JSON whose SHA-256 is
