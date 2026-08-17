@@ -29,7 +29,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
 - Do not modify historical migration files 001-005. New relational state uses migration 006 or later.
 - Do not silently skip a required Gate. Report an explicit environmental block such as `ChromiumUnavailable`, `OpenSslUnavailable`, `DockerUnavailable`, `CargoUnavailable`, or `Windows11Unavailable`. The only temporary exception is Prerequisite Q: exactly four named individual tests may use Windows-only `it.skipIf`; each skip must carry the exact Task 21 removal marker and remains release-blocking.
-- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
+- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. The sole exception is the explicitly reviewed PR5-ATOMIC boundary: Tasks 8-9 retain separate RED evidence but share one commit because Task 8's required interface has no valid production caller until Task 9 composes it. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
 - A Terra worker executes one task per fresh context. It must read every file in the task's **Files** block before editing and must not edit files outside that block without stopping for review.
 - At the end of every task, update `docs/production-closure-status.md` in the same task commit with `component`, `production_wiring`, `verification`, exact command, date, and commit. Never use the ignored SDD ledger as the only completion evidence.
 - Preserve unrelated user changes. Never reset, checkout, or overwrite a dirty file to match this plan.
@@ -137,11 +137,11 @@ Task 15
 
 The 22 implementation tasks plus Prerequisite Q, the P0 build prerequisite,
 SETUP-00, PR5-SCOPE, and PR5-ATOMIC ship as 22 reviewable pull requests: five
-independently reviewed prerequisites and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
+independently reviewed prerequisites and 17 product/release PRs. Each implementation Task has its own commit except the explicitly reviewed PR5-ATOMIC exception. “Three PRs through Task 6” means Product PRs 1-3;
 the ordered merge queue through Task 6 contains five GitHub PRs because Q and
 P0 may not be absorbed into a product diff. A pull request may contain more
 than one task only where the tasks form one architectural boundary or one
-evidence-producing release unit. Every task still has its own commit, focused
+evidence-producing release unit. Except for PR5-ATOMIC, every task has its own commit, focused
 RED/GREEN evidence, status-ledger update, and completion marker.
 
 PRs are stacked in the order below. A stacked PR targets the immediately
@@ -1179,6 +1179,50 @@ git commit -m "docs(plan): repair tasks 8 and 9 implementation scope"
 Run Standards and Spec/architecture `/code-review` against the exact merge-base
 and committed head. Critical or Important findings block Tasks 8-9; each fix is
 a new commit followed by `git diff --check` and a fresh two-axis review.
+
+---
+
+### Task PR5-ATOMIC: Make Tasks 8-9 one compilable delivery unit
+
+**Execution status:** in_progress. Task 8 product edits are uncommitted and
+blocked at root typecheck until Task 9 supplies the required production caller.
+
+**Files:**
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Defines the sole exception to the per-Task commit rule: Tasks 8-9 keep separate RED evidence but share one final commit, joint Gate, and exact-head review.
+- Forbids a compatibility default, insecure fallback, or temporary fake in the production Core composition.
+- Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
+
+- [ ] **Step 1: Record the atomicity RED**
+
+Record Task 8's valid transport RED and the root typecheck errors showing that
+required `application` and `authenticator` have no production caller until Task
+9. Confirm no Task 8 product commit exists.
+
+- [ ] **Step 2: Amend global and local delivery rules**
+
+Add the single named exception to Global Constraints and the PR delivery plan.
+Update Tasks 8-9 to require one union commit and joint Gate while retaining each
+Task's Files and RED behavior.
+
+- [ ] **Step 3: Verify and commit**
+
+Run `git diff --check`, update the status ledger with date, commands, and commit,
+then commit both declared Files:
+
+```bash
+git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
+git commit -m "docs(plan): make tasks 8 and 9 one compilable unit"
+```
+
+- [ ] **Step 4: Review the committed fixed point**
+
+Run both review axes against the exact merge-base and committed head. Critical
+or Important findings require a new fix commit, `git diff --check`, and a fresh
+two-axis review before Tasks 8-9 resume.
 
 ---
 
