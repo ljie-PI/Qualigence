@@ -507,3 +507,30 @@ diff --check` evidence is recorded after the implementation commit.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R2 starts.
+
+## PR5-R2 - Neutral runner-control port and lifecycle-module move
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-r2-neutral-authority`
+date: 2026-08-17
+exact_command: `corepack pnpm vitest run tests/unit/core-daemon`
+implementation_commits: pending
+
+Adds `@qualigence/runner-control` with the Task 8
+`RunnerProtocolApplication` and required `AuthenticatedRunnerContext.scope`.
+Moves the four Core lifecycle services into `@qualigence/core-application`
+and re-exports the previous Core Daemon paths. Production `main.ts` stays
+pre-activation.
+
+RED: the four moved-service unit files failed to construct
+`RunOwnershipService` / `RunnerResumeTokenService` from
+`@qualigence/core-application` before the package exported them.
+
+GREEN: `corepack pnpm vitest run tests/unit/core-daemon` passed 5 files
+and 25 tests. `corepack pnpm smoke:node-imports` and
+`corepack pnpm typecheck` exited 0.
+
+Exact-head Standards and Spec/architecture reviews must pass before
+PR5-R3 starts.

@@ -7,7 +7,7 @@ import type {
   RunnerCapabilities,
 } from "@qualigence/runner-protocol";
 import { negotiateCapabilities } from "@qualigence/runner-protocol";
-import { CoreDaemonError } from "../errors.js";
+import { CoreApplicationError } from "./core-runner-protocol-application.js";
 import type { LeaseOwner, RunOwnershipService } from "./run-ownership-service.js";
 
 export interface ExecutionJobServiceOptions {
@@ -60,7 +60,7 @@ export class ExecutionJobService {
   offer(request: OfferRequest): ExecutionJobOffer {
     const negotiation = negotiateCapabilities(request.capabilities, request.requiredCapabilities);
     if (negotiation.outcome === "rejected") {
-      throw new CoreDaemonError("CapabilityMismatch", "runner is missing required capabilities", {
+      throw new CoreApplicationError("CapabilityMismatch", "runner is missing required capabilities", {
         details: { missingCapabilities: negotiation.rejection.missingCapabilities },
       });
     }
@@ -79,7 +79,7 @@ export class ExecutionJobService {
   accept(offerId: string): ExecutionJobLease {
     const pending = this.offers.get(offerId);
     if (pending === undefined) {
-      throw new CoreDaemonError("UnknownOffer", `offer ${offerId} is not known`);
+      throw new CoreApplicationError("UnknownOffer", `offer ${offerId} is not known`);
     }
     if (pending.lease !== undefined) {
       return pending.lease;

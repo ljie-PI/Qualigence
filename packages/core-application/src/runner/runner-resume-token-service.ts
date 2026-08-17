@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { CoreDaemonError } from "../errors.js";
+import { CoreApplicationError } from "./core-runner-protocol-application.js";
 
 /**
  * The identity and protocol context a resume credential is bound to when it is
@@ -90,17 +90,17 @@ export class RunnerResumeTokenService {
     const record = this.records.get(hash);
     this.records.delete(hash);
     if (record === undefined) {
-      throw new CoreDaemonError("RunnerResumeRejected", "unknown or already-consumed resume token");
+      throw new CoreApplicationError("RunnerResumeRejected", "unknown or already-consumed resume token");
     }
     if (record.expiresAtMs <= this.now()) {
-      throw new CoreDaemonError("RunnerResumeRejected", "resume token has expired");
+      throw new CoreApplicationError("RunnerResumeRejected", "resume token has expired");
     }
     if (
       !constantTimeEquals(record.binding.runnerId, presented.runnerId) ||
       !constantTimeEquals(record.binding.certificateFingerprint, presented.certificateFingerprint) ||
       record.binding.protocolMajor !== presented.protocolMajor
     ) {
-      throw new CoreDaemonError("RunnerResumeRejected", "resume token identity binding does not match");
+      throw new CoreApplicationError("RunnerResumeRejected", "resume token identity binding does not match");
     }
     return record.binding;
   }

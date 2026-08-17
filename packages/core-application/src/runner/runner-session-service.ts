@@ -9,8 +9,8 @@ import type {
   RunnerWelcome,
 } from "@qualigence/runner-protocol";
 import { negotiateProtocolMajor } from "@qualigence/runner-protocol";
-import type { AuthenticatedRunnerIdentity } from "@qualigence/grpc-runner-protocol";
-import { CoreDaemonError } from "../errors.js";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import { CoreApplicationError } from "./core-runner-protocol-application.js";
 import type { RunnerResumeTokenService } from "./runner-resume-token-service.js";
 import type { RunOwnershipService } from "./run-ownership-service.js";
 
@@ -35,7 +35,7 @@ export interface RunnerSessionServiceOptions {
 
 export interface RunnerSessionRecord {
   readonly sessionId: string;
-  readonly identity: AuthenticatedRunnerIdentity;
+  readonly identity: AuthenticatedRunnerContext;
   readonly capabilities: RunnerCapabilities;
   readonly protocolMajor: number;
 }
@@ -69,10 +69,10 @@ export class RunnerSessionService {
    * resume token is unknown, expired, consumed, or bound to a different identity.
    * A fresh single-use resume token is issued on every successful handshake.
    */
-  register(hello: RunnerHello, identity: AuthenticatedRunnerIdentity): RunnerWelcome {
+  register(hello: RunnerHello, identity: AuthenticatedRunnerContext): RunnerWelcome {
     const negotiation = negotiateProtocolMajor(hello.supportedProtocolMajors);
     if (negotiation.outcome === "rejected") {
-      throw new CoreDaemonError("ProtocolVersionMismatch", "no shared protocol major", {
+      throw new CoreApplicationError("ProtocolVersionMismatch", "no shared protocol major", {
         details: {
           offeredProtocolMajors: negotiation.rejection.offeredProtocolMajors,
           supportedProtocolMajors: negotiation.rejection.supportedProtocolMajors,
@@ -133,7 +133,7 @@ export class RunnerSessionService {
   async ingest(sessionId: string, batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
     const session = this.sessions.get(sessionId);
     if (session === undefined) {
-      throw new CoreDaemonError("UnknownSession", `session ${sessionId} is not known`);
+      throw new CoreApplicationError("UnknownSession", `session ${sessionId} is not known`);
     }
     if (this.ownership !== undefined) {
       this.ownership.authorizeTraceUpload(session.identity, batch);
@@ -162,7 +162,7 @@ export class RunnerSessionService {
           };
         case "hash_mismatch":
         case "integrity_violation":
-          throw new CoreDaemonError(
+          throw new CoreApplicationError(
             "TraceIntegrityViolation",
             `trace integrity violation at sequence ${event.sequenceNumber} for run ${batch.runId}`,
             { details: { runId: batch.runId, sequenceNumber: event.sequenceNumber } },

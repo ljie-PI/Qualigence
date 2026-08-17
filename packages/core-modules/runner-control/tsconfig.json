@@ -9,7 +9,6 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
-    { "path": "../../contracts/runner-protocol" },
-    { "path": "../../core-modules/runner-control" }
+    { "path": "../../contracts/runner-protocol" }
   ]
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
-import { RunOwnershipService } from "../../../apps/core-daemon/src/runner/run-ownership-service.js";
+import { RunOwnershipService } from "@qualigence/core-application";
 
 function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
   return {
@@ -101,14 +101,14 @@ describe("RunOwnershipService", () => {
 
     expect(() =>
       ownership.authorizeTraceUpload(
-        { runnerId: "runner-1", certificateFingerprint: "fp-1" },
+        { runnerId: "runner-1", certificateFingerprint: "fp-1", scope: { kind: "local" } },
         batch("run-1"),
       ),
     ).not.toThrow();
 
     expect(() =>
       ownership.authorizeTraceUpload(
-        { runnerId: "runner-2", certificateFingerprint: "fp-2" },
+        { runnerId: "runner-2", certificateFingerprint: "fp-2", scope: { kind: "local" } },
         batch("run-1"),
       ),
     ).toThrowError(expect.objectContaining({ code: "RunOwnershipViolation" }));

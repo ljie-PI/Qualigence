@@ -267,14 +267,14 @@ describe("core/runner disconnect recovery Gate", () => {
 
     expect(() =>
       ownership.authorizeTraceUpload(
-        { runnerId: "runner-2", certificateFingerprint: "fp-runner-2" },
+        { runnerId: "runner-2", certificateFingerprint: "fp-runner-2", scope: { kind: "local" } },
         batch,
       ),
     ).toThrowError(/may not upload Trace/);
     // The rightful owner is still allowed to upload its own run's trace.
     expect(() =>
       ownership.authorizeTraceUpload(
-        { runnerId: "runner-1", certificateFingerprint: "fp-runner-1" },
+        { runnerId: "runner-1", certificateFingerprint: "fp-runner-1", scope: { kind: "local" } },
         batch,
       ),
     ).not.toThrow();

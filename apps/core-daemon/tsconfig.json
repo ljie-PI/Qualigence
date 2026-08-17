@@ -13,6 +13,7 @@
     { "path": "../../packages/contracts/runner-protocol" },
     { "path": "../../packages/runner-kernel" },
     { "path": "../../packages/core-modules/evidence" },
+    { "path": "../../packages/core-application" },
     { "path": "../../packages/storage-providers/artifact-fs" },
     { "path": "../../packages/storage-providers/sqlite-runtime" },
     { "path": "../../packages/protocol-adapters/in-memory-runner-protocol" },

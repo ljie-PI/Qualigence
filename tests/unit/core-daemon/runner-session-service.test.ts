@@ -6,13 +6,23 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import { canonicalTraceEventHash, capabilities } from "@qualigence/runner-protocol";
-import type { AuthenticatedRunnerIdentity } from "@qualigence/grpc-runner-protocol";
-import { RunnerSessionService } from "../../../apps/core-daemon/src/runner/runner-session-service.js";
-import { RunnerResumeTokenService } from "../../../apps/core-daemon/src/runner/runner-resume-token-service.js";
-import { RunOwnershipService } from "../../../apps/core-daemon/src/runner/run-ownership-service.js";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import {
+  RunnerResumeTokenService,
+  RunnerSessionService,
+  RunOwnershipService,
+} from "@qualigence/core-application";
 
-const identity1: AuthenticatedRunnerIdentity = { runnerId: "runner-1", certificateFingerprint: "fp-1" };
-const identity2: AuthenticatedRunnerIdentity = { runnerId: "runner-2", certificateFingerprint: "fp-2" };
+const identity1: AuthenticatedRunnerContext = {
+  runnerId: "runner-1",
+  certificateFingerprint: "fp-1",
+  scope: { kind: "local" },
+};
+const identity2: AuthenticatedRunnerContext = {
+  runnerId: "runner-2",
+  certificateFingerprint: "fp-2",
+  scope: { kind: "local" },
+};
 
 const welcome = {
   serverVersion: "0.1.0",

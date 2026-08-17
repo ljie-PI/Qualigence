@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RunnerResumeTokenService } from "../../../apps/core-daemon/src/runner/runner-resume-token-service.js";
+import { RunnerResumeTokenService } from "@qualigence/core-application";
 
 function fixedClock(start = 1_000): { now: () => number; advance: (ms: number) => void } {
   let current = start;

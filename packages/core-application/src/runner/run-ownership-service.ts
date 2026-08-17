@@ -4,9 +4,9 @@ import type {
   ExecutionJobLease,
   TargetRef,
 } from "@qualigence/runner-protocol";
-import type { AuthenticatedRunnerIdentity } from "@qualigence/grpc-runner-protocol";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
 import type { ExecutionEventBatch } from "@qualigence/runner-protocol";
-import { CoreDaemonError } from "../errors.js";
+import { CoreApplicationError } from "./core-runner-protocol-application.js";
 
 /** The single Runner that owns a Run, captured at lease grant time. */
 export interface LeaseOwner {
@@ -82,7 +82,7 @@ export class RunOwnershipService {
   grant(job: AcceptedExecutionJob, owner: LeaseOwner): ExecutionJobLease {
     const existing = this.records.get(job.runId);
     if (existing !== undefined) {
-      throw new CoreDaemonError(
+      throw new CoreApplicationError(
         "RunOwnershipViolation",
         `run ${job.runId} already has an owner and is never re-granted`,
         { details: { runId: job.runId } },
@@ -167,7 +167,7 @@ export class RunOwnershipService {
   createRecoveryRun(lostRunId: string): AcceptedExecutionJob {
     const record = this.records.get(lostRunId);
     if (record === undefined) {
-      throw new CoreDaemonError("UnknownRun", `run ${lostRunId} is not known`, {
+      throw new CoreApplicationError("UnknownRun", `run ${lostRunId} is not known`, {
         details: { runId: lostRunId },
       });
     }
@@ -193,15 +193,15 @@ export class RunOwnershipService {
    * may upload Trace for a run — even after its lease is lost — so a second
    * Runner can never replay or forge Trace for another Runner's run.
    */
-  authorizeTraceUpload(identity: AuthenticatedRunnerIdentity, batch: ExecutionEventBatch): void {
+  authorizeTraceUpload(identity: AuthenticatedRunnerContext, batch: ExecutionEventBatch): void {
     const record = this.records.get(batch.runId);
     if (record === undefined) {
-      throw new CoreDaemonError("RunOwnershipViolation", `run ${batch.runId} has no owner`, {
+      throw new CoreApplicationError("RunOwnershipViolation", `run ${batch.runId} has no owner`, {
         details: { runId: batch.runId },
       });
     }
     if (!constantTimeEquals(record.owner.runnerId, identity.runnerId)) {
-      throw new CoreDaemonError(
+      throw new CoreApplicationError(
         "RunOwnershipViolation",
         `runner ${identity.runnerId} may not upload Trace for run ${batch.runId} owned by ${record.owner.runnerId}`,
         { details: { runId: batch.runId, ownerRunnerId: record.owner.runnerId } },
@@ -220,7 +220,7 @@ export class RunOwnershipService {
   private requireLiveOwnershipForToken(lease: ExecutionJobLease): OwnershipRecord {
     const record = this.records.get(lease.runId);
     if (record === undefined) {
-      throw new CoreDaemonError("LeaseLost", `run ${lease.runId} has no active lease`, {
+      throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no active lease`, {
         details: { runId: lease.runId },
       });
     }
@@ -229,13 +229,13 @@ export class RunOwnershipService {
       record.leaseEpoch !== lease.leaseEpoch ||
       !constantTimeEquals(record.leaseTokenHash, hashToken(lease.leaseToken))
     ) {
-      throw new CoreDaemonError("LeaseLost", `lease for run ${lease.runId} is no longer valid`, {
+      throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is no longer valid`, {
         details: { runId: lease.runId },
       });
     }
     if (record.expiresAtMs <= this.now()) {
       record.lost = true;
-      throw new CoreDaemonError("LeaseLost", `lease for run ${lease.runId} has expired`, {
+      throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} has expired`, {
         details: { runId: lease.runId },
       });
     }

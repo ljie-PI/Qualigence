@@ -9,6 +9,9 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../contracts/runner-protocol" },
+    { "path": "../core-modules/evidence" },
+    { "path": "../core-modules/runner-control" },
     { "path": "../core-modules/intelligence" },
     { "path": "../storage-providers/postgres-runtime" },
     { "path": "../shared-kernel" }
