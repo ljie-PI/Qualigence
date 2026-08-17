@@ -203,9 +203,12 @@ describe("Core runner protocol production composition", () => {
     const session2 = await client2.connect(makeHello("runner-1", { resumeToken }));
     expect(session2.welcome.sessionId).toBe(session1.welcome.sessionId);
     expect(session2.welcome.resumeToken).not.toBe(resumeToken);
-    const renewed = await session2.renew(lease);
-    expect(renewed.leaseEpoch).toBe(lease.leaseEpoch);
-    expect(renewed.leaseToken).toBe(lease.leaseToken);
+    expect(lease.leaseEpoch).toBe(1);
     expect((await session2.submit(batch(original))).nextExpectedSequenceNumber).toBe(2);
+    const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
+    await session2.complete(lease, completion);
+    await expect.poll(() => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
+    const renewed = await session2.renew(lease).catch((error: unknown) => error);
+    expect(renewed).toMatchObject({ code: "LeaseLost" });
   });
 });

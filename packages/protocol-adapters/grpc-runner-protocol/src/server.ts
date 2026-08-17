@@ -469,13 +469,17 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     }
     if (frame.complete_execution !== undefined) {
       const completion = completionFromWire(frame.complete_execution as Record<string, unknown>);
-      const lease = this.lastLeases.get(completion.runId) ?? {
-        jobId: completion.jobId,
-        runId: completion.runId,
-        leaseToken: "",
-        leaseEpoch: 0,
-        expiresAt: new Date(0).toISOString(),
-      };
+      const lease = this.lastLeases.get(completion.runId);
+      if (lease === undefined) {
+        await this.application.complete(this.sessionId, {
+          jobId: completion.jobId,
+          runId: completion.runId,
+          leaseToken: "",
+          leaseEpoch: 0,
+          expiresAt: new Date(0).toISOString(),
+        }, completion);
+        return;
+      }
       await this.application.complete(this.sessionId, lease, completion);
     }
   }

@@ -126,7 +126,11 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   ): Promise<void> {
     return this.serialize(() => {
       this.requireOwner(sessionId, lease.runId);
-      this.jobs.complete(lease, completion);
+      const held = this.jobs.leaseOf(lease.runId);
+      if (held === undefined) {
+        throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no accepted lease`);
+      }
+      this.jobs.complete(held, completion);
     });
   }
 

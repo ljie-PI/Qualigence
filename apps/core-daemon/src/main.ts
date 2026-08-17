@@ -13,7 +13,7 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 import { TraceIngestor } from "@qualigence/evidence";
-import { SqliteRuntime, SqliteTraceStore } from "@qualigence/sqlite-runtime";
+import { SqliteRunStore, SqliteRuntime, SqliteTraceStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
 
 export interface StartedCoreDaemon {
@@ -36,6 +36,7 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     busyTimeoutMs: 5_000,
   });
   const traceStore = new SqliteTraceStore(runtime);
+  const runStore = new SqliteRunStore(runtime);
   const ownership = new RunOwnershipService({ leaseDurationMs: config.leaseDurationMs });
   const jobs = new ExecutionJobService(ownership, { leaseDurationMs: config.leaseDurationMs });
   const sessions = new RunnerSessionService({
@@ -57,26 +58,16 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     jobs,
     ownership,
     recordRun: async (job) => {
-      const existing = await runtime.db
-        .selectFrom("execution_runs")
-        .select("run_id")
-        .where("run_id", "=", job.runId)
-        .executeTakeFirst();
-      if (existing !== undefined) return;
-      await runtime.db
-        .insertInto("execution_runs")
-        .values({
-          run_id: job.runId,
-          job_id: job.jobId,
-          target_kind: job.target.kind,
-          objective: job.objective,
-          status: "running",
-          next_sequence_number: 1,
-          created_at: new Date().toISOString(),
-          completed_at: null,
-          error_code: null,
-        })
-        .execute();
+      if ((await runStore.get(job.runId)) !== undefined) return;
+      await runStore.create({
+        runId: job.runId,
+        jobId: job.jobId,
+        targetKind: job.target.kind,
+        objective: job.objective,
+        status: "running",
+        nextSequenceNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
     },
   });
   const server = new GrpcRunnerProtocolServer({
