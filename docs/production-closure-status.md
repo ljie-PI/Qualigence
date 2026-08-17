@@ -543,7 +543,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r3-grpc-stream-shell`
 date: 2026-08-17
 exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
-implementation_commits: pending
+implementation_commits: `b95a7ba`
 
 Adds a bounded handshake/frame mailbox, fail-stop overflow, connection
 generation fencing, atomic same-runner admission, and a shared shutdown
