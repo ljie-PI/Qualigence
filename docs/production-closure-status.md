@@ -543,7 +543,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r3-grpc-stream-shell`
 date: 2026-08-17
 exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
-implementation_commits: `b95a7ba`
+implementation_commits: `b95a7ba`, `07a8974`, `9f52a34`, `e8cdc56`
 
 Adds a bounded handshake/frame mailbox, fail-stop overflow, connection
 generation fencing, atomic same-runner admission, and a shared shutdown
@@ -562,6 +562,20 @@ deterministic test, and shutdown did not cover in-flight Trace. The
 follow-up makes handshake admission asynchronous, fail-stops an
 overflowed handshake mailbox with `ProtocolViolation`, ignores
 old-generation frames, and fails closed an in-flight Trace submit.
+
+Round 2 still left Important fencing, live-mailbox, and
+shutdown-completion gaps. `9f52a34` made resume replace the live
+generation and added mailbox/shutdown coverage. Round 3 found Important
+adapter completion state and a `handleFrame` that still advanced the
+shared Trace cursor after await. `e8cdc56` re-checks generation after
+the yield, drops the completion store, and holds a live stale batch
+across resume so the cursor stays at 1.
+
+Round-4 exact-head Standards and Spec/architecture reviews against
+`f9d47c566325d125a76628d31ff1863e014c0317...e8cdc56766bda396c989cc546e5feb6f6c7baa5c`
+reported no Critical or Important findings. The remaining completion
+observation gap is Minor because `complete()` is fire-and-forget and R3
+must not add adapter completion authority.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R4 starts.
