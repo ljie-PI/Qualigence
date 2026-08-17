@@ -4,7 +4,8 @@ import { GrpcRunnerProtocolClient } from "@qualigence/grpc-runner-protocol";
 import type { GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
-import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
+import { eventBatchToWire, helloToWire } from "@qualigence/grpc-runner-protocol";
+import { makeHello, makeRawTestStream, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
 
 let pki: GrpcTestPki;
 
@@ -218,5 +219,71 @@ describe("grpc runner protocol handshake", () => {
     const second = session.renew(lease);
     expect(second).toBe(first);
     await expect(first).resolves.toMatchObject({ jobId: "job-1", runId: "run-attempt-1" });
+  });
+
+  it("rejects a duplicate active runner session and keeps the original connection", async () => {
+    const { server, port } = await startTestServer(pki);
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, port, cert);
+    const client2 = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      await client1.close();
+      await client2.close();
+      await server.shutdown();
+    });
+    await client1.connect(makeHello("runner-1"));
+    const original = await server.waitForConnection("runner-1");
+
+    await expect(client2.connect(makeHello("runner-1"))).rejects.toMatchObject({
+      code: "RunnerAlreadyConnected",
+    });
+    expect(server.connection("runner-1")).toBe(original);
+  });
+
+  it("fails stop a handshake mailbox that exceeds the pending-frame limit", async () => {
+    const { server, port } = await startTestServer(pki, {
+      welcome: {
+        serverVersion: "0.1.0",
+        heartbeatIntervalMs: 5_000,
+        leaseDurationMs: 30_000,
+        traceBatchMaximumEvents: 128,
+        traceBatchMaximumBytes: 262_144,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 64,
+      },
+      maximumHandshakePendingFrames: 1,
+    });
+    const raw = makeRawTestStream(pki, port, pki.clientFor("runner-1"));
+    cleanups.push(async () => {
+      raw.close();
+      await server.shutdown();
+    });
+    raw.stream.write({ correlation_id: "hello", hello: helloToWire(makeHello("runner-1")) });
+    raw.stream.write({ correlation_id: "batch-1", event_batch: eventBatchToWire(batch("run-1", 1, 1)) });
+    raw.stream.write({ correlation_id: "batch-2", event_batch: eventBatchToWire(batch("run-1", 2, 1)) });
+    await expect.poll(() => server.connection("runner-1")).toBeUndefined();
+  });
+
+  it("shares one shutdown promise and fails closed in-flight offers", async () => {
+    const { server, port } = await startTestServer(pki);
+    const waiting = server.waitForConnection("never-connects");
+    const client = makeTestClient(pki, port, pki.clientFor("runner-1"));
+    const session = await client.connect(makeHello("runner-1"));
+    const connection = await server.waitForConnection("runner-1");
+    const offering = connection.offer({
+      jobId: "job-race",
+      runId: "run-race",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "race shutdown",
+    }, []);
+
+    const first = server.shutdown();
+    const second = server.shutdown();
+    expect(second).toBe(first);
+    await expect(waiting).rejects.toMatchObject({ code: "SessionClosed" });
+    await expect(offering).rejects.toMatchObject({ code: "SessionClosed" });
+    await first;
+    await expect(session.submit(batch("run-1", 1, 1))).rejects.toMatchObject({ code: "SessionClosed" });
+    await client.close();
   });
 });

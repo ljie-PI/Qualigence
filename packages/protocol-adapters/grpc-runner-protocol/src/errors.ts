@@ -7,6 +7,7 @@ export type RunnerProtocolErrorCode =
   | "ProtocolVersionMismatch"
   | "CapabilityMismatch"
   | "RunnerIdentityMismatch"
+  | "RunnerAlreadyConnected"
   | "TlsPeerRejected"
   | "ResumeRejected"
   | "LeaseLost"
