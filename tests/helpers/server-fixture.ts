@@ -38,6 +38,8 @@ export interface ServerFixture {
   readonly container: StartedPostgres;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
+  /** Remove only Review contract state while retaining the provisioned fixture. */
+  resetReviewContractState(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -147,6 +149,15 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     provider,
     container,
     token,
+    async resetReviewContractState() {
+      const admin = new (await import("pg")).Client(adminConfig);
+      try {
+        await admin.connect();
+        await admin.query("TRUNCATE TABLE review_resolutions, review_claims, review_tasks");
+      } finally {
+        await admin.end().catch(() => undefined);
+      }
+    },
     async stop() {
       await app.close();
       await provider.close();
