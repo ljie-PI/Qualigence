@@ -444,7 +444,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r0-protocol-authority`
 date: 2026-08-17
 exact_command: `git diff --check`
-implementation_commits: `d591f79`, `673540d`, `ac35b12`, `21d210d`
+implementation_commits: `d591f79`, `673540d`, `ac35b12`, `21d210d`, `42f036d`
 
 The forensic implementation branch `codex/pr5-core-protocol-application`
 at `230b6cd` is 11 commits ahead of `origin/main` and remains unpushed.
@@ -475,5 +475,7 @@ scope, or the ban on fake production composition.
   `Prepared` to in-process `AcceptReserved`. R4 in-process tests live
   under that existing unit path; `core-composition.test.ts` remains the
   PR5-R5 activation Gate.
-- Fresh exact-head Standards and Spec/architecture reviews must pass
-  before PR5-R1 starts.
+- Third exact-head reviews against
+  `d562f8d31fadaf6154f09522ad754e7e03d3eb85...42f036d813d98df47cede3aa380e4e503ea6605a`
+  reported no Critical or Important findings. PR5-R1 stays blocked until
+  this PR merges.
