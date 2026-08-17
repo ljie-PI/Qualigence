@@ -556,5 +556,12 @@ cases because a second Hello replaced the live connection and each
 GREEN: the named R3 Gate plus proto-schema passed. `corepack pnpm
 smoke:node-imports` and `corepack pnpm typecheck` exited 0.
 
+First exact-head Spec review found three Important findings: the
+handshake mailbox was unreachable, generation fencing had no
+deterministic test, and shutdown did not cover in-flight Trace. The
+follow-up makes handshake admission asynchronous, fail-stops an
+overflowed handshake mailbox with `ProtocolViolation`, ignores
+old-generation frames, and fails closed an in-flight Trace submit.
+
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R4 starts.
