@@ -516,7 +516,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r2-neutral-authority`
 date: 2026-08-17
 exact_command: `corepack pnpm vitest run tests/unit/core-daemon`
-implementation_commits: pending
+implementation_commits: `eacca34`
 
 Adds `@qualigence/runner-control` with the Task 8
 `RunnerProtocolApplication` and required `AuthenticatedRunnerContext.scope`.
