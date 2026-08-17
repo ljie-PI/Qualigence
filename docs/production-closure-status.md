@@ -443,7 +443,7 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-r0-protocol-authority`
 date: 2026-08-17
-implementation_commits: `d591f79`
+implementation_commits: `d591f79`, `673540d`, `ac35b12`
 
 The forensic implementation branch `codex/pr5-core-protocol-application`
 at `230b6cd` is 11 commits ahead of `origin/main` and remains unpushed.
@@ -459,6 +459,11 @@ scope, or the ban on fake production composition.
 
 - Forensic head `230b6cd` is frozen as reference only. No cherry-pick of
   a whole commit is authorized.
-- `git diff --check` exited 0 before commit `d591f79`.
-- Exact-head Standards and Spec/architecture reviews must pass before
-  PR5-R1 starts.
+- `git diff --check` exited 0 before commits `d591f79` and `ac35b12`.
+- First exact-head review against
+  `d562f8d31fadaf6154f09522ad754e7e03d3eb85...673540db08ecc9146157012d1b3502dffd0c65c3`
+  found two Important findings: stacked PRs lacked named Gate commands,
+  and typecheck was optional. Commit `ac35b12` names each Gate and
+  requires `corepack pnpm typecheck` for PR5-R1 through PR5-R5.
+- Fresh exact-head Standards and Spec/architecture reviews must pass
+  before PR5-R1 starts.
