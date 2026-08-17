@@ -67,7 +67,7 @@ implementation shape. They add no public method and no Files path.
 | Connection | Accepted → Authenticating → Reserved → Active → Draining → Closed |
 | Session | Absent → AdmissionPending → Active → Detached → Active / Closed |
 | Offer | Dispatchable → Offered → Accepted / Expired / Cancelled |
-| Lease | None → Prepared → Active → Lost / Completed |
+| Lease | None → AcceptReserved → Active → Lost / Completed |
 | Trace | Healthy(cursor) → Healthy(next) / Quarantined |
 | Completion | Open → Recorded → Applied / Conflict |
 | Shutdown | Running → Quiescing → Draining → Closed |
@@ -84,7 +84,9 @@ Invariants that implement Tasks 8-9 without changing their contracts:
 - `createOffer` is idempotent for `{ jobId, runId }` inside one live
   process. Different content for either identity throws
   `RunIdentityMismatch` and sends no second frame.
-- An unaccepted offer is not durable. After Core restart it may be
+- An unaccepted offer is not durable and creates no lease authority.
+  `AcceptReserved` is only the in-process accept reserve; it is not a
+  restart-durable lease. After Core restart an unaccepted offer may be
   recreated; an accepted run waits for Task 10 persistence.
 - Renew validates the exact presented `leaseToken`. A mismatch returns
   `LeaseLost` and mints no replacement.
@@ -114,14 +116,16 @@ PR may add coverage; it must not weaken an earlier case.
 | Renew versus completion | Completed run cannot renew | PR5-R4 |
 | Overlapping Trace batches | Arrival order is preserved; ACK follows ingest | PR5-R4 |
 | Completion ACK loss | Replay records once | PR5-R4 |
-| Unaccepted offer after Core restart | Offer may be recreated; no stranded run ownership | PR5-R4 |
+| Unaccepted offer after Core restart | Offer may be recreated; no stranded run ownership | PR5-R5 |
 | Interrupted in-process Welcome send | `closeSession` rolls back reservation; ownership is not stranded | PR5-R4 |
 | Real mTLS disconnect and resume | Session id is stable; lease is not extended; Trace resumes from ACK | PR5-R5 |
 
 GitHub Issues `#48`, `#49`, `#50`, and `#51` are acceptance aliases for
 the resume-ownership, unaccepted-offer, waiter-collision, and
 interrupted-admission rows. They close only after the owning PR's Gate
-and both review axes pass.
+and both review axes pass. `#49` closes on PR5-R5 because only the
+activation commit starts Core against a real `dataDir` and can recreate
+an unaccepted offer after restart.
 
 ## Stacked delivery
 
@@ -151,7 +155,7 @@ file. PR5-R0 is documentation-only and runs `git diff --check`.
 | PR5-R1 | `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts` then `corepack pnpm smoke:node-imports` |
 | PR5-R2 | `corepack pnpm vitest run tests/unit/core-daemon` then `corepack pnpm smoke:node-imports` |
 | PR5-R3 | `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts` then `corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts` then `corepack pnpm smoke:node-imports` |
-| PR5-R4 | `corepack pnpm vitest run tests/unit/core-daemon` plus every test file that PR creates |
+| PR5-R4 | `corepack pnpm vitest run tests/unit/core-daemon` |
 | PR5-R5 | `corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts` then `corepack pnpm smoke:node-imports` |
 
 PR5-R1 must not add `AcceptedExecutionJob.plan` or policy field mapping.

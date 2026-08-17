@@ -443,7 +443,8 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-r0-protocol-authority`
 date: 2026-08-17
-implementation_commits: `d591f79`, `673540d`, `ac35b12`
+exact_command: `git diff --check`
+implementation_commits: `d591f79`, `673540d`, `ac35b12`, `21d210d`
 
 The forensic implementation branch `codex/pr5-core-protocol-application`
 at `230b6cd` is 11 commits ahead of `origin/main` and remains unpushed.
@@ -459,11 +460,20 @@ scope, or the ban on fake production composition.
 
 - Forensic head `230b6cd` is frozen as reference only. No cherry-pick of
   a whole commit is authorized.
-- `git diff --check` exited 0 before commits `d591f79` and `ac35b12`.
+- `git diff --check` exited 0 before commits `d591f79`, `ac35b12`, and
+  the #49 owner fix.
 - First exact-head review against
   `d562f8d31fadaf6154f09522ad754e7e03d3eb85...673540db08ecc9146157012d1b3502dffd0c65c3`
   found two Important findings: stacked PRs lacked named Gate commands,
   and typecheck was optional. Commit `ac35b12` names each Gate and
   requires `corepack pnpm typecheck` for PR5-R1 through PR5-R5.
+- Second exact-head review against
+  `d562f8d31fadaf6154f09522ad754e7e03d3eb85...21d210d8983bbe5a58a0978136dcd9497b986c0a`
+  found one Important finding: Issue `#49` was aliased to inactive PR5-R4.
+  The delivery document now assigns `#49` to PR5-R5, names the R4 Gate as
+  `corepack pnpm vitest run tests/unit/core-daemon`, and renames lease
+  `Prepared` to in-process `AcceptReserved`. R4 in-process tests live
+  under that existing unit path; `core-composition.test.ts` remains the
+  PR5-R5 activation Gate.
 - Fresh exact-head Standards and Spec/architecture reviews must pass
   before PR5-R1 starts.
