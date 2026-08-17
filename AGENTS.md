@@ -4,11 +4,11 @@
 
 ### Issue Tracker
 
-Qualigence tracks implementation and review findings in GitHub Issues. Read `docs/agents/issue-tracker.md` before creating, reviewing, or resolving tracked work.
+Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
 
 ### Domain Docs
 
-Qualigence uses multi-context domain documentation. Before changing or reviewing any production module, read `docs/agents/domain.md` and every context selected by `CONTEXT-MAP.md`.
+Before changing or reviewing any production module, read `docs/agents/domain.md` and every context selected by `CONTEXT-MAP.md`.
 
 ## Closure Work
 

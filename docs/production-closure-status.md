@@ -1,5 +1,25 @@
 # Production closure status
 
+## SETUP-00 — Engineering context and review guidance (2026-08-17)
+
+component: complete
+production_wiring: missing
+verification: passed
+introducing_pr: SETUP-00 / `codex/pr-preflight-production-closure-plan`
+
+SETUP-00 is documentation-only engineering infrastructure. It adds the ignored
+project worktree location, GitHub Issue review-finding workflow, and
+multi-context navigation. It changes no product Composition Root, runtime
+behavior, migration, manifest, or lockfile.
+
+Evidence:
+
+- `git check-ignore -v .worktrees/probe` resolves through `.gitignore`.
+- `git diff --check` passed for the documentation diff.
+- Standards and Spec/architecture review run against the exact
+  `main...HEAD` diff after the final review-fix commit; no Critical or Important
+  findings may remain before this row is marked passed.
+
 ## Task 0 — Windows test quarantine (2026-08-16)
 
 component: complete
