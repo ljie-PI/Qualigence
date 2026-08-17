@@ -48,6 +48,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
 | 6 OIDC signature verification | merged as PR #40 | Merge commit `0753be7`; `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy passed 39 focused tests and both final review axes; the final Windows Gate passed 893 tests with 6 expected skips. |
+| SETUP-00 Engineering context and review guidance | in_progress | Branch: `codex/pr-preflight-production-closure-plan`; creates .worktrees/ ignore, AGENTS.md, GitHub Issues tracker configuration, multi-context map and 8 domain CONTEXT.md files. |
 | 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
@@ -153,6 +154,7 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | merged as PR #38 (`0820fd5`) |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | merged as PR #39 (`89002cc`) |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | merged as PR #40 (`0753be7`) |
+| SETUP-00 | SETUP-00 | `codex/pr-preflight-production-closure-plan` | `main` | Engineering context, GitHub Issues review finding tracker, and multi-context documentation | in_progress |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
@@ -266,6 +268,48 @@ Linux.
 
 The ledger now records Tasks 1-6 as merged. Task 21 and the release Gate remain
 open; Q stays visible until Task 21 restores all four tests on Windows and Linux.
+
+---
+
+### Task 00: Prerequisite SETUP-00 — Engineering context, issue tracker, and review guidance
+
+**Execution status:** in_progress.
+
+**Files:**
+- Create: `AGENTS.md`
+- Create: `CONTEXT-MAP.md`
+- Create: `docs/agents/domain.md`
+- Create: `docs/agents/issue-tracker.md`
+- Create: `docs/contexts/deployment/CONTEXT.md`
+- Create: `docs/contexts/evidence/CONTEXT.md`
+- Create: `docs/contexts/execution/CONTEXT.md`
+- Create: `docs/contexts/intelligence/CONTEXT.md`
+- Create: `docs/contexts/product/CONTEXT.md`
+- Create: `docs/contexts/protocol/CONTEXT.md`
+- Create: `docs/contexts/storage/CONTEXT.md`
+- Create: `docs/contexts/windows/CONTEXT.md`
+- Modify: `.gitignore`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Produces `AGENTS.md` describing agent skills, issue-tracker usage, multi-context reading rules, and plan boundary constraints.
+- Produces `docs/agents/issue-tracker.md` configuring GitHub Issues in `ljie-PI/Qualigence` as the issue tracker for `/code-review` and engineering skills.
+- Produces `CONTEXT-MAP.md` routing execution, product, protocol, intelligence, evidence, storage, deployment, and windows domains to `docs/contexts/*/CONTEXT.md`.
+- Produces eight domain `CONTEXT.md` files defining stable terms, ownership, seams, invariants, entrypoints, cited architecture/spec references, and verification commands.
+- Ignores `.worktrees/` in `.gitignore` without altering build manifests, runtime packages, lockfiles, or product code.
+
+- [ ] **Step 1: Write context, tracker, and ignore definitions**
+
+Create `.gitignore` entry `.worktrees/`, `AGENTS.md`, `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, `CONTEXT-MAP.md`, and eight `docs/contexts/*/CONTEXT.md` files.
+
+- [ ] **Step 2: Verify documentation consistency and Git checks**
+
+Run `git diff --check` and verify `git check-ignore -v .worktrees/probe`.
+
+- [ ] **Step 3: Run two-axis `/code-review`**
+
+Execute `/code-review` for Standards and Spec/architecture axes against the exact merge-base SHA. Resolve any Critical or Important findings with dedicated fix commits and re-review before merge.
 
 ---
 
