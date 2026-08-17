@@ -4,7 +4,8 @@ import { GrpcRunnerProtocolClient } from "@qualigence/grpc-runner-protocol";
 import type { GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
-import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
+import { eventBatchToWire, helloToWire } from "@qualigence/grpc-runner-protocol";
+import { makeHello, makeRawTestStream, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
 
 let pki: GrpcTestPki;
 
@@ -218,5 +219,185 @@ describe("grpc runner protocol handshake", () => {
     const second = session.renew(lease);
     expect(second).toBe(first);
     await expect(first).resolves.toMatchObject({ jobId: "job-1", runId: "run-attempt-1" });
+  });
+
+  it("rejects a concurrent Hello for the same runner and keeps the first admission", async () => {
+    const { server, port } = await startTestServer(pki);
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, port, cert);
+    const client2 = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      await client1.close();
+      await client2.close();
+      await server.shutdown();
+    });
+
+    const first = client1.connect(makeHello("runner-1"));
+    const second = client2.connect(makeHello("runner-1"));
+    const results = await Promise.allSettled([first, second]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+      code: "RunnerAlreadyConnected",
+    });
+    expect(server.connection("runner-1")).toBeDefined();
+  });
+
+  it("fails stop a handshake mailbox that exceeds the pending-frame limit", async () => {
+    let releaseWelcome!: () => void;
+    const beforeWelcome = new Promise<void>((resolve) => {
+      releaseWelcome = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      maximumHandshakePendingFrames: 1,
+      beforeWelcome: () => beforeWelcome,
+    });
+    const raw = makeRawTestStream(pki, port, pki.clientFor("runner-1"));
+    let streamError: unknown;
+    raw.stream.on("error", (error: unknown) => {
+      streamError = error;
+    });
+    cleanups.push(async () => {
+      releaseWelcome();
+      raw.close();
+      await server.shutdown();
+    });
+    raw.stream.write({ correlation_id: "hello", hello: helloToWire(makeHello("runner-1")) });
+    raw.stream.write({ correlation_id: "batch-1", event_batch: eventBatchToWire(batch("run-1", 1, 1)) });
+    raw.stream.write({ correlation_id: "batch-2", event_batch: eventBatchToWire(batch("run-1", 2, 1)) });
+    await expect.poll(() => streamError).toMatchObject({ details: "ProtocolViolation" });
+    releaseWelcome();
+    expect(server.connection("runner-1")).toBeUndefined();
+  });
+
+  it("ignores a frame after the connection generation increments", async () => {
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, port, cert);
+    const session1 = await client1.connect(makeHello("runner-1"));
+    expect(server.connectionGeneration("runner-1")).toBe(1);
+    const staleSubmit = session1.submit(batch("run-1", 1, 5));
+    staleSubmit.catch(() => undefined);
+    await expect.poll(() => enteredHandle).toBe(1);
+
+    const client2 = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      releaseHandle();
+      await client1.close();
+      await client2.close();
+      await server.shutdown();
+    });
+    const session2 = await client2.connect(
+      makeHello("runner-1", { resumeToken: session1.welcome.resumeToken }),
+    );
+    expect(server.connectionGeneration("runner-1")).toBe(2);
+    const superseded = server.supersededConnection("runner-1");
+    expect(superseded?.generation).toBe(1);
+
+    releaseHandle();
+    await superseded?.drain();
+    expect(server.nextExpectedSequence("run-1")).toBe(1);
+
+    const ack = await session2.submit(batch("run-1", 1, 1));
+    expect(ack.nextExpectedSequenceNumber).toBe(2);
+  });
+
+  it("fails stop a live connection mailbox that exceeds the pending-frame limit", async () => {
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      maximumConnectionPendingFrames: 1,
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
+    const raw = makeRawTestStream(pki, port, pki.clientFor("runner-1"));
+    let streamError: unknown;
+    raw.stream.on("error", (error: unknown) => {
+      streamError = error;
+    });
+    cleanups.push(async () => {
+      releaseHandle();
+      raw.close();
+      await server.shutdown();
+    });
+    raw.stream.write({ correlation_id: "hello", hello: helloToWire(makeHello("runner-1")) });
+    await expect.poll(() => server.connection("runner-1")).toBeDefined();
+    raw.stream.write({ correlation_id: "batch-1", event_batch: eventBatchToWire(batch("run-1", 1, 1)) });
+    await expect.poll(() => enteredHandle).toBe(1);
+    raw.stream.write({ correlation_id: "batch-2", event_batch: eventBatchToWire(batch("run-1", 2, 1)) });
+    await expect.poll(() => streamError).toMatchObject({ details: "ProtocolViolation" });
+    releaseHandle();
+  });
+
+  it("shares one shutdown promise and fails closed in-flight Trace and completion", async () => {
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
+    const waiting = server.waitForConnection("never-connects");
+    const client = makeTestClient(pki, port, pki.clientFor("runner-1"));
+    cleanups.push(async () => {
+      releaseHandle();
+      await client.close();
+      await server.shutdown();
+    });
+    const session = await client.connect(makeHello("runner-1"));
+    const connection = await server.waitForConnection("runner-1");
+    const offering = connection.offer({
+      jobId: "job-race",
+      runId: "run-race",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "race shutdown",
+    }, []);
+    const submitting = session.submit(batch("run-1", 1, 1));
+    void session.complete(
+      {
+        jobId: "job-race",
+        runId: "run-complete",
+        leaseToken: "token",
+        leaseEpoch: 1,
+        expiresAt: "2026-08-17T00:00:30.000Z",
+      },
+      { jobId: "job-race", runId: "run-complete", status: "passed" },
+    );
+    await expect.poll(() => enteredHandle).toBe(1);
+
+    const first = server.shutdown();
+    const second = server.shutdown();
+    expect(second).toBe(first);
+    await expect(waiting).rejects.toMatchObject({ code: "SessionClosed" });
+    await expect(offering).rejects.toMatchObject({ code: "SessionClosed" });
+    releaseHandle();
+    await expect(submitting).rejects.toMatchObject({ code: "SessionClosed" });
+    await first;
+    expect(server.nextExpectedSequence("run-1")).toBe(1);
+    await expect(server.waitForConnection("runner-late")).rejects.toMatchObject({
+      code: "SessionClosed",
+    });
+    await expect(session.submit(batch("run-1", 2, 1))).rejects.toMatchObject({ code: "SessionClosed" });
   });
 });

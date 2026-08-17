@@ -1,3 +1,4 @@
+import * as grpc from "@grpc/grpc-js";
 import { capabilities } from "@qualigence/runner-protocol";
 import type { RunnerHello } from "@qualigence/runner-protocol";
 import {
@@ -9,6 +10,11 @@ import type {
   GrpcRunnerProtocolServerOptions,
   WelcomeParameters,
 } from "@qualigence/grpc-runner-protocol";
+import { runnerServiceDefinition } from "../../packages/protocol-adapters/grpc-runner-protocol/src/proto.js";
+import type {
+  RunnerFrameWire,
+  ServerFrameWire,
+} from "../../packages/protocol-adapters/grpc-runner-protocol/src/proto.js";
 import type { CertificateMaterial, GrpcTestPki } from "./grpc-test-pki.js";
 
 export function welcomeParameters(overrides: Partial<WelcomeParameters> = {}): WelcomeParameters {
@@ -48,6 +54,30 @@ export function makeTestClient(
     tls: cert === undefined ? { ca: pki.ca } : { ca: pki.ca, key: cert.key, cert: cert.cert },
     authority: "localhost",
   });
+}
+
+export interface RawTestStream {
+  readonly stream: grpc.ClientDuplexStream<RunnerFrameWire, ServerFrameWire>;
+  close(): void;
+}
+
+export function makeRawTestStream(
+  pki: GrpcTestPki,
+  port: number,
+  cert: CertificateMaterial,
+): RawTestStream {
+  const credentials = grpc.credentials.createSsl(pki.ca, cert.key, cert.cert);
+  const Stub = runnerServiceDefinition().clientConstructor;
+  const client = new Stub(`127.0.0.1:${port}`, credentials, {
+    "grpc.ssl_target_name_override": "localhost",
+    "grpc.default_authority": "localhost",
+  });
+  const stream = client.Connect();
+  stream.on("error", () => undefined);
+  return {
+    stream,
+    close: (): void => client.close(),
+  };
 }
 
 export function makeHello(
