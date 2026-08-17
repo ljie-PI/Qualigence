@@ -175,8 +175,9 @@ also run `corepack pnpm typecheck`. Every PR runs `git diff --check` and
 - Critical or Important on either axis blocks push and merge.
 - After a fix commit, rerun the affected Gate and a fresh two-axis
   review.
-- If three review rounds on the same stacked PR still leave an
-  Important finding, stop coding and run `/grill`.
+- If five review rounds on the same stacked PR still leave an
+  Important finding, open the GitHub PR, do not merge, and post each
+  remaining Important finding as a PR comment.
 - If the next edit would expand Files, change a locked interface, or
   activate production before PR5-R5, stop and run `/grill`.
 - A skipped Gate is not a pass.

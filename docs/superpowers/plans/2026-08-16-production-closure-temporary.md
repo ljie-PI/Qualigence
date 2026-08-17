@@ -1314,8 +1314,9 @@ without editing either Files union or public interface block.
 
 Run `git diff --check`, update the status ledger, commit the three
 declared Files, and run both review axes against the exact merge-base and
-head. Critical or Important findings block PR5-R1. Three review rounds
-that still leave an Important finding stop the stack for `/grill`.
+head. Critical or Important findings block PR5-R1. Five review rounds
+that still leave an Important finding open the GitHub PR without merge
+and post each remaining Important finding as a PR comment.
 
 ```bash
 git add docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
@@ -1547,8 +1548,9 @@ git commit -m "feat(core): delegate and compose authoritative runner protocol"
 
 Run Standards and Spec/architecture review against the exact merge-base and
 the activation head. Any fix commit reruns the joint Gate and both review
-axes. Three review rounds that still leave an Important finding stop the
-stack for `/grill`.
+axes. Five review rounds that still leave an Important finding open the
+GitHub PR without merge and post each remaining Important finding as a
+PR comment.
 
 ---
 

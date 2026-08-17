@@ -477,5 +477,7 @@ scope, or the ban on fake production composition.
   PR5-R5 activation Gate.
 - Third exact-head reviews against
   `d562f8d31fadaf6154f09522ad754e7e03d3eb85...42f036d813d98df47cede3aa380e4e503ea6605a`
-  reported no Critical or Important findings. PR5-R1 stays blocked until
-  this PR merges.
+  reported no Critical or Important findings.
+- Stop rule updated: five review rounds that still leave an Important
+  finding open the GitHub PR without merge and post each remaining
+  Important finding as a PR comment.
