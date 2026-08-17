@@ -48,8 +48,10 @@ The word `implemented` in the status ledger means only that some planned files o
 | 4 Gate/status closure | complete | A clean detached worktree passed frozen install, build, typecheck, and 4 focused black-box files / 17 tests. `docs/production-closure-status.md` records the repeatable evidence and the remaining root Playwright CLI defect. |
 | 5 Review provider contract | complete after PR review fixes | Shared provider cases plus SQLite/PostgreSQL failure injection and advisory-lock barriers pass with explicit tenant scope and complete-command replay; the focused regression set passes 67 tests. |
 | 6 OIDC signature verification | merged as PR #40 | Merge commit `0753be7`; `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy passed 39 focused tests and both final review axes; the final Windows Gate passed 893 tests with 6 expected skips. |
-| SETUP-00 Engineering context and review guidance | in_progress | Branch: `codex/pr-preflight-production-closure-plan`; creates .worktrees/ ignore, AGENTS.md, GitHub Issues tracker configuration, multi-context map and 8 domain CONTEXT.md files. |
-| 7-18 | pending | Proceed in the dependency order below; Task 6 no longer blocks the dependent Console release Gate. |
+| SETUP-00 Engineering context and review guidance | merged as PR #42 | Merge commit `a9fd9b3`; engineering contexts, review guidance, and the stabilized baseline Gate merged after both review axes passed. |
+| 7 Runner renewal | merged as PR #43 | Merge commit `09afe87`; the final focused Gate passed 21 tests and both exact-head review axes reported no findings. |
+| PR5-SCOPE Tasks 8-9 scope repair | in_progress | Static implementation preflight found required protocol and moved-service test files outside the declared Files blocks. This prerequisite amends scope only; no product code changes. |
+| 8-18 | pending | Proceed in the dependency order below after PR5-SCOPE merges. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
@@ -67,7 +69,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
-- Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
+- Runner accepts and executes leases and Task 7 added bounded renewal; its production policy gate still always returns allowed.
 - Server does not register Mission/Run/Trace/Skill routes, does not start a Runner gRPC endpoint, and does not run `ServerIntelligenceResultConsumer`.
 - Review HTTP mutations use the aggregate handlers and preserve the public conflict envelope. Task 5's shared SQLite/PostgreSQL contract proves idempotency-key binding, audit persistence, and true two-writer claim behavior.
 - Web Console verifies ID Token signatures against its deployment-pinned remote JWKS and an RS256/ES256 allowlist before nonce, tenant, role, or subject processing.
@@ -108,7 +110,8 @@ Tasks 1-3 (already implemented)
     ├── Task 6 (Console ID Token verification; complete)
     └── Task 7 (Runner renew)
 
-Task 8 (gRPC application port)
+PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
+    → Task 8 (gRPC application port)
     → Task 9 (Core protocol application)
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
@@ -132,9 +135,9 @@ Task 15
 
 ## Pull request delivery plan
 
-The 22 implementation tasks plus Prerequisite Q and the P0 build prerequisite
-ship as 19 reviewable pull requests: two independently reviewed prerequisites
-and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
+The 22 implementation tasks plus Prerequisite Q, the P0 build prerequisite,
+SETUP-00, and PR5-SCOPE ship as 21 reviewable pull requests: four independently
+reviewed prerequisites and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
 the ordered merge queue through Task 6 contains five GitHub PRs because Q and
 P0 may not be absorbed into a product diff. A pull request may contain more
 than one task only where the tasks form one architectural boundary or one
@@ -154,8 +157,9 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 1 | 1, 2, 4 | `codex/pr1-runtime-ops` | `codex/pr0-lockfile-repair` | Admin CLI execution, cross-platform binary entrypoints, and their clean black-box Gate | merged as PR #38 (`0820fd5`) |
 | 2 | 3, 5 | `codex/pr2-review-invariants` | `codex/pr1-runtime-ops` | Review aggregate routing plus SQLite/PostgreSQL provider and writer-concurrency parity | merged as PR #39 (`89002cc`) |
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | merged as PR #40 (`0753be7`) |
-| SETUP-00 | SETUP-00 | `codex/pr-preflight-production-closure-plan` | `main` | Engineering context, GitHub Issues review finding tracker, and multi-context documentation | in_progress |
-| 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | pending |
+| SETUP-00 | SETUP-00 | `codex/pr-preflight-production-closure-plan` | `main` | Engineering context, GitHub Issues review finding tracker, and multi-context documentation | merged as PR #42 (`a9fd9b3`) |
+| 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | merged as PR #43 (`09afe87`) |
+| PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | in_progress |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
 | 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
@@ -1138,6 +1142,45 @@ git commit -m "feat(runner): renew execution leases safely"
 
 ---
 
+### Task PR5-SCOPE: Repair Tasks 8-9 implementation scope
+
+**Execution status:** in_progress. Static preflight stopped before product edits.
+
+**Files:**
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Adds only the protocol wire/error/type files required to make Task 8's existing wrong-token renew requirement implementable.
+- Adds only the direct-import unit tests required to preserve Task 9's moved-service behavior.
+- Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
+
+- [ ] **Step 1: Record the blocked implementation preflight**
+
+Document that `RenewLease` lacks the domain lease token required by Task 8, the client lacks stable `LeaseLost` mapping, and four unit tests import services Task 9 moves.
+
+- [ ] **Step 2: Amend Tasks 8-9 exact Files and verification**
+
+Add the required protocol contract/proto/client/error/type/smoke files to Task 8 and the four direct-import service tests to Task 9. Preserve existing public interfaces and scope exclusions.
+
+- [ ] **Step 3: Verify and commit**
+
+Run `git diff --check`, update `docs/production-closure-status.md` with the date,
+exact command result, and commit, then commit both declared Files:
+
+```bash
+git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
+git commit -m "docs(plan): repair tasks 8 and 9 implementation scope"
+```
+
+- [ ] **Step 4: Review the committed fixed point**
+
+Run Standards and Spec/architecture `/code-review` against the exact merge-base
+and committed head. Critical or Important findings block Tasks 8-9; each fix is
+a new commit followed by `git diff --check` and a fresh two-axis review.
+
+---
+
 ### Task 8: Replace gRPC's in-memory lifecycle semantics with an application port
 
 **Files:**
@@ -1145,25 +1188,37 @@ git commit -m "feat(runner): renew execution leases safely"
 - Create: `packages/core-modules/runner-control/tsconfig.json`
 - Create: `packages/core-modules/runner-control/src/runner-protocol-application.ts`
 - Create: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `package.json`
 - Modify: `tsconfig.json`
+- Modify: `tsconfig.test.json`
 - Modify: `pnpm-lock.yaml`
+- Modify: `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/package.json`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/tsconfig.json`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/client.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/ports.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/proto.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/index.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/tls-runner-identity.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/wire-codec.ts`
 - Modify: `tests/helpers/grpc-harness.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-tls.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
+- Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/type/runner-protocol-v1.types.ts`
+- Modify: `tests/smoke/node-package-imports.mjs`
 - Modify: `docs/production-closure-status.md`
 
 **Interfaces:**
 - Produces a required `RunnerProtocolApplication` dependency for `GrpcRunnerProtocolServer` from the neutral leaf package `@qualigence/runner-control`; the gRPC adapter depends inward on this port.
 - Keeps `RunnerConnectionPort` and `RunnerClientPort` public signatures unchanged.
 - Removes lease issuance, resume-token authority, Trace cursor authority, and completion authority from the transport adapter.
+- Adds the existing domain `ExecutionJobLease.leaseToken` to the v1 `RenewLease` wire message so the application authority can validate the exact token; the adapter must not mint or replace it.
+- Surfaces application `LeaseLost` through the client as a stable `RunnerProtocolError`, without string matching or transport fallback.
 
 - [ ] **Step 1: Add a fake application authority to conformance tests**
 
@@ -1234,6 +1289,8 @@ Run:
 
 ```bash
 corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts
+corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts
+corepack pnpm smoke:node-imports
 corepack pnpm typecheck
 git diff --check
 ```
@@ -1241,7 +1298,7 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/core-modules/runner-control packages/protocol-adapters/grpc-runner-protocol tsconfig.json pnpm-lock.yaml tests/helpers/grpc-harness.ts tests/conformance/runner-protocol docs/production-closure-status.md
+git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol tests/helpers/grpc-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs docs/production-closure-status.md
 git commit -m "refactor(protocol): delegate runner lifecycle to core"
 ```
 
@@ -1267,6 +1324,10 @@ git commit -m "refactor(protocol): delegate runner lifecycle to core"
 - Modify: `tests/helpers/core-runner-harness.ts`
 - Create: `tests/component/core-runner/core-composition.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
+- Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
+- Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-resume-token-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-session-service.test.ts`
 - Modify: `docs/production-closure-status.md`
 
 **Interfaces:**
@@ -1287,7 +1348,7 @@ Start Core with a temporary data directory and real SQLite, connect a real gRPC 
 
 - [ ] **Step 2: Extract one reusable Core protocol application seam**
 
-Move the four transport-independent services listed in **Files** into `@qualigence/core-application`, preserve their public signatures/tests, and export them from the package root. They may depend on contracts, evidence/Trace ports, shared-kernel primitives, and `@qualigence/runner-control`; they must not import Core Daemon, Server, Fastify, gRPC, SQLite, or PostgreSQL concrete classes. Core Daemon retains only process configuration and provider composition. This is the same seam Task 14 must instantiate for Self-hosted mode; Task 14 must not import `apps/core-daemon` or copy these services.
+Move the four transport-independent services listed in **Files** into `@qualigence/core-application`, preserve their public signatures/tests, update the four listed unit tests to import the public `@qualigence/core-application` exports, and export them from the package root. They may depend on contracts, evidence/Trace ports, shared-kernel primitives, and `@qualigence/runner-control`; they must not import Core Daemon, Server, Fastify, gRPC, SQLite, or PostgreSQL concrete classes. Core Daemon retains only process configuration and provider composition. This is the same seam Task 14 must instantiate for Self-hosted mode; Task 14 must not import `apps/core-daemon` or copy these services.
 
 Implement the Core protocol application adapter in that shared package with these delegation rules:
 
@@ -1333,7 +1394,7 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/core-application apps/core-daemon pnpm-lock.yaml tests/helpers/core-runner-harness.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts docs/production-closure-status.md
+git add packages/core-application apps/core-daemon pnpm-lock.yaml tests/helpers/core-runner-harness.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
 git commit -m "feat(core): compose authoritative runner protocol"
 ```
 
