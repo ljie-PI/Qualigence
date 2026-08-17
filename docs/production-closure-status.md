@@ -431,4 +431,34 @@ Gate, and atomic union commit. It changes only the plan and status ledger.
   stale PR5-ATOMIC body state, and incomplete scope-B evidence; fixes require a
   new commit and fresh two-axis review.
 - Commit `aaaa90f` fixed every initial review finding and `git diff --check`
-  exited 0; final exact-head review remains required.
+  exited 0.
+- PR #46 merged as `d562f8d31fadaf6154f09522ad754e7e03d3eb85` from head
+  `eda315d3210956eedf4ee523b524ae703cbfb244`. Shared recovery identities
+  are now in Task 8's Files, focused Gate, and activation commit.
+
+## PR5-R0 - Tasks 8-9 stacked delivery authorization
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-r0-protocol-authority`
+date: 2026-08-17
+implementation_commits: pending
+
+The forensic implementation branch `codex/pr5-core-protocol-application`
+at `230b6cd` is 11 commits ahead of `origin/main` and remains unpushed.
+Repeated review of that single product PR produced architecture-level
+findings recorded as Issues `#48`, `#49`, `#50`, and `#51`. Continuing
+under the PR5-ATOMIC single-commit packaging would keep mixing transport,
+authority, and production composition.
+
+This prerequisite changes only the temporary plan, the delivery document,
+and this ledger. It authorizes stacked inactive PRs plus one activation
+commit. It does not change Tasks 8-9 Interfaces, Files unions, required
+scope, or the ban on fake production composition.
+
+- Forensic head `230b6cd` is frozen as reference only. No cherry-pick of
+  a whole commit is authorized.
+- `git diff --check` evidence is recorded after the implementation commit.
+- Exact-head Standards and Spec/architecture reviews must pass before
+  PR5-R1 starts.

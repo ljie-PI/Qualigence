@@ -29,7 +29,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
 - Do not modify historical migration files 001-005. New relational state uses migration 006 or later.
 - Do not silently skip a required Gate. Report an explicit environmental block such as `ChromiumUnavailable`, `OpenSslUnavailable`, `DockerUnavailable`, `CargoUnavailable`, or `Windows11Unavailable`. The only temporary exception is Prerequisite Q: exactly four named individual tests may use Windows-only `it.skipIf`; each skip must carry the exact Task 21 removal marker and remains release-blocking.
-- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. The sole exception is the explicitly reviewed PR5-ATOMIC boundary: Tasks 8-9 retain separate RED evidence but share one commit because Task 8's required interface has no valid production caller until Task 9 composes it. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
+- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. PR5-ATOMIC remains the production-composition rule: no compatibility default, insecure fallback, or fake may enter a production Composition Root, and production Core may require `application`/`authenticator` only in the activation commit. PR5-R0 replaces the single-commit packaging: Tasks 8-9 retain separate RED evidence and ship as the stacked inactive PRs plus one activation commit defined in `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
 - A Terra worker executes one task per fresh context. It must read every file in the task's **Files** block before editing and must not edit files outside that block without stopping for review.
 - At the end of every task, update `docs/production-closure-status.md` in the same task commit with `component`, `production_wiring`, `verification`, exact command, date, and commit. Never use the ignored SDD ledger as the only completion evidence.
 - Preserve unrelated user changes. Never reset, checkout, or overwrite a dirty file to match this plan.
@@ -52,8 +52,9 @@ The word `implemented` in the status ledger means only that some planned files o
 | 7 Runner renewal | merged as PR #43 | Merge commit `09afe87`; the final focused Gate passed 21 tests and both exact-head review axes reported no findings. |
 | PR5-SCOPE Tasks 8-9 scope repair | merged as PR #44 | Merge commit `bfd6da2`; declared required protocol and moved-service test files. |
 | PR5-ATOMIC Tasks 8-9 delivery boundary | merged as PR #45 | Merge commit `aba6a59`; Tasks 8-9 are one compilable implementation/review unit. |
-| PR5-SCOPE-B AuthenticatedRunnerContext test migration | in_progress | Root typecheck found `disconnect-recovery.test.ts` constructs identities without required scope; this prerequisite adds the shared recovery Gate to Task 8. |
-| 8-18 | pending | Proceed in the dependency order below only after PR5-SCOPE-B merges. |
+| PR5-SCOPE-B AuthenticatedRunnerContext test migration | merged as PR #46 | Merge commit `d562f8d`; shared recovery identities are in Task 8's Files, focused Gate, and activation commit. |
+| PR5-R0 Tasks 8-9 stacked delivery | in_progress | Forensic branch `codex/pr5-core-protocol-application` at `230b6cd` is frozen. This prerequisite authorizes stacked inactive PRs plus one activation commit without changing Tasks 8-9 Interfaces or Files. |
+| 8-18 | pending | Proceed in the dependency order below only after PR5-R0 merges. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
@@ -115,7 +116,12 @@ Tasks 1-3 (already implemented)
 PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
     → PR5-ATOMIC (Tasks 8 and 9 as one compilable delivery unit)
     → PR5-SCOPE-B (migrate shared recovery identities)
-    → Tasks 8-9 atomic implementation
+    → PR5-R0 (authorize stacked inactive delivery)
+    → PR5-R1 (client waiter + exact leaseToken wire)
+    → PR5-R2 (neutral port + moved lifecycle modules)
+    → PR5-R3 (gRPC stream shell)
+    → PR5-R4 (Core authority, production inactive)
+    → PR5-R5 (Tasks 8-9 activation commit)
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
@@ -139,13 +145,15 @@ Task 15
 ## Pull request delivery plan
 
 The 22 implementation tasks plus Prerequisite Q, the P0 build prerequisite,
-SETUP-00, PR5-SCOPE, PR5-ATOMIC, and PR5-SCOPE-B ship as 23 reviewable pull
-requests: six independently reviewed prerequisites and 17 product/release PRs.
-Each implementation Task has its own commit except the explicitly reviewed PR5-ATOMIC exception. “Three PRs through Task 6” means Product PRs 1-3;
-the ordered merge queue through Task 6 contains five GitHub PRs because Q and
-P0 may not be absorbed into a product diff. A pull request may contain more
-than one task only where the tasks form one architectural boundary or one
-evidence-producing release unit. Except for PR5-ATOMIC, every task has its own commit, focused
+SETUP-00, PR5-SCOPE, PR5-ATOMIC, PR5-SCOPE-B, and PR5-R0 ship as 28
+reviewable pull requests: seven independently reviewed prerequisites and
+21 product/release PRs. Each implementation Task has its own commit except
+the PR5-R0 stacked packaging of Tasks 8-9. “Three PRs through Task 6”
+means Product PRs 1-3; the ordered merge queue through Task 6 contains
+five GitHub PRs because Q and P0 may not be absorbed into a product diff.
+A pull request may contain more than one task only where the tasks form
+one architectural boundary or one evidence-producing release unit. Except
+for the PR5 stacked PRs, every task has its own commit, focused
 RED/GREEN evidence, status-ledger update, and completion marker.
 
 PRs are stacked in the order below. A stacked PR targets the immediately
@@ -165,8 +173,13 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | merged as PR #43 (`09afe87`) |
 | PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | merged as PR #44 (`bfd6da2`) |
 | PR5-ATOMIC | Tasks 8-9 delivery boundary | `codex/pr5-atomic-scope` | `main` | Require one compilable transport + Core composition commit and joint Gate | merged as PR #45 (`aba6a59`) |
-| PR5-SCOPE-B | Task 8 identity test migration | `codex/pr5-identity-scope` | `main` | Add shared disconnect/recovery identities to the required scope migration | in_progress |
-| 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
+| PR5-SCOPE-B | Task 8 identity test migration | `codex/pr5-identity-scope` | `main` | Add shared disconnect/recovery identities to the required scope migration | merged as PR #46 (`d562f8d`) |
+| PR5-R0 | Tasks 8-9 delivery packaging | `codex/pr5-r0-protocol-authority` | `main` | Authorize stacked inactive PRs plus one activation commit; freeze forensic `230b6cd`; change no product Interfaces or Files | in_progress |
+| PR5-R1 | Task 8 wire/client subset | `codex/pr5-r1-wire-client` | `main` | Exact `leaseToken` wire/error/type mapping and client waiter registry; production composition unchanged | pending |
+| PR5-R2 | Tasks 8-9 module move | `codex/pr5-r2-neutral-authority` | `main` | Neutral `@qualigence/runner-control` port and four lifecycle-module moves; Core Daemon re-exports previous paths | pending |
+| PR5-R3 | Task 8 stream shell | `codex/pr5-r3-grpc-stream-shell` | `main` | Bounded mailbox, fail-stop queue, generation fencing; existing production constructor remains valid | pending |
+| PR5-R4 | Task 9 authority | `codex/pr5-r4-core-authority` | `main` | `CoreRunnerProtocolApplication` and in-process tests; `apps/core-daemon/src/main.ts` stays pre-activation | pending |
+| 5 / PR5-R5 | 8, 9 | `codex/pr5-r5-protocol-activation` | `main` | Required application/authenticator, real SQLite/Trace composition, joint Gate, and the union commit | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
 | 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
 | 8 | 12 | `codex/pr8-self-hosted-resources` | `main` | Mission, Run, Trace, and Skill public resources | pending |
@@ -1191,13 +1204,15 @@ a new commit followed by `git diff --check` and a fresh two-axis review.
 
 **Execution status:** complete and merged as PR #45 (`aba6a59`). The preflight
 proved Task 8 could not compile until Task 9 supplied the production caller.
+PR5-R0 keeps this production-composition rule and replaces only the
+single-commit packaging.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
 - Modify: `docs/production-closure-status.md`
 
 **Interfaces:**
-- Defines the sole exception to the per-Task commit rule: Tasks 8-9 keep separate RED evidence but share one final commit, joint Gate, and exact-head review.
+- Defined the production-composition rule: Tasks 8-9 keep separate RED evidence and no fake production caller. PR5-R0 replaces the original single-commit packaging with stacked inactive PRs plus one activation commit.
 - Forbids a compatibility default, insecure fallback, or temporary fake in the production Core composition.
 - Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
 
@@ -1233,7 +1248,7 @@ two-axis review before Tasks 8-9 resume.
 
 ### Task PR5-SCOPE-B: Migrate shared recovery identities
 
-**Execution status:** in_progress. Product edits remain uncommitted.
+**Execution status:** complete and merged as PR #46 (`d562f8d`).
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
@@ -1244,30 +1259,79 @@ two-axis review before Tasks 8-9 resume.
 - Keeps `AuthenticatedRunnerContext.scope` required; no compatibility fallback or optional field is introduced.
 - Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
 
-- [ ] **Step 1: Record the typecheck RED**
+- [x] **Step 1: Record the typecheck RED**
 
 Record the two exact type errors where recovery-test identities lack the required
 scope after Task 8 introduces `AuthenticatedRunnerContext`.
 
-- [ ] **Step 2: Amend Task 8 and the atomic union Gate**
+- [x] **Step 2: Amend Task 8 and the atomic union Gate**
 
 Add the shared recovery file to Task 8 Files, its focused Gate, and the PR5 union
 commit command.
 
-- [ ] **Step 3: Verify, commit, and review**
+- [x] **Step 3: Verify, commit, and review**
 
 Run `git diff --check`, commit both declared Files, and run both review axes
 against the exact merge-base/head. Critical or Important findings block PR5.
 
 ---
 
+### Task PR5-R0: Authorize stacked Tasks 8-9 delivery
+
+**Execution status:** in_progress. Product Interfaces and Files remain unchanged.
+
+**Files:**
+- Create: `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Replaces only the single-commit packaging of Tasks 8-9. The public
+  `RunnerProtocolApplication`, `RunnerConnectionPort`, `RunnerClientPort`,
+  required `AuthenticatedRunnerContext.scope`, and both Files unions stay
+  identical.
+- Keeps PR5-ATOMIC's production-composition rule: no compatibility default,
+  insecure fallback, or fake may enter a production Composition Root.
+- Freezes forensic branch `codex/pr5-core-protocol-application` at `230b6cd`
+  as reference only.
+- Changes no runtime code, protocol schema, package manifest, lockfile,
+  migration, or product Composition Root.
+
+- [ ] **Step 1: Record the packaging RED**
+
+Record that the forensic 11-commit branch cannot merge under the current
+single-commit rule, and that Issues `#48`-`#51` are architecture-level
+admission/ownership/waiter defects rather than local patches.
+
+- [ ] **Step 2: Publish the delivery document and amend packaging only**
+
+Add `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`
+as the stacked-delivery authority. Update this plan's execution table,
+dependency order, PR table, Task 8-9 delivery steps, and Terra protocol
+without editing either Files union or public interface block.
+
+- [ ] **Step 3: Verify, commit, and review**
+
+Run `git diff --check`, update the status ledger, commit the three
+declared Files, and run both review axes against the exact merge-base and
+head. Critical or Important findings block PR5-R1. Three review rounds
+that still leave an Important finding stop the stack for `/grill`.
+
+```bash
+git add docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
+git commit -m "docs(plan): authorize stacked runner protocol delivery"
+```
+
+---
+
 ### Task 8: Replace gRPC's in-memory lifecycle semantics with an application port
 
-**Atomic delivery constraint:** Task 8 and Task 9 form one implementation and
-review unit. Task 8 must observe its focused RED first, but it must not be
-committed while production Core still lacks the required application and
-authenticator. Complete Task 9 immediately, then commit the union of both Files
-once build, joint focused Gate, and typecheck pass. No compatibility default,
+**Atomic delivery constraint:** Task 8 and Task 9 remain one product unit.
+Their Interfaces and Files unions are unchanged. PR5-R0 packages them as
+stacked inactive PRs plus one activation commit in
+`docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`.
+Task 8 observes its focused RED first. Production Core must not require
+`application` and `authenticator` until PR5-R5. No compatibility default,
 insecure fallback, or temporary fake may enter a production Composition Root.
 
 **Files:**
@@ -1371,20 +1435,13 @@ enqueue(frame: RunnerFrameWire): void {
 
 `handleFrame` becomes async. A malformed or rejected frame closes only the offending session with a stable protocol error; it must not crash the gRPC server process.
 
-- [ ] **Step 6: Verify Task 8 behavior, then continue directly to Task 9**
+- [ ] **Step 6: Verify the current stacked PR, then stop if production would activate**
 
-Run:
-
-```bash
-corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts
-corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts
-corepack pnpm smoke:node-imports
-git diff --check
-```
-
-Do not run root typecheck or commit yet: the required production application is
-created by Task 9. Continue in the same worktree without widening either Files
-block.
+Each inactive PR runs only the subset Gate named in
+`docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`.
+PR5-R1 and PR5-R3 may typecheck because production Core still uses the
+pre-activation constructor. Do not require `application` or `authenticator`
+in production `main.ts` before PR5-R5. Do not widen either Files block.
 
 ---
 
@@ -1465,9 +1522,14 @@ Do not instantiate `InMemoryTraceStore`, `InMemoryResumeTokenStore`, or adapter-
 
 Emit `core-daemon.ready` only after SQLite migration/open and gRPC bind succeed. On shutdown, stop accepting sessions, close gRPC, then close SQLite. If SQLite fails, do not bind a gRPC port.
 
-- [ ] **Step 5: Verify and commit the atomic Tasks 8-9 unit**
+- [ ] **Step 5: Activate production composition only in PR5-R5**
 
-Run:
+PR5-R4 may add `CoreRunnerProtocolApplication` and its in-process tests
+while `apps/core-daemon/src/main.ts` keeps the pre-activation constructor.
+PR5-R5 is the only commit that injects the required application and
+authenticator, opens SQLite/Trace, and emits readiness after both succeed.
+
+Run the joint Gate only on the activation commit:
 
 ```bash
 corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts
@@ -1476,15 +1538,17 @@ corepack pnpm typecheck
 git diff --check
 ```
 
-Commit:
+Commit the union of both Files blocks only in PR5-R5:
 
 ```bash
 git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol packages/core-application apps/core-daemon tests/helpers/grpc-harness.ts tests/helpers/core-runner-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
 git commit -m "feat(core): delegate and compose authoritative runner protocol"
 ```
 
-Run Standards and Spec/architecture review against the exact merge-base and this
-single committed head. Any fix commit reruns the joint Gate and both review axes.
+Run Standards and Spec/architecture review against the exact merge-base and
+the activation head. Any fix commit reruns the joint Gate and both review
+axes. Three review rounds that still leave an Important finding stop the
+stack for `/grill`.
 
 ---
 
@@ -2781,14 +2845,14 @@ git commit -m "docs: report production closure with evidence"
 
 ## Terra execution protocol
 
-Terra or any other implementation agent must execute exactly one pending Task per fresh context. PR5-ATOMIC is the sole exception: one fresh context executes Tasks 8 and 9 together because Task 8 has no valid production caller until Task 9, and produces the single reviewed commit required by that boundary. Before editing it must:
+Terra or any other implementation agent must execute exactly one pending Task per fresh context. The PR5 stacked PRs are the sole exception: one fresh context executes one stacked PR from `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`. Production Core may require `application` and `authenticator` only in PR5-R5. Before editing it must:
 
 1. read this plan's **Status and authority**, **Global Constraints**, the chosen Task's complete **Files/Interfaces/Steps**, and the architecture sections cited by that Task;
 2. read every file in the Task's **Files** block plus the nearest existing provider/composition analogue named in the steps;
 3. verify `git status`, confirm prior dependency commits are present, run `node --version` and `corepack pnpm --version`, and refuse a shared/junctioned `node_modules` worktree;
 4. mark the Task `already implemented`, `ready`, or `environmentally blocked` from evidence before changing code;
-5. observe the focused RED (or the explicitly documented blocked baseline for verification-only Task 4), implement the smallest coherent module, run focused GREEN + typecheck + `git diff --check`, update the committed status ledger, and make one commit; PR5-ATOMIC observes both Task REDs and makes its one union commit only after the joint Gate passes;
-6. request a Standards review and a Spec review against this exact plan Task before the next dependent Task begins; PR5-ATOMIC reviews the union of Tasks 8-9 against both Task bodies.
+5. observe the focused RED (or the explicitly documented blocked baseline for verification-only Task 4), implement the smallest coherent module, run focused GREEN + typecheck + `git diff --check`, update the committed status ledger, and make one commit; each PR5 stacked PR observes its own RED and commits only its Files subset; PR5-R5 observes both Task REDs and makes the activation commit only after the joint Gate passes;
+6. request a Standards review and a Spec review against this exact plan Task before the next dependent Task begins; each PR5 stacked PR reviews its subset; PR5-R5 reviews the union of Tasks 8-9 against both Task bodies.
 
 For low-cost workers, the coordinator should disclose only this document's authority/constraints, current execution table, dependency order, and the selected Task body. Later Task bodies are post-completion context and should remain outside that worker's context; the coordinator/reviewer owns cross-task sequencing and updates this single source-of-truth plan when a dependency changes.
 
