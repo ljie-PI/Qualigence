@@ -53,7 +53,7 @@ The word `implemented` in the status ledger means only that some planned files o
 | PR5-SCOPE Tasks 8-9 scope repair | merged as PR #44 | Merge commit `bfd6da2`; declared required protocol and moved-service test files. |
 | PR5-ATOMIC Tasks 8-9 delivery boundary | merged as PR #45 | Merge commit `aba6a59`; Tasks 8-9 are one compilable implementation/review unit. |
 | PR5-SCOPE-B AuthenticatedRunnerContext test migration | in_progress | Root typecheck found `disconnect-recovery.test.ts` constructs identities without required scope; this prerequisite adds the shared recovery Gate to Task 8. |
-| 8-18 | pending | Proceed in the dependency order below after PR5-SCOPE merges. |
+| 8-18 | pending | Proceed in the dependency order below only after PR5-SCOPE-B merges. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
@@ -115,6 +115,7 @@ Tasks 1-3 (already implemented)
 PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
     → PR5-ATOMIC (Tasks 8 and 9 as one compilable delivery unit)
     → PR5-SCOPE-B (migrate shared recovery identities)
+    → Tasks 8-9 atomic implementation
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
@@ -1188,8 +1189,8 @@ a new commit followed by `git diff --check` and a fresh two-axis review.
 
 ### Task PR5-ATOMIC: Make Tasks 8-9 one compilable delivery unit
 
-**Execution status:** in_progress. Task 8 product edits are uncommitted and
-blocked at root typecheck until Task 9 supplies the required production caller.
+**Execution status:** complete and merged as PR #45 (`aba6a59`). The preflight
+proved Task 8 could not compile until Task 9 supplied the production caller.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
@@ -1200,19 +1201,19 @@ blocked at root typecheck until Task 9 supplies the required production caller.
 - Forbids a compatibility default, insecure fallback, or temporary fake in the production Core composition.
 - Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
 
-- [ ] **Step 1: Record the atomicity RED**
+- [x] **Step 1: Record the atomicity RED**
 
 Record Task 8's valid transport RED and the root typecheck errors showing that
 required `application` and `authenticator` have no production caller until Task
 9. Confirm no Task 8 product commit exists.
 
-- [ ] **Step 2: Amend global and local delivery rules**
+- [x] **Step 2: Amend global and local delivery rules**
 
 Add the single named exception to Global Constraints and the PR delivery plan.
 Update Tasks 8-9 to require one union commit and joint Gate while retaining each
 Task's Files and RED behavior.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run `git diff --check`, update the status ledger with date, commands, and commit,
 then commit both declared Files:
@@ -1222,7 +1223,7 @@ git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/p
 git commit -m "docs(plan): make tasks 8 and 9 one compilable unit"
 ```
 
-- [ ] **Step 4: Review the committed fixed point**
+- [x] **Step 4: Review the committed fixed point**
 
 Run both review axes against the exact merge-base and committed head. Critical
 or Important findings require a new fix commit, `git diff --check`, and a fresh

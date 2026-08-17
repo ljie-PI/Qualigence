@@ -415,6 +415,7 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-identity-scope`
 date: 2026-08-17
+implementation_commit: `615fbba` (review fixes pending)
 
 After Task 9 restored a valid production composition, `corepack pnpm typecheck`
 failed because two identities at
@@ -424,3 +425,8 @@ Task 8.
 
 This prerequisite adds that shared recovery Gate to Task 8's Files, focused
 Gate, and atomic union commit. It changes only the plan and status ledger.
+
+- `git diff --check` exited 0 before commit `615fbba`.
+- Initial exact-head review identified the missing Tasks 8-9 dependency node,
+  stale PR5-ATOMIC body state, and incomplete scope-B evidence; fixes require a
+  new commit and fresh two-axis review.
