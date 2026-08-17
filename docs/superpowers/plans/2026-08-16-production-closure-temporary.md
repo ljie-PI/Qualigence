@@ -51,8 +51,9 @@ The word `implemented` in the status ledger means only that some planned files o
 | SETUP-00 Engineering context and review guidance | merged as PR #42 | Merge commit `a9fd9b3`; engineering contexts, review guidance, and the stabilized baseline Gate merged after both review axes passed. |
 | 7 Runner renewal | merged as PR #43 | Merge commit `09afe87`; the final focused Gate passed 21 tests and both exact-head review axes reported no findings. |
 | PR5-SCOPE Tasks 8-9 scope repair | merged as PR #44 | Merge commit `bfd6da2`; declared required protocol and moved-service test files. |
-| PR5-ATOMIC Tasks 8-9 delivery boundary | in_progress | Task 8 makes application/authenticator required, so Task 9's Core composition is required in the same compilable commit. This prerequisite forbids an insecure or fake intermediate composition. |
-| 8-18 | pending | Proceed in the dependency order below after PR5-SCOPE merges. |
+| PR5-ATOMIC Tasks 8-9 delivery boundary | merged as PR #45 | Merge commit `aba6a59`; Tasks 8-9 are one compilable implementation/review unit. |
+| PR5-SCOPE-B AuthenticatedRunnerContext test migration | in_progress | Root typecheck found `disconnect-recovery.test.ts` constructs identities without required scope; this prerequisite adds the shared recovery Gate to Task 8. |
+| 8-18 | pending | Proceed in the dependency order below only after PR5-SCOPE-B merges. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
@@ -113,6 +114,8 @@ Tasks 1-3 (already implemented)
 
 PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
     → PR5-ATOMIC (Tasks 8 and 9 as one compilable delivery unit)
+    → PR5-SCOPE-B (migrate shared recovery identities)
+    → Tasks 8-9 atomic implementation
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
@@ -136,8 +139,9 @@ Task 15
 ## Pull request delivery plan
 
 The 22 implementation tasks plus Prerequisite Q, the P0 build prerequisite,
-SETUP-00, PR5-SCOPE, and PR5-ATOMIC ship as 22 reviewable pull requests: five
-independently reviewed prerequisites and 17 product/release PRs. Each implementation Task has its own commit except the explicitly reviewed PR5-ATOMIC exception. “Three PRs through Task 6” means Product PRs 1-3;
+SETUP-00, PR5-SCOPE, PR5-ATOMIC, and PR5-SCOPE-B ship as 23 reviewable pull
+requests: six independently reviewed prerequisites and 17 product/release PRs.
+Each implementation Task has its own commit except the explicitly reviewed PR5-ATOMIC exception. “Three PRs through Task 6” means Product PRs 1-3;
 the ordered merge queue through Task 6 contains five GitHub PRs because Q and
 P0 may not be absorbed into a product diff. A pull request may contain more
 than one task only where the tasks form one architectural boundary or one
@@ -160,7 +164,8 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | SETUP-00 | SETUP-00 | `codex/pr-preflight-production-closure-plan` | `main` | Engineering context, GitHub Issues review finding tracker, and multi-context documentation | merged as PR #42 (`a9fd9b3`) |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | merged as PR #43 (`09afe87`) |
 | PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | merged as PR #44 (`bfd6da2`) |
-| PR5-ATOMIC | Tasks 8-9 delivery boundary | `codex/pr5-atomic-scope` | `main` | Require one compilable transport + Core composition commit and joint Gate | in_progress |
+| PR5-ATOMIC | Tasks 8-9 delivery boundary | `codex/pr5-atomic-scope` | `main` | Require one compilable transport + Core composition commit and joint Gate | merged as PR #45 (`aba6a59`) |
+| PR5-SCOPE-B | Task 8 identity test migration | `codex/pr5-identity-scope` | `main` | Add shared disconnect/recovery identities to the required scope migration | in_progress |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
 | 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
@@ -1184,8 +1189,8 @@ a new commit followed by `git diff --check` and a fresh two-axis review.
 
 ### Task PR5-ATOMIC: Make Tasks 8-9 one compilable delivery unit
 
-**Execution status:** in_progress. Task 8 product edits are uncommitted and
-blocked at root typecheck until Task 9 supplies the required production caller.
+**Execution status:** complete and merged as PR #45 (`aba6a59`). The preflight
+proved Task 8 could not compile until Task 9 supplied the production caller.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
@@ -1196,19 +1201,19 @@ blocked at root typecheck until Task 9 supplies the required production caller.
 - Forbids a compatibility default, insecure fallback, or temporary fake in the production Core composition.
 - Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
 
-- [ ] **Step 1: Record the atomicity RED**
+- [x] **Step 1: Record the atomicity RED**
 
 Record Task 8's valid transport RED and the root typecheck errors showing that
 required `application` and `authenticator` have no production caller until Task
 9. Confirm no Task 8 product commit exists.
 
-- [ ] **Step 2: Amend global and local delivery rules**
+- [x] **Step 2: Amend global and local delivery rules**
 
 Add the single named exception to Global Constraints and the PR delivery plan.
 Update Tasks 8-9 to require one union commit and joint Gate while retaining each
 Task's Files and RED behavior.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run `git diff --check`, update the status ledger with date, commands, and commit,
 then commit both declared Files:
@@ -1218,11 +1223,41 @@ git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/p
 git commit -m "docs(plan): make tasks 8 and 9 one compilable unit"
 ```
 
-- [ ] **Step 4: Review the committed fixed point**
+- [x] **Step 4: Review the committed fixed point**
 
 Run both review axes against the exact merge-base and committed head. Critical
 or Important findings require a new fix commit, `git diff --check`, and a fresh
 two-axis review before Tasks 8-9 resume.
+
+---
+
+### Task PR5-SCOPE-B: Migrate shared recovery identities
+
+**Execution status:** in_progress. Product edits remain uncommitted.
+
+**Files:**
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `docs/production-closure-status.md`
+
+**Interfaces:**
+- Adds `tests/component/core-runner/disconnect-recovery.test.ts` to Task 8's identity-contract migration, focused Gate, and PR5-ATOMIC union commit.
+- Keeps `AuthenticatedRunnerContext.scope` required; no compatibility fallback or optional field is introduced.
+- Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
+
+- [ ] **Step 1: Record the typecheck RED**
+
+Record the two exact type errors where recovery-test identities lack the required
+scope after Task 8 introduces `AuthenticatedRunnerContext`.
+
+- [ ] **Step 2: Amend Task 8 and the atomic union Gate**
+
+Add the shared recovery file to Task 8 Files, its focused Gate, and the PR5 union
+commit command.
+
+- [ ] **Step 3: Verify, commit, and review**
+
+Run `git diff --check`, commit both declared Files, and run both review axes
+against the exact merge-base/head. Critical or Important findings block PR5.
 
 ---
 
@@ -1261,6 +1296,7 @@ insecure fallback, or temporary fake may enter a production Composition Root.
 - Modify: `tests/conformance/runner-protocol/grpc-tls.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
 - Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
 - Modify: `tests/type/runner-protocol-v1.types.ts`
 - Modify: `tests/smoke/node-package-imports.mjs`
 - Modify: `docs/production-closure-status.md`
@@ -1340,7 +1376,7 @@ enqueue(frame: RunnerFrameWire): void {
 Run:
 
 ```bash
-corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts
+corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts
 corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts
 corepack pnpm smoke:node-imports
 git diff --check
@@ -1443,7 +1479,7 @@ git diff --check
 Commit:
 
 ```bash
-git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol packages/core-application apps/core-daemon tests/helpers/grpc-harness.ts tests/helpers/core-runner-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
+git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol packages/core-application apps/core-daemon tests/helpers/grpc-harness.ts tests/helpers/core-runner-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
 git commit -m "feat(core): delegate and compose authoritative runner protocol"
 ```
 

@@ -404,3 +404,31 @@ Gate, and exact-head two-axis review.
 - `git diff --check` exited 0 before commit `1cd9cdb`.
 - Commit `d071374` added the named global/Terra exception, closed PR5-SCOPE, and
   recorded the atomicity evidence. `git diff --check` exited 0 after that fix.
+- Final exact-head reviews against
+  `bfd6da2977691704cb3d2e92872cada9be5bc326...d22f1987678df03324231dcb3f9eb17185bfdace`
+  reported no findings. PR #45 merged as `aba6a59ec2dbc0f92000d141563956f7e95c765e`.
+
+## PR5-SCOPE-B - AuthenticatedRunnerContext recovery-test migration
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-identity-scope`
+date: 2026-08-17
+implementation_commits: `615fbba`, `aaaa90f`
+
+After Task 9 restored a valid production composition, `corepack pnpm typecheck`
+failed because two identities at
+`tests/component/core-runner/disconnect-recovery.test.ts:270,277` lacked the new
+required `AuthenticatedRunnerContext.scope`. Making scope optional would weaken
+Task 8.
+
+This prerequisite adds that shared recovery Gate to Task 8's Files, focused
+Gate, and atomic union commit. It changes only the plan and status ledger.
+
+- `git diff --check` exited 0 before commit `615fbba`.
+- Initial exact-head review identified the missing Tasks 8-9 dependency node,
+  stale PR5-ATOMIC body state, and incomplete scope-B evidence; fixes require a
+  new commit and fresh two-axis review.
+- Commit `aaaa90f` fixed every initial review finding and `git diff --check`
+  exited 0; final exact-head review remains required.
