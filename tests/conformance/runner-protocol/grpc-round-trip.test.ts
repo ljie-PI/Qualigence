@@ -278,29 +278,83 @@ describe("grpc runner protocol handshake", () => {
     const client1 = makeTestClient(pki, port, cert);
     const session1 = await client1.connect(makeHello("runner-1"));
     expect(server.connectionGeneration("runner-1")).toBe(1);
-    await client1.close();
-    await expect.poll(() => server.connection("runner-1")).toBeUndefined();
 
     const client2 = makeTestClient(pki, port, cert);
     cleanups.push(async () => {
+      await client1.close();
       await client2.close();
       await server.shutdown();
     });
-    await client2.connect(makeHello("runner-1"));
+    const session2 = await client2.connect(
+      makeHello("runner-1", { resumeToken: session1.welcome.resumeToken }),
+    );
     expect(server.connectionGeneration("runner-1")).toBe(2);
 
-    server.enqueueOnLastReleased("runner-1", {
+    const superseded = server.supersededConnection("runner-1");
+    expect(superseded?.generation).toBe(1);
+    superseded?.enqueue({
       correlation_id: "stale",
-      event_batch: eventBatchToWire(batch("run-1", 1, 1)),
+      event_batch: eventBatchToWire(batch("run-1", 1, 5)),
     });
-    expect(server.connection("runner-1")).toBeDefined();
-    await session1.close().catch(() => undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(server.nextExpectedSequence("run-1")).toBe(1);
+
+    const ack = await session2.submit(batch("run-1", 1, 1));
+    expect(ack.nextExpectedSequenceNumber).toBe(2);
   });
 
-  it("shares one shutdown promise and fails closed in-flight Trace", async () => {
-    const { server, port } = await startTestServer(pki);
+  it("fails stop a live connection mailbox that exceeds the pending-frame limit", async () => {
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      maximumConnectionPendingFrames: 1,
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
+    const raw = makeRawTestStream(pki, port, pki.clientFor("runner-1"));
+    let streamError: unknown;
+    raw.stream.on("error", (error: unknown) => {
+      streamError = error;
+    });
+    cleanups.push(async () => {
+      releaseHandle();
+      raw.close();
+      await server.shutdown();
+    });
+    raw.stream.write({ correlation_id: "hello", hello: helloToWire(makeHello("runner-1")) });
+    await expect.poll(() => server.connection("runner-1")).toBeDefined();
+    raw.stream.write({ correlation_id: "batch-1", event_batch: eventBatchToWire(batch("run-1", 1, 1)) });
+    await expect.poll(() => enteredHandle).toBe(1);
+    raw.stream.write({ correlation_id: "batch-2", event_batch: eventBatchToWire(batch("run-1", 2, 1)) });
+    await expect.poll(() => streamError).toMatchObject({ details: "ProtocolViolation" });
+    releaseHandle();
+  });
+
+  it("shares one shutdown promise and fails closed in-flight Trace and completion", async () => {
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
     const waiting = server.waitForConnection("never-connects");
     const client = makeTestClient(pki, port, pki.clientFor("runner-1"));
+    cleanups.push(async () => {
+      releaseHandle();
+      await client.close();
+      await server.shutdown();
+    });
     const session = await client.connect(makeHello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
     const offering = connection.offer({
@@ -310,15 +364,28 @@ describe("grpc runner protocol handshake", () => {
       objective: "race shutdown",
     }, []);
     const submitting = session.submit(batch("run-1", 1, 1));
+    const completing = session.complete(
+      {
+        jobId: "job-race",
+        runId: "run-complete",
+        leaseToken: "token",
+        leaseEpoch: 1,
+        expiresAt: "2026-08-17T00:00:30.000Z",
+      },
+      { jobId: "job-race", runId: "run-complete", status: "passed" },
+    );
+    await expect.poll(() => enteredHandle).toBeGreaterThan(0);
 
     const first = server.shutdown();
     const second = server.shutdown();
     expect(second).toBe(first);
     await expect(waiting).rejects.toMatchObject({ code: "SessionClosed" });
     await expect(offering).rejects.toMatchObject({ code: "SessionClosed" });
+    releaseHandle();
     await expect(submitting).rejects.toMatchObject({ code: "SessionClosed" });
+    await completing.catch(() => undefined);
     await first;
+    expect(server.hasCompletion("run-complete")).toBe(false);
     await expect(session.submit(batch("run-1", 2, 1))).rejects.toMatchObject({ code: "SessionClosed" });
-    await client.close();
   });
 });

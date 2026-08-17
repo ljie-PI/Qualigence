@@ -46,6 +46,7 @@ export interface GrpcRunnerProtocolServerOptions {
   readonly maximumConnectionPendingFrames?: number;
   readonly maximumConnectionPendingBytes?: number;
   readonly beforeWelcome?: () => Promise<void>;
+  readonly beforeHandleFrame?: () => Promise<void>;
   readonly generateId?: () => string;
   readonly now?: () => Date;
 }
@@ -68,6 +69,7 @@ export class GrpcRunnerProtocolServer {
   private readonly handshakes = new Set<Promise<ServerRunnerConnection | undefined>>();
   /** Trace upload cursor per runId; survives reconnects so resume continues it. */
   private readonly traceCursors = new Map<string, number>();
+  private readonly completions = new Set<string>();
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | undefined;
   private boundPort: number | undefined;
@@ -166,6 +168,26 @@ export class GrpcRunnerProtocolServer {
     const next = Math.max(expected, firstSequenceNumber + eventCount);
     this.traceCursors.set(runId, next);
     return next;
+  }
+
+  nextExpectedSequence(runId: string): number {
+    return this.traceCursors.get(runId) ?? 1;
+  }
+
+  recordCompletion(runId: string): void {
+    this.completions.add(runId);
+  }
+
+  hasCompletion(runId: string): boolean {
+    return this.completions.has(runId);
+  }
+
+  async waitBeforeHandleFrame(): Promise<void> {
+    if (this.options.beforeHandleFrame !== undefined) {
+      await this.options.beforeHandleFrame();
+      return;
+    }
+    await Promise.resolve();
   }
 
   private handleConnect(call: Duplex): void {
@@ -281,7 +303,13 @@ export class GrpcRunnerProtocolServer {
       return undefined;
     }
 
-    if (this.connections.has(identity.runnerId) || this.establishingRunnerIds.has(identity.runnerId)) {
+    if (this.establishingRunnerIds.has(identity.runnerId)) {
+      failCall(call, grpc.status.FAILED_PRECONDITION, "RunnerAlreadyConnected");
+      return undefined;
+    }
+
+    const existing = this.connections.get(identity.runnerId);
+    if (existing !== undefined && hello.resumeToken === undefined) {
       failCall(call, grpc.status.FAILED_PRECONDITION, "RunnerAlreadyConnected");
       return undefined;
     }
@@ -321,10 +349,14 @@ export class GrpcRunnerProtocolServer {
         maximumPendingWriteBytes: this.options.welcome.maximumPendingWriteBytes,
       };
 
-      call.write({ correlation_id: frame.correlation_id, welcome: welcomeToWire(welcome) });
-
       const generation = (this.generations.get(identity.runnerId) ?? 0) + 1;
       this.generations.set(identity.runnerId, generation);
+      if (existing !== undefined) {
+        this.releaseConnection(existing);
+      }
+
+      call.write({ correlation_id: frame.correlation_id, welcome: welcomeToWire(welcome) });
+
       const connection = new ServerRunnerConnection(
         this,
         call,
@@ -357,12 +389,12 @@ export class GrpcRunnerProtocolServer {
     this.lastReleased.set(connection.runnerId, connection);
   }
 
-  connectionGeneration(runnerId: string): number | undefined {
-    return this.generations.get(runnerId);
+  supersededConnection(runnerId: string): ServerRunnerConnection | undefined {
+    return this.lastReleased.get(runnerId);
   }
 
-  enqueueOnLastReleased(runnerId: string, frame: RunnerFrameWire): void {
-    this.lastReleased.get(runnerId)?.enqueue(frame);
+  connectionGeneration(runnerId: string): number | undefined {
+    return this.generations.get(runnerId);
   }
 
   isCurrentGeneration(runnerId: string, generation: number): boolean {
@@ -428,9 +460,10 @@ class ServerRunnerConnection implements RunnerConnectionPort {
   }
 
   enqueue(frame: RunnerFrameWire): void {
-    if (this.disposed || !this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+    if (!this.server.isCurrentGeneration(this.runnerId, this.generation)) {
       return;
     }
+    if (this.disposed) return;
     const frameBytes = frameSize(frame);
     if (
       this.pendingFrameCount >= this.maximumPendingFrames ||
@@ -458,7 +491,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
   }
 
   async handleFrame(frame: RunnerFrameWire): Promise<void> {
-    await Promise.resolve();
+    await this.server.waitBeforeHandleFrame();
     if (this.disposed) {
       throw new RunnerProtocolError("SessionClosed", "runner connection is closed");
     }
@@ -472,6 +505,13 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     }
     if (frame.renew_lease !== undefined) {
       this.handleRenewLease(frame);
+      return;
+    }
+    if (frame.complete_execution !== undefined) {
+      const runId = String(
+        (frame.complete_execution as { readonly run_id?: unknown }).run_id ?? "",
+      );
+      this.server.recordCompletion(runId);
     }
   }
 
