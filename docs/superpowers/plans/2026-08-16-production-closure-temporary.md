@@ -69,7 +69,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - `apps/admin-cli/src/main.ts` parses `argv` and Doctor awaits KMS; clean built-binary black-box verification is recorded in `docs/production-closure-status.md`.
 - `apps/core-daemon/src/main.ts` only starts `GrpcRunnerProtocolServer`; it does not wire `RunnerSessionService`, `ExecutionJobService`, `RunOwnershipService`, durable Trace, or request intake.
 - The gRPC server keeps an in-memory Trace cursor, ignores `complete_execution`, and reissues leases without authoritative ownership validation.
-- Runner accepts and executes leases but has no renew loop; its production policy gate always returns allowed.
+- Runner accepts and executes leases and Task 7 added bounded renewal; its production policy gate still always returns allowed.
 - Server does not register Mission/Run/Trace/Skill routes, does not start a Runner gRPC endpoint, and does not run `ServerIntelligenceResultConsumer`.
 - Review HTTP mutations use the aggregate handlers and preserve the public conflict envelope. Task 5's shared SQLite/PostgreSQL contract proves idempotency-key binding, audit persistence, and true two-writer claim behavior.
 - Web Console verifies ID Token signatures against its deployment-pinned remote JWKS and an RS256/ES256 allowlist before nonce, tenant, role, or subject processing.
@@ -1163,9 +1163,21 @@ Document that `RenewLease` lacks the domain lease token required by Task 8, the 
 
 Add the required protocol contract/proto/client/error/type/smoke files to Task 8 and the four direct-import service tests to Task 9. Preserve existing public interfaces and scope exclusions.
 
-- [ ] **Step 3: Verify and review**
+- [ ] **Step 3: Verify and commit**
 
-Run `git diff --check`, then run Standards and Spec/architecture `/code-review` against the exact merge-base. Critical or Important findings block Tasks 8-9.
+Run `git diff --check`, update `docs/production-closure-status.md` with the date,
+exact command result, and commit, then commit both declared Files:
+
+```bash
+git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/production-closure-status.md
+git commit -m "docs(plan): repair tasks 8 and 9 implementation scope"
+```
+
+- [ ] **Step 4: Review the committed fixed point**
+
+Run Standards and Spec/architecture `/code-review` against the exact merge-base
+and committed head. Critical or Important findings block Tasks 8-9; each fix is
+a new commit followed by `git diff --check` and a fresh two-axis review.
 
 ---
 
@@ -1286,7 +1298,7 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/core-modules/runner-control packages/protocol-adapters/grpc-runner-protocol tsconfig.json pnpm-lock.yaml tests/helpers/grpc-harness.ts tests/conformance/runner-protocol docs/production-closure-status.md
+git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol tests/helpers/grpc-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs docs/production-closure-status.md
 git commit -m "refactor(protocol): delegate runner lifecycle to core"
 ```
 
@@ -1382,7 +1394,7 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/core-application apps/core-daemon pnpm-lock.yaml tests/helpers/core-runner-harness.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts docs/production-closure-status.md
+git add packages/core-application apps/core-daemon pnpm-lock.yaml tests/helpers/core-runner-harness.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
 git commit -m "feat(core): compose authoritative runner protocol"
 ```
 
