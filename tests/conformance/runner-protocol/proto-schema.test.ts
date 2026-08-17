@@ -221,4 +221,10 @@ describe("runner protocol v1 proto schema", () => {
       }
     }
   });
+
+  it("carries the exact domain lease token on RenewLease", () => {
+    const renewLease = messages.get("RenewLease");
+    expect(renewLease, "proto is missing message RenewLease").toBeDefined();
+    expect(renewLease!.fields.get("lease_token")).toBe(4);
+  });
 });

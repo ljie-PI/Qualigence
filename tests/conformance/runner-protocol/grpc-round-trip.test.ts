@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AcceptedExecutionJob, ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
-import type { GrpcRunnerProtocolClient, GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
+import { GrpcRunnerProtocolClient } from "@qualigence/grpc-runner-protocol";
+import type { GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
@@ -187,5 +188,35 @@ describe("grpc runner protocol handshake", () => {
     expect(new Set([ackA.nextExpectedSequenceNumber, ackB.nextExpectedSequenceNumber])).toEqual(
       new Set([2, 3]),
     );
+  });
+
+  it("shares one waiter for a duplicate client correlation id", async () => {
+    const { server, port } = await startTestServer(pki);
+    const cert = pki.clientFor("runner-1");
+    const client = new GrpcRunnerProtocolClient({
+      address: `127.0.0.1:${port}`,
+      tls: { ca: pki.ca, key: cert.key, cert: cert.cert },
+      authority: "localhost",
+      generateId: () => "duplicate-correlation",
+    });
+    track(server, client);
+
+    const session = await client.connect(makeHello("runner-1"));
+    const connection = await server.waitForConnection("runner-1");
+    const job: AcceptedExecutionJob = {
+      jobId: "job-1",
+      runId: "run-attempt-1",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "add the item to the cart",
+    };
+    const leasePromise = connection.offer(job, ["target:web-playwright"]);
+    const offer = await session.nextOffer(new AbortController().signal);
+    const lease = await session.accept(offer.offerId);
+    await leasePromise;
+
+    const first = session.renew(lease);
+    const second = session.renew(lease);
+    expect(second).toBe(first);
+    await expect(first).resolves.toMatchObject({ jobId: "job-1", runId: "run-attempt-1" });
   });
 });

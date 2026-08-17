@@ -1,4 +1,5 @@
 // This file is verified by `pnpm typecheck`; Vitest should not execute it.
+import type { RunnerProtocolErrorCode } from "@qualigence/grpc-runner-protocol";
 import { capabilities, negotiateCapabilities, negotiateProtocolMajor } from "@qualigence/runner-protocol";
 import type {
   CapabilityMismatch,
@@ -62,6 +63,9 @@ const lease: ExecutionJobLease = {
 };
 
 lease satisfies ExecutionJobLease;
+
+const leaseLost: RunnerProtocolErrorCode = "LeaseLost";
+void leaseLost;
 
 const offer: ExecutionJobOffer = {
   offerId: "offer-1",

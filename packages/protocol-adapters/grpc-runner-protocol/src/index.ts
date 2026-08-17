@@ -39,6 +39,8 @@ export {
   leaseToWire,
   offerFromWire,
   offerToWire,
+  renewLeaseFromWire,
+  renewLeaseToWire,
   welcomeFromWire,
   welcomeToWire,
 } from "./mappers.js";

@@ -38,6 +38,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const APPLICATION_ERROR_CODES: ReadonlySet<string> = new Set<RunnerProtocolErrorCode>([
   "RunnerIdentityMismatch",
   "ResumeRejected",
+  "LeaseLost",
   "ProtocolViolation",
   "CapabilityMismatch",
   "TlsPeerRejected",
@@ -288,6 +289,10 @@ class ClientRunnerSession implements RunnerSession {
   private request<T>(correlationId: string, frame: RunnerFrameWire): Promise<T> {
     if (this.closed) {
       return Promise.reject(new RunnerProtocolError("SessionClosed", "session is closed"));
+    }
+    const existing = this.pending.get(correlationId);
+    if (existing !== undefined) {
+      return existing.promise as Promise<T>;
     }
     const deferred = createDeferred<unknown>();
     this.pending.set(correlationId, deferred);

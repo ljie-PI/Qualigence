@@ -9,6 +9,7 @@ export type RunnerProtocolErrorCode =
   | "RunnerIdentityMismatch"
   | "TlsPeerRejected"
   | "ResumeRejected"
+  | "LeaseLost"
   | "TraceGap"
   | "TraceIntegrityViolation"
   | "ProtocolViolation"
