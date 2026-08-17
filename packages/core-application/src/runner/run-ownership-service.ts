@@ -1,38 +1,29 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type {
   AcceptedExecutionJob,
+  ExecutionCompletion,
+  ExecutionEventBatch,
   ExecutionJobLease,
   TargetRef,
 } from "@qualigence/runner-protocol";
-import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
-import type { ExecutionEventBatch } from "@qualigence/runner-protocol";
+import type {
+  AuthenticatedRunnerContext,
+  PersistedLeaseOwner,
+  RunnerControlStore,
+} from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 
-/** The single Runner that owns a Run, captured at lease grant time. */
-export interface LeaseOwner {
-  readonly runnerId: string;
-  readonly sessionId: string;
-}
+export type LeaseOwner = PersistedLeaseOwner;
 
 export type LeaseLostReason = "expired" | "revoked" | "epoch_superseded";
 
 export interface RunOwnershipServiceOptions {
+  readonly store: RunnerControlStore;
   readonly leaseDurationMs?: number;
   readonly now?: () => number;
   readonly generateToken?: () => string;
   readonly generateRunId?: () => string;
   readonly generateJobId?: () => string;
-}
-
-interface OwnershipRecord {
-  readonly job: AcceptedExecutionJob;
-  readonly owner: LeaseOwner;
-  leaseEpoch: number;
-  leaseTokenHash: string;
-  expiresAtMs: number;
-  lost: boolean;
-  completed: boolean;
-  readonly recoveryOfRunId?: string;
 }
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
@@ -52,22 +43,23 @@ function constantTimeEquals(left: string, right: string): boolean {
 
 /**
  * The authoritative single-owner lease and run-ownership state machine (LS-05
- * design §5). The server is the only writer of lease state: it grants a lease
- * bound to `runId + runnerId + sessionId + leaseEpoch`, extends it on renew
- * without changing the epoch, and refuses to transfer a `runId` to a different
- * Runner. A lost run is never re-authorized; recovery always creates a brand new
- * `runId` that records `recoveryOfRunId`. Only the original owning identity may
- * continue to upload already-created Trace for a lost run.
+ * design §5). The persistent store is the only writer of lease state: it grants
+ * a lease bound to `runId + runnerId + sessionId + leaseEpoch`, extends it on
+ * renew without changing the epoch, and refuses to transfer a `runId` to a
+ * different Runner. A lost run is never re-authorized; recovery always creates a
+ * brand new `runId` that records `recoveryOfRunId`.
  */
 export class RunOwnershipService {
-  private readonly records = new Map<string, OwnershipRecord>();
+  private readonly store: RunnerControlStore;
+  private readonly pendingRecoveryOf = new Map<string, string>();
   private readonly leaseDurationMs: number;
   private readonly now: () => number;
   private readonly generateToken: () => string;
   private readonly generateRunId: () => string;
   private readonly generateJobId: () => string;
 
-  constructor(options: RunOwnershipServiceOptions = {}) {
+  constructor(options: RunOwnershipServiceOptions) {
+    this.store = options.store;
     this.leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
     this.now = options.now ?? ((): number => Date.now());
     this.generateToken = options.generateToken ?? ((): string => randomBytes(32).toString("base64url"));
@@ -75,129 +67,116 @@ export class RunOwnershipService {
     this.generateJobId = options.generateJobId ?? ((): string => randomBytes(16).toString("hex"));
   }
 
-  /**
-   * Grant a fresh, single-owner lease for a job. A run may only ever be granted
-   * once; a second grant for the same `runId` is a hard ownership violation.
-   */
-  grant(job: AcceptedExecutionJob, owner: LeaseOwner): ExecutionJobLease {
-    const existing = this.records.get(job.runId);
-    if (existing !== undefined) {
+  async grant(job: AcceptedExecutionJob, owner: LeaseOwner): Promise<ExecutionJobLease> {
+    const leaseToken = this.generateToken();
+    const leaseEpoch = 1;
+    const expiresAt = new Date(this.now() + this.leaseDurationMs).toISOString();
+    const recoveryOfRunId = this.pendingRecoveryOf.get(job.runId);
+    const outcome = await this.store.grantLease({
+      job,
+      owner,
+      leaseEpoch,
+      leaseTokenHash: hashToken(leaseToken),
+      expiresAt,
+      ...(recoveryOfRunId === undefined ? {} : { recoveryOfRunId }),
+    });
+    if (outcome === "already_exists") {
       throw new CoreApplicationError(
         "RunOwnershipViolation",
         `run ${job.runId} already has an owner and is never re-granted`,
         { details: { runId: job.runId } },
       );
     }
-    const leaseToken = this.generateToken();
-    const leaseEpoch = 1;
-    const expiresAtMs = this.now() + this.leaseDurationMs;
-    this.records.set(job.runId, {
-      job,
-      owner,
-      leaseEpoch,
-      leaseTokenHash: hashToken(leaseToken),
-      expiresAtMs,
-      lost: false,
-      completed: false,
-    });
+    this.pendingRecoveryOf.delete(job.runId);
     return {
       jobId: job.jobId,
       runId: job.runId,
       leaseToken,
       leaseEpoch,
-      expiresAt: new Date(expiresAtMs).toISOString(),
+      expiresAt,
     };
   }
 
-  /**
-   * Extend a held lease. Renew keeps the same epoch and only pushes out the
-   * conservative deadline. A wrong token, superseded epoch, or a lease that is
-   * already lost/expired throws `LeaseLost` rather than silently re-authorizing.
-   */
-  renew(lease: ExecutionJobLease): ExecutionJobLease {
-    const record = this.requireLiveOwnershipForToken(lease);
-    record.expiresAtMs = this.now() + this.leaseDurationMs;
+  async renew(lease: ExecutionJobLease): Promise<ExecutionJobLease> {
+    const record = await this.requireLiveLease(lease);
+    const newExpiresAt = new Date(this.now() + this.leaseDurationMs).toISOString();
+    const renewed = await this.store.renewLease({
+      runId: lease.runId,
+      jobId: lease.jobId,
+      owner: record.owner,
+      leaseEpoch: lease.leaseEpoch,
+      leaseTokenHash: hashToken(lease.leaseToken),
+      checkedAt: new Date(this.now()).toISOString(),
+      newExpiresAt,
+    });
+    if (!renewed) {
+      throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is no longer valid`, {
+        details: { runId: lease.runId },
+      });
+    }
     return {
       jobId: lease.jobId,
       runId: lease.runId,
       leaseToken: lease.leaseToken,
       leaseEpoch: record.leaseEpoch,
-      expiresAt: new Date(record.expiresAtMs).toISOString(),
+      expiresAt: newExpiresAt,
     };
   }
 
-  /**
-   * Complete a run under its lease. A lease that has expired or been lost can
-   * never complete a run; the caller receives `LeaseLost` and the server decides
-   * recovery from the Trace it already holds.
-   */
-  complete(lease: ExecutionJobLease): void {
-    const record = this.requireMatchingLease(lease);
-    if (record.completed) {
-      return;
+  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<void> {
+    const record = await this.requireMatchingLease(lease);
+    const outcome = await this.store.completeLease({
+      runId: lease.runId,
+      jobId: lease.jobId,
+      owner: record.owner,
+      leaseEpoch: lease.leaseEpoch,
+      leaseTokenHash: hashToken(lease.leaseToken),
+      checkedAt: new Date(this.now()).toISOString(),
+      completion,
+    });
+    if (outcome === "rejected") {
+      throw new CoreApplicationError(
+        "RunOwnershipViolation",
+        `completion for run ${lease.runId} conflicts with the stored terminal result`,
+        { details: { runId: lease.runId } },
+      );
     }
-    record.completed = true;
   }
 
-  /** True only while the lease is valid: correct token, current epoch, owned, not lost/expired. */
-  mayStartAction(lease: ExecutionJobLease): boolean {
-    const record = this.records.get(lease.runId);
-    if (record === undefined || record.lost || record.completed) {
+  async mayStartAction(lease: ExecutionJobLease): Promise<boolean> {
+    const record = await this.store.lease(lease.runId);
+    if (record === undefined || record.lostAt !== undefined || record.completedAt !== undefined) {
       return false;
     }
     if (record.leaseEpoch !== lease.leaseEpoch) {
       return false;
     }
-    if (record.expiresAtMs <= this.now()) {
+    if (record.expiresAt <= new Date(this.now()).toISOString()) {
       return false;
     }
     return constantTimeEquals(record.leaseTokenHash, hashToken(lease.leaseToken));
   }
 
-  markLost(runId: string, _reason: LeaseLostReason = "revoked"): void {
-    const record = this.records.get(runId);
-    if (record !== undefined) {
-      record.lost = true;
-    }
+  async markLost(runId: string, _reason: LeaseLostReason = "revoked"): Promise<void> {
+    await this.store.markLeaseLost(runId, new Date(this.now()).toISOString());
   }
 
-  /**
-   * Create a fresh recovery attempt for a lost run. The recovery is a brand new
-   * `runId` that records `recoveryOfRunId`; the original `runId` is marked lost
-   * and never re-assigned to any Runner. The new job is returned un-granted so a
-   * caller must explicitly re-offer it.
-   */
-  createRecoveryRun(lostRunId: string): AcceptedExecutionJob {
-    const record = this.records.get(lostRunId);
+  async createRecoveryRun(lostRunId: string): Promise<AcceptedExecutionJob> {
+    const record = await this.store.lease(lostRunId);
     if (record === undefined) {
       throw new CoreApplicationError("UnknownRun", `run ${lostRunId} is not known`, {
         details: { runId: lostRunId },
       });
     }
-    record.lost = true;
+    await this.store.markLeaseLost(lostRunId, new Date(this.now()).toISOString());
     const runId = this.generateRunId();
     const jobId = this.generateJobId();
-    const recovery: AcceptedExecutionJob = recoveryJob(record.job, jobId, runId);
-    this.records.set(runId, {
-      job: recovery,
-      owner: record.owner,
-      leaseEpoch: 0,
-      leaseTokenHash: "",
-      expiresAtMs: 0,
-      lost: false,
-      completed: false,
-      recoveryOfRunId: lostRunId,
-    });
-    return recovery;
+    this.pendingRecoveryOf.set(runId, lostRunId);
+    return recoveryJob(record.job, jobId, runId);
   }
 
-  /**
-   * Authorize a Trace upload for a run. Only the original owning Runner identity
-   * may upload Trace for a run — even after its lease is lost — so a second
-   * Runner can never replay or forge Trace for another Runner's run.
-   */
-  authorizeTraceUpload(identity: AuthenticatedRunnerContext, batch: ExecutionEventBatch): void {
-    const record = this.records.get(batch.runId);
+  async authorizeTraceUpload(identity: AuthenticatedRunnerContext, batch: ExecutionEventBatch): Promise<void> {
+    const record = await this.store.lease(batch.runId);
     if (record === undefined) {
       throw new CoreApplicationError("RunOwnershipViolation", `run ${batch.runId} has no owner`, {
         details: { runId: batch.runId },
@@ -212,17 +191,21 @@ export class RunOwnershipService {
     }
   }
 
-  ownerOf(runId: string): LeaseOwner | undefined {
-    return this.records.get(runId)?.owner;
+  async ownerOf(runId: string): Promise<LeaseOwner | undefined> {
+    return (await this.store.lease(runId))?.owner;
   }
 
-  recoveryOf(runId: string): string | undefined {
-    return this.records.get(runId)?.recoveryOfRunId;
+  async recoveryOf(runId: string): Promise<string | undefined> {
+    return this.pendingRecoveryOf.get(runId) ?? (await this.store.lease(runId))?.recoveryOfRunId;
   }
 
-  private requireLiveOwnershipForToken(lease: ExecutionJobLease): OwnershipRecord {
-    const record = this.requireMatchingLease(lease);
-    if (record.completed) {
+  async completionOf(runId: string): Promise<ExecutionCompletion | undefined> {
+    return this.store.completion(runId);
+  }
+
+  private async requireLiveLease(lease: ExecutionJobLease) {
+    const record = await this.requireMatchingLease(lease);
+    if (record.completedAt !== undefined) {
       throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is completed`, {
         details: { runId: lease.runId },
       });
@@ -230,15 +213,15 @@ export class RunOwnershipService {
     return record;
   }
 
-  private requireMatchingLease(lease: ExecutionJobLease): OwnershipRecord {
-    const record = this.records.get(lease.runId);
+  private async requireMatchingLease(lease: ExecutionJobLease) {
+    const record = await this.store.lease(lease.runId);
     if (record === undefined) {
       throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no active lease`, {
         details: { runId: lease.runId },
       });
     }
     if (
-      record.lost ||
+      record.lostAt !== undefined ||
       record.leaseEpoch !== lease.leaseEpoch ||
       !constantTimeEquals(record.leaseTokenHash, hashToken(lease.leaseToken))
     ) {
@@ -246,8 +229,8 @@ export class RunOwnershipService {
         details: { runId: lease.runId },
       });
     }
-    if (record.expiresAtMs <= this.now()) {
-      record.lost = true;
+    if (record.expiresAt <= new Date(this.now()).toISOString()) {
+      await this.store.markLeaseLost(lease.runId, new Date(this.now()).toISOString());
       throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} has expired`, {
         details: { runId: lease.runId },
       });

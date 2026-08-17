@@ -34,13 +34,12 @@ const DEFAULT_LEASE_DURATION_MS = 30_000;
  * Owns the Offer/accept/renew/complete lifecycle on top of the authoritative
  * {@link RunOwnershipService}. Capability negotiation happens before any Job
  * payload is offered, so a required capability the Runner does not advertise
- * produces an explicit {@link CoreDaemonError} `CapabilityMismatch` rather than a
- * silent downgrade. Accept is idempotent: the same Offer always returns the same
- * Lease.
+ * produces an explicit {@link CoreApplicationError} `CapabilityMismatch` rather
+ * than a silent downgrade. Accept is idempotent: the same Offer always returns
+ * the same Lease.
  */
 export class ExecutionJobService {
   private readonly offers = new Map<string, PendingOffer>();
-  private readonly completions = new Map<string, ExecutionCompletion>();
   private readonly leaseDurationMs: number;
   private readonly generateOfferId: () => string;
 
@@ -57,7 +56,7 @@ export class ExecutionJobService {
    * when the Runner does not advertise every required capability; in that case no
    * Offer is stored and no Job payload is exposed.
    */
-  offer(request: OfferRequest): ExecutionJobOffer {
+  async offer(request: OfferRequest): Promise<ExecutionJobOffer> {
     const negotiation = negotiateCapabilities(request.capabilities, request.requiredCapabilities);
     if (negotiation.outcome === "rejected") {
       throw new CoreApplicationError("CapabilityMismatch", "runner is missing required capabilities", {
@@ -76,7 +75,7 @@ export class ExecutionJobService {
   }
 
   /** Accept an Offer, granting (or re-returning) its single-owner Lease. */
-  accept(offerId: string): ExecutionJobLease {
+  async accept(offerId: string): Promise<ExecutionJobLease> {
     const pending = this.offers.get(offerId);
     if (pending === undefined) {
       throw new CoreApplicationError("UnknownOffer", `offer ${offerId} is not known`);
@@ -84,26 +83,21 @@ export class ExecutionJobService {
     if (pending.lease !== undefined) {
       return pending.lease;
     }
-    const lease = this.ownership.grant(pending.offer.job, pending.owner);
+    const lease = await this.ownership.grant(pending.offer.job, pending.owner);
     pending.lease = lease;
     return lease;
   }
 
-  renew(lease: ExecutionJobLease): ExecutionJobLease {
+  async renew(lease: ExecutionJobLease): Promise<ExecutionJobLease> {
     return this.ownership.renew(lease);
   }
 
-  complete(lease: ExecutionJobLease, completion: ExecutionCompletion): void {
-    const existing = this.completions.get(lease.runId);
-    if (existing !== undefined) {
-      return;
-    }
-    this.ownership.complete(lease);
-    this.completions.set(lease.runId, completion);
+  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<void> {
+    await this.ownership.complete(lease, completion);
   }
 
-  completionOf(runId: string): ExecutionCompletion | undefined {
-    return this.completions.get(runId);
+  async completionOf(runId: string): Promise<ExecutionCompletion | undefined> {
+    return this.ownership.completionOf(runId);
   }
 
   leaseOf(runId: string): ExecutionJobLease | undefined {

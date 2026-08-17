@@ -19,6 +19,7 @@
     "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
+    "@qualigence/runner-control": "workspace:*",
     "@qualigence/in-memory-runner-protocol": "workspace:*",
     "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",

@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sql } from "kysely";
 import { SqliteRuntime, SUPPORTED_SCHEMA_VERSION } from "@qualigence/sqlite-runtime";
 import {
   relationalTableNames,
@@ -41,7 +42,62 @@ describe("shared relational schema catalog", () => {
   });
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(5);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(6);
+  });
+
+  it("freezes migration-006 runner-control tables, hashed-only tokens, and active indexes", async () => {
+    const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      expect(await runtime.schemaVersion()).toBe(6);
+      expect(await tableColumns(runtime, "runner_sessions")).toEqual([
+        "session_id",
+        "runner_id",
+        "certificate_fingerprint",
+        "capabilities_json",
+        "protocol_major",
+        "created_at",
+        "closed_at",
+      ]);
+      expect(await tableColumns(runtime, "runner_resume_tokens")).toEqual([
+        "token_hash",
+        "runner_id",
+        "certificate_fingerprint",
+        "previous_session_id",
+        "protocol_major",
+        "expires_at",
+        "consumed_at",
+      ]);
+      expect(await tableColumns(runtime, "execution_leases")).toEqual([
+        "run_id",
+        "job_id",
+        "runner_id",
+        "session_id",
+        "lease_epoch",
+        "job_json",
+        "lease_token_hash",
+        "expires_at",
+        "lost_at",
+        "completed_at",
+        "recovery_of_run_id",
+      ]);
+      expect(await tableColumns(runtime, "execution_completions")).toEqual([
+        "run_id",
+        "job_id",
+        "completion_json",
+        "completed_at",
+      ]);
+      expect(await columnNames(runtime)).not.toEqual(
+        expect.arrayContaining(["lease_token", "resume_token", "token"]),
+      );
+      expect(await indexSql(runtime, "runner_sessions_active_runner_id")).toMatch(
+        /runner_sessions"?\s*\(\s*"?runner_id"?\s*\).*closed_at IS NULL/is,
+      );
+      expect(await indexSql(runtime, "runner_resume_tokens_unconsumed_expiry")).toMatch(
+        /runner_resume_tokens"?\s*\(\s*"?expires_at"?\s*\).*consumed_at IS NULL/is,
+      );
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("marks every table except schema_migrations as tenant-owned", () => {
@@ -67,3 +123,41 @@ describe("shared relational schema catalog", () => {
     }
   });
 });
+
+interface SqliteColumnInfo {
+  readonly name: string;
+}
+
+async function tableColumns(
+  runtime: SqliteRuntime,
+  table: string,
+): Promise<readonly string[]> {
+  const result = await sql<SqliteColumnInfo>`PRAGMA table_info(${sql.raw(table)})`.execute(
+    runtime.db,
+  );
+  return result.rows.map((row) => row.name);
+}
+
+async function columnNames(runtime: SqliteRuntime): Promise<readonly string[]> {
+  const names: string[] = [];
+  for (const table of [
+    "runner_sessions",
+    "runner_resume_tokens",
+    "execution_leases",
+    "execution_completions",
+  ]) {
+    names.push(...(await tableColumns(runtime, table)));
+  }
+  return names;
+}
+
+async function indexSql(runtime: SqliteRuntime, name: string): Promise<string> {
+  const row = await runtime.db
+    .selectFrom("sqlite_master")
+    .select("sql")
+    .where("type", "=", "index")
+    .where("name", "=", name)
+    .executeTakeFirst();
+  expect(row?.sql, `index ${name}`).toEqual(expect.any(String));
+  return row?.sql ?? "";
+}

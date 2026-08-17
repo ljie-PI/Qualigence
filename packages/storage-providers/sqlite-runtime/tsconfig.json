@@ -21,6 +21,7 @@
     { "path": "../../core-modules/review" },
     { "path": "../../runner-components/recording" },
     { "path": "../relational-kysely" },
+    { "path": "../../core-modules/runner-control" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../../shared-kernel" }
   ]

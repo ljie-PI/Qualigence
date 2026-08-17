@@ -645,3 +645,21 @@ reported no Critical or Important findings.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 Task 10 starts.
+
+## Task 10 — Persist Core Runner sessions, leases, resume tokens, and completions
+
+component: complete
+production_wiring: present
+verification: not_run
+introducing_pr: `codex/pr6-runner-control-persistence`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner/disconnect-recovery.test.ts`
+
+Adds additive migration 006 and a provider-neutral `RunnerControlStore`.
+SQLite and PostgreSQL adapters share one contract for hashed resume
+consumption, lease CAS, and canonical-equivalent completion. Production
+Core opens `SqliteRunnerControlStore` before bind.
+
+RED: schema version was 5 and the four services used in-memory maps.
+
+GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.

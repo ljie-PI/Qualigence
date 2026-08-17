@@ -8,13 +8,12 @@ import type {
   RunnerHello,
   RunnerWelcome,
 } from "@qualigence/runner-protocol";
-import { negotiateProtocolMajor } from "@qualigence/runner-protocol";
-import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import { advertisedCapabilityTokens, negotiateProtocolMajor } from "@qualigence/runner-protocol";
+import type { AuthenticatedRunnerContext, RunnerControlStore } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 import type { RunnerResumeTokenService } from "./runner-resume-token-service.js";
 import type { RunOwnershipService } from "./run-ownership-service.js";
 
-/** Negotiated server parameters advertised to every Runner in its Welcome. */
 export interface SessionWelcomeParameters {
   readonly serverVersion: string;
   readonly heartbeatIntervalMs: number;
@@ -26,10 +25,12 @@ export interface SessionWelcomeParameters {
 }
 
 export interface RunnerSessionServiceOptions {
+  readonly store: RunnerControlStore;
   readonly welcome: SessionWelcomeParameters;
   readonly resumeTokens: RunnerResumeTokenService;
   readonly traceIngestor: TraceIngestor;
   readonly ownership?: RunOwnershipService;
+  readonly now?: () => number;
   readonly generateSessionId?: () => string;
 }
 
@@ -48,18 +49,22 @@ export interface RunnerSessionRecord {
  * is an explicit structured rejection — never a silent downgrade.
  */
 export class RunnerSessionService {
-  private readonly sessions = new Map<string, RunnerSessionRecord>();
+  private readonly live = new Map<string, RunnerSessionRecord>();
+  private readonly store: RunnerControlStore;
   private readonly welcome: SessionWelcomeParameters;
   private readonly resumeTokens: RunnerResumeTokenService;
   private readonly traceIngestor: TraceIngestor;
   private readonly ownership: RunOwnershipService | undefined;
+  private readonly now: () => number;
   private readonly generateSessionId: () => string;
 
   constructor(options: RunnerSessionServiceOptions) {
+    this.store = options.store;
     this.welcome = options.welcome;
     this.resumeTokens = options.resumeTokens;
     this.traceIngestor = options.traceIngestor;
     this.ownership = options.ownership;
+    this.now = options.now ?? ((): number => Date.now());
     this.generateSessionId = options.generateSessionId ?? ((): string => randomUUID());
   }
 
@@ -69,7 +74,7 @@ export class RunnerSessionService {
    * resume token is unknown, expired, consumed, or bound to a different identity.
    * A fresh single-use resume token is issued on every successful handshake.
    */
-  register(hello: RunnerHello, identity: AuthenticatedRunnerContext): RunnerWelcome {
+  async register(hello: RunnerHello, identity: AuthenticatedRunnerContext): Promise<RunnerWelcome> {
     const negotiation = negotiateProtocolMajor(hello.supportedProtocolMajors);
     if (negotiation.outcome === "rejected") {
       throw new CoreApplicationError("ProtocolVersionMismatch", "no shared protocol major", {
@@ -83,7 +88,7 @@ export class RunnerSessionService {
 
     let sessionId = this.generateSessionId();
     if (hello.resumeToken !== undefined) {
-      const binding = this.resumeTokens.use(hello.resumeToken, {
+      const binding = await this.resumeTokens.use(hello.resumeToken, {
         runnerId: identity.runnerId,
         certificateFingerprint: identity.certificateFingerprint,
         protocolMajor,
@@ -91,14 +96,25 @@ export class RunnerSessionService {
       sessionId = binding.previousSessionId;
     }
 
-    this.sessions.set(sessionId, {
+    const createdAt = new Date(this.now()).toISOString();
+    await this.store.saveSession({
+      sessionId,
+      runnerId: identity.runnerId,
+      certificateFingerprint: identity.certificateFingerprint,
+      capabilities: [...advertisedCapabilityTokens(hello.capabilities)],
+      protocolMajor,
+      createdAt,
+    });
+
+    const record: RunnerSessionRecord = {
       sessionId,
       identity,
       capabilities: hello.capabilities,
       protocolMajor,
-    });
+    };
+    this.live.set(sessionId, record);
 
-    const resumeToken = this.resumeTokens.issue({
+    const resumeToken = await this.resumeTokens.issue({
       runnerId: identity.runnerId,
       certificateFingerprint: identity.certificateFingerprint,
       previousSessionId: sessionId,
@@ -120,11 +136,12 @@ export class RunnerSessionService {
   }
 
   session(sessionId: string): RunnerSessionRecord | undefined {
-    return this.sessions.get(sessionId);
+    return this.live.get(sessionId);
   }
 
-  closeSession(sessionId: string): void {
-    this.sessions.delete(sessionId);
+  async closeSession(sessionId: string): Promise<void> {
+    this.live.delete(sessionId);
+    await this.store.closeSession(sessionId, new Date(this.now()).toISOString());
   }
 
   /**
@@ -136,12 +153,12 @@ export class RunnerSessionService {
    * original owning Runner identity may upload Trace for a run.
    */
   async ingest(sessionId: string, batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
-    const session = this.sessions.get(sessionId);
+    const session = this.live.get(sessionId);
     if (session === undefined) {
       throw new CoreApplicationError("UnknownSession", `session ${sessionId} is not known`);
     }
     if (this.ownership !== undefined) {
-      this.ownership.authorizeTraceUpload(session.identity, batch);
+      await this.ownership.authorizeTraceUpload(session.identity, batch);
     }
 
     let nextExpectedSequenceNumber = batch.firstSequenceNumber;
@@ -158,8 +175,6 @@ export class RunnerSessionService {
           nextExpectedSequenceNumber = result.nextSequenceNumber;
           break;
         case "sequence_gap":
-          // Stop at the gap and ask the Runner to resume from the expected
-          // sequence; nothing past the gap is accepted.
           return {
             batchId: batch.batchId,
             runId: batch.runId,

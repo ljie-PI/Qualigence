@@ -83,7 +83,7 @@ describe("Core runner protocol production composition", () => {
     const renewed = await session.renew(lease);
     const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
     await session.complete(renewed, completion);
-    await expect.poll(() => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
+    await expect.poll(async () => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
 
     await expect(session.renew({ ...renewed, leaseToken: "wrong" })).rejects.toMatchObject({
       code: "LeaseLost",
@@ -164,7 +164,7 @@ describe("Core runner protocol production composition", () => {
     const offer = await session2.nextOffer(new AbortController().signal);
     const lease = await session2.accept(offer.offerId);
     await expect(leasePromise).resolves.toEqual(lease);
-    expect(second.application.ownership.ownerOf(job.runId)).toEqual({
+    await expect(second.application.ownership.ownerOf(job.runId)).resolves.toEqual({
       runnerId: "runner-1",
       sessionId: session2.welcome.sessionId,
     });
@@ -207,7 +207,7 @@ describe("Core runner protocol production composition", () => {
     expect((await session2.submit(batch(original))).nextExpectedSequenceNumber).toBe(2);
     const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
     await session2.complete(lease, completion);
-    await expect.poll(() => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
+    await expect.poll(async () => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
     const renewed = await session2.renew(lease).catch((error: unknown) => error);
     expect(renewed).toMatchObject({ code: "LeaseLost" });
   });

@@ -99,7 +99,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   accept(sessionId: string, offerId: string): Promise<ExecutionJobLease> {
     return this.serialize(async () => {
       this.requireSession(sessionId);
-      const lease = this.jobs.accept(offerId);
+      const lease = await this.jobs.accept(offerId);
       const offered = this.offersByRun.get(lease.runId);
       if (offered !== undefined) {
         await this.recordRun?.(offered.offer.job);
@@ -109,8 +109,8 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   }
 
   renew(sessionId: string, lease: ExecutionJobLease): Promise<ExecutionJobLease> {
-    return this.serialize(() => {
-      this.requireOwner(sessionId, lease.runId);
+    return this.serialize(async () => {
+      await this.requireOwner(sessionId, lease.runId);
       return this.jobs.renew(lease);
     });
   }
@@ -124,27 +124,21 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     lease: ExecutionJobLease,
     completion: ExecutionCompletion,
   ): Promise<void> {
-    return this.serialize(() => {
-      this.requireOwner(sessionId, lease.runId);
-      const held = this.jobs.leaseOf(lease.runId);
-      if (held === undefined) {
-        throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no accepted lease`);
-      }
-      this.jobs.complete(held, completion);
+    return this.serialize(async () => {
+      await this.requireOwner(sessionId, lease.runId);
+      await this.jobs.complete(lease, completion);
     });
   }
 
   closeSession(sessionId: string): Promise<void> {
-    return this.serialize(() => {
-      this.sessions.closeSession(sessionId);
-    });
+    return this.serialize(() => this.sessions.closeSession(sessionId));
   }
 
-  private createOfferSerialized(
+  private async createOfferSerialized(
     sessionId: string,
     job: AcceptedExecutionJob,
     requirements: readonly string[],
-  ): ExecutionJobOffer {
+  ): Promise<ExecutionJobOffer> {
     const session = this.requireSession(sessionId);
     const canonical = canonicalPayloadHash({ job, requirements: [...requirements] });
     const byJob = this.offersByJob.get(job.jobId);
@@ -165,7 +159,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
       return byJob.offer;
     }
 
-    const offer = this.jobs.offer({
+    const offer = await this.jobs.offer({
       owner: { runnerId: session.identity.runnerId, sessionId },
       capabilities: session.capabilities,
       job,
@@ -185,9 +179,9 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     return session;
   }
 
-  private requireOwner(sessionId: string, runId: string): void {
+  private async requireOwner(sessionId: string, runId: string): Promise<void> {
     const session = this.requireSession(sessionId);
-    const owner = this.ownership.ownerOf(runId);
+    const owner = await this.ownership.ownerOf(runId);
     if (
       owner === undefined ||
       owner.sessionId !== sessionId ||

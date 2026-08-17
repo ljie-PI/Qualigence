@@ -1,53 +1,24 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import type {
+  ResumePresentedIdentity,
+  ResumeTokenBinding,
+  RunnerControlStore,
+} from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 
-/**
- * The identity and protocol context a resume credential is bound to when it is
- * issued. A token can only ever be redeemed by presenting the exact same Runner
- * certificate identity and protocol major it was issued against.
- */
-export interface ResumeTokenBinding {
-  readonly runnerId: string;
-  readonly certificateFingerprint: string;
-  readonly previousSessionId: string;
-  readonly protocolMajor: number;
-}
-
-/**
- * The identity a Runner presents on reconnect. It never carries the previous
- * session id; that is looked up from the stored record so a peer cannot spoof it.
- */
-export interface ResumePresentedIdentity {
-  readonly runnerId: string;
-  readonly certificateFingerprint: string;
-  readonly protocolMajor: number;
-}
+export type { ResumePresentedIdentity, ResumeTokenBinding };
 
 export interface RunnerResumeTokenServiceOptions {
-  /** Time-to-live for a freshly issued resume token, in milliseconds. */
+  readonly store: RunnerControlStore;
   readonly ttlMs?: number;
   readonly now?: () => number;
   readonly generateToken?: () => string;
-}
-
-interface StoredResumeRecord {
-  readonly binding: ResumeTokenBinding;
-  readonly expiresAtMs: number;
 }
 
 const DEFAULT_RESUME_TTL_MS = 5 * 60 * 1000;
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
-function constantTimeEquals(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8");
-  const rightBuffer = Buffer.from(right, "utf8");
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 /**
@@ -59,49 +30,43 @@ function constantTimeEquals(left: string, right: string): boolean {
  * different Runner identity.
  */
 export class RunnerResumeTokenService {
-  private readonly records = new Map<string, StoredResumeRecord>();
+  private readonly store: RunnerControlStore;
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly generateToken: () => string;
 
-  constructor(options: RunnerResumeTokenServiceOptions = {}) {
+  constructor(options: RunnerResumeTokenServiceOptions) {
+    this.store = options.store;
     this.ttlMs = options.ttlMs ?? DEFAULT_RESUME_TTL_MS;
     this.now = options.now ?? ((): number => Date.now());
     this.generateToken = options.generateToken ?? ((): string => randomBytes(32).toString("base64url"));
   }
 
-  issue(binding: ResumeTokenBinding): string {
+  async issue(binding: ResumeTokenBinding): Promise<string> {
     const token = this.generateToken();
-    this.records.set(hashToken(token), {
+    await this.store.issueResumeToken({
+      tokenHash: hashToken(token),
       binding,
-      expiresAtMs: this.now() + this.ttlMs,
+      expiresAt: new Date(this.now() + this.ttlMs).toISOString(),
     });
     return token;
   }
 
   /**
-   * Redeem a resume token. Throws {@link CoreDaemonError} `RunnerResumeRejected`
+   * Redeem a resume token. Throws {@link CoreApplicationError} `RunnerResumeRejected`
    * when the token is unknown, already consumed, expired, or presented by a
    * different Runner identity/protocol major. The token is consumed whether or
    * not the binding matches, so a leaked token cannot be probed repeatedly.
    */
-  use(token: string, presented: ResumePresentedIdentity): ResumeTokenBinding {
-    const hash = hashToken(token);
-    const record = this.records.get(hash);
-    this.records.delete(hash);
-    if (record === undefined) {
-      throw new CoreApplicationError("RunnerResumeRejected", "unknown or already-consumed resume token");
+  async use(token: string, presented: ResumePresentedIdentity): Promise<ResumeTokenBinding> {
+    const binding = await this.store.consumeResumeToken({
+      tokenHash: hashToken(token),
+      presented,
+      consumedAt: new Date(this.now()).toISOString(),
+    });
+    if (binding === undefined) {
+      throw new CoreApplicationError("RunnerResumeRejected", "unknown, expired, or already-consumed resume token");
     }
-    if (record.expiresAtMs <= this.now()) {
-      throw new CoreApplicationError("RunnerResumeRejected", "resume token has expired");
-    }
-    if (
-      !constantTimeEquals(record.binding.runnerId, presented.runnerId) ||
-      !constantTimeEquals(record.binding.certificateFingerprint, presented.certificateFingerprint) ||
-      record.binding.protocolMajor !== presented.protocolMajor
-    ) {
-      throw new CoreApplicationError("RunnerResumeRejected", "resume token identity binding does not match");
-    }
-    return record.binding;
+    return binding;
   }
 }

@@ -4,6 +4,7 @@ import type {
   ExecutionEventBatch,
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
+import { InMemoryRunnerControlStore } from "@qualigence/runner-control";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { LeasedJobExecutor } from "../../../apps/runner/src/job-executor.js";
 import { TraceUploadPump } from "../../../apps/runner/src/trace-upload-pump.js";
@@ -114,16 +115,16 @@ describe("core/runner independent-process integration", () => {
     void session;
   });
 
-  it("grants a run to a single owner and refuses a second owner for the same run", () => {
-    const ownership = new RunOwnershipService();
+  it("grants a run to a single owner and refuses a second owner for the same run", async () => {
+    const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore() });
     const job = webJob();
 
-    ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
+    await ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
 
-    expect(() =>
+    await expect(
       ownership.grant(job, { runnerId: "runner-2", sessionId: "session-2" }),
-    ).toThrowError(/already has an owner/);
-    expect(ownership.ownerOf(job.runId)?.runnerId).toBe("runner-1");
+    ).rejects.toThrowError(/already has an owner/);
+    expect((await ownership.ownerOf(job.runId))?.runnerId).toBe("runner-1");
   });
 
   it("binds identity to the certificate: another runner's certificate cannot impersonate", async () => {

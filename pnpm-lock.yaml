@@ -339,6 +339,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:../../packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/runner-control
       '@qualigence/runner-kernel':
         specifier: workspace:*
         version: link:../../packages/runner-kernel
@@ -927,6 +930,12 @@ importers:
       '@qualigence/review':
         specifier: workspace:*
         version: link:../../core-modules/review
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:../../core-modules/runner-control
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
       kysely:
         specifier: 0.28.17
         version: 0.28.17
@@ -973,6 +982,9 @@ importers:
       '@qualigence/review':
         specifier: workspace:*
         version: link:../../core-modules/review
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:../../core-modules/runner-control
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
