@@ -15,6 +15,15 @@ export interface LeaseRenewalControllerDependencies {
   readonly delay?: RenewalDelay;
 }
 
+export class LeaseRenewalTimeoutError extends Error {
+  readonly code = "LeaseRenewalTimeout";
+
+  constructor(timeoutMs: number) {
+    super(`lease renewal timed out after ${timeoutMs}ms`);
+    this.name = "LeaseRenewalTimeoutError";
+  }
+}
+
 const timerDelay: RenewalDelay = {
   wait: (ms, signal) =>
     new Promise<void>((resolve, reject) => {
@@ -64,13 +73,31 @@ export class LeaseRenewalController {
       }
       if (renewalSignal.aborted) return;
 
-      try {
-        const renewedLease = await this.deps.session.renew(this.lease);
-        this.lease = renewedLease;
-        this.deps.window.renew(renewedLease);
-      } catch (error) {
-        if (renewalSignal.aborted) return;
-        this.fail(error);
+      const deadlineAbort = new AbortController();
+      const renewResult = Promise.resolve()
+        .then(() => this.deps.session.renew(this.lease))
+        .then(
+          (lease) => ({ kind: "renewed" as const, lease }),
+          (error: unknown) => ({ kind: "failed" as const, error }),
+        );
+      const deadlineResult = this.delay.wait(intervalMs, deadlineAbort.signal).then(
+        () => ({ kind: "timeout" as const }),
+        () => ({ kind: "deadline-cancelled" as const }),
+      );
+      const stopWaitAbort = new AbortController();
+      const stopResult = this.stopped(renewalSignal, stopWaitAbort.signal);
+      const result = await Promise.race([renewResult, deadlineResult, stopResult]);
+      deadlineAbort.abort();
+      stopWaitAbort.abort();
+
+      if (result.kind === "stopped" || renewalSignal.aborted) return;
+      if (result.kind === "timeout") {
+        this.fail(new LeaseRenewalTimeoutError(intervalMs));
+      }
+      if (result.kind === "failed") this.fail(result.error);
+      if (result.kind === "renewed") {
+        this.lease = result.lease;
+        this.deps.window.renew(result.lease);
       }
     }
   }
@@ -83,5 +110,24 @@ export class LeaseRenewalController {
     this.deps.window.close();
     this.deps.executionAbort.abort(error);
     throw error;
+  }
+
+  private stopped(
+    signal: AbortSignal,
+    waitSignal: AbortSignal,
+  ): Promise<{ readonly kind: "stopped" | "stop-wait-cancelled" }> {
+    if (signal.aborted) return Promise.resolve({ kind: "stopped" });
+    return new Promise((resolve) => {
+      const stopped = (): void => {
+        waitSignal.removeEventListener("abort", cancelled);
+        resolve({ kind: "stopped" });
+      };
+      const cancelled = (): void => {
+        signal.removeEventListener("abort", stopped);
+        resolve({ kind: "stop-wait-cancelled" });
+      };
+      signal.addEventListener("abort", stopped, { once: true });
+      waitSignal.addEventListener("abort", cancelled, { once: true });
+    });
   }
 }

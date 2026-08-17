@@ -2,7 +2,10 @@ export { RunnerAppError, isRunnerAppError } from "./errors.js";
 export type { RunnerAppErrorCode, RunnerAppErrorOptions } from "./errors.js";
 export { LeaseWindow } from "./lease-window.js";
 export type { LeaseWindowClocks, LeaseWindowOptions } from "./lease-window.js";
-export { LeaseRenewalController } from "./lease-renewal-controller.js";
+export {
+  LeaseRenewalController,
+  LeaseRenewalTimeoutError,
+} from "./lease-renewal-controller.js";
 export type {
   LeaseRenewalControllerDependencies,
   RenewalDelay,
