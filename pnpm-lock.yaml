@@ -143,6 +143,9 @@ importers:
       '@qualigence/runner':
         specifier: workspace:*
         version: link:apps/runner
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:packages/core-modules/runner-control
       '@qualigence/runner-identity':
         specifier: workspace:*
         version: link:packages/core-modules/runner-identity
@@ -321,6 +324,9 @@ importers:
       '@qualigence/artifact-fs':
         specifier: workspace:*
         version: link:../../packages/storage-providers/artifact-fs
+      '@qualigence/core-application':
+        specifier: workspace:*
+        version: link:../../packages/core-application
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../packages/core-modules/evidence
@@ -567,12 +573,21 @@ importers:
 
   packages/core-application:
     dependencies:
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../core-modules/evidence
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../core-modules/intelligence
       '@qualigence/postgres-runtime':
         specifier: workspace:*
         version: link:../storage-providers/postgres-runtime
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:../core-modules/runner-control
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../contracts/runner-protocol
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../shared-kernel
@@ -637,6 +652,12 @@ importers:
         version: link:../../contracts/desktop
 
   packages/core-modules/review: {}
+
+  packages/core-modules/runner-control:
+    dependencies:
+      '@qualigence/runner-protocol':
+        specifier: workspace:*
+        version: link:../../contracts/runner-protocol
 
   packages/core-modules/runner-identity:
     dependencies:
@@ -729,6 +750,9 @@ importers:
       '@grpc/proto-loader':
         specifier: ^0.7.15
         version: 0.7.15
+      '@qualigence/runner-control':
+        specifier: workspace:*
+        version: link:../../core-modules/runner-control
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol

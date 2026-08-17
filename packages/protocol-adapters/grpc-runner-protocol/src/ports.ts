@@ -9,6 +9,8 @@ import type {
   RunnerWelcome,
 } from "@qualigence/runner-protocol";
 
+export type { AuthenticatedRunnerContext, RunnerProtocolApplication } from "@qualigence/runner-control";
+
 /**
  * Core-facing seam for dispatching one execution attempt to a connected Runner.
  * The Core Daemon (LS-05 Task 4, out of scope here) drives this; the adapter's

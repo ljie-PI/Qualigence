@@ -38,6 +38,7 @@ const packages = [
   ["@qualigence/desktop-windows-uia", "mapUiaPayloadToObservationV1"],
   ["@qualigence/execution-application", "RunExecutionUseCaseImpl"],
   ["@qualigence/grpc-runner-protocol", "GrpcRunnerProtocolClient"],
+  ["@qualigence/runner-control", "RUNNER_CONTROL_PACKAGE"],
   ["@qualigence/core-daemon", "RunnerBackedRunResourceFactory"],
   ["@qualigence/runner", "RunnerClient"],
   ["@qualigence/investigation", "InvestigationCase"],

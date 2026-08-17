@@ -4,8 +4,10 @@ export { GrpcRunnerProtocolClient } from "./client.js";
 export type { GrpcRunnerProtocolClientOptions } from "./client.js";
 
 export type {
+  AuthenticatedRunnerContext,
   RunnerClientPort,
   RunnerConnectionPort,
+  RunnerProtocolApplication,
   RunnerSession,
   WelcomeParameters,
 } from "./ports.js";

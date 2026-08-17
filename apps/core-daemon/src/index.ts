@@ -3,27 +3,27 @@ export {
   type RunnerSessionServiceOptions,
   type RunnerSessionRecord,
   type SessionWelcomeParameters,
-} from "./runner/runner-session-service.js";
+} from "@qualigence/core-application";
 
 export {
   ExecutionJobService,
   type ExecutionJobServiceOptions,
   type OfferRequest,
-} from "./runner/execution-job-service.js";
+} from "@qualigence/core-application";
 
 export {
   RunOwnershipService,
   type RunOwnershipServiceOptions,
   type LeaseOwner,
   type LeaseLostReason,
-} from "./runner/run-ownership-service.js";
+} from "@qualigence/core-application";
 
 export {
   RunnerResumeTokenService,
   type RunnerResumeTokenServiceOptions,
   type ResumeTokenBinding,
   type ResumePresentedIdentity,
-} from "./runner/runner-resume-token-service.js";
+} from "@qualigence/core-application";
 
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
 

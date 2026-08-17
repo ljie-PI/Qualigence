@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AcceptedExecutionJob, ExecutionCompletion } from "@qualigence/runner-protocol";
 import { capabilities } from "@qualigence/runner-protocol";
-import { ExecutionJobService } from "../../../apps/core-daemon/src/runner/execution-job-service.js";
-import { RunOwnershipService } from "../../../apps/core-daemon/src/runner/run-ownership-service.js";
+import { ExecutionJobService, RunOwnershipService } from "@qualigence/core-application";
 
 function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
   return {

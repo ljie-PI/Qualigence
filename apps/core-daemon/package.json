@@ -15,6 +15,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/core-application": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
