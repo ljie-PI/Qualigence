@@ -16,7 +16,7 @@ export interface RunnerClientDependencies {
   readonly clientPort: RunnerClientPort;
   /** Build the handshake; the resume token is supplied on reconnect. */
   readonly makeHello: (resumeToken?: ResumeToken) => RunnerHello;
-  readonly executor: LeasedJobExecutor;
+  readonly executor: Pick<LeasedJobExecutor, "execute">;
   readonly spool: RunnerSpool;
 }
 

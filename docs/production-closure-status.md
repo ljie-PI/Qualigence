@@ -249,3 +249,38 @@ verification: passed
   Together with PR #36 (`ceeb857`), PR #37 (`7e24a9f`), PR #38 (`0820fd5`),
   and PR #39 (`89002cc`), Tasks 1-6 are now merged. Task 21 and release closure
   remain open for the four Windows quarantines and all other pending Tasks 7-22.
+
+## Task 7 - Runner lease renewal
+
+component: complete
+production_wiring: complete
+verification: passed
+implementation_commit: `PENDING (Task 7 commit)`
+
+### Runner lease renewal evidence log
+
+- 2026-08-17 - host: Microsoft Windows 11 Enterprise; Node `v24.13.0`;
+  Corepack pnpm `11.7.0`.
+- RED command: `corepack pnpm vitest run tests/unit/runner/job-executor.test.ts
+  tests/unit/runner/lease-renewal-controller.test.ts` exited 1 before the
+  controller existed: 2 failed files and 0 collected tests; the missing module
+  was `apps/runner/src/lease-renewal-controller.ts`.
+- Behavioral RED command after the required workspace build:
+  `corepack pnpm vitest run tests/unit/runner/job-executor.test.ts` exited 1:
+  1 failed and 3 passed tests. The renewal case expected the manually controlled
+  `20_000` ms (`leaseDurationMs / 3`) wait but observed no wait and renew count
+  remained 0, proving the existing executor never started lease renewal.
+- GREEN command, with `C:\Program Files\Git\usr\bin` prepended to `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`:
+  `corepack pnpm vitest run tests/unit/runner/lease-window.test.ts
+  tests/unit/runner/lease-renewal-controller.test.ts
+  tests/unit/runner/job-executor.test.ts
+  tests/component/core-runner/disconnect-recovery.test.ts` exited 0: 4 files,
+  18 passed, 0 failed, 0 skipped.
+- GREEN proves renewal starts after one third of the lease duration, replaces
+  the current lease and action window, runs concurrently with execution, stops
+  without another renew, permanently closes the action window on non-stop
+  failure, prevents a new action, preserves the failure, and completes with the
+  newest lease token.
+- `corepack pnpm typecheck` exited 0 after the final implementation.
+- `git diff --check` exited 0 after the final implementation.

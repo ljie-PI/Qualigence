@@ -2,6 +2,11 @@ export { RunnerAppError, isRunnerAppError } from "./errors.js";
 export type { RunnerAppErrorCode, RunnerAppErrorOptions } from "./errors.js";
 export { LeaseWindow } from "./lease-window.js";
 export type { LeaseWindowClocks, LeaseWindowOptions } from "./lease-window.js";
+export { LeaseRenewalController } from "./lease-renewal-controller.js";
+export type {
+  LeaseRenewalControllerDependencies,
+  RenewalDelay,
+} from "./lease-renewal-controller.js";
 export { SpoolingTraceRecorder, findingOf } from "./spooling-trace-recorder.js";
 export { TraceUploadPump } from "./trace-upload-pump.js";
 export type { TraceBatchSubmitter, TraceUploadPumpResult } from "./trace-upload-pump.js";
