@@ -94,6 +94,10 @@ export class ExecutionJobService {
   }
 
   complete(lease: ExecutionJobLease, completion: ExecutionCompletion): void {
+    const existing = this.completions.get(lease.runId);
+    if (existing !== undefined) {
+      return;
+    }
     this.ownership.complete(lease);
     this.completions.set(lease.runId, completion);
   }

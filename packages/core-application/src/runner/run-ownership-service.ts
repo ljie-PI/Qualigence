@@ -132,7 +132,10 @@ export class RunOwnershipService {
    * recovery from the Trace it already holds.
    */
   complete(lease: ExecutionJobLease): void {
-    const record = this.requireLiveOwnershipForToken(lease);
+    const record = this.requireMatchingLease(lease);
+    if (record.completed) {
+      return;
+    }
     record.completed = true;
   }
 
@@ -218,6 +221,16 @@ export class RunOwnershipService {
   }
 
   private requireLiveOwnershipForToken(lease: ExecutionJobLease): OwnershipRecord {
+    const record = this.requireMatchingLease(lease);
+    if (record.completed) {
+      throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is completed`, {
+        details: { runId: lease.runId },
+      });
+    }
+    return record;
+  }
+
+  private requireMatchingLease(lease: ExecutionJobLease): OwnershipRecord {
     const record = this.records.get(lease.runId);
     if (record === undefined) {
       throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no active lease`, {

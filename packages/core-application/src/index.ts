@@ -22,11 +22,13 @@ export type { ConsumeSummary } from "./intelligence/server-result-consumer.js";
 
 export {
   CoreApplicationError,
+  CoreRunnerProtocolApplication,
   isCoreApplicationError,
 } from "./runner/core-runner-protocol-application.js";
 export type {
   CoreApplicationErrorCode,
   CoreApplicationErrorOptions,
+  CoreRunnerProtocolApplicationOptions,
 } from "./runner/core-runner-protocol-application.js";
 export {
   RunnerSessionService,
