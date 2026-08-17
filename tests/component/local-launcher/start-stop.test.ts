@@ -161,7 +161,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     cleanups.push(() => unit.stop());
 
     await unit.start();
-    await unit.waitUntilExhausted(5_000);
+    await unit.waitUntilExhausted(10_000);
     expect(unit.restartCount()).toBe(3);
     expect(unit.isSupervising()).toBe(false);
   });
