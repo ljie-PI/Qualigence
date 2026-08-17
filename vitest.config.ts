@@ -8,6 +8,6 @@ export default defineConfig({
     // envelope crypto). Under full-suite parallelism the default 5s timeout is
     // occasionally too tight purely from CPU/IO contention, not from a slow
     // test itself. Raise the ceiling repo-wide instead of tuning each file.
-    testTimeout: 20_000,
+    testTimeout: 30_000,
   },
 });

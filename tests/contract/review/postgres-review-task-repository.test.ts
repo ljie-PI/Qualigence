@@ -1,7 +1,7 @@
 import { PostgresReviewTaskRepository } from "@qualigence/postgres-runtime";
 import { openReviewTask, type ReviewTask } from "@qualigence/review";
 import { Client } from "pg";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupServerFixture } from "../../helpers/server-fixture.js";
 import {
@@ -11,11 +11,47 @@ import {
   type ScopedReviewTaskRepository,
 } from "./review-task-repository.contract.js";
 
+let sharedContractFixture: Awaited<ReturnType<typeof setupServerFixture>> | undefined;
+
+async function resetReviewContractState(
+  fixture: Awaited<ReturnType<typeof setupServerFixture>>,
+): Promise<void> {
+  const admin = new Client({
+    host: fixture.container.host,
+    port: fixture.container.port,
+    database: fixture.container.database,
+    user: fixture.container.superuser,
+    password: fixture.container.password,
+  });
+  try {
+    await admin.connect();
+    await admin.query("TRUNCATE TABLE review_resolutions, review_claims, review_tasks");
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+}
+
+beforeAll(async () => {
+  if (!dockerAvailable()) {
+    throw new Error("DockerUnavailable: Review repository PostgreSQL contract requires Docker.");
+  }
+  sharedContractFixture = await setupServerFixture();
+}, 120_000);
+
+afterAll(async () => {
+  await sharedContractFixture?.stop();
+  sharedContractFixture = undefined;
+});
+
 async function createHarness(): Promise<ReviewRepositoryContractHarness> {
   if (!dockerAvailable()) {
     throw new Error("DockerUnavailable: Review repository PostgreSQL contract requires Docker.");
   }
-  const fixture = await setupServerFixture();
+  const fixture = sharedContractFixture;
+  if (fixture === undefined) {
+    throw new Error("PostgreSQL Review contract fixture was not initialized.");
+  }
+  await resetReviewContractState(fixture);
   const withRepository = <T>(operation: (repository: ScopedReviewTaskRepository) => Promise<T>) =>
     fixture.provider.withTenant("tenant-a", ({ db }) =>
       operation(scopeReviewRepository(new PostgresReviewTaskRepository(db), "tenant-a")),
@@ -58,11 +94,39 @@ async function createHarness(): Promise<ReviewRepositoryContractHarness> {
             };
       });
     },
-    close: () => fixture.stop(),
+    close: async () => {},
   };
 }
 
 reviewTaskRepositoryContract("PostgreSQL", createHarness);
+
+describe("PostgreSQL review contract fixture", () => {
+  it("clears review rows without reprovisioning the database", async () => {
+    const fixture = sharedContractFixture;
+    if (fixture === undefined) {
+      throw new Error("PostgreSQL Review contract fixture was not initialized.");
+    }
+    const reviewTask = openReviewTask({
+      taskId: "fixture-reset",
+      caseId: "fixture-reset:case",
+      reason: "needs_human",
+      priority: "high",
+      evidenceCompleteness: "limited",
+    });
+    await resetReviewContractState(fixture);
+    await fixture.provider.withTenant("tenant-a", ({ db }) =>
+      new PostgresReviewTaskRepository(db).create("tenant-a", reviewTask),
+    );
+
+    await resetReviewContractState(fixture);
+
+    await expect(
+      fixture.provider.withTenant("tenant-a", ({ db }) =>
+        new PostgresReviewTaskRepository(db).find("tenant-a", reviewTask.taskId),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
 
 describe("PostgreSQL review tenant and transaction boundaries", () => {
   it("keeps the same task id isolated between explicit tenant scopes", async () => {

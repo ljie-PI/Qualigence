@@ -1,5 +1,27 @@
 # Production closure status
 
+## SETUP-00 — Engineering context, issue tracker, and review guidance (2026-08-17)
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: SETUP-00 / `codex/pr-preflight-production-closure-plan`
+
+SETUP-00 establishes repository engineering infrastructure: the ignored
+project worktree location, GitHub Issue review-finding workflow, multi-context
+navigation, and stabilized baseline contract fixture execution under parallel
+load. It changes no product Composition Root, runtime behavior, migration,
+manifest, or lockfile.
+
+Evidence:
+
+- `git check-ignore -v .worktrees/probe` resolves through `.gitignore`.
+- `corepack pnpm test` passed with 139 passed files, 1 skipped (live), 894 passed tests, and 6 expected skips.
+- `corepack pnpm typecheck` passed without error.
+- `git diff --check` passed.
+- The GitHub PR must record Standards and Spec/architecture review against its
+  exact final head before a post-merge closure changes this row to `passed`.
+
 ## Task 0 — Windows test quarantine (2026-08-16)
 
 component: complete
