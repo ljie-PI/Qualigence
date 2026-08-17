@@ -298,5 +298,23 @@ implementation_commit: `a28da60`
   renew, deadline expiry fails closed with stable `LeaseRenewalTimeout`, and a
   late renew result cannot update the lease or action window.
 - After the review fix, `corepack pnpm typecheck` and `git diff --check` exited 0.
+- 2026-08-17 second-review RED: `corepack pnpm vitest run
+  tests/unit/runner/lease-renewal-controller.test.ts
+  tests/unit/runner/job-executor.test.ts` exited 1: 2 files, 3 failed and 8
+  passed tests. Stop won an already-started renew and discarded its successful
+  lease, renewal timeout did not close the session, and an `undefined` renew
+  rejection was mistaken for fulfillment.
+- 2026-08-17 second-review GREEN: with `C:\Program Files\Git\usr\bin` prepended
+  to `PATH` and `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
+  `corepack pnpm vitest run tests/unit/runner/lease-window.test.ts
+  tests/unit/runner/lease-renewal-controller.test.ts
+  tests/unit/runner/job-executor.test.ts
+  tests/component/core-runner/disconnect-recovery.test.ts` exited 0: 4 files,
+  21 passed, 0 failed, 0 skipped. Stop now cancels only the interval; an active
+  renew settles or reaches its deadline, successful settlement updates the
+  completion lease, timeout best-effort closes the session before failing
+  closed, and even an `undefined` rejection propagates.
+- After the second-review fix, `corepack pnpm typecheck` and `git diff --check`
+  exited 0. `verification` remains `not_run` pending final exact-head review.
 - The final exact-head Standards and Spec/architecture reviews must pass before
   a post-merge closure changes `verification` to `passed`.

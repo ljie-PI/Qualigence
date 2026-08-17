@@ -63,6 +63,7 @@ class FakeSession implements RunnerSession {
   };
   renewCalls: ExecutionJobLease[] = [];
   renewError: Error | undefined;
+  closeCalls = 0;
 
   async nextOffer(): Promise<ExecutionJobOffer> {
     throw new Error("not used");
@@ -79,7 +80,9 @@ class FakeSession implements RunnerSession {
     throw new Error("not used");
   }
   async complete(_lease: ExecutionJobLease, _result: ExecutionCompletion): Promise<void> {}
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+  }
 }
 
 function makeWindow(state = { monotonic: 1_000, wall: 100_000 }): LeaseWindow {
@@ -170,77 +173,7 @@ describe("LeaseRenewalController", () => {
     expect(executionAbort.signal.aborted).toBe(false);
   });
 
-  it("stops without waiting for an in-flight renew that never settles", async () => {
-    const session = new FakeSession();
-    session.renew = async (lease) => {
-      session.renewCalls.push(lease);
-      return new Promise<ExecutionJobLease>(() => {});
-    };
-    const delay = new ManualDelay();
-    const executionAbort = new AbortController();
-    const window = makeWindow();
-    const controller = new LeaseRenewalController({
-      session,
-      initialLease: INITIAL_LEASE,
-      window,
-      leaseDurationMs: 60_000,
-      executionAbort,
-      delay,
-    });
-
-    const running = controller.run(new AbortController().signal);
-    delay.release();
-    await viWaitFor(() => expect(session.renewCalls).toHaveLength(1));
-    controller.stop();
-
-    let settled = false;
-    running.then(() => {
-      settled = true;
-    });
-    await viWaitFor(() => expect(settled).toBe(true));
-    await expect(running).resolves.toBeUndefined();
-    expect(controller.currentLease()).toEqual(INITIAL_LEASE);
-    expect(window.mayStartAction()).toBe(true);
-    expect(executionAbort.signal.aborted).toBe(false);
-  });
-
-  it("fails closed when an in-flight renew exceeds its deadline", async () => {
-    const session = new FakeSession();
-    session.renew = async (lease) => {
-      session.renewCalls.push(lease);
-      return new Promise<ExecutionJobLease>(() => {});
-    };
-    const delay = new ManualDelay();
-    const executionAbort = new AbortController();
-    const window = makeWindow();
-    const controller = new LeaseRenewalController({
-      session,
-      initialLease: INITIAL_LEASE,
-      window,
-      leaseDurationMs: 60_000,
-      executionAbort,
-      delay,
-    });
-
-    const running = controller.run(new AbortController().signal);
-    delay.release();
-    await viWaitFor(() => expect(delay.waits).toEqual([20_000, 20_000]));
-    delay.release();
-
-    await expect(running).rejects.toMatchObject({
-      name: "LeaseRenewalTimeoutError",
-      code: "LeaseRenewalTimeout",
-      message: "lease renewal timed out after 20000ms",
-    });
-    expect(window.mayStartAction()).toBe(false);
-    expect(executionAbort.signal.aborted).toBe(true);
-    expect(executionAbort.signal.reason).toMatchObject({
-      name: "LeaseRenewalTimeoutError",
-    });
-    expect(controller.currentLease()).toEqual(INITIAL_LEASE);
-  });
-
-  it("ignores a successful renew that arrives after stop", async () => {
+  it("waits for an in-flight renew after stop and keeps its latest lease", async () => {
     const session = new FakeSession();
     let finishRenew: ((lease: ExecutionJobLease) => void) | undefined;
     session.renew = async (lease) => {
@@ -266,16 +199,63 @@ describe("LeaseRenewalController", () => {
     delay.release();
     await viWaitFor(() => expect(session.renewCalls).toHaveLength(1));
     controller.stop();
-    await running;
-
     state.monotonic = 56_000;
-    finishRenew?.(RENEWED_LEASE);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(controller.currentLease()).toEqual(INITIAL_LEASE);
     expect(window.mayStartAction()).toBe(false);
+
+    let settled = false;
+    running.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    finishRenew?.(RENEWED_LEASE);
+    await expect(running).resolves.toBeUndefined();
+    expect(controller.currentLease()).toEqual(RENEWED_LEASE);
+    expect(window.mayStartAction()).toBe(true);
     expect(executionAbort.signal.aborted).toBe(false);
+  });
+
+  it("fails closed when an in-flight renew exceeds its deadline", async () => {
+    const session = new FakeSession();
+    session.renew = async (lease) => {
+      session.renewCalls.push(lease);
+      return new Promise<ExecutionJobLease>(() => {});
+    };
+    const delay = new ManualDelay();
+    const executionAbort = new AbortController();
+    const window = makeWindow();
+    session.close = async () => {
+      session.closeCalls += 1;
+      expect(window.mayStartAction()).toBe(true);
+      throw new Error("transport close failed");
+    };
+    const controller = new LeaseRenewalController({
+      session,
+      initialLease: INITIAL_LEASE,
+      window,
+      leaseDurationMs: 60_000,
+      executionAbort,
+      delay,
+    });
+
+    const running = controller.run(new AbortController().signal);
+    delay.release();
+    await viWaitFor(() => expect(delay.waits).toEqual([20_000, 20_000]));
+    delay.release();
+
+    await expect(running).rejects.toMatchObject({
+      name: "LeaseRenewalTimeoutError",
+      code: "LeaseRenewalTimeout",
+      message: "lease renewal timed out after 20000ms",
+    });
+    expect(window.mayStartAction()).toBe(false);
+    expect(executionAbort.signal.aborted).toBe(true);
+    expect(executionAbort.signal.reason).toMatchObject({
+      name: "LeaseRenewalTimeoutError",
+    });
+    expect(session.closeCalls).toBe(1);
+    expect(controller.currentLease()).toEqual(INITIAL_LEASE);
   });
 });
 

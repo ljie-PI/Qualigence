@@ -84,14 +84,15 @@ export class LeaseRenewalController {
         () => ({ kind: "timeout" as const }),
         () => ({ kind: "deadline-cancelled" as const }),
       );
-      const stopWaitAbort = new AbortController();
-      const stopResult = this.stopped(renewalSignal, stopWaitAbort.signal);
-      const result = await Promise.race([renewResult, deadlineResult, stopResult]);
+      const result = await Promise.race([renewResult, deadlineResult]);
       deadlineAbort.abort();
-      stopWaitAbort.abort();
 
-      if (result.kind === "stopped" || renewalSignal.aborted) return;
       if (result.kind === "timeout") {
+        try {
+          await this.deps.session.close();
+        } catch {
+          // Preserve the authoritative renewal timeout after best-effort transport cancellation.
+        }
         this.fail(new LeaseRenewalTimeoutError(intervalMs));
       }
       if (result.kind === "failed") this.fail(result.error);
@@ -110,24 +111,5 @@ export class LeaseRenewalController {
     this.deps.window.close();
     this.deps.executionAbort.abort(error);
     throw error;
-  }
-
-  private stopped(
-    signal: AbortSignal,
-    waitSignal: AbortSignal,
-  ): Promise<{ readonly kind: "stopped" | "stop-wait-cancelled" }> {
-    if (signal.aborted) return Promise.resolve({ kind: "stopped" });
-    return new Promise((resolve) => {
-      const stopped = (): void => {
-        waitSignal.removeEventListener("abort", cancelled);
-        resolve({ kind: "stopped" });
-      };
-      const cancelled = (): void => {
-        signal.removeEventListener("abort", stopped);
-        resolve({ kind: "stop-wait-cancelled" });
-      };
-      signal.addEventListener("abort", stopped, { once: true });
-      waitSignal.addEventListener("abort", cancelled, { once: true });
-    });
   }
 }

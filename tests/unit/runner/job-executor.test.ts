@@ -277,6 +277,45 @@ describe("LeasedJobExecutor", () => {
     expect(executor.mayStartNextAction()).toBe(false);
   });
 
+  it("propagates an undefined renewal rejection", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseObservation: (() => void) | undefined;
+    const observationReady = new Promise<void>((resolve) => {
+      releaseObservation = resolve;
+    });
+    const observations = [
+      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
+      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+    ];
+    const executor = new LeasedJobExecutor(
+      baseDependencies(spool, state, {
+        renewalDelay: delay,
+        observer: {
+          capture: async () => {
+            await observationReady;
+            return observations.shift()!;
+          },
+        },
+      }),
+    );
+    const session = new FakeSession();
+    session.renew = async () => {
+      session.renewCalls += 1;
+      return Promise.reject(undefined);
+    };
+
+    const execution = executor.execute(offer([]), session);
+    await waitFor(() => expect(delay.waits).toEqual([20_000]));
+    delay.release();
+    await waitFor(() => expect(session.renewCalls).toBe(1));
+    releaseObservation?.();
+
+    await expect(execution).rejects.toBeUndefined();
+    expect(executor.mayStartNextAction()).toBe(false);
+  });
+
   it("blocks a new action locally once the lease window has closed", async () => {
     const spool = await newSpool();
     const state = { monotonic: 1_000, wall: 100_000 };

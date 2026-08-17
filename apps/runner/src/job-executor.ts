@@ -121,10 +121,10 @@ export class LeasedJobExecutor {
         ? controllerDependencies
         : { ...controllerDependencies, delay: this.deps.renewalDelay },
     );
-    let renewalError: unknown;
-    const renewal = controller.run(signal ?? new AbortController().signal).catch((error: unknown) => {
-      renewalError = error;
-    });
+    const renewal = controller.run(signal ?? new AbortController().signal).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
 
     const guardedExecutor: ActionExecutor = {
       execute: async (action: ResolvedAction, permit: ExecutionPermit) => {
@@ -150,8 +150,8 @@ export class LeasedJobExecutor {
       (error: unknown) => ({ status: "rejected" as const, error }),
     );
     controller.stop();
-    await renewal;
-    if (renewalError !== undefined) throw renewalError;
+    const renewalResult = await renewal;
+    if (renewalResult.status === "rejected") throw renewalResult.error;
     if (runtimeResult.status === "rejected") throw runtimeResult.error;
     return { lease: controller.currentLease(), completion: runtimeResult.completion, window };
   }
