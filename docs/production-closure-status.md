@@ -254,8 +254,10 @@ verification: passed
 
 component: complete
 production_wiring: complete
-verification: not_run
-implementation_commit: `a28da60`
+verification: passed
+implementation_commit: `a28da60`, review fixes through `634d9e8`
+merged_pr: `#43`
+merge_commit: `09afe8735b70a49e858fef377b41bb337567533b`
 
 ### Runner lease renewal evidence log
 
@@ -335,3 +337,23 @@ implementation_commit: `a28da60`
   exited 0. `verification` remains `not_run` pending final exact-head review.
 - The final exact-head Standards and Spec/architecture reviews must pass before
   a post-merge closure changes `verification` to `passed`.
+- Final exact-head Standards and Spec/architecture reviews against
+  `a9fd9b305db004cddc2036568afb0b30ce3f16cf...634d9e83741c025ccc030588859bd515c999f523`
+  reported no findings. PR #43 merged as `09afe8735b70a49e858fef377b41bb337567533b`.
+
+## PR5-SCOPE - Tasks 8-9 implementation scope repair
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-scope-prerequisite`
+
+Static implementation preflight stopped before edits because Task 8's required
+wrong-token renewal cannot be represented without adding the existing lease
+token to the `RenewLease` protobuf message and updating client/error/type
+conformance files outside its original Files block. Task 9 moves four services,
+but their four direct-import unit tests were also outside its Files block.
+
+This prerequisite changes only the temporary plan and status ledger. Its final
+exact-head Standards and Spec/architecture reviews must pass before Tasks 8-9
+resume.
