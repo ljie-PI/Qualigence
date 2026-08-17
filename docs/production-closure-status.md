@@ -612,3 +612,28 @@ reported no Critical or Important findings.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R5 starts.
+
+## PR5-R5 - Tasks 8-9 production activation
+
+component: complete
+production_wiring: present
+verification: not_run
+introducing_pr: `codex/pr5-r5-protocol-activation`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts`
+implementation_commits: `1b67756`
+
+Requires `application` and `authenticator` on the gRPC server, opens
+SQLite/Trace before bind, and emits readiness only after both succeed.
+Adds production composition tests for durable Trace, wrong-token renew,
+hash isolation, unaccepted-offer restart, and mTLS resume.
+
+RED: `startCoreDaemon` still used the pre-activation constructor and
+`core-composition.test.ts` did not exist.
+
+GREEN: the named R5 Gate plus
+`tests/component/core-runner/disconnect-recovery.test.ts` passed.
+`corepack pnpm smoke:node-imports` and `corepack pnpm typecheck` exited 0.
+
+Exact-head Standards and Spec/architecture reviews must pass before
+Task 10 starts.
