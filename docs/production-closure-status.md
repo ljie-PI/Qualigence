@@ -621,7 +621,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r5-protocol-activation`
 date: 2026-08-18
 exact_command: `corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts`
-implementation_commits: `1b67756`
+implementation_commits: `1b67756`, `061f31c`
 
 Requires `application` and `authenticator` on the gRPC server, opens
 SQLite/Trace before bind, and emits readiness only after both succeed.
@@ -634,6 +634,14 @@ RED: `startCoreDaemon` still used the pre-activation constructor and
 GREEN: the named R5 Gate plus
 `tests/component/core-runner/disconnect-recovery.test.ts` passed.
 `corepack pnpm smoke:node-imports` and `corepack pnpm typecheck` exited 0.
+
+Round-1 found Important adapter dummy-lease complete after resume and
+a raw `execution_runs` insert. `061f31c` completes with
+`jobs.leaseOf` and records runs through `SqliteRunStore`.
+
+Round-2 exact-head Standards and Spec/architecture reviews against
+`5e8dff4cde5b6215dbd4dc57226f847f57723cd5...061f31c`
+reported no Critical or Important findings.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 Task 10 starts.
