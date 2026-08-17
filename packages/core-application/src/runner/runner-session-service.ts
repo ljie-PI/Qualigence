@@ -81,15 +81,16 @@ export class RunnerSessionService {
     }
     const protocolMajor = negotiation.selectedProtocolMajor;
 
+    let sessionId = this.generateSessionId();
     if (hello.resumeToken !== undefined) {
-      this.resumeTokens.use(hello.resumeToken, {
+      const binding = this.resumeTokens.use(hello.resumeToken, {
         runnerId: identity.runnerId,
         certificateFingerprint: identity.certificateFingerprint,
         protocolMajor,
       });
+      sessionId = binding.previousSessionId;
     }
 
-    const sessionId = this.generateSessionId();
     this.sessions.set(sessionId, {
       sessionId,
       identity,
@@ -120,6 +121,10 @@ export class RunnerSessionService {
 
   session(sessionId: string): RunnerSessionRecord | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  closeSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
   }
 
   /**

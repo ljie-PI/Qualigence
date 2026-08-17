@@ -86,6 +86,21 @@ describe("RunnerSessionService", () => {
     expect(w2.sessionId).not.toBe(w1.sessionId);
   });
 
+  it("keeps the same session id across a successful resume", () => {
+    const { service } = makeService();
+    const first = service.register(hello("runner-1"), identity1);
+    const resumed = service.register(hello("runner-1", { resumeToken: first.resumeToken }), identity1);
+    expect(resumed.sessionId).toBe(first.sessionId);
+    expect(resumed.resumeToken).not.toBe(first.resumeToken);
+  });
+
+  it("removes only protocol session state on close", () => {
+    const { service } = makeService();
+    const first = service.register(hello("runner-1"), identity1);
+    service.closeSession(first.sessionId);
+    expect(service.session(first.sessionId)).toBeUndefined();
+  });
+
   it("rejects a hello with no shared protocol major", () => {
     const { service } = makeService();
     expect(() => service.register(hello("runner-1", { supportedProtocolMajors: [2] }), identity1)).toThrowError(
