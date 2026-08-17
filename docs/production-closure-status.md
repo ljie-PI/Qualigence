@@ -350,6 +350,8 @@ introducing_pr: `codex/pr5-scope-prerequisite`
 
 date: 2026-08-17
 implementation_commits: `3f1fd03`, `cf72455`
+merged_pr: `#44`
+merge_commit: `bfd6da2977691704cb3d2e92872cada9be5bc326`
 
 Static implementation preflight stopped before edits because Task 8's required
 wrong-token renewal cannot be represented without adding the existing lease
@@ -368,3 +370,37 @@ resume.
 - Commit `cf72455` fixed every initial review finding and `git diff --check`
   exited 0. The follow-up Spec/architecture review reported no findings; the
   Standards review required this ledger evidence correction before final review.
+- Final exact-head reviews against
+  `09afe8735b70a49e858fef377b41bb337567533b...8a882c7a3c067b67c67f9329a11781c1198cf56c`
+  reported no findings. PR #44 merged as `bfd6da2977691704cb3d2e92872cada9be5bc326`.
+
+## PR5-ATOMIC - Tasks 8-9 compilable delivery boundary
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-atomic-scope`
+date: 2026-08-17
+implementation_commits: `1cd9cdb`, `d071374`
+
+The implementation preflight proved Task 8 cannot be committed independently:
+making `GrpcRunnerProtocolServer` require its application and authenticator
+causes the existing production Core composition to fail typecheck, while Task 9
+owns the only valid application composition. A compatibility default or fake
+production application would violate Task 8.
+
+This prerequisite changes only the plan and status ledger. It requires Tasks 8
+and 9 to retain separate RED behavior but ship as one compilable commit, joint
+Gate, and exact-head two-axis review.
+
+- Task 8 focused RED command: `corepack pnpm vitest run
+  tests/conformance/runner-protocol/grpc-round-trip.test.ts` failed 6 of 6 cases
+  after transport
+  lifecycle authority moved behind the required application seam.
+- Root typecheck command: `corepack pnpm typecheck` failed with three TypeScript
+  errors because production Core still supplied legacy
+  `identity`/`welcome` options and its services imported the removed adapter
+  identity type, proving Task 9 is required before a valid commit.
+- `git diff --check` exited 0 before commit `1cd9cdb`.
+- Commit `d071374` added the named global/Terra exception, closed PR5-SCOPE, and
+  recorded the atomicity evidence. `git diff --check` exited 0 after that fix.
