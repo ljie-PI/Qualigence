@@ -273,14 +273,28 @@ describe("grpc runner protocol handshake", () => {
   });
 
   it("ignores a frame after the connection generation increments", async () => {
-    const { server, port } = await startTestServer(pki);
+    let enteredHandle = 0;
+    let releaseHandle!: () => void;
+    const beforeHandleFrame = new Promise<void>((resolve) => {
+      releaseHandle = resolve;
+    });
+    const { server, port } = await startTestServer(pki, {
+      beforeHandleFrame: async () => {
+        enteredHandle += 1;
+        await beforeHandleFrame;
+      },
+    });
     const cert = pki.clientFor("runner-1");
     const client1 = makeTestClient(pki, port, cert);
     const session1 = await client1.connect(makeHello("runner-1"));
     expect(server.connectionGeneration("runner-1")).toBe(1);
+    const staleSubmit = session1.submit(batch("run-1", 1, 5));
+    staleSubmit.catch(() => undefined);
+    await expect.poll(() => enteredHandle).toBe(1);
 
     const client2 = makeTestClient(pki, port, cert);
     cleanups.push(async () => {
+      releaseHandle();
       await client1.close();
       await client2.close();
       await server.shutdown();
@@ -289,15 +303,11 @@ describe("grpc runner protocol handshake", () => {
       makeHello("runner-1", { resumeToken: session1.welcome.resumeToken }),
     );
     expect(server.connectionGeneration("runner-1")).toBe(2);
-
     const superseded = server.supersededConnection("runner-1");
     expect(superseded?.generation).toBe(1);
-    superseded?.enqueue({
-      correlation_id: "stale",
-      event_batch: eventBatchToWire(batch("run-1", 1, 5)),
-    });
-    await Promise.resolve();
-    await Promise.resolve();
+
+    releaseHandle();
+    await superseded?.drain();
     expect(server.nextExpectedSequence("run-1")).toBe(1);
 
     const ack = await session2.submit(batch("run-1", 1, 1));
@@ -364,7 +374,7 @@ describe("grpc runner protocol handshake", () => {
       objective: "race shutdown",
     }, []);
     const submitting = session.submit(batch("run-1", 1, 1));
-    const completing = session.complete(
+    void session.complete(
       {
         jobId: "job-race",
         runId: "run-complete",
@@ -374,7 +384,7 @@ describe("grpc runner protocol handshake", () => {
       },
       { jobId: "job-race", runId: "run-complete", status: "passed" },
     );
-    await expect.poll(() => enteredHandle).toBeGreaterThan(0);
+    await expect.poll(() => enteredHandle).toBe(1);
 
     const first = server.shutdown();
     const second = server.shutdown();
@@ -383,9 +393,11 @@ describe("grpc runner protocol handshake", () => {
     await expect(offering).rejects.toMatchObject({ code: "SessionClosed" });
     releaseHandle();
     await expect(submitting).rejects.toMatchObject({ code: "SessionClosed" });
-    await completing.catch(() => undefined);
     await first;
-    expect(server.hasCompletion("run-complete")).toBe(false);
+    expect(server.nextExpectedSequence("run-1")).toBe(1);
+    await expect(server.waitForConnection("runner-late")).rejects.toMatchObject({
+      code: "SessionClosed",
+    });
     await expect(session.submit(batch("run-1", 2, 1))).rejects.toMatchObject({ code: "SessionClosed" });
   });
 });

@@ -69,7 +69,6 @@ export class GrpcRunnerProtocolServer {
   private readonly handshakes = new Set<Promise<ServerRunnerConnection | undefined>>();
   /** Trace upload cursor per runId; survives reconnects so resume continues it. */
   private readonly traceCursors = new Map<string, number>();
-  private readonly completions = new Set<string>();
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | undefined;
   private boundPort: number | undefined;
@@ -172,14 +171,6 @@ export class GrpcRunnerProtocolServer {
 
   nextExpectedSequence(runId: string): number {
     return this.traceCursors.get(runId) ?? 1;
-  }
-
-  recordCompletion(runId: string): void {
-    this.completions.add(runId);
-  }
-
-  hasCompletion(runId: string): boolean {
-    return this.completions.has(runId);
   }
 
   async waitBeforeHandleFrame(): Promise<void> {
@@ -459,6 +450,10 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     return Promise.resolve();
   }
 
+  drain(): Promise<void> {
+    return this.processing;
+  }
+
   enqueue(frame: RunnerFrameWire): void {
     if (!this.server.isCurrentGeneration(this.runnerId, this.generation)) {
       return;
@@ -495,6 +490,9 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     if (this.disposed) {
       throw new RunnerProtocolError("SessionClosed", "runner connection is closed");
     }
+    if (!this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+      return;
+    }
     if (frame.accept_offer !== undefined) {
       this.handleAcceptOffer(frame);
       return;
@@ -505,13 +503,6 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     }
     if (frame.renew_lease !== undefined) {
       this.handleRenewLease(frame);
-      return;
-    }
-    if (frame.complete_execution !== undefined) {
-      const runId = String(
-        (frame.complete_execution as { readonly run_id?: unknown }).run_id ?? "",
-      );
-      this.server.recordCompletion(runId);
     }
   }
 
