@@ -349,7 +349,7 @@ verification: not_run
 introducing_pr: `codex/pr5-scope-prerequisite`
 
 date: 2026-08-17
-implementation_commit: `3f1fd03` (review fixes pending)
+implementation_commits: `3f1fd03`, `cf72455`
 
 Static implementation preflight stopped before edits because Task 8's required
 wrong-token renewal cannot be represented without adding the existing lease
@@ -365,3 +365,6 @@ resume.
 - Initial exact-head review identified stale baseline text, incomplete Task 8-9
   commit file lists, and a missing commit-before-review step; review fixes must
   be committed separately and re-reviewed.
+- Commit `cf72455` fixed every initial review finding and `git diff --check`
+  exited 0. The follow-up Spec/architecture review reported no findings; the
+  Standards review required this ledger evidence correction before final review.
