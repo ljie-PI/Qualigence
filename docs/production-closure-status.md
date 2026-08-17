@@ -415,7 +415,7 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-identity-scope`
 date: 2026-08-17
-implementation_commit: `615fbba` (review fixes pending)
+implementation_commits: `615fbba`, `aaaa90f`
 
 After Task 9 restored a valid production composition, `corepack pnpm typecheck`
 failed because two identities at
@@ -430,3 +430,5 @@ Gate, and atomic union commit. It changes only the plan and status ledger.
 - Initial exact-head review identified the missing Tasks 8-9 dependency node,
   stale PR5-ATOMIC body state, and incomplete scope-B evidence; fixes require a
   new commit and fresh two-axis review.
+- Commit `aaaa90f` fixed every initial review finding and `git diff --check`
+  exited 0; final exact-head review remains required.
