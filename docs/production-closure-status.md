@@ -4,7 +4,7 @@
 
 component: complete
 production_wiring: missing
-verification: passed
+verification: not_run
 introducing_pr: SETUP-00 / `codex/pr-preflight-production-closure-plan`
 
 SETUP-00 is documentation-only engineering infrastructure. It adds the ignored
@@ -16,9 +16,8 @@ Evidence:
 
 - `git check-ignore -v .worktrees/probe` resolves through `.gitignore`.
 - `git diff --check` passed for the documentation diff.
-- Standards and Spec/architecture review run against the exact
-  `main...HEAD` diff after the final review-fix commit; no Critical or Important
-  findings may remain before this row is marked passed.
+- The final Standards and Spec/architecture review must record the exact base
+  and head SHA, commands, and result before this row changes to `passed`.
 
 ## Task 0 — Windows test quarantine (2026-08-16)
 
