@@ -1,5 +1,10 @@
 # Deployment Context
 
+## Terms
+
+- **Readiness** means required dependencies and loops are operational; it is stronger than liveness.
+- **Release evidence** is a verifiable artifact from required Gates, not a historical status claim.
+
 ## Ownership
 
 `apps/server`, `apps/intelligence-worker`, `apps/admin-cli`, `apps/local-launcher`, `deployments`, `Dockerfile`, and observability packages own operations and release composition.
@@ -19,6 +24,19 @@
 - Backup/restore verifies database and object bytes before success is reported.
 - Logs, metrics, and release metadata exclude secrets and high-cardinality evidence content.
 
+## Entrypoints
+
+- `apps/server/src/main.ts`
+- `apps/intelligence-worker/src/main.ts`
+- `apps/admin-cli/src/main.ts`
+- `apps/local-launcher/src/main.ts`
+- `deployments/self-hosted/compose/compose.yaml`
+
+## References
+
+- Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 3, 10, 11, and 13.
+- Specs: `docs/superpowers/specs/2026-08-01-ls-06-m1-local-operations-visual-input-design.md`, `docs/superpowers/specs/2026-08-01-ls-11-m2-self-hosted-runtime-deployment-design.md`.
+
 ## Verification
 
-Use Local Launcher E2E, Self-hosted Compose/backup tests, Node entrypoint smoke, browser E2E, and release Gate scripts. Read Architecture sections 3, 10, 11, and 13.
+Use Local Launcher E2E, Self-hosted Compose/backup tests, Node entrypoint smoke, browser E2E, and release Gate scripts.

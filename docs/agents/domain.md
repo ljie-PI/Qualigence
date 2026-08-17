@@ -7,7 +7,7 @@ Qualigence uses multi-context documentation. `CONTEXT-MAP.md` selects the contex
 ## Reading Rules
 
 - Read the selected context before changing a production module or reviewing its diff.
-- Read the architecture section and LS Spec linked by that context when a change affects a public contract, persistence, security, or deployment.
+- Read the exact architecture sections and LS Specs in the selected context's `References` section when a change affects a public contract, persistence, security, or deployment.
 - Read the exact Task in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md` before editing closure work.
 - Treat `docs/production-closure-status.md` as evidence history, not as proof that wiring exists.
 - Propose an ADR under `docs/adr/` before changing a stable ownership or dependency-direction rule. Do not create an ADR for an implementation detail already decided by the architecture or approved Task.
