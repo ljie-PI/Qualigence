@@ -31,7 +31,7 @@
 
 ## References
 
-- Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.5, 7, 9.1, and 11.
+- Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.5, 5.8, 7, 9.1, and 11.
 - Specs: `docs/superpowers/specs/2026-08-01-ls-03-m1-execution-application-cli-design.md`, `docs/superpowers/specs/2026-08-01-ls-05-m1-core-runner-transport-hardening-design.md`.
 
 ## Verification

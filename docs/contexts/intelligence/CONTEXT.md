@@ -7,7 +7,7 @@
 
 ## Ownership
 
-`packages/core-modules/intelligence`, `packages/runner-components/model-agent`, `packages/core-application/src/intelligence`, and `apps/intelligence-worker` own asynchronous model work.
+`packages/core-modules/intelligence`, `packages/core-application/src/intelligence`, and `apps/intelligence-worker` own Server Intelligence work. `packages/runner-components/model-agent` supplies model adapters to both this context and the Runner Execution Agent; execution-time decisions belong to the Execution context.
 
 ## Seams
 
@@ -30,7 +30,7 @@
 
 ## References
 
-- Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 2, 5.3, 5.7, 9.1, and 11.
+- Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 2, 5.3, 5.7, 5.11, 6.1, 9.1, and 11.
 - Specs: `docs/superpowers/specs/2026-08-01-ls-10-m2-investigation-review-evidence-design.md`, `docs/superpowers/specs/2026-08-01-ls-11-m2-self-hosted-runtime-deployment-design.md`.
 
 ## Verification

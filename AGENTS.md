@@ -8,7 +8,7 @@ Qualigence tracks implementation and review findings in GitHub Issues. Read `doc
 
 ### Domain Docs
 
-Qualigence uses multi-context domain documentation. Read `docs/agents/domain.md` and then the context selected by `CONTEXT-MAP.md` before changing a production seam or reviewing its implementation.
+Qualigence uses multi-context domain documentation. Before changing or reviewing any production module, read `docs/agents/domain.md` and every context selected by `CONTEXT-MAP.md`.
 
 ## Closure Work
 
