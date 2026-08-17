@@ -588,7 +588,7 @@ verification: not_run
 introducing_pr: `codex/pr5-r4-core-authority`
 date: 2026-08-18
 exact_command: `corepack pnpm vitest run tests/unit/core-daemon`
-implementation_commits: `d77d810`
+implementation_commits: `d77d810`, `7351641`
 
 Adds `CoreRunnerProtocolApplication` and in-process authority tests for
 canonical offer replay, rejected-resume ownership, live-session resume,
@@ -601,6 +601,14 @@ did not exist.
 
 GREEN: `corepack pnpm vitest run tests/unit/core-daemon` passed 5 files
 and 35 tests. `corepack pnpm typecheck` exited 0.
+
+Round-1 Spec found one Important: overlapping Trace did not prove
+serialization. `7351641` holds the first ingest in the store and asserts
+the second batch cannot enter until the first ACK.
+
+Round-2 exact-head Standards and Spec/architecture reviews against
+`76cd8a3faee07610c3deee49f3262ce585da7c6e...73516416072306af3023b3c23acbac886c352516`
+reported no Critical or Important findings.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R5 starts.
