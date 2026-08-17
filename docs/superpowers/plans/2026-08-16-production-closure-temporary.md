@@ -50,7 +50,8 @@ The word `implemented` in the status ledger means only that some planned files o
 | 6 OIDC signature verification | merged as PR #40 | Merge commit `0753be7`; `jose` 6.2.9, real RS256/ES256 verification, complete callback cleanup, token/config validation, exact redirect binding, cached JWKS rotation, network/error callbacks, malformed-role rejection, and bootstrap loopback policy passed 39 focused tests and both final review axes; the final Windows Gate passed 893 tests with 6 expected skips. |
 | SETUP-00 Engineering context and review guidance | merged as PR #42 | Merge commit `a9fd9b3`; engineering contexts, review guidance, and the stabilized baseline Gate merged after both review axes passed. |
 | 7 Runner renewal | merged as PR #43 | Merge commit `09afe87`; the final focused Gate passed 21 tests and both exact-head review axes reported no findings. |
-| PR5-SCOPE Tasks 8-9 scope repair | in_progress | Static implementation preflight found required protocol and moved-service test files outside the declared Files blocks. This prerequisite amends scope only; no product code changes. |
+| PR5-SCOPE Tasks 8-9 scope repair | merged as PR #44 | Merge commit `bfd6da2`; declared required protocol and moved-service test files. |
+| PR5-ATOMIC Tasks 8-9 delivery boundary | in_progress | Task 8 makes application/authenticator required, so Task 9's Core composition is required in the same compilable commit. This prerequisite forbids an insecure or fake intermediate composition. |
 | 8-18 | pending | Proceed in the dependency order below after PR5-SCOPE merges. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
@@ -111,8 +112,7 @@ Tasks 1-3 (already implemented)
     └── Task 7 (Runner renew)
 
 PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
-    → Task 8 (gRPC application port)
-    → Task 9 (Core protocol application)
+    → PR5-ATOMIC (Tasks 8 and 9 as one compilable delivery unit)
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
@@ -136,8 +136,8 @@ Task 15
 ## Pull request delivery plan
 
 The 22 implementation tasks plus Prerequisite Q, the P0 build prerequisite,
-SETUP-00, and PR5-SCOPE ship as 21 reviewable pull requests: four independently
-reviewed prerequisites and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
+SETUP-00, PR5-SCOPE, and PR5-ATOMIC ship as 22 reviewable pull requests: five
+independently reviewed prerequisites and 17 product/release PRs. “Three PRs through Task 6” means Product PRs 1-3;
 the ordered merge queue through Task 6 contains five GitHub PRs because Q and
 P0 may not be absorbed into a product diff. A pull request may contain more
 than one task only where the tasks form one architectural boundary or one
@@ -159,7 +159,8 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | 3 | 6 | `codex/pr3-console-oidc` | `codex/pr2-review-invariants` | Browser ID Token signature verification and transient-state security | merged as PR #40 (`0753be7`) |
 | SETUP-00 | SETUP-00 | `codex/pr-preflight-production-closure-plan` | `main` | Engineering context, GitHub Issues review finding tracker, and multi-context documentation | merged as PR #42 (`a9fd9b3`) |
 | 4 | 7 | `codex/pr4-runner-renewal` | `main` | Lease renewal and stop-before-expiry behavior | merged as PR #43 (`09afe87`) |
-| PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | in_progress |
+| PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | merged as PR #44 (`bfd6da2`) |
+| PR5-ATOMIC | Tasks 8-9 delivery boundary | `codex/pr5-atomic-scope` | `main` | Require one compilable transport + Core composition commit and joint Gate | in_progress |
 | 5 | 8, 9 | `codex/pr5-core-protocol-application` | `main` | gRPC application port and the Core lifecycle composition behind it | pending |
 | 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
 | 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
@@ -1183,6 +1184,13 @@ a new commit followed by `git diff --check` and a fresh two-axis review.
 
 ### Task 8: Replace gRPC's in-memory lifecycle semantics with an application port
 
+**Atomic delivery constraint:** Task 8 and Task 9 form one implementation and
+review unit. Task 8 must observe its focused RED first, but it must not be
+committed while production Core still lacks the required application and
+authenticator. Complete Task 9 immediately, then commit the union of both Files
+once build, joint focused Gate, and typecheck pass. No compatibility default,
+insecure fallback, or temporary fake may enter a production Composition Root.
+
 **Files:**
 - Create: `packages/core-modules/runner-control/package.json`
 - Create: `packages/core-modules/runner-control/tsconfig.json`
@@ -1283,7 +1291,7 @@ enqueue(frame: RunnerFrameWire): void {
 
 `handleFrame` becomes async. A malformed or rejected frame closes only the offending session with a stable protocol error; it must not crash the gRPC server process.
 
-- [ ] **Step 6: Verify and commit**
+- [ ] **Step 6: Verify Task 8 behavior, then continue directly to Task 9**
 
 Run:
 
@@ -1291,16 +1299,12 @@ Run:
 corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts
 corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts
 corepack pnpm smoke:node-imports
-corepack pnpm typecheck
 git diff --check
 ```
 
-Commit:
-
-```bash
-git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol tests/helpers/grpc-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs docs/production-closure-status.md
-git commit -m "refactor(protocol): delegate runner lifecycle to core"
-```
+Do not run root typecheck or commit yet: the required production application is
+created by Task 9. Continue in the same worktree without widening either Files
+block.
 
 ---
 
@@ -1381,12 +1385,13 @@ Do not instantiate `InMemoryTraceStore`, `InMemoryResumeTokenStore`, or adapter-
 
 Emit `core-daemon.ready` only after SQLite migration/open and gRPC bind succeed. On shutdown, stop accepting sessions, close gRPC, then close SQLite. If SQLite fails, do not bind a gRPC port.
 
-- [ ] **Step 5: Verify and commit**
+- [ ] **Step 5: Verify and commit the atomic Tasks 8-9 unit**
 
 Run:
 
 ```bash
 corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts
+corepack pnpm smoke:node-imports
 corepack pnpm typecheck
 git diff --check
 ```
@@ -1394,9 +1399,12 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/core-application apps/core-daemon pnpm-lock.yaml tests/helpers/core-runner-harness.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
-git commit -m "feat(core): compose authoritative runner protocol"
+git add package.json tsconfig.json tsconfig.test.json pnpm-lock.yaml packages/core-modules/runner-control packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol packages/core-application apps/core-daemon tests/helpers/grpc-harness.ts tests/helpers/core-runner-harness.ts tests/conformance/runner-protocol tests/type/runner-protocol-v1.types.ts tests/smoke/node-package-imports.mjs tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-resume-token-service.test.ts tests/unit/core-daemon/runner-session-service.test.ts docs/production-closure-status.md
+git commit -m "feat(core): delegate and compose authoritative runner protocol"
 ```
+
+Run Standards and Spec/architecture review against the exact merge-base and this
+single committed head. Any fix commit reruns the joint Gate and both review axes.
 
 ---
 

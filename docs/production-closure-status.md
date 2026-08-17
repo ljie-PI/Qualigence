@@ -368,3 +368,20 @@ resume.
 - Commit `cf72455` fixed every initial review finding and `git diff --check`
   exited 0. The follow-up Spec/architecture review reported no findings; the
   Standards review required this ledger evidence correction before final review.
+
+## PR5-ATOMIC - Tasks 8-9 compilable delivery boundary
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-atomic-scope`
+
+The implementation preflight proved Task 8 cannot be committed independently:
+making `GrpcRunnerProtocolServer` require its application and authenticator
+causes the existing production Core composition to fail typecheck, while Task 9
+owns the only valid application composition. A compatibility default or fake
+production application would violate Task 8.
+
+This prerequisite changes only the plan and status ledger. It requires Tasks 8
+and 9 to retain separate RED behavior but ship as one compilable commit, joint
+Gate, and exact-head two-axis review.
