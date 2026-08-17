@@ -579,3 +579,28 @@ must not add adapter completion authority.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 PR5-R4 starts.
+
+## PR5-R4 - Core protocol authority
+
+component: complete
+production_wiring: missing
+verification: not_run
+introducing_pr: `codex/pr5-r4-core-authority`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/unit/core-daemon`
+implementation_commits: `d77d810`
+
+Adds `CoreRunnerProtocolApplication` and in-process authority tests for
+canonical offer replay, rejected-resume ownership, live-session resume,
+double accept, expired renew, completion replay, overlapping Trace
+ingest, and interrupted Welcome rollback. Production `main.ts` stays
+pre-activation.
+
+RED: `new CoreRunnerProtocolApplication(...)` failed because the class
+did not exist.
+
+GREEN: `corepack pnpm vitest run tests/unit/core-daemon` passed 5 files
+and 35 tests. `corepack pnpm typecheck` exited 0.
+
+Exact-head Standards and Spec/architecture reviews must pass before
+PR5-R5 starts.
