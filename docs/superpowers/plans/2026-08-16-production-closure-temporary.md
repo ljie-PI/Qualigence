@@ -29,7 +29,7 @@ The word `implemented` in the status ledger means only that some planned files o
 - Do not weaken mTLS, OIDC, RLS, Named Pipe identity, Permit binding, Trace hashes, or expected-version checks to make a test pass.
 - Do not modify historical migration files 001-005. New relational state uses migration 006 or later.
 - Do not silently skip a required Gate. Report an explicit environmental block such as `ChromiumUnavailable`, `OpenSslUnavailable`, `DockerUnavailable`, `CargoUnavailable`, or `Windows11Unavailable`. The only temporary exception is Prerequisite Q: exactly four named individual tests may use Windows-only `it.skipIf`; each skip must carry the exact Task 21 removal marker and remains release-blocking.
-- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. PR5-ATOMIC remains the production-composition rule: no compatibility default, insecure fallback, or fake may enter a production Composition Root, and production Core may require `application`/`authenticator` only in the activation commit. PR5-R0 replaces the single-commit packaging: Tasks 8-9 retain separate RED evidence and ship as the stacked inactive PRs plus one activation commit defined in `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
+- Every implementation task begins with a failing focused test, ends with its focused tests plus `corepack pnpm typecheck`, and is committed separately. PR5-ATOMIC remains the production-composition rule: no compatibility default, insecure fallback, or fake may enter a production Composition Root, and production Core may require `application`/`authenticator` only in the activation commit. PR5-R0 replaces the single-commit packaging: Tasks 8-9 retain separate RED evidence and ship as the stacked inactive PRs plus one activation commit defined in `docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`. Each product stacked PR (PR5-R1 through PR5-R5) ends with that document's named focused Gate plus `corepack pnpm typecheck`. A verification-only closure task must capture the pre-existing incomplete Gate as RED/blocked evidence and must not invent a source change merely to create a diff.
 - A Terra worker executes one task per fresh context. It must read every file in the task's **Files** block before editing and must not edit files outside that block without stopping for review.
 - At the end of every task, update `docs/production-closure-status.md` in the same task commit with `component`, `production_wiring`, `verification`, exact command, date, and commit. Never use the ignored SDD ledger as the only completion evidence.
 - Preserve unrelated user changes. Never reset, checkout, or overwrite a dirty file to match this plan.
@@ -1437,11 +1437,11 @@ enqueue(frame: RunnerFrameWire): void {
 
 - [ ] **Step 6: Verify the current stacked PR, then stop if production would activate**
 
-Each inactive PR runs only the subset Gate named in
-`docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`.
-PR5-R1 and PR5-R3 may typecheck because production Core still uses the
-pre-activation constructor. Do not require `application` or `authenticator`
-in production `main.ts` before PR5-R5. Do not widen either Files block.
+Run the exact focused Gate named for the current stacked PR in
+`docs/superpowers/plans/2026-08-17-pr5-protocol-authority-refactor.md`
+**Focused Gates**, then `corepack pnpm typecheck` and `git diff --check`.
+Do not require `application` or `authenticator` in production `main.ts`
+before PR5-R5. Do not widen either Files block.
 
 ---
 

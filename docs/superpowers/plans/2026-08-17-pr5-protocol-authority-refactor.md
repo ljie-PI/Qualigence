@@ -57,6 +57,9 @@ committed the in-process admission. The adapter sends that Welcome and
 must call `closeSession` if the send fails in-process. A crash after
 durable token consume and before Welcome send is Task 10.
 
+The machines and reserve/commit/abort vocabulary below describe later
+implementation shape. They add no public method and no Files path.
+
 ## State machines
 
 | Module | Legal states |
@@ -136,6 +139,21 @@ until PR5-R5.
 | PR5-R4 | `CoreRunnerProtocolApplication` and in-process authority tests. Production `main.ts` still uses the pre-activation constructor | No | one commit inside the Task 9 Files union except `apps/core-daemon/src/main.ts` |
 | PR5-R5 | Required `application` and `authenticator`, real SQLite/Trace composition, readiness/shutdown order, and the joint Gate | Yes | the Task 9 union commit `feat(core): delegate and compose authoritative runner protocol` |
 
+### Focused Gates
+
+Every product stacked PR ends with the named command below plus
+`corepack pnpm typecheck` and `git diff --check`. Do not skip a listed
+file. PR5-R0 is documentation-only and runs `git diff --check`.
+
+| PR | Focused Gate |
+|---|---|
+| PR5-R0 | `git diff --check` |
+| PR5-R1 | `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts` then `corepack pnpm smoke:node-imports` |
+| PR5-R2 | `corepack pnpm vitest run tests/unit/core-daemon` then `corepack pnpm smoke:node-imports` |
+| PR5-R3 | `corepack pnpm vitest run tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/disconnect-recovery.test.ts` then `corepack pnpm vitest run tests/conformance/runner-protocol/proto-schema.test.ts` then `corepack pnpm smoke:node-imports` |
+| PR5-R4 | `corepack pnpm vitest run tests/unit/core-daemon` plus every test file that PR creates |
+| PR5-R5 | `corepack pnpm vitest run tests/unit/core-daemon tests/conformance/runner-protocol tests/component/core-runner/core-composition.test.ts tests/component/core-runner/independent-process.test.ts` then `corepack pnpm smoke:node-imports` |
+
 PR5-R1 must not add `AcceptedExecutionJob.plan` or policy field mapping.
 Those remain Task 15 and Task 18.
 
@@ -146,8 +164,8 @@ or helper only when that snippet sits inside the PR's Files block.
 
 ## Review and stop
 
-Each stacked PR runs its focused Gate, `corepack pnpm typecheck` when
-the production graph still typechecks, `git diff --check`, and
+Each stacked PR runs the Focused Gate table above. Product PRs R1-R5
+also run `corepack pnpm typecheck`. Every PR runs `git diff --check` and
 `/code-review` against the exact merge-base.
 
 - Critical or Important on either axis blocks push and merge.
