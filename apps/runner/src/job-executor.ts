@@ -20,6 +20,10 @@ import {
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import { RunnerAppError } from "./errors.js";
+import {
+  LeaseRenewalController,
+  type RenewalDelay,
+} from "./lease-renewal-controller.js";
 import { LeaseWindow, type LeaseWindowClocks } from "./lease-window.js";
 import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 
@@ -36,6 +40,7 @@ export interface LeasedJobExecutorDependencies {
   readonly capabilities: RunnerCapabilities;
   readonly clocks?: LeaseWindowClocks;
   readonly actionDeadlineSafetyMarginMs?: number;
+  readonly renewalDelay?: RenewalDelay;
 }
 
 export interface LeasedJobResult {
@@ -93,16 +98,37 @@ export class LeasedJobExecutor {
       });
     }
 
-    const lease = await session.accept(offer.offerId);
-    const window = new LeaseWindow(lease, this.clocks, {
+    const initialLease = await session.accept(offer.offerId);
+    const window = new LeaseWindow(initialLease, this.clocks, {
       leaseDurationMs: offer.leaseDurationMs,
       actionDeadlineSafetyMarginMs: this.safetyMarginMs,
     });
     this.currentWindow = window;
 
+    const executionAbort = new AbortController();
+    const guardedSignal = signal === undefined
+      ? executionAbort.signal
+      : AbortSignal.any([signal, executionAbort.signal]);
+    const controllerDependencies = {
+      session,
+      initialLease,
+      window,
+      leaseDurationMs: offer.leaseDurationMs,
+      executionAbort,
+    };
+    const controller = new LeaseRenewalController(
+      this.deps.renewalDelay === undefined
+        ? controllerDependencies
+        : { ...controllerDependencies, delay: this.deps.renewalDelay },
+    );
+    const renewal = controller.run(signal ?? new AbortController().signal).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+
     const guardedExecutor: ActionExecutor = {
       execute: async (action: ResolvedAction, permit: ExecutionPermit) => {
-        if (signal?.aborted || !window.mayStartAction()) {
+        if (guardedSignal.aborted || !window.mayStartAction()) {
           throw new ExecutionBlockedError("LeaseExpired");
         }
         return this.deps.actionExecutor.execute(action, permit);
@@ -119,7 +145,14 @@ export class LeasedJobExecutor {
       traceRecorder: new SpoolingTraceRecorder(this.deps.spool),
     });
 
-    const completion = await runtime.run(offer.job);
-    return { lease, completion, window };
+    const runtimeResult = await runtime.run(offer.job).then(
+      (completion) => ({ status: "fulfilled" as const, completion }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    controller.stop();
+    const renewalResult = await renewal;
+    if (renewalResult.status === "rejected") throw renewalResult.error;
+    if (runtimeResult.status === "rejected") throw runtimeResult.error;
+    return { lease: controller.currentLease(), completion: runtimeResult.completion, window };
   }
 }

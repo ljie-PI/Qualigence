@@ -1,11 +1,15 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type {
+  ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
+  ExecutionJobLease,
+  ExecutionJobOffer,
 } from "@qualigence/runner-protocol";
-import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
+import type { RunnerClientPort, RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { LeaseWindow } from "../../../apps/runner/src/lease-window.js";
+import { RunnerClient } from "../../../apps/runner/src/runner-client.js";
 import { SpoolingTraceRecorder } from "../../../apps/runner/src/spooling-trace-recorder.js";
 import { TraceUploadPump } from "../../../apps/runner/src/trace-upload-pump.js";
 import { RunOwnershipService } from "../../../apps/core-daemon/src/index.js";
@@ -58,7 +62,97 @@ async function spoolObservations(
   }
 }
 
+const latestLease: ExecutionJobLease = {
+  jobId: "job-complete",
+  runId: "run-complete",
+  leaseToken: "renewed-token",
+  leaseEpoch: 1,
+  expiresAt: "2026-08-01T00:02:00.000Z",
+};
+
+class CompletionRecordingSession implements RunnerSession {
+  readonly welcome = {
+    sessionId: "session-complete",
+    resumeToken: "resume-complete",
+    selectedProtocolMajor: 1 as const,
+    serverVersion: "test",
+    heartbeatIntervalMs: 1_000,
+    leaseDurationMs: 60_000,
+    traceBatchMaximumEvents: 100,
+    traceBatchMaximumBytes: 1_000_000,
+    maximumInFlightBatches: 4,
+    maximumPendingWriteBytes: 1_000_000,
+  };
+  completedLease: ExecutionJobLease | undefined;
+
+  async nextOffer(): Promise<ExecutionJobOffer> {
+    return {
+      offerId: "offer-complete",
+      job: {
+        jobId: latestLease.jobId,
+        runId: latestLease.runId,
+        target: { kind: "web", url: "https://example.test" },
+        objective: "complete with the latest lease",
+      },
+      requiredCapabilities: [],
+      leaseDurationMs: 60_000,
+    };
+  }
+  async accept(): Promise<ExecutionJobLease> {
+    throw new Error("not used");
+  }
+  async renew(): Promise<ExecutionJobLease> {
+    throw new Error("not used");
+  }
+  async submit(batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
+    return {
+      batchId: batch.batchId,
+      runId: batch.runId,
+      nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+    };
+  }
+  async complete(lease: ExecutionJobLease, _result: ExecutionCompletion): Promise<void> {
+    this.completedLease = lease;
+  }
+  async close(): Promise<void> {}
+}
+
 describe("core/runner disconnect recovery Gate", () => {
+  it("completes execution with the most recently renewed lease", async () => {
+    const spool = await openMemorySpool();
+    spools.push(spool);
+    const session = new CompletionRecordingSession();
+    const clientPort: RunnerClientPort = {
+      connect: async () => session,
+    };
+    const window = new LeaseWindow(
+      latestLease,
+      { monotonicNow: () => 1_000, wallNow: () => 100_000 },
+      { leaseDurationMs: 60_000, actionDeadlineSafetyMarginMs: 5_000 },
+    );
+    const client = new RunnerClient({
+      clientPort,
+      makeHello: () => makeHello("runner-1"),
+      executor: {
+        execute: async () => ({
+          lease: latestLease,
+          completion: {
+            jobId: latestLease.jobId,
+            runId: latestLease.runId,
+            status: "passed",
+          },
+          window,
+        }),
+      },
+      spool,
+    });
+
+    await client.connect();
+    await client.serveNextOffer(new AbortController().signal);
+
+    expect(session.completedLease?.leaseToken).toBe("renewed-token");
+  });
+
   it("loses no accepted trace when a runner disconnects mid-run and replays in order on reconnect", async () => {
     const { server, port } = await startTestServer(pki);
     const cert = pki.clientFor("runner-1");

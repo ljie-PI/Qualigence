@@ -43,6 +43,8 @@ class FakeSession implements RunnerSession {
 
   accepted = false;
   completed: ExecutionCompletion | undefined;
+  renewCalls = 0;
+  renewedLease: ExecutionJobLease = LEASE;
 
   async nextOffer(): Promise<ExecutionJobOffer> {
     throw new Error("not used");
@@ -52,7 +54,8 @@ class FakeSession implements RunnerSession {
     return LEASE;
   }
   async renew(lease: ExecutionJobLease): Promise<ExecutionJobLease> {
-    return lease;
+    this.renewCalls += 1;
+    return this.renewedLease;
   }
   async submit(batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
     return {
@@ -65,6 +68,28 @@ class FakeSession implements RunnerSession {
     this.completed = result;
   }
   async close(): Promise<void> {}
+}
+
+class ManualDelay {
+  readonly waits: number[] = [];
+  private releaseWait: (() => void) | undefined;
+
+  wait(ms: number, signal: AbortSignal): Promise<void> {
+    this.waits.push(ms);
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        signal.removeEventListener("abort", finish);
+        this.releaseWait = undefined;
+        resolve();
+      };
+      this.releaseWait = finish;
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  }
+
+  release(): void {
+    this.releaseWait?.();
+  }
 }
 
 function offer(requiredCapabilities: readonly string[]): ExecutionJobOffer {
@@ -165,6 +190,132 @@ describe("LeasedJobExecutor", () => {
     expect(executor.mayStartNextAction()).toBe(true);
   });
 
+  it("renews concurrently with execution and returns the newest lease", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseObservation: (() => void) | undefined;
+    const observationReady = new Promise<void>((resolve) => {
+      releaseObservation = resolve;
+    });
+    const observations = [
+      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
+      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+    ];
+    const executor = new LeasedJobExecutor(
+      baseDependencies(spool, state, {
+        renewalDelay: delay,
+        observer: {
+          capture: async () => {
+            await observationReady;
+            return observations.shift()!;
+          },
+        },
+      }),
+    );
+    const session = new FakeSession();
+    session.renewedLease = { ...LEASE, leaseToken: "renewed-token" };
+
+    const execution = executor.execute(offer([]), session);
+    await waitFor(() => expect(delay.waits).toEqual([20_000]));
+    expect(delay.waits).toEqual([20_000]);
+    expect(session.renewCalls).toBe(0);
+
+    delay.release();
+    await waitFor(() => expect(session.renewCalls).toBe(1));
+    releaseObservation?.();
+    const result = await execution;
+
+    expect(result.lease.leaseToken).toBe("renewed-token");
+    expect(session.renewCalls).toBe(1);
+  });
+
+  it("blocks every new action and preserves the renew error after renewal fails", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseObservation: (() => void) | undefined;
+    const observationReady = new Promise<void>((resolve) => {
+      releaseObservation = resolve;
+    });
+    let executed = 0;
+    const observations = [
+      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
+      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+    ];
+    const executor = new LeasedJobExecutor(
+      baseDependencies(spool, state, {
+        renewalDelay: delay,
+        observer: {
+          capture: async () => {
+            await observationReady;
+            return observations.shift()!;
+          },
+        },
+        actionExecutor: {
+          execute: async () => {
+            executed += 1;
+            return { status: "ok" };
+          },
+        },
+      }),
+    );
+    const session = new FakeSession();
+    session.renew = async () => {
+      session.renewCalls += 1;
+      throw new Error("LeaseLost");
+    };
+
+    const execution = executor.execute(offer([]), session);
+    await waitFor(() => expect(delay.waits).toEqual([20_000]));
+    delay.release();
+    await waitFor(() => expect(session.renewCalls).toBe(1));
+    releaseObservation?.();
+
+    await expect(execution).rejects.toThrow("LeaseLost");
+    expect(executed).toBe(0);
+    expect(executor.mayStartNextAction()).toBe(false);
+  });
+
+  it("propagates an undefined renewal rejection", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseObservation: (() => void) | undefined;
+    const observationReady = new Promise<void>((resolve) => {
+      releaseObservation = resolve;
+    });
+    const observations = [
+      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
+      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+    ];
+    const executor = new LeasedJobExecutor(
+      baseDependencies(spool, state, {
+        renewalDelay: delay,
+        observer: {
+          capture: async () => {
+            await observationReady;
+            return observations.shift()!;
+          },
+        },
+      }),
+    );
+    const session = new FakeSession();
+    session.renew = async () => {
+      session.renewCalls += 1;
+      return Promise.reject(undefined);
+    };
+
+    const execution = executor.execute(offer([]), session);
+    await waitFor(() => expect(delay.waits).toEqual([20_000]));
+    delay.release();
+    await waitFor(() => expect(session.renewCalls).toBe(1));
+    releaseObservation?.();
+
+    await expect(execution).rejects.toBeUndefined();
+    expect(executor.mayStartNextAction()).toBe(false);
+  });
+
   it("blocks a new action locally once the lease window has closed", async () => {
     const spool = await newSpool();
     const state = { monotonic: 1_000, wall: 100_000 };
@@ -201,3 +352,15 @@ describe("LeasedJobExecutor", () => {
     expect(executor.mayStartNextAction()).toBe(false);
   });
 });
+
+async function waitFor(assertion: () => void): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch {
+      await Promise.resolve();
+    }
+  }
+  assertion();
+}
