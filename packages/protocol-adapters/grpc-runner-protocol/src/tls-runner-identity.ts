@@ -1,4 +1,6 @@
 import type { PeerCertificate } from "node:tls";
+import type { RunnerHello } from "@qualigence/runner-protocol";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
 import { RunnerProtocolError } from "./errors.js";
 
 export interface AuthenticatedRunnerIdentity {
@@ -15,6 +17,13 @@ export interface AuthenticatedRunnerIdentity {
  */
 export interface TlsRunnerIdentity {
   authenticate(peer: PeerCertificate | undefined, claimedRunnerId: string): AuthenticatedRunnerIdentity;
+}
+
+export interface RunnerPeerAuthenticator {
+  authenticate(
+    peer: PeerCertificate | undefined,
+    hello: RunnerHello,
+  ): Promise<AuthenticatedRunnerContext>;
 }
 
 const RUNNER_URI_PREFIX = "runner://";
@@ -53,8 +62,30 @@ function certificateIdentities(peer: PeerCertificate): ReadonlySet<string> {
   return identities;
 }
 
-export class CertificateRunnerIdentity implements TlsRunnerIdentity {
-  authenticate(peer: PeerCertificate | undefined, claimedRunnerId: string): AuthenticatedRunnerIdentity {
+export class CertificateRunnerIdentity implements TlsRunnerIdentity, RunnerPeerAuthenticator {
+  authenticate(
+    peer: PeerCertificate | undefined,
+    hello: RunnerHello,
+  ): Promise<AuthenticatedRunnerContext>;
+  authenticate(
+    peer: PeerCertificate | undefined,
+    claimedRunnerId: string,
+  ): AuthenticatedRunnerIdentity;
+  authenticate(
+    peer: PeerCertificate | undefined,
+    helloOrRunnerId: RunnerHello | string,
+  ): AuthenticatedRunnerIdentity | Promise<AuthenticatedRunnerContext> {
+    if (typeof helloOrRunnerId === "string") {
+      return this.bind(peer, helloOrRunnerId);
+    }
+    const identity = this.bind(peer, helloOrRunnerId.runnerId);
+    return Promise.resolve({ ...identity, scope: { kind: "local" } });
+  }
+
+  private bind(
+    peer: PeerCertificate | undefined,
+    claimedRunnerId: string,
+  ): AuthenticatedRunnerIdentity {
     if (isEmptyCertificate(peer)) {
       throw new RunnerProtocolError("TlsPeerRejected", "no client certificate was presented");
     }

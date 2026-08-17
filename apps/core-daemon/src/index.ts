@@ -30,6 +30,7 @@ export {
   type ResumePresentedIdentity,
 } from "@qualigence/core-application";
 
+export { startCoreDaemon, type StartedCoreDaemon } from "./main.js";
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
 
 export {

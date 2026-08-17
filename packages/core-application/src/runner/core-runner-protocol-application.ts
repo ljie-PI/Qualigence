@@ -56,6 +56,7 @@ export interface CoreRunnerProtocolApplicationOptions {
   readonly sessions: RunnerSessionService;
   readonly jobs: ExecutionJobService;
   readonly ownership: RunOwnershipService;
+  readonly recordRun?: (job: AcceptedExecutionJob) => Promise<void>;
 }
 
 interface CanonicalOffer {
@@ -65,9 +66,10 @@ interface CanonicalOffer {
 }
 
 export class CoreRunnerProtocolApplication implements RunnerProtocolApplication {
-  private readonly sessions: RunnerSessionService;
-  private readonly jobs: ExecutionJobService;
-  private readonly ownership: RunOwnershipService;
+  readonly sessions: RunnerSessionService;
+  readonly jobs: ExecutionJobService;
+  readonly ownership: RunOwnershipService;
+  private readonly recordRun: ((job: AcceptedExecutionJob) => Promise<void>) | undefined;
   private readonly offersByJob = new Map<string, CanonicalOffer>();
   private readonly offersByRun = new Map<string, CanonicalOffer>();
   private processing: Promise<void> = Promise.resolve();
@@ -76,6 +78,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     this.sessions = options.sessions;
     this.jobs = options.jobs;
     this.ownership = options.ownership;
+    this.recordRun = options.recordRun;
   }
 
   openSession(
@@ -94,9 +97,14 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   }
 
   accept(sessionId: string, offerId: string): Promise<ExecutionJobLease> {
-    return this.serialize(() => {
+    return this.serialize(async () => {
       this.requireSession(sessionId);
-      return this.jobs.accept(offerId);
+      const lease = this.jobs.accept(offerId);
+      const offered = this.offersByRun.get(lease.runId);
+      if (offered !== undefined) {
+        await this.recordRun?.(offered.offer.job);
+      }
+      return lease;
     });
   }
 

@@ -13,7 +13,11 @@ export type {
 } from "./ports.js";
 
 export { CertificateRunnerIdentity } from "./tls-runner-identity.js";
-export type { AuthenticatedRunnerIdentity, TlsRunnerIdentity } from "./tls-runner-identity.js";
+export type {
+  AuthenticatedRunnerIdentity,
+  RunnerPeerAuthenticator,
+  TlsRunnerIdentity,
+} from "./tls-runner-identity.js";
 
 export {
   InMemoryResumeTokenStore,
@@ -45,4 +49,6 @@ export {
   renewLeaseToWire,
   welcomeFromWire,
   welcomeToWire,
+  completionFromWire,
+  completionToWire,
 } from "./mappers.js";

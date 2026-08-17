@@ -1,33 +1,30 @@
-import { randomBytes, randomUUID } from "node:crypto";
 import type { PeerCertificate } from "node:tls";
 import * as grpc from "@grpc/grpc-js";
+import type { RunnerProtocolApplication } from "@qualigence/runner-control";
 import type {
   AcceptedExecutionJob,
   ExecutionJobLease,
-  RunnerWelcome,
 } from "@qualigence/runner-protocol";
-import { negotiateProtocolMajor, SUPPORTED_PROTOCOL_MAJORS } from "@qualigence/runner-protocol";
+import { SUPPORTED_PROTOCOL_MAJORS } from "@qualigence/runner-protocol";
 import { createDeferred } from "./async.js";
 import type { Deferred } from "./async.js";
 import { RunnerProtocolError } from "./errors.js";
 import {
   acceptOfferFromWire,
+  completionFromWire,
   eventAckToWire,
   eventBatchFromWire,
   helloFromWire,
-  jobToWire,
   leaseToWire,
   offerToWire,
   protocolVersionMismatchToWire,
   renewLeaseFromWire,
   welcomeToWire,
 } from "./mappers.js";
-import type { RunnerConnectionPort, WelcomeParameters } from "./ports.js";
+import type { RunnerConnectionPort } from "./ports.js";
 import { runnerServiceDefinition } from "./proto.js";
 import type { RunnerFrameWire, ServerFrameWire } from "./proto.js";
-import { InMemoryResumeTokenStore } from "./resume-token-store.js";
-import type { ResumeTokenStore } from "./resume-token-store.js";
-import type { TlsRunnerIdentity } from "./tls-runner-identity.js";
+import type { RunnerPeerAuthenticator } from "./tls-runner-identity.js";
 
 const DEFAULT_MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAXIMUM_HANDSHAKE_PENDING_FRAMES = 32;
@@ -35,11 +32,10 @@ const DEFAULT_MAXIMUM_HANDSHAKE_PENDING_BYTES = 1024 * 1024;
 
 export interface GrpcRunnerProtocolServerOptions {
   readonly tls: { readonly ca: Buffer; readonly key: Buffer; readonly cert: Buffer };
-  readonly identity: TlsRunnerIdentity;
-  readonly welcome: WelcomeParameters;
+  readonly authenticator: RunnerPeerAuthenticator;
+  readonly application: RunnerProtocolApplication;
   readonly host?: string;
   readonly port?: number;
-  readonly resumeStore?: ResumeTokenStore;
   readonly maxMessageBytes?: number;
   readonly maximumHandshakePendingFrames?: number;
   readonly maximumHandshakePendingBytes?: number;
@@ -47,8 +43,6 @@ export interface GrpcRunnerProtocolServerOptions {
   readonly maximumConnectionPendingBytes?: number;
   readonly beforeWelcome?: () => Promise<void>;
   readonly beforeHandleFrame?: () => Promise<void>;
-  readonly generateId?: () => string;
-  readonly now?: () => Date;
 }
 
 type Duplex = grpc.ServerDuplexStream<RunnerFrameWire, ServerFrameWire>;
@@ -56,10 +50,6 @@ type Duplex = grpc.ServerDuplexStream<RunnerFrameWire, ServerFrameWire>;
 export class GrpcRunnerProtocolServer {
   private readonly server: grpc.Server;
   private readonly options: GrpcRunnerProtocolServerOptions;
-  private readonly resumeStore: ResumeTokenStore;
-  private readonly generateId: () => string;
-  private readonly now: () => Date;
-  readonly leaseDurationMs: number;
   private readonly connections = new Map<string, ServerRunnerConnection>();
   private readonly connectionWaiters = new Map<string, Array<Deferred<RunnerConnectionPort>>>();
   private readonly generations = new Map<string, number>();
@@ -67,18 +57,12 @@ export class GrpcRunnerProtocolServer {
   private readonly lastReleased = new Map<string, ServerRunnerConnection>();
   private readonly activeCalls = new Set<Duplex>();
   private readonly handshakes = new Set<Promise<ServerRunnerConnection | undefined>>();
-  /** Trace upload cursor per runId; survives reconnects so resume continues it. */
-  private readonly traceCursors = new Map<string, number>();
+  private readonly ingestCursors = new Map<string, number>();
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | undefined;
-  private boundPort: number | undefined;
 
   constructor(options: GrpcRunnerProtocolServerOptions) {
     this.options = options;
-    this.resumeStore = options.resumeStore ?? new InMemoryResumeTokenStore();
-    this.generateId = options.generateId ?? ((): string => randomUUID());
-    this.now = options.now ?? ((): Date => new Date());
-    this.leaseDurationMs = options.welcome.leaseDurationMs;
     const maxMessageBytes = options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
     this.server = new grpc.Server({
       "grpc.max_receive_message_length": maxMessageBytes,
@@ -90,20 +74,21 @@ export class GrpcRunnerProtocolServer {
   }
 
   async listen(): Promise<number> {
-    const host = this.options.host ?? "127.0.0.1";
-    const port = this.options.port ?? 0;
     const credentials = grpc.ServerCredentials.createSsl(
       this.options.tls.ca,
       [{ private_key: this.options.tls.key, cert_chain: this.options.tls.cert }],
       true,
     );
-    this.boundPort = await new Promise<number>((resolve, reject) => {
-      this.server.bindAsync(`${host}:${port}`, credentials, (error, bound) => {
-        if (error) reject(error);
-        else resolve(bound);
-      });
+    return new Promise<number>((resolve, reject) => {
+      this.server.bindAsync(
+        `${this.options.host ?? "127.0.0.1"}:${this.options.port ?? 0}`,
+        credentials,
+        (error, bound) => {
+          if (error) reject(error);
+          else resolve(bound);
+        },
+      );
     });
-    return this.boundPort;
   }
 
   connection(runnerId: string): RunnerConnectionPort | undefined {
@@ -159,18 +144,12 @@ export class GrpcRunnerProtocolServer {
     });
   }
 
-  nextTraceAck(runId: string, firstSequenceNumber: number, eventCount: number): number {
-    const expected = this.traceCursors.get(runId) ?? 1;
-    if (firstSequenceNumber > expected) {
-      return expected;
-    }
-    const next = Math.max(expected, firstSequenceNumber + eventCount);
-    this.traceCursors.set(runId, next);
-    return next;
+  nextExpectedSequence(runId: string): number {
+    return this.ingestCursors.get(runId) ?? 1;
   }
 
-  nextExpectedSequence(runId: string): number {
-    return this.traceCursors.get(runId) ?? 1;
+  recordIngestCursor(runId: string, nextExpectedSequenceNumber: number): void {
+    this.ingestCursors.set(runId, nextExpectedSequenceNumber);
   }
 
   async waitBeforeHandleFrame(): Promise<void> {
@@ -203,7 +182,7 @@ export class GrpcRunnerProtocolServer {
             if (established === undefined) return;
             connection = established;
             for (const pending of buffered.splice(0)) established.enqueue(pending);
-          }, (error: unknown) => failCall(call, grpc.status.INVALID_ARGUMENT, errorCode(error)))
+          }, (error: unknown) => failApplicationCall(call, error))
           .finally(() => this.handshakes.delete(handshake));
         return;
       }
@@ -259,18 +238,16 @@ export class GrpcRunnerProtocolServer {
       return undefined;
     }
 
-    const peer = peerCertificate(call);
     const hello = helloFromWire(frame.hello);
-
     let identity;
     try {
-      identity = this.options.identity.authenticate(peer, hello.runnerId);
+      identity = await this.options.authenticator.authenticate(peerCertificate(call), hello);
     } catch (error) {
-      if (error instanceof RunnerProtocolError) {
-        failCall(call, grpc.status.UNAUTHENTICATED, error.code);
-        return undefined;
-      }
-      failCall(call, grpc.status.UNAUTHENTICATED, "TlsPeerRejected");
+      failCall(
+        call,
+        grpc.status.UNAUTHENTICATED,
+        error instanceof RunnerProtocolError ? error.code : "TlsPeerRejected",
+      );
       return undefined;
     }
 
@@ -280,19 +257,6 @@ export class GrpcRunnerProtocolServer {
       await Promise.resolve();
     }
     if (terminated()) return undefined;
-
-    const negotiation = negotiateProtocolMajor(hello.supportedProtocolMajors);
-    if (negotiation.outcome === "rejected") {
-      call.write({
-        correlation_id: frame.correlation_id,
-        protocol_version_mismatch: protocolVersionMismatchToWire(
-          negotiation.rejection.offeredProtocolMajors,
-          negotiation.rejection.supportedProtocolMajors,
-        ),
-      });
-      call.end();
-      return undefined;
-    }
 
     if (this.establishingRunnerIds.has(identity.runnerId)) {
       failCall(call, grpc.status.FAILED_PRECONDITION, "RunnerAlreadyConnected");
@@ -308,37 +272,11 @@ export class GrpcRunnerProtocolServer {
     this.establishingRunnerIds.add(identity.runnerId);
     try {
       if (terminated()) return undefined;
-
-      if (hello.resumeToken !== undefined) {
-        const resumed = this.resumeStore.consume(hello.resumeToken, {
-          runnerId: identity.runnerId,
-          certificateFingerprint: identity.certificateFingerprint,
-        });
-        if (resumed === undefined) {
-          failCall(call, grpc.status.UNAUTHENTICATED, "ResumeRejected");
-          return undefined;
-        }
+      const welcome = await this.options.application.openSession(hello, identity);
+      if (terminated()) {
+        await this.options.application.closeSession(welcome.sessionId).catch(() => undefined);
+        return undefined;
       }
-
-      const sessionId = this.generateId();
-      const resumeToken = this.resumeStore.issue({
-        runnerId: identity.runnerId,
-        certificateFingerprint: identity.certificateFingerprint,
-        previousSessionId: sessionId,
-      });
-
-      const welcome: RunnerWelcome = {
-        sessionId,
-        resumeToken,
-        selectedProtocolMajor: negotiation.selectedProtocolMajor,
-        serverVersion: this.options.welcome.serverVersion,
-        heartbeatIntervalMs: this.options.welcome.heartbeatIntervalMs,
-        leaseDurationMs: this.options.welcome.leaseDurationMs,
-        traceBatchMaximumEvents: this.options.welcome.traceBatchMaximumEvents,
-        traceBatchMaximumBytes: this.options.welcome.traceBatchMaximumBytes,
-        maximumInFlightBatches: this.options.welcome.maximumInFlightBatches,
-        maximumPendingWriteBytes: this.options.welcome.maximumPendingWriteBytes,
-      };
 
       const generation = (this.generations.get(identity.runnerId) ?? 0) + 1;
       this.generations.set(identity.runnerId, generation);
@@ -347,18 +285,34 @@ export class GrpcRunnerProtocolServer {
       }
 
       call.write({ correlation_id: frame.correlation_id, welcome: welcomeToWire(welcome) });
-
       const connection = new ServerRunnerConnection(
         this,
+        this.options.application,
         call,
         identity.runnerId,
-        sessionId,
+        welcome.sessionId,
         generation,
         this.options.maximumConnectionPendingFrames ?? DEFAULT_MAXIMUM_HANDSHAKE_PENDING_FRAMES,
         this.options.maximumConnectionPendingBytes ?? DEFAULT_MAXIMUM_HANDSHAKE_PENDING_BYTES,
       );
       this.registerConnection(connection);
       return connection;
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === "ProtocolVersionMismatch") {
+        const details = (error as { readonly details?: { readonly offeredProtocolMajors?: readonly number[]; readonly supportedProtocolMajors?: readonly number[] } }).details;
+        call.write({
+          correlation_id: frame.correlation_id,
+          protocol_version_mismatch: protocolVersionMismatchToWire(
+            details?.offeredProtocolMajors ?? hello.supportedProtocolMajors,
+            details?.supportedProtocolMajors ?? [...SUPPORTED_PROTOCOL_MAJORS],
+          ),
+        });
+        call.end();
+        return undefined;
+      }
+      failApplicationCall(call, error);
+      return undefined;
     } finally {
       this.establishingRunnerIds.delete(identity.runnerId);
     }
@@ -391,29 +345,19 @@ export class GrpcRunnerProtocolServer {
   isCurrentGeneration(runnerId: string, generation: number): boolean {
     return this.generations.get(runnerId) === generation;
   }
-
-  issueLease(job: AcceptedExecutionJob, leaseEpoch: number): ExecutionJobLease {
-    return {
-      jobId: job.jobId,
-      runId: job.runId,
-      leaseToken: randomBytes(32).toString("base64url"),
-      leaseEpoch,
-      expiresAt: new Date(this.now().getTime() + this.options.welcome.leaseDurationMs).toISOString(),
-    };
-  }
 }
 
 class ServerRunnerConnection implements RunnerConnectionPort {
   private readonly pendingOffers = new Map<string, Deferred<ExecutionJobLease>>();
-  private readonly offeredJobs = new Map<string, { job: AcceptedExecutionJob; epoch: number }>();
+  private readonly lastLeases = new Map<string, ExecutionJobLease>();
   private processing: Promise<void> = Promise.resolve();
   private pendingFrameCount = 0;
   private pendingFrameBytes = 0;
-  private leaseEpoch = 0;
   private disposed = false;
 
   constructor(
     private readonly server: GrpcRunnerProtocolServer,
+    private readonly application: RunnerProtocolApplication,
     private readonly call: Duplex,
     readonly runnerId: string,
     readonly sessionId: string,
@@ -422,23 +366,21 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     private readonly maximumPendingBytes: number,
   ) {}
 
-  offer(job: AcceptedExecutionJob, requirements: readonly string[]): Promise<ExecutionJobLease> {
+  async offer(job: AcceptedExecutionJob, requirements: readonly string[]): Promise<ExecutionJobLease> {
     if (this.disposed) {
       return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection is closed"));
     }
-    const offerId = `${this.sessionId}:offer:${this.offeredJobs.size + 1}`;
-    this.leaseEpoch += 1;
-    this.offeredJobs.set(offerId, { job, epoch: this.leaseEpoch });
+    const offer = await this.application.createOffer(this.sessionId, job, requirements);
+    if (this.disposed) {
+      return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection closed while creating offer"));
+    }
+    const existing = this.pendingOffers.get(offer.offerId);
+    if (existing !== undefined) return existing.promise;
     const deferred = createDeferred<ExecutionJobLease>();
-    this.pendingOffers.set(offerId, deferred);
+    this.pendingOffers.set(offer.offerId, deferred);
     this.call.write({
-      correlation_id: offerId,
-      offer: offerToWire({
-        offerId,
-        job,
-        requiredCapabilities: requirements,
-        leaseDurationMs: this.server.leaseDurationMs,
-      }),
+      correlation_id: offer.offerId,
+      offer: offerToWire(offer),
     });
     return deferred.promise;
   }
@@ -446,7 +388,6 @@ class ServerRunnerConnection implements RunnerConnectionPort {
   cancel(_jobId: string, reason: string): Promise<void> {
     if (this.disposed) return Promise.resolve();
     this.dispose(new RunnerProtocolError("SessionClosed", `cancelled: ${reason}`));
-    this.call.end();
     return Promise.resolve();
   }
 
@@ -476,7 +417,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
         if (!this.disposed) await this.handleFrame(frame);
       })
       .catch((error: unknown) => {
-        failCall(this.call, grpc.status.INVALID_ARGUMENT, errorCode(error));
+        failApplicationCall(this.call, error);
         this.dispose(error);
       })
       .finally(() => {
@@ -494,55 +435,49 @@ class ServerRunnerConnection implements RunnerConnectionPort {
       return;
     }
     if (frame.accept_offer !== undefined) {
-      this.handleAcceptOffer(frame);
+      const offerId = acceptOfferFromWire(frame.accept_offer as Record<string, unknown>);
+      const lease = await this.application.accept(this.sessionId, offerId);
+      this.lastLeases.set(lease.runId, lease);
+      this.call.write({ correlation_id: frame.correlation_id, lease: leaseToWire(lease) });
+      const pending = this.pendingOffers.get(offerId);
+      if (pending !== undefined) {
+        this.pendingOffers.delete(offerId);
+        pending.resolve(lease);
+      }
       return;
     }
     if (frame.event_batch !== undefined) {
-      this.handleEventBatch(frame);
+      const ack = await this.application.ingest(
+        this.sessionId,
+        eventBatchFromWire(frame.event_batch as Record<string, unknown>),
+      );
+      this.server.recordIngestCursor(ack.runId, ack.nextExpectedSequenceNumber);
+      this.call.write({
+        correlation_id: frame.correlation_id,
+        event_ack: eventAckToWire(ack),
+      });
       return;
     }
     if (frame.renew_lease !== undefined) {
-      this.handleRenewLease(frame);
-    }
-  }
-
-  private handleAcceptOffer(frame: RunnerFrameWire): void {
-    const offerId = acceptOfferFromWire(frame.accept_offer as Record<string, unknown>);
-    const offered = this.offeredJobs.get(offerId);
-    const deferred = this.pendingOffers.get(offerId);
-    if (offered === undefined || deferred === undefined) {
+      const lease = await this.application.renew(
+        this.sessionId,
+        renewLeaseFromWire(frame.renew_lease as Record<string, unknown>),
+      );
+      this.lastLeases.set(lease.runId, lease);
+      this.call.write({ correlation_id: frame.correlation_id, lease: leaseToWire(lease) });
       return;
     }
-    this.pendingOffers.delete(offerId);
-    const lease = this.server.issueLease(offered.job, offered.epoch);
-    this.call.write({ correlation_id: offerId, lease: leaseToWire(lease) });
-    deferred.resolve(lease);
-  }
-
-  private handleEventBatch(frame: RunnerFrameWire): void {
-    const batch = eventBatchFromWire(frame.event_batch as Record<string, unknown>);
-    const nextExpected = this.server.nextTraceAck(
-      batch.runId,
-      batch.firstSequenceNumber,
-      batch.events.length,
-    );
-    this.call.write({
-      correlation_id: frame.correlation_id,
-      event_ack: eventAckToWire({
-        batchId: batch.batchId,
-        runId: batch.runId,
-        nextExpectedSequenceNumber: nextExpected,
-      }),
-    });
-  }
-
-  private handleRenewLease(frame: RunnerFrameWire): void {
-    const request = renewLeaseFromWire(frame.renew_lease as Record<string, unknown>);
-    const lease = this.server.issueLease(
-      { jobId: request.jobId, runId: request.runId } as AcceptedExecutionJob,
-      request.leaseEpoch,
-    );
-    this.call.write({ correlation_id: frame.correlation_id, lease: leaseToWire(lease) });
+    if (frame.complete_execution !== undefined) {
+      const completion = completionFromWire(frame.complete_execution as Record<string, unknown>);
+      const lease = this.lastLeases.get(completion.runId) ?? {
+        jobId: completion.jobId,
+        runId: completion.runId,
+        leaseToken: "",
+        leaseEpoch: 0,
+        expiresAt: new Date(0).toISOString(),
+      };
+      await this.application.complete(this.sessionId, lease, completion);
+    }
   }
 
   dispose(reason: unknown): void {
@@ -553,6 +488,9 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     }
     this.pendingOffers.clear();
     this.call.end();
+    if (this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+      void this.application.closeSession(this.sessionId).catch(() => undefined);
+    }
   }
 }
 
@@ -568,7 +506,17 @@ function peerCertificate(call: Duplex): PeerCertificate | undefined {
 function errorCode(error: unknown): string {
   if (error instanceof RunnerProtocolError) return error.code;
   const candidate = (error ?? {}) as { readonly code?: unknown };
+  if (candidate.code === "RunnerResumeRejected") return "ResumeRejected";
   return typeof candidate.code === "string" ? candidate.code : "ProtocolViolation";
+}
+
+function failApplicationCall(call: Duplex, error: unknown): void {
+  const code = errorCode(error);
+  const status =
+    code === "LeaseLost" || code === "RunIdentityMismatch"
+      ? grpc.status.FAILED_PRECONDITION
+      : grpc.status.INVALID_ARGUMENT;
+  failCall(call, status, code);
 }
 
 function failCall(call: Duplex, status: grpc.status, code: string): void {

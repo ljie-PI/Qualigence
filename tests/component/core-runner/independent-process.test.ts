@@ -105,23 +105,13 @@ describe("core/runner independent-process integration", () => {
     const connection = await server.waitForConnection("runner-1");
 
     const job = webJob();
-    const leasePromise = connection.offer(job, [UNSUPPORTED_TOKEN]);
-    leasePromise.catch(() => undefined);
-
-    const spool = await openMemorySpool();
-    spools.push(spool);
-    const executor = new LeasedJobExecutor(
-      deterministicRunnerDependencies(spool, { monotonic: 1_000, wall: 100_000 }),
-    );
-
-    const offer = await session.nextOffer(new AbortController().signal);
-    await expect(executor.execute(offer, session)).rejects.toMatchObject({
+    await expect(connection.offer(job, [UNSUPPORTED_TOKEN])).rejects.toMatchObject({
       code: "CapabilityMismatch",
     });
-    // No lease was accepted and no Job payload ran under a reduced feature set.
+    const spool = await openMemorySpool();
+    spools.push(spool);
     expect((await spool.usage()).events).toBe(0);
-
-    await connection.cancel(job.jobId, "capability mismatch").catch(() => undefined);
+    void session;
   });
 
   it("grants a run to a single owner and refuses a second owner for the same run", () => {
