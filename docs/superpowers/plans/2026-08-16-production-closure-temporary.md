@@ -1145,7 +1145,7 @@ git commit -m "feat(runner): renew execution leases safely"
 
 ### Task PR5-SCOPE: Repair Tasks 8-9 implementation scope
 
-**Execution status:** in_progress. Static preflight stopped before product edits.
+**Execution status:** complete and merged as PR #44 (`bfd6da2`). Static preflight stopped before product edits.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
@@ -1156,15 +1156,15 @@ git commit -m "feat(runner): renew execution leases safely"
 - Adds only the direct-import unit tests required to preserve Task 9's moved-service behavior.
 - Changes no runtime code, protocol schema, package manifest, lockfile, migration, or product Composition Root.
 
-- [ ] **Step 1: Record the blocked implementation preflight**
+- [x] **Step 1: Record the blocked implementation preflight**
 
 Document that `RenewLease` lacks the domain lease token required by Task 8, the client lacks stable `LeaseLost` mapping, and four unit tests import services Task 9 moves.
 
-- [ ] **Step 2: Amend Tasks 8-9 exact Files and verification**
+- [x] **Step 2: Amend Tasks 8-9 exact Files and verification**
 
 Add the required protocol contract/proto/client/error/type/smoke files to Task 8 and the four direct-import service tests to Task 9. Preserve existing public interfaces and scope exclusions.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run `git diff --check`, update `docs/production-closure-status.md` with the date,
 exact command result, and commit, then commit both declared Files:
@@ -1174,7 +1174,7 @@ git add docs/superpowers/plans/2026-08-16-production-closure-temporary.md docs/p
 git commit -m "docs(plan): repair tasks 8 and 9 implementation scope"
 ```
 
-- [ ] **Step 4: Review the committed fixed point**
+- [x] **Step 4: Review the committed fixed point**
 
 Run Standards and Spec/architecture `/code-review` against the exact merge-base
 and committed head. Critical or Important findings block Tasks 8-9; each fix is
@@ -2745,14 +2745,14 @@ git commit -m "docs: report production closure with evidence"
 
 ## Terra execution protocol
 
-Terra or any other implementation agent must execute exactly one pending Task per fresh context. Before editing it must:
+Terra or any other implementation agent must execute exactly one pending Task per fresh context. PR5-ATOMIC is the sole exception: one fresh context executes Tasks 8 and 9 together because Task 8 has no valid production caller until Task 9, and produces the single reviewed commit required by that boundary. Before editing it must:
 
 1. read this plan's **Status and authority**, **Global Constraints**, the chosen Task's complete **Files/Interfaces/Steps**, and the architecture sections cited by that Task;
 2. read every file in the Task's **Files** block plus the nearest existing provider/composition analogue named in the steps;
 3. verify `git status`, confirm prior dependency commits are present, run `node --version` and `corepack pnpm --version`, and refuse a shared/junctioned `node_modules` worktree;
 4. mark the Task `already implemented`, `ready`, or `environmentally blocked` from evidence before changing code;
-5. observe the focused RED (or the explicitly documented blocked baseline for verification-only Task 4), implement the smallest coherent module, run focused GREEN + typecheck + `git diff --check`, update the committed status ledger, and make one commit;
-6. request a Standards review and a Spec review against this exact plan Task before the next dependent Task begins.
+5. observe the focused RED (or the explicitly documented blocked baseline for verification-only Task 4), implement the smallest coherent module, run focused GREEN + typecheck + `git diff --check`, update the committed status ledger, and make one commit; PR5-ATOMIC observes both Task REDs and makes its one union commit only after the joint Gate passes;
+6. request a Standards review and a Spec review against this exact plan Task before the next dependent Task begins; PR5-ATOMIC reviews the union of Tasks 8-9 against both Task bodies.
 
 For low-cost workers, the coordinator should disclose only this document's authority/constraints, current execution table, dependency order, and the selected Task body. Later Task bodies are post-completion context and should remain outside that worker's context; the coordinator/reviewer owns cross-task sequencing and updates this single source-of-truth plan when a dependency changes.
 

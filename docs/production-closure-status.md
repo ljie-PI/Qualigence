@@ -381,7 +381,7 @@ production_wiring: missing
 verification: not_run
 introducing_pr: `codex/pr5-atomic-scope`
 date: 2026-08-17
-implementation_commit: `1cd9cdb` (review fixes pending)
+implementation_commits: `1cd9cdb`, `d071374`
 
 The implementation preflight proved Task 8 cannot be committed independently:
 making `GrpcRunnerProtocolServer` require its application and authenticator
@@ -393,9 +393,14 @@ This prerequisite changes only the plan and status ledger. It requires Tasks 8
 and 9 to retain separate RED behavior but ship as one compilable commit, joint
 Gate, and exact-head two-axis review.
 
-- Task 8 focused RED: the six gRPC round-trip cases failed after transport
+- Task 8 focused RED command: `corepack pnpm vitest run
+  tests/conformance/runner-protocol/grpc-round-trip.test.ts` failed 6 of 6 cases
+  after transport
   lifecycle authority moved behind the required application seam.
-- Root typecheck then failed because production Core still supplied legacy
+- Root typecheck command: `corepack pnpm typecheck` failed with three TypeScript
+  errors because production Core still supplied legacy
   `identity`/`welcome` options and its services imported the removed adapter
   identity type, proving Task 9 is required before a valid commit.
 - `git diff --check` exited 0 before commit `1cd9cdb`.
+- Commit `d071374` added the named global/Terra exception, closed PR5-SCOPE, and
+  recorded the atomicity evidence. `git diff --check` exited 0 after that fix.
