@@ -45,6 +45,13 @@ export interface CheckSpec {
   readonly predicate: string;
 }
 
+export interface PartialIndexSpec {
+  readonly name: string;
+  readonly columns: readonly string[];
+  /** Raw, dialect-neutral SQL predicate; rows excluded from the index. */
+  readonly predicate: string;
+}
+
 export interface RelationalTableSpec {
   readonly name: string;
   /** Whether rows belong to a single tenant and must be RLS-isolated. */
@@ -58,6 +65,8 @@ export interface RelationalTableSpec {
   readonly uniques: readonly UniqueSpec[];
   readonly foreignKeys: readonly ForeignKeySpec[];
   readonly checks: readonly CheckSpec[];
+  /** Partial indexes emitted by the PostgreSQL schema generator. */
+  readonly partialIndexes?: readonly PartialIndexSpec[];
 }
 
 const t = (name: string, notNull = true): ColumnSpec => ({
@@ -1104,6 +1113,13 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     uniques: [],
     foreignKeys: [],
     checks: [],
+    partialIndexes: [
+      {
+        name: "runner_sessions_active_runner_id",
+        columns: ["runner_id"],
+        predicate: "closed_at IS NULL",
+      },
+    ],
   },
   {
     name: "runner_resume_tokens",
@@ -1123,6 +1139,13 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     uniques: [],
     foreignKeys: [],
     checks: [],
+    partialIndexes: [
+      {
+        name: "runner_resume_tokens_unconsumed_expiry",
+        columns: ["expires_at"],
+        predicate: "consumed_at IS NULL",
+      },
+    ],
   },
   {
     name: "execution_leases",

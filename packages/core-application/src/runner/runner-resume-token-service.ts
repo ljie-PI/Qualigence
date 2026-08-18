@@ -15,7 +15,16 @@ export interface RunnerResumeTokenServiceOptions {
   readonly generateToken?: () => string;
 }
 
+export interface ResumeRedemption {
+  readonly binding: ResumeTokenBinding;
+  /** The next single-use resume credential, derived deterministically. */
+  readonly resumeToken: string;
+}
+
 const DEFAULT_RESUME_TTL_MS = 5 * 60 * 1000;
+
+/** Domain-separated derivation of the rotated replacement credential. */
+const ROTATION_DERIVATION_PREFIX = "qualigence:resume-rotation:v1:";
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -25,9 +34,11 @@ function hashToken(token: string): string {
  * Issues and redeems the short-lived, single-use resume credentials described in
  * the LS-05 design §7. Only the token hash is stored; each token is bound to the
  * Runner certificate fingerprint, runnerId, previous sessionId and protocol
- * major and expires after a bounded TTL. Redemption is atomic and single-use, so
- * a token can never be replayed after rotation and can never be redeemed by a
- * different Runner identity.
+ * major and expires after a bounded TTL. Redemption atomically persists the
+ * replacement credential alongside the consume, so a redemption that crashed
+ * between the consume and the Welcome reply is replayed deterministically: the
+ * replacement is derived from the presented credential, which the Runner
+ * legitimately holds, and never depends on process memory.
  */
 export class RunnerResumeTokenService {
   private readonly store: RunnerControlStore;
@@ -53,20 +64,32 @@ export class RunnerResumeTokenService {
   }
 
   /**
-   * Redeem a resume token. Throws {@link CoreApplicationError} `RunnerResumeRejected`
-   * when the token is unknown, already consumed, expired, or presented by a
-   * different Runner identity/protocol major. The token is consumed whether or
-   * not the binding matches, so a leaked token cannot be probed repeatedly.
+   * Redeem a resume token for a fresh session and produce its replacement
+   * credential. Throws {@link CoreApplicationError} `RunnerResumeRejected` when
+   * the token is unknown, expired, already consumed without a stored
+   * replacement, or presented by a different Runner identity/protocol major.
+   * A replay of an already-rotated token (a crashed redemption) returns the
+   * identical replacement credential instead of a second consume, so the
+   * reconnect handshake is idempotent.
    */
-  async use(token: string, presented: ResumePresentedIdentity): Promise<ResumeTokenBinding> {
-    const binding = await this.store.consumeResumeToken({
-      tokenHash: hashToken(token),
+  async redeem(token: string, presented: ResumePresentedIdentity): Promise<ResumeRedemption> {
+    const replacementToken = this.deriveReplacementToken(token);
+    const result = await this.store.rotateResumeToken({
+      presentedTokenHash: hashToken(token),
+      replacementTokenHash: hashToken(replacementToken),
+      replacementExpiresAt: new Date(this.now() + this.ttlMs).toISOString(),
       presented,
-      consumedAt: new Date(this.now()).toISOString(),
+      rotatedAt: new Date(this.now()).toISOString(),
     });
-    if (binding === undefined) {
+    if (result === undefined) {
       throw new CoreApplicationError("RunnerResumeRejected", "unknown, expired, or already-consumed resume token");
     }
-    return binding;
+    return { binding: result.binding, resumeToken: replacementToken };
+  }
+
+  private deriveReplacementToken(presentedToken: string): string {
+    return createHash("sha256")
+      .update(ROTATION_DERIVATION_PREFIX + presentedToken, "utf8")
+      .digest("base64url");
   }
 }

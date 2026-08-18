@@ -1,4 +1,3 @@
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -10,8 +9,11 @@ import type {
   PersistedRunnerSession,
   ResumePresentedIdentity,
   ResumeTokenBinding,
+  RotateResumeTokenInput,
+  RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
+import { classifyCompletion, leaseBindingMatches } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { SqliteRuntime } from "./database.js";
 import { isSqliteBusyError, mapBusyError } from "./errors.js";
@@ -90,6 +92,65 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     });
   }
 
+  async rotateResumeToken(input: RotateResumeTokenInput): Promise<RotateResumeTokenResult | undefined> {
+    return this.withWriteTransaction(async (db) => {
+      const row = await db
+        .selectFrom("runner_resume_tokens")
+        .selectAll()
+        .where("token_hash", "=", input.presentedTokenHash)
+        .executeTakeFirst();
+      if (
+        row === undefined ||
+        row.runner_id !== input.presented.runnerId ||
+        row.certificate_fingerprint !== input.presented.certificateFingerprint ||
+        row.protocol_major !== input.presented.protocolMajor
+      ) {
+        return undefined;
+      }
+      if (row.expires_at <= input.rotatedAt) {
+        // The crash-replay window has closed: burn the credential.
+        await db
+          .updateTable("runner_resume_tokens")
+          .set({ consumed_at: input.rotatedAt })
+          .where("token_hash", "=", input.presentedTokenHash)
+          .execute();
+        return undefined;
+      }
+      if (row.consumed_at !== null) {
+        const replacement = await db
+          .selectFrom("runner_resume_tokens")
+          .select("token_hash")
+          .where("token_hash", "=", input.replacementTokenHash)
+          .executeTakeFirst();
+        return replacement === undefined
+          ? undefined
+          : { outcome: "idempotent_retry", binding: toBinding(row) };
+      }
+      await db
+        .insertInto("runner_resume_tokens")
+        .values({
+          token_hash: input.replacementTokenHash,
+          runner_id: row.runner_id,
+          certificate_fingerprint: row.certificate_fingerprint,
+          previous_session_id: row.previous_session_id,
+          protocol_major: row.protocol_major,
+          expires_at: input.replacementExpiresAt,
+          consumed_at: null,
+        })
+        .execute();
+      const consumed = await db
+        .updateTable("runner_resume_tokens")
+        .set({ consumed_at: input.rotatedAt })
+        .where("token_hash", "=", input.presentedTokenHash)
+        .where("consumed_at", "is", null)
+        .executeTakeFirst();
+      if (consumed.numUpdatedRows === 0n) {
+        return { outcome: "idempotent_retry", binding: toBinding(row) };
+      }
+      return { outcome: "rotated", binding: toBinding(row) };
+    });
+  }
+
   async grantLease(input: PersistedExecutionLease): Promise<"granted" | "already_exists"> {
     return this.withWriteTransaction(async (db) => {
       const inserted = await db
@@ -130,11 +191,21 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     completion: ExecutionCompletion;
   }): Promise<"completed" | "duplicate" | "rejected"> {
     return this.withWriteTransaction(async (db) => {
+      const record = await db
+        .selectFrom("execution_leases")
+        .selectAll()
+        .where("run_id", "=", input.runId)
+        .executeTakeFirst();
+      if (record === undefined) {
+        return "rejected";
+      }
+      const bound = leaseBindingMatches(toLease(record), input);
       const existing = await readCompletion(db, input.runId);
       if (existing !== undefined) {
-        return canonicalPayloadHash(existing) === canonicalPayloadHash(input.completion)
-          ? "duplicate"
-          : "rejected";
+        return bound ? classifyCompletion(existing, input.completion) : "rejected";
+      }
+      if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
+        return "rejected";
       }
       const result = await constrainLiveLease(
         db.updateTable("execution_leases").set({ completed_at: input.checkedAt }),
@@ -142,10 +213,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
       ).executeTakeFirst();
       if (result.numUpdatedRows === 0n) {
         const raced = await readCompletion(db, input.runId);
-        return raced !== undefined &&
-          canonicalPayloadHash(raced) === canonicalPayloadHash(input.completion)
-          ? "duplicate"
-          : "rejected";
+        return raced === undefined ? "rejected" : classifyCompletion(raced, input.completion);
       }
       await db
         .insertInto("execution_completions")

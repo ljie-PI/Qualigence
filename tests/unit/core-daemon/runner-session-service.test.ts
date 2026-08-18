@@ -6,7 +6,8 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import { canonicalTraceEventHash, capabilities } from "@qualigence/runner-protocol";
-import { InMemoryRunnerControlStore, type AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import {
   RunnerResumeTokenService,
   RunnerSessionService,
@@ -148,7 +149,7 @@ describe("RunnerSessionService", () => {
   });
 
   it("rejects a trace upload from a runner that does not own the run", async () => {
-    const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore() });
+    const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore(), integrityEvents: { emit: () => undefined } });
     await ownership.grant(
       { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "cart" },
       { runnerId: "runner-1", sessionId: "session-1" },

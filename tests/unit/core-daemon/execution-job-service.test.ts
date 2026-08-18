@@ -8,7 +8,8 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import { canonicalTraceEventHash, capabilities } from "@qualigence/runner-protocol";
-import { InMemoryRunnerControlStore, type AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import {
   CoreRunnerProtocolApplication,
   ExecutionJobService,
@@ -17,8 +18,24 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 
-function makeOwnership(options: { leaseDurationMs?: number; now?: () => number } = {}): RunOwnershipService {
-  return new RunOwnershipService({ store: new InMemoryRunnerControlStore(), ...options });
+function makeOwnership(options: { leaseDurationMs?: number; now?: () => number } = {}): {
+  ownership: RunOwnershipService;
+  store: InMemoryRunnerControlStore;
+} {
+  const store = new InMemoryRunnerControlStore();
+  return {
+    store,
+    ownership: new RunOwnershipService({
+      store,
+      integrityEvents: { emit: () => undefined },
+      ...options,
+    }),
+  };
+}
+
+function makeService(options: { leaseDurationMs?: number; now?: () => number } = {}): ExecutionJobService {
+  const { ownership, store } = makeOwnership(options);
+  return new ExecutionJobService(ownership, { store, ...options });
 }
 
 function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
@@ -35,7 +52,7 @@ const webCaps = capabilities({ targetAdapters: ["web-playwright"] });
 
 describe("ExecutionJobService", () => {
   it("offers a web job to a runner that advertises web-playwright", async () => {
-    const service = new ExecutionJobService(makeOwnership());
+    const service = makeService();
     const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
@@ -47,7 +64,7 @@ describe("ExecutionJobService", () => {
   });
 
   it("rejects an offer with an explicit CapabilityMismatch instead of silently downgrading", async () => {
-    const service = new ExecutionJobService(makeOwnership());
+    const service = makeService();
     await expect(
       service.offer({
         owner: owner1,
@@ -59,7 +76,7 @@ describe("ExecutionJobService", () => {
   });
 
   it("returns the same lease for a duplicate accept of the same offer", async () => {
-    const service = new ExecutionJobService(makeOwnership());
+    const service = makeService();
     const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
@@ -72,7 +89,7 @@ describe("ExecutionJobService", () => {
   });
 
   it("records completion under a valid lease", async () => {
-    const service = new ExecutionJobService(makeOwnership());
+    const service = makeService();
     const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
@@ -86,7 +103,7 @@ describe("ExecutionJobService", () => {
   });
 
   it("rejects an unknown offer", async () => {
-    const service = new ExecutionJobService(makeOwnership());
+    const service = makeService();
     await expect(service.accept("nope")).rejects.toMatchObject({
       code: "UnknownOffer",
     });
@@ -175,6 +192,7 @@ function makeApplication(options: {
   const controlStore = new InMemoryRunnerControlStore();
   const ownership = new RunOwnershipService({
     store: controlStore,
+    integrityEvents: { emit: () => undefined },
     leaseDurationMs: welcome.leaseDurationMs,
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -185,7 +203,10 @@ function makeApplication(options: {
     traceIngestor: new TraceIngestor(store),
     ownership,
   });
-  const jobs = new ExecutionJobService(ownership, { leaseDurationMs: welcome.leaseDurationMs });
+  const jobs = new ExecutionJobService(ownership, {
+    store: controlStore,
+    leaseDurationMs: welcome.leaseDurationMs,
+  });
   const application = new CoreRunnerProtocolApplication({ sessions, jobs, ownership });
   return { application, sessions, jobs, ownership, store };
 }

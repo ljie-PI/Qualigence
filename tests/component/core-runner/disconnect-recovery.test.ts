@@ -18,7 +18,7 @@ import { LeaseWindow } from "../../../apps/runner/src/lease-window.js";
 import { RunnerClient } from "../../../apps/runner/src/runner-client.js";
 import { SpoolingTraceRecorder } from "../../../apps/runner/src/spooling-trace-recorder.js";
 import { TraceUploadPump } from "../../../apps/runner/src/trace-upload-pump.js";
-import { InMemoryRunnerControlStore } from "@qualigence/runner-control";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import { RunOwnershipService } from "../../../apps/core-daemon/src/index.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
@@ -233,6 +233,7 @@ describe("core/runner disconnect recovery Gate", () => {
     let nowMs = 0;
     const ownership = new RunOwnershipService({
       store: new InMemoryRunnerControlStore(),
+      integrityEvents: { emit: () => undefined },
       leaseDurationMs: 30_000,
       now: () => nowMs,
     });
@@ -265,7 +266,10 @@ describe("core/runner disconnect recovery Gate", () => {
   });
 
   it("refuses a different runner uploading trace for a run it does not own", async () => {
-    const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore() });
+    const ownership = new RunOwnershipService({
+      store: new InMemoryRunnerControlStore(),
+      integrityEvents: { emit: () => undefined },
+    });
     const job = webJob({ runId: "run-1" });
     await ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
 
@@ -339,11 +343,16 @@ describe("core/runner disconnect recovery Gate", () => {
     await second.application.ownership.markLost(job.runId, "expired");
     await expect(second.application.ownership.mayStartAction(lease)).resolves.toBe(false);
     const recovery = await second.application.ownership.createRecoveryRun(job.runId);
-    expect(recovery.runId).not.toBe(job.runId);
+    expect(recovery.job.runId).not.toBe(job.runId);
+    await second.application.ownership.grant(
+      recovery.job,
+      { runnerId: "runner-1", sessionId: session2.welcome.sessionId },
+      recovery.recoveryOfRunId,
+    );
     await expect(second.application.ownership.ownerOf(job.runId)).resolves.toMatchObject({
       runnerId: "runner-1",
     });
-    await expect(second.application.ownership.recoveryOf(recovery.runId)).resolves.toBe(job.runId);
+    await expect(second.application.ownership.recoveryOf(recovery.job.runId)).resolves.toBe(job.runId);
   });
 });
 

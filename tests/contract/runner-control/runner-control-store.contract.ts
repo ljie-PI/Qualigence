@@ -9,6 +9,7 @@ import type {
   PersistedExecutionLease,
   PersistedRunnerSession,
   ResumePresentedIdentity,
+  RotateResumeTokenInput,
   RunnerControlStore,
 } from "@qualigence/runner-control";
 
@@ -86,6 +87,17 @@ function presented(
 
 function passed(runId = "run-1"): ExecutionCompletion {
   return { jobId: `job-${runId}`, runId, status: "passed" };
+}
+
+function rotatedInput(overrides: Partial<RotateResumeTokenInput> = {}): RotateResumeTokenInput {
+  return {
+    presentedTokenHash: "hash-resume-1",
+    replacementTokenHash: "hash-resume-1-replacement",
+    replacementExpiresAt: "2026-08-18T00:06:00.000Z",
+    presented: presented(),
+    rotatedAt: CHECKED_AT,
+    ...overrides,
+  };
 }
 
 export function runnerControlStoreContract(
@@ -172,6 +184,77 @@ export function runnerControlStoreContract(
         });
       });
       expect(binding).toBeUndefined();
+    });
+
+    it("rotates a resume token once and replays the redemption idempotently", async () => {
+      await harness!.runPrimary((store) => store.issueResumeToken(resume()));
+
+      const first = await harness!.runPrimary((store) =>
+        store.rotateResumeToken(rotatedInput()),
+      );
+      const replay = await harness!.runPrimary((store) =>
+        store.rotateResumeToken(rotatedInput()),
+      );
+
+      expect(first).toEqual({
+        outcome: "rotated",
+        binding: resume().binding,
+      });
+      expect(replay).toEqual({
+        outcome: "idempotent_retry",
+        binding: resume().binding,
+      });
+      const replacement = await harness!.runPrimary((store) =>
+        store.consumeResumeToken({
+          tokenHash: "hash-resume-1-replacement",
+          presented: presented(),
+          consumedAt: "2026-08-18T00:05:30.000Z",
+        }),
+      );
+      expect(replacement?.previousSessionId).toBe("session-1");
+    });
+
+    it("rotates a token only once under two concurrent callers", async () => {
+      await harness!.runPrimary((store) => store.issueResumeToken(resume()));
+
+      const [first, second] = await Promise.all([
+        harness!.runPrimary((store) => store.rotateResumeToken(rotatedInput())),
+        harness!.runConcurrent((store) => store.rotateResumeToken(rotatedInput())),
+      ]);
+
+      const outcomes = [first?.outcome, second?.outcome].filter((value) => value !== undefined);
+      expect(outcomes).toHaveLength(2);
+      expect(outcomes.filter((value) => value === "rotated")).toHaveLength(1);
+      expect(outcomes.filter((value) => value === "idempotent_retry")).toHaveLength(1);
+      expect([first?.binding, second?.binding]).toContainEqual(resume().binding);
+    });
+
+    it("rejects a rotation replayed under a different identity or a plainly consumed token", async () => {
+      await harness!.runPrimary((store) => store.issueResumeToken(resume()));
+
+      const wrongIdentity = await harness!.runPrimary((store) =>
+        store.rotateResumeToken(rotatedInput({ presented: presented({ runnerId: "runner-2" }) })),
+      );
+      expect(wrongIdentity).toBeUndefined();
+
+      const token = "hash-resume-2";
+      await harness!.runPrimary(async (store) => {
+        await store.issueResumeToken(resume(token));
+        await store.consumeResumeToken({
+          tokenHash: token,
+          presented: presented(),
+          consumedAt: CHECKED_AT,
+        });
+      });
+      const plainConsumed = await harness!.runPrimary((store) =>
+        store.rotateResumeToken(
+          rotatedInput({
+            presentedTokenHash: token,
+            replacementTokenHash: "hash-resume-2-replacement",
+          }),
+        ),
+      );
+      expect(plainConsumed).toBeUndefined();
     });
 
     it("refuses renew and complete for the wrong token, session, runner, or epoch", async () => {
@@ -293,6 +376,35 @@ export function runnerControlStoreContract(
       expect(outcomes.duplicate).toBe("duplicate");
       expect(outcomes.rejected).toBe("rejected");
       expect(outcomes.stored).toEqual(passed());
+    });
+
+    it("never classifies a completion from an unbound owner as duplicate", async () => {
+      const outcomes = await harness!.runPrimary(async (store) => {
+        expect(await store.grantLease(lease())).toBe("granted");
+        expect(
+          await store.completeLease({
+            runId: "run-1",
+            jobId: "job-run-1",
+            owner: { runnerId: "runner-1", sessionId: "session-1" },
+            leaseEpoch: 1,
+            leaseTokenHash: "hash-lease-run-1",
+            checkedAt: CHECKED_AT,
+            completion: passed(),
+          }),
+        ).toBe("completed");
+        // A different runner replaying the exact terminal payload is not a
+        // duplicate: the static lease binding must be verified first.
+        return store.completeLease({
+          runId: "run-1",
+          jobId: "job-run-1",
+          owner: { runnerId: "runner-2", sessionId: "session-2" },
+          leaseEpoch: 1,
+          leaseTokenHash: "hash-lease-run-1",
+          checkedAt: CHECKED_AT,
+          completion: passed(),
+        });
+      });
+      expect(outcomes).toBe("rejected");
     });
 
     it("preserves active ownership after a process restart against the same database", async () => {

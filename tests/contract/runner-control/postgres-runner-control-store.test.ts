@@ -17,35 +17,20 @@ import {
 const TENANT_ID = "tenant-runner-control";
 
 let fixture: PostgresFixture | undefined;
-let primaryRuntime: TenantTransactionProvider | undefined;
-let concurrentRuntime: TenantTransactionProvider | undefined;
 
 beforeAll(async () => {
   if (!dockerAvailable()) {
     throw new Error("DockerUnavailable: RunnerControlStore PostgreSQL contract requires Docker.");
   }
   fixture = await setupPostgresFixture();
-  primaryRuntime = createPostgresRuntime(fixture.serverConfig);
-  concurrentRuntime = createPostgresRuntime(fixture.serverConfig);
 }, 120_000);
 
 afterAll(async () => {
-  await concurrentRuntime?.close();
-  await primaryRuntime?.close();
   await fixture?.stop();
 });
 
-async function createHarness(): Promise<RunnerControlStoreContractHarness> {
-  if (!dockerAvailable()) {
-    throw new Error("DockerUnavailable: RunnerControlStore PostgreSQL contract requires Docker.");
-  }
-  if (fixture === undefined || primaryRuntime === undefined || concurrentRuntime === undefined) {
-    throw new Error("PostgreSQL RunnerControlStore fixture was not initialized.");
-  }
-  const primary = primaryRuntime;
-  const concurrent = concurrentRuntime;
-  const provisioned = fixture;
-  const admin = await import("pg").then((module) => new module.default.Client(provisioned.adminConfig));
+async function truncateRunnerControlTables(fixtureToClean: PostgresFixture): Promise<void> {
+  const admin = await import("pg").then((module) => new module.default.Client(fixtureToClean.adminConfig));
   await admin.connect();
   try {
     await admin.query(
@@ -54,18 +39,44 @@ async function createHarness(): Promise<RunnerControlStoreContractHarness> {
   } finally {
     await admin.end();
   }
+}
+
+function storeIn(
+  getRuntime: () => TenantTransactionProvider,
+): RunnerControlStoreContractHarness["runPrimary"] {
+  return (operation) =>
+    getRuntime().withTenant(TENANT_ID, ({ db }) =>
+      operation(new PostgresRunnerControlStore(db, TENANT_ID)),
+    );
+}
+
+async function createHarness(): Promise<RunnerControlStoreContractHarness> {
+  if (!dockerAvailable()) {
+    throw new Error("DockerUnavailable: RunnerControlStore PostgreSQL contract requires Docker.");
+  }
+  if (fixture === undefined) {
+    throw new Error("PostgreSQL RunnerControlStore fixture was not initialized.");
+  }
+  const f = fixture;
+  await truncateRunnerControlTables(f);
+  let primary = createPostgresRuntime(f.serverConfig);
+  let concurrent = createPostgresRuntime(f.serverConfig);
 
   return {
-    runPrimary: (operation) =>
-      primary.withTenant(TENANT_ID, ({ db }) =>
-        operation(new PostgresRunnerControlStore(db, TENANT_ID)),
-      ),
-    runConcurrent: (operation) =>
-      concurrent.withTenant(TENANT_ID, ({ db }) =>
-        operation(new PostgresRunnerControlStore(db, TENANT_ID)),
-      ),
-    reopen: async () => {},
-    close: async () => {},
+    runPrimary: storeIn(() => primary),
+    runConcurrent: storeIn(() => concurrent),
+    // A real reopen: fresh pools and connections against the same database, so
+    // the restart contract observes durable state across connections.
+    async reopen() {
+      await concurrent.close();
+      await primary.close();
+      primary = createPostgresRuntime(f.serverConfig);
+      concurrent = createPostgresRuntime(f.serverConfig);
+    },
+    async close() {
+      await concurrent.close();
+      await primary.close();
+    },
   };
 }
 

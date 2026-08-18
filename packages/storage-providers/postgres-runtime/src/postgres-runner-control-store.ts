@@ -1,4 +1,3 @@
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -10,14 +9,23 @@ import type {
   PersistedRunnerSession,
   ResumePresentedIdentity,
   ResumeTokenBinding,
+  RotateResumeTokenInput,
+  RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import type { Kysely, UpdateQueryBuilder, UpdateResult } from "kysely";
+import { classifyCompletion, leaseBindingMatches } from "@qualigence/runner-control";
+import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { PostgresDatabase } from "./postgres-database.js";
 
+/**
+ * PostgreSQL {@link RunnerControlStore}. Must be constructed with a tenant
+ * transaction from `TenantTransactionProvider.withTenant`, so every
+ * multi-statement operation (completion, resume rotation) is atomic in a single
+ * transaction instead of a sequence of separately committed statements.
+ */
 export class PostgresRunnerControlStore implements RunnerControlStore {
   constructor(
-    private readonly db: Kysely<PostgresDatabase>,
+    private readonly db: Transaction<PostgresDatabase>,
     private readonly tenantId: string,
   ) {}
 
@@ -90,6 +98,69 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
       : undefined;
   }
 
+  async rotateResumeToken(input: RotateResumeTokenInput): Promise<RotateResumeTokenResult | undefined> {
+    const row = await this.db
+      .selectFrom("runner_resume_tokens")
+      .selectAll()
+      .where("tenant_id", "=", this.tenantId)
+      .where("token_hash", "=", input.presentedTokenHash)
+      .executeTakeFirst();
+    if (
+      row === undefined ||
+      row.runner_id !== input.presented.runnerId ||
+      row.certificate_fingerprint !== input.presented.certificateFingerprint ||
+      row.protocol_major !== input.presented.protocolMajor
+    ) {
+      return undefined;
+    }
+    if (row.expires_at <= input.rotatedAt) {
+      // The crash-replay window has closed: burn the credential.
+      await this.db
+        .updateTable("runner_resume_tokens")
+        .set({ consumed_at: input.rotatedAt })
+        .where("tenant_id", "=", this.tenantId)
+        .where("token_hash", "=", input.presentedTokenHash)
+        .execute();
+      return undefined;
+    }
+    if (row.consumed_at !== null) {
+      const replacement = await this.db
+        .selectFrom("runner_resume_tokens")
+        .select("token_hash")
+        .where("tenant_id", "=", this.tenantId)
+        .where("token_hash", "=", input.replacementTokenHash)
+        .executeTakeFirst();
+      return replacement === undefined
+        ? undefined
+        : { outcome: "idempotent_retry", binding: toBinding(row) };
+    }
+    await this.db
+      .insertInto("runner_resume_tokens")
+      .values({
+        tenant_id: this.tenantId,
+        token_hash: input.replacementTokenHash,
+        runner_id: row.runner_id,
+        certificate_fingerprint: row.certificate_fingerprint,
+        previous_session_id: row.previous_session_id,
+        protocol_major: row.protocol_major,
+        expires_at: input.replacementExpiresAt,
+        consumed_at: null,
+      })
+      .onConflict((oc) => oc.columns(["tenant_id", "token_hash"]).doNothing())
+      .execute();
+    const consumed = await this.db
+      .updateTable("runner_resume_tokens")
+      .set({ consumed_at: input.rotatedAt })
+      .where("tenant_id", "=", this.tenantId)
+      .where("token_hash", "=", input.presentedTokenHash)
+      .where("consumed_at", "is", null)
+      .executeTakeFirst();
+    if (consumed.numUpdatedRows === 0n) {
+      return { outcome: "idempotent_retry", binding: toBinding(row) };
+    }
+    return { outcome: "rotated", binding: toBinding(row) };
+  }
+
   async grantLease(input: PersistedExecutionLease): Promise<"granted" | "already_exists"> {
     const inserted = await this.db
       .insertInto("execution_leases")
@@ -126,11 +197,22 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     checkedAt: string;
     completion: ExecutionCompletion;
   }): Promise<"completed" | "duplicate" | "rejected"> {
+    const record = await this.db
+      .selectFrom("execution_leases")
+      .selectAll()
+      .where("tenant_id", "=", this.tenantId)
+      .where("run_id", "=", input.runId)
+      .executeTakeFirst();
+    if (record === undefined) {
+      return "rejected";
+    }
+    const bound = leaseBindingMatches(toLease(record), input);
     const existing = await readCompletion(this.db, this.tenantId, input.runId);
     if (existing !== undefined) {
-      return canonicalPayloadHash(existing) === canonicalPayloadHash(input.completion)
-        ? "duplicate"
-        : "rejected";
+      return bound ? classifyCompletion(existing, input.completion) : "rejected";
+    }
+    if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
+      return "rejected";
     }
     const result = await constrainLiveLease(
       this.db.updateTable("execution_leases").set({ completed_at: input.checkedAt }),
@@ -139,10 +221,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     ).executeTakeFirst();
     if (result.numUpdatedRows === 0n) {
       const raced = await readCompletion(this.db, this.tenantId, input.runId);
-      return raced !== undefined &&
-        canonicalPayloadHash(raced) === canonicalPayloadHash(input.completion)
-        ? "duplicate"
-        : "rejected";
+      return raced === undefined ? "rejected" : classifyCompletion(raced, input.completion);
     }
     await this.db
       .insertInto("execution_completions")

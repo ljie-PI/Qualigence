@@ -19,6 +19,9 @@ import type { RunnerSessionService } from "./runner-session-service.js";
 
 export type CoreApplicationErrorCode =
   | "LeaseLost"
+  | "RunLost"
+  | "RunCompleted"
+  | "LeaseActive"
   | "CapabilityMismatch"
   | "ProtocolVersionMismatch"
   | "RunnerResumeRejected"
@@ -126,6 +129,14 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   ): Promise<void> {
     return this.serialize(async () => {
       await this.requireOwner(sessionId, lease.runId);
+      if (lease.leaseToken === "") {
+        // The gRPC server could not attach a lease it had seen on this
+        // connection: the run was accepted or renewed on a pre-disconnect
+        // connection (or a previous Core process). Session ownership is already
+        // verified above, so the stored lease is the authority for completing.
+        await this.ownership.completeStored(lease.runId, completion);
+        return;
+      }
       await this.jobs.complete(lease, completion);
     });
   }

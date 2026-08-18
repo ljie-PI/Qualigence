@@ -13,6 +13,7 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 import { TraceIngestor } from "@qualigence/evidence";
+import { StructuredLogger } from "@qualigence/observability";
 import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
 
@@ -38,11 +39,18 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
   const traceStore = new SqliteTraceStore(runtime);
   const runStore = new SqliteRunStore(runtime);
   const controlStore = new SqliteRunnerControlStore(runtime);
+  const logger = new StructuredLogger({ service: "core-daemon" });
   const ownership = new RunOwnershipService({
     store: controlStore,
     leaseDurationMs: config.leaseDurationMs,
+    integrityEvents: {
+      emit: (event) => logger.warn("runner-control.integrity", { ...event }),
+    },
   });
-  const jobs = new ExecutionJobService(ownership, { leaseDurationMs: config.leaseDurationMs });
+  const jobs = new ExecutionJobService(ownership, {
+    store: controlStore,
+    leaseDurationMs: config.leaseDurationMs,
+  });
   const sessions = new RunnerSessionService({
     store: controlStore,
     welcome: {

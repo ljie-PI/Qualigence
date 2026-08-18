@@ -48,171 +48,94 @@ export interface PersistedExecutionLease {
   readonly recoveryOfRunId?: string;
 }
 
-export class InMemoryRunnerControlStore implements RunnerControlStore {
-  private readonly sessions = new Map<string, PersistedRunnerSession & { closedAt?: string }>();
-  private readonly tokens = new Map<
-    string,
-    HashedResumeTokenRecord & { consumedAt?: string }
-  >();
-  private readonly leases = new Map<string, PersistedExecutionLease>();
-  private readonly completions = new Map<string, ExecutionCompletion>();
-  private queue: Promise<void> = Promise.resolve();
+export interface RotateResumeTokenInput {
+  readonly presentedTokenHash: string;
+  readonly replacementTokenHash: string;
+  readonly replacementExpiresAt: string;
+  readonly presented: ResumePresentedIdentity;
+  readonly rotatedAt: string;
+}
 
-  saveSession(record: PersistedRunnerSession): Promise<void> {
-    return this.serialize(() => {
-      this.sessions.set(record.sessionId, { ...record });
-    });
-  }
+export interface RotateResumeTokenResult {
+  /**
+   * `rotated` when this call consumed the presented token and stored the
+   * replacement; `idempotent_retry` when an earlier (possibly crashed)
+   * redemption already rotated the same presented token.
+   */
+  readonly outcome: "rotated" | "idempotent_retry";
+  readonly binding: ResumeTokenBinding;
+}
 
-  closeSession(sessionId: string, closedAt: string): Promise<void> {
-    return this.serialize(() => {
-      const existing = this.sessions.get(sessionId);
-      if (existing !== undefined) {
-        this.sessions.set(sessionId, { ...existing, closedAt });
-      }
-    });
-  }
+export type RunnerControlIntegrityKind = "completion_conflict";
 
-  issueResumeToken(record: HashedResumeTokenRecord): Promise<void> {
-    return this.serialize(() => {
-      this.tokens.set(record.tokenHash, { ...record });
-    });
-  }
+/**
+ * An integrity anomaly observed by the runner-control authority. Only hashes
+ * are ever carried; raw lease tokens, resume tokens and completion payloads
+ * must never be embedded in an event.
+ */
+export interface RunnerControlIntegrityEvent {
+  readonly kind: RunnerControlIntegrityKind;
+  readonly runId: string;
+  readonly leaseTokenHash: string;
+  readonly presentedCompletionHash: string;
+  readonly storedCompletionHash?: string;
+  readonly observedAt: string;
+}
 
-  consumeResumeToken(input: {
-    tokenHash: string;
-    presented: ResumePresentedIdentity;
-    consumedAt: string;
-  }): Promise<ResumeTokenBinding | undefined> {
-    return this.serialize(() => {
-      const record = this.tokens.get(input.tokenHash);
-      if (record === undefined || record.consumedAt !== undefined) {
-        return undefined;
-      }
-      this.tokens.set(input.tokenHash, { ...record, consumedAt: input.consumedAt });
-      if (
-        record.expiresAt <= input.consumedAt ||
-        record.binding.runnerId !== input.presented.runnerId ||
-        record.binding.certificateFingerprint !== input.presented.certificateFingerprint ||
-        record.binding.protocolMajor !== input.presented.protocolMajor
-      ) {
-        return undefined;
-      }
-      return record.binding;
-    });
-  }
+export interface RunnerControlIntegrityEventSink {
+  readonly emit: (event: RunnerControlIntegrityEvent) => void;
+}
 
-  grantLease(input: PersistedExecutionLease): Promise<"granted" | "already_exists"> {
-    return this.serialize(() => {
-      if (this.leases.has(input.job.runId)) {
-        return "already_exists";
-      }
-      this.leases.set(input.job.runId, { ...input });
-      return "granted";
-    });
-  }
-
-  renewLease(input: {
-    runId: string;
+/**
+ * Pure lease-binding comparison shared by every provider: a completion is
+ * legitimate only when the presented lease is bound to the stored job, owner,
+ * epoch and token hash and the lease was never marked lost. It intentionally
+ * ignores expiry and the completed flag so an idempotent completion retry after
+ * the terminal commit remains a `duplicate` rather than a rejection.
+ */
+export function leaseBindingMatches(
+  record: PersistedExecutionLease,
+  presented: {
     jobId: string;
     owner: PersistedLeaseOwner;
     leaseEpoch: number;
     leaseTokenHash: string;
-    checkedAt: string;
-    newExpiresAt: string;
-  }): Promise<boolean> {
-    return this.serialize(() => {
-      const record = this.liveLease(input);
-      if (record === undefined) {
-        return false;
-      }
-      this.leases.set(input.runId, { ...record, expiresAt: input.newExpiresAt });
-      return true;
-    });
-  }
+  },
+): boolean {
+  return (
+    record.lostAt === undefined &&
+    record.job.jobId === presented.jobId &&
+    record.owner.runnerId === presented.owner.runnerId &&
+    record.owner.sessionId === presented.owner.sessionId &&
+    record.leaseEpoch === presented.leaseEpoch &&
+    record.leaseTokenHash === presented.leaseTokenHash
+  );
+}
 
-  completeLease(input: {
-    runId: string;
-    jobId: string;
-    owner: PersistedLeaseOwner;
-    leaseEpoch: number;
-    leaseTokenHash: string;
-    checkedAt: string;
-    completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected"> {
-    return this.serialize(() => {
-      const existing = this.completions.get(input.runId);
-      if (existing !== undefined) {
-        return canonicalPayloadHash(existing) === canonicalPayloadHash(input.completion)
-          ? "duplicate"
-          : "rejected";
-      }
-      const record = this.liveLease(input);
-      if (record === undefined) {
-        const raced = this.completions.get(input.runId);
-        return raced !== undefined &&
-          canonicalPayloadHash(raced) === canonicalPayloadHash(input.completion)
-          ? "duplicate"
-          : "rejected";
-      }
-      this.leases.set(input.runId, { ...record, completedAt: input.checkedAt });
-      this.completions.set(input.runId, input.completion);
-      return "completed";
-    });
+/**
+ * Classify a completion replay against the stored terminal result. `duplicate`
+ * is legal only when the stored completion is byte-for-byte
+ * canonical-equivalent; any other stored terminal result is `rejected` and must
+ * be surfaced as a `completion_conflict` integrity event.
+ */
+export function classifyCompletion(
+  stored: undefined,
+  presented: ExecutionCompletion,
+): "absent";
+export function classifyCompletion(
+  stored: ExecutionCompletion,
+  presented: ExecutionCompletion,
+): "duplicate" | "rejected";
+export function classifyCompletion(
+  stored: ExecutionCompletion | undefined,
+  presented: ExecutionCompletion,
+): "duplicate" | "rejected" | "absent" {
+  if (stored === undefined) {
+    return "absent";
   }
-
-  markLeaseLost(runId: string, lostAt: string): Promise<boolean> {
-    return this.serialize(() => {
-      const record = this.leases.get(runId);
-      if (record === undefined || record.lostAt !== undefined) {
-        return false;
-      }
-      this.leases.set(runId, { ...record, lostAt });
-      return true;
-    });
-  }
-
-  lease(runId: string): Promise<PersistedExecutionLease | undefined> {
-    return this.serialize(() => this.leases.get(runId));
-  }
-
-  completion(runId: string): Promise<ExecutionCompletion | undefined> {
-    return this.serialize(() => this.completions.get(runId));
-  }
-
-  private liveLease(input: {
-    runId: string;
-    jobId: string;
-    owner: PersistedLeaseOwner;
-    leaseEpoch: number;
-    leaseTokenHash: string;
-    checkedAt: string;
-  }): PersistedExecutionLease | undefined {
-    const record = this.leases.get(input.runId);
-    if (
-      record === undefined ||
-      record.lostAt !== undefined ||
-      record.completedAt !== undefined ||
-      record.job.jobId !== input.jobId ||
-      record.owner.runnerId !== input.owner.runnerId ||
-      record.owner.sessionId !== input.owner.sessionId ||
-      record.leaseEpoch !== input.leaseEpoch ||
-      record.leaseTokenHash !== input.leaseTokenHash ||
-      record.expiresAt <= input.checkedAt
-    ) {
-      return undefined;
-    }
-    return record;
-  }
-
-  private serialize<TResult>(operation: () => Promise<TResult> | TResult): Promise<TResult> {
-    const result = this.queue.then(operation);
-    this.queue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
+  return canonicalPayloadHash(stored) === canonicalPayloadHash(presented)
+    ? "duplicate"
+    : "rejected";
 }
 
 export interface RunnerControlStore {
@@ -224,6 +147,15 @@ export interface RunnerControlStore {
     presented: ResumePresentedIdentity;
     consumedAt: string;
   }): Promise<ResumeTokenBinding | undefined>;
+  /**
+   * Atomically redeem a single-use resume token and persist its replacement in
+   * the same step, so a redemption that crashed between the consume and the
+   * Welcome reply can be replayed deterministically. A repeated presentation of
+   * an already-rotated token returns `idempotent_retry` with the same binding;
+   * an unknown, expired, plainly consumed, or identity-mismatched token returns
+   * `undefined`.
+   */
+  rotateResumeToken(input: RotateResumeTokenInput): Promise<RotateResumeTokenResult | undefined>;
   grantLease(input: PersistedExecutionLease): Promise<"granted" | "already_exists">;
   renewLease(input: {
     runId: string;
@@ -242,7 +174,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected">;
+  }): Promise<"completed" | "duplicate" | "rejected" | "absent">;
   markLeaseLost(runId: string, lostAt: string): Promise<boolean>;
   lease(runId: string): Promise<PersistedExecutionLease | undefined>;
   completion(runId: string): Promise<ExecutionCompletion | undefined>;

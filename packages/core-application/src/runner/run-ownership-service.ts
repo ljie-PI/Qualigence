@@ -1,14 +1,17 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type {
-  AcceptedExecutionJob,
-  ExecutionCompletion,
-  ExecutionEventBatch,
-  ExecutionJobLease,
-  TargetRef,
+import {
+  canonicalPayloadHash,
+  type AcceptedExecutionJob,
+  type ExecutionCompletion,
+  type ExecutionEventBatch,
+  type ExecutionJobLease,
+  type TargetRef,
 } from "@qualigence/runner-protocol";
 import type {
   AuthenticatedRunnerContext,
+  PersistedExecutionLease,
   PersistedLeaseOwner,
+  RunnerControlIntegrityEventSink,
   RunnerControlStore,
 } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
@@ -19,11 +22,23 @@ export type LeaseLostReason = "expired" | "revoked" | "epoch_superseded";
 
 export interface RunOwnershipServiceOptions {
   readonly store: RunnerControlStore;
+  /**
+   * Required integrity-event sink; production wires a structured logger. An
+   * event is emitted when a completion is rejected because a different terminal
+   * result is already stored for the run.
+   */
+  readonly integrityEvents: RunnerControlIntegrityEventSink;
   readonly leaseDurationMs?: number;
   readonly now?: () => number;
   readonly generateToken?: () => string;
   readonly generateRunId?: () => string;
   readonly generateJobId?: () => string;
+}
+
+export interface RecoveredRun {
+  readonly job: AcceptedExecutionJob;
+  /** The lost runId this recovery run inherits the execution from. */
+  readonly recoveryOfRunId: string;
 }
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
@@ -51,7 +66,7 @@ function constantTimeEquals(left: string, right: string): boolean {
  */
 export class RunOwnershipService {
   private readonly store: RunnerControlStore;
-  private readonly pendingRecoveryOf = new Map<string, string>();
+  private readonly integrityEvents: RunnerControlIntegrityEventSink;
   private readonly leaseDurationMs: number;
   private readonly now: () => number;
   private readonly generateToken: () => string;
@@ -60,6 +75,7 @@ export class RunOwnershipService {
 
   constructor(options: RunOwnershipServiceOptions) {
     this.store = options.store;
+    this.integrityEvents = options.integrityEvents;
     this.leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
     this.now = options.now ?? ((): number => Date.now());
     this.generateToken = options.generateToken ?? ((): string => randomBytes(32).toString("base64url"));
@@ -67,11 +83,14 @@ export class RunOwnershipService {
     this.generateJobId = options.generateJobId ?? ((): string => randomBytes(16).toString("hex"));
   }
 
-  async grant(job: AcceptedExecutionJob, owner: LeaseOwner): Promise<ExecutionJobLease> {
+  async grant(
+    job: AcceptedExecutionJob,
+    owner: LeaseOwner,
+    recoveryOfRunId?: string,
+  ): Promise<ExecutionJobLease> {
     const leaseToken = this.generateToken();
     const leaseEpoch = 1;
     const expiresAt = new Date(this.now() + this.leaseDurationMs).toISOString();
-    const recoveryOfRunId = this.pendingRecoveryOf.get(job.runId);
     const outcome = await this.store.grantLease({
       job,
       owner,
@@ -87,7 +106,6 @@ export class RunOwnershipService {
         { details: { runId: job.runId } },
       );
     }
-    this.pendingRecoveryOf.delete(job.runId);
     return {
       jobId: job.jobId,
       runId: job.runId,
@@ -125,20 +143,62 @@ export class RunOwnershipService {
 
   async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<void> {
     const record = await this.requireMatchingLease(lease);
+    await this.completeAgainst(record, completion);
+  }
+
+  /**
+   * Complete a run using the stored lease as authority, without presenting the
+   * raw lease token. This is the resumed-connection path: the gRPC server never
+   * saw the lease on this connection (it was accepted or renewed on a
+   * pre-disconnect connection or a previous Core process), so the session-owner
+   * check is the gate and the persisted lease binding is what is written. A run
+   * with no stored lease or a lost lease is refused exactly like
+   * {@link complete}.
+   */
+  async completeStored(runId: string, completion: ExecutionCompletion): Promise<void> {
+    const record = await this.store.lease(runId);
+    if (record === undefined || record.lostAt !== undefined) {
+      throw new CoreApplicationError("LeaseLost", `run ${runId} has no active lease`, {
+        details: { runId },
+      });
+    }
+    await this.completeAgainst(record, completion);
+  }
+
+  private async completeAgainst(
+    record: PersistedExecutionLease,
+    completion: ExecutionCompletion,
+  ): Promise<void> {
     const outcome = await this.store.completeLease({
-      runId: lease.runId,
-      jobId: lease.jobId,
+      runId: record.job.runId,
+      jobId: record.job.jobId,
       owner: record.owner,
-      leaseEpoch: lease.leaseEpoch,
-      leaseTokenHash: hashToken(lease.leaseToken),
+      leaseEpoch: record.leaseEpoch,
+      leaseTokenHash: record.leaseTokenHash,
       checkedAt: new Date(this.now()).toISOString(),
       completion,
     });
+    if (outcome === "absent") {
+      throw new CoreApplicationError(
+        "LeaseLost",
+        `lease for run ${record.job.runId} no longer exists`,
+        { details: { runId: record.job.runId } },
+      );
+    }
     if (outcome === "rejected") {
+      const stored = await this.store.completion(record.job.runId);
+      this.integrityEvents.emit({
+        kind: "completion_conflict",
+        runId: record.job.runId,
+        leaseTokenHash: record.leaseTokenHash,
+        presentedCompletionHash: canonicalPayloadHash(completion),
+        ...(stored === undefined ? {} : { storedCompletionHash: canonicalPayloadHash(stored) }),
+        observedAt: new Date(this.now()).toISOString(),
+      });
       throw new CoreApplicationError(
         "RunOwnershipViolation",
-        `completion for run ${lease.runId} conflicts with the stored terminal result`,
-        { details: { runId: lease.runId } },
+        `completion for run ${record.job.runId} conflicts with the stored terminal result`,
+        { details: { runId: record.job.runId } },
       );
     }
   }
@@ -161,18 +221,43 @@ export class RunOwnershipService {
     await this.store.markLeaseLost(runId, new Date(this.now()).toISOString());
   }
 
-  async createRecoveryRun(lostRunId: string): Promise<AcceptedExecutionJob> {
+  /**
+   * Recover a lost run under a brand-new runId. The prior runId is never
+   * re-authorized: only an expired lease or an explicitly revoked one may be
+   * recovered, a live lease rejects recovery with `LeaseActive`, and a
+   * completed run rejects it with `RunCompleted` so a terminal result is never
+   * executed a second time. The lineage is returned to the caller, flows
+   * through {@link ExecutionJobService.offer} into the recovered grant, and is
+   * then persisted on the new lease row.
+   */
+  async createRecoveryRun(lostRunId: string): Promise<RecoveredRun> {
     const record = await this.store.lease(lostRunId);
     if (record === undefined) {
       throw new CoreApplicationError("UnknownRun", `run ${lostRunId} is not known`, {
         details: { runId: lostRunId },
       });
     }
-    await this.store.markLeaseLost(lostRunId, new Date(this.now()).toISOString());
+    if (record.completedAt !== undefined) {
+      throw new CoreApplicationError(
+        "RunCompleted",
+        `run ${lostRunId} already completed and is never recovered`,
+        { details: { runId: lostRunId } },
+      );
+    }
+    const nowIso = new Date(this.now()).toISOString();
+    if (record.lostAt === undefined && record.expiresAt > nowIso) {
+      throw new CoreApplicationError(
+        "LeaseActive",
+        `run ${lostRunId} still has a live lease; recover only after expiry or an explicit revoke`,
+        { details: { runId: lostRunId } },
+      );
+    }
+    if (record.lostAt === undefined) {
+      await this.store.markLeaseLost(lostRunId, nowIso);
+    }
     const runId = this.generateRunId();
     const jobId = this.generateJobId();
-    this.pendingRecoveryOf.set(runId, lostRunId);
-    return recoveryJob(record.job, jobId, runId);
+    return { job: recoveryJob(record.job, jobId, runId), recoveryOfRunId: lostRunId };
   }
 
   async authorizeTraceUpload(identity: AuthenticatedRunnerContext, batch: ExecutionEventBatch): Promise<void> {
@@ -196,7 +281,7 @@ export class RunOwnershipService {
   }
 
   async recoveryOf(runId: string): Promise<string | undefined> {
-    return this.pendingRecoveryOf.get(runId) ?? (await this.store.lease(runId))?.recoveryOfRunId;
+    return (await this.store.lease(runId))?.recoveryOfRunId;
   }
 
   async completionOf(runId: string): Promise<ExecutionCompletion | undefined> {

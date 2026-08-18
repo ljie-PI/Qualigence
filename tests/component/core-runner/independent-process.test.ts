@@ -4,7 +4,7 @@ import type {
   ExecutionEventBatch,
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
-import { InMemoryRunnerControlStore } from "@qualigence/runner-control";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { LeasedJobExecutor } from "../../../apps/runner/src/job-executor.js";
 import { TraceUploadPump } from "../../../apps/runner/src/trace-upload-pump.js";
@@ -116,7 +116,10 @@ describe("core/runner independent-process integration", () => {
   });
 
   it("grants a run to a single owner and refuses a second owner for the same run", async () => {
-    const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore() });
+    const ownership = new RunOwnershipService({
+      store: new InMemoryRunnerControlStore(),
+      integrityEvents: { emit: () => undefined },
+    });
     const job = webJob();
 
     await ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });

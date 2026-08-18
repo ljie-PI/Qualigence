@@ -72,7 +72,9 @@ export class RunnerSessionService {
    * Register a connecting Runner. Rejects with `ProtocolVersionMismatch` when no
    * shared protocol major exists and with `RunnerResumeRejected` when a presented
    * resume token is unknown, expired, consumed, or bound to a different identity.
-   * A fresh single-use resume token is issued on every successful handshake.
+   * A fresh single-use resume token is issued on every successful handshake; a
+   * redemption that crashed before the Welcome was delivered replays
+   * idempotently and returns the same replacement credential.
    */
   async register(hello: RunnerHello, identity: AuthenticatedRunnerContext): Promise<RunnerWelcome> {
     const negotiation = negotiateProtocolMajor(hello.supportedProtocolMajors);
@@ -86,14 +88,24 @@ export class RunnerSessionService {
     }
     const protocolMajor = negotiation.selectedProtocolMajor;
 
-    let sessionId = this.generateSessionId();
+    let sessionId: string;
+    let resumeToken: string;
     if (hello.resumeToken !== undefined) {
-      const binding = await this.resumeTokens.use(hello.resumeToken, {
+      const redemption = await this.resumeTokens.redeem(hello.resumeToken, {
         runnerId: identity.runnerId,
         certificateFingerprint: identity.certificateFingerprint,
         protocolMajor,
       });
-      sessionId = binding.previousSessionId;
+      sessionId = redemption.binding.previousSessionId;
+      resumeToken = redemption.resumeToken;
+    } else {
+      sessionId = this.generateSessionId();
+      resumeToken = await this.resumeTokens.issue({
+        runnerId: identity.runnerId,
+        certificateFingerprint: identity.certificateFingerprint,
+        previousSessionId: sessionId,
+        protocolMajor,
+      });
     }
 
     const createdAt = new Date(this.now()).toISOString();
@@ -113,13 +125,6 @@ export class RunnerSessionService {
       protocolMajor,
     };
     this.live.set(sessionId, record);
-
-    const resumeToken = await this.resumeTokens.issue({
-      runnerId: identity.runnerId,
-      certificateFingerprint: identity.certificateFingerprint,
-      previousSessionId: sessionId,
-      protocolMajor,
-    });
 
     return {
       sessionId,

@@ -339,6 +339,9 @@ importers:
       '@qualigence/in-memory-runner-protocol':
         specifier: workspace:*
         version: link:../../packages/protocol-adapters/in-memory-runner-protocol
+      '@qualigence/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@qualigence/runner-control':
         specifier: workspace:*
         version: link:../../packages/core-modules/runner-control

@@ -52,6 +52,7 @@ export {
 export type {
   LeaseLostReason,
   LeaseOwner,
+  RecoveredRun,
   RunOwnershipServiceOptions,
 } from "./runner/run-ownership-service.js";
 export {
