@@ -133,4 +133,30 @@ describe("PostgresRunnerControlStore persisted policy migration", () => {
       await runtime.close();
     }
   });
+
+  it("losslessly loads a persisted Job plan and rejects a malformed plan", async () => {
+    if (fixture === undefined) throw new Error("PostgreSQL fixture was not initialized.");
+    await truncateRunnerControlTables(fixture);
+    const runtime = createPostgresRuntime(fixture.serverConfig);
+    const job = plannedJob("job-plan", "run-plan");
+    try {
+      await runtime.withTenant(TENANT_ID, async ({ db }) => {
+        await db.insertInto("execution_leases").values({ tenant_id: TENANT_ID, run_id: job.runId, job_id: job.jobId, runner_id: "runner-1", session_id: "session-1", lease_epoch: 1, lease_token_hash: "token-hash", expires_at: "2026-08-18T00:01:00.000Z", lost_at: null, completed_at: null, recovery_of_run_id: null, job_json: JSON.stringify(job) }).execute();
+        const store = new PostgresRunnerControlStore(db, TENANT_ID);
+        await expect(store.lease(job.runId)).resolves.toMatchObject({ job });
+        await db.updateTable("execution_leases").set({ job_json: JSON.stringify({ ...job, plan: { ...job.plan, expectedClaimIds: [] } }) }).where("run_id", "=", job.runId).execute();
+        await expect(store.lease(job.runId)).rejects.toMatchObject({ code: "PolicyMissing" });
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
 });
+
+function plannedJob(jobId: string, runId: string) {
+  return {
+    jobId, runId, target: { kind: "web" as const, url: "https://example.test/" }, objective: "planned",
+    policy: { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+    plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ kind: "navigate" as const, path: "/cart" }, { kind: "verify" as const, claimIds: ["claim-1"] as [string] }], expectedClaimIds: ["claim-1"] as [string], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 } },
+  };
+}

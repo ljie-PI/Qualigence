@@ -78,10 +78,10 @@ describe("Core runner protocol production composition", () => {
   });
 
   it.each([
-    ["absent host", undefined],
-    ["non-loopback host", "0.0.0.0"],
-    ["IPv6 loopback", "::1"],
-  ])("rejects Phase A %s before opening SQLite", async (_name, host) => {
+    ["absent host", undefined, /exact loopback/],
+    ["non-loopback host", "0.0.0.0", /exact loopback/],
+    ["IPv6 loopback", "::1", /manifest format/],
+  ])("rejects Phase A %s before opening SQLite", async (_name, host, message) => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-host-"));
     const database = join(dataDir, "qualigence.db");
     try {
@@ -89,7 +89,7 @@ describe("Core runner protocol production composition", () => {
         host: host as never, port: await freePort(), dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
         legacyM1LocalRecoveryCandidate: { format: "legacy-m1-local-recovery/v1", records: [] },
-      })).rejects.toThrow(/127\.0\.0\.1/);
+      })).rejects.toThrow(message);
       expect(existsSync(database)).toBe(false);
     } finally {
       await rm(dataDir, { recursive: true, force: true });

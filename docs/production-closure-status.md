@@ -780,6 +780,21 @@ mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-ga
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
 
+Task 15 review-fix round 4 (2026-08-18): Local recovery now accepts only the
+two plan-authorized exact loopback forms (`127.0.0.1` and `::1`), while absent
+or other hosts fail Phase A. The neutral strict Job parser now validates and
+preserves optional immutable plan snapshots through normal SQLite/PostgreSQL
+lease reads and the hash-bound Local recovery upcast; malformed plan snapshots
+produce `PolicyMissing`. Mission exploration conversion now maps only the
+exactly representable `ReadOnly` exploration ceiling to Runner `Normal` risk,
+rejecting broader/unrepresentable ceilings and any result above approved risk.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 180 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
 Task 15 review-fix round 3 (2026-08-18): the frozen `plan = 5` Job field now
 maps losslessly through gRPC/protobuf alongside policy, with a non-empty plan
 round-trip assertion. Legacy recovery requires explicit `127.0.0.1` exactly;

@@ -163,17 +163,71 @@ export interface PolicylessExecutionJob {
   readonly runId: string;
   readonly target: WebTargetRef;
   readonly objective: string;
+  readonly plan?: ExecutionJobPlanSnapshot;
 }
 
 export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
-  const identity = parseExecutionJobIdentity(value);
-  return { ...identity, policy: parseExecutionPolicySnapshot(record(value).policy) };
+  const raw = record(value);
+  const identity = parseExecutionJobIdentity(raw);
+  const policy = parseExecutionPolicySnapshot(raw.policy);
+  const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
+  return plan === undefined ? { ...identity, policy } : { ...identity, policy, plan };
 }
 
 export function parsePolicylessExecutionJob(value: unknown): PolicylessExecutionJob {
   const raw = record(value);
   if (raw.policy !== undefined) throw new ExecutionPolicySnapshotError();
-  return parseExecutionJobIdentity(raw);
+  const identity = parseExecutionJobIdentity(raw);
+  const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
+  return plan === undefined ? identity : { ...identity, plan };
+}
+
+function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot {
+  const plan = record(value);
+  const steps = array(plan.steps).map(parseExecutionPlanStep);
+  const expectedClaimIds = stringTuple(plan.expectedClaimIds);
+  const [firstStep, ...remainingSteps] = steps;
+  if (firstStep === undefined) throw new ExecutionPolicySnapshotError();
+  const budget = record(plan.budget);
+  return {
+    missionId: nonEmptyString(plan.missionId),
+    missionRevision: positiveSafeInteger(plan.missionRevision),
+    testCaseId: nonEmptyString(plan.testCaseId),
+    steps: [firstStep, ...remainingSteps],
+    expectedClaimIds,
+    budget: {
+      maximumStepsPerJob: positiveSafeInteger(budget.maximumStepsPerJob),
+      maximumWallClockMs: positiveSafeInteger(budget.maximumWallClockMs),
+      maximumModelTokens: positiveSafeInteger(budget.maximumModelTokens),
+    },
+  };
+}
+
+function parseExecutionPlanStep(value: unknown): ExecutionPlanStep {
+  const step = record(value);
+  switch (step.kind) {
+    case "navigate":
+      return { kind: "navigate", path: nonEmptyString(step.path) };
+    case "click":
+      return { kind: "click", target: parseExecutionPlanTarget(step.target) };
+    case "input": {
+      return { kind: "input", target: parseExecutionPlanTarget(step.target), valueRef: nonEmptyString(step.valueRef) };
+    }
+    case "verify":
+      return { kind: "verify", claimIds: stringTuple(step.claimIds) };
+    default:
+      throw new ExecutionPolicySnapshotError();
+  }
+}
+
+function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
+  const target = record(value);
+  const role = target.role === undefined ? undefined : nonEmptyString(target.role);
+  const name = target.name === undefined ? undefined : nonEmptyString(target.name);
+  const base = { purpose: nonEmptyString(target.purpose) };
+  return role === undefined && name === undefined
+    ? base
+    : { ...base, ...(role === undefined ? {} : { role }), ...(name === undefined ? {} : { name }) };
 }
 
 function parseExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
@@ -196,6 +250,23 @@ function record(value: unknown): Readonly<Record<string, unknown>> {
 function nonEmptyString(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new ExecutionPolicySnapshotError();
   return value;
+}
+
+function positiveSafeInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function array(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function stringTuple(value: unknown): readonly [string, ...string[]] {
+  const items = array(value).map(nonEmptyString);
+  const [first, ...rest] = items;
+  if (first === undefined) throw new ExecutionPolicySnapshotError();
+  return [first, ...rest];
 }
 
 function isoInstant(value: unknown): string {

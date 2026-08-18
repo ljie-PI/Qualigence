@@ -134,11 +134,30 @@ export function narrowApprovedExecutionPolicy(
   ) {
     throw new Error("Exploration policy would expand approved execution authority.");
   }
+  const maximumRisk = exactExecutionRiskFor(exploration.riskCeiling);
+  if (executionRiskRank(maximumRisk) > executionRiskRank(approved.maximumRisk)) {
+    throw new Error("Exploration policy risk ceiling would expand approved execution authority.");
+  }
   return {
     ...approved,
     allowedOrigins: [...exploration.allowedOrigins],
     allowedActionKinds: exploration.allowedActionKinds as ApprovedExecutionPolicy["allowedActionKinds"],
+    maximumRisk,
   };
+}
+
+function exactExecutionRiskFor(ceiling: ExplorationRiskCeiling): ApprovedExecutionPolicy["maximumRisk"] {
+  // ReadOnly maps exactly to the Runner's Normal authority. Mutation ceilings
+  // have no exact Task 15 snapshot counterpart, so representing either as an
+  // ExternalSideEffect grant would widen the approved exploration authority.
+  if (ceiling !== "ReadOnly") {
+    throw new Error("Exploration policy risk ceiling has no exact execution policy mapping.");
+  }
+  return "Normal";
+}
+
+function executionRiskRank(risk: ApprovedExecutionPolicy["maximumRisk"]): number {
+  return ["Normal", "ExternalSideEffect", "Destructive", "ProductionForbidden"].indexOf(risk);
 }
 
 /** A kind of action the model may propose. */
