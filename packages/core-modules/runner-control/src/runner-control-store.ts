@@ -48,6 +48,20 @@ export interface PersistedExecutionLease {
   readonly recoveryOfRunId?: string;
 }
 
+/**
+ * The result of one atomic completion attempt. A stored terminal completion is
+ * exposed only when this attempt verified the lease binding and observed a
+ * different canonical completion in that same operation.
+ */
+export type CompleteLeaseResult =
+  | { readonly outcome: "completed" }
+  | { readonly outcome: "duplicate" }
+  | { readonly outcome: "rejected" }
+  | {
+      readonly outcome: "completion_conflict";
+      readonly storedCompletion: ExecutionCompletion;
+    };
+
 export interface RotateResumeTokenInput {
   readonly presentedTokenHash: string;
   readonly replacementTokenHash: string;
@@ -163,7 +177,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected">;
+  }): Promise<CompleteLeaseResult>;
   markLeaseLost(runId: string, lostAt: string): Promise<boolean>;
   lease(runId: string): Promise<PersistedExecutionLease | undefined>;
   completion(runId: string): Promise<ExecutionCompletion | undefined>;

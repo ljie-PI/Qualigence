@@ -5,6 +5,7 @@ export type {
 } from "./runner-protocol-application.js";
 
 export type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,

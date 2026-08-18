@@ -2,6 +2,7 @@ import type {
   ExecutionCompletion,
 } from "@qualigence/runner-protocol";
 import type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,
@@ -31,6 +32,7 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
   private readonly leases = new Map<string, PersistedExecutionLease>();
   private readonly completions = new Map<string, ExecutionCompletion>();
   private queue: Promise<void> = Promise.resolve();
+  completionReadCount = 0;
 
   saveSession(record: PersistedRunnerSession): Promise<void> {
     return this.serialize(() => {
@@ -139,27 +141,27 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected"> {
+  }): Promise<CompleteLeaseResult> {
     return this.serialize(() => {
       const record = this.leases.get(input.runId);
       if (record === undefined) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const bound = leaseBindingMatches(record, input);
       const existing = this.completions.get(input.runId);
       if (existing !== undefined) {
-        return bound ? classifyCompletion(existing, input.completion) : "rejected";
+        return completionResult(bound, existing, input.completion);
       }
       if (!bound || record.expiresAt <= input.checkedAt) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const raced = this.completions.get(input.runId);
       if (raced !== undefined) {
-        return bound ? classifyCompletion(raced, input.completion) : "rejected";
+        return completionResult(bound, raced, input.completion);
       }
       this.leases.set(input.runId, { ...record, completedAt: input.checkedAt });
       this.completions.set(input.runId, input.completion);
-      return "completed";
+      return { outcome: "completed" };
     });
   }
 
@@ -179,7 +181,10 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
   }
 
   completion(runId: string): Promise<ExecutionCompletion | undefined> {
-    return this.serialize(() => this.completions.get(runId));
+    return this.serialize(() => {
+      this.completionReadCount += 1;
+      return this.completions.get(runId);
+    });
   }
 
   private liveLease(input: {
@@ -211,6 +216,19 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
     );
     return result;
   }
+}
+
+function completionResult(
+  bound: boolean,
+  storedCompletion: ExecutionCompletion,
+  presentedCompletion: ExecutionCompletion,
+): CompleteLeaseResult {
+  if (!bound) {
+    return { outcome: "rejected" };
+  }
+  return classifyCompletion(storedCompletion, presentedCompletion) === "duplicate"
+    ? { outcome: "duplicate" }
+    : { outcome: "completion_conflict", storedCompletion };
 }
 
 function identityMatches(

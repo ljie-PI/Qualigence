@@ -3,6 +3,7 @@ import type {
   ExecutionCompletion,
 } from "@qualigence/runner-protocol";
 import type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,
@@ -191,7 +192,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected"> {
+  }): Promise<CompleteLeaseResult> {
     return this.withWriteTransaction(async (db) => {
       const record = await db
         .selectFrom("execution_leases")
@@ -199,15 +200,15 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
         .where("run_id", "=", input.runId)
         .executeTakeFirst();
       if (record === undefined) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const bound = leaseBindingMatches(toLease(record), input);
       const existing = await readCompletion(db, input.runId);
       if (existing !== undefined) {
-        return bound ? classifyCompletion(existing, input.completion) : "rejected";
+        return completionResult(bound, existing, input.completion);
       }
       if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const result = await constrainLiveLease(
         db.updateTable("execution_leases").set({ completed_at: input.checkedAt }),
@@ -215,7 +216,9 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
       ).executeTakeFirst();
       if (result.numUpdatedRows === 0n) {
         const raced = await readCompletion(db, input.runId);
-        return raced === undefined ? "rejected" : classifyCompletion(raced, input.completion);
+        return raced === undefined
+          ? { outcome: "rejected" }
+          : completionResult(true, raced, input.completion);
       }
       await db
         .insertInto("execution_completions")
@@ -226,7 +229,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
           completed_at: input.checkedAt,
         })
         .execute();
-      return "completed";
+      return { outcome: "completed" };
     });
   }
 
@@ -268,6 +271,19 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     }
     throw new Error("Unreachable SQLite runner-control transaction retry state.");
   }
+}
+
+function completionResult(
+  bound: boolean,
+  storedCompletion: ExecutionCompletion,
+  presentedCompletion: ExecutionCompletion,
+): CompleteLeaseResult {
+  if (!bound) {
+    return { outcome: "rejected" };
+  }
+  return classifyCompletion(storedCompletion, presentedCompletion) === "duplicate"
+    ? { outcome: "duplicate" }
+    : { outcome: "completion_conflict", storedCompletion };
 }
 
 function sessionValues(record: PersistedRunnerSession) {

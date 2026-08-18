@@ -162,6 +162,13 @@ export class RunOwnershipService {
         details: { runId },
       });
     }
+    const nowIso = new Date(this.now()).toISOString();
+    if (record.expiresAt <= nowIso) {
+      await this.store.markLeaseLost(runId, nowIso);
+      throw new CoreApplicationError("LeaseLost", `lease for run ${runId} has expired`, {
+        details: { runId },
+      });
+    }
     await this.completeAgainst(record, completion);
   }
 
@@ -178,29 +185,27 @@ export class RunOwnershipService {
       checkedAt: new Date(this.now()).toISOString(),
       completion,
     });
-    if (outcome === "rejected") {
-      const stored = await this.store.completion(record.job.runId);
-      if (stored === undefined) {
-        // No terminal result exists: the lease was expired, lost, or never
-        // matched, not a replay of a different completion. Surface the lost
-        // authority without a completion-conflict event.
-        throw new CoreApplicationError(
-          "LeaseLost",
-          `lease for run ${record.job.runId} no longer authorizes completion`,
-          { details: { runId: record.job.runId } },
-        );
-      }
+    if (outcome.outcome === "completion_conflict") {
       this.integrityEvents.emit({
         kind: "completion_conflict",
         runId: record.job.runId,
         leaseTokenHash: record.leaseTokenHash,
         presentedCompletionHash: canonicalPayloadHash(completion),
-        storedCompletionHash: canonicalPayloadHash(stored),
+        storedCompletionHash: canonicalPayloadHash(outcome.storedCompletion),
         observedAt: new Date(this.now()).toISOString(),
       });
       throw new CoreApplicationError(
         "RunOwnershipViolation",
         `completion for run ${record.job.runId} conflicts with the stored terminal result`,
+        { details: { runId: record.job.runId } },
+      );
+    }
+    if (outcome.outcome === "rejected") {
+      // The atomic completion decision observed no valid-bound terminal
+      // conflict, so this is lost authority rather than an integrity event.
+      throw new CoreApplicationError(
+        "LeaseLost",
+        `lease for run ${record.job.runId} no longer authorizes completion`,
         { details: { runId: record.job.runId } },
       );
     }

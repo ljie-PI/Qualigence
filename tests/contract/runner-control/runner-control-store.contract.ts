@@ -130,7 +130,7 @@ export function runnerControlStoreContract(
             checkedAt: CHECKED_AT,
             completion: passed(),
           }),
-        ).toBe("completed");
+        ).toEqual({ outcome: "completed" });
         return {
           lease: await store.lease("run-1"),
           completion: await store.completion("run-1"),
@@ -317,8 +317,8 @@ export function runnerControlStoreContract(
 
       expect(denied.wrongToken).toBe(false);
       expect(denied.wrongSession).toBe(false);
-      expect(denied.wrongRunner).toBe("rejected");
-      expect(denied.wrongEpoch).toBe("rejected");
+      expect(denied.wrongRunner).toEqual({ outcome: "rejected" });
+      expect(denied.wrongEpoch).toEqual({ outcome: "rejected" });
     });
 
     it("marks an expired lease lost and never transfers the old runId", async () => {
@@ -386,9 +386,12 @@ export function runnerControlStoreContract(
         return { first, duplicate, rejected, stored: await store.completion("run-1") };
       });
 
-      expect(outcomes.first).toBe("completed");
-      expect(outcomes.duplicate).toBe("duplicate");
-      expect(outcomes.rejected).toBe("rejected");
+      expect(outcomes.first).toEqual({ outcome: "completed" });
+      expect(outcomes.duplicate).toEqual({ outcome: "duplicate" });
+      expect(outcomes.rejected).toEqual({
+        outcome: "completion_conflict",
+        storedCompletion: passed(),
+      });
       expect(outcomes.stored).toEqual(passed());
     });
 
@@ -405,7 +408,7 @@ export function runnerControlStoreContract(
             checkedAt: CHECKED_AT,
             completion: passed(),
           }),
-        ).toBe("completed");
+        ).toEqual({ outcome: "completed" });
         // A different runner replaying the exact terminal payload is not a
         // duplicate: the static lease binding must be verified first.
         return store.completeLease({
@@ -418,7 +421,7 @@ export function runnerControlStoreContract(
           completion: passed(),
         });
       });
-      expect(outcomes).toBe("rejected");
+      expect(outcomes).toEqual({ outcome: "rejected" });
     });
 
     it("preserves active ownership after a process restart against the same database", async () => {

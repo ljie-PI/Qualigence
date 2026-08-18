@@ -696,3 +696,15 @@ findings remain; the final Gate passed 10 files / 90 tests, plus
 `corepack pnpm typecheck` and `git diff --check`.
 
 GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.
+
+Task 10 follow-up fix evidence (2026-08-18): `completeLease` now returns a
+provider-neutral discriminated result, carrying a stored terminal completion
+only for an atomically observed, valid-bound canonical conflict. The ownership
+service emits `completion_conflict` from that result and makes no second
+completion read. `completeStored` marks an observed expired live lease lost at
+the same `nowIso` before returning `LeaseLost`. After `corepack pnpm build`,
+`corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon/run-ownership-service.test.ts`
+passed 4 files / 52 tests. With Git OpenSSL on `PATH` and
+`OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
+`corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
+passed 2 files / 10 tests.

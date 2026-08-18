@@ -3,6 +3,7 @@ import type {
   ExecutionCompletion,
 } from "@qualigence/runner-protocol";
 import type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,
@@ -197,7 +198,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected"> {
+  }): Promise<CompleteLeaseResult> {
     const record = await this.db
       .selectFrom("execution_leases")
       .selectAll()
@@ -205,15 +206,15 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
       .where("run_id", "=", input.runId)
       .executeTakeFirst();
     if (record === undefined) {
-      return "rejected";
+      return { outcome: "rejected" };
     }
     const bound = leaseBindingMatches(toLease(record), input);
     const existing = await readCompletion(this.db, this.tenantId, input.runId);
     if (existing !== undefined) {
-      return bound ? classifyCompletion(existing, input.completion) : "rejected";
+      return completionResult(bound, existing, input.completion);
     }
     if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
-      return "rejected";
+      return { outcome: "rejected" };
     }
     const result = await constrainLiveLease(
       this.db.updateTable("execution_leases").set({ completed_at: input.checkedAt }),
@@ -222,7 +223,9 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     ).executeTakeFirst();
     if (result.numUpdatedRows === 0n) {
       const raced = await readCompletion(this.db, this.tenantId, input.runId);
-      return raced === undefined ? "rejected" : classifyCompletion(raced, input.completion);
+      return raced === undefined
+        ? { outcome: "rejected" }
+        : completionResult(true, raced, input.completion);
     }
     await this.db
       .insertInto("execution_completions")
@@ -234,7 +237,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
         completed_at: input.checkedAt,
       })
       .execute();
-    return "completed";
+    return { outcome: "completed" };
   }
 
   async markLeaseLost(runId: string, lostAt: string): Promise<boolean> {
@@ -261,6 +264,19 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
   async completion(runId: string): Promise<ExecutionCompletion | undefined> {
     return readCompletion(this.db, this.tenantId, runId);
   }
+}
+
+function completionResult(
+  bound: boolean,
+  storedCompletion: ExecutionCompletion,
+  presentedCompletion: ExecutionCompletion,
+): CompleteLeaseResult {
+  if (!bound) {
+    return { outcome: "rejected" };
+  }
+  return classifyCompletion(storedCompletion, presentedCompletion) === "duplicate"
+    ? { outcome: "duplicate" }
+    : { outcome: "completion_conflict", storedCompletion };
 }
 
 function sessionValues(record: PersistedRunnerSession) {
