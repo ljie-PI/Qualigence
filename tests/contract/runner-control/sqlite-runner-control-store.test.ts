@@ -102,40 +102,47 @@ describe("SqliteRunnerControlStore persisted policy migration", () => {
     }
   });
 
-  it("upcasts only the exact verified Local recovery record", async () => {
+  it("rejects an arbitrary legacy policy passed to the public Store", async () => {
     const directory = await mkdtemp(join(process.cwd(), ".tmp-legacy-upcast-sqlite-"));
     const runtime = await SqliteRuntime.open({ filename: join(directory, "qualigence.db"), busyTimeoutMs: 5_000 });
     const planned = plannedJob("job-legacy", "run-legacy");
     const job = { jobId: planned.jobId, runId: planned.runId, target: planned.target, objective: "legacy", plan: planned.plan };
-    const policy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+    const policy = { policyId: "arbitrary", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
     try {
       await runtime.db.insertInto("execution_leases").values({
         run_id: job.runId, job_id: job.jobId, runner_id: "runner-1", session_id: "session-1", lease_epoch: 1, lease_token_hash: "token-hash",
         expires_at: "2026-08-18T00:01:00.000Z", lost_at: null, completed_at: null, recovery_of_run_id: null, job_json: JSON.stringify(job),
       }).execute();
-      const store = new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: [{ ...job, canonicalJobSha256: canonicalPayloadHash(job), policy }] });
-      await expect(store.lease(job.runId)).resolves.toMatchObject({ job: { projectId: "local", policy, plan: job.plan } });
-      const wrong = new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: [{ ...job, canonicalJobSha256: "0".repeat(64), policy }] });
-      await expect(wrong.lease(job.runId)).rejects.toMatchObject({ code: "PolicyMissing" });
+      const store = new (SqliteRunnerControlStore as unknown as new (
+        runtime: SqliteRuntime,
+        legacy: unknown,
+      ) => SqliteRunnerControlStore)(runtime, {
+        legacyM1LocalRecovery: [{ ...job, canonicalJobSha256: canonicalPayloadHash(job), policy }],
+      });
+      await expect(store.lease(job.runId)).rejects.toMatchObject({ code: "PolicyMissing" });
     } finally {
       await runtime.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
 
-  it("upcasts a projectless historical Job only when its policy and manifest hash match", async () => {
+  it("rejects an exact-shaped legacy policy passed to the public Store without verified Core migration", async () => {
     const directory = await mkdtemp(join(process.cwd(), ".tmp-projectless-upcast-sqlite-"));
     const runtime = await SqliteRuntime.open({ filename: join(directory, "qualigence.db"), busyTimeoutMs: 5_000 });
-    const { projectId: _projectId, ...job } = plannedJob("job-projectless-legacy", "run-projectless-legacy");
+    const legacyPolicy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+    const { projectId: _projectId, ...job } = { ...plannedJob("job-projectless-legacy", "run-projectless-legacy"), policy: legacyPolicy };
     try {
       await runtime.db.insertInto("execution_leases").values({
         run_id: job.runId, job_id: job.jobId, runner_id: "runner-1", session_id: "session-1", lease_epoch: 1, lease_token_hash: "token-hash",
         expires_at: "2026-08-18T00:01:00.000Z", lost_at: null, completed_at: null, recovery_of_run_id: null, job_json: JSON.stringify(job),
       }).execute();
-      const store = new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy: job.policy }] });
-      await expect(store.lease(job.runId)).resolves.toMatchObject({ job: { projectId: "local", policy: job.policy } });
-      const wrong = new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy: { ...job.policy, policyId: "other" } }] });
-      await expect(wrong.lease(job.runId)).rejects.toMatchObject({ code: "PolicyMissing" });
+      const store = new (SqliteRunnerControlStore as unknown as new (
+        runtime: SqliteRuntime,
+        legacy: unknown,
+      ) => SqliteRunnerControlStore)(runtime, {
+        legacyM1LocalRecovery: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy: job.policy }],
+      });
+      await expect(store.lease(job.runId)).rejects.toMatchObject({ code: "PolicyMissing" });
     } finally {
       await runtime.close();
       await rm(directory, { recursive: true, force: true });

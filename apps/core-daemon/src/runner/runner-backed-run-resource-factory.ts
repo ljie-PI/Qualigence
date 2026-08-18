@@ -90,6 +90,9 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
           if (acceptedJob.policy !== request.policy) {
             throw new Error("Execution Job policy must be the exact request snapshot.");
           }
+          if (acceptedJob.projectId !== request.projectId) {
+            throw new Error("Execution Job project provenance must match its opened run request.");
+          }
           if (acceptedJob.runId !== runId || acceptedJob.target.url !== request.target.url) {
             throw new Error("Execution Job must match its opened run request.");
           }

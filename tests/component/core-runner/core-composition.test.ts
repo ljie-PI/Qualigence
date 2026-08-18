@@ -8,7 +8,7 @@ import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type { ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
 import { startCoreDaemon } from "@qualigence/core-daemon";
-import { SqliteRuntime } from "@qualigence/sqlite-runtime";
+import { SqliteRunnerControlStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient } from "../../helpers/grpc-harness.js";
@@ -139,6 +139,14 @@ describe("Core runner protocol production composition", () => {
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key }, legacyM1LocalRecoveryCandidate: candidate,
       });
       cleanups.push(async () => { await daemon.shutdown(); await rm(dataDir, { recursive: true, force: true }); });
+      const strictReaderRuntime = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
+      try {
+        await expect(new SqliteRunnerControlStore(strictReaderRuntime).lease(policyless.runId)).resolves.toMatchObject({
+          job: { projectId: "local", policy },
+        });
+      } finally {
+        await strictReaderRuntime.close();
+      }
       await daemon.application.ownership.markLost(policyless.runId, "expired");
       await expect(daemon.application.ownership.createRecoveryRun(policyless.runId)).resolves.toMatchObject({ job: { projectId: "local", policy } });
     } catch (error) {

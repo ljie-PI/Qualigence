@@ -160,4 +160,34 @@ describe("RunnerBackedRunResourceFactory", () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(traces.eventsFor(result.runId)).toEqual([]);
   });
+
+  it("rejects a Job from another project before offering it to a Runner", async () => {
+    const offer = vi.fn();
+    const factory = new RunnerBackedRunResourceFactory({
+      connection: { offer, cancel: vi.fn() },
+      openStores: async () => ({
+        runs: new InMemoryRunStore(),
+        traces: new InMemoryTraceStore(),
+        artifacts: artifactStore,
+        manifests: new InMemoryManifestStore(),
+        close: async () => undefined,
+      }),
+      awaitCompletion: vi.fn(),
+    });
+    const runRequest = request();
+    const scope = await factory.open("run-1", runRequest);
+    try {
+      await expect(scope.execute({
+        jobId: "job-1",
+        runId: "run-1",
+        projectId: "other-project",
+        target: runRequest.target,
+        objective: runRequest.objective,
+        policy: runRequest.policy,
+      })).rejects.toThrow(/project provenance/);
+      expect(offer).not.toHaveBeenCalled();
+    } finally {
+      await scope.close();
+    }
+  });
 });

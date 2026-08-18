@@ -807,6 +807,24 @@ passed and the amended Task 15 Gate passed 24 files / 229 tests, including the
 Docker-backed PostgreSQL runner-control contract. `corepack pnpm typecheck` and
 `git diff --check` passed. No environmental blocker occurred.
 
+Task 15 Important provenance review fix (2026-08-18):
+`SqliteRunnerControlStore` no longer has a legacy recovery option, record type,
+or public upcast path. Its constructor and all normal reads strict-parse
+`job_json`; policyless and projectless Jobs remain `PolicyMissing`, including
+when callers pass former arbitrary or exact-shaped option values at runtime.
+Only `startCoreDaemon` obtains the opaque recovery capability after exact
+Local/loopback, constrained `legacy-m1-local` policy, identifier, origin, and
+canonical-hash validation. Before Core service composition or listener bind, it
+transactionally compare-and-swaps every attested legacy JSON row to the exact
+strict Job with `projectId: "local"`; an ordinary Store then reads it without a
+compatibility path. The Core remote dispatch factory now rejects a Job whose
+project differs from its opened request before `connection.offer`.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`

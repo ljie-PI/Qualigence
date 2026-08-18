@@ -1,12 +1,32 @@
-import { canonicalPayloadHash, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
-import type { LegacyM1LocalRecoveryRecord } from "@qualigence/sqlite-runtime";
+import { canonicalPayloadHash, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import type { AcceptedExecutionJob, ExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import type { SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { parsePolicylessExecutionJobForRecovery, parseProjectlessExecutionJobForRecovery } from "@qualigence/runner-control";
 
-interface RecoveryManifestRecord extends LegacyM1LocalRecoveryRecord {}
+interface RecoveryManifestRecord {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly canonicalJobSha256: string;
+  readonly policy: ExecutionPolicySnapshot;
+}
 
 interface RecoveryManifest {
   readonly format: "legacy-m1-local-recovery/v1";
   readonly records: readonly RecoveryManifestRecord[];
+}
+
+const verifiedRecoveryBrand: unique symbol = Symbol("verifiedLegacyM1LocalRecovery");
+
+interface VerifiedRecoveryRecord {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly originalJson: string;
+  readonly recoveredJob: AcceptedExecutionJob;
+}
+
+/** Opaque authority created only after both Local recovery validation phases pass. */
+export interface VerifiedLegacyM1LocalRecovery {
+  readonly [verifiedRecoveryBrand]: readonly VerifiedRecoveryRecord[];
 }
 
 /** Validates the bounded Local-only recovery declaration before SQLite opens. */
@@ -29,7 +49,8 @@ export function validateLegacyM1LocalRecoveryCandidate(
 export function verifyLegacyM1LocalRecoveryRows(
   manifest: RecoveryManifest,
   rows: ReadonlyMap<string, string>,
-): readonly LegacyM1LocalRecoveryRecord[] {
+): VerifiedLegacyM1LocalRecovery {
+  const verified: VerifiedRecoveryRecord[] = [];
   for (const record of manifest.records) {
     const raw = rows.get(`${record.jobId}:${record.runId}`);
     if (raw === undefined) throw new Error("Legacy recovery lease row is missing.");
@@ -39,28 +60,51 @@ export function verifyLegacyM1LocalRecoveryRows(
     } catch {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    let job;
+    let recoveredJob: AcceptedExecutionJob;
     try {
-      job = parsePolicylessExecutionJobForRecovery(persisted);
+      const job = parsePolicylessExecutionJobForRecovery(persisted);
+      recoveredJob = parseExecutionJob({ ...job, projectId: "local", policy: record.policy });
     } catch {
       try {
         const projectless = parseProjectlessExecutionJobForRecovery(persisted);
         if (canonicalPayloadHash(projectless.policy) !== canonicalPayloadHash(record.policy)) {
           throw new Error("Legacy recovery lease row does not match the manifest.");
         }
-        job = projectless;
+        recoveredJob = parseExecutionJob({ ...projectless, projectId: "local" });
       } catch {
         throw new Error("Legacy recovery lease row does not match the manifest.");
       }
     }
-    if (job.jobId !== record.jobId || job.runId !== record.runId || canonicalPayloadHash(persisted) !== record.canonicalJobSha256) {
+    if (recoveredJob.jobId !== record.jobId || recoveredJob.runId !== record.runId || canonicalPayloadHash(persisted) !== record.canonicalJobSha256) {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    if (new URL(job.target.url).origin !== record.policy.allowedOrigins[0]) {
+    if (new URL(recoveredJob.target.url).origin !== record.policy.allowedOrigins[0]) {
       throw new Error("Legacy recovery target origin does not match the manifest policy.");
     }
+    verified.push({ jobId: record.jobId, runId: record.runId, originalJson: raw, recoveredJob });
   }
-  return manifest.records;
+  return { [verifiedRecoveryBrand]: verified };
+}
+
+/** Applies every verified Local recovery record before Core composes or binds. */
+export async function applyVerifiedLegacyM1LocalRecovery(
+  runtime: SqliteRuntime,
+  recovery: VerifiedLegacyM1LocalRecovery,
+): Promise<void> {
+  await runtime.db.transaction().execute(async (db) => {
+    for (const record of recovery[verifiedRecoveryBrand]) {
+      const result = await db
+        .updateTable("execution_leases")
+        .set({ job_json: JSON.stringify(record.recoveredJob) })
+        .where("run_id", "=", record.runId)
+        .where("job_id", "=", record.jobId)
+        .where("job_json", "=", record.originalJson)
+        .executeTakeFirst();
+      if (result.numUpdatedRows !== 1n) {
+        throw new Error("Legacy recovery lease row changed before migration.");
+      }
+    }
+  });
 }
 
 function validateRecord(value: unknown, identities: Set<string>): RecoveryManifestRecord {

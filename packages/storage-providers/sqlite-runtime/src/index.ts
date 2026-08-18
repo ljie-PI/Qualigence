@@ -24,10 +24,6 @@ export { SqliteInvestigationStore } from "./sqlite-investigation-store.js";
 export { SqliteReviewStore } from "./sqlite-review-store.js";
 
 export { SqliteRunnerControlStore } from "./sqlite-runner-control-store.js";
-export type {
-  LegacyM1LocalRecoveryRecord,
-  SqliteRunnerControlStoreOptions,
-} from "./sqlite-runner-control-store.js";
 
 export { SqliteIntelligenceStore } from "./sqlite-intelligence-store.js";
 

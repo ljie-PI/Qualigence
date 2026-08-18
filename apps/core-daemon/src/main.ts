@@ -17,6 +17,7 @@ import { StructuredLogger } from "@qualigence/observability";
 import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
 import {
+  applyVerifiedLegacyM1LocalRecovery,
   validateLegacyM1LocalRecoveryCandidate,
   verifyLegacyM1LocalRecoveryRows,
 } from "./legacy-m1-local-recovery.js";
@@ -59,12 +60,10 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
         const raw = await rawControlStore.rawRecoveryJobJson(record.runId);
         if (raw !== undefined) recoveryRows.set(`${record.jobId}:${record.runId}`, raw);
       }
-      // Do not construct an upcasting store until all storage rows are verified.
-      verifyLegacyM1LocalRecoveryRows(recovery, recoveryRows);
+      const verifiedRecovery = verifyLegacyM1LocalRecoveryRows(recovery, recoveryRows);
+      await applyVerifiedLegacyM1LocalRecovery(runtime, verifiedRecovery);
     }
-    controlStore = recovery === undefined
-      ? rawControlStore
-      : new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: recovery.records });
+    controlStore = rawControlStore;
   } catch (error) {
     await runtime.close();
     throw error;

@@ -21,7 +21,9 @@ describe("legacy M1 Local recovery", () => {
       format: "legacy-m1-local-recovery/v1",
       records: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy: { policyId: "legacy-m1-local", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" } }],
     }, { deploymentMode: "local", host: "127.0.0.1" });
-    expect(verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify(job)]]))).toHaveLength(1);
+    expect(
+      verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify(job)]])),
+    ).toBeDefined();
     expect(() => validateLegacyM1LocalRecoveryCandidate({
       format: "legacy-m1-local-recovery/v1",
       records: candidate.records,
@@ -33,7 +35,9 @@ describe("legacy M1 Local recovery", () => {
     const policy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
     const job = { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "legacy", policy };
     const candidate = validateLegacyM1LocalRecoveryCandidate({ format: "legacy-m1-local-recovery/v1", records: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy }] }, { deploymentMode: "local", host: "127.0.0.1" });
-    expect(verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify(job)]])).length).toBe(1);
+    expect(
+      verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify(job)]])),
+    ).toBeDefined();
     expect(() => verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify({ ...job, policy: { ...policy, policyId: "other" } })]]))).toThrow();
   });
 });
