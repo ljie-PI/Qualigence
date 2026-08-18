@@ -118,6 +118,37 @@ describe("Core runner protocol production composition", () => {
     }
   });
 
+  it.each([
+    ["empty jobId", "", "run-1"],
+    ["whitespace jobId", "   ", "run-1"],
+    ["empty runId", "job-1", ""],
+    ["whitespace runId", "job-1", "\t  "],
+  ])("rejects Phase A %s before SQLite or listener side effects", async (_name, jobId, runId) => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-identity-"));
+    const database = join(dataDir, "qualigence.db");
+    const port = await freePort();
+    const policy = { policyId: "legacy-m1-local", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+    try {
+      await expect(startCoreDaemon({
+        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+        legacyM1LocalRecoveryCandidate: {
+          format: "legacy-m1-local-recovery/v1",
+          records: [{ jobId, runId, canonicalJobSha256: "0".repeat(64), policy }],
+        },
+      })).rejects.toThrow(/identity/);
+      expect(existsSync(database)).toBe(false);
+
+      const daemon = await startCoreDaemon({
+        host: "127.0.0.1", port, dataDir, leaseDurationMs: 30_000,
+        tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+      });
+      await daemon.shutdown();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects Phase B mismatches before bind, closes SQLite, and only upcasts a verified Local row", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-b-"));
     const database = join(dataDir, "qualigence.db");

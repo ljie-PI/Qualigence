@@ -60,7 +60,7 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
   let controlStore: SqliteRunnerControlStore;
   try {
     const rawControlStore = new SqliteRunnerControlStore(runtime);
-    if (recovery !== undefined) await applyVerifiedLegacyRecovery(runtime, rawControlStore, recovery);
+    if (recovery !== undefined) await applyVerifiedLegacyRecovery(runtime, recovery);
     controlStore = rawControlStore;
   } catch (error) {
     await runtime.close();
@@ -155,12 +155,16 @@ function validateLegacyRecoveryCandidate(
 
 async function applyVerifiedLegacyRecovery(
   runtime: SqliteRuntime,
-  store: SqliteRunnerControlStore,
   records: readonly LegacyRecoveryRecord[],
 ): Promise<void> {
   const verified: VerifiedLegacyRecoveryRecord[] = [];
   for (const record of records) {
-    const raw = await store.rawRecoveryJobJson(record.runId);
+    const row = await runtime.db
+      .selectFrom("execution_leases")
+      .select("job_json")
+      .where("run_id", "=", record.runId)
+      .executeTakeFirst();
+    const raw = row?.job_json;
     if (raw === undefined) throw new Error("Legacy recovery lease row is missing.");
     const persisted = parseLegacyRecoveryJson(raw);
     const historical = parseHistoricalProjectlessJob(persisted, record.policy);
@@ -194,7 +198,12 @@ async function applyVerifiedLegacyRecovery(
 
 function validateLegacyRecoveryRecord(value: unknown, identities: Set<string>): LegacyRecoveryRecord {
   const record = recordValue(value, "Legacy recovery record is malformed.") as Partial<LegacyRecoveryRecord>;
-  if (typeof record.jobId !== "string" || typeof record.runId !== "string" || typeof record.canonicalJobSha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.canonicalJobSha256) || record.policy === undefined) {
+  if (
+    typeof record.jobId !== "string" || record.jobId.trim().length === 0 ||
+    typeof record.runId !== "string" || record.runId.trim().length === 0 ||
+    typeof record.canonicalJobSha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.canonicalJobSha256) ||
+    record.policy === undefined
+  ) {
     throw new Error("Legacy recovery record identity is malformed.");
   }
   let policy: ExecutionPolicySnapshot;

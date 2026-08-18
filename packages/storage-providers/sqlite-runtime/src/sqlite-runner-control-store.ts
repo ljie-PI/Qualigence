@@ -269,16 +269,6 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     return readCompletion(this.runtime.db, runId);
   }
 
-  /** Read-only startup seam for verified Local legacy recovery. Never leases. */
-  async rawRecoveryJobJson(runId: string): Promise<string | undefined> {
-    const row = await this.runtime.db
-      .selectFrom("execution_leases")
-      .select("job_json")
-      .where("run_id", "=", runId)
-      .executeTakeFirst();
-    return row?.job_json;
-  }
-
   private async withWriteTransaction<TResult>(
     operation: (db: Transaction<Database>) => Promise<TResult>,
   ): Promise<TResult> {

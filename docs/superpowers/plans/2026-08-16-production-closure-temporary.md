@@ -2387,6 +2387,38 @@ above with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
 check. Stage only **Startup-private recovery Files** and commit exactly
 `fix(policy): privatize legacy recovery startup`.
 
+**Adapter-seam review-fix authority (2026-08-18):** Final review of `26a2573`
+found that `SqliteRunnerControlStore.rawRecoveryJobJson()` remained a public,
+adapter-specific recovery helper and Phase A accepted empty/whitespace Job and
+Run identifiers. This narrow repair preserves the existing composition: it uses
+the `SqliteRuntime.db` transaction/query seam already owned by
+`startCoreDaemon`, changes no `RunnerControlStore` interface, and adds no new
+public or parallel seam.
+
+**Adapter-seam review-fix Files (all paths):**
+- Modify: `apps/core-daemon/src/main.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+
+**Adapter-seam review-fix Interfaces and steps:**
+- Remove public `SqliteRunnerControlStore.rawRecoveryJobJson()`. Private startup
+  recovery reads exact `execution_leases.job_json` through `SqliteRuntime.db`
+  inside `startCoreDaemon`; `RunnerControlStore` remains unchanged.
+- Phase A requires trimmed, nonempty `jobId` and `runId` before `mkdir`, SQLite
+  open, or listener bind. Existing component composition tests cover empty and
+  whitespace values, assert no database side effect, and then bind the same port
+  normally to prove no listener side effect.
+- Preserve all existing Local/loopback/constrained-policy and Phase B
+  row/identity/hash/origin checks before migration. Record actual evidence in
+  the Task 15 ledger.
+
+**Adapter-seam review-fix Gate and staging:** Run the full **Follow-up Gate**
+above with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Adapter-seam review-fix Files** and commit exactly
+`fix(policy): close legacy recovery adapter seam`.
+
 **Files:**
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Modify: `packages/contracts/runner-protocol/src/messages.ts`

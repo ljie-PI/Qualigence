@@ -854,6 +854,21 @@ Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
 passed. The Gate ran 24 files / 231 tests including Docker-backed PostgreSQL;
 no environmental blocker occurred.
 
+Task 15 adapter-seam provenance review fix (2026-08-18): public
+`SqliteRunnerControlStore.rawRecoveryJobJson()` is removed. The private
+`startCoreDaemon` startup operation reads exact historical `job_json` through
+its already-owned `SqliteRuntime.db` query/transaction seam; no
+`RunnerControlStore` interface or parallel adapter seam was added. Phase A now
+requires trimmed, nonempty manifest `jobId` and `runId` before `mkdir`, SQLite
+open, or listener bind. Existing component composition tests prove empty and
+whitespace identifiers create no database and leave the same port available for
+normal startup.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 235 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
