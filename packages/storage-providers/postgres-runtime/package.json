@@ -13,6 +13,8 @@
   "dependencies": {
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/review": "workspace:*",
+    "@qualigence/runner-control": "workspace:*",
+    "@qualigence/runner-protocol": "workspace:*",
     "kysely": "0.28.17",
     "pg": "8.13.1"
   },

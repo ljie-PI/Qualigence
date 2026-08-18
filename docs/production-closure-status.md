@@ -645,3 +645,54 @@ reported no Critical or Important findings.
 
 Exact-head Standards and Spec/architecture reviews must pass before
 Task 10 starts.
+
+## Task 10 — Persist Core Runner sessions, leases, resume tokens, and completions
+
+component: complete
+production_wiring: present
+verification: passed
+introducing_pr: `codex/pr6-runner-control-persistence`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner/disconnect-recovery.test.ts`
+
+Adds additive migration 006 and a provider-neutral `RunnerControlStore`.
+SQLite and PostgreSQL adapters share one contract for hashed resume
+consumption, lease CAS, and canonical-equivalent completion. Production
+Core opens `SqliteRunnerControlStore` before bind.
+
+RED: schema version was 5 and the four services used in-memory maps.
+
+Round-1 verification (2026-08-18): the focused Gate above passed 10 files
+and 90 tests with the plan-documented Windows OpenSSL resolution
+(`C:\Program Files\Git\usr\ssl\openssl.cnf`), plus `corepack pnpm typecheck`
+and `git diff --check`. The PostgreSQL provider contract passed 12 tests
+against Docker 29.6.1, including restart-preserved ownership and the
+reopened-connection harness.
+
+Round-1 fixes included in the review-round commit: resume-token rotation
+with an expiry-bounded idempotent crash-replay window (`rotateResumeToken`
+in all three adapters), and resumed-connection completion authority
+(`RunOwnershipService.completeStored`), so a Runner that reconnects after a
+disconnect or Core restart can complete the run against the persisted
+lease even though no raw lease token was seen on the new connection. The
+in-memory contract harness shares one store for the concurrent-caller
+cases, and the postgres harness re-resolves runtimes after `reopen()`.
+
+Round-2 exact-head Standards and Spec reviews against
+`86ea1790f9019362c6d9a74fe1845d193b69c577...292fc68`
+reported two Important Spec findings, both fixed in the final review
+commit: resume consumption no longer burns the credential on a
+mismatched or expired presentation (identity and expiry predicates now
+gate the consuming UPDATE in both providers, pinned by the contract),
+and the dead `"absent"` outcome was removed from the port so a
+no-terminal-result rejection surfaces as `LeaseLost` without a
+misleading `completion_conflict` integrity event. The SQLite rotation
+insert gained the PostgreSQL `onConflict(doNothing)` parity. Two Spec
+claims (postgres `completeLease` not transactional; missing index
+`ifNotExists`) were checked against the code and rejected: the postgres
+store is constructed with a tenant `Transaction`, and postgres DDL is
+one-shot offline provisioning by design. No Critical or Important
+findings remain; the final Gate passed 10 files / 90 tests, plus
+`corepack pnpm typecheck` and `git diff --check`.
+
+GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.

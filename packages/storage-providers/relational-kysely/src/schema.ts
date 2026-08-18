@@ -467,6 +467,47 @@ export interface EvidenceAuditEventsTable {
   occurred_at: string;
 }
 
+export interface RunnerSessionsTable {
+  session_id: string;
+  runner_id: string;
+  certificate_fingerprint: string;
+  capabilities_json: string;
+  protocol_major: number;
+  created_at: string;
+  closed_at: string | null;
+}
+
+export interface RunnerResumeTokensTable {
+  token_hash: string;
+  runner_id: string;
+  certificate_fingerprint: string;
+  previous_session_id: string;
+  protocol_major: number;
+  expires_at: string;
+  consumed_at: string | null;
+}
+
+export interface ExecutionLeasesTable {
+  run_id: string;
+  job_id: string;
+  runner_id: string;
+  session_id: string;
+  lease_epoch: number;
+  job_json: string;
+  lease_token_hash: string;
+  expires_at: string;
+  lost_at: string | null;
+  completed_at: string | null;
+  recovery_of_run_id: string | null;
+}
+
+export interface ExecutionCompletionsTable {
+  run_id: string;
+  job_id: string;
+  completion_json: string;
+  completed_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -517,5 +558,9 @@ export interface Database {
   evidence_key_rotations: EvidenceKeyRotationsTable;
   evidence_local_only_records: EvidenceLocalOnlyRecordsTable;
   evidence_audit_events: EvidenceAuditEventsTable;
+  runner_sessions: RunnerSessionsTable;
+  runner_resume_tokens: RunnerResumeTokensTable;
+  execution_leases: ExecutionLeasesTable;
+  execution_completions: ExecutionCompletionsTable;
   sqlite_master: SqliteMasterTable;
 }

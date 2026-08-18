@@ -20,6 +20,7 @@
     "@qualigence/recording": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
+    "@qualigence/runner-control": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/skill": "workspace:*",

@@ -1,22 +1,29 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import type {
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
   ExecutionJobLease,
   ExecutionJobOffer,
+  TraceEvent,
 } from "@qualigence/runner-protocol";
 import type { RunnerClientPort, RunnerSession } from "@qualigence/grpc-runner-protocol";
+import { startCoreDaemon } from "@qualigence/core-daemon";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { LeaseWindow } from "../../../apps/runner/src/lease-window.js";
 import { RunnerClient } from "../../../apps/runner/src/runner-client.js";
 import { SpoolingTraceRecorder } from "../../../apps/runner/src/spooling-trace-recorder.js";
 import { TraceUploadPump } from "../../../apps/runner/src/trace-upload-pump.js";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import { RunOwnershipService } from "../../../apps/core-daemon/src/index.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
-import { openMemorySpool, webJob } from "../../helpers/core-runner-harness.js";
+import { openMemorySpool, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
 
 let pki: GrpcTestPki;
 
@@ -202,7 +209,7 @@ describe("core/runner disconnect recovery Gate", () => {
     expect((await spool.usage()).events).toBe(0);
   });
 
-  it("blocks a new action after lease expiry on both the runner and core sides", () => {
+  it("blocks a new action after lease expiry on both the runner and core sides", async () => {
     const lease = {
       jobId: "job-1",
       runId: "run-1",
@@ -224,14 +231,19 @@ describe("core/runner disconnect recovery Gate", () => {
 
     // Core side: ownership refuses to authorize a new action past lease expiry.
     let nowMs = 0;
-    const ownership = new RunOwnershipService({ leaseDurationMs: 30_000, now: () => nowMs });
-    const granted = ownership.grant(webJob({ runId: "run-1" }), {
+    const ownership = new RunOwnershipService({
+      store: new InMemoryRunnerControlStore(),
+      integrityEvents: { emit: () => undefined },
+      leaseDurationMs: 30_000,
+      now: () => nowMs,
+    });
+    const granted = await ownership.grant(webJob({ runId: "run-1" }), {
       runnerId: "runner-1",
       sessionId: "session-1",
     });
-    expect(ownership.mayStartAction(granted)).toBe(true);
+    await expect(ownership.mayStartAction(granted)).resolves.toBe(true);
     nowMs = 30_001; // advance the Core clock past expiry
-    expect(ownership.mayStartAction(granted)).toBe(false);
+    await expect(ownership.mayStartAction(granted)).resolves.toBe(false);
   });
 
   it("refuses a second runner replaying another runner's resume token", async () => {
@@ -253,10 +265,13 @@ describe("core/runner disconnect recovery Gate", () => {
     ).rejects.toMatchObject({ code: "ResumeRejected" });
   });
 
-  it("refuses a different runner uploading trace for a run it does not own", () => {
-    const ownership = new RunOwnershipService();
+  it("refuses a different runner uploading trace for a run it does not own", async () => {
+    const ownership = new RunOwnershipService({
+      store: new InMemoryRunnerControlStore(),
+      integrityEvents: { emit: () => undefined },
+    });
     const job = webJob({ runId: "run-1" });
-    ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
+    await ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
 
     const batch: ExecutionEventBatch = {
       batchId: "batch-1",
@@ -265,18 +280,102 @@ describe("core/runner disconnect recovery Gate", () => {
       events: [],
     };
 
-    expect(() =>
+    await expect(
       ownership.authorizeTraceUpload(
         { runnerId: "runner-2", certificateFingerprint: "fp-runner-2", scope: { kind: "local" } },
         batch,
       ),
-    ).toThrowError(/may not upload Trace/);
-    // The rightful owner is still allowed to upload its own run's trace.
-    expect(() =>
+    ).rejects.toThrowError(/may not upload Trace/);
+    await expect(
       ownership.authorizeTraceUpload(
         { runnerId: "runner-1", certificateFingerprint: "fp-runner-1", scope: { kind: "local" } },
         batch,
       ),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
+  });
+
+  it("restores an accepted lease after Core restart and refuses a lost run to another runner", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-control-restart-"));
+    const first = await startCoreDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      dataDir,
+      leaseDurationMs: 30_000,
+      tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+    });
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, first.port, cert);
+    const session1 = await client1.connect(makeHello("runner-1"));
+    const connection1 = await first.server.waitForConnection("runner-1");
+    const job = webJob({ jobId: "job-persist", runId: "run-persist" });
+    const leasePromise = connection1.offer(job, [WEB_TARGET_TOKEN]);
+    const offer = await session1.nextOffer(new AbortController().signal);
+    const lease = await session1.accept(offer.offerId);
+    await leasePromise;
+    const original = persistedEvent(job.runId);
+    expect((await session1.submit(persistedBatch(original))).nextExpectedSequenceNumber).toBe(2);
+    const resumeToken = session1.welcome.resumeToken;
+    await client1.close();
+    await first.shutdown();
+
+    const second = await startCoreDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      dataDir,
+      leaseDurationMs: 30_000,
+      tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+    });
+    const client2 = makeTestClient(pki, second.port, cert);
+    cleanups.push(async () => {
+      await client2.close();
+      await second.shutdown();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    const session2 = await client2.connect(makeHello("runner-1", { resumeToken }));
+    expect(session2.welcome.sessionId).toBe(session1.welcome.sessionId);
+    expect((await session2.submit(persistedBatch(original))).nextExpectedSequenceNumber).toBe(2);
+    await expect(second.application.ownership.mayStartAction(lease)).resolves.toBe(true);
+    await expect(second.application.ownership.ownerOf(job.runId)).resolves.toEqual({
+      runnerId: "runner-1",
+      sessionId: session2.welcome.sessionId,
+    });
+
+    await second.application.ownership.markLost(job.runId, "expired");
+    await expect(second.application.ownership.mayStartAction(lease)).resolves.toBe(false);
+    const recovery = await second.application.ownership.createRecoveryRun(job.runId);
+    expect(recovery.job.runId).not.toBe(job.runId);
+    await second.application.ownership.grant(
+      recovery.job,
+      { runnerId: "runner-1", sessionId: session2.welcome.sessionId },
+      recovery.recoveryOfRunId,
+    );
+    await expect(second.application.ownership.ownerOf(job.runId)).resolves.toMatchObject({
+      runnerId: "runner-1",
+    });
+    await expect(second.application.ownership.recoveryOf(recovery.job.runId)).resolves.toBe(job.runId);
   });
 });
+
+function persistedEvent(runId: string): TraceEvent {
+  const input = {
+    protocolVersion: "runner-protocol/v1",
+    schemaVersion: "trace-event/v1",
+    messageId: `${runId}:1`,
+    idempotencyKey: `${runId}:1`,
+    runId,
+    sequenceNumber: 1,
+    stage: "observation",
+    occurredAt: "2026-08-18T00:00:00.000Z",
+    payload: { graphId: "graph-1", nodes: [] },
+  } as const;
+  return { ...input, payloadHash: canonicalTraceEventHash(input) } as TraceEvent;
+}
+
+function persistedBatch(trace: TraceEvent): ExecutionEventBatch {
+  return {
+    batchId: `batch-${trace.payloadHash}`,
+    runId: trace.runId,
+    firstSequenceNumber: trace.sequenceNumber,
+    events: [trace],
+  };
+}

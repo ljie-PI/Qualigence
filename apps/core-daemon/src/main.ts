@@ -13,7 +13,8 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 import { TraceIngestor } from "@qualigence/evidence";
-import { SqliteRunStore, SqliteRuntime, SqliteTraceStore } from "@qualigence/sqlite-runtime";
+import { StructuredLogger } from "@qualigence/observability";
+import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
 
 export interface StartedCoreDaemon {
@@ -37,9 +38,21 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
   });
   const traceStore = new SqliteTraceStore(runtime);
   const runStore = new SqliteRunStore(runtime);
-  const ownership = new RunOwnershipService({ leaseDurationMs: config.leaseDurationMs });
-  const jobs = new ExecutionJobService(ownership, { leaseDurationMs: config.leaseDurationMs });
+  const controlStore = new SqliteRunnerControlStore(runtime);
+  const logger = new StructuredLogger({ service: "core-daemon" });
+  const ownership = new RunOwnershipService({
+    store: controlStore,
+    leaseDurationMs: config.leaseDurationMs,
+    integrityEvents: {
+      emit: (event) => logger.warn("runner-control.integrity", { ...event }),
+    },
+  });
+  const jobs = new ExecutionJobService(ownership, {
+    store: controlStore,
+    leaseDurationMs: config.leaseDurationMs,
+  });
   const sessions = new RunnerSessionService({
+    store: controlStore,
     welcome: {
       serverVersion: "0.1.0",
       heartbeatIntervalMs: 5_000,
@@ -49,7 +62,7 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
       maximumInFlightBatches: 2,
       maximumPendingWriteBytes: 1_048_576,
     },
-    resumeTokens: new RunnerResumeTokenService(),
+    resumeTokens: new RunnerResumeTokenService({ store: controlStore }),
     traceIngestor: new TraceIngestor(traceStore),
     ownership,
   });

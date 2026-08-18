@@ -9,6 +9,7 @@ import type {
 } from "@qualigence/runner-protocol";
 import { canonicalTraceEventHash, capabilities } from "@qualigence/runner-protocol";
 import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
+import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
 import {
   CoreRunnerProtocolApplication,
   ExecutionJobService,
@@ -16,6 +17,26 @@ import {
   RunnerSessionService,
   RunOwnershipService,
 } from "@qualigence/core-application";
+
+function makeOwnership(options: { leaseDurationMs?: number; now?: () => number } = {}): {
+  ownership: RunOwnershipService;
+  store: InMemoryRunnerControlStore;
+} {
+  const store = new InMemoryRunnerControlStore();
+  return {
+    store,
+    ownership: new RunOwnershipService({
+      store,
+      integrityEvents: { emit: () => undefined },
+      ...options,
+    }),
+  };
+}
+
+function makeService(options: { leaseDurationMs?: number; now?: () => number } = {}): ExecutionJobService {
+  const { ownership, store } = makeOwnership(options);
+  return new ExecutionJobService(ownership, { store, ...options });
+}
 
 function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
   return {
@@ -30,9 +51,9 @@ const owner1 = { runnerId: "runner-1", sessionId: "session-1" } as const;
 const webCaps = capabilities({ targetAdapters: ["web-playwright"] });
 
 describe("ExecutionJobService", () => {
-  it("offers a web job to a runner that advertises web-playwright", () => {
-    const service = new ExecutionJobService(new RunOwnershipService());
-    const offer = service.offer({
+  it("offers a web job to a runner that advertises web-playwright", async () => {
+    const service = makeService();
+    const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
       job: job("run-1"),
@@ -42,50 +63,50 @@ describe("ExecutionJobService", () => {
     expect(offer.requiredCapabilities).toEqual(["target:web-playwright"]);
   });
 
-  it("rejects an offer with an explicit CapabilityMismatch instead of silently downgrading", () => {
-    const service = new ExecutionJobService(new RunOwnershipService());
-    expect(() =>
+  it("rejects an offer with an explicit CapabilityMismatch instead of silently downgrading", async () => {
+    const service = makeService();
+    await expect(
       service.offer({
         owner: owner1,
         capabilities: webCaps,
         job: job("run-1"),
         requiredCapabilities: ["target:web-playwright", "model:vision-input"],
       }),
-    ).toThrowError(expect.objectContaining({ code: "CapabilityMismatch" }));
+    ).rejects.toMatchObject({ code: "CapabilityMismatch" });
   });
 
-  it("returns the same lease for a duplicate accept of the same offer", () => {
-    const service = new ExecutionJobService(new RunOwnershipService());
-    const offer = service.offer({
+  it("returns the same lease for a duplicate accept of the same offer", async () => {
+    const service = makeService();
+    const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
       job: job("run-1"),
       requiredCapabilities: ["target:web-playwright"],
     });
-    const first = service.accept(offer.offerId);
-    const second = service.accept(offer.offerId);
+    const first = await service.accept(offer.offerId);
+    const second = await service.accept(offer.offerId);
     expect(second).toEqual(first);
   });
 
-  it("records completion under a valid lease", () => {
-    const service = new ExecutionJobService(new RunOwnershipService());
-    const offer = service.offer({
+  it("records completion under a valid lease", async () => {
+    const service = makeService();
+    const offer = await service.offer({
       owner: owner1,
       capabilities: webCaps,
       job: job("run-1"),
       requiredCapabilities: ["target:web-playwright"],
     });
-    const lease = service.accept(offer.offerId);
+    const lease = await service.accept(offer.offerId);
     const completion: ExecutionCompletion = { jobId: lease.jobId, runId: lease.runId, status: "passed" };
-    service.complete(lease, completion);
-    expect(service.completionOf("run-1")).toEqual(completion);
+    await service.complete(lease, completion);
+    await expect(service.completionOf("run-1")).resolves.toEqual(completion);
   });
 
-  it("rejects an unknown offer", () => {
-    const service = new ExecutionJobService(new RunOwnershipService());
-    expect(() => service.accept("nope")).toThrowError(
-      expect.objectContaining({ code: "UnknownOffer" }),
-    );
+  it("rejects an unknown offer", async () => {
+    const service = makeService();
+    await expect(service.accept("nope")).rejects.toMatchObject({
+      code: "UnknownOffer",
+    });
   });
 });
 
@@ -168,17 +189,24 @@ function makeApplication(options: {
   readonly now?: () => number;
 } = {}) {
   const store = options.store ?? new InMemoryTraceStore();
+  const controlStore = new InMemoryRunnerControlStore();
   const ownership = new RunOwnershipService({
+    store: controlStore,
+    integrityEvents: { emit: () => undefined },
     leaseDurationMs: welcome.leaseDurationMs,
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   const sessions = new RunnerSessionService({
+    store: controlStore,
     welcome,
-    resumeTokens: new RunnerResumeTokenService(),
+    resumeTokens: new RunnerResumeTokenService({ store: controlStore }),
     traceIngestor: new TraceIngestor(store),
     ownership,
   });
-  const jobs = new ExecutionJobService(ownership, { leaseDurationMs: welcome.leaseDurationMs });
+  const jobs = new ExecutionJobService(ownership, {
+    store: controlStore,
+    leaseDurationMs: welcome.leaseDurationMs,
+  });
   const application = new CoreRunnerProtocolApplication({ sessions, jobs, ownership });
   return { application, sessions, jobs, ownership, store };
 }
@@ -207,12 +235,18 @@ describe("CoreRunnerProtocolApplication", () => {
     const first = await application.openSession(hello("runner-1"), identity1);
     const offer = await application.createOffer(first.sessionId, job("run-1"), ["target:web-playwright"]);
     await application.accept(first.sessionId, offer.offerId);
-    expect(ownership.ownerOf("run-1")).toEqual({ runnerId: "runner-1", sessionId: first.sessionId });
+    await expect(ownership.ownerOf("run-1")).resolves.toEqual({
+      runnerId: "runner-1",
+      sessionId: first.sessionId,
+    });
 
     await expect(
       application.openSession(hello("runner-2", { resumeToken: first.resumeToken }), identity2),
     ).rejects.toMatchObject({ code: "RunnerResumeRejected" });
-    expect(ownership.ownerOf("run-1")).toEqual({ runnerId: "runner-1", sessionId: first.sessionId });
+    await expect(ownership.ownerOf("run-1")).resolves.toEqual({
+      runnerId: "runner-1",
+      sessionId: first.sessionId,
+    });
   });
 
   it("keeps the live session identity after a successful resume", async () => {
@@ -232,7 +266,7 @@ describe("CoreRunnerProtocolApplication", () => {
     expect(replay.offerId).toBe(offer.offerId);
     const accepted = await application.accept(resumed.sessionId, replay.offerId);
     expect(accepted.leaseToken).toBe(lease.leaseToken);
-    expect(ownership.ownerOf("run-1")?.sessionId).toBe(resumed.sessionId);
+    expect((await ownership.ownerOf("run-1"))?.sessionId).toBe(resumed.sessionId);
   });
 
   it("returns the same lease for a second accept", async () => {
@@ -253,8 +287,8 @@ describe("CoreRunnerProtocolApplication", () => {
     now += welcome.leaseDurationMs + 1;
     await expect(application.renew(session.sessionId, lease)).rejects.toMatchObject({ code: "LeaseLost" });
     await expect(application.renew(session.sessionId, lease)).rejects.toMatchObject({ code: "LeaseLost" });
-    expect(ownership.mayStartAction(lease)).toBe(false);
-    expect(ownership.ownerOf("run-1")).toEqual({
+    await expect(ownership.mayStartAction(lease)).resolves.toBe(false);
+    await expect(ownership.ownerOf("run-1")).resolves.toEqual({
       runnerId: "runner-1",
       sessionId: session.sessionId,
     });
@@ -268,7 +302,7 @@ describe("CoreRunnerProtocolApplication", () => {
     const completion: ExecutionCompletion = { jobId: lease.jobId, runId: lease.runId, status: "passed" };
     await application.complete(session.sessionId, lease, completion);
     await application.complete(session.sessionId, lease, completion);
-    expect(jobs.completionOf("run-1")).toEqual(completion);
+    await expect(jobs.completionOf("run-1")).resolves.toEqual(completion);
     await expect(application.renew(session.sessionId, lease)).rejects.toMatchObject({ code: "LeaseLost" });
   });
 
@@ -308,13 +342,16 @@ describe("CoreRunnerProtocolApplication", () => {
     ).rejects.toMatchObject({ code: "UnknownSession" });
     await application.closeSession(existing.sessionId);
     expect(sessions.session(existing.sessionId)).toBeUndefined();
-    expect(ownership.ownerOf("run-1")).toEqual({ runnerId: "runner-1", sessionId: existing.sessionId });
+    await expect(ownership.ownerOf("run-1")).resolves.toEqual({
+      runnerId: "runner-1",
+      sessionId: existing.sessionId,
+    });
 
     const replacement = await application.openSession(hello("runner-2"), identity2);
     expect(replacement.sessionId).not.toBe(interrupted.sessionId);
     await expect(
       application.createOffer(replacement.sessionId, job("run-1"), ["target:web-playwright"]),
     ).rejects.toMatchObject({ code: "RunIdentityMismatch" });
-    expect(ownership.ownerOf("run-1")?.runnerId).toBe("runner-1");
+    expect((await ownership.ownerOf("run-1"))?.runnerId).toBe("runner-1");
   });
 });

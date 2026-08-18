@@ -1,4 +1,4 @@
-import { type Kysely, type ColumnDataType, sql } from "kysely";
+import { type Kysely, type ColumnDataType, type SqlBool, sql } from "kysely";
 import {
   RELATIONAL_TABLES,
   type ColumnSpec,
@@ -89,5 +89,14 @@ export async function createTenantSchema(db: Kysely<any>): Promise<void> {
     }
 
     await builder.execute();
+
+    for (const index of table.partialIndexes ?? []) {
+      await db.schema
+        .createIndex(index.name)
+        .on(table.name)
+        .columns(compositeKey(table, index.columns))
+        .where(sql.raw<SqlBool>(index.predicate))
+        .execute();
+    }
   }
 }
