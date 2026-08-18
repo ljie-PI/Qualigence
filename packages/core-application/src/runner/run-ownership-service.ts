@@ -178,21 +178,24 @@ export class RunOwnershipService {
       checkedAt: new Date(this.now()).toISOString(),
       completion,
     });
-    if (outcome === "absent") {
-      throw new CoreApplicationError(
-        "LeaseLost",
-        `lease for run ${record.job.runId} no longer exists`,
-        { details: { runId: record.job.runId } },
-      );
-    }
     if (outcome === "rejected") {
       const stored = await this.store.completion(record.job.runId);
+      if (stored === undefined) {
+        // No terminal result exists: the lease was expired, lost, or never
+        // matched, not a replay of a different completion. Surface the lost
+        // authority without a completion-conflict event.
+        throw new CoreApplicationError(
+          "LeaseLost",
+          `lease for run ${record.job.runId} no longer authorizes completion`,
+          { details: { runId: record.job.runId } },
+        );
+      }
       this.integrityEvents.emit({
         kind: "completion_conflict",
         runId: record.job.runId,
         leaseTokenHash: record.leaseTokenHash,
         presentedCompletionHash: canonicalPayloadHash(completion),
-        ...(stored === undefined ? {} : { storedCompletionHash: canonicalPayloadHash(stored) }),
+        storedCompletionHash: canonicalPayloadHash(stored),
         observedAt: new Date(this.now()).toISOString(),
       });
       throw new CoreApplicationError(

@@ -60,11 +60,9 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
   }): Promise<ResumeTokenBinding | undefined> {
     return this.serialize(() => {
       const record = this.tokens.get(input.tokenHash);
-      if (record === undefined || record.consumedAt !== undefined) {
-        return undefined;
-      }
-      this.tokens.set(input.tokenHash, { ...record, consumedAt: input.consumedAt });
       if (
+        record === undefined ||
+        record.consumedAt !== undefined ||
         record.expiresAt <= input.consumedAt ||
         record.binding.runnerId !== input.presented.runnerId ||
         record.binding.certificateFingerprint !== input.presented.certificateFingerprint ||
@@ -72,6 +70,7 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
       ) {
         return undefined;
       }
+      this.tokens.set(input.tokenHash, { ...record, consumedAt: input.consumedAt });
       return record.binding;
     });
   }

@@ -119,20 +119,9 @@ export function leaseBindingMatches(
  * be surfaced as a `completion_conflict` integrity event.
  */
 export function classifyCompletion(
-  stored: undefined,
-  presented: ExecutionCompletion,
-): "absent";
-export function classifyCompletion(
   stored: ExecutionCompletion,
   presented: ExecutionCompletion,
-): "duplicate" | "rejected";
-export function classifyCompletion(
-  stored: ExecutionCompletion | undefined,
-  presented: ExecutionCompletion,
-): "duplicate" | "rejected" | "absent" {
-  if (stored === undefined) {
-    return "absent";
-  }
+): "duplicate" | "rejected" {
   return canonicalPayloadHash(stored) === canonicalPayloadHash(presented)
     ? "duplicate"
     : "rejected";
@@ -174,7 +163,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected" | "absent">;
+  }): Promise<"completed" | "duplicate" | "rejected">;
   markLeaseLost(runId: string, lostAt: string): Promise<boolean>;
   lease(runId: string): Promise<PersistedExecutionLease | undefined>;
   completion(runId: string): Promise<ExecutionCompletion | undefined>;

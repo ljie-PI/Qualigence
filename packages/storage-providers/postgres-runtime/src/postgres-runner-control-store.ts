@@ -75,12 +75,19 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     presented: ResumePresentedIdentity;
     consumedAt: string;
   }): Promise<ResumeTokenBinding | undefined> {
+    // Consumption is the atomic gate, so the presented identity must already
+    // match the bound runner and expiry before the token row is consumed: a
+    // mismatched or expired presentation never destroys the credential.
     const row = await this.db
       .updateTable("runner_resume_tokens")
       .set({ consumed_at: input.consumedAt })
       .where("tenant_id", "=", this.tenantId)
       .where("token_hash", "=", input.tokenHash)
       .where("consumed_at", "is", null)
+      .where("runner_id", "=", input.presented.runnerId)
+      .where("certificate_fingerprint", "=", input.presented.certificateFingerprint)
+      .where("protocol_major", "=", input.presented.protocolMajor)
+      .where("expires_at", ">", input.consumedAt)
       .returning([
         "runner_id",
         "certificate_fingerprint",
@@ -89,13 +96,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
         "expires_at",
       ])
       .executeTakeFirst();
-    return row !== undefined &&
-      row.expires_at > input.consumedAt &&
-      row.runner_id === input.presented.runnerId &&
-      row.certificate_fingerprint === input.presented.certificateFingerprint &&
-      row.protocol_major === input.presented.protocolMajor
-      ? toBinding(row)
-      : undefined;
+    return row === undefined ? undefined : toBinding(row);
   }
 
   async rotateResumeToken(input: RotateResumeTokenInput): Promise<RotateResumeTokenResult | undefined> {

@@ -678,4 +678,21 @@ lease even though no raw lease token was seen on the new connection. The
 in-memory contract harness shares one store for the concurrent-caller
 cases, and the postgres harness re-resolves runtimes after `reopen()`.
 
+Round-2 exact-head Standards and Spec reviews against
+`86ea1790f9019362c6d9a74fe1845d193b69c577...292fc68`
+reported two Important Spec findings, both fixed in the final review
+commit: resume consumption no longer burns the credential on a
+mismatched or expired presentation (identity and expiry predicates now
+gate the consuming UPDATE in both providers, pinned by the contract),
+and the dead `"absent"` outcome was removed from the port so a
+no-terminal-result rejection surfaces as `LeaseLost` without a
+misleading `completion_conflict` integrity event. The SQLite rotation
+insert gained the PostgreSQL `onConflict(doNothing)` parity. Two Spec
+claims (postgres `completeLease` not transactional; missing index
+`ifNotExists`) were checked against the code and rejected: the postgres
+store is constructed with a tenant `Transaction`, and postgres DDL is
+one-shot offline provisioning by design. No Critical or Important
+findings remain; the final Gate passed 10 files / 90 tests, plus
+`corepack pnpm typecheck` and `git diff --check`.
+
 GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.

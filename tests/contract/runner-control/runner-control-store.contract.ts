@@ -174,12 +174,26 @@ export function runnerControlStoreContract(
       expect(bindings[0]).toEqual(resume().binding);
     });
 
-    it("rejects a resume token presented by a different runner identity", async () => {
+    it("rejects a resume token presented by a different runner identity without consuming it", async () => {
       const binding = await harness!.runPrimary(async (store) => {
         await store.issueResumeToken(resume());
-        return store.consumeResumeToken({
+        const mismatch = await store.consumeResumeToken({
           tokenHash: "hash-resume-1",
           presented: presented({ runnerId: "runner-2" }),
+          consumedAt: CHECKED_AT,
+        });
+        expect(mismatch).toBeUndefined();
+        // A mismatched presentation never destroys the credential: the rightful
+        // identity can still consume it exactly once.
+        const rightful = await store.consumeResumeToken({
+          tokenHash: "hash-resume-1",
+          presented: presented(),
+          consumedAt: CHECKED_AT,
+        });
+        expect(rightful).toEqual(resume().binding);
+        return store.consumeResumeToken({
+          tokenHash: "hash-resume-1",
+          presented: presented(),
           consumedAt: CHECKED_AT,
         });
       });
