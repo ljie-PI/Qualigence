@@ -11,7 +11,9 @@ import type {
   RunResourceScope,
 } from "@qualigence/execution-application";
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
+import { ExecutionPolicySnapshotError, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionJobLease } from "@qualigence/runner-protocol";
+import { CoreApplicationError } from "@qualigence/core-application";
 
 /** Persistence ports for one Run, opened together and closed together. */
 export interface RunnerBackedRunResources {
@@ -68,6 +70,14 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
   }
 
   async open(runId: string, request: RunExecutionRequest): Promise<RunResourceScope> {
+    try {
+      parseExecutionPolicySnapshot(request.policy);
+    } catch (error) {
+      if (error instanceof ExecutionPolicySnapshotError) {
+        throw new CoreApplicationError("PolicyMissing", "execution request policy is missing or malformed");
+      }
+      throw error;
+    }
     const stores = await this.openStores(runId, request);
 
     let offeredJob: AcceptedExecutionJob | undefined;

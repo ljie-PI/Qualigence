@@ -1,6 +1,7 @@
 import {
   RunnerControlStoreError,
 } from "@qualigence/runner-control";
+import { parseExecutionJob } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -394,28 +395,9 @@ function toLease(row: {
 
 function parseJob(jobJson: string): AcceptedExecutionJob {
   try {
-    const job = JSON.parse(jobJson) as { readonly policy?: unknown };
-    if (!hasPolicy(job.policy)) {
-      throw new RunnerControlStoreError();
-    }
-    return job as AcceptedExecutionJob;
+    return parseExecutionJob(JSON.parse(jobJson));
   } catch (error) {
     if (error instanceof RunnerControlStoreError) throw error;
     throw new RunnerControlStoreError();
   }
-}
-
-function hasPolicy(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const policy = value as Record<string, unknown>;
-  return (
-    typeof policy.policyId === "string" && policy.policyId.length > 0 &&
-    (policy.environment === "isolated_test" || policy.environment === "staging" || policy.environment === "production") &&
-    Array.isArray(policy.allowedOrigins) && policy.allowedOrigins.every((origin) => typeof origin === "string") &&
-    Array.isArray(policy.allowedActionKinds) && policy.allowedActionKinds.every((kind) => ["navigate", "click", "input", "select", "scroll", "window"].includes(String(kind))) &&
-    (policy.maximumRisk === "Normal" || policy.maximumRisk === "ExternalSideEffect" || policy.maximumRisk === "Destructive" || policy.maximumRisk === "ProductionForbidden") &&
-    typeof policy.explorationAllowed === "boolean" &&
-    typeof policy.issuedAt === "string" && Number.isFinite(Date.parse(policy.issuedAt)) &&
-    typeof policy.expiresAt === "string" && Number.isFinite(Date.parse(policy.expiresAt))
-  );
 }

@@ -1,5 +1,6 @@
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { LegacyM1LocalRecoveryRecord } from "@qualigence/sqlite-runtime";
+import { parsePolicylessExecutionJobForRecovery } from "@qualigence/runner-control";
 
 interface RecoveryManifestRecord extends LegacyM1LocalRecoveryRecord {}
 
@@ -32,11 +33,16 @@ export function verifyLegacyM1LocalRecoveryRows(
   for (const record of manifest.records) {
     const raw = rows.get(`${record.jobId}:${record.runId}`);
     if (raw === undefined) throw new Error("Legacy recovery lease row is missing.");
-    const job = JSON.parse(raw) as { readonly jobId?: unknown; readonly runId?: unknown; readonly target?: { readonly url?: unknown }; readonly policy?: unknown };
-    if (job.policy !== undefined || job.jobId !== record.jobId || job.runId !== record.runId || canonicalPayloadHash(job) !== record.canonicalJobSha256) {
+    let job;
+    try {
+      job = parsePolicylessExecutionJobForRecovery(JSON.parse(raw));
+    } catch {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    if (typeof job.target?.url !== "string" || new URL(job.target.url).origin !== record.policy.allowedOrigins[0]) {
+    if (job.jobId !== record.jobId || job.runId !== record.runId || canonicalPayloadHash(job) !== record.canonicalJobSha256) {
+      throw new Error("Legacy recovery lease row does not match the manifest.");
+    }
+    if (new URL(job.target.url).origin !== record.policy.allowedOrigins[0]) {
       throw new Error("Legacy recovery target origin does not match the manifest policy.");
     }
   }
@@ -49,7 +55,12 @@ function validateRecord(value: unknown, identities: Set<string>): RecoveryManife
   if (typeof record.jobId !== "string" || typeof record.runId !== "string" || typeof record.canonicalJobSha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.canonicalJobSha256) || record.policy === undefined) {
     throw new Error("Legacy recovery record identity is malformed.");
   }
-  const policy = record.policy;
+  let policy;
+  try {
+    policy = parseExecutionPolicySnapshot(record.policy);
+  } catch {
+    throw new Error("Legacy recovery policy is not constrained.");
+  }
   if (
     policy.policyId !== "legacy-m1-local" || policy.environment !== "isolated_test" ||
     policy.allowedActionKinds.length !== 1 || policy.allowedActionKinds[0] !== "click" ||

@@ -1,7 +1,7 @@
 import {
   RunnerControlStoreError,
 } from "@qualigence/runner-control";
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash, parseExecutionJob } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -18,7 +18,7 @@ import type {
   RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import { leaseBindingMatches, observedCompletionResult } from "@qualigence/runner-control";
+import { leaseBindingMatches, observedCompletionResult, parsePolicylessExecutionJobForRecovery } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { SqliteRuntime } from "./database.js";
 import { isSqliteBusyError, mapBusyError } from "./errors.js";
@@ -422,38 +422,23 @@ function parseJob(
   } catch {
     throw new RunnerControlStoreError();
   }
-  if (!isJob(parsed)) throw new RunnerControlStoreError();
-  if (hasPolicy(parsed)) return parsed;
+  try {
+    return parseExecutionJob(parsed);
+  } catch {
+    // Only a policyless but otherwise strict Local record may reach recovery.
+  }
+  let policyless;
+  try {
+    policyless = parsePolicylessExecutionJobForRecovery(parsed);
+  } catch {
+    throw new RunnerControlStoreError();
+  }
   const record = legacyRecovery?.find(
     (candidate) =>
-      candidate.jobId === parsed.jobId &&
-      candidate.runId === parsed.runId &&
+      candidate.jobId === policyless.jobId &&
+      candidate.runId === policyless.runId &&
       candidate.canonicalJobSha256 === canonicalPayloadHash(parsed),
   );
   if (record === undefined) throw new RunnerControlStoreError();
-  return { ...parsed, policy: record.policy };
-}
-
-function isJob(value: unknown): value is Omit<AcceptedExecutionJob, "policy"> & { readonly policy?: unknown } {
-  return typeof value === "object" && value !== null &&
-    typeof (value as { jobId?: unknown }).jobId === "string" &&
-    typeof (value as { runId?: unknown }).runId === "string" &&
-    typeof (value as { objective?: unknown }).objective === "string" &&
-    typeof (value as { target?: unknown }).target === "object";
-}
-
-function hasPolicy(job: Omit<AcceptedExecutionJob, "policy"> & { readonly policy?: unknown }): job is AcceptedExecutionJob {
-  const policy = job.policy;
-  if (typeof policy !== "object" || policy === null) return false;
-  const snapshot = policy as Record<string, unknown>;
-  return (
-    typeof snapshot.policyId === "string" && snapshot.policyId.length > 0 &&
-    (snapshot.environment === "isolated_test" || snapshot.environment === "staging" || snapshot.environment === "production") &&
-    Array.isArray(snapshot.allowedOrigins) && snapshot.allowedOrigins.every((origin) => typeof origin === "string") &&
-    Array.isArray(snapshot.allowedActionKinds) && snapshot.allowedActionKinds.every((kind) => ["navigate", "click", "input", "select", "scroll", "window"].includes(String(kind))) &&
-    (snapshot.maximumRisk === "Normal" || snapshot.maximumRisk === "ExternalSideEffect" || snapshot.maximumRisk === "Destructive" || snapshot.maximumRisk === "ProductionForbidden") &&
-    typeof snapshot.explorationAllowed === "boolean" &&
-    typeof snapshot.issuedAt === "string" && Number.isFinite(Date.parse(snapshot.issuedAt)) &&
-    typeof snapshot.expiresAt === "string" && Number.isFinite(Date.parse(snapshot.expiresAt))
-  );
+  return parseExecutionJob({ ...policyless, policy: record.policy });
 }

@@ -2,6 +2,10 @@ import {
   canonicalPayloadHash,
   type AcceptedExecutionJob,
   type ExecutionCompletion,
+  ExecutionPolicySnapshotError,
+  parseExecutionJob as parseProtocolExecutionJob,
+  parseExecutionPolicySnapshot as parseProtocolExecutionPolicySnapshot,
+  parsePolicylessExecutionJob,
 } from "@qualigence/runner-protocol";
 
 export class RunnerControlStoreError extends Error {
@@ -10,6 +14,33 @@ export class RunnerControlStoreError extends Error {
   constructor(message = "persisted execution Job policy is missing or malformed") {
     super(message);
     this.name = "RunnerControlStoreError";
+  }
+}
+
+export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
+  try {
+    return parseProtocolExecutionJob(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
+
+export function parseExecutionPolicySnapshot(value: unknown) {
+  try {
+    return parseProtocolExecutionPolicySnapshot(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
+
+export function parsePolicylessExecutionJobForRecovery(value: unknown) {
+  try {
+    return parsePolicylessExecutionJob(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
   }
 }
 

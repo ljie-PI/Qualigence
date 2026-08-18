@@ -1,4 +1,10 @@
-import type { AcceptedExecutionJob, ExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import {
+  ExecutionPolicySnapshotError,
+  parseExecutionJob,
+  parseExecutionPolicySnapshot,
+  type AcceptedExecutionJob,
+  type ExecutionPolicySnapshot,
+} from "@qualigence/runner-protocol";
 import type {
   PolicyDecision,
   ResolvedAction,
@@ -28,16 +34,22 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
   }
 
   static admitJob(job: unknown, options: DeterministicRunnerPolicyGateOptions = {}): TargetAdmission {
-    if (!isAcceptedExecutionJob(job) || !isPolicy(job.policy)) {
+    let accepted: AcceptedExecutionJob;
+    try {
+      accepted = parseExecutionJob(job);
+    } catch (error) {
+      if (error instanceof ExecutionPolicySnapshotError) {
+        return { status: "denied", code: "PolicyMissing", message: "execution Job policy is required" };
+      }
       return { status: "denied", code: "PolicyMissing", message: "execution Job policy is required" };
     }
-    const policy = job.policy;
+    const policy = accepted.policy;
     if (Date.parse(policy.expiresAt) <= (options.now ?? Date.now)()) {
       return { status: "denied", code: "PolicyDenied", message: "PolicyExpired" };
     }
     let target: URL;
     try {
-      target = new URL(job.target.url);
+      target = new URL(accepted.target.url);
     } catch {
       return { status: "denied", code: "PolicyDenied", message: "TargetInvalid" };
     }
@@ -48,7 +60,14 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
   }
 
   async authorize(action: ResolvedAction, context: RunnerPolicyContext): Promise<PolicyDecision> {
-    if (Date.parse(this.policy.expiresAt) <= this.now()) return denied("PolicyExpired");
+    try {
+      parseExecutionPolicySnapshot(this.policy);
+    } catch {
+      return denied("PolicyMalformed");
+    }
+    const expiresAt = Date.parse(this.policy.expiresAt);
+    if (!Number.isFinite(expiresAt)) return denied("PolicyMalformed");
+    if (expiresAt <= this.now()) return denied("PolicyExpired");
     if (!this.policy.allowedOrigins.includes(originOf(context.job))) return denied("TargetOriginDenied");
     if (this.policy.environment === "production" && this.policy.explorationAllowed) return denied("ProductionExplorationDenied");
 
@@ -90,23 +109,4 @@ function isFallback(action: ResolvedAction): boolean {
 
 function rank(risk: string): number {
   return RISK_ORDER.indexOf(risk as typeof RISK_ORDER[number]);
-}
-
-function isAcceptedExecutionJob(value: unknown): value is AcceptedExecutionJob {
-  return typeof value === "object" && value !== null && "target" in value && "policy" in value;
-}
-
-function isPolicy(value: unknown): value is ExecutionPolicySnapshot {
-  if (typeof value !== "object" || value === null) return false;
-  const policy = value as Record<string, unknown>;
-  return (
-    typeof policy.policyId === "string" &&
-    (policy.environment === "isolated_test" || policy.environment === "staging" || policy.environment === "production") &&
-    Array.isArray(policy.allowedOrigins) &&
-    Array.isArray(policy.allowedActionKinds) &&
-    typeof policy.maximumRisk === "string" &&
-    typeof policy.explorationAllowed === "boolean" &&
-    typeof policy.issuedAt === "string" &&
-    typeof policy.expiresAt === "string"
-  );
 }

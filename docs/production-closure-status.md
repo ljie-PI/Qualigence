@@ -759,3 +759,23 @@ policy command `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-
 passed 3 files / 12 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract tests ran and passed; no Gate was
 skipped. Task 11 source and tests remain unchanged.
+
+Task 15 review-fix round (2026-08-18): strict policy parsing is now centralized
+in the Runner Protocol contract and used by gRPC mapping, both runner-control
+providers, Core request admission, legacy Local recovery parsing, and the
+Runner gate. It requires canonical ISO instants with `issuedAt < expiresAt`,
+canonical non-credentialed HTTP(S) origins, known enums, nonempty unique action
+and origin sets, and staging's exact click/Normal/non-exploration declaration.
+Malformed wire or persisted Jobs raise `PolicyMissing`; provider renewal reads
+and validates the stored Job before updating expiry. The Core factory validates
+the request before opening stores or offering. Direct `startCoreDaemon` tests
+prove Phase A rejects before SQLite creation/listen, Phase B closes SQLite and
+does not bind on mismatch, and only a hash-bound validated Local row upcasts.
+Denied Runner offers prove no target/browser start, capture/decision, resolver,
+permit-backed executor, or close path is invoked.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 164 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.

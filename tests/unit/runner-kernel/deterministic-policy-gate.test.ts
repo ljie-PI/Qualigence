@@ -51,4 +51,23 @@ describe("DeterministicRunnerPolicyGate", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });
   });
+
+  it("allows the exact bounded staging click and denies staging exploration and fallbacks", async () => {
+    const staging = { ...policy, environment: "staging" as const };
+    const now = () => Date.parse("2026-08-18T00:00:30.000Z");
+    const gate = new DeterministicRunnerPolicyGate(staging, { now });
+    await expect(gate.authorize(click, { job: job({ policy: staging }), action: click })).resolves.toMatchObject({ status: "allowed" });
+    const coordinate = { targetKind: "desktop" as const, actionId: "action-coordinate", graphId: "graph-1", nodeId: "node-1", resolution: "coordinate" as const, kind: "click" as const };
+    const visual = { ...coordinate, actionId: "action-visual", resolution: "visual" as const };
+    await expect(gate.authorize(coordinate, { job: job({ policy: staging }), action: coordinate })).resolves.toMatchObject({ status: "denied", reason: "FallbackDenied" });
+    await expect(gate.authorize(visual, { job: job({ policy: staging }), action: visual })).resolves.toMatchObject({ status: "denied", reason: "FallbackDenied" });
+    expect(DeterministicRunnerPolicyGate.admitJob(job({ policy: { ...staging, explorationAllowed: true } }), { now })).toMatchObject({ status: "denied", code: "PolicyMissing" });
+  });
+
+  it("fails closed when a malformed in-memory policy has an invalid expiry", async () => {
+    const malformed = { ...policy, expiresAt: "not-an-instant" } as never;
+    const gate = new DeterministicRunnerPolicyGate(malformed, { now: () => 0 });
+    await expect(gate.authorize(click, { job: job({ policy: malformed }), action: click })).resolves.toMatchObject({ status: "denied" });
+    expect(DeterministicRunnerPolicyGate.admitJob(job({ policy: malformed }), { now: () => 0 })).toMatchObject({ status: "denied", code: "PolicyMissing" });
+  });
 });

@@ -15,6 +15,7 @@ import type {
   TraceEvent,
   TraceStage,
 } from "@qualigence/runner-protocol";
+import { ExecutionPolicySnapshotError, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import { RunnerProtocolError } from "./errors.js";
 
 /**
@@ -161,36 +162,27 @@ function policyToWire(policy: ExecutionPolicySnapshot): Wire {
 }
 
 function policyFromWire(wire: unknown): ExecutionPolicySnapshot {
-  if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
-    throw new RunnerProtocolError("PolicyMissing", "execution Job policy is required");
+  try {
+    if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
+      throw new ExecutionPolicySnapshotError();
+    }
+    const policy = wire as Wire;
+    return parseExecutionPolicySnapshot({
+      policyId: policy.policy_id,
+      environment: policy.environment,
+      allowedOrigins: policy.allowed_origins,
+      allowedActionKinds: policy.allowed_action_kinds,
+      maximumRisk: policy.maximum_risk,
+      explorationAllowed: policy.exploration_allowed,
+      issuedAt: policy.issued_at,
+      expiresAt: policy.expires_at,
+    });
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) {
+      throw new RunnerProtocolError("PolicyMissing", "execution Job policy is missing or malformed");
+    }
+    throw error;
   }
-  const policy = wire as Wire;
-  const environment = asString(policy.environment);
-  const maximumRisk = asString(policy.maximum_risk);
-  const allowedActionKinds = asArray<string>(policy.allowed_action_kinds);
-  const allowedOrigins = asArray<string>(policy.allowed_origins);
-  if (
-    asString(policy.policy_id) === "" ||
-    (environment !== "isolated_test" && environment !== "staging" && environment !== "production") ||
-    allowedOrigins.some((origin) => origin.length === 0) ||
-    allowedActionKinds.some((kind) => !["navigate", "click", "input", "select", "scroll", "window"].includes(kind)) ||
-    (maximumRisk !== "Normal" && maximumRisk !== "ExternalSideEffect" && maximumRisk !== "Destructive" && maximumRisk !== "ProductionForbidden") ||
-    typeof policy.exploration_allowed !== "boolean" ||
-    asString(policy.issued_at) === "" ||
-    asString(policy.expires_at) === ""
-  ) {
-    throw new RunnerProtocolError("PolicyMissing", "execution Job policy is malformed");
-  }
-  return {
-    policyId: asString(policy.policy_id),
-    environment,
-    allowedOrigins,
-    allowedActionKinds: allowedActionKinds as ExecutionPolicySnapshot["allowedActionKinds"],
-    maximumRisk,
-    explorationAllowed: policy.exploration_allowed,
-    issuedAt: asString(policy.issued_at),
-    expiresAt: asString(policy.expires_at),
-  };
 }
 
 export function jobToWire(job: AcceptedExecutionJob): Wire {
@@ -204,13 +196,20 @@ export function jobToWire(job: AcceptedExecutionJob): Wire {
 }
 
 export function jobFromWire(wire: Wire): AcceptedExecutionJob {
-  return {
-    jobId: asString(wire.job_id),
-    runId: asString(wire.run_id),
-    target: targetFromWire(wire.target),
-    objective: asString(wire.objective),
-    policy: policyFromWire(wire.policy),
-  };
+  try {
+    return parseExecutionJob({
+      jobId: wire.job_id,
+      runId: wire.run_id,
+      target: targetFromWire(wire.target),
+      objective: wire.objective,
+      policy: policyFromWire(wire.policy),
+    });
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) {
+      throw new RunnerProtocolError("PolicyMissing", "execution Job is malformed");
+    }
+    throw error;
+  }
 }
 
 // --- ExecutionJobOffer ----------------------------------------------------

@@ -54,6 +54,32 @@ describe("grpc runner protocol mappers", () => {
     ).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
   });
 
+  it.each([
+    ["invalid expiry", { expires_at: "not-an-instant" }],
+    ["inverted policy interval", { issued_at: "2026-08-18T00:01:00.000Z", expires_at: "2026-08-18T00:00:00.000Z" }],
+    ["unknown environment", { environment: "preview" }],
+    ["unknown action", { allowed_action_kinds: ["teleport"] }],
+    ["staging exploration", { environment: "staging", exploration_allowed: true }],
+  ])("rejects a wire Job with %s as PolicyMissing", (_name, policyOverride) => {
+    expect(() => jobFromWire({
+      job_id: "job-1",
+      run_id: "run-1",
+      target: { web: { url: "https://example.test/" } },
+      objective: "must not dispatch",
+      policy: {
+        policy_id: "policy-1",
+        environment: "isolated_test",
+        allowed_origins: ["https://example.test"],
+        allowed_action_kinds: ["click"],
+        maximum_risk: "Normal",
+        exploration_allowed: false,
+        issued_at: "2026-08-18T00:00:00.000Z",
+        expires_at: "2026-08-18T00:01:00.000Z",
+        ...policyOverride,
+      },
+    })).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
+  });
+
   it("round-trips RunnerHello through the protobuf wire", () => {
     const hello: RunnerHello = {
       runnerId: "runner-1",

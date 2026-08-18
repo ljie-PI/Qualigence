@@ -125,6 +125,116 @@ export interface ExecutionPolicySnapshot {
   readonly expiresAt: string;
 }
 
+export class ExecutionPolicySnapshotError extends Error {
+  constructor() {
+    super("execution policy snapshot is missing or malformed");
+    this.name = "ExecutionPolicySnapshotError";
+  }
+}
+
+const POLICY_ENVIRONMENTS = ["isolated_test", "staging", "production"] as const;
+const POLICY_ACTION_KINDS = ["navigate", "click", "input", "select", "scroll", "window"] as const;
+const POLICY_RISKS = ["Normal", "ExternalSideEffect", "Destructive", "ProductionForbidden"] as const;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Strict transport-safe parser shared by wire, persistence, and Runner admission. */
+export function parseExecutionPolicySnapshot(value: unknown): ExecutionPolicySnapshot {
+  const policy = record(value);
+  const policyId = nonEmptyString(policy.policyId);
+  const environment = enumValue(policy.environment, POLICY_ENVIRONMENTS);
+  const allowedOrigins = stringArray(policy.allowedOrigins).map(parseOrigin);
+  const allowedActionKinds = enumArray(policy.allowedActionKinds, POLICY_ACTION_KINDS);
+  const maximumRisk = enumValue(policy.maximumRisk, POLICY_RISKS);
+  if (typeof policy.explorationAllowed !== "boolean") throw new ExecutionPolicySnapshotError();
+  const issuedAt = isoInstant(policy.issuedAt);
+  const expiresAt = isoInstant(policy.expiresAt);
+  if (Date.parse(issuedAt) >= Date.parse(expiresAt)) throw new ExecutionPolicySnapshotError();
+  if (new Set(allowedOrigins).size !== allowedOrigins.length || new Set(allowedActionKinds).size !== allowedActionKinds.length) {
+    throw new ExecutionPolicySnapshotError();
+  }
+  if (environment === "staging" && (allowedActionKinds.length !== 1 || allowedActionKinds[0] !== "click" || maximumRisk !== "Normal" || policy.explorationAllowed)) {
+    throw new ExecutionPolicySnapshotError();
+  }
+  return { policyId, environment, allowedOrigins, allowedActionKinds, maximumRisk, explorationAllowed: policy.explorationAllowed, issuedAt, expiresAt };
+}
+
+export interface PolicylessExecutionJob {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly target: WebTargetRef;
+  readonly objective: string;
+}
+
+export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
+  const identity = parseExecutionJobIdentity(value);
+  return { ...identity, policy: parseExecutionPolicySnapshot(record(value).policy) };
+}
+
+export function parsePolicylessExecutionJob(value: unknown): PolicylessExecutionJob {
+  const raw = record(value);
+  if (raw.policy !== undefined) throw new ExecutionPolicySnapshotError();
+  return parseExecutionJobIdentity(raw);
+}
+
+function parseExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
+  const job = record(value);
+  const target = record(job.target);
+  if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
+  return {
+    jobId: nonEmptyString(job.jobId),
+    runId: nonEmptyString(job.runId),
+    target: { kind: "web", url: parseTargetUrl(target.url) },
+    objective: nonEmptyString(job.objective),
+  };
+}
+
+function record(value: unknown): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ExecutionPolicySnapshotError();
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function nonEmptyString(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function isoInstant(value: unknown): string {
+  const instant = nonEmptyString(value);
+  if (!ISO_INSTANT.test(instant) || !Number.isFinite(Date.parse(instant)) || new Date(instant).toISOString() !== instant) throw new ExecutionPolicySnapshotError();
+  return instant;
+}
+
+function parseOrigin(value: string): string {
+  if (value.includes("*")) throw new ExecutionPolicySnapshotError();
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw new ExecutionPolicySnapshotError(); }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "" || parsed.origin !== value) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function parseTargetUrl(value: unknown): string {
+  const url = nonEmptyString(value);
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new ExecutionPolicySnapshotError(); }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "") throw new ExecutionPolicySnapshotError();
+  return url;
+}
+
+function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] {
+  if (typeof value !== "string" || !allowed.includes(value)) throw new ExecutionPolicySnapshotError();
+  return value as T[number];
+}
+
+function stringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value.map(nonEmptyString);
+}
+
+function enumArray<T extends readonly string[]>(value: unknown, allowed: T): readonly T[number][] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value.map((item) => enumValue(item, allowed));
+}
+
 export interface AcceptedExecutionJob {
   readonly jobId: ExecutionJobId;
   readonly runId: RunId;

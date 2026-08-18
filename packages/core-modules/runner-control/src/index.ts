@@ -24,6 +24,9 @@ export {
   leaseBindingMatches,
   observedCompletionResult,
   RunnerControlStoreError,
+  parseExecutionJob,
+  parseExecutionPolicySnapshot,
+  parsePolicylessExecutionJobForRecovery,
 } from "./runner-control-store.js";
 
 export const RUNNER_CONTROL_PACKAGE = "@qualigence/runner-control";

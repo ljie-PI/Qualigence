@@ -89,6 +89,21 @@ function request(): RunExecutionRequest {
 }
 
 describe("RunnerBackedRunResourceFactory", () => {
+  it("rejects a missing or malformed request policy before opening stores or offering", async () => {
+    const openStores = vi.fn();
+    const offer = vi.fn();
+    const factory = new RunnerBackedRunResourceFactory({
+      connection: { offer, cancel: vi.fn() },
+      openStores,
+      awaitCompletion: vi.fn(),
+    });
+
+    await expect(factory.open("run-1", { ...request(), policy: undefined } as never)).rejects.toMatchObject({ code: "PolicyMissing" });
+    await expect(factory.open("run-1", { ...request(), policy: { ...request().policy, expiresAt: "not-an-instant" } } as never)).rejects.toMatchObject({ code: "PolicyMissing" });
+    expect(openStores).not.toHaveBeenCalled();
+    expect(offer).not.toHaveBeenCalled();
+  });
+
   it("offers the exact already-derived policy and waits for Runner completion without Core execution", async () => {
     const runs = new InMemoryRunStore();
     const traces = new InMemoryTraceStore();
