@@ -127,18 +127,20 @@ export function leaseBindingMatches(
 }
 
 /**
- * Classify a completion replay against the stored terminal result. `duplicate`
- * is legal only when the stored completion is byte-for-byte
- * canonical-equivalent; any other stored terminal result is `rejected` and must
- * be surfaced as a `completion_conflict` integrity event.
+ * Classify the terminal completion observed in one atomic lease operation.
+ * `undefined` means no terminal completion was observed. An unbound caller
+ * never learns or replays a stored terminal result.
  */
-export function classifyCompletion(
-  stored: ExecutionCompletion,
-  presented: ExecutionCompletion,
-): "duplicate" | "rejected" {
-  return canonicalPayloadHash(stored) === canonicalPayloadHash(presented)
-    ? "duplicate"
-    : "rejected";
+export function observedCompletionResult(
+  storedCompletion: ExecutionCompletion | undefined,
+  presentedCompletion: ExecutionCompletion,
+): CompleteLeaseResult | undefined {
+  if (storedCompletion === undefined) {
+    return undefined;
+  }
+  return canonicalPayloadHash(storedCompletion) === canonicalPayloadHash(presentedCompletion)
+    ? { outcome: "duplicate" }
+    : { outcome: "completion_conflict", storedCompletion };
 }
 
 export interface RunnerControlStore {

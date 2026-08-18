@@ -14,8 +14,8 @@ import type {
   RunnerControlStore,
 } from "@qualigence/runner-control";
 import {
-  classifyCompletion,
   leaseBindingMatches,
+  observedCompletionResult,
 } from "@qualigence/runner-control";
 
 type TokenRecord = HashedResumeTokenRecord & { consumedAt?: string };
@@ -148,16 +148,21 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
         return { outcome: "rejected" };
       }
       const bound = leaseBindingMatches(record, input);
+      if (!bound) {
+        return { outcome: "rejected" };
+      }
       const existing = this.completions.get(input.runId);
-      if (existing !== undefined) {
-        return completionResult(bound, existing, input.completion);
+      const observed = observedCompletionResult(existing, input.completion);
+      if (observed !== undefined) {
+        return observed;
       }
       if (!bound || record.expiresAt <= input.checkedAt) {
         return { outcome: "rejected" };
       }
       const raced = this.completions.get(input.runId);
-      if (raced !== undefined) {
-        return completionResult(bound, raced, input.completion);
+      const racedResult = observedCompletionResult(raced, input.completion);
+      if (racedResult !== undefined) {
+        return racedResult;
       }
       this.leases.set(input.runId, { ...record, completedAt: input.checkedAt });
       this.completions.set(input.runId, input.completion);
@@ -168,7 +173,7 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
   markLeaseLost(runId: string, lostAt: string): Promise<boolean> {
     return this.serialize(() => {
       const record = this.leases.get(runId);
-      if (record === undefined || record.lostAt !== undefined) {
+      if (record === undefined || record.lostAt !== undefined || record.completedAt !== undefined) {
         return false;
       }
       this.leases.set(runId, { ...record, lostAt });
@@ -216,19 +221,6 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
     );
     return result;
   }
-}
-
-function completionResult(
-  bound: boolean,
-  storedCompletion: ExecutionCompletion,
-  presentedCompletion: ExecutionCompletion,
-): CompleteLeaseResult {
-  if (!bound) {
-    return { outcome: "rejected" };
-  }
-  return classifyCompletion(storedCompletion, presentedCompletion) === "duplicate"
-    ? { outcome: "duplicate" }
-    : { outcome: "completion_conflict", storedCompletion };
 }
 
 function identityMatches(

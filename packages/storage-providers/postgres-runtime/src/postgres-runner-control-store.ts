@@ -14,7 +14,7 @@ import type {
   RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import { classifyCompletion, leaseBindingMatches } from "@qualigence/runner-control";
+import { leaseBindingMatches, observedCompletionResult } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { PostgresDatabase } from "./postgres-database.js";
 
@@ -209,9 +209,13 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
       return { outcome: "rejected" };
     }
     const bound = leaseBindingMatches(toLease(record), input);
+    if (!bound) {
+      return { outcome: "rejected" };
+    }
     const existing = await readCompletion(this.db, this.tenantId, input.runId);
-    if (existing !== undefined) {
-      return completionResult(bound, existing, input.completion);
+    const observed = observedCompletionResult(existing, input.completion);
+    if (observed !== undefined) {
+      return observed;
     }
     if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
       return { outcome: "rejected" };
@@ -223,9 +227,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     ).executeTakeFirst();
     if (result.numUpdatedRows === 0n) {
       const raced = await readCompletion(this.db, this.tenantId, input.runId);
-      return raced === undefined
-        ? { outcome: "rejected" }
-        : completionResult(true, raced, input.completion);
+      return observedCompletionResult(raced, input.completion) ?? { outcome: "rejected" };
     }
     await this.db
       .insertInto("execution_completions")
@@ -247,6 +249,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
       .where("tenant_id", "=", this.tenantId)
       .where("run_id", "=", runId)
       .where("lost_at", "is", null)
+      .where("completed_at", "is", null)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
   }
@@ -264,19 +267,6 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
   async completion(runId: string): Promise<ExecutionCompletion | undefined> {
     return readCompletion(this.db, this.tenantId, runId);
   }
-}
-
-function completionResult(
-  bound: boolean,
-  storedCompletion: ExecutionCompletion,
-  presentedCompletion: ExecutionCompletion,
-): CompleteLeaseResult {
-  if (!bound) {
-    return { outcome: "rejected" };
-  }
-  return classifyCompletion(storedCompletion, presentedCompletion) === "duplicate"
-    ? { outcome: "duplicate" }
-    : { outcome: "completion_conflict", storedCompletion };
 }
 
 function sessionValues(record: PersistedRunnerSession) {

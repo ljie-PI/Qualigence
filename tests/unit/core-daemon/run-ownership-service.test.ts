@@ -264,6 +264,44 @@ describe("RunOwnershipService", () => {
     });
   });
 
+  it("preserves terminal duplicate and conflict classification after lease expiry", async () => {
+    const clock = fixedClock();
+    const store = new InMemoryRunnerControlStore();
+    const sink = recordingSink();
+    const service = ownership({ store, integrityEvents: sink, leaseDurationMs: 10_000, now: clock.now });
+    await service.grant(job("run-1"), owner1);
+    await service.completeStored("run-1", passed());
+    clock.advance(10_001);
+
+    await expect(service.completeStored("run-1", passed())).resolves.toBeUndefined();
+    await expect(
+      service.completeStored("run-1", {
+        jobId: "job-run-1",
+        runId: "run-1",
+        status: "error",
+        errorCode: "action_failed",
+      }),
+    ).rejects.toMatchObject({ code: "RunOwnershipViolation" });
+    await expect(store.lease("run-1")).resolves.toMatchObject({
+      completedAt: new Date(1_000).toISOString(),
+    });
+    expect((await store.lease("run-1"))?.lostAt).toBeUndefined();
+    expect(sink.events).toHaveLength(1);
+  });
+
+  it("rechecks a failed expiry loss CAS for a terminal completion", async () => {
+    const clock = fixedClock();
+    const store = new TerminalCompletionRaceStore();
+    const service = ownership({ store, leaseDurationMs: 10_000, now: clock.now });
+    await service.grant(job("run-1"), owner1);
+    clock.advance(10_001);
+
+    await expect(service.completeStored("run-1", passed())).resolves.toBeUndefined();
+    await expect(store.lease("run-1")).resolves.toMatchObject({
+      completedAt: new Date(1_000).toISOString(),
+    });
+  });
+
   it("allows only the original owning identity to upload Trace, even after lease loss", async () => {
     const service = ownership();
     await service.grant(job("run-1"), owner1);
@@ -284,3 +322,27 @@ describe("RunOwnershipService", () => {
     ).rejects.toMatchObject({ code: "RunOwnershipViolation" });
   });
 });
+
+class TerminalCompletionRaceStore extends InMemoryRunnerControlStore {
+  private raced = false;
+
+  override async markLeaseLost(runId: string, _lostAt: string): Promise<boolean> {
+    if (!this.raced) {
+      this.raced = true;
+      const record = await this.lease(runId);
+      if (record === undefined) {
+        throw new Error("Expected a lease to complete in the simulated race.");
+      }
+      await this.completeLease({
+        runId,
+        jobId: record.job.jobId,
+        owner: record.owner,
+        leaseEpoch: record.leaseEpoch,
+        leaseTokenHash: record.leaseTokenHash,
+        checkedAt: new Date(1_000).toISOString(),
+        completion: passed(runId),
+      });
+    }
+    return false;
+  }
+}
