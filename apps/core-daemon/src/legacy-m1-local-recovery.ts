@@ -1,7 +1,6 @@
 import { canonicalPayloadHash, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { SqliteRuntime } from "@qualigence/sqlite-runtime";
-import { parsePolicylessExecutionJobForRecovery, parseProjectlessExecutionJobForRecovery } from "@qualigence/runner-control";
 
 interface RecoveryManifestRecord {
   readonly jobId: string;
@@ -60,30 +59,65 @@ export function verifyLegacyM1LocalRecoveryRows(
     } catch {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    let recoveredJob: AcceptedExecutionJob;
-    try {
-      const job = parsePolicylessExecutionJobForRecovery(persisted);
-      recoveredJob = parseExecutionJob({ ...job, projectId: "local", policy: record.policy });
-    } catch {
-      try {
-        const projectless = parseProjectlessExecutionJobForRecovery(persisted);
-        if (canonicalPayloadHash(projectless.policy) !== canonicalPayloadHash(record.policy)) {
-          throw new Error("Legacy recovery lease row does not match the manifest.");
-        }
-        recoveredJob = parseExecutionJob({ ...projectless, projectId: "local" });
-      } catch {
-        throw new Error("Legacy recovery lease row does not match the manifest.");
-      }
-    }
-    if (recoveredJob.jobId !== record.jobId || recoveredJob.runId !== record.runId || canonicalPayloadHash(persisted) !== record.canonicalJobSha256) {
+    const historical = parseHistoricalProjectlessJob(persisted, record.policy);
+    if (historical.jobId !== record.jobId || historical.runId !== record.runId || canonicalPayloadHash(persisted) !== record.canonicalJobSha256) {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    if (new URL(recoveredJob.target.url).origin !== record.policy.allowedOrigins[0]) {
+    if (new URL(historical.targetUrl).origin !== record.policy.allowedOrigins[0]) {
       throw new Error("Legacy recovery target origin does not match the manifest policy.");
+    }
+    let recoveredJob: AcceptedExecutionJob;
+    try {
+      recoveredJob = parseExecutionJob({ ...historical.raw, policy: historical.policy, projectId: "local" });
+    } catch {
+      throw new Error("Legacy recovery lease row does not match the manifest.");
     }
     verified.push({ jobId: record.jobId, runId: record.runId, originalJson: raw, recoveredJob });
   }
   return { [verifiedRecoveryBrand]: verified };
+}
+
+function parseHistoricalProjectlessJob(
+  value: unknown,
+  manifestPolicy: ExecutionPolicySnapshot,
+): {
+  readonly raw: Readonly<Record<string, unknown>>;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly targetUrl: string;
+  readonly policy: unknown;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Legacy recovery lease row does not match the manifest.");
+  }
+  const raw = value as Readonly<Record<string, unknown>>;
+  if (raw.projectId !== undefined) {
+    throw new Error("Legacy recovery lease row does not match the manifest.");
+  }
+  const jobId = nonEmptyString(raw.jobId);
+  const runId = nonEmptyString(raw.runId);
+  const target = record(raw.target);
+  if (target.kind !== "web") throw new Error("Legacy recovery lease row does not match the manifest.");
+  const targetUrl = nonEmptyString(target.url);
+  const policy = raw.policy === undefined ? manifestPolicy : raw.policy;
+  if (raw.policy !== undefined && canonicalPayloadHash(raw.policy) !== canonicalPayloadHash(manifestPolicy)) {
+    throw new Error("Legacy recovery lease row does not match the manifest.");
+  }
+  return { raw, jobId, runId, targetUrl, policy };
+}
+
+function record(value: unknown): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Legacy recovery lease row does not match the manifest.");
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function nonEmptyString(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Legacy recovery lease row does not match the manifest.");
+  }
+  return value;
 }
 
 /** Applies every verified Local recovery record before Core composes or binds. */

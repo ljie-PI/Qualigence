@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
+import * as runnerProtocol from "@qualigence/runner-protocol";
+import * as runnerControl from "@qualigence/runner-control";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import { validateLegacyM1LocalRecoveryCandidate } from "@qualigence/core-daemon";
 import { verifyLegacyM1LocalRecoveryRows } from "../../../apps/core-daemon/src/legacy-m1-local-recovery.js";
 
 describe("legacy M1 Local recovery", () => {
+  it("exposes no public policyless or projectless Job parser", () => {
+    expect(runnerProtocol).not.toHaveProperty("parsePolicylessExecutionJob");
+    expect(runnerProtocol).not.toHaveProperty("PolicylessExecutionJob");
+    expect(runnerControl).not.toHaveProperty("parseProjectlessExecutionJobForRecovery");
+    expect(runnerControl).not.toHaveProperty("ProjectlessExecutionJob");
+  });
+
   it("rejects a non-Local or non-loopback recovery candidate before SQLite opens", () => {
     expect(() => validateLegacyM1LocalRecoveryCandidate({ deploymentMode: "self_hosted" })).toThrow();
   });

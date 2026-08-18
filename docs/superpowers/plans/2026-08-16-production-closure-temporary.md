@@ -2315,6 +2315,42 @@ listed Vitest files, `corepack pnpm typecheck`, and `git diff --check`. Stage
 only **Review-fix Files** and commit exactly
 `fix(policy): harden legacy provenance recovery`.
 
+**Final review-fix authority (2026-08-18):** Final review of `b868f78` found
+that `@qualigence/runner-control` still exported a reusable
+`parseProjectlessExecutionJobForRecovery` parser and type. This narrow repair
+does not alter prior implementation history. It removes every public
+policyless/projectless recovery parser from contracts and Core modules, keeping
+the historical-shape parser private to the verified Core startup operation.
+
+**Final review-fix Files (all paths):**
+- Modify: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `packages/contracts/runner-protocol/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+
+**Final review-fix Interfaces and steps:**
+- Delete public `PolicylessExecutionJob`, `ProjectlessExecutionJob`,
+  `parsePolicylessExecutionJob`, and
+  `parseProjectlessExecutionJobForRecovery` exports. No contract or Core module
+  exposes a parser that accepts a Job without immutable project provenance.
+- `apps/core-daemon/src/legacy-m1-local-recovery.ts` privately parses the
+  historical shape only inside `verifyLegacyM1LocalRecoveryRows`, verifies its
+  manifest identity/hash/origin and exact constrained policy in the same
+  operation, then and only then constructs the strict `projectId: "local"` Job
+  consumed by its opaque migration capability.
+- Update the existing unit test to prove the public Runner Protocol and
+  runner-control module namespaces expose no projectless recovery parser while
+  the verified Local manifest path still succeeds and policy mismatch fails.
+- Record actual evidence in the Task 15 ledger.
+
+**Final review-fix Gate and staging:** Run the full **Follow-up Gate** above
+with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Final review-fix Files** and commit exactly
+`fix(policy): restrict legacy provenance parser`.
+
 **Files:**
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Modify: `packages/contracts/runner-protocol/src/messages.ts`

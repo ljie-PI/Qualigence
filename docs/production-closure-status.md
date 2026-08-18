@@ -825,6 +825,21 @@ Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
 passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
 no environmental blocker occurred.
 
+Task 15 final provenance review fix (2026-08-18): public Runner Protocol and
+`@qualigence/runner-control` namespaces no longer export policyless/projectless
+Job parsers or types. The historical shape parser is private to
+`apps/core-daemon/src/legacy-m1-local-recovery.ts`; it validates only the raw
+record until the same verified manifest operation proves Local/loopback
+authority, exact constrained policy, identifiers, hash, and origin. Only then
+does it construct the strict `projectId: "local"` Job used by the opaque
+pre-listener migration capability. Public consumers have no projectless restore
+path.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
