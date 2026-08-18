@@ -780,6 +780,47 @@ mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-ga
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
 
+Task 15 review-fix round 6 (2026-08-18): the Task 15 Files block was correctly
+amended to authorize the one IPv6 listener path before it changed. The gRPC
+server now binds `::1` using bracketed authority notation and a real IPv6 mTLS
+connection passes. Core configuration requires explicit `local` or
+`self_hosted` deployment mode; absent/unknown values fail, manifest absence is
+no recovery candidate, and malformed manifest JSON fails load. Wire plan parsing
+now enters the strict Job parser so malformed plans fail `PolicyMissing` at the
+network boundary. Runner OfferRuntime drains Trace with negotiated welcome
+limits. Mission/exploration authority validation rejects malformed canonical
+instants, enums, and duplicate origins/actions before compilation. The runtime
+policy matrix proves action-kind, risk ceiling, and `ProductionForbidden`
+denials never mint a permit or invoke an executor; Core factory legacy gate
+injection remains rejected.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 189 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 5 (2026-08-18): gRPC listener binding formats IPv6
+loopback as `[::1]:port` and a real mTLS IPv6 connection passes while IPv4 is
+unchanged. `CORE_DEPLOYMENT_MODE` is now mandatory and accepts only `local` or
+`self_hosted`; absent/unknown modes do not silently select Local, while manifest
+absence remains a no-recovery candidate and malformed JSON fails config load.
+Malformed plan wire payloads now fail as `PolicyMissing` before Job admission.
+OfferRuntime drains Trace using negotiated welcome limits, proven with restrictive
+bounds. Mission and exploration authority validation now rejects malformed
+instants/enums/duplicates before compilation or dispatch. The policy matrix adds
+action-kind, risk-ceiling, and `ProductionForbidden` denials before permit or
+executor creation; the Core factory also rejects legacy injected policy gates.
+
+The Task 15 Files block was amended in this fix round to add the exact
+`packages/protocol-adapters/grpc-runner-protocol/src/server.ts` IPv6 listener
+path before editing it. After `corepack pnpm build`, the complete Task 15
+focused command passed 26 files / 186 tests with
+`C:\Program Files\Git\usr\bin` on PATH for component mTLS.
+`corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 15 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
 Task 15 review-fix round 4 (2026-08-18): Local recovery now accepts only the
 two plan-authorized exact loopback forms (`127.0.0.1` and `::1`), while absent
 or other hosts fail Phase A. The neutral strict Job parser now validates and

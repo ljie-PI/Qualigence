@@ -169,4 +169,13 @@ describe("MissionCompiler", () => {
       error: { code: "MissionBudgetExceeded" },
     });
   });
+
+  it("rejects malformed Mission policy before any execution can be compiled", () => {
+    const result = compiler.compile(
+      approved(),
+      mission({ executionPolicy: { ...mission().executionPolicy, allowedOrigins: ["https://example.test", "https://example.test"], allowedActionKinds: ["teleport"] as never } }),
+      webTarget,
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: "MissionBudgetExceeded" } });
+  });
 });

@@ -47,6 +47,17 @@ describe("DeterministicRunnerPolicyGate", () => {
     await expect(productionGate.authorize(click, { job: job({ policy: production }), action: click })).resolves.toMatchObject({ status: "denied", reason: "ProductionExplorationDenied" });
   });
 
+  it("denies action-kind mismatch, risk above ceiling, and ProductionForbidden before a permit exists", async () => {
+    const now = () => Date.parse("2026-08-18T00:00:30.000Z");
+    const actionKindGate = new DeterministicRunnerPolicyGate({ ...policy, allowedActionKinds: ["navigate"] }, { now });
+    await expect(actionKindGate.authorize(click, { job: job(), action: click })).resolves.toMatchObject({ status: "denied", reason: "ActionKindDenied" });
+    const destructive = { targetKind: "desktop" as const, actionId: "close", graphId: "graph-1", nodeId: "node-1", resolution: "semantic" as const, kind: "window" as const, windowOperation: "close" as const };
+    const normalGate = new DeterministicRunnerPolicyGate(policy, { now });
+    await expect(normalGate.authorize(destructive, { job: job(), action: destructive })).resolves.toMatchObject({ status: "denied", reason: "ActionKindDenied" });
+    const riskGate = new DeterministicRunnerPolicyGate({ ...policy, allowedActionKinds: ["window"], maximumRisk: "ProductionForbidden" }, { now });
+    await expect(riskGate.authorize(destructive, { job: job(), action: destructive })).resolves.toMatchObject({ status: "denied", reason: "RiskDenied" });
+  });
+
   it("admits only a non-expired HTTP(S) target in its explicit policy origins", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });

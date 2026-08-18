@@ -232,7 +232,7 @@ function planStepFromWire(wire: unknown): ExecutionPlanStep {
   const verify = (step.verify ?? {}) as Wire;
   const claimIds = asArray<string>(verify.claim_ids);
   const [firstClaimId, ...remainingClaimIds] = claimIds;
-  if (firstClaimId === undefined) throw new RunnerProtocolError("ProtocolViolation", "execution plan verify step requires claim ids");
+  if (firstClaimId === undefined) throw new ExecutionPolicySnapshotError();
   return { kind: "verify", claimIds: [firstClaimId, ...remainingClaimIds] };
 }
 
@@ -259,7 +259,7 @@ function planFromWire(wire: unknown): ExecutionJobPlanSnapshot | undefined {
   const [firstStep, ...remainingSteps] = steps;
   const [firstClaim, ...remainingClaims] = claims;
   if (firstStep === undefined || firstClaim === undefined) {
-    throw new RunnerProtocolError("ProtocolViolation", "execution plan is malformed");
+    throw new ExecutionPolicySnapshotError();
   }
   const budget = (plan.budget ?? {}) as Wire;
   return {
@@ -290,15 +290,15 @@ export function jobToWire(job: AcceptedExecutionJob): Wire {
 
 export function jobFromWire(wire: Wire): AcceptedExecutionJob {
   try {
-    const job = parseExecutionJob({
+    const plan = planFromWire(wire.plan);
+    return parseExecutionJob({
       jobId: wire.job_id,
       runId: wire.run_id,
       target: targetFromWire(wire.target),
       objective: wire.objective,
       policy: policyFromWire(wire.policy),
+      ...(plan === undefined ? {} : { plan }),
     });
-    const plan = planFromWire(wire.plan);
-    return plan === undefined ? job : { ...job, plan };
   } catch (error) {
     if (error instanceof ExecutionPolicySnapshotError) {
       throw new RunnerProtocolError("PolicyMissing", "execution Job is malformed");

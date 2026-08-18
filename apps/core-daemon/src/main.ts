@@ -37,7 +37,12 @@ export interface StartedCoreDaemon {
 export async function startCoreDaemon(config: CoreDaemonConfig): Promise<StartedCoreDaemon> {
   const recovery = config.legacyM1LocalRecoveryCandidate === undefined
     ? undefined
-    : validateLegacyM1LocalRecoveryCandidate(config.legacyM1LocalRecoveryCandidate, { deploymentMode: config.deploymentMode ?? "local", host: config.host });
+    : validateLegacyM1LocalRecoveryCandidate(
+        config.legacyM1LocalRecoveryCandidate,
+        config.deploymentMode === undefined
+          ? { host: config.host }
+          : { deploymentMode: config.deploymentMode, host: config.host },
+      );
   await mkdir(config.dataDir, { recursive: true });
   const runtime = await SqliteRuntime.open({
     filename: join(config.dataDir, "qualigence.db"),

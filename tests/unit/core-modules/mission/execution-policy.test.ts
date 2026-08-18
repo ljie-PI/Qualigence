@@ -38,4 +38,10 @@ describe("ApprovedExecutionPolicy", () => {
     expect(narrowApprovedExecutionPolicy(explorationApproved, exploration)).toMatchObject({ maximumRisk: "Normal" });
     expect(() => narrowApprovedExecutionPolicy(explorationApproved, { ...exploration, riskCeiling: "LocalMutation" })).toThrow(/risk/i);
   });
+
+  it("rejects malformed approved and exploration policy values before issuance", () => {
+    expect(() => validateApprovedExecutionPolicy({ ...approved, allowedOrigins: ["https://staging.example.test", "https://staging.example.test"], issuedAt: "not-an-instant" }, 60_000)).toThrow();
+    expect(() => validateApprovedExecutionPolicy({ ...approved, allowedActionKinds: ["teleport"] as never }, 60_000)).toThrow();
+    expect(() => narrowApprovedExecutionPolicy({ ...approved, environment: "isolated_test", explorationAllowed: true }, { seedSkillBundleIds: [], allowedActionKinds: ["teleport"], allowedOrigins: ["https://staging.example.test"], maximumSteps: 1, maximumWallClockMs: 1, maximumModelTokens: 1, maximumStateVisits: 1, maximumRecoveries: 0, riskCeiling: "ReadOnly" })).toThrow();
+  });
 });

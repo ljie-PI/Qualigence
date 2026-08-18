@@ -53,6 +53,18 @@ function batch(runId: string, firstSequenceNumber: number, count: number): Execu
 }
 
 describe("grpc runner protocol handshake", () => {
+  it("binds IPv6 loopback with a bracketed transport address", async () => {
+    const { server, port } = await startTestServer(pki, { host: "::1", port: 0 });
+    const cert = pki.clientFor("runner-1");
+    const client = new GrpcRunnerProtocolClient({
+      address: `[::1]:${port}`,
+      tls: { ca: pki.ca, key: cert.key, cert: cert.cert },
+      authority: "localhost",
+    });
+    track(server, client);
+    await expect(client.connect(makeHello("runner-1"))).resolves.toMatchObject({ welcome: { selectedProtocolMajor: 1 } });
+  });
+
   it("round-trips RunnerHello -> RunnerWelcome over a real mutual-TLS connection", async () => {
     const { server, port } = await startTestServer(pki);
     const client = makeTestClient(pki, port, pki.clientFor("runner-1"));

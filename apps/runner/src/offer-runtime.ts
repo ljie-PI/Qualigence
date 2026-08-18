@@ -9,7 +9,7 @@ import type { RunnerConfig } from "./config.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
 
 export interface RunnerOfferRuntimeOptions {
-  readonly session: Pick<RunnerSession, "accept" | "complete">;
+  readonly session: Pick<RunnerSession, "accept" | "complete" | "submit" | "welcome">;
   readonly spool: RunnerSpool;
   readonly config: RunnerConfig;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
@@ -65,9 +65,9 @@ export class RunnerOfferRuntime {
         capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
       });
       const result = await executor.execute(offer, this.options.session as RunnerSession);
-      await new TraceUploadPump(this.options.spool, this.options.session as RunnerSession, offer.job.runId, {
-        maximumEvents: 128,
-        maximumBytes: 262_144,
+      await new TraceUploadPump(this.options.spool, this.options.session, offer.job.runId, {
+        maximumEvents: this.options.session.welcome.traceBatchMaximumEvents,
+        maximumBytes: this.options.session.welcome.traceBatchMaximumBytes,
       }).drain();
       await this.options.session.complete(result.lease, result.completion);
     } finally {

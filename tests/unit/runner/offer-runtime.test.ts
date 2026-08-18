@@ -37,7 +37,7 @@ describe("RunnerOfferRuntime", () => {
       accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2026-08-18T00:01:00.000Z" })),
       complete: vi.fn(async () => undefined),
     };
-    const runtime = new RunnerOfferRuntime({ createTarget: createTarget as never, session, spool: {} as never, config: {} as never });
+    const runtime = new RunnerOfferRuntime({ createTarget: createTarget as never, session: session as never, spool: {} as never, config: {} as never });
 
     await runtime.run({
       offerId: "offer-1",
@@ -67,7 +67,7 @@ describe("RunnerOfferRuntime", () => {
       accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2026-08-18T00:01:00.000Z" })),
       complete: vi.fn(async () => undefined),
     };
-    const runtime = new RunnerOfferRuntime({ createTarget: createTarget as never, session, spool: {} as never, config: {} as never });
+    const runtime = new RunnerOfferRuntime({ createTarget: createTarget as never, session: session as never, spool: {} as never, config: {} as never });
     await runtime.run({
       offerId: "offer-1",
       job: {
@@ -83,7 +83,7 @@ describe("RunnerOfferRuntime", () => {
     executorGates.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target) as never;
-    const session = { accept: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 128, traceBatchMaximumBytes: 262_144 } };
+    const session = { accept: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
     const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
     const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
     await runtime.run({
@@ -93,6 +93,7 @@ describe("RunnerOfferRuntime", () => {
     } as never);
     expect((createTarget as unknown as { mock: { calls: Array<readonly [{ readonly allowedOrigins: readonly string[] }]> } }).mock.calls[0]?.[0]?.allowedOrigins).toEqual(["https://staging.example.test"]);
     expect(executorGates).toHaveLength(1);
+    expect(spool.pending).toHaveBeenCalledWith("run-staging", 1, { maximumEvents: 1, maximumBytes: 9 });
     await expect(executorGates[0]!.authorize({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }, { job: { jobId: "job-staging", runId: "run-staging", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } }, action: { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" } })).resolves.toMatchObject({ status: "allowed" });
   });
 
@@ -103,7 +104,7 @@ describe("RunnerOfferRuntime", () => {
   ])("denies %s before target creation", async (_name, override) => {
     const createTarget = vi.fn();
     const session = { accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" })), complete: vi.fn(async () => undefined) };
-    const runtime = new RunnerOfferRuntime({ createTarget, session, spool: {} as never, config: {} as never });
+    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: {} as never, config: {} as never });
     await runtime.run({ offerId: "offer-1", job: { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://staging.example.test/" }, objective: "blocked", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z", ...override } }, requiredCapabilities: [], leaseDurationMs: 30_000 } as never);
     expect(createTarget).not.toHaveBeenCalled();
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ errorCode: "PolicyMissing" }));

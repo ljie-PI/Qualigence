@@ -91,15 +91,28 @@ export function validateApprovedExecutionPolicy(
   policy: ApprovedExecutionPolicy,
   maximumWallClockMs: number,
 ): ApprovedExecutionPolicy {
-  const issued = Date.parse(policy.issuedAt);
-  const expires = Date.parse(policy.expiresAt);
-  if (!Number.isFinite(issued) || !Number.isFinite(expires) || issued >= expires) {
+  if (
+    typeof policy.policyId !== "string" || policy.policyId.trim().length === 0 ||
+    (policy.environment !== "isolated_test" && policy.environment !== "staging" && policy.environment !== "production") ||
+    typeof policy.explorationAllowed !== "boolean" ||
+    !Array.isArray(policy.allowedOrigins) || !Array.isArray(policy.allowedActionKinds) ||
+    policy.allowedOrigins.length === 0 || policy.allowedActionKinds.length === 0
+  ) {
+    throw new Error("Execution policy authority values are invalid.");
+  }
+  const issued = parseCanonicalInstant(policy.issuedAt);
+  const expires = parseCanonicalInstant(policy.expiresAt);
+  if (issued >= expires) {
     throw new Error("Execution policy expiry must be after issue time.");
   }
-  if (expires > issued + maximumWallClockMs || policy.allowedOrigins.length === 0) {
+  if (!Number.isSafeInteger(maximumWallClockMs) || maximumWallClockMs <= 0 || expires > issued + maximumWallClockMs) {
     throw new Error("Execution policy exceeds the Mission execution budget.");
   }
+  if (new Set(policy.allowedOrigins).size !== policy.allowedOrigins.length || new Set(policy.allowedActionKinds).size !== policy.allowedActionKinds.length) {
+    throw new Error("Execution policy authority values must not contain duplicates.");
+  }
   for (const origin of policy.allowedOrigins) {
+    if (typeof origin !== "string") throw new Error("Execution policy origin is invalid.");
     if (origin.includes("*")) {
       throw new Error("Execution policy origin must not contain a wildcard.");
     }
@@ -108,6 +121,10 @@ export function validateApprovedExecutionPolicy(
       throw new Error("Execution policy origin must be canonical HTTP(S) without credentials.");
     }
   }
+  for (const actionKind of policy.allowedActionKinds) {
+    if (typeof actionKind !== "string" || !isExecutionActionKind(actionKind)) throw new Error("Execution policy action kind is invalid.");
+  }
+  if (!isExecutionRisk(policy.maximumRisk)) throw new Error("Execution policy maximum risk is invalid.");
   if (policy.environment === "staging") {
     if (
       policy.allowedActionKinds.length !== 1 || policy.allowedActionKinds[0] !== "click" ||
@@ -233,7 +250,41 @@ export function validateExplorationPolicy(policy: ExplorationPolicy): Exploratio
   if (!isExplorationRiskCeiling(policy.riskCeiling)) {
     throw new Error(`Exploration policy riskCeiling ${String(policy.riskCeiling)} is out of range.`);
   }
+  if (
+    policy.allowedOrigins.length === 0 ||
+    policy.allowedActionKinds.length === 0 ||
+    new Set(policy.allowedOrigins).size !== policy.allowedOrigins.length ||
+    new Set(policy.allowedActionKinds).size !== policy.allowedActionKinds.length ||
+    policy.allowedOrigins.some((origin) => typeof origin !== "string" || !isCanonicalHttpOrigin(origin)) ||
+    policy.allowedActionKinds.some((kind) => typeof kind !== "string" || !isExecutionActionKind(kind))
+  ) {
+    throw new Error("Exploration policy authority values are invalid.");
+  }
   return policy;
+}
+
+function parseCanonicalInstant(value: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) throw new Error("Execution policy instant is invalid.");
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) throw new Error("Execution policy instant is invalid.");
+  return parsed;
+}
+
+function isCanonicalHttpOrigin(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return !value.includes("*") && (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.username === "" && parsed.password === "" && parsed.origin === value;
+  } catch {
+    return false;
+  }
+}
+
+function isExecutionActionKind(value: string): value is ApprovedExecutionPolicy["allowedActionKinds"][number] {
+  return ["navigate", "click", "input", "select", "scroll", "window"].includes(value);
+}
+
+function isExecutionRisk(value: string): value is ApprovedExecutionPolicy["maximumRisk"] {
+  return ["Normal", "ExternalSideEffect", "Destructive", "ProductionForbidden"].includes(value);
 }
 
 function isExplorationRiskCeiling(value: string): value is ExplorationRiskCeiling {

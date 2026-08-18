@@ -89,6 +89,13 @@ function request(): RunExecutionRequest {
 }
 
 describe("RunnerBackedRunResourceFactory", () => {
+  it("rejects a legacy injected policy gate at the public constructor", () => {
+    expect(() => new RunnerBackedRunResourceFactory({
+      connection: { offer: vi.fn(), cancel: vi.fn() },
+      openStores: vi.fn(), awaitCompletion: vi.fn(), policyGate: {} as never,
+    } as never)).toThrow(/policyGate/);
+  });
+
   it("rejects a missing or malformed request policy before opening stores or offering", async () => {
     const openStores = vi.fn();
     const offer = vi.fn();

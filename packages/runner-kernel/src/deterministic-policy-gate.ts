@@ -74,7 +74,11 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     const actionKind = action.kind;
     if (!this.policy.allowedActionKinds.includes(actionKind)) return denied("ActionKindDenied");
     const risk = riskFor(action);
-    if (risk === "ProductionForbidden" || rank(risk) > rank(this.policy.maximumRisk)) return denied("RiskDenied");
+    if (
+      this.policy.maximumRisk === "ProductionForbidden" ||
+      risk === "ProductionForbidden" ||
+      rank(risk) > rank(this.policy.maximumRisk)
+    ) return denied("RiskDenied");
     if (isFallback(action)) return denied("FallbackDenied");
     if (this.policy.environment === "staging" && (actionKind !== "click" || risk !== "Normal")) {
       return denied("StagingPolicyDenied");
