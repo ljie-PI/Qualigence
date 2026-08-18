@@ -43,6 +43,7 @@ function job(runId = "run-1", jobId = `job-${runId}`): AcceptedExecutionJob {
   return {
     jobId,
     runId,
+    projectId: "project-test",
     target: { kind: "web", url: "https://example.test/" },
     objective: "persist runner ownership",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: CREATED_AT, expiresAt: EXPIRES_AT },

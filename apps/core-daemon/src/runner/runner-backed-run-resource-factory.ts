@@ -70,6 +70,9 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
   }
 
   async open(runId: string, request: RunExecutionRequest): Promise<RunResourceScope> {
+    if (typeof request.projectId !== "string" || request.projectId.trim().length === 0) {
+      throw new CoreApplicationError("PolicyMissing", "execution request project provenance is missing");
+    }
     try {
       parseExecutionPolicySnapshot(request.policy);
     } catch (error) {
@@ -86,6 +89,9 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
         execute: async (acceptedJob: AcceptedExecutionJob) => {
           if (acceptedJob.policy !== request.policy) {
             throw new Error("Execution Job policy must be the exact request snapshot.");
+          }
+          if (acceptedJob.projectId !== request.projectId) {
+            throw new Error("Execution Job project provenance must match its opened run request.");
           }
           if (acceptedJob.runId !== runId || acceptedJob.target.url !== request.target.url) {
             throw new Error("Execution Job must match its opened run request.");

@@ -10,6 +10,7 @@ import type {
 const legacyJob: AcceptedExecutionJob = {
   jobId: "job-1",
   runId: "run-attempt-1",
+  projectId: "project-1",
   target: { kind: "web", url: "https://example.test/" },
   objective: "add the item to the cart",
   policy: {
@@ -49,6 +50,7 @@ const plannedJob: AcceptedExecutionJob = {
 describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
   it("freezes policy as a required immutable execution snapshot", () => {
     expect(legacyJob.policy.policyId).toBe("policy-test");
+    expect(legacyJob.projectId).toBe("project-1");
   });
 
   it("keeps M1 objective-only jobs valid and JSON round-trippable without a plan", () => {
@@ -63,12 +65,19 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
     const preLs07Shape = {
       jobId: "job-1",
       runId: "run-attempt-1",
+      projectId: "project-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
       policy: legacyJob.policy,
     };
     expect("plan" in legacyJob).toBe(false);
     expect(canonicalPayloadHash(legacyJob)).toBe(canonicalPayloadHash(preLs07Shape));
+  });
+
+  it("includes immutable project provenance in the canonical Job identity", () => {
+    expect(canonicalPayloadHash({ ...legacyJob, projectId: "project-2" })).not.toBe(
+      canonicalPayloadHash(legacyJob),
+    );
   });
 
   it("carries an immutable mission plan snapshot when present", () => {
@@ -100,5 +109,6 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
     expect(message).toMatch(/string\s+objective\s*=\s*4\s*;/);
     expect(message).toMatch(/ExecutionJobPlanSnapshot\s+plan\s*=\s*5\s*;/);
     expect(message).toMatch(/ExecutionPolicySnapshot\s+policy\s*=\s*6\s*;/);
+    expect(message).toMatch(/string\s+project_id\s*=\s*7\s*;/);
   });
 });

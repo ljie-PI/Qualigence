@@ -32,7 +32,6 @@ export {
 
 export { startCoreDaemon, type StartedCoreDaemon } from "./main.js";
 export { loadCoreDaemonConfig } from "./config.js";
-export { validateLegacyM1LocalRecoveryCandidate } from "./legacy-m1-local-recovery.js";
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
 
 export {

@@ -45,6 +45,7 @@ describe("PlaywrightObserver against real Chromium", () => {
   const job: AcceptedExecutionJob = {
     jobId: "job-observe",
     runId: "run-observe",
+    projectId: "project-test",
     target: { kind: "web", url: "http://placeholder.test" },
     objective: "Observe storefront",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://placeholder.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

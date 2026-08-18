@@ -185,6 +185,7 @@ export class MissionExecutionUseCase {
       throw new ExecutionApplicationError("InvalidConfiguration", "Mission target is outside its approved policy origins.");
     }
     return {
+      projectId: mission.projectId,
       target: { kind: "web", url: mission.dispatch.targetUrl },
       objective: job.objective,
       policy: mission.executionPolicy,

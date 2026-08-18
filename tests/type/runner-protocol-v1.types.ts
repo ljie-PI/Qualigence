@@ -73,6 +73,7 @@ const offer: ExecutionJobOffer = {
   job: {
     jobId: "job-1",
     runId: "run-attempt-1",
+    projectId: "project-1",
     target: { kind: "web", url: "https://example.test/" },
     objective: "add the item to the cart",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
@@ -94,6 +95,17 @@ const policylessJob = {
 // @ts-expect-error AcceptedExecutionJob must reject a policyless value
 const typedPolicylessJob: AcceptedExecutionJob = policylessJob;
 void typedPolicylessJob;
+
+const projectlessJob = {
+  jobId: "job-projectless",
+  runId: "run-projectless",
+  target: { kind: "web" as const, url: "https://example.test/" },
+  objective: "must not dispatch without project provenance",
+  policy: offer.job.policy,
+};
+// @ts-expect-error AcceptedExecutionJob must reject a projectless value
+const typedProjectlessJob: AcceptedExecutionJob = projectlessJob;
+void typedProjectlessJob;
 
 const batch: ExecutionEventBatch = {
   batchId: "batch-1",

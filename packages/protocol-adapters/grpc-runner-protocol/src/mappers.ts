@@ -280,6 +280,7 @@ export function jobToWire(job: AcceptedExecutionJob): Wire {
   const wire: Wire = {
     job_id: job.jobId,
     run_id: job.runId,
+    project_id: job.projectId,
     target: targetToWire(job.target),
     objective: job.objective,
     policy: policyToWire(job.policy),
@@ -294,6 +295,7 @@ export function jobFromWire(wire: Wire): AcceptedExecutionJob {
     return parseExecutionJob({
       jobId: wire.job_id,
       runId: wire.run_id,
+      projectId: wire.project_id,
       target: targetFromWire(wire.target),
       objective: wire.objective,
       policy: policyFromWire(wire.policy),

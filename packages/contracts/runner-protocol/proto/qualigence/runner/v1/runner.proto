@@ -107,6 +107,7 @@ message AcceptedExecutionJob {
   // only jobs. Read-only Runner DTO; the Runner never writes it back.
   ExecutionJobPlanSnapshot plan = 5;
   ExecutionPolicySnapshot policy = 6;
+  string project_id = 7;
 }
 
 message ExecutionPolicySnapshot {

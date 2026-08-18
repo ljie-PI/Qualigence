@@ -7,8 +7,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type { ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
+import * as coreDaemon from "@qualigence/core-daemon";
 import { startCoreDaemon } from "@qualigence/core-daemon";
-import { SqliteRuntime } from "@qualigence/sqlite-runtime";
+import { SqliteRunnerControlStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient } from "../../helpers/grpc-harness.js";
@@ -59,6 +60,12 @@ async function freePort(): Promise<number> {
 }
 
 describe("Core runner protocol production composition", () => {
+  it("exposes no callable legacy recovery helper outside Core startup", () => {
+    expect(coreDaemon).not.toHaveProperty("validateLegacyM1LocalRecoveryCandidate");
+    expect(coreDaemon).not.toHaveProperty("verifyLegacyM1LocalRecoveryRows");
+    expect(coreDaemon).not.toHaveProperty("applyVerifiedLegacyM1LocalRecovery");
+  });
+
   it("rejects Phase A recovery candidates before SQLite opens or a listener binds", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-a-"));
     const database = join(dataDir, "qualigence.db");
@@ -111,6 +118,37 @@ describe("Core runner protocol production composition", () => {
     }
   });
 
+  it.each([
+    ["empty jobId", "", "run-1"],
+    ["whitespace jobId", "   ", "run-1"],
+    ["empty runId", "job-1", ""],
+    ["whitespace runId", "job-1", "\t  "],
+  ])("rejects Phase A %s before SQLite or listener side effects", async (_name, jobId, runId) => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-identity-"));
+    const database = join(dataDir, "qualigence.db");
+    const port = await freePort();
+    const policy = { policyId: "legacy-m1-local", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+    try {
+      await expect(startCoreDaemon({
+        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+        legacyM1LocalRecoveryCandidate: {
+          format: "legacy-m1-local-recovery/v1",
+          records: [{ jobId, runId, canonicalJobSha256: "0".repeat(64), policy }],
+        },
+      })).rejects.toThrow(/identity/);
+      expect(existsSync(database)).toBe(false);
+
+      const daemon = await startCoreDaemon({
+        host: "127.0.0.1", port, dataDir, leaseDurationMs: 30_000,
+        tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+      });
+      await daemon.shutdown();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects Phase B mismatches before bind, closes SQLite, and only upcasts a verified Local row", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-b-"));
     const database = join(dataDir, "qualigence.db");
@@ -139,8 +177,16 @@ describe("Core runner protocol production composition", () => {
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key }, legacyM1LocalRecoveryCandidate: candidate,
       });
       cleanups.push(async () => { await daemon.shutdown(); await rm(dataDir, { recursive: true, force: true }); });
+      const strictReaderRuntime = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
+      try {
+        await expect(new SqliteRunnerControlStore(strictReaderRuntime).lease(policyless.runId)).resolves.toMatchObject({
+          job: { projectId: "local", policy },
+        });
+      } finally {
+        await strictReaderRuntime.close();
+      }
       await daemon.application.ownership.markLost(policyless.runId, "expired");
-      await expect(daemon.application.ownership.createRecoveryRun(policyless.runId)).resolves.toMatchObject({ job: { policy } });
+      await expect(daemon.application.ownership.createRecoveryRun(policyless.runId)).resolves.toMatchObject({ job: { projectId: "local", policy } });
     } catch (error) {
       await rm(dataDir, { recursive: true, force: true });
       throw error;

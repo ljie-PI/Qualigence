@@ -50,10 +50,10 @@ function mission(overrides: Partial<TestMission> = {}): TestMission {
   };
 }
 
-function draft(options: { withInput?: boolean } = {}): TestPlanRevision {
+function draft(options: { withInput?: boolean; projectId?: string } = {}): TestPlanRevision {
   const result = createDraftTestPlan(
     {
-      projectId: "p",
+      projectId: options.projectId ?? "p",
       prdId: "prd-1",
       prdRevision: 1,
       proposal: validatedProposal(options),
@@ -64,7 +64,7 @@ function draft(options: { withInput?: boolean } = {}): TestPlanRevision {
   return result.value;
 }
 
-function approved(options: { withInput?: boolean } = {}): TestPlanRevision {
+function approved(options: { withInput?: boolean; projectId?: string } = {}): TestPlanRevision {
   const result = approveTestPlan(
     draft(options),
     { expectedVersion: 1, reviewerId: "r", idempotencyKey: "k" },
@@ -85,6 +85,11 @@ describe("MissionCompiler", () => {
     });
   });
 
+  it("refuses a Mission whose project provenance differs from the approved Plan", () => {
+    const result = compiler.compile(approved(), mission({ projectId: "other-project" }), webTarget);
+    expect(result).toMatchObject({ ok: false, error: { code: "MissionProjectMismatch" } });
+  });
+
   it("compiles an approved plan into frozen, source-grounded jobs", () => {
     const plan = approved();
     const result = compiler.compile(plan, mission(), webTarget);
@@ -102,6 +107,7 @@ describe("MissionCompiler", () => {
       "web.click",
       "web.navigate",
     ]);
+    expect(result.value.projectId).toBe("p");
     expect(Object.isFrozen(job.testCaseSnapshot)).toBe(true);
     expect(Object.isFrozen(result.value)).toBe(true);
   });
@@ -115,6 +121,14 @@ describe("MissionCompiler", () => {
     expect(a.value.compiledHash).toBe(b.value.compiledHash);
     expect(canonicalJson(a.value)).toBe(canonicalJson(b.value));
     expect(JSON.stringify(a.value)).toBe(JSON.stringify(b.value));
+  });
+
+  it("changes the canonical compiled hash when immutable project provenance changes", () => {
+    const first = compiler.compile(approved({ projectId: "project-a" }), mission({ projectId: "project-a" }), webTarget);
+    const second = compiler.compile(approved({ projectId: "project-b" }), mission({ projectId: "project-b" }), webTarget);
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.compiledHash).not.toBe(second.value.compiledHash);
   });
 
   it("includes the approved immutable policy timestamps in the compiled snapshot", () => {

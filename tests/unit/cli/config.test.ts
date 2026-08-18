@@ -45,6 +45,7 @@ describe("parseRunRequest", () => {
 
     expect(invocation.output).toBe("human");
     expect(invocation.request).toEqual({
+      projectId: "local",
       target: { kind: "web", url: "http://127.0.0.1:3000/" },
       objective: "add one item",
       policy: expect.objectContaining({ environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:3000"], allowedActionKinds: ["click"] }),

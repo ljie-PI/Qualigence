@@ -92,6 +92,7 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
   }
 
   const request: RunExecutionRequest = {
+    projectId: "local",
     target: { kind: "web", url: options.url },
     objective: options.objective,
     policy: localPolicy(options.url),

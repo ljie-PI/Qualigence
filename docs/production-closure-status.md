@@ -789,6 +789,86 @@ dispatch maps it to `InvalidTargetUrl` with a durable failed attempt and blocked
 Mission, without browser construction. The existing Playwright session validator
 remains unchanged as independent adapter defense in depth.
 
+Task 15 Critical project-provenance follow-up (2026-08-18): required immutable
+`projectId` now flows from approved Mission/project source through the compiled
+Mission hash and SQLite snapshot, `DispatchableMission`, `RunExecutionRequest`,
+`AcceptedExecutionJob`, recovery, Runner protobuf tag 7, gRPC mapper, and
+runner-control SQLite/PostgreSQL Job JSON. Local CLI explicitly issues only
+`projectId: "local"`; no network or normal storage default exists. Missing or
+malformed project provenance fails closed as `PolicyMissing`; renewal leaves its
+expiry unchanged. The constrained Local manifest recovery may attach `local`
+only to a hash-bound historical projectless record with either no policy or the
+exact manifest policy. PostgreSQL never upcasts. SQLite rejects a compiled
+Mission persistence scope that disagrees with its immutable project ID.
+
+After Git OpenSSL resolution with `C:\Program Files\Git\usr\bin` on `PATH` and
+`OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`, `corepack pnpm build`
+passed and the amended Task 15 Gate passed 24 files / 229 tests, including the
+Docker-backed PostgreSQL runner-control contract. `corepack pnpm typecheck` and
+`git diff --check` passed. No environmental blocker occurred.
+
+Task 15 Important provenance review fix (2026-08-18):
+`SqliteRunnerControlStore` no longer has a legacy recovery option, record type,
+or public upcast path. Its constructor and all normal reads strict-parse
+`job_json`; policyless and projectless Jobs remain `PolicyMissing`, including
+when callers pass former arbitrary or exact-shaped option values at runtime.
+Only `startCoreDaemon` obtains the opaque recovery capability after exact
+Local/loopback, constrained `legacy-m1-local` policy, identifier, origin, and
+canonical-hash validation. Before Core service composition or listener bind, it
+transactionally compare-and-swaps every attested legacy JSON row to the exact
+strict Job with `projectId: "local"`; an ordinary Store then reads it without a
+compatibility path. The Core remote dispatch factory now rejects a Job whose
+project differs from its opened request before `connection.offer`.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
+Task 15 final provenance review fix (2026-08-18): public Runner Protocol and
+`@qualigence/runner-control` namespaces no longer export policyless/projectless
+Job parsers or types. The historical shape parser is private to
+`apps/core-daemon/src/legacy-m1-local-recovery.ts`; it validates only the raw
+record until the same verified manifest operation proves Local/loopback
+authority, exact constrained policy, identifiers, hash, and origin. Only then
+does it construct the strict `projectId: "local"` Job used by the opaque
+pre-listener migration capability. Public consumers have no projectless restore
+path.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
+Task 15 startup-private recovery review fix (2026-08-18):
+`apps/core-daemon/src/legacy-m1-local-recovery.ts` and all Core recovery helper
+exports are deleted. `startCoreDaemon` now exclusively owns the private Phase A
+Local/loopback/constrained-policy validation, Phase B raw-row/hash/origin/policy
+attestation, and transactional strict-Job migration before service composition
+or listener bind. Component tests exercise every success and rejection case
+through `startCoreDaemon` and prove the public Core module exposes no callable
+recovery verifier or applier.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 231 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
+Task 15 adapter-seam provenance review fix (2026-08-18): public
+`SqliteRunnerControlStore.rawRecoveryJobJson()` is removed. The private
+`startCoreDaemon` startup operation reads exact historical `job_json` through
+its already-owned `SqliteRuntime.db` query/transaction seam; no
+`RunnerControlStore` interface or parallel adapter seam was added. Phase A now
+requires trimmed, nonempty manifest `jobId` and `runId` before `mkdir`, SQLite
+open, or listener bind. Existing component composition tests prove empty and
+whitespace identifiers create no database and leave the same port available for
+normal startup.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 235 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`

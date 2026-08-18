@@ -36,6 +36,7 @@ export function webJob(overrides: Partial<AcceptedExecutionJob> = {}): AcceptedE
   return {
     jobId: "job-1",
     runId: "run-1",
+    projectId: "project-test",
     target: { kind: "web", url: "https://shop.example.test/cart" },
     objective: "add the item to the cart",
     policy,

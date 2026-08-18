@@ -201,6 +201,8 @@ describe("SqlitePrdMissionStore", () => {
     const loaded = await store.loadMissionForDispatch("mission-1");
     expect(loaded).toBeDefined();
     expect(loaded?.prdRevision).toBe(1);
+    expect(loaded?.projectId).toBe("proj-1");
+    expect(loaded?.executionPolicy).toEqual(mission().executionPolicy);
     expect(loaded?.planId).toBe(plan.planId);
     expect(loaded?.dispatch.targetUrl).toBe("https://example.test/");
     expect(loaded?.jobs).toHaveLength(1);
@@ -241,6 +243,7 @@ describe("SqlitePrdMissionStore", () => {
     expect(record?.status).toBe("completed");
     expect(record?.prdId).toBe(prdDocument.prdId);
     expect(record?.prdRevision).toBe(1);
+    expect(record?.projectId).toBe("proj-1");
     expect(record?.jobs).toHaveLength(1);
     const job = record?.jobs[0];
     expect(job?.status).toBe("completed");
@@ -261,6 +264,22 @@ describe("SqlitePrdMissionStore", () => {
 
     const loaded = await store.loadMissionForDispatch("mission-1");
     expect(loaded?.jobs).toHaveLength(1);
+    await runtime.close();
+  });
+
+  it("rejects a persistence scope that disagrees with immutable compiled project provenance", async () => {
+    const runtime = await open();
+    const store = new SqlitePrdMissionStore(runtime);
+    const plan = approvedPlan();
+    await expect(store.saveCompiledMission({
+      mission: compiledMission(plan),
+      projectId: "other-project",
+      planId: plan.planId,
+      prdId: prdDocument.prdId,
+      prdRevision: prdDocument.revision,
+      dispatch,
+      stopOnBlockedTestCase: true,
+    })).rejects.toThrow(/project provenance/);
     await runtime.close();
   });
 });

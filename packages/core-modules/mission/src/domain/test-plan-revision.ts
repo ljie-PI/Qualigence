@@ -68,6 +68,7 @@ export interface TestPlanRevision {
 export type MissionErrorCode =
   | "PlanVersionConflict"
   | "PlanNotApproved"
+  | "MissionProjectMismatch"
   | "PlanAlreadyApproved"
   | "TargetCapabilityMismatch"
   | "MissionBudgetExceeded"

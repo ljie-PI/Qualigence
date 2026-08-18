@@ -5,7 +5,6 @@ import {
   ExecutionPolicySnapshotError,
   parseExecutionJob as parseProtocolExecutionJob,
   parseExecutionPolicySnapshot as parseProtocolExecutionPolicySnapshot,
-  parsePolicylessExecutionJob,
 } from "@qualigence/runner-protocol";
 
 export class RunnerControlStoreError extends Error {
@@ -29,15 +28,6 @@ export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
 export function parseExecutionPolicySnapshot(value: unknown) {
   try {
     return parseProtocolExecutionPolicySnapshot(value);
-  } catch (error) {
-    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
-    throw error;
-  }
-}
-
-export function parsePolicylessExecutionJobForRecovery(value: unknown) {
-  try {
-    return parsePolicylessExecutionJob(value);
   } catch (error) {
     if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
     throw error;

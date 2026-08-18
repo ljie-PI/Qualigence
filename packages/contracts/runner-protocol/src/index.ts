@@ -158,28 +158,12 @@ export function parseExecutionPolicySnapshot(value: unknown): ExecutionPolicySna
   return { policyId, environment, allowedOrigins, allowedActionKinds, maximumRisk, explorationAllowed: policy.explorationAllowed, issuedAt, expiresAt };
 }
 
-export interface PolicylessExecutionJob {
-  readonly jobId: string;
-  readonly runId: string;
-  readonly target: WebTargetRef;
-  readonly objective: string;
-  readonly plan?: ExecutionJobPlanSnapshot;
-}
-
 export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
   const raw = record(value);
   const identity = parseExecutionJobIdentity(raw);
   const policy = parseExecutionPolicySnapshot(raw.policy);
   const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
   return plan === undefined ? { ...identity, policy } : { ...identity, policy, plan };
-}
-
-export function parsePolicylessExecutionJob(value: unknown): PolicylessExecutionJob {
-  const raw = record(value);
-  if (raw.policy !== undefined) throw new ExecutionPolicySnapshotError();
-  const identity = parseExecutionJobIdentity(raw);
-  const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
-  return plan === undefined ? identity : { ...identity, plan };
 }
 
 function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot {
@@ -230,13 +214,14 @@ function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
     : { ...base, ...(role === undefined ? {} : { role }), ...(name === undefined ? {} : { name }) };
 }
 
-function parseExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
+function parseExecutionJobIdentity(value: unknown): Omit<AcceptedExecutionJob, "policy" | "plan"> {
   const job = record(value);
   const target = record(job.target);
   if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
   return {
     jobId: nonEmptyString(job.jobId),
     runId: nonEmptyString(job.runId),
+    projectId: nonEmptyString(job.projectId),
     target: { kind: "web", url: parseTargetUrl(target.url) },
     objective: nonEmptyString(job.objective),
   };
@@ -309,6 +294,7 @@ function enumArray<T extends readonly string[]>(value: unknown, allowed: T): rea
 export interface AcceptedExecutionJob {
   readonly jobId: ExecutionJobId;
   readonly runId: RunId;
+  readonly projectId: string;
   readonly target: TargetRef;
   readonly objective: string;
   readonly policy: ExecutionPolicySnapshot;

@@ -393,6 +393,7 @@ function recoveryJob(
   const base: AcceptedExecutionJob = {
     jobId,
     runId,
+    projectId: original.projectId,
     target,
     objective: original.objective,
     policy: original.policy,

@@ -2134,6 +2134,291 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 
 **Execution precondition:** Task 9 is complete. Execute this Task before Tasks 12 and 14 even though its number is higher, so no production Mission dispatch path is ever composed with an allow-all policy.
 
+**Critical project-provenance follow-up authority (2026-08-18):** A post-review
+audit at `5120c1f` found that the completed policy snapshot work preserved
+`projectId` only through Mission persistence, then dropped it at
+`DispatchableMission -> RunExecutionRequest -> AcceptedExecutionJob`. This
+additive remediation does not revise the historical Task 15 Files block or
+claim that its prior implementation changed the paths below. It closes the
+blocking immutable project-provenance transport contract required before Task
+11 Local authorization and Tasks 12/14 Self-hosted dispatch authorization can
+be implemented.
+
+**Follow-up Files (additive authority only):**
+- Modify: `packages/contracts/runner-protocol/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts`
+- Modify: `packages/core-application/src/runner/run-ownership-service.ts`
+- Modify: `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`
+- Modify: `packages/core-modules/mission/src/domain/test-mission.ts`
+- Modify: `packages/core-modules/mission/src/domain/test-plan-revision.ts`
+- Modify: `packages/core-modules/mission/src/application/mission-compiler.ts`
+- Modify: `packages/execution-application/src/contracts.ts`
+- Modify: `packages/execution-application/src/run-execution-use-case.ts`
+- Modify: `packages/execution-application/src/mission-execution-use-case.ts`
+- Modify: `apps/cli/src/config.ts`
+- Modify: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `apps/core-daemon/src/main.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/index.ts`
+- Modify: `tests/type/runner-protocol-v1.types.ts`
+- Modify: `tests/type/run-execution-use-case.types.ts`
+- Modify: `tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts`
+- Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
+- Modify: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
+- Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/contract/runner-control/runner-control-store.contract.ts`
+- Modify: `tests/contract/runner-control/sqlite-runner-control-store.test.ts`
+- Modify: `tests/contract/runner-control/postgres-runner-control-store.test.ts`
+- Modify: `tests/contract/sqlite/prd-mission-store.test.ts`
+- Modify: `tests/helpers/core-runner-harness.ts`
+- Modify: `tests/unit/cli/config.test.ts`
+- Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
+- Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+- Modify: `tests/unit/core-daemon/runner-session-service.test.ts`
+- Modify: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+- Modify: `tests/unit/core-modules/mission/mission-compiler.test.ts`
+- Modify: `tests/unit/execution-application/artifact-recording-observer.test.ts`
+- Modify: `tests/unit/execution-application/mission-execution-use-case.test.ts`
+- Modify: `tests/unit/runner-components/model-agent.test.ts`
+- Modify: `tests/unit/runner-kernel/deterministic-policy-gate.test.ts`
+- Modify: `tests/unit/runner-kernel/execution-runtime.test.ts`
+- Modify: `tests/unit/runner/job-executor.test.ts`
+- Modify: `tests/unit/runner/offer-runtime.test.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
+- Modify: `tests/component/investigation/offline-capsule-restoration.test.ts`
+- Modify: `tests/component/m1-web-walking-skeleton.test.ts`
+- Modify: `tests/component/web-execution/local-run-composition-root.test.ts`
+- Modify: `tests/component/web-execution/playwright-click.test.ts`
+- Modify: `tests/component/web-execution/playwright-observation.test.ts`
+- Modify: `tests/component/web-execution/playwright-web-target.test.ts`
+- Modify: `tests/component/web-execution/run-execution-use-case.test.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+
+**Follow-up Interfaces and invariants:**
+- `AcceptedExecutionJob.projectId` and `RunExecutionRequest.projectId` are
+  required nonempty immutable provenance. The Runner v1 `AcceptedExecutionJob`
+  wire message allocates exactly `string project_id = 7`; tags 1-6 remain
+  unchanged. Mappers and the protobuf codec must round-trip it losslessly.
+- Strict network and production-storage parsing rejects an absent or malformed
+  project ID as `PolicyMissing`; no transport, Runner, Core, or provider default
+  is allowed.
+- `TestMission.projectId` flows through `CompiledMission`, its canonical hash,
+  the persisted compiled snapshot, `DispatchableMission`, Mission execution,
+  `RunExecutionRequest`, Job construction, and recovery. The compiler rejects
+  an approved Plan/Mission project mismatch; SQLite rejects a
+  `SaveCompiledMissionInput.projectId` that disagrees with the compiled Mission
+  before persistence. Recovery copies the stored immutable value.
+- The CLI is an explicit Local policy issuance root and constructs
+  `projectId: "local"`. Future Task 11 Local issuance may do the same only at
+  its documented Local issuer root; it must not add an implicit request or
+  storage default.
+- SQLite and PostgreSQL serialize and strict-parse the field in `job_json` on
+  lease, renewal, and recovery. The existing constrained Local legacy recovery
+  may attach exactly `projectId: "local"` only when its already verified
+  historical record is projectless and either policyless or carries the exact
+  constrained manifest policy; every other projectless persisted or network Job
+  fails closed. Canonical Job hashes include project provenance.
+
+**Follow-up Steps:**
+- [ ] Add RED type, mapper/protobuf, storage/recovery, compiler/Mission, shared
+  execution, Core recovery, and CLI assertions for required project provenance
+  before changing the production contract.
+- [ ] Add the required contract field, frozen protobuf tag 7, strict parser,
+  lossless mapper, durable Job JSON parsing, and constrained legacy Local
+  upcast; do not add an optional or default production value.
+- [ ] Propagate the approved Mission project through compiler/hash/persistence,
+  Mission request construction, shared Job construction, and recovery. Limit
+  explicit `"local"` construction to the existing CLI issuer and the verified
+  legacy Local storage read.
+- [ ] Update every audited direct Job/request fixture, run provider parity and
+  focused Core/Mission/component evidence, then append actual follow-up evidence
+  to the Task 15 status ledger.
+
+**Follow-up Gate:** Build first, then with Git OpenSSL explicitly resolved:
+
+```powershell
+$env:PATH = 'C:\Program Files\Git\usr\bin;' + $env:PATH
+$env:OPENSSL_CONF = 'C:\Program Files\Git\usr\ssl\openssl.cnf'
+corepack pnpm build
+corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/unit/core-daemon/runner-session-service.test.ts tests/unit/cli/config.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts
+corepack pnpm typecheck
+git diff --check
+```
+
+Run the Docker-backed PostgreSQL contract in that Gate. Report
+`DockerUnavailable` only if the Docker daemon actually blocks it.
+
+**Follow-up staging:** Stage only the exact paths in **Follow-up Files**. The
+follow-up commit is exactly `fix(policy): preserve immutable job project provenance`.
+
+**Important review-fix authority (2026-08-18):** Standards review of follow-up
+commit `f143f8f` found two Important defects. This amendment is additive to the
+historical Task 15 scope and the preceding Critical follow-up authority: it does
+not claim either prior implementation used the paths below for this fix. It
+authorizes no new product capability.
+
+**Review-fix Files (all paths):**
+- Modify: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `apps/core-daemon/src/main.ts`
+- Modify: `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/index.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Modify: `tests/contract/runner-control/sqlite-runner-control-store.test.ts`
+- Modify: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+
+**Review-fix Interfaces and invariants:**
+- `SqliteRunnerControlStore` has no public legacy-upcast constructor option,
+  public recovery record, or alternate parse path. All ordinary `lease`,
+  renewal, completion, and recovery reads strict-parse `job_json`; missing
+  `projectId` throws `PolicyMissing`.
+- Only `startCoreDaemon`, after Phase A Local/loopback manifest validation and
+  Phase B hash/identity/origin/exact-policy validation, may obtain an opaque
+  `VerifiedLegacyM1LocalRecovery`. Before Core composes services or binds a
+  listener, that capability atomically replaces each attested historical JSON
+  row with the exact immutable Job carrying manifest policy and
+  `projectId: "local"`. A raw row change, malformed row, unconstrained policy,
+  or failed compare-and-set aborts startup. The public Store then uses its sole
+  strict parser; no legacy capability survives into its constructor.
+- `RunnerBackedRunResourceFactory.execute` rejects an accepted Job whose
+  `projectId` differs from the opened `RunExecutionRequest.projectId` before
+  recording an offered Job or calling `connection.offer`. It preserves the
+  existing exact-policy, run, and target checks.
+
+**Review-fix Steps:**
+- [ ] Add RED proof that passing an arbitrary legacy policy/record to the public
+  SQLite Store cannot upcast a projectless row, while only startup with the
+  exact constrained manifest migrates the persisted JSON and then permits a
+  normal strict Store read.
+- [ ] Remove the public Store option/exports and apply the opaque verified
+  recovery migration transactionally from the Core startup seam before listener
+  bind. Cover policy/hash rejection and successful strict post-migration read.
+- [ ] Add a Core factory test that executes a valid-shape Job with a different
+  project ID and proves `connection.offer` is never called.
+- [ ] Record actual review-fix verification in the Task 15 ledger.
+
+**Review-fix Gate and staging:** Run the full **Follow-up Gate** above with its
+explicit Git OpenSSL environment, including `corepack pnpm build`, all 24
+listed Vitest files, `corepack pnpm typecheck`, and `git diff --check`. Stage
+only **Review-fix Files** and commit exactly
+`fix(policy): harden legacy provenance recovery`.
+
+**Final review-fix authority (2026-08-18):** Final review of `b868f78` found
+that `@qualigence/runner-control` still exported a reusable
+`parseProjectlessExecutionJobForRecovery` parser and type. This narrow repair
+does not alter prior implementation history. It removes every public
+policyless/projectless recovery parser from contracts and Core modules, keeping
+the historical-shape parser private to the verified Core startup operation.
+
+**Final review-fix Files (all paths):**
+- Modify: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `packages/contracts/runner-protocol/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+
+**Final review-fix Interfaces and steps:**
+- Delete public `PolicylessExecutionJob`, `ProjectlessExecutionJob`,
+  `parsePolicylessExecutionJob`, and
+  `parseProjectlessExecutionJobForRecovery` exports. No contract or Core module
+  exposes a parser that accepts a Job without immutable project provenance.
+- `apps/core-daemon/src/legacy-m1-local-recovery.ts` privately parses the
+  historical shape only inside `verifyLegacyM1LocalRecoveryRows`, verifies its
+  manifest identity/hash/origin and exact constrained policy in the same
+  operation, then and only then constructs the strict `projectId: "local"` Job
+  consumed by its opaque migration capability.
+- Update the existing unit test to prove the public Runner Protocol and
+  runner-control module namespaces expose no projectless recovery parser while
+  the verified Local manifest path still succeeds and policy mismatch fails.
+- Record actual evidence in the Task 15 ledger.
+
+**Final review-fix Gate and staging:** Run the full **Follow-up Gate** above
+with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Final review-fix Files** and commit exactly
+`fix(policy): restrict legacy provenance parser`.
+
+**Startup-private recovery review-fix authority (2026-08-18):** Exact review
+of `54fe823` found that `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+still exported verifier and applier functions which could be invoked directly
+outside `startCoreDaemon`. This narrow repair does not alter prior scope or
+implementation history. It makes phase-A validation, phase-B attestation, and
+the pre-listener migration one private startup operation with no exported
+recovery value or callable verifier/applier.
+
+**Startup-private recovery Files (all paths):**
+- Modify: `apps/core-daemon/src/index.ts`
+- Modify: `apps/core-daemon/src/main.ts`
+- Delete: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Delete: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+
+**Startup-private recovery Interfaces and steps:**
+- `startCoreDaemon` is the only callable recovery operation. Private functions
+  in `main.ts` perform Phase A Local/loopback/constrained-policy validation,
+  load and verify all Phase-B persisted rows, and atomically migrate the strict
+  `projectId: "local"` Jobs before service composition or listener bind.
+- Delete all public Core barrel exports and standalone module exports for
+  recovery validation, verification, capability, or application. Delete the
+  unit test that directly invoked those helper functions; retain and extend
+  `startCoreDaemon` component coverage for success and failed phase checks.
+- The Core public namespace must expose no legacy recovery helper. No direct
+  source module remains from which a consumer can invoke an attestation or
+  migration separately from the startup sequence.
+- Record actual evidence in the Task 15 ledger.
+
+**Startup-private recovery Gate and staging:** Run the full **Follow-up Gate**
+above with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Startup-private recovery Files** and commit exactly
+`fix(policy): privatize legacy recovery startup`.
+
+**Adapter-seam review-fix authority (2026-08-18):** Final review of `26a2573`
+found that `SqliteRunnerControlStore.rawRecoveryJobJson()` remained a public,
+adapter-specific recovery helper and Phase A accepted empty/whitespace Job and
+Run identifiers. This narrow repair preserves the existing composition: it uses
+the `SqliteRuntime.db` transaction/query seam already owned by
+`startCoreDaemon`, changes no `RunnerControlStore` interface, and adds no new
+public or parallel seam.
+
+**Adapter-seam review-fix Files (all paths):**
+- Modify: `apps/core-daemon/src/main.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+
+**Adapter-seam review-fix Interfaces and steps:**
+- Remove public `SqliteRunnerControlStore.rawRecoveryJobJson()`. Private startup
+  recovery reads exact `execution_leases.job_json` through `SqliteRuntime.db`
+  inside `startCoreDaemon`; `RunnerControlStore` remains unchanged.
+- Phase A requires trimmed, nonempty `jobId` and `runId` before `mkdir`, SQLite
+  open, or listener bind. Existing component composition tests cover empty and
+  whitespace values, assert no database side effect, and then bind the same port
+  normally to prove no listener side effect.
+- Preserve all existing Local/loopback/constrained-policy and Phase B
+  row/identity/hash/origin checks before migration. Record actual evidence in
+  the Task 15 ledger.
+
+**Adapter-seam review-fix Gate and staging:** Run the full **Follow-up Gate**
+above with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Adapter-seam review-fix Files** and commit exactly
+`fix(policy): close legacy recovery adapter seam`.
+
 **Files:**
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Modify: `packages/contracts/runner-protocol/src/messages.ts`
@@ -2274,11 +2559,11 @@ Freeze the v1 protobuf allocation from the existing `AcceptedExecutionJob` numbe
 
 **Storage-only legacy read:** Add a shared `RunnerControlStoreError` with code `PolicyMissing` in `packages/core-modules/runner-control/src/runner-control-store.ts` and export it from `packages/core-modules/runner-control/src/index.ts`. Both `SqliteRunnerControlStore` and `PostgresRunnerControlStore` parse `execution_leases.job_json` through that strict seam. `PostgresRunnerControlStore` has no upcast option: every policyless or malformed persisted Job, including every Self-hosted/tenant-scoped row, throws `PolicyMissing` and is never offered, renewed, recovered, or executed.
 
-`SqliteRunnerControlStore` is fail-closed by default. Its only exception is an explicit `SqliteRunnerControlStoreOptions.legacyM1LocalRecovery` supplied for a Local SQLite migration/recovery. Export that option from `packages/storage-providers/sqlite-runtime/src/index.ts`; it is not a boolean and has no default. `apps/core-daemon/src/legacy-m1-local-recovery.ts` owns the recovery-manifest interface and both validation phases, giving `startCoreDaemon` a small, deep seam rather than exposing raw manifest parsing across composition.
+`SqliteRunnerControlStore` is fail-closed by default. Its only exception is an explicit `SqliteRunnerControlStoreOptions.legacyM1LocalRecovery` supplied for a Local SQLite migration/recovery. Export that option from `packages/storage-providers/sqlite-runtime/src/index.ts`; it is not a boolean and has no default. `apps/core-daemon/src/legacy-m1-local-recovery.ts` owns the recovery-manifest interface and both validation phases, giving `startCoreDaemon` a small, deep seam rather than exposing raw manifest parsing across composition. **Superseded by the 2026-08-18 Important review fix above:** the option and export are removed; only Phase B's opaque verified capability atomically migrates the exact attested JSON before Core constructs the normal strict Store.
 
 **Phase A, before SQLite opens:** `apps/core-daemon/src/config.ts` reads the optional explicitly named `CORE_LEGACY_M1_LOCAL_RECOVERY_MANIFEST` file and passes an opaque parsed candidate, not an enabled store option. `startCoreDaemon(config)` repeats the pure validation before `SqliteRuntime.open`: the candidate requires `deploymentMode: "local"`, an exact loopback host (`127.0.0.1` or `::1`), manifest format `legacy-m1-local-recovery/v1`, nonempty structurally valid records, unique `{ jobId, runId, canonicalJobSha256}` identity, valid SHA-256 format, and a constrained policy shape. Any non-Local mode, non-loopback host, unknown format/version, malformed or duplicate record, or malformed policy fails startup before SQLite opens. The candidate policy must be exactly `policyId: "legacy-m1-local"`, `environment: "isolated_test"`, `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, one syntactically valid origin, and valid `issuedAt`/`expiresAt` with `issuedAt < expiresAt`. No candidate enables an upcast during Phase A.
 
-**Phase B, after SQLite opens and before any listener or offer:** `startCoreDaemon` uses a read-only raw recovery lookup supplied by `SqliteRunnerControlStore` to load each manifest record's persisted `execution_leases.job_json`; this lookup returns no lease/runner capability and cannot authorize an offer. It verifies the row exists, parses the policyless Job only to read its target and identifiers, and checks its run/job IDs, `canonicalPayloadHash(policylessJob)`, target origin, and constrained manifest policy exactly match the manifest record. Only after every record passes does Phase B create the immutable `legacyM1LocalRecovery` store option. Any missing row, preexisting policy, parse failure, identifier/hash/origin/policy mismatch, or additional unverified manifest record fails startup; `startCoreDaemon` closes SQLite and binds neither gRPC nor HTTP listeners. The fully verified option is the only value passed to `SqliteRunnerControlStore`; no unvalidated manifest path reaches a store read that can upcast or a `connection.offer` call. PostgreSQL never receives this option.
+**Phase B, after SQLite opens and before any listener or offer:** `startCoreDaemon` uses a read-only raw recovery lookup supplied by `SqliteRunnerControlStore` to load each manifest record's persisted `execution_leases.job_json`; this lookup returns no lease/runner capability and cannot authorize an offer. It verifies the row exists, parses the policyless Job only to read its target and identifiers, and checks its run/job IDs, `canonicalPayloadHash(policylessJob)`, target origin, and constrained manifest policy exactly match the manifest record. Only after every record passes does Phase B create the immutable `legacyM1LocalRecovery` store option. Any missing row, preexisting policy, parse failure, identifier/hash/origin/policy mismatch, or additional unverified manifest record fails startup; `startCoreDaemon` closes SQLite and binds neither gRPC nor HTTP listeners. The fully verified option is the only value passed to `SqliteRunnerControlStore`; no unvalidated manifest path reaches a store read that can upcast or a `connection.offer` call. PostgreSQL never receives this option. **Superseded by the 2026-08-18 Important review fix above:** Phase B instead creates an opaque verified capability and atomically compare-and-swaps every attested row to its exact strict `projectId: "local"` Job before Core constructs the Store; no option reaches the Store and all subsequent reads use its ordinary strict parser.
 
 `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts` covers Phase A structure/mode/host/version/policy constraints and Phase B raw-row identity/hash/origin/policy checks. `tests/contract/runner-control/sqlite-runner-control-store.test.ts` seeds raw policyless `execution_leases.job_json` and proves default rejection, then proves only the fully verified store option yields the exact configured `legacy-m1-local` snapshot. `tests/contract/runner-control/postgres-runner-control-store.test.ts` seeds the same raw shape and proves unconditional `PolicyMissing`; `tests/unit/core-daemon/config.test.ts` covers manifest absence/file parsing; `tests/component/core-runner/core-composition.test.ts` calls exported `startCoreDaemon` directly with non-loopback/non-Local/malformed/duplicate Phase A inputs and missing-row/hash/origin/policy-mismatch Phase B inputs, proving each rejects before listeners bind, then proves ordinary composition has no recovery manifest and cannot offer a policyless persisted Job. `tests/component/core-runner/disconnect-recovery.test.ts` proves `RunOwnershipService.recoveryJob` only copies a prevalidated stored policy, never constructs `legacy-m1-local`. These are storage reads only: wire payloads, newly persisted Jobs, and unknown/recovered production Jobs never receive an upcast.
 

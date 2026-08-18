@@ -100,6 +100,7 @@ describe("grpc runner protocol handshake", () => {
     const job: AcceptedExecutionJob = {
       jobId: "job-1",
       runId: "run-attempt-1",
+      projectId: "project-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
       policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
@@ -108,6 +109,7 @@ describe("grpc runner protocol handshake", () => {
 
     const offer = await session.nextOffer(new AbortController().signal);
     expect(offer.job.jobId).toBe("job-1");
+    expect(offer.job.projectId).toBe("project-1");
     expect(offer.requiredCapabilities).toEqual(["target:web-playwright"]);
 
     const clientLease = await session.accept(offer.offerId);
@@ -220,6 +222,7 @@ describe("grpc runner protocol handshake", () => {
     const job: AcceptedExecutionJob = {
       jobId: "job-1",
       runId: "run-attempt-1",
+      projectId: "project-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
       policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
@@ -382,8 +385,9 @@ describe("grpc runner protocol handshake", () => {
     const session = await client.connect(makeHello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
     const offering = connection.offer({
-      jobId: "job-race",
-      runId: "run-race",
+       jobId: "job-race",
+       runId: "run-race",
+       projectId: "project-1",
        target: { kind: "web", url: "https://example.test/" },
        objective: "race shutdown",
        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

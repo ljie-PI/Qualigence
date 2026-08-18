@@ -1,7 +1,7 @@
 import {
   RunnerControlStoreError,
 } from "@qualigence/runner-control";
-import { canonicalPayloadHash, parseExecutionJob } from "@qualigence/runner-protocol";
+import { parseExecutionJob } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -18,7 +18,7 @@ import type {
   RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import { leaseBindingMatches, observedCompletionResult, parsePolicylessExecutionJobForRecovery } from "@qualigence/runner-control";
+import { leaseBindingMatches, observedCompletionResult } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { SqliteRuntime } from "./database.js";
 import { isSqliteBusyError, mapBusyError } from "./errors.js";
@@ -26,22 +26,8 @@ import type { Database } from "./schema.js";
 
 type RunnerControlDb = Kysely<Database> | Transaction<Database>;
 
-export interface LegacyM1LocalRecoveryRecord {
-  readonly jobId: string;
-  readonly runId: string;
-  readonly canonicalJobSha256: string;
-  readonly policy: AcceptedExecutionJob["policy"];
-}
-
-export interface SqliteRunnerControlStoreOptions {
-  readonly legacyM1LocalRecovery?: readonly LegacyM1LocalRecoveryRecord[];
-}
-
 export class SqliteRunnerControlStore implements RunnerControlStore {
-  constructor(
-    private readonly runtime: SqliteRuntime,
-    private readonly options: SqliteRunnerControlStoreOptions = {},
-  ) {}
+  constructor(private readonly runtime: SqliteRuntime) {}
 
   async saveSession(record: PersistedRunnerSession): Promise<void> {
     await this.runtime.db
@@ -199,7 +185,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
         .select(["job_json"])
         .where("run_id", "=", input.runId)
         .executeTakeFirst();
-      if (row !== undefined) parseJob(row.job_json, this.options.legacyM1LocalRecovery);
+      if (row !== undefined) parseJob(row.job_json);
       const result = await constrainLiveLease(
         db.updateTable("execution_leases").set({ expires_at: input.newExpiresAt }),
         input,
@@ -276,21 +262,11 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
       .selectAll()
       .where("run_id", "=", runId)
       .executeTakeFirst();
-    return row === undefined ? undefined : toLease(row, this.options.legacyM1LocalRecovery);
+    return row === undefined ? undefined : toLease(row);
   }
 
   async completion(runId: string): Promise<ExecutionCompletion | undefined> {
     return readCompletion(this.runtime.db, runId);
-  }
-
-  /** Read-only startup seam for verified Local legacy recovery. Never leases. */
-  async rawRecoveryJobJson(runId: string): Promise<string | undefined> {
-    const row = await this.runtime.db
-      .selectFrom("execution_leases")
-      .select("job_json")
-      .where("run_id", "=", runId)
-      .executeTakeFirst();
-    return row?.job_json;
   }
 
   private async withWriteTransaction<TResult>(
@@ -399,9 +375,9 @@ function toLease(row: {
   lost_at: string | null;
   completed_at: string | null;
   recovery_of_run_id: string | null;
-}, legacyRecovery: readonly LegacyM1LocalRecoveryRecord[] | undefined = undefined): PersistedExecutionLease {
+}): PersistedExecutionLease {
   return {
-    job: parseJob(row.job_json, legacyRecovery),
+    job: parseJob(row.job_json),
     owner: { runnerId: row.runner_id, sessionId: row.session_id },
     leaseEpoch: row.lease_epoch,
     leaseTokenHash: row.lease_token_hash,
@@ -412,33 +388,10 @@ function toLease(row: {
   };
 }
 
-function parseJob(
-  jobJson: string,
-  legacyRecovery: readonly LegacyM1LocalRecoveryRecord[] | undefined,
-): AcceptedExecutionJob {
-  let parsed: unknown;
+function parseJob(jobJson: string): AcceptedExecutionJob {
   try {
-    parsed = JSON.parse(jobJson);
+    return parseExecutionJob(JSON.parse(jobJson));
   } catch {
     throw new RunnerControlStoreError();
   }
-  try {
-    return parseExecutionJob(parsed);
-  } catch {
-    // Only a policyless but otherwise strict Local record may reach recovery.
-  }
-  let policyless;
-  try {
-    policyless = parsePolicylessExecutionJobForRecovery(parsed);
-  } catch {
-    throw new RunnerControlStoreError();
-  }
-  const record = legacyRecovery?.find(
-    (candidate) =>
-      candidate.jobId === policyless.jobId &&
-      candidate.runId === policyless.runId &&
-      candidate.canonicalJobSha256 === canonicalPayloadHash(parsed),
-  );
-  if (record === undefined) throw new RunnerControlStoreError();
-  return parseExecutionJob({ ...policyless, policy: record.policy });
 }

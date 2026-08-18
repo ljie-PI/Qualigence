@@ -33,7 +33,7 @@ describe("ExecutionRuntime", () => {
       verifier: { verify: async () => ({ status: "passed" as const, summary: "not reached", claims: [] }) },
       traceRecorder,
     });
-    const completion = await runtime.run({ jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "test", policy });
+    const completion = await runtime.run({ jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "test", policy });
     expect(completion).toMatchObject({ status: "blocked", errorCode: "PolicyDenied" });
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).not.toContain("policy_authorized");
@@ -98,6 +98,7 @@ describe("ExecutionRuntime", () => {
     const completion = await runtime.run({
       jobId: "job-1",
       runId: "run-1",
+      projectId: "project-test",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click login",
       policy,
@@ -176,6 +177,7 @@ describe("ExecutionRuntime", () => {
     const completion = await runtime.run({
       jobId: "job-denied",
       runId: "run-denied",
+      projectId: "project-test",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click delete",
       policy,
@@ -271,6 +273,7 @@ describe("ExecutionRuntime", () => {
     const completion = await runtime.run({
       jobId: "job-failed",
       runId: "run-failed",
+      projectId: "project-test",
       target: { kind: "web", url: "https://example.test" },
       objective: "Verify cart total",
       policy,
@@ -348,6 +351,7 @@ describe("ExecutionRuntime", () => {
     const completion = await runtime.run({
       jobId: "job-action-failed",
       runId: "run-action-failed",
+      projectId: "project-test",
       target: { kind: "web", url: "https://example.test" },
       objective: "Add item to cart",
       policy,

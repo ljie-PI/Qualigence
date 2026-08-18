@@ -180,6 +180,7 @@ function configFor(model: MockModelServer, dataDir: string): CliConfig {
 
 function requestFor(url: string): RunExecutionRequest {
   return {
+    projectId: "local",
     target: { kind: "web", url },
     objective: "add one item to the cart",
     policy: { policyId: "policy-local", environment: "isolated_test", allowedOrigins: [new URL(url).origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },

@@ -126,6 +126,7 @@ describe("MissionExecutionUseCase", () => {
 
     expect(runExecution.requests).toEqual([
       {
+        projectId: "project-1",
         target: { kind: "web", url: "http://127.0.0.1:4599/cart" },
         objective: "Add a product to the cart",
         policy: repository.mission.executionPolicy,

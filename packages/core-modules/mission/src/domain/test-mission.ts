@@ -66,6 +66,7 @@ export interface ExecutionJob {
 export interface CompiledMission {
   readonly missionId: string;
   readonly missionRevision: number;
+  readonly projectId: string;
   readonly targetId: string;
   readonly executionPolicy: ApprovedExecutionPolicy;
   readonly jobs: readonly [ExecutionJob, ...ExecutionJob[]];

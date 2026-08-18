@@ -11,6 +11,7 @@ import type { AcceptedExecutionJob, ExecutionCompletion, ExecutionPolicySnapshot
  * later). Only provider-neutral fields appear here.
  */
 export interface RunExecutionRequest {
+  readonly projectId: string;
   readonly target: { readonly kind: "web"; readonly url: string };
   readonly objective: string;
   readonly policy: ExecutionPolicySnapshot;

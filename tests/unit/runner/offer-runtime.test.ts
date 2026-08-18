@@ -71,7 +71,7 @@ describe("RunnerOfferRuntime", () => {
     await runtime.run({
       offerId: "offer-1",
       job: {
-        jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://evil.test/" }, objective: "must block",
+        jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://evil.test/" }, objective: "must block",
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },
       }, requiredCapabilities: [], leaseDurationMs: 30_000,
     });
@@ -88,13 +88,13 @@ describe("RunnerOfferRuntime", () => {
     const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
     await runtime.run({
       offerId: "offer-staging",
-      job: { jobId: "job-staging", runId: "run-staging", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
+      job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
       requiredCapabilities: [], leaseDurationMs: 30_000,
     } as never);
     expect((createTarget as unknown as { mock: { calls: Array<readonly [{ readonly allowedOrigins: readonly string[] }]> } }).mock.calls[0]?.[0]?.allowedOrigins).toEqual(["https://staging.example.test"]);
     expect(executorGates).toHaveLength(1);
     expect(spool.pending).toHaveBeenCalledWith("run-staging", 1, { maximumEvents: 1, maximumBytes: 9 });
-    await expect(executorGates[0]!.authorize({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }, { job: { jobId: "job-staging", runId: "run-staging", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } }, action: { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" } })).resolves.toMatchObject({ status: "allowed" });
+    await expect(executorGates[0]!.authorize({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }, { job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } }, action: { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" } })).resolves.toMatchObject({ status: "allowed" });
   });
 
   it.each([
