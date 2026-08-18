@@ -840,6 +840,20 @@ Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
 passed. The Gate ran 24 files / 230 tests including Docker-backed PostgreSQL;
 no environmental blocker occurred.
 
+Task 15 startup-private recovery review fix (2026-08-18):
+`apps/core-daemon/src/legacy-m1-local-recovery.ts` and all Core recovery helper
+exports are deleted. `startCoreDaemon` now exclusively owns the private Phase A
+Local/loopback/constrained-policy validation, Phase B raw-row/hash/origin/policy
+attestation, and transactional strict-Job migration before service composition
+or listener bind. Component tests exercise every success and rejection case
+through `startCoreDaemon` and prove the public Core module exposes no callable
+recovery verifier or applier.
+
+With Git OpenSSL resolved as above, `corepack pnpm build`, the amended complete
+Task 15 follow-up Gate, `corepack pnpm typecheck`, and `git diff --check`
+passed. The Gate ran 24 files / 231 tests including Docker-backed PostgreSQL;
+no environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`

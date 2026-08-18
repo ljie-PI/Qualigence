@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type { ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
+import * as coreDaemon from "@qualigence/core-daemon";
 import { startCoreDaemon } from "@qualigence/core-daemon";
 import { SqliteRunnerControlStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
@@ -59,6 +60,12 @@ async function freePort(): Promise<number> {
 }
 
 describe("Core runner protocol production composition", () => {
+  it("exposes no callable legacy recovery helper outside Core startup", () => {
+    expect(coreDaemon).not.toHaveProperty("validateLegacyM1LocalRecoveryCandidate");
+    expect(coreDaemon).not.toHaveProperty("verifyLegacyM1LocalRecoveryRows");
+    expect(coreDaemon).not.toHaveProperty("applyVerifiedLegacyM1LocalRecovery");
+  });
+
   it("rejects Phase A recovery candidates before SQLite opens or a listener binds", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-a-"));
     const database = join(dataDir, "qualigence.db");

@@ -2351,6 +2351,42 @@ with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
 check. Stage only **Final review-fix Files** and commit exactly
 `fix(policy): restrict legacy provenance parser`.
 
+**Startup-private recovery review-fix authority (2026-08-18):** Exact review
+of `54fe823` found that `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+still exported verifier and applier functions which could be invoked directly
+outside `startCoreDaemon`. This narrow repair does not alter prior scope or
+implementation history. It makes phase-A validation, phase-B attestation, and
+the pre-listener migration one private startup operation with no exported
+recovery value or callable verifier/applier.
+
+**Startup-private recovery Files (all paths):**
+- Modify: `apps/core-daemon/src/index.ts`
+- Modify: `apps/core-daemon/src/main.ts`
+- Delete: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Delete: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+
+**Startup-private recovery Interfaces and steps:**
+- `startCoreDaemon` is the only callable recovery operation. Private functions
+  in `main.ts` perform Phase A Local/loopback/constrained-policy validation,
+  load and verify all Phase-B persisted rows, and atomically migrate the strict
+  `projectId: "local"` Jobs before service composition or listener bind.
+- Delete all public Core barrel exports and standalone module exports for
+  recovery validation, verification, capability, or application. Delete the
+  unit test that directly invoked those helper functions; retain and extend
+  `startCoreDaemon` component coverage for success and failed phase checks.
+- The Core public namespace must expose no legacy recovery helper. No direct
+  source module remains from which a consumer can invoke an attestation or
+  migration separately from the startup sequence.
+- Record actual evidence in the Task 15 ledger.
+
+**Startup-private recovery Gate and staging:** Run the full **Follow-up Gate**
+above with explicit Git OpenSSL, build, all 24 Vitest files, typecheck, and diff
+check. Stage only **Startup-private recovery Files** and commit exactly
+`fix(policy): privatize legacy recovery startup`.
+
 **Files:**
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Modify: `packages/contracts/runner-protocol/src/messages.ts`
