@@ -238,7 +238,15 @@ export class RunOwnershipService {
   }
 
   async mayStartAction(lease: ExecutionJobLease): Promise<boolean> {
-    const record = await this.store.lease(lease.runId);
+    let record;
+    try {
+      record = await this.store.lease(lease.runId);
+    } catch (error) {
+      if (error instanceof RunnerControlStoreError) {
+        throw new CoreApplicationError("PolicyMissing", "persisted execution Job policy is unavailable");
+      }
+      throw error;
+    }
     if (record === undefined || record.lostAt !== undefined || record.completedAt !== undefined) {
       return false;
     }
@@ -311,7 +319,14 @@ export class RunOwnershipService {
   }
 
   async ownerOf(runId: string): Promise<LeaseOwner | undefined> {
-    return (await this.store.lease(runId))?.owner;
+    try {
+      return (await this.store.lease(runId))?.owner;
+    } catch (error) {
+      if (error instanceof RunnerControlStoreError) {
+        throw new CoreApplicationError("PolicyMissing", "persisted execution Job policy is unavailable");
+      }
+      throw error;
+    }
   }
 
   async recoveryOf(runId: string): Promise<string | undefined> {
@@ -333,7 +348,15 @@ export class RunOwnershipService {
   }
 
   private async requireMatchingLease(lease: ExecutionJobLease) {
-    const record = await this.store.lease(lease.runId);
+    let record;
+    try {
+      record = await this.store.lease(lease.runId);
+    } catch (error) {
+      if (error instanceof RunnerControlStoreError) {
+        throw new CoreApplicationError("PolicyMissing", "persisted execution Job policy is unavailable");
+      }
+      throw error;
+    }
     if (record === undefined) {
       throw new CoreApplicationError("LeaseLost", `run ${lease.runId} has no active lease`, {
         details: { runId: lease.runId },

@@ -779,3 +779,41 @@ files / 164 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 3 (2026-08-18): the frozen `plan = 5` Job field now
+maps losslessly through gRPC/protobuf alongside policy, with a non-empty plan
+round-trip assertion. Legacy recovery requires explicit `127.0.0.1` exactly;
+direct `startCoreDaemon` evidence now covers absent/non-loopback host,
+malformed/duplicate manifests, missing row, origin and preexisting-policy
+mismatch, ordinary policyless no-manifest fail-closed behavior, resource release,
+and the constrained successful upcast. Strict `lease()` failures encountered by
+owner lookup during application renewal translate to Core `PolicyMissing`.
+Offer evidence isolates a non-expired cross-origin denial, policyless denial,
+invalid staging exploration/coordinate/visual declarations, and an allowed
+staging control that passes exactly the snapshot origins and same deterministic
+gate into the executor.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 2 (2026-08-18): gRPC Job mapping now losslessly
+preserves the existing `plan = 5` snapshot through protobuf, including steps,
+claims, and budget. Legacy Local recovery now requires explicit exact
+`127.0.0.1`; absent, IPv6, or any other host fails before SQLite/listen. Direct
+daemon evidence covers malformed/duplicate Phase A manifests, missing Phase B
+rows, hash/origin/preexisting-policy mismatch closure, ordinary policyless rows
+without a manifest fail-closed, and the constrained verified upcast. Strict
+lease parsing arising in owner lookup is translated to `CoreApplicationError`
+`PolicyMissing` for application renewal. Runner OfferRuntime proves non-expired
+cross-origin, policyless, and invalid staging exploration/coordinate/visual
+offers do not construct targets; a valid staging control receives only the
+snapshot's exact `allowedOrigins`.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.

@@ -10,6 +10,7 @@ import type {
 import { canonicalTraceEventHash, capabilities } from "@qualigence/runner-protocol";
 import type { AuthenticatedRunnerContext } from "@qualigence/runner-control";
 import { InMemoryRunnerControlStore } from "../../helpers/in-memory-runner-control-store.js";
+import { RunnerControlStoreError } from "@qualigence/runner-control";
 import {
   CoreRunnerProtocolApplication,
   ExecutionJobService,
@@ -213,6 +214,21 @@ function makeApplication(options: {
 }
 
 describe("CoreRunnerProtocolApplication", () => {
+  it("maps a policyless persisted owner lookup during renew to PolicyMissing", async () => {
+    class PolicylessLeaseStore extends InMemoryRunnerControlStore {
+      override async lease(_runId: string): Promise<never> {
+        throw new RunnerControlStoreError();
+      }
+    }
+    const controlStore = new PolicylessLeaseStore();
+    const ownership = new RunOwnershipService({ store: controlStore, integrityEvents: { emit: () => undefined } });
+    const jobs = new ExecutionJobService(ownership, { store: controlStore, leaseDurationMs: welcome.leaseDurationMs });
+    const sessions = new RunnerSessionService({ store: controlStore, welcome, resumeTokens: new RunnerResumeTokenService({ store: controlStore }), traceIngestor: new TraceIngestor(new InMemoryTraceStore()), ownership });
+    const application = new CoreRunnerProtocolApplication({ sessions, jobs, ownership });
+    const session = await application.openSession(hello("runner-1"), identity1);
+    await expect(application.renew(session.sessionId, { jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2026-08-18T00:01:00.000Z" })).rejects.toMatchObject({ code: "PolicyMissing" });
+  });
+
   it("replays an exact canonical offer and rejects different content for the same identities", async () => {
     const { application } = makeApplication();
     const session = await application.openSession(hello("runner-1"), identity1);

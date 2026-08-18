@@ -8,6 +8,12 @@ describe("legacy M1 Local recovery", () => {
     expect(() => validateLegacyM1LocalRecoveryCandidate({ deploymentMode: "self_hosted" })).toThrow();
   });
 
+  it("requires exact IPv4 loopback instead of accepting an absent or IPv6 host", () => {
+    const candidate = { format: "legacy-m1-local-recovery/v1", records: [] };
+    expect(() => validateLegacyM1LocalRecoveryCandidate(candidate, { deploymentMode: "local" })).toThrow();
+    expect(() => validateLegacyM1LocalRecoveryCandidate(candidate, { deploymentMode: "local", host: "::1" })).toThrow();
+  });
+
   it("requires a hash-bound policyless row and constrained legacy policy", () => {
     const job = { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "legacy" };
     const candidate = validateLegacyM1LocalRecoveryCandidate({

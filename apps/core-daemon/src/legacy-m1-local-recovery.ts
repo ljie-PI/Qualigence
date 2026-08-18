@@ -15,7 +15,7 @@ export function validateLegacyM1LocalRecoveryCandidate(
   config: { readonly deploymentMode?: string; readonly host?: string } = {},
 ): RecoveryManifest {
   if (config.deploymentMode !== "local") throw new Error("Legacy recovery requires Local deployment mode.");
-  if (config.host !== undefined && config.host !== "127.0.0.1" && config.host !== "::1") throw new Error("Legacy recovery requires loopback host.");
+  if (config.host !== "127.0.0.1") throw new Error("Legacy recovery requires exact 127.0.0.1 loopback host.");
   if (typeof candidate !== "object" || candidate === null) throw new Error("Legacy recovery manifest is malformed.");
   const manifest = candidate as { readonly format?: unknown; readonly records?: unknown };
   if (manifest.format !== "legacy-m1-local-recovery/v1" || !Array.isArray(manifest.records) || manifest.records.length === 0) {

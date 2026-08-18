@@ -133,6 +133,18 @@ describe("grpc runner protocol mappers", () => {
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+        plan: {
+          missionId: "mission-1",
+          missionRevision: 2,
+          testCaseId: "case-1",
+          steps: [
+            { kind: "navigate", path: "/cart" },
+            { kind: "click", target: { role: "button", name: "Add", purpose: "add item" } },
+            { kind: "verify", claimIds: ["claim-1"] },
+          ],
+          expectedClaimIds: ["claim-1"],
+          budget: { maximumStepsPerJob: 3, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+        },
       },
       requiredCapabilities: ["target:web-playwright"],
       leaseDurationMs: 30_000,
