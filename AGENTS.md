@@ -10,6 +10,10 @@ Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-t
 
 Before changing or reviewing any production module, read `docs/agents/domain.md` and every context selected by `CONTEXT-MAP.md`.
 
+### Preserve Existing Design
+
+Before editing code, inspect the surrounding module and its callers, adapters, tests, and documented context. Extend the existing interfaces, seams, dependency direction, naming, error semantics, and test patterns rather than introducing a parallel structure. Keep changes local and compatible with established invariants. If the requested change conflicts with the existing design or requires a new architectural seam, stop and obtain explicit approval before editing.
+
 ## Closure Work
 
 Before a closure task, read `docs/superpowers/plans/2026-08-16-production-closure-temporary.md` sections **Status and authority**, **Global Constraints**, **Current execution state**, and **Dependency order**, the complete selected Task, and its cited architecture sections. The coordinator or reviewer owns later Task dependencies and plan changes.
