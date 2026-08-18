@@ -106,6 +106,18 @@ message AcceptedExecutionJob {
   // Additive (LS-07): immutable Mission plan snapshot. Absent for M1 objective-
   // only jobs. Read-only Runner DTO; the Runner never writes it back.
   ExecutionJobPlanSnapshot plan = 5;
+  ExecutionPolicySnapshot policy = 6;
+}
+
+message ExecutionPolicySnapshot {
+  string policy_id = 1;
+  string environment = 2;
+  repeated string allowed_origins = 3;
+  repeated string allowed_action_kinds = 4;
+  string maximum_risk = 5;
+  bool exploration_allowed = 6;
+  string issued_at = 7;
+  string expires_at = 8;
 }
 
 message ExecutionPlanTarget {

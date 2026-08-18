@@ -2,7 +2,47 @@ import {
   canonicalPayloadHash,
   type AcceptedExecutionJob,
   type ExecutionCompletion,
+  ExecutionPolicySnapshotError,
+  parseExecutionJob as parseProtocolExecutionJob,
+  parseExecutionPolicySnapshot as parseProtocolExecutionPolicySnapshot,
+  parsePolicylessExecutionJob,
 } from "@qualigence/runner-protocol";
+
+export class RunnerControlStoreError extends Error {
+  readonly code = "PolicyMissing" as const;
+
+  constructor(message = "persisted execution Job policy is missing or malformed") {
+    super(message);
+    this.name = "RunnerControlStoreError";
+  }
+}
+
+export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
+  try {
+    return parseProtocolExecutionJob(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
+
+export function parseExecutionPolicySnapshot(value: unknown) {
+  try {
+    return parseProtocolExecutionPolicySnapshot(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
+
+export function parsePolicylessExecutionJobForRecovery(value: unknown) {
+  try {
+    return parsePolicylessExecutionJob(value);
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
 
 export interface ResumeTokenBinding {
   readonly runnerId: string;
@@ -170,7 +210,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     newExpiresAt: string;
-  }): Promise<boolean>;
+  }): Promise<"renewed" | "rejected">;
   completeLease(input: {
     runId: string;
     jobId: string;

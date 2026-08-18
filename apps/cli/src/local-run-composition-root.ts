@@ -22,11 +22,8 @@ import {
 import { ModelGateway } from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
 import {
+  DeterministicRunnerPolicyGate,
   ExecutionRuntime,
-  type PolicyDecision,
-  type ResolvedAction,
-  type RunnerPolicyContext,
-  type RunnerPolicyGate,
 } from "@qualigence/runner-kernel";
 import { SystemClock } from "@qualigence/shared-kernel";
 import {
@@ -42,23 +39,6 @@ import type { CliConfig } from "./config.js";
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const DATABASE_FILE = "qualigence.db";
 const ARTIFACT_DIR = "artifacts";
-
-/**
- * The local M1 policy gate. Every resolved action is authorized because the CLI
- * only ever navigates the single origin declared for the Run. LS-04 will replace
- * this with a real allow/deny policy.
- */
-class LocalAllowAllPolicyGate implements RunnerPolicyGate {
-  async authorize(
-    _action: ResolvedAction,
-    _context: RunnerPolicyContext,
-  ): Promise<PolicyDecision> {
-    return {
-      status: "allowed",
-      reason: "local execution authorizes same-origin actions",
-    };
-  }
-}
 
 /**
  * The sole local construction seam. It assembles the SQLite-backed persistence
@@ -94,13 +74,12 @@ export class LocalRunResourceFactory implements RunResourceFactory {
         clock,
       );
 
-      const origin = new URL(request.target.url).origin;
       adapter = new PlaywrightWebTargetAdapter({
         url: request.target.url,
         headed: request.executionProfile.headed,
         navigationTimeoutMs: request.executionProfile.navigationTimeoutMs,
         actionTimeoutMs: request.executionProfile.actionTimeoutMs,
-        allowedOrigins: [origin],
+        allowedOrigins: request.policy.allowedOrigins,
       });
 
       const provider = new OpenAICompatibleModelProvider({
@@ -143,7 +122,7 @@ export class LocalRunResourceFactory implements RunResourceFactory {
         observer,
         decisionProvider,
         resolver: adapter,
-        policyGate: new LocalAllowAllPolicyGate(),
+        policyGate: new DeterministicRunnerPolicyGate(request.policy),
         actionExecutor: adapter,
         verifier,
         traceRecorder,
@@ -153,7 +132,7 @@ export class LocalRunResourceFactory implements RunResourceFactory {
 
       const boundAdapter = adapter;
       return {
-        runtime: executionRuntime,
+        execute: (job) => executionRuntime.run(job),
         artifacts,
         manifests,
         runs,

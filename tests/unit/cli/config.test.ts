@@ -47,6 +47,7 @@ describe("parseRunRequest", () => {
     expect(invocation.request).toEqual({
       target: { kind: "web", url: "http://127.0.0.1:3000/" },
       objective: "add one item",
+      policy: expect.objectContaining({ environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:3000"], allowedActionKinds: ["click"] }),
       executionProfile: {
         modelProfileId: "default",
         headed: false,
@@ -106,5 +107,30 @@ describe("parseRunRequest", () => {
         "xml",
       ]),
     ).toThrow(CliConfigError);
+  });
+
+  it("rejects a malformed target URL with a stable CLI configuration error", () => {
+    try {
+      parseRunRequest([
+        "run",
+        "--url",
+        "not-a-url",
+        "--objective",
+        "add one item",
+      ]);
+      expect.unreachable("malformed URL must fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CliConfigError);
+      expect(error).toMatchObject({ code: "InvalidConfiguration", name: "CliConfigError" });
+    }
+  });
+
+  it.each([
+    "ftp://example.test/path",
+    "file:///tmp/target.html",
+    "data:text/html,hello",
+    "https://user:secret@example.test/",
+  ])("rejects unsafe target URL %s with CliConfigError", (url) => {
+    expect(() => parseRunRequest(["run", "--url", url, "--objective", "add one item"])).toThrow(CliConfigError);
   });
 });

@@ -15,36 +15,8 @@ import {
   SqliteRunnerSpool,
   type RunnerSpool,
 } from "@qualigence/runner-spool";
-import {
-  ModelBackedDecisionProvider,
-  ModelBackedVerifier,
-} from "@qualigence/model-agent";
-import { ModelGateway } from "@qualigence/model-gateway";
-import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
-import type {
-  PolicyDecision,
-  ResolvedAction,
-  RunnerPolicyContext,
-  RunnerPolicyGate,
-} from "@qualigence/runner-kernel";
-import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
-import { LeasedJobExecutor } from "./job-executor.js";
-import { TraceUploadPump } from "./trace-upload-pump.js";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
-
-/**
- * The Runner's M1 policy gate. Every resolved action is authorized because a Job
- * only ever navigates the single origin declared for its target. This mirrors the
- * single-process CLI gate and will be replaced by a real allow/deny policy later.
- */
-class AllowSameOriginPolicyGate implements RunnerPolicyGate {
-  async authorize(
-    _action: ResolvedAction,
-    _context: RunnerPolicyContext,
-  ): Promise<PolicyDecision> {
-    return { status: "allowed", reason: "runner authorizes same-origin actions" };
-  }
-}
+import { RunnerOfferRuntime } from "./offer-runtime.js";
 
 async function openSpool(config: RunnerConfig): Promise<SqliteRunnerSpool> {
   await mkdir(config.dataDir, { recursive: true });
@@ -66,41 +38,7 @@ async function runOffer(
   offer: ExecutionJobOffer,
   spool: RunnerSpool,
 ): Promise<void> {
-  const url = offer.job.target.url;
-  const adapter = new PlaywrightWebTargetAdapter({
-    url,
-    headed: config.headed,
-    navigationTimeoutMs: config.navigationTimeoutMs,
-    actionTimeoutMs: config.actionTimeoutMs,
-    allowedOrigins: [new URL(url).origin],
-  });
-  await adapter.start();
-  try {
-    const provider = new OpenAICompatibleModelProvider({
-      baseUrl: config.model.baseUrl,
-      apiKey: config.model.apiKey,
-    });
-    const gateway = new ModelGateway({ provider });
-    const executor = new LeasedJobExecutor({
-      observer: adapter,
-      decisionProvider: new ModelBackedDecisionProvider(gateway, config.model.modelName),
-      resolver: adapter,
-      policyGate: new AllowSameOriginPolicyGate(),
-      actionExecutor: adapter,
-      verifier: new ModelBackedVerifier(gateway, config.model.modelName),
-      spool,
-      capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
-    });
-
-    const result = await executor.execute(offer, session);
-    await new TraceUploadPump(spool, session, offer.job.runId, {
-      maximumEvents: session.welcome.traceBatchMaximumEvents,
-      maximumBytes: session.welcome.traceBatchMaximumBytes,
-    }).drain();
-    await session.complete(result.lease, result.completion);
-  } finally {
-    await adapter.close();
-  }
+  await new RunnerOfferRuntime({ config, session, spool }).run(offer);
 }
 
 async function main(): Promise<void> {

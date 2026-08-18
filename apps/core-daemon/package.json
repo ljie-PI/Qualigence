@@ -20,9 +20,7 @@
     "@qualigence/execution-application": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/runner-control": "workspace:*",
-    "@qualigence/in-memory-runner-protocol": "workspace:*",
     "@qualigence/observability": "workspace:*",
-    "@qualigence/runner-kernel": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*"

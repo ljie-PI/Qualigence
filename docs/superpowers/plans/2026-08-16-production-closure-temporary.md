@@ -2142,6 +2142,7 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/wire-codec.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/client.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`
 - Modify: `packages/runner-kernel/src/execution-runtime.ts`
 - Create: `packages/runner-kernel/src/deterministic-policy-gate.ts`
 - Modify: `packages/runner-kernel/src/index.ts`

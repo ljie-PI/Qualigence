@@ -6,6 +6,10 @@ import type {
   ExecutionEventBatch,
   ExecutionJobLease,
   ExecutionJobOffer,
+  ExecutionJobPlanSnapshot,
+  ExecutionPlanStep,
+  ExecutionPlanTarget,
+  ExecutionPolicySnapshot,
   FindingEnvelope,
   RunnerHello,
   RunnerProtocolMajor,
@@ -14,6 +18,8 @@ import type {
   TraceEvent,
   TraceStage,
 } from "@qualigence/runner-protocol";
+import { ExecutionPolicySnapshotError, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import { RunnerProtocolError } from "./errors.js";
 
 /**
  * Explicit, total mapping between the frozen transport-agnostic domain messages
@@ -145,22 +151,160 @@ function targetFromWire(wire: unknown): TargetRef {
   return { kind: "web", url: asString(web.url) };
 }
 
-export function jobToWire(job: AcceptedExecutionJob): Wire {
+function policyToWire(policy: ExecutionPolicySnapshot): Wire {
   return {
+    policy_id: policy.policyId,
+    environment: policy.environment,
+    allowed_origins: [...policy.allowedOrigins],
+    allowed_action_kinds: [...policy.allowedActionKinds],
+    maximum_risk: policy.maximumRisk,
+    exploration_allowed: policy.explorationAllowed,
+    issued_at: policy.issuedAt,
+    expires_at: policy.expiresAt,
+  };
+}
+
+function policyFromWire(wire: unknown): ExecutionPolicySnapshot {
+  try {
+    if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
+      throw new ExecutionPolicySnapshotError();
+    }
+    const policy = wire as Wire;
+    return parseExecutionPolicySnapshot({
+      policyId: policy.policy_id,
+      environment: policy.environment,
+      allowedOrigins: policy.allowed_origins,
+      allowedActionKinds: policy.allowed_action_kinds,
+      maximumRisk: policy.maximum_risk,
+      explorationAllowed: policy.exploration_allowed,
+      issuedAt: policy.issued_at,
+      expiresAt: policy.expires_at,
+    });
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) {
+      throw new RunnerProtocolError("PolicyMissing", "execution Job policy is missing or malformed");
+    }
+    throw error;
+  }
+}
+
+function planTargetToWire(target: ExecutionPlanTarget): Wire {
+  const wire: Wire = { purpose: target.purpose };
+  if (target.role !== undefined) wire.role = target.role;
+  if (target.name !== undefined) wire.name = target.name;
+  return wire;
+}
+
+function planTargetFromWire(wire: unknown): ExecutionPlanTarget {
+  const target = (wire ?? {}) as Wire;
+  const role = asString(target.role);
+  const name = asString(target.name);
+  const purpose = asString(target.purpose);
+  const base = { purpose };
+  return role === "" && name === "" ? base : {
+    ...base,
+    ...(role === "" ? {} : { role }),
+    ...(name === "" ? {} : { name }),
+  };
+}
+
+function planStepToWire(step: ExecutionPlanStep): Wire {
+  switch (step.kind) {
+    case "navigate":
+      return { navigate: { path: step.path } };
+    case "click":
+      return { click: { target: planTargetToWire(step.target) } };
+    case "input":
+      return { input: { target: planTargetToWire(step.target), value_ref: step.valueRef } };
+    case "verify":
+      return { verify: { claim_ids: [...step.claimIds] } };
+  }
+}
+
+function planStepFromWire(wire: unknown): ExecutionPlanStep {
+  const step = (wire ?? {}) as Wire;
+  if (step.navigate !== undefined) return { kind: "navigate", path: asString((step.navigate as Wire).path) };
+  if (step.click !== undefined) return { kind: "click", target: planTargetFromWire((step.click as Wire).target) };
+  if (step.input !== undefined) {
+    const input = step.input as Wire;
+    return { kind: "input", target: planTargetFromWire(input.target), valueRef: asString(input.value_ref) };
+  }
+  const verify = (step.verify ?? {}) as Wire;
+  const claimIds = asArray<string>(verify.claim_ids);
+  const [firstClaimId, ...remainingClaimIds] = claimIds;
+  if (firstClaimId === undefined) throw new ExecutionPolicySnapshotError();
+  return { kind: "verify", claimIds: [firstClaimId, ...remainingClaimIds] };
+}
+
+function planToWire(plan: ExecutionJobPlanSnapshot): Wire {
+  return {
+    mission_id: plan.missionId,
+    mission_revision: plan.missionRevision,
+    test_case_id: plan.testCaseId,
+    steps: plan.steps.map(planStepToWire),
+    expected_claim_ids: [...plan.expectedClaimIds],
+    budget: {
+      maximum_steps_per_job: plan.budget.maximumStepsPerJob,
+      maximum_wall_clock_ms: plan.budget.maximumWallClockMs,
+      maximum_model_tokens: plan.budget.maximumModelTokens,
+    },
+  };
+}
+
+function planFromWire(wire: unknown): ExecutionJobPlanSnapshot | undefined {
+  if (wire === undefined || wire === null) return undefined;
+  const plan = wire as Wire;
+  const steps = asArray<Wire>(plan.steps).map(planStepFromWire);
+  const claims = asArray<string>(plan.expected_claim_ids);
+  const [firstStep, ...remainingSteps] = steps;
+  const [firstClaim, ...remainingClaims] = claims;
+  if (firstStep === undefined || firstClaim === undefined) {
+    throw new ExecutionPolicySnapshotError();
+  }
+  const budget = (plan.budget ?? {}) as Wire;
+  return {
+    missionId: asString(plan.mission_id),
+    missionRevision: asNumber(plan.mission_revision),
+    testCaseId: asString(plan.test_case_id),
+    steps: [firstStep, ...remainingSteps],
+    expectedClaimIds: [firstClaim, ...remainingClaims],
+    budget: {
+      maximumStepsPerJob: asNumber(budget.maximum_steps_per_job),
+      maximumWallClockMs: asNumber(budget.maximum_wall_clock_ms),
+      maximumModelTokens: asNumber(budget.maximum_model_tokens),
+    },
+  };
+}
+
+export function jobToWire(job: AcceptedExecutionJob): Wire {
+  const wire: Wire = {
     job_id: job.jobId,
     run_id: job.runId,
     target: targetToWire(job.target),
     objective: job.objective,
+    policy: policyToWire(job.policy),
   };
+  if (job.plan !== undefined) wire.plan = planToWire(job.plan);
+  return wire;
 }
 
 export function jobFromWire(wire: Wire): AcceptedExecutionJob {
-  return {
-    jobId: asString(wire.job_id),
-    runId: asString(wire.run_id),
-    target: targetFromWire(wire.target),
-    objective: asString(wire.objective),
-  };
+  try {
+    const plan = planFromWire(wire.plan);
+    return parseExecutionJob({
+      jobId: wire.job_id,
+      runId: wire.run_id,
+      target: targetFromWire(wire.target),
+      objective: wire.objective,
+      policy: policyFromWire(wire.policy),
+      ...(plan === undefined ? {} : { plan }),
+    });
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) {
+      throw new RunnerProtocolError("PolicyMissing", "execution Job is malformed");
+    }
+    throw error;
+  }
 }
 
 // --- ExecutionJobOffer ----------------------------------------------------

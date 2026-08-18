@@ -177,6 +177,7 @@ describe("runner protocol v1 proto schema", () => {
         runId: "run-attempt-1",
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
       },
       requiredCapabilities: ["target:web-playwright"],
       leaseDurationMs: 30_000,
@@ -226,5 +227,14 @@ describe("runner protocol v1 proto schema", () => {
     const renewLease = messages.get("RenewLease");
     expect(renewLease, "proto is missing message RenewLease").toBeDefined();
     expect(renewLease!.fields.get("lease_token")).toBe(4);
+  });
+
+  it("freezes every ExecutionPolicySnapshot field and tag", () => {
+    const policy = messages.get("ExecutionPolicySnapshot");
+    expect(policy?.fields).toEqual(new Map([
+      ["policy_id", 1], ["environment", 2], ["allowed_origins", 3], ["allowed_action_kinds", 4],
+      ["maximum_risk", 5], ["exploration_allowed", 6], ["issued_at", 7], ["expires_at", 8],
+    ]));
+    expect(messages.get("AcceptedExecutionJob")?.fields.get("policy")).toBe(6);
   });
 });

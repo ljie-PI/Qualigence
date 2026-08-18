@@ -10,7 +10,9 @@ export interface CoreDaemonConfig {
     readonly key: Buffer;
   };
   readonly dataDir: string;
+  readonly deploymentMode?: "local" | "self_hosted";
   readonly leaseDurationMs: number;
+  readonly legacyM1LocalRecoveryCandidate?: unknown;
 }
 
 function required(name: string, env: NodeJS.ProcessEnv): string {
@@ -27,6 +29,11 @@ function required(name: string, env: NodeJS.ProcessEnv): string {
  * on the first Runner handshake.
  */
 export function loadCoreDaemonConfig(env: NodeJS.ProcessEnv = process.env): CoreDaemonConfig {
+  const recoveryManifest = env.CORE_LEGACY_M1_LOCAL_RECOVERY_MANIFEST;
+  const deploymentMode = env.CORE_DEPLOYMENT_MODE;
+  if (deploymentMode !== "local" && deploymentMode !== "self_hosted") {
+    throw new Error("CORE_DEPLOYMENT_MODE must be exactly local or self_hosted.");
+  }
   return {
     host: env.CORE_HOST ?? "127.0.0.1",
     port: Number.parseInt(env.CORE_PORT ?? "50555", 10),
@@ -36,6 +43,8 @@ export function loadCoreDaemonConfig(env: NodeJS.ProcessEnv = process.env): Core
       key: readFileSync(required("CORE_TLS_KEY", env)),
     },
     dataDir: env.CORE_DATA_DIR ?? "./.qualigence-core",
+    deploymentMode,
     leaseDurationMs: Number.parseInt(env.CORE_LEASE_DURATION_MS ?? "30000", 10),
+    ...(recoveryManifest === undefined ? {} : { legacyM1LocalRecoveryCandidate: JSON.parse(readFileSync(recoveryManifest, "utf8")) }),
   };
 }

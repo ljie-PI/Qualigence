@@ -81,7 +81,7 @@ export class GrpcRunnerProtocolServer {
     );
     return new Promise<number>((resolve, reject) => {
       this.server.bindAsync(
-        `${this.options.host ?? "127.0.0.1"}:${this.options.port ?? 0}`,
+        listenerAddress(this.options.host ?? "127.0.0.1", this.options.port ?? 0),
         credentials,
         (error, bound) => {
           if (error) reject(error);
@@ -528,3 +528,7 @@ function failCall(call: Duplex, status: grpc.status, code: string): void {
 }
 
 export { SUPPORTED_PROTOCOL_MAJORS };
+
+function listenerAddress(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}

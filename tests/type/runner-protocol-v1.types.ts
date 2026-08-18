@@ -2,6 +2,7 @@
 import type { RunnerProtocolErrorCode } from "@qualigence/grpc-runner-protocol";
 import { capabilities, negotiateCapabilities, negotiateProtocolMajor } from "@qualigence/runner-protocol";
 import type {
+  AcceptedExecutionJob,
   CapabilityMismatch,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -74,12 +75,25 @@ const offer: ExecutionJobOffer = {
     runId: "run-attempt-1",
     target: { kind: "web", url: "https://example.test/" },
     objective: "add the item to the cart",
+    policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
   },
   requiredCapabilities: ["target:web-playwright", "action:click"],
   leaseDurationMs: 30_000,
 };
 
 offer satisfies ExecutionJobOffer;
+
+// Task 15 freezes policy as a required Job snapshot. This is intentionally RED
+// until the protocol contract adds the required field.
+const policylessJob = {
+  jobId: "job-policyless",
+  runId: "run-policyless",
+  target: { kind: "web", url: "https://example.test/" },
+  objective: "must not dispatch without policy",
+};
+// @ts-expect-error AcceptedExecutionJob must reject a policyless value
+const typedPolicylessJob: AcceptedExecutionJob = policylessJob;
+void typedPolicylessJob;
 
 const batch: ExecutionEventBatch = {
   batchId: "batch-1",

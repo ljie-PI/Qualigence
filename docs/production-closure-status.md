@@ -724,3 +724,180 @@ passed 4 files / 63 tests. With Git OpenSSL on `PATH` and
 `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
 `corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
 passed 2 files / 10 tests.
+
+## Task 15 — Deterministic execution policy snapshot (2026-08-18)
+
+component: complete
+production_wiring: present
+verification: passed
+introducing_pr: `codex/pr11-execution-policy`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/legacy-m1-local-recovery.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/unit/core-modules/mission/execution-policy.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/cli/config.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/e2e/cli-web-cart.test.ts`
+
+RED: the pre-implementation focused command failed as expected: policy was not
+present on `AcceptedExecutionJob`, protobuf had no field 6 policy message,
+wire jobs without policy were accepted, no deterministic gate/admission or
+recovery validation seam existed, and typecheck rejected the new required
+interfaces. The initial RED run also exposed the documented Windows OpenSSL
+configuration requirement; subsequent component runs used Git OpenSSL on PATH.
+
+GREEN: `AcceptedExecutionJob.policy` is required and losslessly mapped through
+the frozen protobuf tags (Job policy = 6; nested fields 1-8). Core and Mission
+propagate immutable approved policy, Local CLI issues explicit isolated-test
+authority, and both Local and remote Runner composition construct the
+deterministic Runner gate. Remote offers are admitted before target/browser
+creation and denied jobs complete blocked without action execution. SQLite and
+PostgreSQL reject malformed or policyless persisted lease Jobs; renewal fails
+as `PolicyMissing` before expiry mutation. The only legacy upcast is the
+validated, hash-bound Local SQLite recovery manifest; PostgreSQL never upcasts.
+Core transport now only offers and awaits completion, without a policy gate or
+target/action pipeline.
+
+The complete focused command above passed 26 files / 145 tests using
+`C:\Program Files\Git\usr\bin` on PATH for mTLS component tests. The final
+policy command `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 12 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract tests ran and passed; no Gate was
+skipped. Task 11 source and tests remain unchanged.
+
+Task 15 review-fix round (2026-08-18): strict policy parsing is now centralized
+in the Runner Protocol contract and used by gRPC mapping, both runner-control
+providers, Core request admission, legacy Local recovery parsing, and the
+Runner gate. It requires canonical ISO instants with `issuedAt < expiresAt`,
+canonical non-credentialed HTTP(S) origins, known enums, nonempty unique action
+and origin sets, and staging's exact click/Normal/non-exploration declaration.
+Malformed wire or persisted Jobs raise `PolicyMissing`; provider renewal reads
+and validates the stored Job before updating expiry. The Core factory validates
+the request before opening stores or offering. Direct `startCoreDaemon` tests
+prove Phase A rejects before SQLite creation/listen, Phase B closes SQLite and
+does not bind on mismatch, and only a hash-bound validated Local row upcasts.
+Denied Runner offers prove no target/browser start, capture/decision, resolver,
+permit-backed executor, or close path is invoked.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 164 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 8 (2026-08-18): one shared strict execution-target
+validator now governs CLI local policy issuance, Mission dispatch construction,
+and the shared execution use case. It accepts only absolute HTTP(S) URLs without
+credentials and rejects `ftp`, `file`, `data`, malformed, and credentialed URLs.
+CLI maps rejection to `CliConfigError(InvalidConfiguration)`; persisted Mission
+dispatch maps it to `InvalidTargetUrl` with a durable failed attempt and blocked
+Mission, without browser construction. The existing Playwright session validator
+remains unchanged as independent adapter defense in depth.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 7 (2026-08-18): CLI local policy construction now
+converts malformed `--url` input into the stable `CliConfigError`
+`InvalidConfiguration` rather than leaking `URL` parsing. Mission execution
+validates persisted dispatch URLs before calling the execution use case and
+converts invalid URL configuration into a durable error attempt, failed job, and
+blocked Mission terminal state without an uncaught exception or browser work.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 191 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 6 (2026-08-18): the Task 15 Files block was correctly
+amended to authorize the one IPv6 listener path before it changed. The gRPC
+server now binds `::1` using bracketed authority notation and a real IPv6 mTLS
+connection passes. Core configuration requires explicit `local` or
+`self_hosted` deployment mode; absent/unknown values fail, manifest absence is
+no recovery candidate, and malformed manifest JSON fails load. Wire plan parsing
+now enters the strict Job parser so malformed plans fail `PolicyMissing` at the
+network boundary. Runner OfferRuntime drains Trace with negotiated welcome
+limits. Mission/exploration authority validation rejects malformed canonical
+instants, enums, and duplicate origins/actions before compilation. The runtime
+policy matrix proves action-kind, risk ceiling, and `ProductionForbidden`
+denials never mint a permit or invoke an executor; Core factory legacy gate
+injection remains rejected.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 189 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 5 (2026-08-18): gRPC listener binding formats IPv6
+loopback as `[::1]:port` and a real mTLS IPv6 connection passes while IPv4 is
+unchanged. `CORE_DEPLOYMENT_MODE` is now mandatory and accepts only `local` or
+`self_hosted`; absent/unknown modes do not silently select Local, while manifest
+absence remains a no-recovery candidate and malformed JSON fails config load.
+Malformed plan wire payloads now fail as `PolicyMissing` before Job admission.
+OfferRuntime drains Trace using negotiated welcome limits, proven with restrictive
+bounds. Mission and exploration authority validation now rejects malformed
+instants/enums/duplicates before compilation or dispatch. The policy matrix adds
+action-kind, risk-ceiling, and `ProductionForbidden` denials before permit or
+executor creation; the Core factory also rejects legacy injected policy gates.
+
+The Task 15 Files block was amended in this fix round to add the exact
+`packages/protocol-adapters/grpc-runner-protocol/src/server.ts` IPv6 listener
+path before editing it. After `corepack pnpm build`, the complete Task 15
+focused command passed 26 files / 186 tests with
+`C:\Program Files\Git\usr\bin` on PATH for component mTLS.
+`corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 15 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 4 (2026-08-18): Local recovery now accepts only the
+two plan-authorized exact loopback forms (`127.0.0.1` and `::1`), while absent
+or other hosts fail Phase A. The neutral strict Job parser now validates and
+preserves optional immutable plan snapshots through normal SQLite/PostgreSQL
+lease reads and the hash-bound Local recovery upcast; malformed plan snapshots
+produce `PolicyMissing`. Mission exploration conversion now maps only the
+exactly representable `ReadOnly` exploration ceiling to Runner `Normal` risk,
+rejecting broader/unrepresentable ceilings and any result above approved risk.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 180 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 3 (2026-08-18): the frozen `plan = 5` Job field now
+maps losslessly through gRPC/protobuf alongside policy, with a non-empty plan
+round-trip assertion. Legacy recovery requires explicit `127.0.0.1` exactly;
+direct `startCoreDaemon` evidence now covers absent/non-loopback host,
+malformed/duplicate manifests, missing row, origin and preexisting-policy
+mismatch, ordinary policyless no-manifest fail-closed behavior, resource release,
+and the constrained successful upcast. Strict `lease()` failures encountered by
+owner lookup during application renewal translate to Core `PolicyMissing`.
+Offer evidence isolates a non-expired cross-origin denial, policyless denial,
+invalid staging exploration/coordinate/visual declarations, and an allowed
+staging control that passes exactly the snapshot origins and same deterministic
+gate into the executor.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
+Task 15 review-fix round 2 (2026-08-18): gRPC Job mapping now losslessly
+preserves the existing `plan = 5` snapshot through protobuf, including steps,
+claims, and budget. Legacy Local recovery now requires explicit exact
+`127.0.0.1`; absent, IPv6, or any other host fails before SQLite/listen. Direct
+daemon evidence covers malformed/duplicate Phase A manifests, missing Phase B
+rows, hash/origin/preexisting-policy mismatch closure, ordinary policyless rows
+without a manifest fail-closed, and the constrained verified upcast. Strict
+lease parsing arising in owner lookup is translated to `CoreApplicationError`
+`PolicyMissing` for application renewal. Runner OfferRuntime proves non-expired
+cross-origin, policyless, and invalid staging exploration/coordinate/visual
+offers do not construct targets; a valid staging control receives only the
+snapshot's exact `allowedOrigins`.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.

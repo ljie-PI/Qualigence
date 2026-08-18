@@ -106,11 +106,212 @@ export interface WebTargetRef {
 
 export type TargetRef = WebTargetRef;
 
+export type ExecutionPolicyEnvironment = "isolated_test" | "staging" | "production";
+export type ExecutionPolicyActionKind = "navigate" | "click" | "input" | "select" | "scroll" | "window";
+export type ExecutionPolicyRisk = "Normal" | "ExternalSideEffect" | "Destructive" | "ProductionForbidden";
+
+/**
+ * Immutable Core-issued authority snapshot for exactly one accepted Job. It is
+ * carried losslessly over the Runner Protocol and never inferred by a Runner.
+ */
+export interface ExecutionPolicySnapshot {
+  readonly policyId: string;
+  readonly environment: ExecutionPolicyEnvironment;
+  readonly allowedOrigins: readonly string[];
+  readonly allowedActionKinds: readonly ExecutionPolicyActionKind[];
+  readonly maximumRisk: ExecutionPolicyRisk;
+  readonly explorationAllowed: boolean;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+export class ExecutionPolicySnapshotError extends Error {
+  constructor() {
+    super("execution policy snapshot is missing or malformed");
+    this.name = "ExecutionPolicySnapshotError";
+  }
+}
+
+const POLICY_ENVIRONMENTS = ["isolated_test", "staging", "production"] as const;
+const POLICY_ACTION_KINDS = ["navigate", "click", "input", "select", "scroll", "window"] as const;
+const POLICY_RISKS = ["Normal", "ExternalSideEffect", "Destructive", "ProductionForbidden"] as const;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Strict transport-safe parser shared by wire, persistence, and Runner admission. */
+export function parseExecutionPolicySnapshot(value: unknown): ExecutionPolicySnapshot {
+  const policy = record(value);
+  const policyId = nonEmptyString(policy.policyId);
+  const environment = enumValue(policy.environment, POLICY_ENVIRONMENTS);
+  const allowedOrigins = stringArray(policy.allowedOrigins).map(parseOrigin);
+  const allowedActionKinds = enumArray(policy.allowedActionKinds, POLICY_ACTION_KINDS);
+  const maximumRisk = enumValue(policy.maximumRisk, POLICY_RISKS);
+  if (typeof policy.explorationAllowed !== "boolean") throw new ExecutionPolicySnapshotError();
+  const issuedAt = isoInstant(policy.issuedAt);
+  const expiresAt = isoInstant(policy.expiresAt);
+  if (Date.parse(issuedAt) >= Date.parse(expiresAt)) throw new ExecutionPolicySnapshotError();
+  if (new Set(allowedOrigins).size !== allowedOrigins.length || new Set(allowedActionKinds).size !== allowedActionKinds.length) {
+    throw new ExecutionPolicySnapshotError();
+  }
+  if (environment === "staging" && (allowedActionKinds.length !== 1 || allowedActionKinds[0] !== "click" || maximumRisk !== "Normal" || policy.explorationAllowed)) {
+    throw new ExecutionPolicySnapshotError();
+  }
+  return { policyId, environment, allowedOrigins, allowedActionKinds, maximumRisk, explorationAllowed: policy.explorationAllowed, issuedAt, expiresAt };
+}
+
+export interface PolicylessExecutionJob {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly target: WebTargetRef;
+  readonly objective: string;
+  readonly plan?: ExecutionJobPlanSnapshot;
+}
+
+export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
+  const raw = record(value);
+  const identity = parseExecutionJobIdentity(raw);
+  const policy = parseExecutionPolicySnapshot(raw.policy);
+  const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
+  return plan === undefined ? { ...identity, policy } : { ...identity, policy, plan };
+}
+
+export function parsePolicylessExecutionJob(value: unknown): PolicylessExecutionJob {
+  const raw = record(value);
+  if (raw.policy !== undefined) throw new ExecutionPolicySnapshotError();
+  const identity = parseExecutionJobIdentity(raw);
+  const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
+  return plan === undefined ? identity : { ...identity, plan };
+}
+
+function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot {
+  const plan = record(value);
+  const steps = array(plan.steps).map(parseExecutionPlanStep);
+  const expectedClaimIds = stringTuple(plan.expectedClaimIds);
+  const [firstStep, ...remainingSteps] = steps;
+  if (firstStep === undefined) throw new ExecutionPolicySnapshotError();
+  const budget = record(plan.budget);
+  return {
+    missionId: nonEmptyString(plan.missionId),
+    missionRevision: positiveSafeInteger(plan.missionRevision),
+    testCaseId: nonEmptyString(plan.testCaseId),
+    steps: [firstStep, ...remainingSteps],
+    expectedClaimIds,
+    budget: {
+      maximumStepsPerJob: positiveSafeInteger(budget.maximumStepsPerJob),
+      maximumWallClockMs: positiveSafeInteger(budget.maximumWallClockMs),
+      maximumModelTokens: positiveSafeInteger(budget.maximumModelTokens),
+    },
+  };
+}
+
+function parseExecutionPlanStep(value: unknown): ExecutionPlanStep {
+  const step = record(value);
+  switch (step.kind) {
+    case "navigate":
+      return { kind: "navigate", path: nonEmptyString(step.path) };
+    case "click":
+      return { kind: "click", target: parseExecutionPlanTarget(step.target) };
+    case "input": {
+      return { kind: "input", target: parseExecutionPlanTarget(step.target), valueRef: nonEmptyString(step.valueRef) };
+    }
+    case "verify":
+      return { kind: "verify", claimIds: stringTuple(step.claimIds) };
+    default:
+      throw new ExecutionPolicySnapshotError();
+  }
+}
+
+function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
+  const target = record(value);
+  const role = target.role === undefined ? undefined : nonEmptyString(target.role);
+  const name = target.name === undefined ? undefined : nonEmptyString(target.name);
+  const base = { purpose: nonEmptyString(target.purpose) };
+  return role === undefined && name === undefined
+    ? base
+    : { ...base, ...(role === undefined ? {} : { role }), ...(name === undefined ? {} : { name }) };
+}
+
+function parseExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
+  const job = record(value);
+  const target = record(job.target);
+  if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
+  return {
+    jobId: nonEmptyString(job.jobId),
+    runId: nonEmptyString(job.runId),
+    target: { kind: "web", url: parseTargetUrl(target.url) },
+    objective: nonEmptyString(job.objective),
+  };
+}
+
+function record(value: unknown): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ExecutionPolicySnapshotError();
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function nonEmptyString(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function positiveSafeInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function array(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function stringTuple(value: unknown): readonly [string, ...string[]] {
+  const items = array(value).map(nonEmptyString);
+  const [first, ...rest] = items;
+  if (first === undefined) throw new ExecutionPolicySnapshotError();
+  return [first, ...rest];
+}
+
+function isoInstant(value: unknown): string {
+  const instant = nonEmptyString(value);
+  if (!ISO_INSTANT.test(instant) || !Number.isFinite(Date.parse(instant)) || new Date(instant).toISOString() !== instant) throw new ExecutionPolicySnapshotError();
+  return instant;
+}
+
+function parseOrigin(value: string): string {
+  if (value.includes("*")) throw new ExecutionPolicySnapshotError();
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw new ExecutionPolicySnapshotError(); }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "" || parsed.origin !== value) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function parseTargetUrl(value: unknown): string {
+  const url = nonEmptyString(value);
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new ExecutionPolicySnapshotError(); }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "") throw new ExecutionPolicySnapshotError();
+  return url;
+}
+
+function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] {
+  if (typeof value !== "string" || !allowed.includes(value)) throw new ExecutionPolicySnapshotError();
+  return value as T[number];
+}
+
+function stringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value.map(nonEmptyString);
+}
+
+function enumArray<T extends readonly string[]>(value: unknown, allowed: T): readonly T[number][] {
+  if (!Array.isArray(value) || value.length === 0) throw new ExecutionPolicySnapshotError();
+  return value.map((item) => enumValue(item, allowed));
+}
+
 export interface AcceptedExecutionJob {
   readonly jobId: ExecutionJobId;
   readonly runId: RunId;
   readonly target: TargetRef;
   readonly objective: string;
+  readonly policy: ExecutionPolicySnapshot;
   /**
    * Optional immutable Mission plan snapshot (LS-07). Purely additive: M1
    * objective-only jobs omit it. When present it is a read-only Runner DTO —

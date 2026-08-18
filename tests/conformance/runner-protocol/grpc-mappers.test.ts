@@ -22,6 +22,7 @@ import {
   leaseToWire,
   offerFromWire,
   offerToWire,
+  jobFromWire,
   renewLeaseFromWire,
   renewLeaseToWire,
   welcomeFromWire,
@@ -42,6 +43,43 @@ function wireRoundTrip<TDomain>(
 }
 
 describe("grpc runner protocol mappers", () => {
+  it("rejects a network Job that omits the required policy snapshot", () => {
+    expect(() =>
+      jobFromWire({
+        job_id: "job-policyless",
+        run_id: "run-policyless",
+        target: { web: { url: "https://example.test/" } },
+        objective: "must not dispatch",
+      }),
+    ).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
+  });
+
+  it.each([
+    ["invalid expiry", { expires_at: "not-an-instant" }],
+    ["inverted policy interval", { issued_at: "2026-08-18T00:01:00.000Z", expires_at: "2026-08-18T00:00:00.000Z" }],
+    ["unknown environment", { environment: "preview" }],
+    ["unknown action", { allowed_action_kinds: ["teleport"] }],
+    ["staging exploration", { environment: "staging", exploration_allowed: true }],
+  ])("rejects a wire Job with %s as PolicyMissing", (_name, policyOverride) => {
+    expect(() => jobFromWire({
+      job_id: "job-1",
+      run_id: "run-1",
+      target: { web: { url: "https://example.test/" } },
+      objective: "must not dispatch",
+      policy: {
+        policy_id: "policy-1",
+        environment: "isolated_test",
+        allowed_origins: ["https://example.test"],
+        allowed_action_kinds: ["click"],
+        maximum_risk: "Normal",
+        exploration_allowed: false,
+        issued_at: "2026-08-18T00:00:00.000Z",
+        expires_at: "2026-08-18T00:01:00.000Z",
+        ...policyOverride,
+      },
+    })).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
+  });
+
   it("round-trips RunnerHello through the protobuf wire", () => {
     const hello: RunnerHello = {
       runnerId: "runner-1",
@@ -94,6 +132,19 @@ describe("grpc runner protocol mappers", () => {
         runId: "run-attempt-1",
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+        plan: {
+          missionId: "mission-1",
+          missionRevision: 2,
+          testCaseId: "case-1",
+          steps: [
+            { kind: "navigate", path: "/cart" },
+            { kind: "click", target: { role: "button", name: "Add", purpose: "add item" } },
+            { kind: "verify", claimIds: ["claim-1"] },
+          ],
+          expectedClaimIds: ["claim-1"],
+          budget: { maximumStepsPerJob: 3, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+        },
       },
       requiredCapabilities: ["target:web-playwright"],
       leaseDurationMs: 30_000,

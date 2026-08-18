@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DeterministicRunnerPolicyGate,
   ExecutionRuntime,
   type RunnerPolicyGate,
 } from "@qualigence/runner-kernel";
@@ -9,7 +10,35 @@ import {
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
 
+const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+
 describe("ExecutionRuntime", () => {
+  it.each([
+    ["action-kind mismatch", { allowedActionKinds: ["navigate"] as const, maximumRisk: "Normal" as const }],
+    ["risk above ceiling", { allowedActionKinds: ["window"] as const, maximumRisk: "Normal" as const }],
+    ["ProductionForbidden policy", { allowedActionKinds: ["click"] as const, maximumRisk: "ProductionForbidden" as const }],
+  ])("does not mint a permit or invoke the executor for %s", async (_name, override) => {
+    let executorCalls = 0;
+    const traceRecorder = new InMemoryTraceRecorder();
+    const action = override.allowedActionKinds[0] === "window"
+      ? { targetKind: "desktop" as const, actionId: "close", graphId: "graph-1", nodeId: "node-1", resolution: "semantic" as const, kind: "window" as const, windowOperation: "close" as const }
+      : { kind: "click" as const, target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" };
+    const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z", ...override };
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "test" }),
+      resolver: { resolve: async () => action as never },
+      policyGate: new DeterministicRunnerPolicyGate(policy),
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" as const }; } },
+      verifier: { verify: async () => ({ status: "passed" as const, summary: "not reached", claims: [] }) },
+      traceRecorder,
+    });
+    const completion = await runtime.run({ jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "test", policy });
+    expect(completion).toMatchObject({ status: "blocked", errorCode: "PolicyDenied" });
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-1").map((event) => event.stage)).not.toContain("policy_authorized");
+  });
+
   it("runs an accepted web job through all M1 stages and records trace in order", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const observations = [
@@ -71,6 +100,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-1",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click login",
+      policy,
     });
 
     expect(completion.status).toBe("passed");
@@ -148,6 +178,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-denied",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click delete",
+      policy,
     });
 
     expect(completion.status).toBe("blocked");
@@ -242,6 +273,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-failed",
       target: { kind: "web", url: "https://example.test" },
       objective: "Verify cart total",
+      policy,
     });
 
     expect(completion.status).toBe("finding");
@@ -318,6 +350,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-action-failed",
       target: { kind: "web", url: "https://example.test" },
       objective: "Add item to cart",
+      policy,
     });
 
     expect(completion).toEqual({

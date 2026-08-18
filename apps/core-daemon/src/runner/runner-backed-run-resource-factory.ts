@@ -5,18 +5,15 @@ import type {
   RunStore,
   TraceStore,
 } from "@qualigence/evidence";
-import { TraceIngestor } from "@qualigence/evidence";
 import type {
   RunExecutionRequest,
   RunResourceFactory,
   RunResourceScope,
 } from "@qualigence/execution-application";
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
-import { InMemoryProtocolTraceRecorder } from "@qualigence/in-memory-runner-protocol";
+import { ExecutionPolicySnapshotError, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionJobLease } from "@qualigence/runner-protocol";
-import { ExecutionRuntime } from "@qualigence/runner-kernel";
-import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
-import type { RemoteRunnerTarget } from "./remote-runner-target.js";
+import { CoreApplicationError } from "@qualigence/core-application";
 
 /** Persistence ports for one Run, opened together and closed together. */
 export interface RunnerBackedRunResources {
@@ -35,16 +32,10 @@ export interface RunnerBackedRunResourceFactoryOptions {
    * closes.
    */
   readonly connection: RunnerConnectionPort;
-  /** Opens the per-call execution channel to the leased Runner. */
-  readonly openTarget: (
-    runId: string,
-    request: RunExecutionRequest,
-    lease: ExecutionJobLease,
-  ) => Promise<RemoteRunnerTarget>;
   /** Opens the Core-side persistence ports (SQLite in production, in-memory in tests). */
   readonly openStores: (runId: string, request: RunExecutionRequest) => Promise<RunnerBackedRunResources>;
-  /** Core-side policy gate; authorization stays on the Core, never the Runner. */
-  readonly policyGate: RunnerPolicyGate;
+  /** Waits for the Runner's authoritative completion without the raw lease token. */
+  readonly awaitCompletion: (lease: ExecutionJobLease) => Promise<import("@qualigence/runner-protocol").ExecutionCompletion>;
   readonly requiredCapabilities?: readonly string[];
   readonly generateJobId?: () => string;
 }
@@ -62,79 +53,71 @@ export interface RunnerBackedRunResourceFactoryOptions {
  */
 export class RunnerBackedRunResourceFactory implements RunResourceFactory {
   private readonly connection: RunnerConnectionPort;
-  private readonly openTarget: RunnerBackedRunResourceFactoryOptions["openTarget"];
   private readonly openStores: RunnerBackedRunResourceFactoryOptions["openStores"];
-  private readonly policyGate: RunnerPolicyGate;
+  private readonly awaitCompletion: RunnerBackedRunResourceFactoryOptions["awaitCompletion"];
   private readonly requiredCapabilities: readonly string[];
   private readonly generateJobId: () => string;
 
   constructor(options: RunnerBackedRunResourceFactoryOptions) {
     this.connection = options.connection;
-    this.openTarget = options.openTarget;
     this.openStores = options.openStores;
-    this.policyGate = options.policyGate;
+    if ("policyGate" in (options as object)) {
+      throw new Error("RunnerBackedRunResourceFactory does not accept policyGate; Runner owns policy admission.");
+    }
+    this.awaitCompletion = options.awaitCompletion;
     this.requiredCapabilities = options.requiredCapabilities ?? ["target:web-playwright"];
     this.generateJobId = options.generateJobId ?? ((): string => randomBytes(16).toString("hex"));
   }
 
   async open(runId: string, request: RunExecutionRequest): Promise<RunResourceScope> {
+    try {
+      parseExecutionPolicySnapshot(request.policy);
+    } catch (error) {
+      if (error instanceof ExecutionPolicySnapshotError) {
+        throw new CoreApplicationError("PolicyMissing", "execution request policy is missing or malformed");
+      }
+      throw error;
+    }
     const stores = await this.openStores(runId, request);
 
-    const job: AcceptedExecutionJob = {
-      jobId: this.generateJobId(),
-      runId,
-      target: { kind: "web", url: request.target.url },
-      objective: request.objective,
-    };
-
-    let lease: ExecutionJobLease;
-    let target: RemoteRunnerTarget;
+    let offeredJob: AcceptedExecutionJob | undefined;
     try {
-      lease = await this.connection.offer(job, this.requiredCapabilities);
-      target = await this.openTarget(runId, request, lease);
+      return {
+        execute: async (acceptedJob: AcceptedExecutionJob) => {
+          if (acceptedJob.policy !== request.policy) {
+            throw new Error("Execution Job policy must be the exact request snapshot.");
+          }
+          if (acceptedJob.runId !== runId || acceptedJob.target.url !== request.target.url) {
+            throw new Error("Execution Job must match its opened run request.");
+          }
+          offeredJob = acceptedJob;
+          const lease = await this.connection.offer(acceptedJob, this.requiredCapabilities);
+          return this.awaitCompletion(lease);
+        },
+        artifacts: stores.artifacts,
+        manifests: stores.manifests,
+        runs: stores.runs,
+        traces: stores.traces,
+        close: async (): Promise<void> => {
+          let firstError: unknown;
+          try {
+            if (offeredJob !== undefined) {
+              await this.connection.cancel(offeredJob.jobId, "run scope closed");
+            }
+          } catch (cause) {
+            firstError = cause;
+          }
+          try {
+            await stores.close();
+          } catch (cause) {
+            firstError ??= cause;
+          }
+          if (firstError !== undefined) throw firstError;
+        },
+      };
     } catch (cause) {
       await stores.close().catch(() => undefined);
       throw cause;
     }
-
-    const runtime = new ExecutionRuntime({
-      observer: target,
-      decisionProvider: target,
-      resolver: target,
-      policyGate: this.policyGate,
-      actionExecutor: target,
-      verifier: target,
-      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(stores.traces)),
-    });
-
-    const connection = this.connection;
-    return {
-      runtime,
-      artifacts: stores.artifacts,
-      manifests: stores.manifests,
-      runs: stores.runs,
-      traces: stores.traces,
-      close: async (): Promise<void> => {
-        let firstError: unknown;
-        try {
-          await connection.cancel(job.jobId, "run scope closed");
-        } catch (cause) {
-          firstError = cause;
-        }
-        try {
-          await target.close();
-        } catch (cause) {
-          firstError ??= cause;
-        }
-        try {
-          await stores.close();
-        } catch (cause) {
-          firstError ??= cause;
-        }
-        if (firstError !== undefined) {
-          throw firstError;
-        }
-      },
-    };
   }
 }

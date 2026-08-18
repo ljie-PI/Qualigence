@@ -16,6 +16,7 @@ import type {
   RunExecutionUseCase,
 } from "./contracts.js";
 import { ExecutionApplicationError } from "./errors.js";
+import { isValidExecutionTargetUrl } from "./run-execution-use-case.js";
 
 /** Full-chain provenance from a Mission execution back to its originating PRD. */
 export interface MissionExecutionTrace {
@@ -107,9 +108,13 @@ export class MissionExecutionUseCase {
     let stopped = false;
 
     for (const job of mission.jobs) {
-      const runResult = await this.runExecution.execute(
-        this.buildRequest(mission, job),
-      );
+      let runResult: RunExecutionResult;
+      try {
+        runResult = await this.runExecution.execute(this.buildRequest(mission, job));
+      } catch (error) {
+        if (!(error instanceof ExecutionApplicationError)) throw error;
+        runResult = { runId: "", status: "error", errorCode: error.code, evidenceRefs: [] };
+      }
 
       await this.repository.recordJobAttempt({
         attemptId: this.generateAttemptId(),
@@ -172,9 +177,17 @@ export class MissionExecutionUseCase {
     mission: DispatchableMission,
     job: DispatchableJob,
   ): RunExecutionRequest {
+    if (!isValidExecutionTargetUrl(mission.dispatch.targetUrl)) {
+      throw new ExecutionApplicationError("InvalidTargetUrl", "Mission dispatch target URL is invalid.");
+    }
+    const targetOrigin = new URL(mission.dispatch.targetUrl).origin;
+    if (!mission.executionPolicy.allowedOrigins.includes(targetOrigin)) {
+      throw new ExecutionApplicationError("InvalidConfiguration", "Mission target is outside its approved policy origins.");
+    }
     return {
       target: { kind: "web", url: mission.dispatch.targetUrl },
       objective: job.objective,
+      policy: mission.executionPolicy,
       executionProfile: {
         modelProfileId: mission.dispatch.modelProfileId,
         headed: mission.dispatch.headed,

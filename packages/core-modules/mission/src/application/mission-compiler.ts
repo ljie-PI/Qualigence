@@ -12,6 +12,7 @@ import {
   type TargetCapabilitySummary,
   type TestMission,
 } from "../domain/test-mission.js";
+import { validateApprovedExecutionPolicy } from "../exploration-policy.js";
 
 /** Recursively sort object keys so equal content always serializes identically. */
 function canonicalize(value: unknown): unknown {
@@ -83,6 +84,14 @@ export class MissionCompiler {
     }
 
     const supported = new Set(target.supportedStepKinds);
+    try {
+      validateApprovedExecutionPolicy(mission.executionPolicy, mission.executionBudget.maximumWallClockMs);
+    } catch (error) {
+      return {
+        ok: false,
+        error: { code: "MissionBudgetExceeded", message: error instanceof Error ? error.message : "Invalid execution policy." },
+      };
+    }
     const jobs: ExecutionJob[] = [];
 
     for (const testCase of plan.testCases) {
@@ -155,6 +164,7 @@ export class MissionCompiler {
           idempotencyKey: job.idempotencyKey,
           requiredCapabilities: job.requiredCapabilities,
           budget: job.budget,
+          executionPolicy: mission.executionPolicy,
           snapshotHash: job.snapshotHash,
         })),
       }),
@@ -166,6 +176,7 @@ export class MissionCompiler {
         missionId: mission.missionId,
         missionRevision: mission.revision,
         targetId: mission.targetId,
+        executionPolicy: deepFreeze(structuredClone(mission.executionPolicy)),
         jobs: [firstJob, ...restJobs],
         compiledHash,
       }),

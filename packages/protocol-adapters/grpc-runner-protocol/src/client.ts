@@ -48,6 +48,7 @@ const APPLICATION_ERROR_CODES: ReadonlySet<string> = new Set<RunnerProtocolError
   "ProtocolViolation",
   "CapabilityMismatch",
   "TlsPeerRejected",
+  "PolicyMissing",
 ]);
 
 export interface GrpcRunnerProtocolClientOptions {
@@ -194,7 +195,11 @@ class ClientRunnerSession implements RunnerSession {
 
   dispatch(frame: ServerFrameWire): void {
     if (frame.offer !== undefined) {
-      this.offers.push(offerFromWire(frame.offer));
+      try {
+        this.offers.push(offerFromWire(frame.offer));
+      } catch (error) {
+        this.fail(error);
+      }
       return;
     }
     if (frame.lease !== undefined) {

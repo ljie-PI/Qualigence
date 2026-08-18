@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { z } from "zod";
+import { isValidExecutionTargetUrl } from "@qualigence/execution-application";
 import type { RunExecutionRequest } from "@qualigence/execution-application";
 
 export type OutputMode = "human" | "json";
@@ -34,6 +35,7 @@ const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 const DEFAULT_MODEL_PROFILE_ID = "default";
 const DEFAULT_DATA_DIR = ".qualigence/data";
+const LOCAL_POLICY_DURATION_MS = 15_000;
 
 const environmentSchema = z.object({
   QUALIGENCE_MODEL_BASE_URL: z
@@ -92,6 +94,7 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
   const request: RunExecutionRequest = {
     target: { kind: "web", url: options.url },
     objective: options.objective,
+    policy: localPolicy(options.url),
     executionProfile: {
       modelProfileId: DEFAULT_MODEL_PROFILE_ID,
       headed: options.headed === true,
@@ -101,6 +104,24 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
   };
 
   return { request, output };
+}
+
+function localPolicy(url: string): RunExecutionRequest["policy"] {
+  if (!isValidExecutionTargetUrl(url)) {
+    throw new CliConfigError("--url must be a valid HTTP(S) URL.");
+  }
+  const origin = new URL(url).origin;
+  const issuedAt = new Date().toISOString();
+  return {
+    policyId: "local-cli-isolated-test",
+    environment: "isolated_test",
+    allowedOrigins: [origin],
+    allowedActionKinds: ["click"],
+    maximumRisk: "Normal",
+    explorationAllowed: false,
+    issuedAt,
+    expiresAt: new Date(Date.parse(issuedAt) + LOCAL_POLICY_DURATION_MS).toISOString(),
+  };
 }
 
 interface RunOptions {

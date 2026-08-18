@@ -14,6 +14,7 @@ import type {
   TestPlanRevision,
 } from "@qualigence/mission";
 import type { SqliteRuntime } from "./database.js";
+import type { CompiledMission } from "@qualigence/mission";
 import { runInImmediateTransaction } from "./transaction.js";
 
 /**
@@ -174,6 +175,16 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
       .orderBy("job_id", "asc")
       .execute();
 
+    const compiled = await db
+      .selectFrom("mission_revisions")
+      .select("compiled_json")
+      .where("mission_id", "=", mission.mission_id)
+      .where("revision", "=", mission.revision)
+      .executeTakeFirst();
+    if (compiled === undefined) {
+      throw new Error(`Missing immutable compiled Mission ${mission.mission_id}@${mission.revision}.`);
+    }
+    const compiledMission = JSON.parse(compiled.compiled_json) as CompiledMission;
     const jobs: DispatchableJob[] = jobRows.map((row) => ({
       jobId: row.job_id,
       testCaseId: row.test_case_id,
@@ -193,6 +204,7 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
       prdRevision: mission.prd_revision,
       status: mission.status as MissionStatus,
       dispatch: JSON.parse(mission.dispatch_json) as MissionDispatchDescriptor,
+      executionPolicy: compiledMission.executionPolicy,
       stopOnBlockedTestCase: mission.stop_on_blocked === 1,
       jobs,
     };

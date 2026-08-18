@@ -94,9 +94,10 @@ export class RunExecutionUseCaseImpl implements RunExecutionUseCase {
         runId,
         target: { kind: "web", url: request.target.url },
         objective: request.objective,
+        policy: request.policy,
       };
 
-      const completion = await scope.runtime.run(job);
+      const completion = await scope.execute(job);
       return await this.finalizeCompletion(scope, runId, completion);
     } catch (cause) {
       const errorCode = mapInfrastructureError(cause);
@@ -188,7 +189,7 @@ function validateRequest(
   if (request.target.kind !== "web") {
     return "InvalidConfiguration";
   }
-  if (!isValidHttpUrl(request.target.url)) {
+  if (!isValidExecutionTargetUrl(request.target.url)) {
     return "InvalidTargetUrl";
   }
   if (request.objective.trim().length === 0) {
@@ -208,14 +209,19 @@ function validateRequest(
   return undefined;
 }
 
-function isValidHttpUrl(value: string): boolean {
+export function isValidExecutionTargetUrl(value: string): boolean {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     return false;
   }
-  return url.protocol === "http:" || url.protocol === "https:";
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.username === "" &&
+    url.password === "" &&
+    url.origin !== "null"
+  );
 }
 
 function isPositiveInteger(value: number): boolean {

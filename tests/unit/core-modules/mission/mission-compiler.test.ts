@@ -35,6 +35,16 @@ function mission(overrides: Partial<TestMission> = {}): TestMission {
       maximumModelTokens: 100000,
       stopOnBlockedTestCase: true,
     },
+    executionPolicy: {
+      policyId: "policy-mission",
+      environment: "staging",
+      allowedOrigins: ["https://example.test"],
+      allowedActionKinds: ["click"],
+      maximumRisk: "Normal",
+      explorationAllowed: false,
+      issuedAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-08-01T00:01:00.000Z",
+    },
     status: "approved",
     ...overrides,
   };
@@ -107,12 +117,12 @@ describe("MissionCompiler", () => {
     expect(JSON.stringify(a.value)).toBe(JSON.stringify(b.value));
   });
 
-  it("does not embed timestamps in the compiled snapshot identity", () => {
+  it("includes the approved immutable policy timestamps in the compiled snapshot", () => {
     const plan = approved();
     const result = compiler.compile(plan, mission(), webTarget);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(JSON.stringify(result.value)).not.toContain("2026-08-01");
+    expect(result.value.executionPolicy.issuedAt).toBe("2026-08-01T00:00:00.000Z");
   });
 
   it("keeps the compiled snapshot immutable if the plan later changes", () => {
@@ -158,5 +168,14 @@ describe("MissionCompiler", () => {
       ok: false,
       error: { code: "MissionBudgetExceeded" },
     });
+  });
+
+  it("rejects malformed Mission policy before any execution can be compiled", () => {
+    const result = compiler.compile(
+      approved(),
+      mission({ executionPolicy: { ...mission().executionPolicy, allowedOrigins: ["https://example.test", "https://example.test"], allowedActionKinds: ["teleport"] as never } }),
+      webTarget,
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: "MissionBudgetExceeded" } });
   });
 });

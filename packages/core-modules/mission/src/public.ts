@@ -37,6 +37,8 @@ export {
   isWithinRiskCeiling,
   riskRank,
   validateExplorationPolicy,
+  validateApprovedExecutionPolicy,
+  narrowApprovedExecutionPolicy,
 } from "./exploration-policy.js";
 
 export type {
@@ -50,6 +52,7 @@ export type {
   ExplorationTerminalReason,
   ProposedExplorationAction,
   RegressionJobPlan,
+  ApprovedExecutionPolicy,
 } from "./exploration-policy.js";
 
 export type {

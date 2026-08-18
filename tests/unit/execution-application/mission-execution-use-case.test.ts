@@ -41,6 +41,7 @@ function dispatchableMission(
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 5_000,
     },
+    executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:4599"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     stopOnBlockedTestCase: true,
     jobs: [
       {
@@ -127,6 +128,7 @@ describe("MissionExecutionUseCase", () => {
       {
         target: { kind: "web", url: "http://127.0.0.1:4599/cart" },
         objective: "Add a product to the cart",
+        policy: repository.mission.executionPolicy,
         executionProfile: {
           modelProfileId: "profile-a",
           headed: false,
@@ -197,5 +199,50 @@ describe("MissionExecutionUseCase", () => {
     const runExecution = new ScriptedRunExecution([]);
     const useCase = new MissionExecutionUseCase(repository, runExecution);
     await expect(useCase.execute("missing")).rejects.toThrow();
+  });
+
+  it("records a failed attempt and blocks the Mission when a persisted dispatch URL is malformed", async () => {
+    repository.mission = dispatchableMission({
+      dispatch: { ...dispatchableMission().dispatch, targetUrl: "not-a-url" },
+    });
+    const runExecution = new ScriptedRunExecution([]);
+    const useCase = new MissionExecutionUseCase(repository, runExecution, {
+      generateAttemptId: () => "attempt-invalid-target",
+      clock: { now: () => "2026-08-18T00:00:00.000Z" },
+    });
+
+    await expect(useCase.execute("mission-1")).resolves.toMatchObject({
+      status: "blocked",
+      jobResults: [{ jobId: "job-1", runId: "", status: "error" }],
+    });
+    expect(runExecution.requests).toEqual([]);
+    expect(repository.attempts).toEqual([
+      expect.objectContaining({
+        attemptId: "attempt-invalid-target",
+        jobId: "job-1",
+        runId: "",
+        status: "error",
+        errorCode: "InvalidTargetUrl",
+      }),
+    ]);
+    expect(repository.jobStatuses).toEqual([{ jobId: "job-1", status: "failed" }]);
+    expect(repository.missionStatuses).toEqual(["running", "blocked"]);
+  });
+
+  it.each([
+    "ftp://example.test/path",
+    "file:///tmp/target.html",
+    "data:text/html,hello",
+    "https://user:secret@example.test/",
+  ])("records InvalidTargetUrl for unsafe persisted dispatch URL %s", async (targetUrl) => {
+    repository.mission = dispatchableMission({ dispatch: { ...dispatchableMission().dispatch, targetUrl } });
+    const useCase = new MissionExecutionUseCase(repository, new ScriptedRunExecution([]), {
+      generateAttemptId: () => "attempt-unsafe-target",
+      clock: { now: () => "2026-08-18T00:00:00.000Z" },
+    });
+
+    await expect(useCase.execute("mission-1")).resolves.toMatchObject({ status: "blocked" });
+    expect(repository.attempts[0]).toMatchObject({ status: "error", errorCode: "InvalidTargetUrl" });
+    expect(repository.missionStatuses).toEqual(["running", "blocked"]);
   });
 });
