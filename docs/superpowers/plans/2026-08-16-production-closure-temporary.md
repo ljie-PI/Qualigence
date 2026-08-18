@@ -126,7 +126,10 @@ PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
 Task 10
-    → Task 11 (Local API + Launcher independent loop)
+    → Task 11 design dossier only (documentation-only separate docs PR/commit/review permitted; no source/test RED, implementation, Task Gate, Task commit, or dispatch activation)
+
+Task 10 + merged Task 15
+    → Task 11 implementation, RED/Gate/commit, and Local dispatch activation
 
 Tasks 9-11 + Task 15
     → Task 12 (Self-hosted Mission/Run/Skill API and matching Console client)
@@ -1734,10 +1737,15 @@ git commit -m "feat(core): persist runner ownership state"
 
 ### Task 11: Add authenticated Local run intake and make Launcher prove Runner registration
 
+**Execution precondition:** Task 10 and merged Task 15 are complete.
+
+**Policy sequencing:** The only parallel Task 11 work authorized while Task 15 is in progress is the documentation-only dossier `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`. It may be committed and reviewed in a separate docs-only PR while Task 15 proceeds. That separate documentation commit is not Task 11's implementation commit and may not add Task 11 production/test source, create or run its RED test, run its Task Gate, or activate Local dispatch. Task 11 implementation, its RED test, its Gate and implementation commit, and all Local production dispatch activation begin only after Task 15 merges with required Job policy and no allow-all composition.
+
 **Files:**
 - Create: `apps/core-daemon/src/local/local-session-service.ts`
 - Create: `apps/core-daemon/src/local/local-http-server.ts`
 - Create: `apps/core-daemon/src/local/local-run-coordinator.ts`
+- Create: `apps/core-daemon/src/local/local-run-policy-issuer.ts`
 - Modify: `packages/core-application/src/runner/core-runner-protocol-application.ts`
 - Modify: `apps/core-daemon/src/main.ts`
 - Modify: `apps/core-daemon/src/config.ts`
@@ -1747,6 +1755,9 @@ git commit -m "feat(core): persist runner ownership state"
 - Modify: `packages/contracts/local-control/src/health.ts`
 - Modify: `tests/e2e/local-launcher.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
+- Create: `tests/unit/core-daemon/local-run-policy-issuer.test.ts`
+- Create: `tests/unit/core-daemon/local-run-coordinator.test.ts`
+- Create: `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`
 - Modify: `docs/production-closure-status.md`
 
 **Interfaces:**
@@ -1754,8 +1765,13 @@ git commit -m "feat(core): persist runner ownership state"
 - Produces one-time bootstrap-token exchange and hashed short-lived local session tokens.
 - Consumes `GrpcRunnerProtocolServer.waitForConnection(runnerId)` and the persistent run/Trace stores.
 - Produces a completion callback that updates the same persisted Run created by the Local intake path.
+- Produces `LocalRunPolicyIssuer`, the only Local intake seam that creates a policy-bearing Job from validated `{ targetUrl, objective }` input.
 
 - [ ] **Step 1: Add a failing true-process E2E**
+
+Before the process E2E, add `tests/unit/core-daemon/local-run-policy-issuer.test.ts` as the focused RED test surface for the issuer below. It must prove only Local loopback mode can issue; it always emits exact `environment: "isolated_test"` and never staging; the policy origin is exactly `new URL(targetUrl).origin`; action kinds are exactly `['click']`; maximum risk is `Normal`; exploration is false; injected clock plus configured TTL produce auditable deterministic `policyId`, `issuedAt`, and `expiresAt`; and non-loopback/non-Local configuration, invalid targets, and a zero/negative TTL reject.
+
+Add `tests/unit/core-daemon/local-run-coordinator.test.ts` as the issuer-to-offer RED seam. With a recording `LocalRunPolicyIssuer` and `RunnerConnectionPort`, prove the coordinator receives validated `{ targetUrl, objective }`, invokes the issuer once with the validated target, and passes the exact returned immutable `ExecutionPolicySnapshot` unchanged through required-policy `RunExecutionRequest`/`AcceptedExecutionJob` into `connection.offer`. Assert a request object with an extra `policy` field is schema-rejected before the issuer runs; no default, copied, or HTTP override may alter the issuer snapshot. The Launcher E2E repeats the public contract: `POST /api/v1/local/runs` accepts only `{ targetUrl, objective }`.
 
 Run real built Core and Runner processes, not `fake-process.mjs`. Assert Launcher:
 
@@ -1780,9 +1796,11 @@ Authorization: Bearer <bootstrap-token>
 
 Consume with constant-time hash comparison. Store only the session-token hash. A second exchange returns 401. Bind HTTP to `127.0.0.1`; reject non-loopback host configuration in Local mode.
 
-- [ ] **Step 3: Implement Local run coordination**
+- [ ] **Step 3: Implement Local run coordination and policy issuance**
 
-`POST /api/v1/local/runs` accepts a schema-validated `{ targetUrl, objective }`, creates runId/jobId in deterministic code, inserts an `execution_runs` row, waits for the configured runner connection, and calls `connection.offer(job, ["target:web-playwright"])`. Return 202 with runId after accept; completion remains asynchronous. `GET` reads Run status and evidence refs from SQLite.
+`POST /api/v1/local/runs` accepts only a schema-validated `{ targetUrl, objective }`, creates runId/jobId in deterministic code, inserts an `execution_runs` row, waits for the configured runner connection, and calls `connection.offer(job, ["target:web-playwright"])`. Return 202 with runId after accept; completion remains asynchronous. `GET` reads Run status and evidence refs from SQLite.
+
+Define `LocalRunPolicyIssuer` in `apps/core-daemon/src/local/local-run-policy-issuer.ts` as a deep Local-intake module. Its interface is `issue(target: { kind: "web"; url: string }): ExecutionPolicySnapshot`; constructor options are validated Local mode configuration, injected clock, and a positive configured policy TTL. It must not accept policy input from HTTP, must not depend on Runner adapters, and must fail non-Local or non-loopback construction. From the validated target it emits an immutable isolated-test snapshot with `allowedOrigins: [new URL(target.url).origin]`, `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, injected `issuedAt`, `expiresAt = issuedAt + TTL`, and a deterministic auditable `policyId` derived from the issuer version, origin, issuedAt, and expiresAt. `LocalRunCoordinator` calls the issuer after request validation and before constructing its required-policy `RunExecutionRequest` or `AcceptedExecutionJob`; it passes that exact returned snapshot unchanged to the offer. It must never use a default policy, make policy optional, or accept an HTTP-supplied policy.
 
 Inject the following port into `CoreRunnerProtocolApplication` and call it only after `ExecutionJobService.complete` has authoritatively accepted the completion:
 
@@ -1798,7 +1816,7 @@ export interface RunCompletionSink {
 
 `LocalRunCoordinator` implements this port with `SqliteRunStore` plus the Task 10 completion record. Duplicate `complete_execution` messages return the stored terminal result and do not append another terminal event or Finding. A sink failure keeps the completion inbox retryable and prevents the Run from being reported terminal.
 
-Do not run a model or Playwright in Core. Do not use `RunnerBackedRunResourceFactory` unless its `RemoteRunnerTarget` has a real protocol implementation; the current Runner executes the full fixed pipeline after accepting an offer.
+Do not run a model or Playwright in Core. Do not use `RunnerBackedRunResourceFactory` for Task 11 dispatch; Task 15 removes its obsolete Core-side action pipeline, and Task 11's later coordinator must wait for the Runner's authoritative completion after offering its policy-bearing Job.
 
 - [ ] **Step 4: Make readiness truthful**
 
@@ -1814,7 +1832,7 @@ Run:
 
 ```bash
 corepack pnpm build
-corepack pnpm vitest run tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts
+corepack pnpm vitest run tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts
 corepack pnpm typecheck
 git diff --check
 ```
@@ -1822,9 +1840,11 @@ git diff --check
 Commit:
 
 ```bash
-git add apps/core-daemon/src/local apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/local-launcher/src packages/contracts/local-control/src/health.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
+git add apps/core-daemon/src/local apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/local-launcher/src packages/contracts/local-control/src/health.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
 git commit -m "feat(local): close launcher core runner loop"
 ```
+
+Before Task 15 merges, the only permitted Task 11 change is the dossier above. Its separate documentation-only PR stages only `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`; it does not run Task 11's RED/Gate or use this implementation commit command. The dossier must record the `LocalRunPolicyIssuer` interface, its exact isolated-test-not-staging decision, fixed constraints, deterministic identity/time rule, Local/loopback preconditions, no-HTTP-policy invariant, and the issuer-to-`RunExecutionRequest`/`AcceptedExecutionJob`/offer snapshot-propagation seam after Task 15; it does not create source or tests.
 
 ---
 
@@ -2120,26 +2140,80 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 - Modify: `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`
 - Modify: `packages/protocol-adapters/grpc-runner-protocol/src/wire-codec.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/client.ts`
 - Modify: `packages/runner-kernel/src/execution-runtime.ts`
 - Create: `packages/runner-kernel/src/deterministic-policy-gate.ts`
 - Modify: `packages/runner-kernel/src/index.ts`
 - Modify: `apps/runner/src/main.ts`
+- Create: `apps/runner/src/offer-runtime.ts`
+- Modify: `apps/runner/src/errors.ts`
 - Modify: `packages/core-application/src/runner/core-runner-protocol-application.ts`
+- Modify: `packages/core-application/src/runner/run-ownership-service.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/core-modules/mission/src/domain/test-mission.ts`
+- Modify: `packages/core-modules/mission/src/application/mission-compiler.ts`
+- Modify: `packages/core-modules/mission/src/application/prd-mission-repository.ts`
+- Modify: `packages/core-modules/mission/src/public.ts`
+- Modify: `packages/execution-application/src/run-execution-use-case.ts`
+- Modify: `packages/execution-application/src/contracts.ts`
+- Modify: `packages/execution-application/src/index.ts`
+- Modify: `packages/execution-application/src/mission-execution-use-case.ts`
+- Modify: `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`
+- Delete: `apps/core-daemon/src/runner/remote-runner-target.ts`
+- Modify: `apps/core-daemon/src/index.ts`
+- Modify: `apps/core-daemon/src/config.ts`
+- Modify: `apps/core-daemon/src/main.ts`
+- Create: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `apps/core-daemon/package.json`
+- Modify: `apps/core-daemon/tsconfig.json`
+- Modify: `apps/cli/src/config.ts`
 - Modify: `apps/cli/src/local-run-composition-root.ts`
 - Modify: `packages/core-modules/mission/src/exploration-policy.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/index.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts`
+- Modify: `pnpm-lock.yaml`
 - Modify: `tests/type/runner-protocol-v1.types.ts`
+- Modify: `tests/type/run-execution-use-case.types.ts`
 - Modify: `tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
 - Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/contract/runner-control/runner-control-store.contract.ts`
+- Modify: `tests/contract/runner-control/sqlite-runner-control-store.test.ts`
+- Modify: `tests/contract/runner-control/postgres-runner-control-store.test.ts`
 - Modify: `tests/helpers/core-runner-harness.ts`
+- Modify: `tests/helpers/in-memory-runner-control-store.ts`
 - Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
 - Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+- Modify: `tests/unit/core-daemon/runner-session-service.test.ts`
+- Create: `tests/unit/core-daemon/config.test.ts`
+- Create: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
 - Modify: `tests/unit/runner/job-executor.test.ts`
+- Create: `tests/unit/runner/offer-runtime.test.ts`
+- Modify: `tests/unit/runner-components/model-agent.test.ts`
+- Create: `tests/unit/core-modules/mission/execution-policy.test.ts`
+- Modify: `tests/unit/core-modules/mission/mission-compiler.test.ts`
+- Modify: `tests/unit/execution-application/mission-execution-use-case.test.ts`
+- Modify: `tests/unit/cli/config.test.ts`
 - Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
 - Modify: `tests/component/prd-planning/prd-to-run.test.ts`
 - Modify: `tests/contract/sqlite/prd-mission-store.test.ts`
+- Modify: `tests/component/web-execution/playwright-click.test.ts`
+- Modify: `tests/component/web-execution/playwright-observation.test.ts`
+- Modify: `tests/component/web-execution/playwright-web-target.test.ts`
+- Modify: `tests/unit/target-adapters/web-playwright/browser-session.test.ts`
+- Modify: `tests/component/web-execution/run-execution-use-case.test.ts`
+- Modify: `tests/component/web-execution/local-run-composition-root.test.ts`
+- Modify: `tests/component/investigation/offline-capsule-restoration.test.ts`
+- Modify: `tests/component/m1-web-walking-skeleton.test.ts`
+- Modify: `tests/unit/execution-application/artifact-recording-observer.test.ts`
 - Create: `tests/unit/runner-kernel/deterministic-policy-gate.test.ts`
 - Modify: `tests/unit/runner-kernel/execution-runtime.test.ts`
 - Modify: `tests/e2e/cli-web-cart.test.ts`
@@ -2149,6 +2223,26 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 - Produces required `AcceptedExecutionJob.policy: ExecutionPolicySnapshot`.
 - Produces `DeterministicRunnerPolicyGate implements RunnerPolicyGate`.
 - Removes `AllowSameOriginPolicyGate` and `LocalAllowAllPolicyGate` from production composition roots.
+
+- [ ] **Step 0: Audit scope and capture policy RED evidence before implementation**
+
+Run the mandatory audit before modifying any production source:
+
+```bash
+rg -n "AcceptedExecutionJob|jobId:|policy:" apps packages tests
+rg -n "AllowSameOriginPolicyGate|LocalAllowAllPolicyGate|AcceptedExecutionJob" apps packages tests
+```
+
+Compare every `AcceptedExecutionJob` object construction, nested `ExecutionJobOffer.job` fixture, recovery copy, and persisted-Job deserialization with **Files**. The audit as of `main` `06becdb` requires the Core recovery and Runner-backed producers, the shared execution-application producer, both Runner-control storage boundaries, and all direct Job fixtures: `tests/contract/runner-control/runner-control-store.contract.ts`, `tests/helpers/core-runner-harness.ts`, `tests/type/runner-protocol-v1.types.ts`, `tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts`, `tests/conformance/runner-protocol/grpc-mappers.test.ts`, `tests/conformance/runner-protocol/grpc-round-trip.test.ts`, `tests/conformance/runner-protocol/proto-schema.test.ts`, `tests/unit/core-daemon/execution-job-service.test.ts`, `tests/unit/core-daemon/run-ownership-service.test.ts`, `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`, `tests/unit/core-daemon/runner-session-service.test.ts`, `tests/unit/runner/job-executor.test.ts`, `tests/unit/runner-components/model-agent.test.ts`, `tests/unit/runner-kernel/execution-runtime.test.ts`, `tests/component/core-runner/disconnect-recovery.test.ts`, `tests/component/web-execution/playwright-click.test.ts`, `tests/component/web-execution/playwright-observation.test.ts`, `tests/component/web-execution/playwright-web-target.test.ts`, `tests/component/web-execution/run-execution-use-case.test.ts`, `tests/component/investigation/offline-capsule-restoration.test.ts`, `tests/component/m1-web-walking-skeleton.test.ts`, and `tests/unit/execution-application/artifact-recording-observer.test.ts`. The `RunExecutionRequest` producers that must supply this required policy are `apps/cli/src/config.ts`, `packages/execution-application/src/mission-execution-use-case.ts`, and their listed tests/type fixtures. If a later audit finds another Job constructor or request producer, add its exact path to this plan before editing it; do not make `policy` optional.
+
+First add the RED assertions and fixtures, then run the focused command below before implementing the DTO, mapper, gate, or composition changes. Record the expected nonzero Vitest and typecheck results separately; do not collapse them with `&&`. RED evidence must show: a missing TypeScript `policy` is rejected; wire Jobs without policy fail as `PolicyMissing`; protobuf and mapper round trips preserve each policy field; PostgreSQL and unconfigured SQLite Runner-control reads reject a policyless persisted Job as `PolicyMissing`; policyless persisted leases cannot renew and leave expiry unchanged; only a hash-bound Local SQLite recovery manifest can upcast an identified Local M1 Job to `legacy-m1-local`; recovery preserves the original immutable policy; a cross-origin offered Job is denied before browser launch or `page.goto`, permit construction, or action execution; the Core Runner-backed factory rejects a `policyGate` option and passes the exact already-derived policy unchanged to the offered Job; and the policy matrix denies expired, cross-origin, action-kind, risk, production-exploration, and production coordinate/visual-fallback cases before permit construction or executor invocation. A valid isolated same-origin click remains the positive control.
+
+```bash
+corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/legacy-m1-local-recovery.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/unit/core-modules/mission/execution-policy.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/cli/config.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/e2e/cli-web-cart.test.ts
+corepack pnpm typecheck
+```
+
+Do not change production composition or add a compatibility default to make this command green. `AcceptedExecutionJob.policy` remains required end-to-end; only the exact Local SQLite manifest-bound storage read below may supply the legacy isolated-test policy, and no network payload, PostgreSQL row, unconfigured SQLite row, or unknown persisted Job may be upcast or accepted.
 
 - [ ] **Step 1: Freeze the policy DTO with type tests**
 
@@ -2167,9 +2261,31 @@ export interface ExecutionPolicySnapshot {
 }
 ```
 
-Make it required on new `AcceptedExecutionJob` values and update every constructor/fixture listed in **Files**. Add explicit protobuf fields for every policy value and lossless `toWire`/`fromWire` mapper assertions; do not serialize the snapshot as unconstrained JSON. Historical serialized Jobs may be upcast only at a storage boundary with an explicit `legacy-m1-local` isolated-test policy; production network payloads without policy fail with `PolicyMissing`.
+Make it required on new `AcceptedExecutionJob` values and update every constructor/fixture listed in **Files**. Add explicit protobuf fields for every policy value and lossless `toWire`/`fromWire` mapper assertions; do not serialize the snapshot as unconstrained JSON. Production network payloads without policy fail with `PolicyMissing`; policy is never optional in a domain, factory, or transport type.
 
-Before implementation, run `rg -n "AcceptedExecutionJob|jobId:|policy:" apps packages tests` and compare every constructing call site with the **Files** block. If a constructor is outside the block, stop and add the exact path to this plan before editing; do not make `policy` optional to reduce the migration surface.
+**Staging authority and admission:** Keep `staging` as a distinct `ExecutionPolicySnapshot.environment`, never an alias or fallthrough for `isolated_test` or `production`. Only the Core/Mission path may issue it: `packages/core-modules/mission/src/exploration-policy.ts` defines the approved staging declaration, `packages/core-modules/mission/src/domain/test-mission.ts` carries it on the approved Mission, and `packages/core-modules/mission/src/application/mission-compiler.ts` rejects any staging snapshot not explicitly declared and persisted in the immutable compiled Mission. No target URL, deployment setting, Local issuer, or Runner configuration may infer staging.
+
+For Task 15's current single-action execution, an approved staging declaration is valid only with a nonempty explicit set of canonical HTTP(S) origins, exact `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, and `issuedAt < expiresAt <= issuedAt + mission.executionBudget.maximumWallClockMs`. The selected Web target origin must be a member of that explicit set. It cannot inherit an isolated-test or production policy field, include a wildcard or credentialed origin, allow `ProductionForbidden`, or expand action/risk authority. `packages/core-modules/mission/src/application/prd-mission-repository.ts` and `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts` retain the exact staging declaration through the compiled-Mission snapshot; `packages/execution-application/src/mission-execution-use-case.ts` passes it unchanged into the required Job policy.
+
+`DeterministicRunnerPolicyGate` handles `"staging"` in an explicit environment branch. An allowed staging action must satisfy the snapshot expiry, exact target origin, `click` allowlist, and `Normal` risk ceiling. Exploration is denied because `explorationAllowed` is false. Coordinate, visual, or any other fallback is denied because it is neither an approved action kind nor represented by a staging fallback permission; it must not fall through to an isolated-test behavior. `tests/unit/core-modules/mission/execution-policy.test.ts` and `tests/unit/core-modules/mission/mission-compiler.test.ts` add a valid explicit staging declaration plus a rejected inherited/wildcard/over-broad declaration. `tests/contract/sqlite/prd-mission-store.test.ts` proves the staging snapshot round trip. `tests/unit/runner-kernel/deterministic-policy-gate.test.ts` adds a valid bounded staging same-origin click and denied staging exploration/coordinate-or-visual fallback cases, proving no permit or executor invocation. These exact paths are already in Task 15's **Files** block and `Step 5` staging recipe; they are required focused RED/GREEN evidence, not a Task 16 deferral.
+
+Freeze the v1 protobuf allocation from the existing `AcceptedExecutionJob` numbering: `job_id = 1`, `run_id = 2`, `target = 3`, `objective = 4`, and existing `plan = 5` remain unchanged; the required field is exactly `ExecutionPolicySnapshot policy = 6`. Define the new nested message with exactly these wire fields: `string policy_id = 1`, `string environment = 2`, `repeated string allowed_origins = 3`, `repeated string allowed_action_kinds = 4`, `string maximum_risk = 5`, `bool exploration_allowed = 6`, `string issued_at = 7`, and `string expires_at = 8`. These tags follow the already-occupied Job tags 1-5 and the new message's first sequential field range; neither names nor tags may be repurposed. `tests/conformance/runner-protocol/proto-schema.test.ts` must assert every one of these field/tag pairs, in addition to preserving `plan = 5`; mapper and protobuf round-trip tests must assert every policy value. Add `PolicyMissing` to the stable gRPC adapter error vocabulary in `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts`; `jobFromWire` rejects an absent or malformed `policy` with that exact code, and `packages/protocol-adapters/grpc-runner-protocol/src/client.ts` fails the offer queue with the same error before any malformed `ExecutionJobOffer` reaches `RunnerSession.nextOffer`.
+
+**Storage-only legacy read:** Add a shared `RunnerControlStoreError` with code `PolicyMissing` in `packages/core-modules/runner-control/src/runner-control-store.ts` and export it from `packages/core-modules/runner-control/src/index.ts`. Both `SqliteRunnerControlStore` and `PostgresRunnerControlStore` parse `execution_leases.job_json` through that strict seam. `PostgresRunnerControlStore` has no upcast option: every policyless or malformed persisted Job, including every Self-hosted/tenant-scoped row, throws `PolicyMissing` and is never offered, renewed, recovered, or executed.
+
+`SqliteRunnerControlStore` is fail-closed by default. Its only exception is an explicit `SqliteRunnerControlStoreOptions.legacyM1LocalRecovery` supplied for a Local SQLite migration/recovery. Export that option from `packages/storage-providers/sqlite-runtime/src/index.ts`; it is not a boolean and has no default. `apps/core-daemon/src/legacy-m1-local-recovery.ts` owns the recovery-manifest interface and both validation phases, giving `startCoreDaemon` a small, deep seam rather than exposing raw manifest parsing across composition.
+
+**Phase A, before SQLite opens:** `apps/core-daemon/src/config.ts` reads the optional explicitly named `CORE_LEGACY_M1_LOCAL_RECOVERY_MANIFEST` file and passes an opaque parsed candidate, not an enabled store option. `startCoreDaemon(config)` repeats the pure validation before `SqliteRuntime.open`: the candidate requires `deploymentMode: "local"`, an exact loopback host (`127.0.0.1` or `::1`), manifest format `legacy-m1-local-recovery/v1`, nonempty structurally valid records, unique `{ jobId, runId, canonicalJobSha256}` identity, valid SHA-256 format, and a constrained policy shape. Any non-Local mode, non-loopback host, unknown format/version, malformed or duplicate record, or malformed policy fails startup before SQLite opens. The candidate policy must be exactly `policyId: "legacy-m1-local"`, `environment: "isolated_test"`, `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, one syntactically valid origin, and valid `issuedAt`/`expiresAt` with `issuedAt < expiresAt`. No candidate enables an upcast during Phase A.
+
+**Phase B, after SQLite opens and before any listener or offer:** `startCoreDaemon` uses a read-only raw recovery lookup supplied by `SqliteRunnerControlStore` to load each manifest record's persisted `execution_leases.job_json`; this lookup returns no lease/runner capability and cannot authorize an offer. It verifies the row exists, parses the policyless Job only to read its target and identifiers, and checks its run/job IDs, `canonicalPayloadHash(policylessJob)`, target origin, and constrained manifest policy exactly match the manifest record. Only after every record passes does Phase B create the immutable `legacyM1LocalRecovery` store option. Any missing row, preexisting policy, parse failure, identifier/hash/origin/policy mismatch, or additional unverified manifest record fails startup; `startCoreDaemon` closes SQLite and binds neither gRPC nor HTTP listeners. The fully verified option is the only value passed to `SqliteRunnerControlStore`; no unvalidated manifest path reaches a store read that can upcast or a `connection.offer` call. PostgreSQL never receives this option.
+
+`tests/unit/core-daemon/legacy-m1-local-recovery.test.ts` covers Phase A structure/mode/host/version/policy constraints and Phase B raw-row identity/hash/origin/policy checks. `tests/contract/runner-control/sqlite-runner-control-store.test.ts` seeds raw policyless `execution_leases.job_json` and proves default rejection, then proves only the fully verified store option yields the exact configured `legacy-m1-local` snapshot. `tests/contract/runner-control/postgres-runner-control-store.test.ts` seeds the same raw shape and proves unconditional `PolicyMissing`; `tests/unit/core-daemon/config.test.ts` covers manifest absence/file parsing; `tests/component/core-runner/core-composition.test.ts` calls exported `startCoreDaemon` directly with non-loopback/non-Local/malformed/duplicate Phase A inputs and missing-row/hash/origin/policy-mismatch Phase B inputs, proving each rejects before listeners bind, then proves ordinary composition has no recovery manifest and cannot offer a policyless persisted Job. `tests/component/core-runner/disconnect-recovery.test.ts` proves `RunOwnershipService.recoveryJob` only copies a prevalidated stored policy, never constructs `legacy-m1-local`. These are storage reads only: wire payloads, newly persisted Jobs, and unknown/recovered production Jobs never receive an upcast.
+
+**Renewal is also a storage read:** Change `RunnerControlStore.renewLease` in `packages/core-modules/runner-control/src/runner-control-store.ts` from `Promise<boolean>` to `Promise<"renewed" | "rejected">`; `rejected` remains only the ordinary live-lease CAS result. Before either provider updates `expires_at`, it must select and strict-parse the existing `job_json` through the same policy-migration seam used by `lease()`. A policyless row therefore throws `RunnerControlStoreError("PolicyMissing")` and never reaches the update statement. Add `PolicyMissing` to `CoreApplicationErrorCode` in `packages/core-application/src/runner/core-runner-protocol-application.ts`; `RunOwnershipService.renew` catches only `RunnerControlStoreError`, translates it to `CoreApplicationError("PolicyMissing", safeMessage)` without JSON details, and otherwise preserves the error. The existing `ExecutionJobService.renew` forwarder then remains transparent. Add `PolicyMissing` to the gRPC `RunnerProtocolErrorCode` and client application-error set in `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts` and `client.ts`, so `CoreRunnerProtocolApplication` surfaces that exact code rather than `LeaseLost`, `rejected`, `TransportError`, or raw JSON. The lease expiry remains unchanged. Update `tests/helpers/in-memory-runner-control-store.ts` to the new discriminated result so its CAS fake stays conformant; it has no raw persisted JSON and never supplies a legacy upcast.
+
+Extend the provider tests above with raw-row renewal cases: seed a live, token/owner/epoch-matching lease whose `job_json` lacks policy; call `renewLease` with a later expiry; assert exact `PolicyMissing` in SQLite and PostgreSQL and reread the row to prove its original expiry is unchanged. Add a `RunOwnershipService.renew` case in `tests/unit/core-daemon/run-ownership-service.test.ts` and a gRPC renewal assertion in `tests/component/core-runner/core-composition.test.ts`, each proving the typed policy failure is not converted to `LeaseLost` or `TransportError`. This preserves one clear error mode for corrupted persisted policy while retaining `rejected` for a genuine conditional-update race or stale lease.
+
+Step 0's audit is a release-blocking precondition for this migration. If a constructor is outside the block, stop and add the exact path to this plan before editing; do not make `policy` optional to reduce the migration surface.
 
 - [ ] **Step 2: Add a policy matrix before implementation**
 
@@ -2181,11 +2297,33 @@ The gate receives the immutable Job policy at construction and checks in this or
 
 - [ ] **Step 4: Construct policy in Core/CLI, enforce in Runner**
 
-Core derives the snapshot from approved Mission/exploration policy and target. Local CLI constructs an explicit isolated-test policy limited to the target URL origin and the action kinds it supports. Runner instantiates `DeterministicRunnerPolicyGate(offer.job.policy)`; it does not widen the policy from local configuration.
+Core must propagate an approved policy source without synthesizing an allow-all or target-derived default. Add a Mission-owned `ApprovedExecutionPolicy` and its Exploration narrowing conversion in `packages/core-modules/mission/src/exploration-policy.ts`. Its required inputs are exactly `policyId`, `environment`, `allowedOrigins`, `allowedActionKinds`, `maximumRisk`, `explorationAllowed`, `issuedAt`, and `expiresAt`; the conversion accepts a validated `ExplorationPolicy` only to narrow this approved source, never to widen it. It rejects an exploration policy that would require an unrepresentable or broader action/risk/origin authority, and produces an exploration-enabled policy only when the approved environment is non-production and the Mission source permits exploration. `tests/unit/core-modules/mission/execution-policy.test.ts` is the direct RED/GREEN proof for this conversion.
+
+`packages/core-modules/mission/src/domain/test-mission.ts` carries `ApprovedExecutionPolicy` on the approved Mission; `packages/core-modules/mission/src/application/mission-compiler.ts` validates, freezes, and carries it in the immutable compiled Mission; and `packages/core-modules/mission/src/application/prd-mission-repository.ts` exposes it on `DispatchableMission`. `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts` persists it in the existing immutable `mission_revisions.compiled_json` snapshot and reloads that snapshot when constructing `DispatchableMission`, without modifying historical migrations. The target URL is only checked against the approved allowed-origins set; it must never manufacture a broader origin list or other policy default.
+
+`packages/execution-application/src/contracts.ts` makes the immutable snapshot required on `RunExecutionRequest`. `packages/execution-application/src/mission-execution-use-case.ts` maps the loaded approved Mission/exploration policy and selected target into that request, rejecting a target outside the approved origins. `packages/execution-application/src/run-execution-use-case.ts` copies `request.policy` unchanged into the new `AcceptedExecutionJob`; `apps/cli/src/config.ts` is the sole non-Mission producer and constructs the explicit isolated-test policy for the requested URL and its supported action kinds.
+
+`apps/cli/src/local-run-composition-root.ts` is a local Runner-side composition root: before its local `ExecutionRuntime` can observe, decide, resolve, execute, or verify, it constructs `DeterministicRunnerPolicyGate(request.policy)` and passes that gate to the runtime in place of `LocalAllowAllPolicyGate`. It gives the Playwright adapter exactly `request.policy.allowedOrigins`, never `[new URL(request.target.url).origin]`. The remote Runner independently constructs its own gate in `apps/runner/src/offer-runtime.ts` from `offer.job.policy`. Core derives and transports immutable policy but neither `apps/core-daemon` nor `packages/core-application` imports, constructs, injects, or calls `RunnerPolicyGate`.
+
+`apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts` is a Core-side transport bridge, not a Runner execution runtime. Replace `RunResourceScope.runtime: ExecutionRuntime` in `packages/execution-application/src/contracts.ts` with `execute(job: AcceptedExecutionJob): Promise<ExecutionCompletion>`; export the changed contract from `packages/execution-application/src/index.ts`. `packages/execution-application/src/run-execution-use-case.ts` calls `scope.execute(job)`. The Local factory adapts its local `ExecutionRuntime.run(job)` to that scope method; the Core factory implements it by `connection.offer(job, requiredCapabilities)` and then awaiting an injected token-free `awaitCompletion(lease)` port.
+
+Remove `RunnerPolicyGate`, `ExecutionRuntime`, `InMemoryProtocolTraceRecorder`, `TraceIngestor`, and `RemoteRunnerTarget` from the Core factory's options, state, and construction. Its `execute` path requires the already-derived Job policy, copies that exact immutable Job to `connection.offer`, and only awaits completion. It neither authorizes, resolves, observes, nor executes actions in Core. It must reject a supplied legacy `policyGate` option at the public constructor boundary rather than ignoring it, so neither `AllowAllRunnerPolicyGate` nor any arbitrary Core gate can affect remote dispatch. Delete the obsolete `apps/core-daemon/src/runner/remote-runner-target.ts` and remove its export from `apps/core-daemon/src/index.ts`; remove the now-unused Runner Kernel and in-memory Runner Protocol dependencies/references from `apps/core-daemon/package.json`, `apps/core-daemon/tsconfig.json`, and `pnpm-lock.yaml`.
+
+`apps/runner/src/main.ts` delegates remote gate construction to `apps/runner/src/offer-runtime.ts`; that runtime owns remote action authorization and does not accept a Core-supplied gate. `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts` starts RED by asserting that the constructor type/runtime rejects `policyGate`, that a request without policy cannot be dispatched, that `connection.offer` receives the same policy value, and that no Core target action or permit is invoked. `tests/component/core-runner/core-composition.test.ts` and `tests/component/core-runner/independent-process.test.ts` prove a remotely offered Job is enforced only by the Runner-side deterministic gate, including a denial with no action execution. `tests/component/web-execution/local-run-composition-root.test.ts` and `tests/e2e/cli-web-cart.test.ts` prove the local root uses `DeterministicRunnerPolicyGate(request.policy)` and cannot widen its adapter origin allowlist. Do not move either local or remote `DeterministicRunnerPolicyGate` construction into Core.
+
+**Runner target admission:** Create `apps/runner/src/offer-runtime.ts` as the single Runner composition module for one offered Job. Its small interface accepts `{ offer, session, spool, config, createTarget }`, and calls the new static `DeterministicRunnerPolicyGate.admitJob(job: AcceptedExecutionJob): TargetAdmission` before `createTarget`, `PlaywrightWebTargetAdapter` construction, `adapter.start`, browser launch, context/page creation, or `page.goto`. `TargetAdmission` is a small allowed/denied result. It validates required policy, expiry, HTTP(S) target origin, and membership in `policy.allowedOrigins`, returning stable `PolicyMissing` or `PolicyDenied` codes with safe messages. The allowed result carries the constructed `DeterministicRunnerPolicyGate`; denied results construct neither a gate nor an `ExecutionPermit`. This lets policyless untrusted offer input fail explicitly before any `offer.job.policy` property is consumed.
+
+On admission denial, `RunnerOfferRuntime` calls `session.accept(offer.offerId)` only to obtain the lease required to send one blocked `ExecutionCompletion` carrying that stable code, then completes it. It does not start a browser, invoke a model/decision provider, invoke an action executor, or drain a fabricated Trace. This resolves the offered lease deterministically rather than treating policy denial as a transport failure. Only an allowed admission may construct the adapter with `allowedOrigins: offer.job.policy.allowedOrigins`, compose `LeasedJobExecutor` with the same deterministic gate, drain Trace, and complete the lease.
+
+`apps/runner/src/main.ts` delegates `runOffer` to this module and removes its target-origin-derived `allowedOrigins` and `AllowSameOriginPolicyGate`. `apps/runner/src/errors.ts` adds the two stable Runner error codes. Keep `packages/target-adapters/web-playwright/src/browser-session.ts` and `PlaywrightWebTargetAdapter` unchanged as the deep adapter defense in depth: `PlaywrightBrowserSession.validateTarget()` still rejects any adapter input origin not in its explicit allowlist before `BrowserLauncher.launch` or `page.goto`; it must never infer an allowlist from the URL. The policy admission seam remains in `apps/runner`, where the offered Job and deterministic policy belong; neither the target adapter nor Core receives a `RunnerPolicyGate`.
+
+`tests/unit/runner/offer-runtime.test.ts` starts RED using an injected `createTarget` spy: a cross-origin or policyless offer produces the corresponding blocked completion after exactly one lease accept, while `createTarget`, browser launch, `page.goto`, permit construction, decision, and executor calls are all zero. Its allowed control proves `createTarget` receives only `policy.allowedOrigins` and the executor uses the same gate. Extend `tests/unit/target-adapters/web-playwright/browser-session.test.ts` with an injected `BrowserLauncher`/page spy proving a non-allowlisted adapter URL invokes neither `launch` nor `goto`; extend `tests/unit/runner/job-executor.test.ts` and `tests/component/core-runner/independent-process.test.ts` to prove Runner-side denial produces no action execution. These tests prove initial navigation is protected before Playwright, while the existing action-executor origin checks remain a second defense.
+
+Cover this path in `tests/unit/core-modules/mission/execution-policy.test.ts`, `tests/unit/core-modules/mission/mission-compiler.test.ts`, `tests/contract/sqlite/prd-mission-store.test.ts`, `tests/unit/execution-application/mission-execution-use-case.test.ts`, `tests/component/prd-planning/prd-to-run.test.ts`, `tests/unit/cli/config.test.ts`, `tests/component/web-execution/local-run-composition-root.test.ts`, and `tests/type/run-execution-use-case.types.ts`: changing a target must not widen the approved policy; the Mission/SQLite round trip retains it; required request policy cannot be omitted; and CLI produces only its explicit isolated-test policy. The runner, not Core, instantiates `DeterministicRunnerPolicyGate(offer.job.policy)` and does not widen policy from local configuration.
 
 - [ ] **Step 5: Verify and commit**
 
-Run:
+Rerun the Step 0 focused command after implementation and require it to pass, then run:
 
 ```bash
 corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts
@@ -2196,7 +2334,9 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/contracts/runner-protocol packages/protocol-adapters/grpc-runner-protocol/src packages/runner-kernel apps/runner/src/main.ts packages/core-application/src/runner/core-runner-protocol-application.ts apps/cli/src/local-run-composition-root.ts packages/core-modules/mission/src/exploration-policy.ts tests docs/production-closure-status.md
+git add packages/core-modules/runner-control/src/runner-control-store.ts packages/core-modules/runner-control/src/index.ts packages/execution-application/src/index.ts apps/core-daemon/src/runner/remote-runner-target.ts apps/core-daemon/src/index.ts apps/core-daemon/src/config.ts apps/core-daemon/src/main.ts apps/core-daemon/src/legacy-m1-local-recovery.ts apps/core-daemon/package.json apps/core-daemon/tsconfig.json packages/storage-providers/sqlite-runtime/src/index.ts pnpm-lock.yaml tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/helpers/in-memory-runner-control-store.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/legacy-m1-local-recovery.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/component/core-runner/core-composition.test.ts
+git add apps/runner/src/offer-runtime.ts apps/runner/src/errors.ts tests/unit/runner/offer-runtime.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts
+git add packages/contracts/runner-protocol/src/index.ts packages/contracts/runner-protocol/src/messages.ts packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts packages/protocol-adapters/grpc-runner-protocol/src/wire-codec.ts packages/protocol-adapters/grpc-runner-protocol/src/errors.ts packages/protocol-adapters/grpc-runner-protocol/src/client.ts packages/runner-kernel/src/execution-runtime.ts packages/runner-kernel/src/deterministic-policy-gate.ts packages/runner-kernel/src/index.ts apps/runner/src/main.ts packages/core-application/src/runner/core-runner-protocol-application.ts packages/core-application/src/runner/run-ownership-service.ts packages/core-modules/mission/src/domain/test-mission.ts packages/core-modules/mission/src/application/mission-compiler.ts packages/core-modules/mission/src/application/prd-mission-repository.ts packages/core-modules/mission/src/public.ts packages/core-modules/mission/src/exploration-policy.ts packages/execution-application/src/contracts.ts packages/execution-application/src/mission-execution-use-case.ts packages/execution-application/src/run-execution-use-case.ts apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts apps/cli/src/config.ts apps/cli/src/local-run-composition-root.ts packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts tests/type/runner-protocol-v1.types.ts tests/type/run-execution-use-case.types.ts tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/helpers/core-runner-harness.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/unit/core-daemon/runner-session-service.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/core-modules/mission/execution-policy.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/execution-application/artifact-recording-observer.test.ts tests/unit/cli/config.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts tests/component/investigation/offline-capsule-restoration.test.ts tests/component/m1-web-walking-skeleton.test.ts tests/e2e/cli-web-cart.test.ts docs/production-closure-status.md
 git commit -m "feat(policy): enforce deterministic execution snapshots"
 ```
 
