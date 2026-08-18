@@ -54,6 +54,22 @@ describe("grpc runner protocol mappers", () => {
     ).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
   });
 
+  it("rejects a network Job that omits immutable project provenance", () => {
+    expect(() =>
+      jobFromWire({
+        job_id: "job-projectless",
+        run_id: "run-projectless",
+        target: { web: { url: "https://example.test/" } },
+        objective: "must not dispatch",
+        policy: {
+          policy_id: "policy-1", environment: "isolated_test", allowed_origins: ["https://example.test"],
+          allowed_action_kinds: ["click"], maximum_risk: "Normal", exploration_allowed: false,
+          issued_at: "2026-08-18T00:00:00.000Z", expires_at: "2026-08-18T00:01:00.000Z",
+        },
+      }),
+    ).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
+  });
+
   it.each([
     ["invalid expiry", { expires_at: "not-an-instant" }],
     ["inverted policy interval", { issued_at: "2026-08-18T00:01:00.000Z", expires_at: "2026-08-18T00:00:00.000Z" }],
@@ -130,6 +146,7 @@ describe("grpc runner protocol mappers", () => {
       job: {
         jobId: "job-1",
         runId: "run-attempt-1",
+        projectId: "project-1",
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

@@ -2134,6 +2134,128 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 
 **Execution precondition:** Task 9 is complete. Execute this Task before Tasks 12 and 14 even though its number is higher, so no production Mission dispatch path is ever composed with an allow-all policy.
 
+**Critical project-provenance follow-up authority (2026-08-18):** A post-review
+audit at `5120c1f` found that the completed policy snapshot work preserved
+`projectId` only through Mission persistence, then dropped it at
+`DispatchableMission -> RunExecutionRequest -> AcceptedExecutionJob`. This
+additive remediation does not revise the historical Task 15 Files block or
+claim that its prior implementation changed the paths below. It closes the
+blocking immutable project-provenance transport contract required before Task
+11 Local authorization and Tasks 12/14 Self-hosted dispatch authorization can
+be implemented.
+
+**Follow-up Files (additive authority only):**
+- Modify: `packages/contracts/runner-protocol/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts`
+- Modify: `packages/core-application/src/runner/run-ownership-service.ts`
+- Modify: `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`
+- Modify: `packages/core-modules/mission/src/domain/test-mission.ts`
+- Modify: `packages/core-modules/mission/src/domain/test-plan-revision.ts`
+- Modify: `packages/core-modules/mission/src/application/mission-compiler.ts`
+- Modify: `packages/execution-application/src/contracts.ts`
+- Modify: `packages/execution-application/src/run-execution-use-case.ts`
+- Modify: `packages/execution-application/src/mission-execution-use-case.ts`
+- Modify: `apps/cli/src/config.ts`
+- Modify: `apps/core-daemon/src/legacy-m1-local-recovery.ts`
+- Modify: `tests/type/runner-protocol-v1.types.ts`
+- Modify: `tests/type/run-execution-use-case.types.ts`
+- Modify: `tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts`
+- Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
+- Modify: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
+- Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/contract/runner-control/runner-control-store.contract.ts`
+- Modify: `tests/contract/runner-control/sqlite-runner-control-store.test.ts`
+- Modify: `tests/contract/runner-control/postgres-runner-control-store.test.ts`
+- Modify: `tests/contract/sqlite/prd-mission-store.test.ts`
+- Modify: `tests/helpers/core-runner-harness.ts`
+- Modify: `tests/unit/cli/config.test.ts`
+- Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
+- Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+- Modify: `tests/unit/core-daemon/runner-session-service.test.ts`
+- Modify: `tests/unit/core-daemon/legacy-m1-local-recovery.test.ts`
+- Modify: `tests/unit/core-modules/mission/mission-compiler.test.ts`
+- Modify: `tests/unit/execution-application/artifact-recording-observer.test.ts`
+- Modify: `tests/unit/execution-application/mission-execution-use-case.test.ts`
+- Modify: `tests/unit/runner-components/model-agent.test.ts`
+- Modify: `tests/unit/runner-kernel/deterministic-policy-gate.test.ts`
+- Modify: `tests/unit/runner-kernel/execution-runtime.test.ts`
+- Modify: `tests/unit/runner/job-executor.test.ts`
+- Modify: `tests/unit/runner/offer-runtime.test.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
+- Modify: `tests/component/investigation/offline-capsule-restoration.test.ts`
+- Modify: `tests/component/m1-web-walking-skeleton.test.ts`
+- Modify: `tests/component/web-execution/local-run-composition-root.test.ts`
+- Modify: `tests/component/web-execution/playwright-click.test.ts`
+- Modify: `tests/component/web-execution/playwright-observation.test.ts`
+- Modify: `tests/component/web-execution/playwright-web-target.test.ts`
+- Modify: `tests/component/web-execution/run-execution-use-case.test.ts`
+- Modify: `docs/production-closure-status.md`
+- Modify: `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`
+
+**Follow-up Interfaces and invariants:**
+- `AcceptedExecutionJob.projectId` and `RunExecutionRequest.projectId` are
+  required nonempty immutable provenance. The Runner v1 `AcceptedExecutionJob`
+  wire message allocates exactly `string project_id = 7`; tags 1-6 remain
+  unchanged. Mappers and the protobuf codec must round-trip it losslessly.
+- Strict network and production-storage parsing rejects an absent or malformed
+  project ID as `PolicyMissing`; no transport, Runner, Core, or provider default
+  is allowed.
+- `TestMission.projectId` flows through `CompiledMission`, its canonical hash,
+  the persisted compiled snapshot, `DispatchableMission`, Mission execution,
+  `RunExecutionRequest`, Job construction, and recovery. The compiler rejects
+  an approved Plan/Mission project mismatch; SQLite rejects a
+  `SaveCompiledMissionInput.projectId` that disagrees with the compiled Mission
+  before persistence. Recovery copies the stored immutable value.
+- The CLI is an explicit Local policy issuance root and constructs
+  `projectId: "local"`. Future Task 11 Local issuance may do the same only at
+  its documented Local issuer root; it must not add an implicit request or
+  storage default.
+- SQLite and PostgreSQL serialize and strict-parse the field in `job_json` on
+  lease, renewal, and recovery. The existing constrained Local legacy recovery
+  may attach exactly `projectId: "local"` only when its already verified
+  historical record is projectless and either policyless or carries the exact
+  constrained manifest policy; every other projectless persisted or network Job
+  fails closed. Canonical Job hashes include project provenance.
+
+**Follow-up Steps:**
+- [ ] Add RED type, mapper/protobuf, storage/recovery, compiler/Mission, shared
+  execution, Core recovery, and CLI assertions for required project provenance
+  before changing the production contract.
+- [ ] Add the required contract field, frozen protobuf tag 7, strict parser,
+  lossless mapper, durable Job JSON parsing, and constrained legacy Local
+  upcast; do not add an optional or default production value.
+- [ ] Propagate the approved Mission project through compiler/hash/persistence,
+  Mission request construction, shared Job construction, and recovery. Limit
+  explicit `"local"` construction to the existing CLI issuer and the verified
+  legacy Local storage read.
+- [ ] Update every audited direct Job/request fixture, run provider parity and
+  focused Core/Mission/component evidence, then append actual follow-up evidence
+  to the Task 15 status ledger.
+
+**Follow-up Gate:** Build first, then with Git OpenSSL explicitly resolved:
+
+```powershell
+$env:PATH = 'C:\Program Files\Git\usr\bin;' + $env:PATH
+$env:OPENSSL_CONF = 'C:\Program Files\Git\usr\ssl\openssl.cnf'
+corepack pnpm build
+corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/unit/core-daemon/runner-session-service.test.ts tests/unit/cli/config.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts
+corepack pnpm typecheck
+git diff --check
+```
+
+Run the Docker-backed PostgreSQL contract in that Gate. Report
+`DockerUnavailable` only if the Docker daemon actually blocks it.
+
+**Follow-up staging:** Stage only the exact paths in **Follow-up Files**. The
+follow-up commit is exactly `fix(policy): preserve immutable job project provenance`.
+
 **Files:**
 - Modify: `packages/contracts/runner-protocol/src/index.ts`
 - Modify: `packages/contracts/runner-protocol/src/messages.ts`

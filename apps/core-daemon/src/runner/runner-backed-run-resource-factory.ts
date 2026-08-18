@@ -70,6 +70,9 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
   }
 
   async open(runId: string, request: RunExecutionRequest): Promise<RunResourceScope> {
+    if (typeof request.projectId !== "string" || request.projectId.trim().length === 0) {
+      throw new CoreApplicationError("PolicyMissing", "execution request project provenance is missing");
+    }
     try {
       parseExecutionPolicySnapshot(request.policy);
     } catch (error) {

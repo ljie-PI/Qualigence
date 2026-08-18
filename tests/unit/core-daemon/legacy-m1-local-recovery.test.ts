@@ -28,4 +28,12 @@ describe("legacy M1 Local recovery", () => {
     }, { deploymentMode: "local", host: "::1" })).not.toThrow();
     expect(() => verifyLegacyM1LocalRecoveryRows(candidate, new Map())).toThrow();
   });
+
+  it("accepts a projectless row only when its stored policy exactly matches the manifest", () => {
+    const policy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+    const job = { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "legacy", policy };
+    const candidate = validateLegacyM1LocalRecoveryCandidate({ format: "legacy-m1-local-recovery/v1", records: [{ jobId: job.jobId, runId: job.runId, canonicalJobSha256: canonicalPayloadHash(job), policy }] }, { deploymentMode: "local", host: "127.0.0.1" });
+    expect(verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify(job)]])).length).toBe(1);
+    expect(() => verifyLegacyM1LocalRecoveryRows(candidate, new Map([["job-1:run-1", JSON.stringify({ ...job, policy: { ...policy, policyId: "other" } })]]))).toThrow();
+  });
 });

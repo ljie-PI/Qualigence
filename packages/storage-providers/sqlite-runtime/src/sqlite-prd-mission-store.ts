@@ -100,6 +100,9 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
 
   async saveCompiledMission(input: SaveCompiledMissionInput): Promise<void> {
     const { mission } = input;
+    if (mission.projectId !== input.projectId) {
+      throw new Error("Compiled Mission project provenance does not match its persistence scope.");
+    }
     await runInImmediateTransaction(this.runtime, async () => {
       const db = this.runtime.db;
       await db

@@ -789,6 +789,24 @@ dispatch maps it to `InvalidTargetUrl` with a durable failed attempt and blocked
 Mission, without browser construction. The existing Playwright session validator
 remains unchanged as independent adapter defense in depth.
 
+Task 15 Critical project-provenance follow-up (2026-08-18): required immutable
+`projectId` now flows from approved Mission/project source through the compiled
+Mission hash and SQLite snapshot, `DispatchableMission`, `RunExecutionRequest`,
+`AcceptedExecutionJob`, recovery, Runner protobuf tag 7, gRPC mapper, and
+runner-control SQLite/PostgreSQL Job JSON. Local CLI explicitly issues only
+`projectId: "local"`; no network or normal storage default exists. Missing or
+malformed project provenance fails closed as `PolicyMissing`; renewal leaves its
+expiry unchanged. The constrained Local manifest recovery may attach `local`
+only to a hash-bound historical projectless record with either no policy or the
+exact manifest policy. PostgreSQL never upcasts. SQLite rejects a compiled
+Mission persistence scope that disagrees with its immutable project ID.
+
+After Git OpenSSL resolution with `C:\Program Files\Git\usr\bin` on `PATH` and
+`OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`, `corepack pnpm build`
+passed and the amended Task 15 Gate passed 24 files / 229 tests, including the
+Docker-backed PostgreSQL runner-control contract. `corepack pnpm typecheck` and
+`git diff --check` passed. No environmental blocker occurred.
+
 After `corepack pnpm build`, the complete Task 15 focused command passed 26
 files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`

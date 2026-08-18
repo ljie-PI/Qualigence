@@ -76,6 +76,7 @@ class InMemoryManifestStore implements ArtifactManifestStore {
 
 function request(): RunExecutionRequest {
   return {
+    projectId: "project-test",
     target: { kind: "web", url: "http://127.0.0.1:3000/" },
     objective: "add one item to the cart",
     policy: { policyId: "policy-request", environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:3000"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
@@ -96,7 +97,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     } as never)).toThrow(/policyGate/);
   });
 
-  it("rejects a missing or malformed request policy before opening stores or offering", async () => {
+  it("rejects missing project provenance or a missing/malformed request policy before opening stores or offering", async () => {
     const openStores = vi.fn();
     const offer = vi.fn();
     const factory = new RunnerBackedRunResourceFactory({
@@ -106,6 +107,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     });
 
     await expect(factory.open("run-1", { ...request(), policy: undefined } as never)).rejects.toMatchObject({ code: "PolicyMissing" });
+    await expect(factory.open("run-1", { ...request(), projectId: undefined } as never)).rejects.toMatchObject({ code: "PolicyMissing" });
     await expect(factory.open("run-1", { ...request(), policy: { ...request().policy, expiresAt: "not-an-instant" } } as never)).rejects.toMatchObject({ code: "PolicyMissing" });
     expect(openStores).not.toHaveBeenCalled();
     expect(offer).not.toHaveBeenCalled();
@@ -153,6 +155,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     expect(offer).toHaveBeenCalledOnce();
     expect(offer.mock.calls[0]?.[1]).toEqual(["target:web-playwright"]);
     expect(offer.mock.calls[0]?.[0].policy).toBe(runRequest.policy);
+    expect(offer.mock.calls[0]?.[0].projectId).toBe(runRequest.projectId);
     expect(awaitCompletion).toHaveBeenCalledWith(lease);
     expect(cancel).toHaveBeenCalledOnce();
     expect(traces.eventsFor(result.runId)).toEqual([]);

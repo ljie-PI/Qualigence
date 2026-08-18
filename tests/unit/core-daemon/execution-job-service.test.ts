@@ -43,6 +43,7 @@ function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
   return {
     jobId,
     runId,
+    projectId: "project-test",
     target: { kind: "web", url: "https://example.test/" },
     objective: "add the item to the cart",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

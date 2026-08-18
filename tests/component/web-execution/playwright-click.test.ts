@@ -36,6 +36,7 @@ function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
 const job: AcceptedExecutionJob = {
   jobId: "job-click",
   runId: "run-click",
+  projectId: "project-test",
   target: { kind: "web", url: "http://placeholder.test" },
   objective: "Exercise clicks",
   policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://placeholder.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

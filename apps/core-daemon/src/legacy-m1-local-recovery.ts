@@ -1,6 +1,6 @@
 import { canonicalPayloadHash, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { LegacyM1LocalRecoveryRecord } from "@qualigence/sqlite-runtime";
-import { parsePolicylessExecutionJobForRecovery } from "@qualigence/runner-control";
+import { parsePolicylessExecutionJobForRecovery, parseProjectlessExecutionJobForRecovery } from "@qualigence/runner-control";
 
 interface RecoveryManifestRecord extends LegacyM1LocalRecoveryRecord {}
 
@@ -33,13 +33,27 @@ export function verifyLegacyM1LocalRecoveryRows(
   for (const record of manifest.records) {
     const raw = rows.get(`${record.jobId}:${record.runId}`);
     if (raw === undefined) throw new Error("Legacy recovery lease row is missing.");
-    let job;
+    let persisted: unknown;
     try {
-      job = parsePolicylessExecutionJobForRecovery(JSON.parse(raw));
+      persisted = JSON.parse(raw);
     } catch {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
-    if (job.jobId !== record.jobId || job.runId !== record.runId || canonicalPayloadHash(job) !== record.canonicalJobSha256) {
+    let job;
+    try {
+      job = parsePolicylessExecutionJobForRecovery(persisted);
+    } catch {
+      try {
+        const projectless = parseProjectlessExecutionJobForRecovery(persisted);
+        if (canonicalPayloadHash(projectless.policy) !== canonicalPayloadHash(record.policy)) {
+          throw new Error("Legacy recovery lease row does not match the manifest.");
+        }
+        job = projectless;
+      } catch {
+        throw new Error("Legacy recovery lease row does not match the manifest.");
+      }
+    }
+    if (job.jobId !== record.jobId || job.runId !== record.runId || canonicalPayloadHash(persisted) !== record.canonicalJobSha256) {
       throw new Error("Legacy recovery lease row does not match the manifest.");
     }
     if (new URL(job.target.url).origin !== record.policy.allowedOrigins[0]) {

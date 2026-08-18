@@ -176,8 +176,8 @@ export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
 
 export function parsePolicylessExecutionJob(value: unknown): PolicylessExecutionJob {
   const raw = record(value);
-  if (raw.policy !== undefined) throw new ExecutionPolicySnapshotError();
-  const identity = parseExecutionJobIdentity(raw);
+  if (raw.policy !== undefined || raw.projectId !== undefined) throw new ExecutionPolicySnapshotError();
+  const identity = parsePolicylessExecutionJobIdentity(raw);
   const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
   return plan === undefined ? identity : { ...identity, plan };
 }
@@ -230,7 +230,20 @@ function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
     : { ...base, ...(role === undefined ? {} : { role }), ...(name === undefined ? {} : { name }) };
 }
 
-function parseExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
+function parseExecutionJobIdentity(value: unknown): Omit<AcceptedExecutionJob, "policy" | "plan"> {
+  const job = record(value);
+  const target = record(job.target);
+  if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
+  return {
+    jobId: nonEmptyString(job.jobId),
+    runId: nonEmptyString(job.runId),
+    projectId: nonEmptyString(job.projectId),
+    target: { kind: "web", url: parseTargetUrl(target.url) },
+    objective: nonEmptyString(job.objective),
+  };
+}
+
+function parsePolicylessExecutionJobIdentity(value: unknown): PolicylessExecutionJob {
   const job = record(value);
   const target = record(job.target);
   if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
@@ -309,6 +322,7 @@ function enumArray<T extends readonly string[]>(value: unknown, allowed: T): rea
 export interface AcceptedExecutionJob {
   readonly jobId: ExecutionJobId;
   readonly runId: RunId;
+  readonly projectId: string;
   readonly target: TargetRef;
   readonly objective: string;
   readonly policy: ExecutionPolicySnapshot;

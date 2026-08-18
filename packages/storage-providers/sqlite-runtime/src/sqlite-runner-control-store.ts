@@ -18,7 +18,7 @@ import type {
   RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import { leaseBindingMatches, observedCompletionResult, parsePolicylessExecutionJobForRecovery } from "@qualigence/runner-control";
+import { leaseBindingMatches, observedCompletionResult, parsePolicylessExecutionJobForRecovery, parseProjectlessExecutionJobForRecovery } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { SqliteRuntime } from "./database.js";
 import { isSqliteBusyError, mapBusyError } from "./errors.js";
@@ -431,7 +431,21 @@ function parseJob(
   try {
     policyless = parsePolicylessExecutionJobForRecovery(parsed);
   } catch {
-    throw new RunnerControlStoreError();
+    let projectless;
+    try {
+      projectless = parseProjectlessExecutionJobForRecovery(parsed);
+    } catch {
+      throw new RunnerControlStoreError();
+    }
+    const record = legacyRecovery?.find(
+      (candidate) =>
+        candidate.jobId === projectless.jobId &&
+        candidate.runId === projectless.runId &&
+        candidate.canonicalJobSha256 === canonicalPayloadHash(parsed) &&
+        canonicalPayloadHash(candidate.policy) === canonicalPayloadHash(projectless.policy),
+    );
+    if (record === undefined) throw new RunnerControlStoreError();
+    return parseExecutionJob({ ...projectless, projectId: "local" });
   }
   const record = legacyRecovery?.find(
     (candidate) =>
@@ -440,5 +454,5 @@ function parseJob(
       candidate.canonicalJobSha256 === canonicalPayloadHash(parsed),
   );
   if (record === undefined) throw new RunnerControlStoreError();
-  return parseExecutionJob({ ...policyless, policy: record.policy });
+  return parseExecutionJob({ ...policyless, projectId: "local", policy: record.policy });
 }

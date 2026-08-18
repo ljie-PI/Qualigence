@@ -307,6 +307,7 @@ function job() {
   return {
     jobId: "job-1",
     runId: "run-1",
+    projectId: "project-test",
     target: { kind: "web" as const, url: "https://example.test" },
     objective: "verify the cart total",
     policy: { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

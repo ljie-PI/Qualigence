@@ -72,6 +72,7 @@ function isAlive(pid: number): boolean {
 const job: AcceptedExecutionJob = {
   jobId: "job-facade",
   runId: "run-facade",
+  projectId: "project-test",
   target: { kind: "web", url: "http://placeholder.test" },
   objective: "Drive the facade",
   policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://placeholder.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },

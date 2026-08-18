@@ -141,6 +141,7 @@ class PlaywrightReproductionRunner implements ReproductionRunnerPort {
       const graph = await observer.capture({
         jobId: `job-${attemptId}`,
         runId: `run-${attemptId}`,
+        projectId: "proj-1",
         target: { kind: "web", url: this.fixtureUrl },
         objective: "Reproduce the cart total defect",
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: [this.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: FROZEN, expiresAt: "2026-08-01T00:01:00.000Z" },

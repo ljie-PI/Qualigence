@@ -140,7 +140,7 @@ describe("Core runner protocol production composition", () => {
       });
       cleanups.push(async () => { await daemon.shutdown(); await rm(dataDir, { recursive: true, force: true }); });
       await daemon.application.ownership.markLost(policyless.runId, "expired");
-      await expect(daemon.application.ownership.createRecoveryRun(policyless.runId)).resolves.toMatchObject({ job: { policy } });
+      await expect(daemon.application.ownership.createRecoveryRun(policyless.runId)).resolves.toMatchObject({ job: { projectId: "local", policy } });
     } catch (error) {
       await rm(dataDir, { recursive: true, force: true });
       throw error;

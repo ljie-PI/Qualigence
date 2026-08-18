@@ -11,6 +11,7 @@ function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
   return {
     jobId,
     runId,
+    projectId: "project-test",
     target: { kind: "web", url: "https://example.test/" },
     objective: "add the item to the cart",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
@@ -136,6 +137,7 @@ describe("RunOwnershipService", () => {
     clock.advance(30_001); // expire; recovery is now safe
     const recovery = await service.createRecoveryRun("run-1");
     expect(recovery.job.runId).not.toBe("run-1");
+    expect(recovery.job.projectId).toBe("project-test");
     expect(recovery.recoveryOfRunId).toBe("run-1");
 
     await service.grant(recovery.job, owner1, recovery.recoveryOfRunId);

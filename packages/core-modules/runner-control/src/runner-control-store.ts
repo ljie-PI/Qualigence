@@ -44,6 +44,27 @@ export function parsePolicylessExecutionJobForRecovery(value: unknown) {
   }
 }
 
+/** A historical Job that retained policy but predates project provenance. */
+export type ProjectlessExecutionJob = Omit<AcceptedExecutionJob, "projectId">;
+
+/** Parses a historical Job without assigning project provenance. */
+export function parseProjectlessExecutionJobForRecovery(value: unknown): ProjectlessExecutionJob {
+  try {
+    const raw = value as { readonly projectId?: unknown };
+    if (typeof raw !== "object" || raw === null || raw.projectId !== undefined) {
+      throw new ExecutionPolicySnapshotError();
+    }
+    const { projectId: _projectId, ...job } = parseProtocolExecutionJob({
+      ...raw,
+      projectId: "legacy-recovery-placeholder",
+    });
+    return job;
+  } catch (error) {
+    if (error instanceof ExecutionPolicySnapshotError) throw new RunnerControlStoreError();
+    throw error;
+  }
+}
+
 export interface ResumeTokenBinding {
   readonly runnerId: string;
   readonly certificateFingerprint: string;

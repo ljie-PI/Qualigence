@@ -92,6 +92,7 @@ export class RunExecutionUseCaseImpl implements RunExecutionUseCase {
       const job: AcceptedExecutionJob = {
         jobId,
         runId,
+        projectId: request.projectId,
         target: { kind: "web", url: request.target.url },
         objective: request.objective,
         policy: request.policy,
@@ -186,6 +187,9 @@ export class RunExecutionUseCaseImpl implements RunExecutionUseCase {
 function validateRequest(
   request: RunExecutionRequest,
 ): ExecutionApplicationErrorCode | undefined {
+  if (typeof request.projectId !== "string" || request.projectId.trim().length === 0) {
+    return "InvalidConfiguration";
+  }
   if (request.target.kind !== "web") {
     return "InvalidConfiguration";
   }

@@ -17,6 +17,7 @@ describe("DeterministicRunnerPolicyGate", () => {
   const job = (overrides: Partial<AcceptedExecutionJob> = {}): AcceptedExecutionJob => ({
     jobId: "job-1",
     runId: "run-1",
+    projectId: "project-test",
     target: { kind: "web", url: "https://example.test/" },
     objective: "click",
     policy,
@@ -61,6 +62,8 @@ describe("DeterministicRunnerPolicyGate", () => {
   it("admits only a non-expired HTTP(S) target in its explicit policy origins", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });
+    const { projectId: _projectId, ...projectless } = job();
+    expect(DeterministicRunnerPolicyGate.admitJob(projectless, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyMissing" });
   });
 
   it("allows the exact bounded staging click and denies staging exploration and fallbacks", async () => {

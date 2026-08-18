@@ -73,6 +73,16 @@ export class MissionCompiler {
       };
     }
 
+    if (mission.projectId.trim().length === 0 || plan.projectId !== mission.projectId) {
+      return {
+        ok: false,
+        error: {
+          code: "MissionProjectMismatch",
+          message: "Mission project provenance must match the approved Plan.",
+        },
+      };
+    }
+
     if (plan.testCases.length > mission.executionBudget.maximumJobs) {
       return {
         ok: false,
@@ -157,6 +167,7 @@ export class MissionCompiler {
       canonicalJson({
         missionId: mission.missionId,
         missionRevision: mission.revision,
+        projectId: mission.projectId,
         targetId: mission.targetId,
         jobs: jobs.map((job) => ({
           jobId: job.jobId,
@@ -175,6 +186,7 @@ export class MissionCompiler {
       value: deepFreeze<CompiledMission>({
         missionId: mission.missionId,
         missionRevision: mission.revision,
+        projectId: mission.projectId,
         targetId: mission.targetId,
         executionPolicy: deepFreeze(structuredClone(mission.executionPolicy)),
         jobs: [firstJob, ...restJobs],
