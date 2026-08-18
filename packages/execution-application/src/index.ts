@@ -22,6 +22,7 @@ export { TerminalTraceEnsurer } from "./terminal-trace-ensurer.js";
 
 export {
   RunExecutionUseCaseImpl,
+  isValidExecutionTargetUrl,
   type RunExecutionUseCaseOptions,
 } from "./run-execution-use-case.js";
 

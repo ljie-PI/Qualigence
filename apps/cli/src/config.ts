@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { z } from "zod";
+import { isValidExecutionTargetUrl } from "@qualigence/execution-application";
 import type { RunExecutionRequest } from "@qualigence/execution-application";
 
 export type OutputMode = "human" | "json";
@@ -106,12 +107,10 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
 }
 
 function localPolicy(url: string): RunExecutionRequest["policy"] {
-  let origin: string;
-  try {
-    origin = new URL(url).origin;
-  } catch {
+  if (!isValidExecutionTargetUrl(url)) {
     throw new CliConfigError("--url must be a valid HTTP(S) URL.");
   }
+  const origin = new URL(url).origin;
   const issuedAt = new Date().toISOString();
   return {
     policyId: "local-cli-isolated-test",

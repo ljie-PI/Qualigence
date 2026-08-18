@@ -124,4 +124,13 @@ describe("parseRunRequest", () => {
       expect(error).toMatchObject({ code: "InvalidConfiguration", name: "CliConfigError" });
     }
   });
+
+  it.each([
+    "ftp://example.test/path",
+    "file:///tmp/target.html",
+    "data:text/html,hello",
+    "https://user:secret@example.test/",
+  ])("rejects unsafe target URL %s with CliConfigError", (url) => {
+    expect(() => parseRunRequest(["run", "--url", url, "--objective", "add one item"])).toThrow(CliConfigError);
+  });
 });

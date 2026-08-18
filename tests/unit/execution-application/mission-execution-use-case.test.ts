@@ -228,4 +228,21 @@ describe("MissionExecutionUseCase", () => {
     expect(repository.jobStatuses).toEqual([{ jobId: "job-1", status: "failed" }]);
     expect(repository.missionStatuses).toEqual(["running", "blocked"]);
   });
+
+  it.each([
+    "ftp://example.test/path",
+    "file:///tmp/target.html",
+    "data:text/html,hello",
+    "https://user:secret@example.test/",
+  ])("records InvalidTargetUrl for unsafe persisted dispatch URL %s", async (targetUrl) => {
+    repository.mission = dispatchableMission({ dispatch: { ...dispatchableMission().dispatch, targetUrl } });
+    const useCase = new MissionExecutionUseCase(repository, new ScriptedRunExecution([]), {
+      generateAttemptId: () => "attempt-unsafe-target",
+      clock: { now: () => "2026-08-18T00:00:00.000Z" },
+    });
+
+    await expect(useCase.execute("mission-1")).resolves.toMatchObject({ status: "blocked" });
+    expect(repository.attempts[0]).toMatchObject({ status: "error", errorCode: "InvalidTargetUrl" });
+    expect(repository.missionStatuses).toEqual(["running", "blocked"]);
+  });
 });

@@ -16,6 +16,7 @@ import type {
   RunExecutionUseCase,
 } from "./contracts.js";
 import { ExecutionApplicationError } from "./errors.js";
+import { isValidExecutionTargetUrl } from "./run-execution-use-case.js";
 
 /** Full-chain provenance from a Mission execution back to its originating PRD. */
 export interface MissionExecutionTrace {
@@ -176,16 +177,10 @@ export class MissionExecutionUseCase {
     mission: DispatchableMission,
     job: DispatchableJob,
   ): RunExecutionRequest {
-    let targetOrigin: string;
-    try {
-      const target = new URL(mission.dispatch.targetUrl);
-      if (target.protocol !== "http:" && target.protocol !== "https:") {
-        throw new Error("unsupported target scheme");
-      }
-      targetOrigin = target.origin;
-    } catch {
+    if (!isValidExecutionTargetUrl(mission.dispatch.targetUrl)) {
       throw new ExecutionApplicationError("InvalidTargetUrl", "Mission dispatch target URL is invalid.");
     }
+    const targetOrigin = new URL(mission.dispatch.targetUrl).origin;
     if (!mission.executionPolicy.allowedOrigins.includes(targetOrigin)) {
       throw new ExecutionApplicationError("InvalidConfiguration", "Mission target is outside its approved policy origins.");
     }

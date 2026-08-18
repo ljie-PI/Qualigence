@@ -780,6 +780,21 @@ mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-ga
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
 
+Task 15 review-fix round 8 (2026-08-18): one shared strict execution-target
+validator now governs CLI local policy issuance, Mission dispatch construction,
+and the shared execution use case. It accepts only absolute HTTP(S) URLs without
+credentials and rejects `ftp`, `file`, `data`, malformed, and credentialed URLs.
+CLI maps rejection to `CliConfigError(InvalidConfiguration)`; persisted Mission
+dispatch maps it to `InvalidTargetUrl` with a durable failed attempt and blocked
+Mission, without browser construction. The existing Playwright session validator
+remains unchanged as independent adapter defense in depth.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 199 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
 Task 15 review-fix round 7 (2026-08-18): CLI local policy construction now
 converts malformed `--url` input into the stable `CliConfigError`
 `InvalidConfiguration` rather than leaking `URL` parsing. Mission execution
