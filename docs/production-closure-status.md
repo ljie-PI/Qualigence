@@ -650,7 +650,7 @@ Task 10 starts.
 
 component: complete
 production_wiring: present
-verification: not_run
+verification: passed
 introducing_pr: `codex/pr6-runner-control-persistence`
 date: 2026-08-18
 exact_command: `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner/disconnect-recovery.test.ts`
@@ -661,5 +661,21 @@ consumption, lease CAS, and canonical-equivalent completion. Production
 Core opens `SqliteRunnerControlStore` before bind.
 
 RED: schema version was 5 and the four services used in-memory maps.
+
+Round-1 verification (2026-08-18): the focused Gate above passed 10 files
+and 90 tests with the plan-documented Windows OpenSSL resolution
+(`C:\Program Files\Git\usr\ssl\openssl.cnf`), plus `corepack pnpm typecheck`
+and `git diff --check`. The PostgreSQL provider contract passed 12 tests
+against Docker 29.6.1, including restart-preserved ownership and the
+reopened-connection harness.
+
+Round-1 fixes included in the review-round commit: resume-token rotation
+with an expiry-bounded idempotent crash-replay window (`rotateResumeToken`
+in all three adapters), and resumed-connection completion authority
+(`RunOwnershipService.completeStored`), so a Runner that reconnects after a
+disconnect or Core restart can complete the run against the persisted
+lease even though no raw lease token was seen on the new connection. The
+in-memory contract harness shares one store for the concurrent-caller
+cases, and the postgres harness re-resolves runtimes after `reopen()`.
 
 GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.
