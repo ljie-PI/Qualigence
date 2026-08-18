@@ -76,6 +76,71 @@ export interface ExplorationPolicy {
   readonly riskCeiling: ExplorationRiskCeiling;
 }
 
+export interface ApprovedExecutionPolicy {
+  readonly policyId: string;
+  readonly environment: "isolated_test" | "staging" | "production";
+  readonly allowedOrigins: readonly string[];
+  readonly allowedActionKinds: readonly ("navigate" | "click" | "input" | "select" | "scroll" | "window")[];
+  readonly maximumRisk: "Normal" | "ExternalSideEffect" | "Destructive" | "ProductionForbidden";
+  readonly explorationAllowed: boolean;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+export function validateApprovedExecutionPolicy(
+  policy: ApprovedExecutionPolicy,
+  maximumWallClockMs: number,
+): ApprovedExecutionPolicy {
+  const issued = Date.parse(policy.issuedAt);
+  const expires = Date.parse(policy.expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || issued >= expires) {
+    throw new Error("Execution policy expiry must be after issue time.");
+  }
+  if (expires > issued + maximumWallClockMs || policy.allowedOrigins.length === 0) {
+    throw new Error("Execution policy exceeds the Mission execution budget.");
+  }
+  for (const origin of policy.allowedOrigins) {
+    if (origin.includes("*")) {
+      throw new Error("Execution policy origin must not contain a wildcard.");
+    }
+    const parsed = new URL(origin);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin !== origin || parsed.username !== "" || parsed.password !== "") {
+      throw new Error("Execution policy origin must be canonical HTTP(S) without credentials.");
+    }
+  }
+  if (policy.environment === "staging") {
+    if (
+      policy.allowedActionKinds.length !== 1 || policy.allowedActionKinds[0] !== "click" ||
+      policy.maximumRisk !== "Normal" || policy.explorationAllowed
+    ) {
+      throw new Error("Staging policy must be an explicit bounded click-only declaration.");
+    }
+  }
+  return policy;
+}
+
+/** Converts validated exploration limits only when they can narrow approved authority. */
+export function narrowApprovedExecutionPolicy(
+  approved: ApprovedExecutionPolicy,
+  exploration: ExplorationPolicy,
+): ApprovedExecutionPolicy {
+  validateExplorationPolicy(exploration);
+  if (approved.environment === "production" || !approved.explorationAllowed) {
+    throw new Error("Exploration is not permitted by the approved execution policy.");
+  }
+  if (
+    exploration.allowedOrigins.some((origin) => !approved.allowedOrigins.includes(origin)) ||
+    exploration.allowedActionKinds.some((kind) => !approved.allowedActionKinds.includes(kind as ApprovedExecutionPolicy["allowedActionKinds"][number]))
+  ) {
+    throw new Error("Exploration policy would expand approved execution authority.");
+  }
+  return {
+    ...approved,
+    allowedOrigins: [...exploration.allowedOrigins],
+    allowedActionKinds: exploration.allowedActionKinds as ApprovedExecutionPolicy["allowedActionKinds"],
+  };
+}
+
 /** A kind of action the model may propose. */
 export type ExplorationActionKind = "navigate" | "click" | "input";
 

@@ -31,3 +31,6 @@ export type {
   VerificationResult,
   Verifier,
 } from "./execution-runtime.js";
+
+export { DeterministicRunnerPolicyGate } from "./deterministic-policy-gate.js";
+export type { DeterministicRunnerPolicyGateOptions, TargetAdmission } from "./deterministic-policy-gate.js";

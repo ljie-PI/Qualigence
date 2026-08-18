@@ -351,6 +351,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
           maximumModelTokens: 100_000,
           stopOnBlockedTestCase: true,
         },
+        executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: [fixture.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-01T00:00:00.000Z", expiresAt: "2099-08-01T00:01:00.000Z" },
         status: "approved",
       };
       const compiled = new MissionCompiler().compile(approved.value, mission, target);

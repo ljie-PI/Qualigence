@@ -6,6 +6,7 @@ import type {
   ExecutionEventBatch,
   ExecutionJobLease,
   ExecutionJobOffer,
+  ExecutionPolicySnapshot,
   FindingEnvelope,
   RunnerHello,
   RunnerProtocolMajor,
@@ -14,6 +15,7 @@ import type {
   TraceEvent,
   TraceStage,
 } from "@qualigence/runner-protocol";
+import { RunnerProtocolError } from "./errors.js";
 
 /**
  * Explicit, total mapping between the frozen transport-agnostic domain messages
@@ -145,12 +147,59 @@ function targetFromWire(wire: unknown): TargetRef {
   return { kind: "web", url: asString(web.url) };
 }
 
+function policyToWire(policy: ExecutionPolicySnapshot): Wire {
+  return {
+    policy_id: policy.policyId,
+    environment: policy.environment,
+    allowed_origins: [...policy.allowedOrigins],
+    allowed_action_kinds: [...policy.allowedActionKinds],
+    maximum_risk: policy.maximumRisk,
+    exploration_allowed: policy.explorationAllowed,
+    issued_at: policy.issuedAt,
+    expires_at: policy.expiresAt,
+  };
+}
+
+function policyFromWire(wire: unknown): ExecutionPolicySnapshot {
+  if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
+    throw new RunnerProtocolError("PolicyMissing", "execution Job policy is required");
+  }
+  const policy = wire as Wire;
+  const environment = asString(policy.environment);
+  const maximumRisk = asString(policy.maximum_risk);
+  const allowedActionKinds = asArray<string>(policy.allowed_action_kinds);
+  const allowedOrigins = asArray<string>(policy.allowed_origins);
+  if (
+    asString(policy.policy_id) === "" ||
+    (environment !== "isolated_test" && environment !== "staging" && environment !== "production") ||
+    allowedOrigins.some((origin) => origin.length === 0) ||
+    allowedActionKinds.some((kind) => !["navigate", "click", "input", "select", "scroll", "window"].includes(kind)) ||
+    (maximumRisk !== "Normal" && maximumRisk !== "ExternalSideEffect" && maximumRisk !== "Destructive" && maximumRisk !== "ProductionForbidden") ||
+    typeof policy.exploration_allowed !== "boolean" ||
+    asString(policy.issued_at) === "" ||
+    asString(policy.expires_at) === ""
+  ) {
+    throw new RunnerProtocolError("PolicyMissing", "execution Job policy is malformed");
+  }
+  return {
+    policyId: asString(policy.policy_id),
+    environment,
+    allowedOrigins,
+    allowedActionKinds: allowedActionKinds as ExecutionPolicySnapshot["allowedActionKinds"],
+    maximumRisk,
+    explorationAllowed: policy.exploration_allowed,
+    issuedAt: asString(policy.issued_at),
+    expiresAt: asString(policy.expires_at),
+  };
+}
+
 export function jobToWire(job: AcceptedExecutionJob): Wire {
   return {
     job_id: job.jobId,
     run_id: job.runId,
     target: targetToWire(job.target),
     objective: job.objective,
+    policy: policyToWire(job.policy),
   };
 }
 
@@ -160,6 +209,7 @@ export function jobFromWire(wire: Wire): AcceptedExecutionJob {
     runId: asString(wire.run_id),
     target: targetFromWire(wire.target),
     objective: asString(wire.objective),
+    policy: policyFromWire(wire.policy),
   };
 }
 

@@ -16,6 +16,10 @@ import { TraceIngestor } from "@qualigence/evidence";
 import { StructuredLogger } from "@qualigence/observability";
 import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
+import {
+  validateLegacyM1LocalRecoveryCandidate,
+  verifyLegacyM1LocalRecoveryRows,
+} from "./legacy-m1-local-recovery.js";
 
 export interface StartedCoreDaemon {
   readonly port: number;
@@ -31,6 +35,9 @@ export interface StartedCoreDaemon {
  * after both succeed. Request intake remains out of scope for this binary.
  */
 export async function startCoreDaemon(config: CoreDaemonConfig): Promise<StartedCoreDaemon> {
+  const recovery = config.legacyM1LocalRecoveryCandidate === undefined
+    ? undefined
+    : validateLegacyM1LocalRecoveryCandidate(config.legacyM1LocalRecoveryCandidate, { deploymentMode: config.deploymentMode ?? "local", host: config.host });
   await mkdir(config.dataDir, { recursive: true });
   const runtime = await SqliteRuntime.open({
     filename: join(config.dataDir, "qualigence.db"),
@@ -38,7 +45,25 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
   });
   const traceStore = new SqliteTraceStore(runtime);
   const runStore = new SqliteRunStore(runtime);
-  const controlStore = new SqliteRunnerControlStore(runtime);
+  let controlStore: SqliteRunnerControlStore;
+  try {
+    const rawControlStore = new SqliteRunnerControlStore(runtime);
+    const recoveryRows = new Map<string, string>();
+    if (recovery !== undefined) {
+      for (const record of recovery.records) {
+        const raw = await rawControlStore.rawRecoveryJobJson(record.runId);
+        if (raw !== undefined) recoveryRows.set(`${record.jobId}:${record.runId}`, raw);
+      }
+      // Do not construct an upcasting store until all storage rows are verified.
+      verifyLegacyM1LocalRecoveryRows(recovery, recoveryRows);
+    }
+    controlStore = recovery === undefined
+      ? rawControlStore
+      : new SqliteRunnerControlStore(runtime, { legacyM1LocalRecovery: recovery.records });
+  } catch (error) {
+    await runtime.close();
+    throw error;
+  }
   const logger = new StructuredLogger({ service: "core-daemon" });
   const ownership = new RunOwnershipService({
     store: controlStore,

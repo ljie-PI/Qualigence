@@ -90,6 +90,7 @@ describe("grpc runner protocol handshake", () => {
       runId: "run-attempt-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
+      policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     };
     const leasePromise = connection.offer(job, ["target:web-playwright"]);
 
@@ -209,6 +210,7 @@ describe("grpc runner protocol handshake", () => {
       runId: "run-attempt-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
+      policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     };
     const leasePromise = connection.offer(job, ["target:web-playwright"]);
     const offer = await session.nextOffer(new AbortController().signal);
@@ -370,8 +372,9 @@ describe("grpc runner protocol handshake", () => {
     const offering = connection.offer({
       jobId: "job-race",
       runId: "run-race",
-      target: { kind: "web", url: "https://example.test/" },
-      objective: "race shutdown",
+       target: { kind: "web", url: "https://example.test/" },
+       objective: "race shutdown",
+       policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     }, []);
     const submitting = session.submit(batch("run-1", 1, 1));
     void session.complete(

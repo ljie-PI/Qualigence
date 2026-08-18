@@ -9,6 +9,8 @@ import {
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
 
+const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+
 describe("ExecutionRuntime", () => {
   it("runs an accepted web job through all M1 stages and records trace in order", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
@@ -71,6 +73,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-1",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click login",
+      policy,
     });
 
     expect(completion.status).toBe("passed");
@@ -148,6 +151,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-denied",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click delete",
+      policy,
     });
 
     expect(completion.status).toBe("blocked");
@@ -242,6 +246,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-failed",
       target: { kind: "web", url: "https://example.test" },
       objective: "Verify cart total",
+      policy,
     });
 
     expect(completion.status).toBe("finding");
@@ -318,6 +323,7 @@ describe("ExecutionRuntime", () => {
       runId: "run-action-failed",
       target: { kind: "web", url: "https://example.test" },
       objective: "Add item to cart",
+      policy,
     });
 
     expect(completion).toEqual({

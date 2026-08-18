@@ -94,9 +94,10 @@ export class RunExecutionUseCaseImpl implements RunExecutionUseCase {
         runId,
         target: { kind: "web", url: request.target.url },
         objective: request.objective,
+        policy: request.policy,
       };
 
-      const completion = await scope.runtime.run(job);
+      const completion = await scope.execute(job);
       return await this.finalizeCompletion(scope, runId, completion);
     } catch (cause) {
       const errorCode = mapInfrastructureError(cause);

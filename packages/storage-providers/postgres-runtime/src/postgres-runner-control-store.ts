@@ -1,3 +1,6 @@
+import {
+  RunnerControlStoreError,
+} from "@qualigence/runner-control";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -181,13 +184,20 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     newExpiresAt: string;
-  }): Promise<boolean> {
+  }): Promise<"renewed" | "rejected"> {
+    const row = await this.db
+      .selectFrom("execution_leases")
+      .select("job_json")
+      .where("tenant_id", "=", this.tenantId)
+      .where("run_id", "=", input.runId)
+      .executeTakeFirst();
+    if (row !== undefined) parseJob(row.job_json);
     const result = await constrainLiveLease(
       this.db.updateTable("execution_leases").set({ expires_at: input.newExpiresAt }),
       this.tenantId,
       input,
     ).executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return result.numUpdatedRows > 0n ? "renewed" : "rejected";
   }
 
   async completeLease(input: {
@@ -371,7 +381,7 @@ function toLease(row: {
   recovery_of_run_id: string | null;
 }): PersistedExecutionLease {
   return {
-    job: JSON.parse(row.job_json) as AcceptedExecutionJob,
+    job: parseJob(row.job_json),
     owner: { runnerId: row.runner_id, sessionId: row.session_id },
     leaseEpoch: row.lease_epoch,
     leaseTokenHash: row.lease_token_hash,
@@ -380,4 +390,32 @@ function toLease(row: {
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
     ...(row.recovery_of_run_id === null ? {} : { recoveryOfRunId: row.recovery_of_run_id }),
   };
+}
+
+function parseJob(jobJson: string): AcceptedExecutionJob {
+  try {
+    const job = JSON.parse(jobJson) as { readonly policy?: unknown };
+    if (!hasPolicy(job.policy)) {
+      throw new RunnerControlStoreError();
+    }
+    return job as AcceptedExecutionJob;
+  } catch (error) {
+    if (error instanceof RunnerControlStoreError) throw error;
+    throw new RunnerControlStoreError();
+  }
+}
+
+function hasPolicy(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const policy = value as Record<string, unknown>;
+  return (
+    typeof policy.policyId === "string" && policy.policyId.length > 0 &&
+    (policy.environment === "isolated_test" || policy.environment === "staging" || policy.environment === "production") &&
+    Array.isArray(policy.allowedOrigins) && policy.allowedOrigins.every((origin) => typeof origin === "string") &&
+    Array.isArray(policy.allowedActionKinds) && policy.allowedActionKinds.every((kind) => ["navigate", "click", "input", "select", "scroll", "window"].includes(String(kind))) &&
+    (policy.maximumRisk === "Normal" || policy.maximumRisk === "ExternalSideEffect" || policy.maximumRisk === "Destructive" || policy.maximumRisk === "ProductionForbidden") &&
+    typeof policy.explorationAllowed === "boolean" &&
+    typeof policy.issuedAt === "string" && Number.isFinite(Date.parse(policy.issuedAt)) &&
+    typeof policy.expiresAt === "string" && Number.isFinite(Date.parse(policy.expiresAt))
+  );
 }

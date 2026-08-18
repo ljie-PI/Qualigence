@@ -119,6 +119,7 @@ function mission(): TestMission {
       maximumModelTokens: 100_000,
       stopOnBlockedTestCase: true,
     },
+    executionPolicy: { policyId: "policy-mission", environment: "staging", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2026-08-01T00:01:00.000Z" },
     status: "approved",
   };
 }

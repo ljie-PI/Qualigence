@@ -23,6 +23,7 @@ export type {
 export {
   leaseBindingMatches,
   observedCompletionResult,
+  RunnerControlStoreError,
 } from "./runner-control-store.js";
 
 export const RUNNER_CONTROL_PACKAGE = "@qualigence/runner-control";

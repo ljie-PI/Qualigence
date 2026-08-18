@@ -17,6 +17,7 @@ export type RunnerProtocolErrorCode =
   | "TraceGap"
   | "TraceIntegrityViolation"
   | "ProtocolViolation"
+  | "PolicyMissing"
   | "SessionClosed"
   | "TransportError";
 

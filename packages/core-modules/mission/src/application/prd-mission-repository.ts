@@ -4,6 +4,7 @@ import type {
   ExecutionJobStatus,
   MissionStatus,
 } from "../domain/test-mission.js";
+import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 import type {
   TestCase,
   TestPlanRevision,
@@ -56,6 +57,7 @@ export interface DispatchableMission {
   readonly prdRevision: number;
   readonly status: MissionStatus;
   readonly dispatch: MissionDispatchDescriptor;
+  readonly executionPolicy: ApprovedExecutionPolicy;
   readonly stopOnBlockedTestCase: boolean;
   readonly jobs: readonly DispatchableJob[];
 }

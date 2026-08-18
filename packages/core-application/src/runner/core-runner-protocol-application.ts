@@ -30,7 +30,8 @@ export type CoreApplicationErrorCode =
   | "UnknownOffer"
   | "UnknownRun"
   | "RunIdentityMismatch"
-  | "RunOwnershipViolation";
+  | "RunOwnershipViolation"
+  | "PolicyMissing";
 
 export interface CoreApplicationErrorOptions {
   readonly cause?: unknown;

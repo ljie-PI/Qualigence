@@ -34,6 +34,7 @@ const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 const DEFAULT_MODEL_PROFILE_ID = "default";
 const DEFAULT_DATA_DIR = ".qualigence/data";
+const LOCAL_POLICY_DURATION_MS = 15_000;
 
 const environmentSchema = z.object({
   QUALIGENCE_MODEL_BASE_URL: z
@@ -92,6 +93,7 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
   const request: RunExecutionRequest = {
     target: { kind: "web", url: options.url },
     objective: options.objective,
+    policy: localPolicy(options.url),
     executionProfile: {
       modelProfileId: DEFAULT_MODEL_PROFILE_ID,
       headed: options.headed === true,
@@ -101,6 +103,20 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
   };
 
   return { request, output };
+}
+
+function localPolicy(url: string): RunExecutionRequest["policy"] {
+  const issuedAt = new Date().toISOString();
+  return {
+    policyId: "local-cli-isolated-test",
+    environment: "isolated_test",
+    allowedOrigins: [new URL(url).origin],
+    allowedActionKinds: ["click"],
+    maximumRisk: "Normal",
+    explorationAllowed: false,
+    issuedAt,
+    expiresAt: new Date(Date.parse(issuedAt) + LOCAL_POLICY_DURATION_MS).toISOString(),
+  };
 }
 
 interface RunOptions {

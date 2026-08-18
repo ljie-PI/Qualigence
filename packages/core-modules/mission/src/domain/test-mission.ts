@@ -1,4 +1,5 @@
 import type { IntentStep, TestCase } from "./test-plan-revision.js";
+import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 
 export interface MissionBudget {
   readonly maximumJobs: number;
@@ -29,6 +30,7 @@ export interface TestMission {
   readonly targetId: string;
   readonly testCaseIds: readonly [string, ...string[]];
   readonly executionBudget: MissionBudget;
+  readonly executionPolicy: ApprovedExecutionPolicy;
   readonly status: MissionStatus;
 }
 
@@ -65,6 +67,7 @@ export interface CompiledMission {
   readonly missionId: string;
   readonly missionRevision: number;
   readonly targetId: string;
+  readonly executionPolicy: ApprovedExecutionPolicy;
   readonly jobs: readonly [ExecutionJob, ...ExecutionJob[]];
   readonly compiledHash: string;
 }

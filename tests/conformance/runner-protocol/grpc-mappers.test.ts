@@ -22,6 +22,7 @@ import {
   leaseToWire,
   offerFromWire,
   offerToWire,
+  jobFromWire,
   renewLeaseFromWire,
   renewLeaseToWire,
   welcomeFromWire,
@@ -42,6 +43,17 @@ function wireRoundTrip<TDomain>(
 }
 
 describe("grpc runner protocol mappers", () => {
+  it("rejects a network Job that omits the required policy snapshot", () => {
+    expect(() =>
+      jobFromWire({
+        job_id: "job-policyless",
+        run_id: "run-policyless",
+        target: { web: { url: "https://example.test/" } },
+        objective: "must not dispatch",
+      }),
+    ).toThrow(expect.objectContaining({ code: "PolicyMissing" }));
+  });
+
   it("round-trips RunnerHello through the protobuf wire", () => {
     const hello: RunnerHello = {
       runnerId: "runner-1",
@@ -94,6 +106,7 @@ describe("grpc runner protocol mappers", () => {
         runId: "run-attempt-1",
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
       },
       requiredCapabilities: ["target:web-playwright"],
       leaseDurationMs: 30_000,

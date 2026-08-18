@@ -47,6 +47,7 @@ describe("parseRunRequest", () => {
     expect(invocation.request).toEqual({
       target: { kind: "web", url: "http://127.0.0.1:3000/" },
       objective: "add one item",
+      policy: expect.objectContaining({ environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:3000"], allowedActionKinds: ["click"] }),
       executionProfile: {
         modelProfileId: "default",
         headed: false,

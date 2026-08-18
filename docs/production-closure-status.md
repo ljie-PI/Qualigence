@@ -724,3 +724,38 @@ passed 4 files / 63 tests. With Git OpenSSL on `PATH` and
 `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
 `corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
 passed 2 files / 10 tests.
+
+## Task 15 — Deterministic execution policy snapshot (2026-08-18)
+
+component: complete
+production_wiring: present
+verification: passed
+introducing_pr: `codex/pr11-execution-policy`
+date: 2026-08-18
+exact_command: `corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/legacy-m1-local-recovery.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/runner/job-executor.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/unit/core-modules/mission/execution-policy.test.ts tests/unit/core-modules/mission/mission-compiler.test.ts tests/contract/sqlite/prd-mission-store.test.ts tests/unit/execution-application/mission-execution-use-case.test.ts tests/unit/cli/config.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/component/web-execution/run-execution-use-case.test.ts tests/component/web-execution/local-run-composition-root.test.ts tests/component/prd-planning/prd-to-run.test.ts tests/e2e/cli-web-cart.test.ts`
+
+RED: the pre-implementation focused command failed as expected: policy was not
+present on `AcceptedExecutionJob`, protobuf had no field 6 policy message,
+wire jobs without policy were accepted, no deterministic gate/admission or
+recovery validation seam existed, and typecheck rejected the new required
+interfaces. The initial RED run also exposed the documented Windows OpenSSL
+configuration requirement; subsequent component runs used Git OpenSSL on PATH.
+
+GREEN: `AcceptedExecutionJob.policy` is required and losslessly mapped through
+the frozen protobuf tags (Job policy = 6; nested fields 1-8). Core and Mission
+propagate immutable approved policy, Local CLI issues explicit isolated-test
+authority, and both Local and remote Runner composition construct the
+deterministic Runner gate. Remote offers are admitted before target/browser
+creation and denied jobs complete blocked without action execution. SQLite and
+PostgreSQL reject malformed or policyless persisted lease Jobs; renewal fails
+as `PolicyMissing` before expiry mutation. The only legacy upcast is the
+validated, hash-bound Local SQLite recovery manifest; PostgreSQL never upcasts.
+Core transport now only offers and awaits completion, without a policy gate or
+target/action pipeline.
+
+The complete focused command above passed 26 files / 145 tests using
+`C:\Program Files\Git\usr\bin` on PATH for mTLS component tests. The final
+policy command `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 12 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract tests ran and passed; no Gate was
+skipped. Task 11 source and tests remain unchanged.

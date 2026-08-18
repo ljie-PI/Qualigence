@@ -106,11 +106,31 @@ export interface WebTargetRef {
 
 export type TargetRef = WebTargetRef;
 
+export type ExecutionPolicyEnvironment = "isolated_test" | "staging" | "production";
+export type ExecutionPolicyActionKind = "navigate" | "click" | "input" | "select" | "scroll" | "window";
+export type ExecutionPolicyRisk = "Normal" | "ExternalSideEffect" | "Destructive" | "ProductionForbidden";
+
+/**
+ * Immutable Core-issued authority snapshot for exactly one accepted Job. It is
+ * carried losslessly over the Runner Protocol and never inferred by a Runner.
+ */
+export interface ExecutionPolicySnapshot {
+  readonly policyId: string;
+  readonly environment: ExecutionPolicyEnvironment;
+  readonly allowedOrigins: readonly string[];
+  readonly allowedActionKinds: readonly ExecutionPolicyActionKind[];
+  readonly maximumRisk: ExecutionPolicyRisk;
+  readonly explorationAllowed: boolean;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
 export interface AcceptedExecutionJob {
   readonly jobId: ExecutionJobId;
   readonly runId: RunId;
   readonly target: TargetRef;
   readonly objective: string;
+  readonly policy: ExecutionPolicySnapshot;
   /**
    * Optional immutable Mission plan snapshot (LS-07). Purely additive: M1
    * objective-only jobs omit it. When present it is a read-only Runner DTO —

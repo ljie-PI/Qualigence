@@ -182,6 +182,7 @@ function requestFor(url: string): RunExecutionRequest {
   return {
     target: { kind: "web", url },
     objective: "add one item to the cart",
+    policy: { policyId: "policy-local", environment: "isolated_test", allowedOrigins: [new URL(url).origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },
     executionProfile: {
       modelProfileId: "default",
       headed: false,

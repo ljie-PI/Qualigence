@@ -19,6 +19,7 @@ export type RunnerWireMessageName =
   | "TraceIntegrityViolation"
   | "TargetRef"
   | "AcceptedExecutionJob"
+  | "ExecutionPolicySnapshot"
   | "TraceEventEnvelope";
 
 const PACKAGE = "qualigence.runner.v1";

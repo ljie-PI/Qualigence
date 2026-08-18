@@ -31,6 +31,8 @@ export {
 } from "@qualigence/core-application";
 
 export { startCoreDaemon, type StartedCoreDaemon } from "./main.js";
+export { loadCoreDaemonConfig } from "./config.js";
+export { validateLegacyM1LocalRecoveryCandidate } from "./legacy-m1-local-recovery.js";
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
 
 export {
@@ -38,5 +40,3 @@ export {
   type RunnerBackedRunResourceFactoryOptions,
   type RunnerBackedRunResources,
 } from "./runner/runner-backed-run-resource-factory.js";
-
-export type { RemoteRunnerTarget } from "./runner/remote-runner-target.js";

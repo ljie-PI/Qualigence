@@ -14,6 +14,7 @@ import type {
   RunnerControlIntegrityEventSink,
   RunnerControlStore,
 } from "@qualigence/runner-control";
+import { RunnerControlStoreError } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 
 export type LeaseOwner = PersistedLeaseOwner;
@@ -116,18 +117,27 @@ export class RunOwnershipService {
   }
 
   async renew(lease: ExecutionJobLease): Promise<ExecutionJobLease> {
-    const record = await this.requireLiveLease(lease);
+    let renewed: "renewed" | "rejected";
+    let record: PersistedExecutionLease;
     const newExpiresAt = new Date(this.now() + this.leaseDurationMs).toISOString();
-    const renewed = await this.store.renewLease({
-      runId: lease.runId,
-      jobId: lease.jobId,
-      owner: record.owner,
-      leaseEpoch: lease.leaseEpoch,
-      leaseTokenHash: hashToken(lease.leaseToken),
-      checkedAt: new Date(this.now()).toISOString(),
-      newExpiresAt,
-    });
-    if (!renewed) {
+    try {
+      record = await this.requireLiveLease(lease);
+      renewed = await this.store.renewLease({
+        runId: lease.runId,
+        jobId: lease.jobId,
+        owner: record.owner,
+        leaseEpoch: lease.leaseEpoch,
+        leaseTokenHash: hashToken(lease.leaseToken),
+        checkedAt: new Date(this.now()).toISOString(),
+        newExpiresAt,
+      });
+    } catch (error) {
+      if (error instanceof RunnerControlStoreError) {
+        throw new CoreApplicationError("PolicyMissing", "persisted execution Job policy is unavailable");
+      }
+      throw error;
+    }
+    if (renewed === "rejected") {
       throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is no longer valid`, {
         details: { runId: lease.runId },
       });
@@ -362,6 +372,7 @@ function recoveryJob(
     runId,
     target,
     objective: original.objective,
+    policy: original.policy,
   };
   return original.plan === undefined ? base : { ...base, plan: original.plan };
 }

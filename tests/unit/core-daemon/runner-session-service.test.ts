@@ -151,7 +151,7 @@ describe("RunnerSessionService", () => {
   it("rejects a trace upload from a runner that does not own the run", async () => {
     const ownership = new RunOwnershipService({ store: new InMemoryRunnerControlStore(), integrityEvents: { emit: () => undefined } });
     await ownership.grant(
-      { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "cart" },
+      { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://example.test/" }, objective: "cart", policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" } },
       { runnerId: "runner-1", sessionId: "session-1" },
     );
     const { service } = makeService(ownership);

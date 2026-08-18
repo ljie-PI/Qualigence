@@ -16,17 +16,30 @@ export const WEB_TARGET_TOKEN = "target:web-playwright";
 /** A token the default Runner never advertises, used to force a mismatch. */
 export const UNSUPPORTED_TOKEN = "model:vision-input";
 
+export const isolatedTestPolicy = {
+  policyId: "policy-test",
+  environment: "isolated_test" as const,
+  allowedOrigins: ["https://shop.example.test"],
+  allowedActionKinds: ["click"] as const,
+  maximumRisk: "Normal" as const,
+  explorationAllowed: false,
+  issuedAt: "2026-08-18T00:00:00.000Z",
+  expiresAt: "2026-08-18T00:01:00.000Z",
+};
+
 export function webRunnerCapabilities(): RunnerCapabilities {
   return capabilities({ targetAdapters: ["web-playwright"] });
 }
 
 export function webJob(overrides: Partial<AcceptedExecutionJob> = {}): AcceptedExecutionJob {
+  const { policy = isolatedTestPolicy, ...rest } = overrides;
   return {
     jobId: "job-1",
     runId: "run-1",
     target: { kind: "web", url: "https://shop.example.test/cart" },
     objective: "add the item to the cart",
-    ...overrides,
+    policy,
+    ...rest,
   };
 }
 

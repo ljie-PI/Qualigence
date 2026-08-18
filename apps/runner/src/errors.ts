@@ -7,6 +7,8 @@ export type RunnerAppErrorCode =
   | "LeaseExpired"
   | "LeaseWindowUnsafe"
   | "SpoolUnavailable"
+  | "PolicyMissing"
+  | "PolicyDenied"
   | "TransportError";
 
 export interface RunnerAppErrorOptions {

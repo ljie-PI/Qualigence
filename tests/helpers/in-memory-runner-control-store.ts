@@ -122,14 +122,14 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     newExpiresAt: string;
-  }): Promise<boolean> {
+  }): Promise<"renewed" | "rejected"> {
     return this.serialize(() => {
       const record = this.liveLease(input);
       if (record === undefined) {
-        return false;
+        return "rejected";
       }
       this.leases.set(input.runId, { ...record, expiresAt: input.newExpiresAt });
-      return true;
+      return "renewed";
     });
   }
 

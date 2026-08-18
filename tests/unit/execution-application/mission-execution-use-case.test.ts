@@ -41,6 +41,7 @@ function dispatchableMission(
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 5_000,
     },
+    executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:4599"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     stopOnBlockedTestCase: true,
     jobs: [
       {
@@ -127,6 +128,7 @@ describe("MissionExecutionUseCase", () => {
       {
         target: { kind: "web", url: "http://127.0.0.1:4599/cart" },
         objective: "Add a product to the cart",
+        policy: repository.mission.executionPolicy,
         executionProfile: {
           modelProfileId: "profile-a",
           headed: false,

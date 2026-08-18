@@ -4,6 +4,15 @@ import {
   type ExecutionCompletion,
 } from "@qualigence/runner-protocol";
 
+export class RunnerControlStoreError extends Error {
+  readonly code = "PolicyMissing" as const;
+
+  constructor(message = "persisted execution Job policy is missing or malformed") {
+    super(message);
+    this.name = "RunnerControlStoreError";
+  }
+}
+
 export interface ResumeTokenBinding {
   readonly runnerId: string;
   readonly certificateFingerprint: string;
@@ -170,7 +179,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     newExpiresAt: string;
-  }): Promise<boolean>;
+  }): Promise<"renewed" | "rejected">;
   completeLease(input: {
     runId: string;
     jobId: string;

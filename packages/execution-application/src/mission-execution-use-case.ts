@@ -172,9 +172,14 @@ export class MissionExecutionUseCase {
     mission: DispatchableMission,
     job: DispatchableJob,
   ): RunExecutionRequest {
+    const targetOrigin = new URL(mission.dispatch.targetUrl).origin;
+    if (!mission.executionPolicy.allowedOrigins.includes(targetOrigin)) {
+      throw new ExecutionApplicationError("InvalidConfiguration", "Mission target is outside its approved policy origins.");
+    }
     return {
       target: { kind: "web", url: mission.dispatch.targetUrl },
       objective: job.objective,
+      policy: mission.executionPolicy,
       executionProfile: {
         modelProfileId: mission.dispatch.modelProfileId,
         headed: mission.dispatch.headed,

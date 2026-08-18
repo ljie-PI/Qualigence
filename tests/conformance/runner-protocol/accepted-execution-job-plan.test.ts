@@ -12,6 +12,16 @@ const legacyJob: AcceptedExecutionJob = {
   runId: "run-attempt-1",
   target: { kind: "web", url: "https://example.test/" },
   objective: "add the item to the cart",
+  policy: {
+    policyId: "policy-test",
+    environment: "isolated_test",
+    allowedOrigins: ["https://example.test"],
+    allowedActionKinds: ["click"],
+    maximumRisk: "Normal",
+    explorationAllowed: false,
+    issuedAt: "2026-08-18T00:00:00.000Z",
+    expiresAt: "2026-08-18T00:01:00.000Z",
+  },
 };
 
 const planSnapshot: ExecutionJobPlanSnapshot = {
@@ -37,6 +47,10 @@ const plannedJob: AcceptedExecutionJob = {
 };
 
 describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
+  it("freezes policy as a required immutable execution snapshot", () => {
+    expect(legacyJob.policy.policyId).toBe("policy-test");
+  });
+
   it("keeps M1 objective-only jobs valid and JSON round-trippable without a plan", () => {
     expect(legacyJob.plan).toBeUndefined();
     const roundTripped = JSON.parse(JSON.stringify(legacyJob)) as AcceptedExecutionJob;
@@ -44,13 +58,14 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
   });
 
   it("does not introduce a phantom plan key for a job that omits the optional plan", () => {
-    // A purely additive optional field must not alter the serialized identity of
-    // an existing objective-only job: omitting it yields exactly the pre-LS-07 shape.
+    // `plan` remains optional, while the required policy is part of every Job's
+    // immutable identity.
     const preLs07Shape = {
       jobId: "job-1",
       runId: "run-attempt-1",
       target: { kind: "web", url: "https://example.test/" },
       objective: "add the item to the cart",
+      policy: legacyJob.policy,
     };
     expect("plan" in legacyJob).toBe(false);
     expect(canonicalPayloadHash(legacyJob)).toBe(canonicalPayloadHash(preLs07Shape));
@@ -84,5 +99,6 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
     expect(message).toMatch(/string\s+job_id\s*=\s*1\s*;/);
     expect(message).toMatch(/string\s+objective\s*=\s*4\s*;/);
     expect(message).toMatch(/ExecutionJobPlanSnapshot\s+plan\s*=\s*5\s*;/);
+    expect(message).toMatch(/ExecutionPolicySnapshot\s+policy\s*=\s*6\s*;/);
   });
 });

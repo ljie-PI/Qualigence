@@ -45,6 +45,7 @@ function job(runId = "run-1", jobId = `job-${runId}`): AcceptedExecutionJob {
     runId,
     target: { kind: "web", url: "https://example.test/" },
     objective: "persist runner ownership",
+    policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: CREATED_AT, expiresAt: EXPIRES_AT },
   };
 }
 
@@ -315,8 +316,8 @@ export function runnerControlStoreContract(
         }),
       }));
 
-      expect(denied.wrongToken).toBe(false);
-      expect(denied.wrongSession).toBe(false);
+      expect(denied.wrongToken).toBe("rejected");
+      expect(denied.wrongSession).toBe("rejected");
       expect(denied.wrongRunner).toEqual({ outcome: "rejected" });
       expect(denied.wrongEpoch).toEqual({ outcome: "rejected" });
     });
@@ -345,7 +346,7 @@ export function runnerControlStoreContract(
         };
       });
 
-      expect(result.renewed).toBe(false);
+      expect(result.renewed).toBe("rejected");
       expect(result.original?.lostAt).toBe(AFTER_EXPIRY);
       expect(result.original?.owner.runnerId).toBe("runner-1");
       expect(result.recovered?.job.runId).toBe("run-2");

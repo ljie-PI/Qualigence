@@ -12,20 +12,12 @@ import { RunExecutionUseCaseImpl, type RunExecutionRequest } from "@qualigence/e
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
 import type {
   AcceptedExecutionJob,
+  ExecutionCompletion,
   ExecutionJobLease,
-  ObservationGraph,
   RunId,
 } from "@qualigence/runner-protocol";
-import type {
-  ActionOutcome,
-  ProposedAction,
-  ResolvedAction,
-  VerificationResult,
-} from "@qualigence/runner-kernel";
-import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
 import {
   RunnerBackedRunResourceFactory,
-  type RemoteRunnerTarget,
 } from "../../../apps/core-daemon/src/index.js";
 
 class InMemoryRunStore implements RunStore {
@@ -86,6 +78,7 @@ function request(): RunExecutionRequest {
   return {
     target: { kind: "web", url: "http://127.0.0.1:3000/" },
     objective: "add one item to the cart",
+    policy: { policyId: "policy-request", environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:3000"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     executionProfile: {
       modelProfileId: "default",
       headed: false,
@@ -95,43 +88,8 @@ function request(): RunExecutionRequest {
   };
 }
 
-function graph(graphId: string): ObservationGraph {
-  return { graphId, nodes: [{ id: "n1", role: "button", name: "add", text: "Add", confidence: 1 }] };
-}
-
-/** A remote target that scripts a passing run and records every dispatched call. */
-class RecordingRemoteTarget implements RemoteRunnerTarget {
-  readonly calls: string[] = [];
-  private captures = 0;
-  async capture(): Promise<ObservationGraph> {
-    this.calls.push("capture");
-    this.captures += 1;
-    return graph(`g-${this.captures}`);
-  }
-  async decide(): Promise<ProposedAction> {
-    this.calls.push("decide");
-    return { kind: "click", target: { nodeId: "n1" }, reason: "click add" };
-  }
-  async resolve(): Promise<ResolvedAction> {
-    this.calls.push("resolve");
-    return { kind: "click", target: { nodeId: "n1", selector: "#add" }, graphId: "g-1" };
-  }
-  async execute(): Promise<ActionOutcome> {
-    this.calls.push("execute");
-    return { status: "ok" };
-  }
-  async verify(): Promise<VerificationResult> {
-    this.calls.push("verify");
-    return { status: "passed", summary: "ok", claims: [] };
-  }
-  async close(): Promise<void> {
-    this.calls.push("close");
-  }
-}
-
 describe("RunnerBackedRunResourceFactory", () => {
-  it("drives RunExecutionUseCase over a leased Runner without changing its interface", async () => {
-    const target = new RecordingRemoteTarget();
+  it("offers the exact already-derived policy and waits for Runner completion without Core execution", async () => {
     const runs = new InMemoryRunStore();
     const traces = new InMemoryTraceStore();
     const manifests = new InMemoryManifestStore();
@@ -147,9 +105,14 @@ describe("RunnerBackedRunResourceFactory", () => {
     const cancel = vi.fn(async () => undefined);
     const connection: RunnerConnectionPort = { offer, cancel };
 
+    const awaitCompletion = vi.fn(async (acceptedLease: ExecutionJobLease): Promise<ExecutionCompletion> => ({
+      jobId: acceptedLease.jobId,
+      runId: acceptedLease.runId,
+      status: "passed",
+    }));
+    const runRequest = request();
     const factory = new RunnerBackedRunResourceFactory({
       connection,
-      openTarget: async () => target,
       openStores: async () => ({
         runs,
         traces,
@@ -157,22 +120,19 @@ describe("RunnerBackedRunResourceFactory", () => {
         manifests,
         close: async () => undefined,
       }),
-      policyGate: new AllowAllRunnerPolicyGate(),
+      awaitCompletion,
     });
 
     const useCase = new RunExecutionUseCaseImpl(factory);
-    const result = await useCase.execute(request());
+    const result = await useCase.execute(runRequest);
 
     expect(result.status).toBe("passed");
-    // The whole pipeline was dispatched to the remote Runner target.
-    expect(target.calls).toContain("capture");
-    expect(target.calls).toContain("execute");
-    expect(target.calls).toContain("verify");
     // A single-owner lease was acquired via the RunnerConnectionPort and released.
     expect(offer).toHaveBeenCalledOnce();
     expect(offer.mock.calls[0]?.[1]).toEqual(["target:web-playwright"]);
+    expect(offer.mock.calls[0]?.[0].policy).toBe(runRequest.policy);
+    expect(awaitCompletion).toHaveBeenCalledWith(lease);
     expect(cancel).toHaveBeenCalledOnce();
-    // Trace was persisted on the Core side.
-    expect(traces.eventsFor(result.runId).length).toBeGreaterThan(0);
+    expect(traces.eventsFor(result.runId)).toEqual([]);
   });
 });

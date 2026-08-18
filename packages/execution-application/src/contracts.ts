@@ -4,8 +4,7 @@ import type {
   RunStore,
   TraceStore,
 } from "@qualigence/evidence";
-import type { ExecutionRuntime } from "@qualigence/runner-kernel";
-import type { FindingEnvelope } from "@qualigence/runner-protocol";
+import type { AcceptedExecutionJob, ExecutionCompletion, ExecutionPolicySnapshot, FindingEnvelope } from "@qualigence/runner-protocol";
 
 /**
  * Stable request accepted by every entry point (CLI today, API/PRD planner
@@ -14,6 +13,7 @@ import type { FindingEnvelope } from "@qualigence/runner-protocol";
 export interface RunExecutionRequest {
   readonly target: { readonly kind: "web"; readonly url: string };
   readonly objective: string;
+  readonly policy: ExecutionPolicySnapshot;
   readonly executionProfile: {
     readonly modelProfileId: string;
     readonly headed: boolean;
@@ -40,12 +40,12 @@ export interface RunExecutionUseCase {
 
 /**
  * The per-run resource bundle. It exposes only public package types so that a
- * future implementation (LS-05) can back {@link RunResourceScope.runtime} with a
+ * future implementation can back {@link RunResourceScope.execute} with a
  * remote Runner connection without changing {@link RunExecutionUseCase} or any
  * of its callers.
  */
 export interface RunResourceScope {
-  readonly runtime: ExecutionRuntime;
+  execute(job: AcceptedExecutionJob): Promise<ExecutionCompletion>;
   readonly artifacts: ArtifactStore;
   readonly manifests: ArtifactManifestStore;
   readonly runs: RunStore;

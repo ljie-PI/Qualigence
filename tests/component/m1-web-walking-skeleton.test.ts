@@ -72,6 +72,7 @@ describe("M1 web walking skeleton", () => {
       runId: "run-1",
       target: { kind: "web", url: "https://example.test" },
       objective: "Click login",
+      policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     });
 
     expect(completion.status).toBe("passed");
