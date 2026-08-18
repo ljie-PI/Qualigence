@@ -106,11 +106,17 @@ export function parseRunRequest(argv: readonly string[]): RunInvocation {
 }
 
 function localPolicy(url: string): RunExecutionRequest["policy"] {
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    throw new CliConfigError("--url must be a valid HTTP(S) URL.");
+  }
   const issuedAt = new Date().toISOString();
   return {
     policyId: "local-cli-isolated-test",
     environment: "isolated_test",
-    allowedOrigins: [new URL(url).origin],
+    allowedOrigins: [origin],
     allowedActionKinds: ["click"],
     maximumRisk: "Normal",
     explorationAllowed: false,

@@ -108,4 +108,20 @@ describe("parseRunRequest", () => {
       ]),
     ).toThrow(CliConfigError);
   });
+
+  it("rejects a malformed target URL with a stable CLI configuration error", () => {
+    try {
+      parseRunRequest([
+        "run",
+        "--url",
+        "not-a-url",
+        "--objective",
+        "add one item",
+      ]);
+      expect.unreachable("malformed URL must fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CliConfigError);
+      expect(error).toMatchObject({ code: "InvalidConfiguration", name: "CliConfigError" });
+    }
+  });
 });

@@ -107,9 +107,13 @@ export class MissionExecutionUseCase {
     let stopped = false;
 
     for (const job of mission.jobs) {
-      const runResult = await this.runExecution.execute(
-        this.buildRequest(mission, job),
-      );
+      let runResult: RunExecutionResult;
+      try {
+        runResult = await this.runExecution.execute(this.buildRequest(mission, job));
+      } catch (error) {
+        if (!(error instanceof ExecutionApplicationError)) throw error;
+        runResult = { runId: "", status: "error", errorCode: error.code, evidenceRefs: [] };
+      }
 
       await this.repository.recordJobAttempt({
         attemptId: this.generateAttemptId(),
@@ -172,7 +176,16 @@ export class MissionExecutionUseCase {
     mission: DispatchableMission,
     job: DispatchableJob,
   ): RunExecutionRequest {
-    const targetOrigin = new URL(mission.dispatch.targetUrl).origin;
+    let targetOrigin: string;
+    try {
+      const target = new URL(mission.dispatch.targetUrl);
+      if (target.protocol !== "http:" && target.protocol !== "https:") {
+        throw new Error("unsupported target scheme");
+      }
+      targetOrigin = target.origin;
+    } catch {
+      throw new ExecutionApplicationError("InvalidTargetUrl", "Mission dispatch target URL is invalid.");
+    }
     if (!mission.executionPolicy.allowedOrigins.includes(targetOrigin)) {
       throw new ExecutionApplicationError("InvalidConfiguration", "Mission target is outside its approved policy origins.");
     }

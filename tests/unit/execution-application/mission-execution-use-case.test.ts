@@ -200,4 +200,32 @@ describe("MissionExecutionUseCase", () => {
     const useCase = new MissionExecutionUseCase(repository, runExecution);
     await expect(useCase.execute("missing")).rejects.toThrow();
   });
+
+  it("records a failed attempt and blocks the Mission when a persisted dispatch URL is malformed", async () => {
+    repository.mission = dispatchableMission({
+      dispatch: { ...dispatchableMission().dispatch, targetUrl: "not-a-url" },
+    });
+    const runExecution = new ScriptedRunExecution([]);
+    const useCase = new MissionExecutionUseCase(repository, runExecution, {
+      generateAttemptId: () => "attempt-invalid-target",
+      clock: { now: () => "2026-08-18T00:00:00.000Z" },
+    });
+
+    await expect(useCase.execute("mission-1")).resolves.toMatchObject({
+      status: "blocked",
+      jobResults: [{ jobId: "job-1", runId: "", status: "error" }],
+    });
+    expect(runExecution.requests).toEqual([]);
+    expect(repository.attempts).toEqual([
+      expect.objectContaining({
+        attemptId: "attempt-invalid-target",
+        jobId: "job-1",
+        runId: "",
+        status: "error",
+        errorCode: "InvalidTargetUrl",
+      }),
+    ]);
+    expect(repository.jobStatuses).toEqual([{ jobId: "job-1", status: "failed" }]);
+    expect(repository.missionStatuses).toEqual(["running", "blocked"]);
+  });
 });

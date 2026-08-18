@@ -780,6 +780,19 @@ mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-ga
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
 
+Task 15 review-fix round 7 (2026-08-18): CLI local policy construction now
+converts malformed `--url` input into the stable `CliConfigError`
+`InvalidConfiguration` rather than leaking `URL` parsing. Mission execution
+validates persisted dispatch URLs before calling the execution use case and
+converts invalid URL configuration into a durable error attempt, failed job, and
+blocked Mission terminal state without an uncaught exception or browser work.
+
+After `corepack pnpm build`, the complete Task 15 focused command passed 26
+files / 191 tests with `C:\Program Files\Git\usr\bin` on PATH for component
+mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
+passed 3 files / 18 tests. `corepack pnpm typecheck` and `git diff --check`
+passed. Docker-backed PostgreSQL contract cases ran with no skips.
+
 Task 15 review-fix round 6 (2026-08-18): the Task 15 Files block was correctly
 amended to authorize the one IPv6 listener path before it changed. The gRPC
 server now binds `::1` using bracketed authority notation and a real IPv6 mTLS
