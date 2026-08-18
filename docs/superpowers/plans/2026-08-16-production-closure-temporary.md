@@ -1750,6 +1750,7 @@ git commit -m "feat(core): persist runner ownership state"
 - Modify: `tests/e2e/local-launcher.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
 - Create: `tests/unit/core-daemon/local-run-policy-issuer.test.ts`
+- Create: `tests/unit/core-daemon/local-run-coordinator.test.ts`
 - Create: `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`
 - Modify: `docs/production-closure-status.md`
 
@@ -1762,7 +1763,9 @@ git commit -m "feat(core): persist runner ownership state"
 
 - [ ] **Step 1: Add a failing true-process E2E**
 
-Before the process E2E, add `tests/unit/core-daemon/local-run-policy-issuer.test.ts` as the focused RED test surface for the issuer below. It must prove only Local loopback mode can issue; the policy origin is exactly `new URL(targetUrl).origin`; action kinds are exactly `['click']`; maximum risk is `Normal`; exploration is false; injected clock plus configured TTL produce auditable deterministic `policyId`, `issuedAt`, and `expiresAt`; and non-loopback/non-Local configuration, invalid targets, and a zero/negative TTL reject. The Launcher E2E also proves `POST /api/v1/local/runs` accepts only `{ targetUrl, objective }`: a caller cannot submit, override, or widen `policy` in HTTP input.
+Before the process E2E, add `tests/unit/core-daemon/local-run-policy-issuer.test.ts` as the focused RED test surface for the issuer below. It must prove only Local loopback mode can issue; it always emits exact `environment: "isolated_test"` and never staging; the policy origin is exactly `new URL(targetUrl).origin`; action kinds are exactly `['click']`; maximum risk is `Normal`; exploration is false; injected clock plus configured TTL produce auditable deterministic `policyId`, `issuedAt`, and `expiresAt`; and non-loopback/non-Local configuration, invalid targets, and a zero/negative TTL reject.
+
+Add `tests/unit/core-daemon/local-run-coordinator.test.ts` as the issuer-to-offer RED seam. With a recording `LocalRunPolicyIssuer` and `RunnerConnectionPort`, prove the coordinator receives validated `{ targetUrl, objective }`, invokes the issuer once with the validated target, and passes the exact returned immutable `ExecutionPolicySnapshot` unchanged through required-policy `RunExecutionRequest`/`AcceptedExecutionJob` into `connection.offer`. Assert a request object with an extra `policy` field is schema-rejected before the issuer runs; no default, copied, or HTTP override may alter the issuer snapshot. The Launcher E2E repeats the public contract: `POST /api/v1/local/runs` accepts only `{ targetUrl, objective }`.
 
 Run real built Core and Runner processes, not `fake-process.mjs`. Assert Launcher:
 
@@ -1823,7 +1826,7 @@ Run:
 
 ```bash
 corepack pnpm build
-corepack pnpm vitest run tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts
+corepack pnpm vitest run tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts
 corepack pnpm typecheck
 git diff --check
 ```
@@ -1831,11 +1834,11 @@ git diff --check
 Commit:
 
 ```bash
-git add apps/core-daemon/src/local apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/local-launcher/src packages/contracts/local-control/src/health.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
+git add apps/core-daemon/src/local apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/local-launcher/src packages/contracts/local-control/src/health.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
 git commit -m "feat(local): close launcher core runner loop"
 ```
 
-Before Task 15 merges, the only permitted Task 11 change is the dossier above. Its separate documentation-only PR stages only `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`; it does not run Task 11's RED/Gate or use this implementation commit command. The dossier must record the `LocalRunPolicyIssuer` interface, its fixed isolated-test constraints, deterministic identity/time rule, its Local/loopback preconditions, its no-HTTP-policy invariant, and the post-Task-15 call ordering before Job construction; it does not create the issuer source or tests.
+Before Task 15 merges, the only permitted Task 11 change is the dossier above. Its separate documentation-only PR stages only `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`; it does not run Task 11's RED/Gate or use this implementation commit command. The dossier must record the `LocalRunPolicyIssuer` interface, its exact isolated-test-not-staging decision, fixed constraints, deterministic identity/time rule, Local/loopback preconditions, no-HTTP-policy invariant, and the issuer-to-`RunExecutionRequest`/`AcceptedExecutionJob`/offer snapshot-propagation seam after Task 15; it does not create source or tests.
 
 ---
 
@@ -2253,6 +2256,12 @@ export interface ExecutionPolicySnapshot {
 ```
 
 Make it required on new `AcceptedExecutionJob` values and update every constructor/fixture listed in **Files**. Add explicit protobuf fields for every policy value and lossless `toWire`/`fromWire` mapper assertions; do not serialize the snapshot as unconstrained JSON. Production network payloads without policy fail with `PolicyMissing`; policy is never optional in a domain, factory, or transport type.
+
+**Staging authority and admission:** Keep `staging` as a distinct `ExecutionPolicySnapshot.environment`, never an alias or fallthrough for `isolated_test` or `production`. Only the Core/Mission path may issue it: `packages/core-modules/mission/src/exploration-policy.ts` defines the approved staging declaration, `packages/core-modules/mission/src/domain/test-mission.ts` carries it on the approved Mission, and `packages/core-modules/mission/src/application/mission-compiler.ts` rejects any staging snapshot not explicitly declared and persisted in the immutable compiled Mission. No target URL, deployment setting, Local issuer, or Runner configuration may infer staging.
+
+For Task 15's current single-action execution, an approved staging declaration is valid only with a nonempty explicit set of canonical HTTP(S) origins, exact `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, and `issuedAt < expiresAt <= issuedAt + mission.executionBudget.maximumWallClockMs`. The selected Web target origin must be a member of that explicit set. It cannot inherit an isolated-test or production policy field, include a wildcard or credentialed origin, allow `ProductionForbidden`, or expand action/risk authority. `packages/core-modules/mission/src/application/prd-mission-repository.ts` and `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts` retain the exact staging declaration through the compiled-Mission snapshot; `packages/execution-application/src/mission-execution-use-case.ts` passes it unchanged into the required Job policy.
+
+`DeterministicRunnerPolicyGate` handles `"staging"` in an explicit environment branch. An allowed staging action must satisfy the snapshot expiry, exact target origin, `click` allowlist, and `Normal` risk ceiling. Exploration is denied because `explorationAllowed` is false. Coordinate, visual, or any other fallback is denied because it is neither an approved action kind nor represented by a staging fallback permission; it must not fall through to an isolated-test behavior. `tests/unit/core-modules/mission/execution-policy.test.ts` and `tests/unit/core-modules/mission/mission-compiler.test.ts` add a valid explicit staging declaration plus a rejected inherited/wildcard/over-broad declaration. `tests/contract/sqlite/prd-mission-store.test.ts` proves the staging snapshot round trip. `tests/unit/runner-kernel/deterministic-policy-gate.test.ts` adds a valid bounded staging same-origin click and denied staging exploration/coordinate-or-visual fallback cases, proving no permit or executor invocation. These exact paths are already in Task 15's **Files** block and `Step 5` staging recipe; they are required focused RED/GREEN evidence, not a Task 16 deferral.
 
 Freeze the v1 protobuf allocation from the existing `AcceptedExecutionJob` numbering: `job_id = 1`, `run_id = 2`, `target = 3`, `objective = 4`, and existing `plan = 5` remain unchanged; the required field is exactly `ExecutionPolicySnapshot policy = 6`. Define the new nested message with exactly these wire fields: `string policy_id = 1`, `string environment = 2`, `repeated string allowed_origins = 3`, `repeated string allowed_action_kinds = 4`, `string maximum_risk = 5`, `bool exploration_allowed = 6`, `string issued_at = 7`, and `string expires_at = 8`. These tags follow the already-occupied Job tags 1-5 and the new message's first sequential field range; neither names nor tags may be repurposed. `tests/conformance/runner-protocol/proto-schema.test.ts` must assert every one of these field/tag pairs, in addition to preserving `plan = 5`; mapper and protobuf round-trip tests must assert every policy value. Add `PolicyMissing` to the stable gRPC adapter error vocabulary in `packages/protocol-adapters/grpc-runner-protocol/src/errors.ts`; `jobFromWire` rejects an absent or malformed `policy` with that exact code, and `packages/protocol-adapters/grpc-runner-protocol/src/client.ts` fails the offer queue with the same error before any malformed `ExecutionJobOffer` reaches `RunnerSession.nextOffer`.
 
