@@ -1588,6 +1588,12 @@ PR comment.
 - Modify: `docs/production-closure-status.md`
 - Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
 
+**Follow-up scope (2026-08-18 review fixes):**
+- Modify source: `packages/core-modules/runner-control/src/runner-control-store.ts`, `packages/core-modules/runner-control/src/index.ts`, `packages/core-application/src/runner/run-ownership-service.ts`, `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`, and `packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts`.
+- Modify tests: `tests/contract/runner-control/runner-control-store.contract.ts`, `tests/helpers/in-memory-runner-control-store.ts`, and `tests/unit/core-daemon/run-ownership-service.test.ts`.
+- Modify evidence docs: this plan and `docs/production-closure-status.md`.
+- Verify: `corepack pnpm build`; `corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon/run-ownership-service.test.ts`; `corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`; `corepack pnpm typecheck`; and `git diff --check`.
+
 **Interfaces:**
 - Produces provider-neutral async `RunnerControlStore` from a new leaf package `@qualigence/runner-control`.
 - `@qualigence/runner-control` depends only on `@qualigence/runner-protocol`; Core Daemon and the two storage runtimes depend on it. It must not depend on `@qualigence/core-application`, Kysely, SQLite, PostgreSQL, or any `apps/*` package.

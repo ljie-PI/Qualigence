@@ -3,6 +3,7 @@ import type {
   ExecutionCompletion,
 } from "@qualigence/runner-protocol";
 import type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,
@@ -13,7 +14,7 @@ import type {
   RotateResumeTokenResult,
   RunnerControlStore,
 } from "@qualigence/runner-control";
-import { classifyCompletion, leaseBindingMatches } from "@qualigence/runner-control";
+import { leaseBindingMatches, observedCompletionResult } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
 import type { SqliteRuntime } from "./database.js";
 import { isSqliteBusyError, mapBusyError } from "./errors.js";
@@ -191,7 +192,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected"> {
+  }): Promise<CompleteLeaseResult> {
     return this.withWriteTransaction(async (db) => {
       const record = await db
         .selectFrom("execution_leases")
@@ -199,15 +200,19 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
         .where("run_id", "=", input.runId)
         .executeTakeFirst();
       if (record === undefined) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const bound = leaseBindingMatches(toLease(record), input);
+      if (!bound) {
+        return { outcome: "rejected" };
+      }
       const existing = await readCompletion(db, input.runId);
-      if (existing !== undefined) {
-        return bound ? classifyCompletion(existing, input.completion) : "rejected";
+      const observed = observedCompletionResult(existing, input.completion);
+      if (observed !== undefined) {
+        return observed;
       }
       if (!bound || record.expires_at <= input.checkedAt || record.completed_at !== null) {
-        return "rejected";
+        return { outcome: "rejected" };
       }
       const result = await constrainLiveLease(
         db.updateTable("execution_leases").set({ completed_at: input.checkedAt }),
@@ -215,7 +220,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
       ).executeTakeFirst();
       if (result.numUpdatedRows === 0n) {
         const raced = await readCompletion(db, input.runId);
-        return raced === undefined ? "rejected" : classifyCompletion(raced, input.completion);
+        return observedCompletionResult(raced, input.completion) ?? { outcome: "rejected" };
       }
       await db
         .insertInto("execution_completions")
@@ -226,7 +231,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
           completed_at: input.checkedAt,
         })
         .execute();
-      return "completed";
+      return { outcome: "completed" };
     });
   }
 
@@ -236,6 +241,7 @@ export class SqliteRunnerControlStore implements RunnerControlStore {
       .set({ lost_at: lostAt })
       .where("run_id", "=", runId)
       .where("lost_at", "is", null)
+      .where("completed_at", "is", null)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
   }

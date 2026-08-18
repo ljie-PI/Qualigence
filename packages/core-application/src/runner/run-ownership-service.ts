@@ -157,17 +157,40 @@ export class RunOwnershipService {
    */
   async completeStored(runId: string, completion: ExecutionCompletion): Promise<void> {
     const record = await this.store.lease(runId);
-    if (record === undefined || record.lostAt !== undefined) {
+    const nowIso = new Date(this.now()).toISOString();
+    if (record === undefined) {
       throw new CoreApplicationError("LeaseLost", `run ${runId} has no active lease`, {
         details: { runId },
       });
     }
-    await this.completeAgainst(record, completion);
+    if (record.completedAt !== undefined) {
+      await this.completeAgainst(record, completion, nowIso);
+      return;
+    }
+    if (record.lostAt !== undefined) {
+      throw new CoreApplicationError("LeaseLost", `run ${runId} has no active lease`, {
+        details: { runId },
+      });
+    }
+    if (record.expiresAt <= nowIso) {
+      if (!await this.store.markLeaseLost(runId, nowIso)) {
+        const latest = await this.store.lease(runId);
+        if (latest?.completedAt !== undefined) {
+          await this.completeAgainst(latest, completion, nowIso);
+          return;
+        }
+      }
+      throw new CoreApplicationError("LeaseLost", `lease for run ${runId} has expired`, {
+        details: { runId },
+      });
+    }
+    await this.completeAgainst(record, completion, nowIso);
   }
 
   private async completeAgainst(
     record: PersistedExecutionLease,
     completion: ExecutionCompletion,
+    checkedAt = new Date(this.now()).toISOString(),
   ): Promise<void> {
     const outcome = await this.store.completeLease({
       runId: record.job.runId,
@@ -175,32 +198,30 @@ export class RunOwnershipService {
       owner: record.owner,
       leaseEpoch: record.leaseEpoch,
       leaseTokenHash: record.leaseTokenHash,
-      checkedAt: new Date(this.now()).toISOString(),
+      checkedAt,
       completion,
     });
-    if (outcome === "rejected") {
-      const stored = await this.store.completion(record.job.runId);
-      if (stored === undefined) {
-        // No terminal result exists: the lease was expired, lost, or never
-        // matched, not a replay of a different completion. Surface the lost
-        // authority without a completion-conflict event.
-        throw new CoreApplicationError(
-          "LeaseLost",
-          `lease for run ${record.job.runId} no longer authorizes completion`,
-          { details: { runId: record.job.runId } },
-        );
-      }
+    if (outcome.outcome === "completion_conflict") {
       this.integrityEvents.emit({
         kind: "completion_conflict",
         runId: record.job.runId,
         leaseTokenHash: record.leaseTokenHash,
         presentedCompletionHash: canonicalPayloadHash(completion),
-        storedCompletionHash: canonicalPayloadHash(stored),
-        observedAt: new Date(this.now()).toISOString(),
+        storedCompletionHash: canonicalPayloadHash(outcome.storedCompletion),
+        observedAt: checkedAt,
       });
       throw new CoreApplicationError(
         "RunOwnershipViolation",
         `completion for run ${record.job.runId} conflicts with the stored terminal result`,
+        { details: { runId: record.job.runId } },
+      );
+    }
+    if (outcome.outcome === "rejected") {
+      // The atomic completion decision observed no valid-bound terminal
+      // conflict, so this is lost authority rather than an integrity event.
+      throw new CoreApplicationError(
+        "LeaseLost",
+        `lease for run ${record.job.runId} no longer authorizes completion`,
         { details: { runId: record.job.runId } },
       );
     }
@@ -316,6 +337,9 @@ export class RunOwnershipService {
       throw new CoreApplicationError("LeaseLost", `lease for run ${lease.runId} is no longer valid`, {
         details: { runId: lease.runId },
       });
+    }
+    if (record.completedAt !== undefined) {
+      return record;
     }
     if (record.expiresAt <= new Date(this.now()).toISOString()) {
       await this.store.markLeaseLost(lease.runId, new Date(this.now()).toISOString());

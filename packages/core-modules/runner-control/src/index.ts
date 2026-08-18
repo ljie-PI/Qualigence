@@ -5,6 +5,7 @@ export type {
 } from "./runner-protocol-application.js";
 
 export type {
+  CompleteLeaseResult,
   HashedResumeTokenRecord,
   PersistedExecutionLease,
   PersistedLeaseOwner,
@@ -20,8 +21,8 @@ export type {
 } from "./runner-control-store.js";
 
 export {
-  classifyCompletion,
   leaseBindingMatches,
+  observedCompletionResult,
 } from "./runner-control-store.js";
 
 export const RUNNER_CONTROL_PACKAGE = "@qualigence/runner-control";

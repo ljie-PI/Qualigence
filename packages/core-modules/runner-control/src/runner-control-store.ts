@@ -48,6 +48,20 @@ export interface PersistedExecutionLease {
   readonly recoveryOfRunId?: string;
 }
 
+/**
+ * The result of one atomic completion attempt. A stored terminal completion is
+ * exposed only when this attempt verified the lease binding and observed a
+ * different canonical completion in that same operation.
+ */
+export type CompleteLeaseResult =
+  | { readonly outcome: "completed" }
+  | { readonly outcome: "duplicate" }
+  | { readonly outcome: "rejected" }
+  | {
+      readonly outcome: "completion_conflict";
+      readonly storedCompletion: ExecutionCompletion;
+    };
+
 export interface RotateResumeTokenInput {
   readonly presentedTokenHash: string;
   readonly replacementTokenHash: string;
@@ -113,18 +127,20 @@ export function leaseBindingMatches(
 }
 
 /**
- * Classify a completion replay against the stored terminal result. `duplicate`
- * is legal only when the stored completion is byte-for-byte
- * canonical-equivalent; any other stored terminal result is `rejected` and must
- * be surfaced as a `completion_conflict` integrity event.
+ * Classify the terminal completion observed in one atomic lease operation.
+ * `undefined` means no terminal completion was observed. An unbound caller
+ * never learns or replays a stored terminal result.
  */
-export function classifyCompletion(
-  stored: ExecutionCompletion,
-  presented: ExecutionCompletion,
-): "duplicate" | "rejected" {
-  return canonicalPayloadHash(stored) === canonicalPayloadHash(presented)
-    ? "duplicate"
-    : "rejected";
+export function observedCompletionResult(
+  storedCompletion: ExecutionCompletion | undefined,
+  presentedCompletion: ExecutionCompletion,
+): CompleteLeaseResult | undefined {
+  if (storedCompletion === undefined) {
+    return undefined;
+  }
+  return canonicalPayloadHash(storedCompletion) === canonicalPayloadHash(presentedCompletion)
+    ? { outcome: "duplicate" }
+    : { outcome: "completion_conflict", storedCompletion };
 }
 
 export interface RunnerControlStore {
@@ -163,7 +179,7 @@ export interface RunnerControlStore {
     leaseTokenHash: string;
     checkedAt: string;
     completion: ExecutionCompletion;
-  }): Promise<"completed" | "duplicate" | "rejected">;
+  }): Promise<CompleteLeaseResult>;
   markLeaseLost(runId: string, lostAt: string): Promise<boolean>;
   lease(runId: string): Promise<PersistedExecutionLease | undefined>;
   completion(runId: string): Promise<ExecutionCompletion | undefined>;

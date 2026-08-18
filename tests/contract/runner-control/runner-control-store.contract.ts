@@ -130,7 +130,7 @@ export function runnerControlStoreContract(
             checkedAt: CHECKED_AT,
             completion: passed(),
           }),
-        ).toBe("completed");
+        ).toEqual({ outcome: "completed" });
         return {
           lease: await store.lease("run-1"),
           completion: await store.completion("run-1"),
@@ -317,8 +317,8 @@ export function runnerControlStoreContract(
 
       expect(denied.wrongToken).toBe(false);
       expect(denied.wrongSession).toBe(false);
-      expect(denied.wrongRunner).toBe("rejected");
-      expect(denied.wrongEpoch).toBe("rejected");
+      expect(denied.wrongRunner).toEqual({ outcome: "rejected" });
+      expect(denied.wrongEpoch).toEqual({ outcome: "rejected" });
     });
 
     it("marks an expired lease lost and never transfers the old runId", async () => {
@@ -386,10 +386,68 @@ export function runnerControlStoreContract(
         return { first, duplicate, rejected, stored: await store.completion("run-1") };
       });
 
-      expect(outcomes.first).toBe("completed");
-      expect(outcomes.duplicate).toBe("duplicate");
-      expect(outcomes.rejected).toBe("rejected");
+      expect(outcomes.first).toEqual({ outcome: "completed" });
+      expect(outcomes.duplicate).toEqual({ outcome: "duplicate" });
+      expect(outcomes.rejected).toEqual({
+        outcome: "completion_conflict",
+        storedCompletion: passed(),
+      });
       expect(outcomes.stored).toEqual(passed());
+    });
+
+    it("allows only one concurrent completion transition and returns the atomic terminal result", async () => {
+      await harness!.runPrimary(async (store) => {
+        expect(await store.grantLease(lease())).toBe("granted");
+      });
+
+      const completion = passed();
+      const [first, second] = await Promise.all([
+        harness!.runPrimary((store) => complete(store, completion)),
+        harness!.runConcurrent((store) => complete(store, completion)),
+      ]);
+
+      expect([first, second].filter((result) => result.outcome === "completed")).toHaveLength(1);
+      expect([first, second].filter((result) => result.outcome === "duplicate")).toHaveLength(1);
+      await expect(harness!.runPrimary((store) => store.completion("run-1"))).resolves.toEqual(completion);
+    });
+
+    it("returns the atomically observed winning completion to a competing conflict", async () => {
+      await harness!.runPrimary(async (store) => {
+        expect(await store.grantLease(lease())).toBe("granted");
+      });
+
+      const completions: readonly [ExecutionCompletion, ExecutionCompletion] = [
+        passed(),
+        { jobId: "job-run-1", runId: "run-1", status: "error", errorCode: "failed" } as const,
+      ];
+      const [first, second] = await Promise.all([
+        harness!.runPrimary((store) => complete(store, completions[0])),
+        harness!.runConcurrent((store) => complete(store, completions[1])),
+      ]);
+      const outcomes = [first, second];
+      const winnerIndex = outcomes.findIndex((result) => result.outcome === "completed");
+      const conflict = outcomes.find((result) => result.outcome === "completion_conflict");
+
+      expect(winnerIndex).not.toBe(-1);
+      expect(conflict).toEqual({
+        outcome: "completion_conflict",
+        storedCompletion: completions[winnerIndex],
+      });
+      await expect(harness!.runPrimary((store) => store.completion("run-1"))).resolves.toEqual(
+        completions[winnerIndex],
+      );
+    });
+
+    it("never marks a completed lease lost", async () => {
+      const stored = await harness!.runPrimary(async (store) => {
+        expect(await store.grantLease(lease())).toBe("granted");
+        expect(await complete(store, passed())).toEqual({ outcome: "completed" });
+        expect(await store.markLeaseLost("run-1", AFTER_EXPIRY)).toBe(false);
+        return store.lease("run-1");
+      });
+
+      expect(stored).toMatchObject({ completedAt: CHECKED_AT });
+      expect(stored?.lostAt).toBeUndefined();
     });
 
     it("never classifies a completion from an unbound owner as duplicate", async () => {
@@ -405,7 +463,7 @@ export function runnerControlStoreContract(
             checkedAt: CHECKED_AT,
             completion: passed(),
           }),
-        ).toBe("completed");
+        ).toEqual({ outcome: "completed" });
         // A different runner replaying the exact terminal payload is not a
         // duplicate: the static lease binding must be verified first.
         return store.completeLease({
@@ -418,7 +476,7 @@ export function runnerControlStoreContract(
           completion: passed(),
         });
       });
-      expect(outcomes).toBe("rejected");
+      expect(outcomes).toEqual({ outcome: "rejected" });
     });
 
     it("preserves active ownership after a process restart against the same database", async () => {
@@ -449,5 +507,17 @@ export function runnerControlStoreContract(
       const stored = await harness!.runPrimary((store) => store.lease("run-1"));
       expect(stored?.owner.runnerId).toBe("runner-1");
     });
+  });
+}
+
+function complete(store: RunnerControlStore, completion: ExecutionCompletion) {
+  return store.completeLease({
+    runId: "run-1",
+    jobId: "job-run-1",
+    owner: { runnerId: "runner-1", sessionId: "session-1" },
+    leaseEpoch: 1,
+    leaseTokenHash: "hash-lease-run-1",
+    checkedAt: CHECKED_AT,
+    completion,
   });
 }

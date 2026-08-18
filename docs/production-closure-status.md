@@ -696,3 +696,31 @@ findings remain; the final Gate passed 10 files / 90 tests, plus
 `corepack pnpm typecheck` and `git diff --check`.
 
 GREEN: focused Gate plus `corepack pnpm typecheck` and `git diff --check`.
+
+Task 10 follow-up fix evidence (2026-08-18): `completeLease` now returns a
+provider-neutral discriminated result, carrying a stored terminal completion
+only for an atomically observed, valid-bound canonical conflict. The ownership
+service emits `completion_conflict` from that result and makes no second
+completion read. `completeStored` marks an observed expired live lease lost at
+the same `nowIso` before returning `LeaseLost`. After `corepack pnpm build`,
+`corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon/run-ownership-service.test.ts`
+passed 4 files / 52 tests. With Git OpenSSL on `PATH` and
+`OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
+`corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
+passed 2 files / 10 tests. `corepack pnpm typecheck` and `git diff --check`
+passed; exact-head review remains pending.
+
+Task 10 follow-up round 2 (2026-08-18) repairs the subsequent Important review
+blockers. `markLeaseLost` now atomically refuses terminal leases in every
+provider. `completeStored` gives terminal replay precedence over expiry and,
+after a failed expiry-loss CAS, re-reads only the lease to classify a terminal
+race with the same `nowIso`; it never transitions a completed lease to lost.
+`observedCompletionResult` centralizes valid-bound canonical terminal mapping in
+the neutral runner-control port. The shared provider contract uses independent
+primary/concurrent callers to prove one completion transition, duplicate replay,
+and conflict results that carry the atomic winner. After `corepack pnpm build`,
+`corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon/run-ownership-service.test.ts`
+passed 4 files / 63 tests. With Git OpenSSL on `PATH` and
+`OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`,
+`corepack pnpm vitest run tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts`
+passed 2 files / 10 tests.
