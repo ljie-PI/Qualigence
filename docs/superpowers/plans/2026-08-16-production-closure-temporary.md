@@ -1728,6 +1728,8 @@ git commit -m "feat(core): persist runner ownership state"
 
 ### Task 11: Add authenticated Local run intake and make Launcher prove Runner registration
 
+**Policy sequencing:** Task 11 may design and prepare its Local intake while Task 15 is in progress, but it must not activate Local production dispatch, claim the true-process dispatch Gate, or compose a production Local path until Task 15 has removed every allow-all policy composition and made Job policy required.
+
 **Files:**
 - Create: `apps/core-daemon/src/local/local-session-service.ts`
 - Create: `apps/core-daemon/src/local/local-http-server.ts`
@@ -2119,21 +2121,37 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 - Modify: `packages/runner-kernel/src/index.ts`
 - Modify: `apps/runner/src/main.ts`
 - Modify: `packages/core-application/src/runner/core-runner-protocol-application.ts`
+- Modify: `packages/core-application/src/runner/run-ownership-service.ts`
+- Modify: `packages/execution-application/src/run-execution-use-case.ts`
+- Modify: `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`
 - Modify: `apps/cli/src/local-run-composition-root.ts`
 - Modify: `packages/core-modules/mission/src/exploration-policy.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts`
 - Modify: `tests/type/runner-protocol-v1.types.ts`
 - Modify: `tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-mappers.test.ts`
 - Modify: `tests/conformance/runner-protocol/grpc-round-trip.test.ts`
 - Modify: `tests/conformance/runner-protocol/proto-schema.test.ts`
+- Modify: `tests/contract/runner-control/runner-control-store.contract.ts`
 - Modify: `tests/helpers/core-runner-harness.ts`
 - Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
 - Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+- Modify: `tests/unit/core-daemon/runner-session-service.test.ts`
 - Modify: `tests/unit/runner/job-executor.test.ts`
+- Modify: `tests/unit/runner-components/model-agent.test.ts`
 - Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
 - Modify: `tests/component/prd-planning/prd-to-run.test.ts`
 - Modify: `tests/contract/sqlite/prd-mission-store.test.ts`
+- Modify: `tests/component/web-execution/playwright-click.test.ts`
+- Modify: `tests/component/web-execution/playwright-observation.test.ts`
+- Modify: `tests/component/web-execution/playwright-web-target.test.ts`
+- Modify: `tests/component/web-execution/run-execution-use-case.test.ts`
+- Modify: `tests/component/investigation/offline-capsule-restoration.test.ts`
+- Modify: `tests/component/m1-web-walking-skeleton.test.ts`
+- Modify: `tests/unit/execution-application/artifact-recording-observer.test.ts`
 - Create: `tests/unit/runner-kernel/deterministic-policy-gate.test.ts`
 - Modify: `tests/unit/runner-kernel/execution-runtime.test.ts`
 - Modify: `tests/e2e/cli-web-cart.test.ts`
@@ -2143,6 +2161,26 @@ git commit -m "feat(self-hosted): connect external runner data plane"
 - Produces required `AcceptedExecutionJob.policy: ExecutionPolicySnapshot`.
 - Produces `DeterministicRunnerPolicyGate implements RunnerPolicyGate`.
 - Removes `AllowSameOriginPolicyGate` and `LocalAllowAllPolicyGate` from production composition roots.
+
+- [ ] **Step 0: Audit scope and capture policy RED evidence before implementation**
+
+Run the mandatory audit before modifying any production source:
+
+```bash
+rg -n "AcceptedExecutionJob|jobId:|policy:" apps packages tests
+rg -n "AllowSameOriginPolicyGate|LocalAllowAllPolicyGate|AcceptedExecutionJob" apps packages tests
+```
+
+Compare every `AcceptedExecutionJob` object construction, nested `ExecutionJobOffer.job` fixture, recovery copy, and persisted-Job deserialization with **Files**. The audit as of `main` `06becdb` requires the added Core recovery and Runner-backed producers, the shared execution-application producer, both Runner-control storage boundaries, and these out-of-block fixture paths: `tests/contract/runner-control/runner-control-store.contract.ts`, `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`, `tests/unit/core-daemon/runner-session-service.test.ts`, `tests/unit/runner-components/model-agent.test.ts`, `tests/component/web-execution/playwright-click.test.ts`, `tests/component/web-execution/playwright-observation.test.ts`, `tests/component/web-execution/playwright-web-target.test.ts`, `tests/component/web-execution/run-execution-use-case.test.ts`, `tests/component/investigation/offline-capsule-restoration.test.ts`, `tests/component/m1-web-walking-skeleton.test.ts`, and `tests/unit/execution-application/artifact-recording-observer.test.ts`. If a later audit finds another Job constructor, add its exact path to this plan before editing it; do not make `policy` optional.
+
+First add the RED assertions and fixtures, then run the focused command below before implementing the DTO, mapper, gate, or composition changes. Record the expected nonzero Vitest and typecheck results separately; do not collapse them with `&&`. RED evidence must show: a missing TypeScript `policy` is rejected; wire Jobs without policy fail as `PolicyMissing`; protobuf and mapper round trips preserve each policy field; persisted legacy Jobs are upcast only in the SQLite/PostgreSQL Runner-control read boundaries to explicit `legacy-m1-local` isolated-test policy; recovery preserves the original immutable policy; and the policy matrix denies expired, cross-origin, action-kind, risk, production-exploration, and production coordinate/visual-fallback cases before permit construction or executor invocation. A valid isolated same-origin click remains the positive control.
+
+```bash
+corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/conformance/runner-protocol/grpc-round-trip.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/contract/runner-control tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts
+corepack pnpm typecheck
+```
+
+Do not change production composition or add a compatibility default to make this command green. `AcceptedExecutionJob.policy` remains required end-to-end; only the explicit storage-boundary upcast above may supply the legacy isolated-test policy, and no network payload missing policy may be upcast or accepted.
 
 - [ ] **Step 1: Freeze the policy DTO with type tests**
 
@@ -2163,7 +2201,7 @@ export interface ExecutionPolicySnapshot {
 
 Make it required on new `AcceptedExecutionJob` values and update every constructor/fixture listed in **Files**. Add explicit protobuf fields for every policy value and lossless `toWire`/`fromWire` mapper assertions; do not serialize the snapshot as unconstrained JSON. Historical serialized Jobs may be upcast only at a storage boundary with an explicit `legacy-m1-local` isolated-test policy; production network payloads without policy fail with `PolicyMissing`.
 
-Before implementation, run `rg -n "AcceptedExecutionJob|jobId:|policy:" apps packages tests` and compare every constructing call site with the **Files** block. If a constructor is outside the block, stop and add the exact path to this plan before editing; do not make `policy` optional to reduce the migration surface.
+Step 0's audit is a release-blocking precondition for this migration. If a constructor is outside the block, stop and add the exact path to this plan before editing; do not make `policy` optional to reduce the migration surface.
 
 - [ ] **Step 2: Add a policy matrix before implementation**
 
@@ -2179,7 +2217,7 @@ Core derives the snapshot from approved Mission/exploration policy and target. L
 
 - [ ] **Step 5: Verify and commit**
 
-Run:
+Rerun the Step 0 focused command after implementation and require it to pass, then run:
 
 ```bash
 corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts
@@ -2190,7 +2228,7 @@ git diff --check
 Commit:
 
 ```bash
-git add packages/contracts/runner-protocol packages/protocol-adapters/grpc-runner-protocol/src packages/runner-kernel apps/runner/src/main.ts packages/core-application/src/runner/core-runner-protocol-application.ts apps/cli/src/local-run-composition-root.ts packages/core-modules/mission/src/exploration-policy.ts tests docs/production-closure-status.md
+git add packages/contracts/runner-protocol packages/protocol-adapters/grpc-runner-protocol/src packages/runner-kernel apps/runner/src/main.ts packages/core-application/src/runner/core-runner-protocol-application.ts packages/core-application/src/runner/run-ownership-service.ts packages/execution-application/src/run-execution-use-case.ts apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts apps/cli/src/local-run-composition-root.ts packages/core-modules/mission/src/exploration-policy.ts packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts tests docs/production-closure-status.md
 git commit -m "feat(policy): enforce deterministic execution snapshots"
 ```
 
