@@ -7,6 +7,35 @@ production_wiring: present
 verification: passed
 implementation_commit: same commit as this ledger entry (`feat(local): close launcher core runner loop`)
 
+Final Task 11 finding closure is committed separately as
+`fix(local): close supervision and readiness gaps`. It makes post-start
+publication transactional with zeroization and reverse-order rollback, keeps
+unreaped process state diagnostic, derives reconciliation health from durable
+SQLite blockers across restart, and records safe process lifecycle events for
+foreground and detached shutdown evidence.
+
+Final finding verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
+2026-08-19):
+
+- Affected supervision/readiness set passed 5 files / 38 tests with one
+  pre-existing Task 21 Windows quarantine skip.
+- Task 11 Gate group 1 passed 10 files / 61 tests.
+- Task 11 Gate group 2 passed 10 files / 103 tests, including the mandatory
+  Docker-backed PostgreSQL Runner-control contract.
+- Task 11 Gate group 3 passed 11 files / 84 tests with one pre-existing Task 21
+  Windows quarantine skip. The built-process E2E passed 5 tests using real
+  Launcher/Core/Runner, Chromium, model, and web fixture processes. It proved
+  three post-start rollback failures, authenticated foreground SIGINT/SIGTERM
+  quiesce, Runner-before-Core reaping, detached stop order, and byte-level
+  credential absence across config, every captured runtime state, logs, and
+  SQLite for raw 32-byte, lowercase/uppercase hex, padded/unpadded base64, and
+  base64url representations.
+- `corepack pnpm build`, `corepack pnpm typecheck`, and `git diff --check`
+  passed after the final source and ledger changes.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`; Docker and Chromium
+  were available. No fake-process E2E fallback or environmental block occurred.
+
 Final review fixes are committed separately as
 `fix(local): harden intake lifecycle authority`. They preserve the Task 11
 interfaces while enforcing stop-marker tuple/freshness authority, canonical

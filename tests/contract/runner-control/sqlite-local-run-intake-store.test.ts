@@ -36,6 +36,24 @@ describe("SqliteLocalRunIntakeStore", () => {
       expect(await store.applyCompletion({ runId: localJob.runId, expectedAttempt: 0, jobId: localJob.jobId, jobSha256: canonicalPayloadHash({ ...localJob, objective: "altered" }), completion: { jobId: localJob.jobId, runId: localJob.runId, status: "passed" }, completedAt: "2026-08-19T00:00:01.000Z" })).toBe("identity_mismatch");
       await store.markIntegrityBlocked({ runId: localJob.runId, expectedAttempt: 0, errorCode: "CompletionIdentityMismatch", blockedAt: "2026-08-19T00:00:01.000Z" });
       await expect(store.run(localJob.runId)).resolves.toMatchObject({ completionState: "integrity_blocked", completionErrorCode: "CompletionIdentityMismatch", runStatus: "running" });
+      await expect(store.hasCompletionBlockers()).resolves.toBe(true);
+    } finally { await runtime.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("reports retry exhaustion as a blocker after close and reopen", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".tmp-local-intake-restart-blocked-"));
+    const filename = join(directory, "db.sqlite");
+    let runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      let store = new SqliteLocalRunIntakeStore(runtime, { retryBaseMs: 1, retryMaximumMs: 1, maximumAttempts: 1 });
+      await store.create({ job: localJob, createdAt: "2026-08-19T00:00:00.000Z" });
+      await store.beginOffer({ runId: localJob.runId, expectedAttempt: 0, startedAt: "2026-08-19T00:00:00.000Z" });
+      await store.markOffered({ runId: localJob.runId, expectedAttempt: 0, offeredAt: "2026-08-19T00:00:00.000Z" });
+      await expect(store.recordCompletionFailure({ runId: localJob.runId, expectedAttempt: 0, errorCode: "CompletionPending", failedAt: "2026-08-19T00:00:01.000Z" })).resolves.toEqual({ status: "blocked" });
+      await runtime.close();
+      runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000, openMode: "require-current" });
+      store = new SqliteLocalRunIntakeStore(runtime, { retryBaseMs: 1, retryMaximumMs: 1, maximumAttempts: 1 });
+      await expect(store.hasCompletionBlockers()).resolves.toBe(true);
     } finally { await runtime.close(); await rm(directory, { recursive: true, force: true }); }
   });
 });

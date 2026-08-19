@@ -10,6 +10,7 @@ export const localJob = {
 export async function assertLocalRunIntakeStore(store: LocalRunIntakeStore): Promise<void> {
   const createdAt = "2026-08-19T00:00:00.000Z";
   await store.create({ job: localJob, createdAt });
+  await expect(store.hasCompletionBlockers()).resolves.toBe(false);
   await expect(store.run(localJob.runId)).resolves.toMatchObject({ dispatchState: "pending_runner", completionState: "awaiting", completionAttempt: 0 });
   const [pending] = await store.pendingDispatches(1);
   expect(pending?.job).toEqual(localJob);

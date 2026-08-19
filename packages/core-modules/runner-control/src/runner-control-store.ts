@@ -136,6 +136,7 @@ export interface LocalRunIntakeStore {
   quarantineInterruptedDispatches(quarantinedAt: string): Promise<number>;
   run(runId: string): Promise<LocalRunIntakeRecord | undefined>;
   pendingCompletions(input: { readonly now: string; readonly limit: number }): Promise<readonly LocalRunCompletionCandidate[]>;
+  hasCompletionBlockers(): Promise<boolean>;
   recordCompletionFailure(input: { readonly runId: string; readonly expectedAttempt: number; readonly errorCode: "CompletionPending" | "CompletionAuthorityUnavailable" | "CompletionApplyFailed"; readonly failedAt: string }): Promise<{ readonly status: "scheduled"; readonly attempt: number; readonly nextAttemptAt: string } | { readonly status: "blocked" } | { readonly status: "stale" }>;
   applyCompletion(input: { readonly runId: string; readonly expectedAttempt: number; readonly jobId: string; readonly jobSha256: string; readonly completion: ExecutionCompletion; readonly completedAt: string }): Promise<LocalCompletionApplyResult>;
   markIntegrityBlocked(input: { readonly runId: string; readonly expectedAttempt: number; readonly errorCode: "CompletionIdentityMismatch" | "CompletionConflict"; readonly blockedAt: string }): Promise<"blocked" | "stale">;

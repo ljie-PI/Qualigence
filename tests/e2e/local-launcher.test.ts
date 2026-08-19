@@ -1,11 +1,12 @@
 import { createServer } from "node:net";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import BetterSqlite3 from "better-sqlite3";
 import { runCli } from "../helpers/cli-process.js";
+import { run } from "../../apps/local-launcher/src/main.js";
 import { startMockModelServer, type MockModelHandle } from "../fixtures/openai-compatible/mock-server.js";
 import { startCartFixture, type FixtureHandle } from "../fixtures/web-cart/server.js";
 
@@ -23,8 +24,7 @@ let httpPort: number;
 
 beforeAll(async () => {
   if (!existsSync(launcherEntry)) throw new Error("Built Local Launcher is required.");
-  grpcPort = await freePort();
-  httpPort = await freePort();
+  [grpcPort, httpPort] = await distinctPorts();
 });
 
 afterEach(async () => {
@@ -32,7 +32,7 @@ afterEach(async () => {
     await launch(dataDir, "stop").catch(() => undefined);
   }
   await cart?.close(); await model?.close();
-  if (dataDir !== undefined) await rm(dataDir, { recursive: true, force: true });
+  if (dataDir !== undefined) await removeEventually(dataDir);
   dataDir = undefined; cart = undefined; model = undefined;
 });
 
@@ -121,6 +121,7 @@ describe("local-launcher real process loop", () => {
     expect(isPidAlive(firstState.runnerPid)).toBe(false);
     expect(isPidAlive(firstState.corePid)).toBe(false);
     expect(isPidAlive(firstState.supervisorPid)).toBe(false);
+    await expectStopOrder(dataDir, firstState.runnerPid, firstState.corePid);
 
     const interrupted = new BetterSqlite3(join(dataDir, "qualigence.db"));
     try {
@@ -145,6 +146,7 @@ describe("local-launcher real process loop", () => {
     expect(isPidAlive(secondState.runnerPid)).toBe(false);
     expect(isPidAlive(secondState.corePid)).toBe(false);
     expect(isPidAlive(secondState.supervisorPid)).toBe(false);
+    await expectStopOrder(dataDir, secondState.runnerPid, secondState.corePid);
 
     const pendingAuthority = new BetterSqlite3(join(dataDir, "qualigence.db"));
     try {
@@ -154,6 +156,7 @@ describe("local-launcher real process loop", () => {
     } finally { pendingAuthority.close(); }
     const policyStart = await launch(dataDir, "start");
     expect(policyStart.exitCode, policyStart.stderr).toBe(0);
+    const policyStateText = await readFile(join(dataDir, "runtime-state.json"), "utf8");
     const policyBootstrap = [...policyStart.stdout.matchAll(/bootstrap token:\s*([A-Za-z0-9_-]{43})/g)][0]?.[1];
     const policySessionResponse = await fetch(`http://127.0.0.1:${httpPort}/api/v1/local/session`, { method: "POST", headers: { authorization: `Bearer ${policyBootstrap}` } });
     const { sessionToken: policySessionToken } = await policySessionResponse.json() as { sessionToken: string };
@@ -170,17 +173,95 @@ describe("local-launcher real process loop", () => {
     expect(await pollRun(initial.runId, policySessionToken)).toMatchObject({ status: "error", errorCode: "CompletionIdentityMismatch" });
     expect((await launch(dataDir, "stop")).exitCode).toBe(0);
 
-    const forbidden = [bootstrap!, sessionToken, restartedBootstrap!, restartedSessionToken, policyBootstrap!, policySessionToken, API_KEY];
+    const forbidden = [bootstrap!, sessionToken, restartedBootstrap!, restartedSessionToken, policyBootstrap!, policySessionToken];
     for (const file of [join(dataDir, "config.yaml"), join(dataDir, "qualigence.db"), ...((await readdir(join(dataDir, "logs"))).map((name) => join(dataDir!, "logs", name)))]) {
-      const text = await readFile(file, "latin1");
-      for (const value of forbidden) expect(text).not.toContain(value);
+      const bytes = await readFile(file);
+      assertNoCredentialRepresentations(bytes, forbidden);
+      expect(bytes.includes(Buffer.from(API_KEY))).toBe(false);
     }
-    for (const stateText of [firstStateText, secondStateText]) {
+    for (const stateText of [firstStateText, secondStateText, policyStateText]) {
       expect(Object.keys(JSON.parse(stateText) as object).sort()).toEqual(["corePid", "corePort", "dataDir", "runnerPid", "startedAt", "supervisorPid"]);
-      for (const value of forbidden) expect(stateText).not.toContain(value);
+      assertNoCredentialRepresentations(Buffer.from(stateText), forbidden);
+      expect(stateText).not.toContain(API_KEY);
     }
   }, 180_000);
+
+  it.each(["handoff", "runtime-state", "token-print"] as const)("rolls back all started processes when %s publication fails", async (failure) => {
+    dataDir = await mkdtemp(join(repoRoot, `.tmp-launcher-${failure}-`));
+    model = await startMockModelServer();
+    expect((await launch(dataDir, "init")).exitCode).toBe(0);
+    const originalEntry = process.argv[1] ?? launcherEntry;
+    const exits: number[] = [];
+    try {
+      process.argv[1] = failure === "handoff" ? join(dataDir, "missing-launcher.js") : launcherEntry;
+      if (failure === "runtime-state") await mkdir(join(dataDir, "runtime-state.json"));
+      await run(["start"], {
+        out: (line) => { if (failure === "token-print" && line.includes("bootstrap token:")) throw new Error("injected token print failure"); },
+        err: () => undefined,
+        exit: (code) => exits.push(code),
+      }, launcherEnv(dataDir));
+    } finally { process.argv[1] = originalEntry; }
+    expect(exits).toEqual([1]);
+    if (failure === "runtime-state") await expect((await import("../../apps/local-launcher/src/runtime-state.js")).readRuntimeState(dataDir)).resolves.toBeUndefined();
+    else expect(existsSync(join(dataDir, "runtime-state.json"))).toBe(false);
+    const events = await lifecycleEvents(dataDir);
+    const started = events.filter((event) => event.event.endsWith(":started"));
+    expect(started.map((event) => event.event)).toEqual(["core:started", "runner:started"]);
+    for (const event of started) expect(isPidAlive(event.pid)).toBe(false);
+    expect(events.map((event) => event.event).slice(-4)).toEqual(["runner:stop_requested", "runner:reaped", "core:stop_requested", "core:reaped"]);
+  }, 60_000);
+
+  it("quiesces authentically and reaps Runner before Core for SIGINT and SIGTERM foreground shutdown", async () => {
+    dataDir = await mkdtemp(join(repoRoot, ".tmp-launcher-foreground-"));
+    model = await startMockModelServer();
+    expect((await launch(dataDir, "init")).exitCode).toBe(0);
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      [grpcPort, httpPort] = await distinctPorts();
+      const output: string[] = []; const errors: string[] = []; const exits: number[] = [];
+      const foreground = run(["start", "--foreground"], { out: (line) => output.push(line), err: (line) => errors.push(line), exit: (code) => exits.push(code) }, launcherEnv(dataDir));
+      await expect.poll(() => output.join("\n"), { timeout: 20_000, interval: 100, message: errors.join("\n") }).toContain("bootstrap token:");
+      const state = JSON.parse(await readFile(join(dataDir, "runtime-state.json"), "utf8")) as { corePid: number; runnerPid: number };
+      process.emit(signal, signal);
+      await expect(foreground).resolves.toBeUndefined();
+      expect(exits, errors.join("\n")).toEqual([]);
+      expect(existsSync(join(dataDir, "runtime-state.json"))).toBe(false);
+      expect(isPidAlive(state.runnerPid)).toBe(false); expect(isPidAlive(state.corePid)).toBe(false);
+      await expectStopOrder(dataDir, state.runnerPid, state.corePid, true);
+    }
+  }, 120_000);
 });
+
+interface LifecycleEvent { readonly event: string; readonly pid: number; readonly at: string }
+
+async function lifecycleEvents(directory: string): Promise<readonly LifecycleEvent[]> {
+  const text = await readFile(join(directory, "logs", "lifecycle.jsonl"), "utf8");
+  return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as LifecycleEvent);
+}
+
+async function expectStopOrder(directory: string, runnerPid: number, corePid: number, requireQuiesce = false): Promise<void> {
+  const events = await lifecycleEvents(directory);
+  const runnerStop = events.findIndex((event) => event.event === "runner:stop_requested" && event.pid === runnerPid);
+  const runnerReaped = events.findIndex((event) => event.event === "runner:reaped" && event.pid === runnerPid);
+  const coreStop = events.findIndex((event) => event.event === "core:stop_requested" && event.pid === corePid);
+  const coreReaped = events.findIndex((event) => event.event === "core:reaped" && event.pid === corePid);
+  expect(runnerStop).toBeGreaterThanOrEqual(0); expect(runnerReaped).toBeGreaterThan(runnerStop);
+  expect(coreStop).toBeGreaterThan(runnerReaped); expect(coreReaped).toBeGreaterThan(coreStop);
+  if (requireQuiesce) {
+    let quiesced = -1;
+    for (let index = 0; index < runnerStop; index += 1) if (events[index]?.event === "core:quiesced") quiesced = index;
+    expect(quiesced).toBeGreaterThanOrEqual(0); expect(quiesced).toBeLessThan(runnerStop);
+  }
+}
+
+function assertNoCredentialRepresentations(content: Buffer, encodedTokens: readonly string[]): void {
+  for (const encoded of encodedTokens) {
+    const raw = Buffer.from(encoded, "base64url");
+    expect(raw).toHaveLength(32);
+    for (const representation of [raw, Buffer.from(raw.toString("hex")), Buffer.from(raw.toString("hex").toUpperCase()), Buffer.from(raw.toString("base64")), Buffer.from(raw.toString("base64url")), Buffer.from(`${raw.toString("base64url")}=`)]) {
+      expect(content.indexOf(representation)).toBe(-1);
+    }
+  }
+}
 
 async function pollRun(runId: string, token: string): Promise<{ readonly status: string; readonly errorCode?: string; readonly evidenceReferences?: readonly { readonly id: string; readonly kind: string; readonly createdAt: string }[] }> {
   const deadline = Date.now() + DEADLINE_MS;
@@ -202,4 +283,23 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); if (address === null || typeof address === "string") throw new Error("Expected TCP port.");
   await new Promise<void>((resolve) => server.close(() => resolve())); return address.port;
+}
+
+async function distinctPorts(): Promise<readonly [number, number]> {
+  const first = await freePort();
+  for (;;) {
+    const second = await freePort();
+    if (second !== first) return [first, second];
+  }
+}
+
+async function removeEventually(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try { await rm(path, { recursive: true, force: true }); return; }
+    catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }

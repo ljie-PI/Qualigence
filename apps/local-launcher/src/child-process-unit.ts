@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import type { HealthCheck } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
 
@@ -36,6 +36,7 @@ export interface ChildProcessUnitOptions {
   readonly livenessChecksFn?: () => Promise<readonly HealthCheck[]>;
   readonly pollIntervalMs?: number;
   readonly fd3Frame?: Buffer;
+  readonly lifecycleLogFile?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -107,6 +108,7 @@ export async function terminateProcess(
     }
     await sleepKeepAlive(20);
   }
+  throw new LauncherError("ProcessReapTimedOut", `process ${pid} remained alive after forced termination`);
 }
 
 /**
@@ -177,6 +179,7 @@ export class ChildProcessUnit {
     }
     this.child = child;
     this.currentPid = child.pid;
+    if (child.pid !== undefined) await this.recordLifecycle("started", child.pid);
     this.childExited = false;
     const fd3 = child.stdio[3];
     if (this.options.fd3Frame !== undefined && fd3 !== undefined && fd3 !== null && "end" in fd3) {
@@ -320,10 +323,17 @@ export class ChildProcessUnit {
     this.supervising = false;
     const pid = this.currentPid;
     if (pid !== undefined) {
+      await this.recordLifecycle("stop_requested", pid);
       await terminateProcess(pid, this.options.shutdownGraceMs, this.options.detached ?? false);
+      await this.recordLifecycle("reaped", pid);
     }
     this.child = undefined;
     this.currentPid = undefined;
+  }
+
+  private async recordLifecycle(event: "started" | "stop_requested" | "reaped", pid: number): Promise<void> {
+    if (this.options.lifecycleLogFile === undefined) return;
+    await appendFile(this.options.lifecycleLogFile, `${JSON.stringify({ event: `${this.name}:${event}`, pid, at: new Date().toISOString() })}\n`, "utf8").catch(() => undefined);
   }
 
   /** Detach the child so it survives the launcher process exiting. */

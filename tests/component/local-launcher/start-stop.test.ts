@@ -174,6 +174,23 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(unit.restartCount()).toBe(3);
     expect(unit.isSupervising()).toBe(false);
   });
+
+  it("records observable stop and reap events without clearing process identity early", async () => {
+    const dir = await scratchDir("lifecycle-events");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const unit = new ChildProcessUnit({ name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" }, logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready", startupTimeoutMs: 5_000, shutdownGraceMs: 1_000 });
+    cleanups.push(() => unit.stop());
+    await unit.start();
+    const pid = unit.pid();
+    await unit.stop();
+    const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
+    await expect(events).resolves.toEqual([
+      expect.objectContaining({ event: "runner:started", pid }),
+      expect.objectContaining({ event: "runner:stop_requested", pid }),
+      expect.objectContaining({ event: "runner:reaped", pid }),
+    ]);
+    expect(unit.pid()).toBeUndefined();
+  });
 });
 
 async function makeDataDir(name: string): Promise<{

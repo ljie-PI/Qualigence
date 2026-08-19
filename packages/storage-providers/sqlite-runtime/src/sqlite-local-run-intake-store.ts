@@ -113,6 +113,12 @@ export class SqliteLocalRunIntakeStore implements LocalRunIntakeStore {
     return rows.map((row) => ({ runId: row.run_id, jobId: row.job_id, jobSha256: row.job_sha256, expectedAttempt: row.completion_attempt }));
   }
 
+  async hasCompletionBlockers(): Promise<boolean> {
+    const row = await this.runtime.db.selectFrom("local_run_intakes").select("run_id")
+      .where("completion_state", "in", ["integrity_blocked", "retry_exhausted"]).limit(1).executeTakeFirst();
+    return row !== undefined;
+  }
+
   async recordCompletionFailure(input: { readonly runId: string; readonly expectedAttempt: number; readonly errorCode: "CompletionPending" | "CompletionAuthorityUnavailable" | "CompletionApplyFailed"; readonly failedAt: string }) {
     const failedAt = instant(input.failedAt);
     return runInImmediateTransaction(this.runtime, async () => {

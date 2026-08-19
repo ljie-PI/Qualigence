@@ -33,12 +33,14 @@ import { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff
 import { ProcessSupervisor } from "./process-supervisor.js";
 import {
   clearRuntimeState,
+  clearOwnedTopologyFiles,
   isPidAlive,
   isTopologyRunning,
   publishStopRequest,
   readRuntimeState,
   sameTopology,
   writeRuntimeState,
+  type RuntimeState,
 } from "./runtime-state.js";
 
 const VERSION = "0.1.0";
@@ -213,6 +215,7 @@ function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv, frame: Buff
     shutdownGraceMs: SHUTDOWN_GRACE_MS,
     detached: true,
     fd3Frame: frame,
+    lifecycleLogFile: join(ctx.logsDir, "lifecycle.jsonl"),
   });
 }
 
@@ -248,6 +251,7 @@ function buildRunnerUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv): ChildPro
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     shutdownGraceMs: SHUTDOWN_GRACE_MS,
     detached: true,
+    lifecycleLogFile: join(ctx.logsDir, "lifecycle.jsonl"),
   });
 }
 
@@ -337,42 +341,40 @@ async function commandStart(
   const core = buildCoreUnit(ctx, env, credentials.frame());
   const runner = buildRunnerUnit(ctx, env);
   const supervisor = new ProcessSupervisor({ version: VERSION, units: [core, runner] });
+  let topology: RuntimeState | undefined;
   try {
     await supervisor.start();
     const finalReady = await new HealthClient(VERSION).coreHealth("127.0.0.1", ctx.config.core.httpPort ?? 50_556, "/health/ready");
     if (finalReady.status !== "pass") throw new LauncherError("RunnerUnhealthy", "configured Runner did not register required capability");
+    const corePid = core.pid();
+    const runnerPid = runner.pid();
+    if (corePid === undefined || runnerPid === undefined) throw new LauncherError("CoreUnhealthy", "a supervised process did not report a PID.");
+    const startedAt = new Date().toISOString();
+    const supervisorPid = foreground ? process.pid : await ProcessSupervisor.handoffDetached({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
+    topology = { supervisorPid, corePid, runnerPid, corePort: ctx.config.core.port, dataDir: ctx.dataDir, startedAt };
+    await writeRuntimeState(topology);
+    io.out("Qualigence Local is running.");
+    io.out(`  Core:            http://127.0.0.1:${ctx.config.core.httpPort ?? 50_556}`);
+    io.out(`  bootstrap token: ${encodeBootstrapCredential(credentials.userBootstrap)}`);
+    if (foreground) {
+      credentials.userBootstrap.fill(0);
+      await runForeground(supervisor, ctx, io, credentials.supervisor, ctx.config.shutdown.drainTimeoutMs, topology);
+    } else {
+      credentials.destroy();
+      core.detach();
+      runner.detach();
+    }
   } catch (error) {
-    await supervisor.stop();
-    throw error;
-  }
-
-  const corePid = core.pid();
-  const runnerPid = runner.pid();
-  if (corePid === undefined || runnerPid === undefined) {
-    throw new LauncherError("CoreUnhealthy", "a supervised process did not report a PID.");
-  }
-
-  const startedAt = new Date().toISOString();
-  const supervisorPid = foreground ? process.pid : await ProcessSupervisor.handoffDetached({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
-  await writeRuntimeState({
-    supervisorPid,
-    corePid,
-    runnerPid,
-    corePort: ctx.config.core.port,
-    dataDir: ctx.dataDir,
-    startedAt,
-  });
-
-  io.out("Qualigence Local is running.");
-  io.out(`  Core:            http://127.0.0.1:${ctx.config.core.httpPort ?? 50_556}`);
-  io.out(`  bootstrap token: ${encodeBootstrapCredential(credentials.userBootstrap)}`);
-  if (foreground) {
-    credentials.userBootstrap.fill(0);
-    await runForeground(supervisor, ctx, io, credentials.supervisor, ctx.config.shutdown.drainTimeoutMs);
-  } else {
     credentials.destroy();
-    core.detach();
-    runner.detach();
+    let rollbackFailure: unknown;
+    if (topology !== undefined && topology.supervisorPid !== process.pid) {
+      try { await terminateProcess(topology.supervisorPid, SHUTDOWN_GRACE_MS); } catch (failure) { rollbackFailure ??= failure; }
+    }
+    try { await supervisor.stop(); } catch (failure) { rollbackFailure ??= failure; }
+    if (topology !== undefined && rollbackFailure === undefined) {
+      try { await clearOwnedTopologyFiles(ctx.dataDir, topology); } catch (failure) { rollbackFailure ??= failure; }
+    }
+    throw rollbackFailure ?? error;
   }
 }
 
@@ -382,6 +384,7 @@ function runForeground(
   io: LauncherIo,
   supervisorCredential: Uint8Array,
   drainTimeoutMs: number,
+  topology: RuntimeState,
 ): Promise<void> {
   return new Promise<void>((resolvePromise, rejectPromise) => {
     let shutdownPromise: Promise<void> | undefined;
@@ -390,7 +393,7 @@ function runForeground(
         try {
           await quiesceCore(ctx.config.core.httpPort ?? 50_556, supervisorCredential, drainTimeoutMs).catch(() => undefined);
           await supervisor.stop();
-          await clearRuntimeState(ctx.dataDir);
+          await clearOwnedTopologyFiles(ctx.dataDir, topology);
           io.out("Qualigence Local stopped.");
         } finally {
           Buffer.from(supervisorCredential.buffer, supervisorCredential.byteOffset, supervisorCredential.byteLength).fill(0);

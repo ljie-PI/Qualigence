@@ -40,7 +40,10 @@ function positivePid(value: unknown): value is number { return typeof value === 
 function canonicalInstant(value: unknown): value is string { if (typeof value !== "string") return false; const time = Date.parse(value); return Number.isFinite(time) && new Date(time).toISOString() === value; }
 
 export async function writeRuntimeState(state: RuntimeState): Promise<void> {
-  await writeFile(stateFile(state.dataDir), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const temporary = join(state.dataDir, `runtime-state.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", flag: "wx", flush: true });
+  try { await rename(temporary, stateFile(state.dataDir)); }
+  finally { await rm(temporary, { force: true }); }
 }
 
 export { localStopRequestSchema } from "@qualigence/local-control";
@@ -93,6 +96,19 @@ export function sameTopology(left: Pick<RuntimeState, "supervisorPid" | "corePid
 
 export async function clearRuntimeState(dataDir: string): Promise<void> {
   await rm(stateFile(dataDir), { force: true });
+}
+
+export async function clearOwnedTopologyFiles(dataDir: string, topology: Pick<RuntimeState, "supervisorPid" | "corePid" | "runnerPid" | "startedAt">): Promise<void> {
+  const state = await readRuntimeState(dataDir);
+  if (state !== undefined && sameTopology(state, topology)) await clearRuntimeState(dataDir);
+  for (const path of [join(dataDir, "local-stop-request.json"), join(dataDir, `local-stop-request.${topology.supervisorPid}.claim`)]) {
+    try {
+      const marker = parseStopRequest(JSON.parse(await readFile(path, "utf8")));
+      if (sameTopology(marker, topology)) await rm(path, { force: true });
+    } catch {
+      // A malformed or differently owned marker is not ours to remove.
+    }
+  }
 }
 
 /** True when the OS process for `pid` is alive (and we may signal it). */

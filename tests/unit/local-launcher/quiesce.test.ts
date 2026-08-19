@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseStopRequest, publishStopRequest, readRuntimeState, stopRequestMatchesTopology } from "../../../apps/local-launcher/src/runtime-state.js";
+import { clearOwnedTopologyFiles, parseStopRequest, publishStopRequest, readRuntimeState, stopRequestMatchesTopology, writeRuntimeState } from "../../../apps/local-launcher/src/runtime-state.js";
 
 describe("detached stop marker", () => {
   it("accepts only the exact non-secret v1 topology tuple", () => {
@@ -49,6 +49,19 @@ describe("detached stop marker", () => {
     try {
       await writeFile(join(directory, "runtime-state.json"), JSON.stringify({ supervisorPid: 10, corePid: 11, runnerPid: 12, corePort: 50555, dataDir: directory, startedAt: "2026-08-19T00:00:00.000Z", credential: "forbidden" }));
       await expect(readRuntimeState(directory)).resolves.toBeUndefined();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("clears only runtime state and markers owned by the failed topology", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".tmp-owned-topology-"));
+    const owned = { supervisorPid: 10, corePid: 11, runnerPid: 12, corePort: 50555, dataDir: directory, startedAt: "2026-08-19T00:00:00.000Z" };
+    const other = { ...owned, supervisorPid: 20, corePid: 21, runnerPid: 22, startedAt: "2026-08-19T00:01:00.000Z" };
+    try {
+      await writeRuntimeState(other);
+      await writeFile(join(directory, "local-stop-request.json"), JSON.stringify({ version: "local-stop-request/v1", supervisorPid: other.supervisorPid, corePid: other.corePid, runnerPid: other.runnerPid, startedAt: other.startedAt, requestedAt: "2026-08-19T00:01:01.000Z" }));
+      await clearOwnedTopologyFiles(directory, owned);
+      await expect(readRuntimeState(directory)).resolves.toEqual(other);
+      expect(parseStopRequest(JSON.parse(await readFile(join(directory, "local-stop-request.json"), "utf8")))).toMatchObject({ supervisorPid: other.supervisorPid, corePid: other.corePid, runnerPid: other.runnerPid, startedAt: other.startedAt });
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

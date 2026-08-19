@@ -10,6 +10,7 @@ describe("LocalRunCoordinator", () => {
       markOffered: vi.fn(async () => true),
       markOfferOutcomeUnknown: vi.fn(async () => true),
       pendingCompletions: vi.fn(async () => []),
+      hasCompletionBlockers: vi.fn(async () => false),
     };
     const offer = vi.fn(async () => { throw new Error("connection lost after write start"); });
     const coordinator = new LocalRunCoordinator({
@@ -29,6 +30,7 @@ describe("LocalRunCoordinator", () => {
       applyCompletion: vi.fn(),
       markIntegrityBlocked: vi.fn(async () => "blocked" as const),
       recordCompletionFailure: vi.fn(),
+      hasCompletionBlockers: vi.fn(async () => true),
     };
     const coordinator = new LocalRunCoordinator({
       store: store as never,
@@ -54,6 +56,7 @@ describe("LocalRunCoordinator", () => {
         if (reconciliationCalls === 1) throw new Error("sqlite busy");
         return [];
       }),
+      hasCompletionBlockers: vi.fn(async () => false),
     };
     const coordinator = new LocalRunCoordinator({
       store: store as never,
@@ -75,6 +78,7 @@ describe("LocalRunCoordinator", () => {
     const store = {
       pendingCompletions: vi.fn(async () => attempts === 0 ? [{ runId: "run-1", jobId: "job-1", jobSha256: "a".repeat(64), expectedAttempt: 0 }] : []),
       recordCompletionFailure: vi.fn(async () => { attempts += 1; return { status: "scheduled" as const, attempt: 1, nextAttemptAt: "2026-08-19T00:00:01.000Z" }; }),
+      hasCompletionBlockers: vi.fn(async () => false),
     };
     const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: { completionRecord: vi.fn(async () => { throw new Error("sqlite busy"); }) } as never, connection: () => undefined, configuredRunnerId: "runner-1", now: () => "2026-08-19T00:00:00.000Z" });
 
@@ -85,10 +89,36 @@ describe("LocalRunCoordinator", () => {
   });
 
   it("aborts a retained poll delay and awaits loop exit during shutdown", async () => {
-    const store = { pendingDispatches: vi.fn(async () => []), pendingCompletions: vi.fn(async () => []) };
+    const store = { pendingDispatches: vi.fn(async () => []), pendingCompletions: vi.fn(async () => []), hasCompletionBlockers: vi.fn(async () => false) };
     const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: {} as never, connection: () => undefined, configuredRunnerId: "runner-1" });
     coordinator.startLive(60_000);
     await expect.poll(() => store.pendingCompletions).toHaveBeenCalled();
     await expect(coordinator.shutdown()).resolves.toBeUndefined();
+  });
+
+  it("initializes health from durable blockers and never clears it on an empty pass", async () => {
+    const store = {
+      quarantineInterruptedDispatches: vi.fn(async () => 0),
+      pendingCompletions: vi.fn(async () => []),
+      hasCompletionBlockers: vi.fn(async () => true),
+    };
+    const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: {} as never, connection: () => undefined, configuredRunnerId: "runner-1" });
+
+    await coordinator.startup();
+    expect(coordinator.isHealthy()).toBe(false);
+    await coordinator.reconciliationPass();
+    expect(coordinator.isHealthy()).toBe(false);
+  });
+
+  it("becomes unhealthy immediately when a pending completion exhausts retries", async () => {
+    const store = {
+      pendingCompletions: vi.fn(async () => [{ runId: "run-1", jobId: "job-1", jobSha256: "a".repeat(64), expectedAttempt: 7 }]),
+      recordCompletionFailure: vi.fn(async () => ({ status: "blocked" as const })),
+      hasCompletionBlockers: vi.fn(async () => true),
+    };
+    const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: { completionRecord: vi.fn(async () => undefined) } as never, connection: () => undefined, configuredRunnerId: "runner-1" });
+
+    await coordinator.reconciliationPass();
+    expect(coordinator.isHealthy()).toBe(false);
   });
 });

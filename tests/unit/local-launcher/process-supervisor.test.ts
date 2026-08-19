@@ -5,6 +5,7 @@ import {
 } from "../../../apps/local-launcher/src/process-supervisor.js";
 import { LauncherError } from "../../../apps/local-launcher/src/errors.js";
 import type { HealthCheck } from "@qualigence/local-control";
+import { terminateProcess } from "../../../apps/local-launcher/src/child-process-unit.js";
 
 /** An in-memory {@link ProcessUnit} used to drive supervisor orchestration. */
 class FakeProcessUnit implements ProcessUnit {
@@ -183,6 +184,29 @@ describe("ProcessSupervisor.stop", () => {
     expect(core.stopSpy).toHaveBeenCalledOnce();
     expect(supervisor.events().slice(-2)).toEqual(["runner:stop", "core:stop"]);
   });
+
+  it("does not report success or discard a unit whose process cannot be reaped", async () => {
+    const core = new FakeProcessUnit("core");
+    const runner = new FakeProcessUnit("runner");
+    runner.stopSpy.mockImplementationOnce(() => { throw new LauncherError("ProcessReapTimedOut", "runner remained alive"); });
+    const supervisor = supervisorWith(core, runner);
+    await supervisor.start();
+
+    await expect(supervisor.stop()).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
+    expect(supervisor.events().slice(-2)).toEqual(["runner:stop", "core:stop"]);
+    await expect(supervisor.stop()).resolves.toBeUndefined();
+    expect(runner.stopSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("terminateProcess", () => {
+  it("throws ProcessReapTimedOut when the PID remains alive after SIGKILL", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
+      expect(kill).toHaveBeenCalledWith(2_147_000_000, "SIGKILL");
+    } finally { kill.mockRestore(); }
+  }, 5_000);
 });
 
 describe("ProcessSupervisor.status", () => {

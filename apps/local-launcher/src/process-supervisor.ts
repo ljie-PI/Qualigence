@@ -5,11 +5,11 @@ import {
 } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
 import { fork } from "node:child_process";
-import { readFile, rename, rm } from "node:fs/promises";
+import { appendFile, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:http";
 import { terminateProcess } from "./child-process-unit.js";
-import { clearRuntimeState, parseStopRequest, readRuntimeState, sameTopology, stopRequestMatchesTopology } from "./runtime-state.js";
+import { clearOwnedTopologyFiles, parseStopRequest, readRuntimeState, sameTopology, stopRequestMatchesTopology } from "./runtime-state.js";
 
 /**
  * One supervised child process (Core or Runner). Concrete implementations spawn
@@ -114,11 +114,13 @@ export class ProcessSupervisor {
   private async rollback(): Promise<void> {
     // Stop already-started units in reverse order so dependants shut down first.
     let failure: unknown;
+    const unreaped: ProcessUnit[] = [];
     while (this.running.length > 0) {
       const unit = this.running.pop() as ProcessUnit;
       this.record(`${unit.name}:stop`);
-      try { await unit.stop(); } catch (error) { failure ??= error; }
+      try { await unit.stop(); } catch (error) { failure ??= error; unreaped.unshift(unit); }
     }
+    this.running.push(...unreaped);
     if (failure !== undefined) throw failure;
   }
 
@@ -154,12 +156,22 @@ export class ProcessSupervisor {
     return new Promise((resolve, reject) => {
       const entry = process.argv[1]; if (entry === undefined) { reject(new LauncherError("SupervisorUnavailable", "launcher entrypoint is unavailable")); return; }
       const child = fork(entry, ["__supervise"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
-      const timeout = setTimeout(() => { child.kill(); reject(new LauncherError("SupervisorUnavailable", "detached supervisor did not acknowledge handoff")); }, 10_000);
+      let settled = false;
+      let timeout: NodeJS.Timeout;
+      const fail = (error: LauncherError): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        const pid = child.pid;
+        void (pid === undefined ? Promise.resolve() : terminateProcess(pid, 0)).finally(() => reject(error));
+      };
+      timeout = setTimeout(() => fail(new LauncherError("SupervisorUnavailable", "detached supervisor did not acknowledge handoff")), 10_000);
       child.once("message", (message) => {
         if (message !== "ready" || child.pid === undefined) return;
-        clearTimeout(timeout); child.disconnect(); child.unref(); resolve(child.pid);
+        if (settled) return;
+        settled = true; clearTimeout(timeout); child.disconnect(); child.unref(); resolve(child.pid);
       });
-      child.once("error", (error) => { clearTimeout(timeout); reject(new LauncherError("SupervisorUnavailable", "detached supervisor failed", { cause: error })); });
+      child.once("error", (error) => fail(new LauncherError("SupervisorUnavailable", "detached supervisor failed", { cause: error })));
       child.send({ ...input, supervisorCredential: Buffer.from(input.supervisorCredential).toString("base64url") });
     });
   }
@@ -167,22 +179,31 @@ export class ProcessSupervisor {
   static runDetachedChild(): void {
     process.once("message", (value) => {
       const input = parseDetachedInput(value);
-      const units: ProcessUnit[] = [new PidProcessUnit("core", input.corePid), new PidProcessUnit("runner", input.runnerPid)];
+      const lifecycleLogFile = join(input.dataDir, "logs", "lifecycle.jsonl");
+      const units: ProcessUnit[] = [new PidProcessUnit("core", input.corePid, lifecycleLogFile), new PidProcessUnit("runner", input.runnerPid, lifecycleLogFile)];
       const supervisor = new ProcessSupervisor({ version: "0.1.0", units });
       // These units are already running; seed only the supervisor's private list.
       supervisor.running.push(...units);
       process.send?.("ready");
-      void pollDetachedStop(supervisor, input).finally(() => process.exit(0));
+      void pollDetachedStop(supervisor, input).then(() => process.exit(0), () => process.exit(1));
     });
   }
 }
 
 class PidProcessUnit implements ProcessUnit {
-  constructor(readonly name: string, private readonly processId: number) {}
+  constructor(readonly name: string, private readonly processId: number, private readonly lifecycleLogFile: string) {}
   async start(): Promise<void> {}
-  async stop(): Promise<void> { await terminateProcess(this.processId, 5_000, true); }
+  async stop(): Promise<void> {
+    await recordLifecycle(this.lifecycleLogFile, `${this.name}:stop_requested`, this.processId);
+    await terminateProcess(this.processId, 5_000, true);
+    await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, this.processId);
+  }
   async readinessChecks(): Promise<readonly HealthCheck[]> { return []; }
   async livenessChecks(): Promise<readonly HealthCheck[]> { return []; }
+}
+
+async function recordLifecycle(path: string, event: string, pid: number): Promise<void> {
+  await appendFile(path, `${JSON.stringify({ event, pid, at: new Date().toISOString() })}\n`, "utf8").catch(() => undefined);
 }
 
 interface DetachedInput {
@@ -216,7 +237,7 @@ async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedIn
     await quiesce(input).catch(() => undefined);
     await supervisor.stop();
     await removeMatchingReplay(canonical, claim, input);
-    await clearRuntimeState(input.dataDir);
+    await clearOwnedTopologyFiles(input.dataDir, { supervisorPid: process.pid, corePid: input.corePid, runnerPid: input.runnerPid, startedAt: input.startedAt });
     return;
   }
 }

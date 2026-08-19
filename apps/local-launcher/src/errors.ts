@@ -16,7 +16,8 @@ export type LauncherErrorCode =
   | "StopTopologyChanged"
   | "SupervisorUnavailable"
   | "StopRequestInvalid"
-  | "StopTimedOut";
+  | "StopTimedOut"
+  | "ProcessReapTimedOut";
 
 export interface LauncherErrorOptions {
   readonly cause?: unknown;
