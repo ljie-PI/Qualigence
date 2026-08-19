@@ -33,7 +33,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
   });
 
   it("reports the shared logical schema version", async () => {
-    expect(await readSchemaVersion(fixture.adminConfig)).toBe(5);
+    expect(await readSchemaVersion(fixture.adminConfig)).toBe(7);
   });
 
   it("creates every catalogued table", async () => {

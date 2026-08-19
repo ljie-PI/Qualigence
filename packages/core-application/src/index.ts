@@ -29,6 +29,7 @@ export type {
   CoreApplicationErrorCode,
   CoreApplicationErrorOptions,
   CoreRunnerProtocolApplicationOptions,
+  RunCompletionSink,
 } from "./runner/core-runner-protocol-application.js";
 export {
   RunnerSessionService,
@@ -54,6 +55,7 @@ export type {
   LeaseOwner,
   RecoveredRun,
   RunOwnershipServiceOptions,
+  RunCompletionDisposition,
 } from "./runner/run-ownership-service.js";
 export {
   ExecutionJobService,

@@ -336,6 +336,9 @@ importers:
       '@qualigence/grpc-runner-protocol':
         specifier: workspace:*
         version: link:../../packages/protocol-adapters/grpc-runner-protocol
+      '@qualigence/local-control':
+        specifier: workspace:*
+        version: link:../../packages/contracts/local-control
       '@qualigence/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -351,6 +354,9 @@ importers:
       '@qualigence/sqlite-runtime':
         specifier: workspace:*
         version: link:../../packages/storage-providers/sqlite-runtime
+      fastify:
+        specifier: 5.11.0
+        version: 5.11.0
 
   apps/intelligence-worker:
     dependencies:

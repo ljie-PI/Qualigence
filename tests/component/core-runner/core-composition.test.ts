@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type { ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
@@ -57,6 +57,32 @@ async function freePort(): Promise<number> {
   if (address === null || typeof address === "string") throw new Error("Expected a TCP address.");
   await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
   return address.port;
+}
+
+async function testBootstrapCredentials() {
+  const backing = Buffer.alloc(100, 0x5a);
+  return {
+    userBootstrap: backing.subarray(20, 52),
+    supervisor: backing.subarray(52, 84),
+    createdAtEpochMs: Date.now(),
+    userExpiresAtEpochMs: Date.now() + 60_000,
+    destroy: () => backing.fill(0),
+  };
+}
+
+async function canBind(port: number): Promise<boolean> {
+  const server = createServer();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, "127.0.0.1", resolve);
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+  }
 }
 
 describe("Core runner protocol production composition", () => {
@@ -153,6 +179,7 @@ describe("Core runner protocol production composition", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-b-"));
     const database = join(dataDir, "qualigence.db");
     const port = await freePort();
+    const httpPort = await freePort();
     const policyless = { jobId: "job-legacy", runId: "run-legacy", target: { kind: "web", url: "https://example.test/" }, objective: "legacy" };
     const policy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
     const seed = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
@@ -165,17 +192,17 @@ describe("Core runner protocol production composition", () => {
     const candidate = { format: "legacy-m1-local-recovery/v1" as const, records: [{ jobId: policyless.jobId, runId: policyless.runId, canonicalJobSha256: canonicalPayloadHash(policyless), policy }] };
     try {
       await expect(startCoreDaemon({
-        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        host: "127.0.0.1", port, httpPort, configuredRunnerId: "runner-1", dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
         legacyM1LocalRecoveryCandidate: { ...candidate, records: [{ ...candidate.records[0], canonicalJobSha256: "0".repeat(64) }] },
-      })).rejects.toThrow(/does not match/);
+      }, { collectBootstrapCredentials: testBootstrapCredentials })).rejects.toThrow(/does not match/);
       const reopened = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
       await reopened.close();
 
       const daemon = await startCoreDaemon({
-        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        host: "127.0.0.1", port, httpPort, configuredRunnerId: "runner-1", dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key }, legacyM1LocalRecoveryCandidate: candidate,
-      });
+      }, { collectBootstrapCredentials: testBootstrapCredentials });
       cleanups.push(async () => { await daemon.shutdown(); await rm(dataDir, { recursive: true, force: true }); });
       const strictReaderRuntime = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
       try {
@@ -190,6 +217,33 @@ describe("Core runner protocol production composition", () => {
     } catch (error) {
       await rm(dataDir, { recursive: true, force: true });
       throw error;
+    }
+  });
+
+  it("destroys credentials and closes SQLite when coordinator startup fails before listeners bind", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-startup-cleanup-"));
+    const database = join(dataDir, "qualigence.db");
+    const seed = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
+    await seed.close();
+    const grpcPort = await freePort();
+    const httpPort = await freePort();
+    const frame = Buffer.alloc(100, 0x5a);
+    const destroy = vi.fn(() => frame.fill(0));
+    try {
+      await expect(startCoreDaemon({
+        host: "127.0.0.1", port: grpcPort, httpPort, dataDir, deploymentMode: "local", configuredRunnerId: "runner-1", leaseDurationMs: 30_000,
+        tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+      }, {
+        collectBootstrapCredentials: async () => ({ userBootstrap: frame.subarray(20, 52), supervisor: frame.subarray(52, 84), createdAtEpochMs: Date.now(), userExpiresAtEpochMs: Date.now() + 60_000, destroy }),
+        startCoordinator: async () => { throw new Error("injected coordinator startup failure"); },
+      })).rejects.toThrow("injected coordinator startup failure");
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(frame.equals(Buffer.alloc(100))).toBe(true);
+      await rm(database);
+      expect(await canBind(grpcPort)).toBe(true);
+      expect(await canBind(httpPort)).toBe(true);
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
     }
   });
 
@@ -272,6 +326,10 @@ describe("Core runner protocol production composition", () => {
     const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
     await session.complete(renewed, completion);
     await expect.poll(async () => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
+    const reader = await SqliteRuntime.open({ filename: join(dataDir, "qualigence.db"), busyTimeoutMs: 5_000, openMode: "require-current" });
+    try {
+      await expect(new SqliteRunnerControlStore(reader).completionRecord(job.runId)).resolves.toEqual({ runId: job.runId, jobId: job.jobId, jobSha256: canonicalPayloadHash(job), completion, completedAt: expect.any(String) });
+    } finally { await reader.close(); }
 
     await expect(session.renew({ ...renewed, leaseToken: "wrong" })).rejects.toMatchObject({
       code: "LeaseLost",

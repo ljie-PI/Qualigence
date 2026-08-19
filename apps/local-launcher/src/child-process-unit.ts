@@ -1,11 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import type { HealthCheck } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 50;
-const REAP_TIMEOUT_MS = 3_000;
+export const REAP_TIMEOUT_MS = 3_000;
 
 export interface RestartPolicy {
   readonly maxRestarts: number;
@@ -35,6 +35,8 @@ export interface ChildProcessUnitOptions {
   readonly readinessChecksFn?: () => Promise<readonly HealthCheck[]>;
   readonly livenessChecksFn?: () => Promise<readonly HealthCheck[]>;
   readonly pollIntervalMs?: number;
+  readonly fd3Frame?: Buffer;
+  readonly lifecycleLogFile?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -67,7 +69,7 @@ export function isPidAlive(pid: number): boolean {
 }
 
 function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
-  const targets = group ? [-pid, pid] : [pid];
+  const targets = group && process.platform !== "win32" ? [-pid, pid] : [pid];
   for (const target of targets) {
     try {
       process.kill(target, signal);
@@ -90,6 +92,21 @@ export async function terminateProcess(
   if (!isPidAlive(pid)) {
     return;
   }
+  if (process.platform === "win32") {
+    await taskkill(pid, false);
+    const softDeadline = Date.now() + graceMs;
+    while (Date.now() < softDeadline) {
+      if (!isPidAlive(pid)) return;
+      await sleepKeepAlive(20);
+    }
+    await taskkill(pid, true);
+    const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
+    while (Date.now() < hardDeadline) {
+      if (!isPidAlive(pid)) return;
+      await sleepKeepAlive(20);
+    }
+    throw new LauncherError("ProcessReapTimedOut", `process ${String(pid)} remained alive after forced termination`);
+  }
   killPid(pid, "SIGTERM", group);
   const softDeadline = Date.now() + graceMs;
   while (Date.now() < softDeadline) {
@@ -106,6 +123,7 @@ export async function terminateProcess(
     }
     await sleepKeepAlive(20);
   }
+  throw new LauncherError("ProcessReapTimedOut", `process ${pid} remained alive after forced termination`);
 }
 
 /**
@@ -125,6 +143,7 @@ export class ChildProcessUnit {
   private restarts = 0;
   private exhausted = false;
   private readonly pollIntervalMs: number;
+  private readyLogOffset = 0;
 
   constructor(private readonly options: ChildProcessUnitOptions) {
     this.name = options.name;
@@ -159,13 +178,14 @@ export class ChildProcessUnit {
   }
 
   private async spawnOnce(signal?: AbortSignal): Promise<void> {
+    this.readyLogOffset = await readFile(this.options.logFile).then((content) => content.byteLength, () => 0);
     const fd = openSync(this.options.logFile, "a");
     let child: ChildProcess;
     try {
       child = spawn(this.options.command, [...this.options.args], {
         cwd: this.options.cwd,
         env: this.options.env ?? process.env,
-        stdio: ["ignore", fd, fd],
+        stdio: this.options.fd3Frame === undefined ? ["ignore", fd, fd] : ["ignore", fd, fd, "pipe"],
         detached: this.options.detached ?? false,
       });
     } finally {
@@ -174,7 +194,13 @@ export class ChildProcessUnit {
     }
     this.child = child;
     this.currentPid = child.pid;
+    if (child.pid !== undefined) await this.recordLifecycle("started", child.pid);
     this.childExited = false;
+    const fd3 = child.stdio[3];
+    if (this.options.fd3Frame !== undefined && fd3 !== undefined && fd3 !== null && "end" in fd3) {
+      const frame = this.options.fd3Frame;
+      fd3.end(frame, () => frame.fill(0));
+    }
 
     child.once("exit", () => {
       this.childExited = true;
@@ -237,7 +263,7 @@ export class ChildProcessUnit {
     } catch {
       return false;
     }
-    for (const line of content.split("\n")) {
+    for (const line of content.slice(this.readyLogOffset).split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) {
         continue;
@@ -312,10 +338,17 @@ export class ChildProcessUnit {
     this.supervising = false;
     const pid = this.currentPid;
     if (pid !== undefined) {
+      await this.recordLifecycle("stop_requested", pid);
       await terminateProcess(pid, this.options.shutdownGraceMs, this.options.detached ?? false);
+      await this.recordLifecycle("reaped", pid);
     }
     this.child = undefined;
     this.currentPid = undefined;
+  }
+
+  private async recordLifecycle(event: "started" | "stop_requested" | "reaped", pid: number): Promise<void> {
+    if (this.options.lifecycleLogFile === undefined) return;
+    await appendFile(this.options.lifecycleLogFile, `${JSON.stringify({ event: `${this.name}:${event}`, pid, at: new Date().toISOString() })}\n`, "utf8").catch(() => undefined);
   }
 
   /** Detach the child so it survives the launcher process exiting. */
@@ -346,4 +379,13 @@ export class ChildProcessUnit {
       safeMessage: `${this.name} ${kind}: process ${alive ? "alive" : "not running"}`,
     };
   }
+}
+
+function taskkill(pid: number, force: boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const args = ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])];
+    const child = spawn("taskkill.exe", args, { stdio: "ignore", windowsHide: true });
+    child.once("error", () => resolve());
+    child.once("close", () => resolve());
+  });
 }

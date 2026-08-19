@@ -42,13 +42,26 @@ describe("shared relational schema catalog", () => {
   });
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(6);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(7);
+  });
+
+  it("adds the migration-007 Local intake authority", async () => {
+    const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      expect(await runtime.schemaVersion()).toBe(7);
+      expect(await tableColumns(runtime, "local_run_intakes")).toEqual([
+        "run_id", "job_id", "job_json", "job_sha256", "dispatch_state", "dispatch_attempt",
+        "dispatch_last_attempt_at", "dispatch_error_code", "completion_state", "completion_attempt",
+        "completion_last_attempt_at", "completion_next_attempt_at", "completion_error_code",
+        "completion_sha256", "completion_applied_at", "completion_blocked_at", "created_at", "updated_at",
+      ]);
+    } finally { await runtime.close(); }
   });
 
   it("freezes migration-006 runner-control tables, hashed-only tokens, and active indexes", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {
-      expect(await runtime.schemaVersion()).toBe(6);
+      expect(await runtime.schemaVersion()).toBe(7);
       expect(await tableColumns(runtime, "runner_sessions")).toEqual([
         "session_id",
         "runner_id",

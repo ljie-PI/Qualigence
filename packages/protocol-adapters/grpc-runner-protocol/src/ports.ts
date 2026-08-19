@@ -17,6 +17,11 @@ export type { AuthenticatedRunnerContext, RunnerProtocolApplication } from "@qua
  * server implements it per live Runner connection. Neither side imports Protobuf.
  */
 export interface RunnerConnectionPort {
+  readonly authenticatedRunner: {
+    readonly runnerId: string;
+    readonly scope: import("@qualigence/runner-control").RunnerAuthorizationScope;
+    readonly capabilities: readonly string[];
+  };
   offer(job: AcceptedExecutionJob, requirements: readonly string[]): Promise<ExecutionJobLease>;
   cancel(jobId: string, reason: string): Promise<void>;
 }

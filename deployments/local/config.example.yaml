@@ -16,6 +16,7 @@ core:
   # Local mode always binds Core to loopback; the host is forced to 127.0.0.1.
   host: 127.0.0.1
   port: 50555
+  httpPort: 50556
 
 runner:
   id: qualigence-local-runner
@@ -32,3 +33,19 @@ modelProfile:
   # "disabled" keeps the pure-semantic path; "on-demand" allows visual input
   # when the provider capability and data policy both permit it.
   visualInput: disabled
+
+auth:
+  bootstrapTtlMs: 600000
+  userSessionTtlMs: 900000
+
+completionReconciliationRetryBaseMs: 1000
+completionReconciliationRetryMaximumMs: 60000
+completionReconciliationMaximumAttempts: 8
+completionReconciliationPollIntervalMs: 250
+completionReconciliationBatchSize: 64
+
+shutdown:
+  stopRequestPollIntervalMs: 250
+  stopRequestMaximumAgeMs: 30000
+  stopRequestWaitTimeoutMs: 60000
+  drainTimeoutMs: 30000

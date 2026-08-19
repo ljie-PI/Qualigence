@@ -9,6 +9,7 @@ import {
   type HealthReport,
 } from "@qualigence/local-control";
 import { isPidAlive } from "./child-process-unit.js";
+import { request } from "node:http";
 
 const DEFAULT_MIN_FREE_DISK_BYTES = 256 * 1024 * 1024;
 const LOW_FREE_DISK_BYTES = 1024 * 1024 * 1024;
@@ -88,6 +89,14 @@ export class HealthClient {
         : `core port ${host}:${port} is not listening`,
       open ? undefined : "CorePortClosed",
     );
+  }
+
+  async coreHealth(host: string, port: number, path: "/health/internal-ready" | "/health/ready"): Promise<HealthCheck> {
+    const ok = await new Promise<boolean>((resolve) => {
+      const probe = request({ host, port, path, method: "GET", timeout: PORT_PROBE_TIMEOUT_MS }, (response) => { response.resume(); resolve(response.statusCode === 200); });
+      probe.once("error", () => resolve(false)); probe.once("timeout", () => { probe.destroy(); resolve(false); }); probe.end();
+    });
+    return check("runner", ok ? "pass" : "fail", ok ? `${path} is ready` : `${path} is unavailable`, ok ? undefined : "CoreNotReady");
   }
 
   async checkDatabase(dbFile: string): Promise<HealthCheck> {

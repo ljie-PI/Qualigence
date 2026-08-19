@@ -24,5 +24,7 @@
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*"
+    ,"@qualigence/local-control": "workspace:*"
+    ,"fastify": "5.11.0"
   }
 }

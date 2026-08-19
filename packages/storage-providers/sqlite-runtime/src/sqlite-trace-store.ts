@@ -171,6 +171,12 @@ export class SqliteTraceStore implements TraceStore {
     return run?.next_sequence_number ?? 1;
   }
 
+  async findingReferences(runId: RunId) {
+    const rows = await this.runtime.db.selectFrom("findings").select(["finding_id", "created_at"])
+      .where("run_id", "=", runId).orderBy("created_at").orderBy("finding_id").execute();
+    return rows.map((row) => ({ findingId: row.finding_id, createdAt: row.created_at }));
+  }
+
   private async withImmediateTransaction<TResult>(
     body: () => Promise<TResult>,
   ): Promise<TResult> {

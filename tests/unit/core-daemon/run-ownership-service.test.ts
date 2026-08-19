@@ -276,7 +276,7 @@ describe("RunOwnershipService", () => {
     await service.completeStored("run-1", passed());
     clock.advance(10_001);
 
-    await expect(service.completeStored("run-1", passed())).resolves.toBeUndefined();
+    await expect(service.completeStored("run-1", passed())).resolves.toBe("duplicate");
     await expect(
       service.completeStored("run-1", {
         jobId: "job-run-1",
@@ -299,7 +299,7 @@ describe("RunOwnershipService", () => {
     await service.grant(job("run-1"), owner1);
     clock.advance(10_001);
 
-    await expect(service.completeStored("run-1", passed())).resolves.toBeUndefined();
+    await expect(service.completeStored("run-1", passed())).resolves.toBe("duplicate");
     await expect(store.lease("run-1")).resolves.toMatchObject({
       completedAt: new Date(1_000).toISOString(),
     });

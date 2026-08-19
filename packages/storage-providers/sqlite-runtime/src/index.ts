@@ -24,6 +24,9 @@ export { SqliteInvestigationStore } from "./sqlite-investigation-store.js";
 export { SqliteReviewStore } from "./sqlite-review-store.js";
 
 export { SqliteRunnerControlStore } from "./sqlite-runner-control-store.js";
+export { SqliteLocalRunIntakeStore } from "./sqlite-local-run-intake-store.js";
+export type { LocalCompletionRetryPolicy } from "./sqlite-local-run-intake-store.js";
+export { SqliteLocalReadinessProbe } from "./sqlite-local-readiness-probe.js";
 
 export { SqliteIntelligenceStore } from "./sqlite-intelligence-store.js";
 

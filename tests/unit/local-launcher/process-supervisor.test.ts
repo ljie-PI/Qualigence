@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   ProcessSupervisor,
@@ -5,6 +6,7 @@ import {
 } from "../../../apps/local-launcher/src/process-supervisor.js";
 import { LauncherError } from "../../../apps/local-launcher/src/errors.js";
 import type { HealthCheck } from "@qualigence/local-control";
+import { terminateProcess } from "../../../apps/local-launcher/src/child-process-unit.js";
 
 /** An in-memory {@link ProcessUnit} used to drive supervisor orchestration. */
 class FakeProcessUnit implements ProcessUnit {
@@ -169,6 +171,52 @@ describe("ProcessSupervisor.stop", () => {
       "runner:stop",
       "core:stop",
     ]);
+  });
+
+  it("still stops Core when Runner stop fails, then reports the shutdown error", async () => {
+    const core = new FakeProcessUnit("core");
+    const runner = new FakeProcessUnit("runner");
+    runner.stopSpy.mockImplementationOnce(() => { throw new Error("runner stop failed"); });
+    const supervisor = supervisorWith(core, runner);
+    await supervisor.start();
+
+    await expect(supervisor.stop()).rejects.toThrow("runner stop failed");
+
+    expect(core.stopSpy).toHaveBeenCalledOnce();
+    expect(supervisor.events().slice(-2)).toEqual(["runner:stop", "core:stop"]);
+  });
+
+  it("does not report success or discard a unit whose process cannot be reaped", async () => {
+    const core = new FakeProcessUnit("core");
+    const runner = new FakeProcessUnit("runner");
+    runner.stopSpy.mockImplementationOnce(() => { throw new LauncherError("ProcessReapTimedOut", "runner remained alive"); });
+    const supervisor = supervisorWith(core, runner);
+    await supervisor.start();
+
+    await expect(supervisor.stop()).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
+    expect(supervisor.events().slice(-2)).toEqual(["runner:stop", "core:stop"]);
+    await expect(supervisor.stop()).resolves.toBeUndefined();
+    expect(runner.stopSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("terminateProcess", () => {
+  it("throws ProcessReapTimedOut when the PID remains alive after forced termination", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
+      expect(kill).toHaveBeenCalledWith(2_147_000_000, 0);
+    } finally { kill.mockRestore(); }
+  }, 5_000);
+
+  it("terminates and reaps a real child process", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    expect(child.pid).toBeDefined();
+    await terminateProcess(child.pid as number, 100, true);
+    expect(() => process.kill(child.pid as number, 0)).toThrow();
   });
 });
 

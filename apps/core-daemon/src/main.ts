@@ -1,4 +1,6 @@
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -13,18 +15,32 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 import { TraceIngestor } from "@qualigence/evidence";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { StructuredLogger } from "@qualigence/observability";
 import { canonicalPayloadHash, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionPolicySnapshot } from "@qualigence/runner-protocol";
-import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
+import { SqliteArtifactManifestStore, SqliteLocalReadinessProbe, SqliteLocalRunIntakeStore, SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
+import { collectBootstrapCredentialHandoff } from "./local/bootstrap-credential-handoff.js";
+import { buildLocalHttpServer } from "./local/local-http-server.js";
+import { LocalReadinessService } from "./local/local-readiness-service.js";
+import { LocalRunCoordinator } from "./local/local-run-coordinator.js";
+import { LocalRunPolicyIssuer } from "./local/local-run-policy-issuer.js";
+import { LocalSessionService } from "./local/local-session-service.js";
+import type { ParsedBootstrapFrame } from "@qualigence/local-control";
 
 export interface StartedCoreDaemon {
   readonly port: number;
   readonly server: GrpcRunnerProtocolServer;
   readonly application: CoreRunnerProtocolApplication;
   readonly traceStore: SqliteTraceStore;
+  readonly httpPort?: number;
   shutdown(): Promise<void>;
+}
+
+export interface CoreDaemonStartupDependencies {
+  readonly collectBootstrapCredentials?: () => Promise<ParsedBootstrapFrame>;
+  readonly startCoordinator?: (coordinator: LocalRunCoordinator) => Promise<void>;
 }
 
 interface LegacyRecoveryRecord {
@@ -46,96 +62,141 @@ interface VerifiedLegacyRecoveryRecord {
  * application, then bind the mutual-TLS gRPC server. Readiness is emitted only
  * after both succeed. Request intake remains out of scope for this binary.
  */
-export async function startCoreDaemon(config: CoreDaemonConfig): Promise<StartedCoreDaemon> {
+export async function startCoreDaemon(config: CoreDaemonConfig, dependencies: CoreDaemonStartupDependencies = {}): Promise<StartedCoreDaemon> {
   const recovery = config.legacyM1LocalRecoveryCandidate === undefined
     ? undefined
     : validateLegacyRecoveryCandidate(config.legacyM1LocalRecoveryCandidate, config);
-  await mkdir(config.dataDir, { recursive: true });
-  const runtime = await SqliteRuntime.open({
-    filename: join(config.dataDir, "qualigence.db"),
-    busyTimeoutMs: 5_000,
-  });
-  const traceStore = new SqliteTraceStore(runtime);
-  const runStore = new SqliteRunStore(runtime);
-  let controlStore: SqliteRunnerControlStore;
+  if (config.deploymentMode === "local" && (config.httpPort === undefined || config.configuredRunnerId === undefined || config.configuredRunnerId.trim().length === 0)) {
+    throw new Error("Local Core requires an HTTP port and configured Runner ID.");
+  }
+  const localEnabled = config.deploymentMode === "local";
+  let credentials: ParsedBootstrapFrame | undefined;
+  let runtime: SqliteRuntime | undefined;
+  let coordinator: LocalRunCoordinator | undefined;
+  let server: GrpcRunnerProtocolServer | undefined;
+  let http: ReturnType<typeof buildLocalHttpServer> | undefined;
+  let startupComplete = false;
+  let startupFailure: unknown;
   try {
-    const rawControlStore = new SqliteRunnerControlStore(runtime);
+    credentials = localEnabled
+      ? await (dependencies.collectBootstrapCredentials?.() ?? collectBootstrapCredentialHandoff(createReadStream("", { fd: Number(process.env.CORE_BOOTSTRAP_CREDENTIAL_FD ?? "3"), autoClose: true }), 5_000))
+      : undefined;
+    if (credentials !== undefined && credentials.userExpiresAtEpochMs <= Date.now()) {
+      throw new Error("Bootstrap credential has expired.");
+    }
+    await mkdir(config.dataDir, { recursive: true });
+    runtime = await SqliteRuntime.open({
+      filename: join(config.dataDir, "qualigence.db"),
+      busyTimeoutMs: 5_000,
+      ...(localEnabled ? { openMode: "require-current" as const } : {}),
+    });
+    const traceStore = new SqliteTraceStore(runtime);
+    const runStore = new SqliteRunStore(runtime);
+    const manifestStore = new SqliteArtifactManifestStore(runtime);
+    const artifactStore = new LocalArtifactStore(join(config.dataDir, "artifacts"), { now: () => new Date().toISOString() });
+    const controlStore = new SqliteRunnerControlStore(runtime);
     if (recovery !== undefined) await applyVerifiedLegacyRecovery(runtime, recovery);
-    controlStore = rawControlStore;
-  } catch (error) {
-    await runtime.close();
-    throw error;
-  }
-  const logger = new StructuredLogger({ service: "core-daemon" });
-  const ownership = new RunOwnershipService({
-    store: controlStore,
-    leaseDurationMs: config.leaseDurationMs,
-    integrityEvents: {
-      emit: (event) => logger.warn("runner-control.integrity", { ...event }),
-    },
-  });
-  const jobs = new ExecutionJobService(ownership, {
-    store: controlStore,
-    leaseDurationMs: config.leaseDurationMs,
-  });
-  const sessions = new RunnerSessionService({
-    store: controlStore,
-    welcome: {
-      serverVersion: "0.1.0",
-      heartbeatIntervalMs: 5_000,
+    const logger = new StructuredLogger({ service: "core-daemon" });
+    const ownership = new RunOwnershipService({
+      store: controlStore,
       leaseDurationMs: config.leaseDurationMs,
-      traceBatchMaximumEvents: 128,
-      traceBatchMaximumBytes: 262_144,
-      maximumInFlightBatches: 2,
-      maximumPendingWriteBytes: 1_048_576,
-    },
-    resumeTokens: new RunnerResumeTokenService({ store: controlStore }),
-    traceIngestor: new TraceIngestor(traceStore),
-    ownership,
-  });
-  const application = new CoreRunnerProtocolApplication({
-    sessions,
-    jobs,
-    ownership,
-    recordRun: async (job) => {
-      if ((await runStore.get(job.runId)) !== undefined) return;
-      await runStore.create({
-        runId: job.runId,
-        jobId: job.jobId,
-        targetKind: job.target.kind,
-        objective: job.objective,
-        status: "running",
-        nextSequenceNumber: 1,
-        createdAt: new Date().toISOString(),
+      integrityEvents: {
+        emit: (event) => logger.warn("runner-control.integrity", { ...event }),
+      },
+    });
+    const jobs = new ExecutionJobService(ownership, {
+      store: controlStore,
+      leaseDurationMs: config.leaseDurationMs,
+    });
+    const sessions = new RunnerSessionService({
+      store: controlStore,
+      welcome: {
+        serverVersion: "0.1.0",
+        heartbeatIntervalMs: 5_000,
+        leaseDurationMs: config.leaseDurationMs,
+        traceBatchMaximumEvents: 128,
+        traceBatchMaximumBytes: 262_144,
+        maximumInFlightBatches: 2,
+        maximumPendingWriteBytes: 1_048_576,
+      },
+      resumeTokens: new RunnerResumeTokenService({ store: controlStore }),
+      traceIngestor: new TraceIngestor(traceStore),
+      ownership,
+    });
+    let intake: SqliteLocalRunIntakeStore | undefined;
+    let readiness: LocalReadinessService | undefined;
+    let httpBound = false;
+    let grpcBound = false;
+    if (localEnabled && credentials !== undefined) {
+      intake = new SqliteLocalRunIntakeStore(runtime, {
+        retryBaseMs: config.completionReconciliationRetryBaseMs ?? 1_000,
+        retryMaximumMs: config.completionReconciliationRetryMaximumMs ?? 60_000,
+        maximumAttempts: config.completionReconciliationMaximumAttempts ?? 8,
       });
-    },
-  });
-  const server = new GrpcRunnerProtocolServer({
-    tls: { ca: config.tls.ca, cert: config.tls.cert, key: config.tls.key },
-    authenticator: new CertificateRunnerIdentity(),
-    application,
-    host: config.host,
-    port: config.port,
-  });
+    }
+    const application = new CoreRunnerProtocolApplication({
+      sessions,
+      jobs,
+      ownership,
+      ...(localEnabled ? { completionSink: { complete: async (input: Parameters<LocalRunCoordinator["complete"]>[0]) => coordinator?.complete(input) } } : {}),
+      recordRun: async (job) => {
+        if ((await runStore.get(job.runId)) !== undefined) return;
+        await runStore.create({ runId: job.runId, jobId: job.jobId, targetKind: job.target.kind, objective: job.objective, status: "running", nextSequenceNumber: 1, createdAt: new Date().toISOString() });
+      },
+    });
+    server = new GrpcRunnerProtocolServer({
+      tls: { ca: config.tls.ca, cert: config.tls.cert, key: config.tls.key },
+      authenticator: new CertificateRunnerIdentity(),
+      application,
+      host: config.host,
+      port: config.port,
+    });
+    if (intake !== undefined) coordinator = new LocalRunCoordinator({ store: intake, controlStore, connection: () => server?.connection(config.configuredRunnerId!), configuredRunnerId: config.configuredRunnerId!, batchSize: config.completionReconciliationBatchSize ?? 64 });
 
-  let port: number;
-  try {
-    port = await server.listen();
+    if (localEnabled && credentials !== undefined && coordinator !== undefined && intake !== undefined) {
+      const policyIssuer = new LocalRunPolicyIssuer();
+      const localSessions = new LocalSessionService({ userBootstrap: credentials.userBootstrap, supervisor: credentials.supervisor, userBootstrapExpiresAtEpochMs: credentials.userExpiresAtEpochMs, userSessionTtlMs: config.userSessionTtlMs ?? 900_000 });
+      credentials.destroy();
+      credentials = undefined;
+      const probe = new SqliteLocalReadinessProbe(runtime);
+      readiness = new LocalReadinessService({ schemaVersion: () => runtime!.schemaVersion(), storageProbe: () => probe.probe(), artifactProbe: async () => { const bytes = Buffer.from("local-readiness"); const manifest = await artifactStore.write({ artifactId: randomUUID(), runId: `readiness-${process.pid}`, name: "probe.bin", kind: "other", mediaType: "application/octet-stream", bytes }); try { const read = await artifactStore.read(manifest); if (!Buffer.from(read).equals(bytes)) throw new Error("Artifact readiness bytes differ."); } finally { await artifactStore.delete(manifest); } }, listeners: () => ({ http: httpBound, grpc: grpcBound }), reconciliationHealthy: () => coordinator!.isHealthy(), configuredRunnerId: config.configuredRunnerId!, connection: () => server?.connection(config.configuredRunnerId!) });
+      http = buildLocalHttpServer({ sessions: localSessions, createRun: async ({ targetUrl, objective }) => { const issued = policyIssuer.issue({ kind: "web", url: targetUrl }); const job = { jobId: randomUUID(), runId: randomUUID(), projectId: issued.projectId, target: { kind: "web" as const, url: targetUrl }, objective, policy: issued.policy }; await intake.create({ job, createdAt: new Date().toISOString() }); return { runId: job.runId, status: "pending_runner" }; }, readRun: async (runId) => { const record = await intake.run(runId); if (record === undefined) return undefined; const blocked = record.completionState === "integrity_blocked" || record.completionState === "retry_exhausted"; const status = record.completionState === "applied" ? record.runStatus : blocked ? "error" : record.dispatchState === "offer_outcome_unknown" ? "offer_outcome_unknown" : record.dispatchState === "offered" ? "running" : "pending_runner"; const errorCode = blocked ? record.completionErrorCode : record.errorCode; const findings = await traceStore.findingReferences(runId); const artifacts = await manifestStore.listForRun(runId); const evidenceReferences = [...findings.map((finding) => ({ id: finding.findingId, kind: "finding", createdAt: finding.createdAt })), ...artifacts.map((artifact) => ({ id: artifact.artifactId, kind: artifact.kind, createdAt: artifact.createdAt }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)); return { runId, status, ...(errorCode === undefined ? {} : { errorCode }), ...(evidenceReferences.length === 0 ? {} : { evidenceReferences }) }; }, quiesce: async () => { readiness!.quiesce(); await coordinator!.shutdown(); await mkdir(join(config.dataDir, "logs"), { recursive: true }); await appendFile(join(config.dataDir, "logs", "lifecycle.jsonl"), `${JSON.stringify({ event: "core:quiesced", at: new Date().toISOString() })}\n`, "utf8"); }, health: readiness });
+      await (dependencies.startCoordinator?.(coordinator) ?? coordinator.startup());
+    }
+
+    const port = await server.listen();
+    grpcBound = true;
+    if (http !== undefined && config.httpPort !== undefined) { await http.listen({ host: "127.0.0.1", port: config.httpPort }); httpBound = true; }
+    coordinator?.startLive(config.completionReconciliationPollIntervalMs ?? 250);
+    startupComplete = true;
+    return {
+      port,
+      server,
+      application,
+      traceStore,
+      ...(config.httpPort === undefined ? {} : { httpPort: config.httpPort }),
+      shutdown: async (): Promise<void> => {
+        readiness?.quiesce();
+        let failure: unknown;
+        for (const close of [async () => http?.close(), async () => coordinator?.shutdown(), async () => server?.shutdown(), async () => runtime?.close()]) {
+          try { await close(); } catch (error) { failure ??= error; }
+        }
+        if (failure !== undefined) throw failure;
+      },
+    };
   } catch (error) {
-    await runtime.close();
+    startupFailure = error;
     throw error;
+  } finally {
+    if (!startupComplete) {
+      let cleanupFailure: unknown;
+      for (const close of [async () => http?.close(), async () => coordinator?.shutdown(), async () => server?.shutdown(), async () => runtime?.close()]) {
+        try { await close(); } catch (error) { cleanupFailure ??= error; }
+      }
+      if (startupFailure === undefined && cleanupFailure !== undefined) throw cleanupFailure;
+    }
+    credentials?.destroy();
   }
-
-  return {
-    port,
-    server,
-    application,
-    traceStore,
-    shutdown: async (): Promise<void> => {
-      await server.shutdown();
-      await runtime.close();
-    },
-  };
 }
 
 function validateLegacyRecoveryCandidate(

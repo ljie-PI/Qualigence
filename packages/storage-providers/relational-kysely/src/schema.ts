@@ -508,6 +508,27 @@ export interface ExecutionCompletionsTable {
   completed_at: string;
 }
 
+export interface LocalRunIntakesTable {
+  run_id: string;
+  job_id: string;
+  job_json: string;
+  job_sha256: string;
+  dispatch_state: string;
+  dispatch_attempt: number;
+  dispatch_last_attempt_at: string | null;
+  dispatch_error_code: string | null;
+  completion_state: string;
+  completion_attempt: number;
+  completion_last_attempt_at: string | null;
+  completion_next_attempt_at: string;
+  completion_error_code: string | null;
+  completion_sha256: string | null;
+  completion_applied_at: string | null;
+  completion_blocked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -562,5 +583,6 @@ export interface Database {
   runner_resume_tokens: RunnerResumeTokensTable;
   execution_leases: ExecutionLeasesTable;
   execution_completions: ExecutionCompletionsTable;
+  local_run_intakes: LocalRunIntakesTable;
   sqlite_master: SqliteMasterTable;
 }

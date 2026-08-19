@@ -14,6 +14,12 @@ export const healthCheckNameSchema = z.enum([
   "spool",
   "model_provider",
   "disk",
+  "http_listener",
+  "grpc_listener",
+  "reconciliation",
+  "run_store",
+  "trace_store",
+  "manifest_store",
 ]);
 
 export const healthCheckStatusSchema = z.enum(["pass", "warn", "fail"]);

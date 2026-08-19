@@ -37,6 +37,7 @@ export { HealthClient } from "./health-client.js";
 export type { HealthTarget } from "./health-client.js";
 
 export { MigrationGuard } from "./migration-guard.js";
+export { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff.js";
 
 export { ProcessSupervisor } from "./process-supervisor.js";
 export type {
@@ -54,4 +55,4 @@ export {
 export type { RuntimeState } from "./runtime-state.js";
 
 export { run } from "./main.js";
-export type { LauncherIo } from "./main.js";
+export type { LauncherDependencies, LauncherIo } from "./main.js";

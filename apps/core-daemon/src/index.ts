@@ -30,9 +30,14 @@ export {
   type ResumePresentedIdentity,
 } from "@qualigence/core-application";
 
-export { startCoreDaemon, type StartedCoreDaemon } from "./main.js";
+export { startCoreDaemon, type CoreDaemonStartupDependencies, type StartedCoreDaemon } from "./main.js";
 export { loadCoreDaemonConfig } from "./config.js";
 export { CoreDaemonError, isCoreDaemonError, type CoreDaemonErrorCode } from "./errors.js";
+export { LocalSessionService } from "./local/local-session-service.js";
+export { LocalRunPolicyIssuer } from "./local/local-run-policy-issuer.js";
+export { LocalRunCoordinator } from "./local/local-run-coordinator.js";
+export { LocalReadinessService } from "./local/local-readiness-service.js";
+export { buildLocalHttpServer } from "./local/local-http-server.js";
 
 export {
   RunnerBackedRunResourceFactory,

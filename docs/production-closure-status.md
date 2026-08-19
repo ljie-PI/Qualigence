@@ -1,5 +1,108 @@
 # Production closure status
 
+## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
+
+component: complete
+production_wiring: present
+verification: passed
+implementation_commit: same commit as this ledger entry (`feat(local): close launcher core runner loop`)
+
+Final Task 11 finding closure is committed separately through
+`fix(local): close final task 11 lifecycle findings`. It makes post-start
+publication transactional with zeroization and reverse-order rollback, keeps
+unreaped process state diagnostic, derives reconciliation health from durable
+SQLite blockers across restart, and records safe process lifecycle events for
+foreground and detached shutdown evidence.
+
+Final finding verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
+2026-08-19):
+
+- Affected supervision/readiness set passed 5 files / 38 tests with one
+  pre-existing Task 21 Windows quarantine skip.
+- Task 11 Gate group 1 passed 10 files / 61 tests.
+- Task 11 Gate group 2 passed 10 files / 103 tests, including the mandatory
+  Docker-backed PostgreSQL Runner-control contract.
+- Task 11 Gate group 3 passed 11 files / 85 tests with one pre-existing Task 21
+  Windows quarantine skip. The built-process E2E passed 5 tests using real
+  Launcher/Core/Runner, Chromium, model, and web fixture processes. It proved
+  three post-start rollback failures, authenticated foreground shutdown
+  (Windows stop-marker command; POSIX SIGINT/SIGTERM), Runner-before-Core
+  reaping, detached stop order, and byte-level
+  credential absence across config, every captured runtime state, logs, and
+  SQLite for raw 32-byte, lowercase/uppercase hex, padded/unpadded base64, and
+  base64url representations.
+- `corepack pnpm build`, `corepack pnpm typecheck`, and `git diff --check`
+  passed after the final source and ledger changes.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`; Docker and Chromium
+  were available. No fake-process E2E fallback or environmental block occurred.
+
+Final review fixes are committed separately as
+`fix(local): harden intake lifecycle authority`. They preserve the Task 11
+interfaces while enforcing stop-marker tuple/freshness authority, canonical
+completion Job hash matching, recoverable retained reconciliation, authenticated
+foreground quiesce, complete Launcher-to-Core configuration propagation,
+header-first fd-3 collection, and strict HTTP target validation.
+
+Final scoped review findings were closed by `fix(local): close final task 11
+lifecycle findings`: constant-time session authorization, pre-bind bootstrap
+expiry rejection, startup cleanup/zeroization, atomic no-overwrite marker claims,
+platform-correct process-tree termination, private detached-supervisor helpers,
+and foreground use of the same authenticated marker/quiesce lifecycle.
+
+The exact-head scoped review fix `fix(local): close final scoped spec findings`
+also makes persisted completion identity errors immediately integrity-blocking,
+requires complete Local composition configuration, rejects unsafe host overrides,
+and atomically claims runtime state before deleting only the matching topology.
+
+Task 11 extends the existing `ProcessSupervisor`, `ChildProcessUnit`,
+`RunnerControlStore`, Evidence read ports, Core application services,
+`GrpcRunnerProtocolServer.connection`, `SqliteRuntime`, `BackupManager`, and
+`MigrationGuard`. It adds no parallel lifecycle, connection registry, recovery
+module, `DataDirLock`, Self-hosted composition, or automatic lease recovery.
+
+RED evidence:
+
+- With Git OpenSSL configured, the initial focused command failed 9 files / 1
+  collected test. Eight suites failed to resolve the absent Local credential,
+  session, HTTP, issuer, coordinator, and readiness modules/package exports;
+  the stop-marker case failed because `parseStopRequest` did not exist.
+
+GREEN evidence (Windows 11, Node 24, Corepack pnpm 11.7.0, 2026-08-19):
+
+- `corepack pnpm build` passed with `npm_config_offline=true`; TypeScript and the
+  Web Console Vite production build completed from the frozen installed graph.
+- Task 11 Gate group 1 passed 10 files / 49 tests.
+- Task 11 Gate group 2 passed 10 files / 101 tests, including Docker-backed
+  PostgreSQL migration/schema and Runner-control contracts.
+- Task 11 Gate group 3 passed 11 files / 68 tests with one pre-existing Task 21
+  Windows quarantine skip. Its E2E used built Launcher/Core/Runner processes,
+  the local OpenAI-compatible fixture, the web fixture, and real Chromium; it
+  did not use `fake-process.mjs`.
+- `corepack pnpm typecheck` passed, including build, test TypeScript, and Web
+  Console typecheck. `git diff --check` passed.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`.
+- No environmental block occurred. Docker PostgreSQL and Chromium both ran.
+
+Final review-fix verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
+2026-08-19):
+
+- `corepack pnpm build` passed after the final source change.
+- Task 11 Gate group 1 passed 10 files / 59 tests.
+- Task 11 Gate group 2 passed 10 files / 102 tests, including the mandatory
+  Docker-backed PostgreSQL Runner-control provider contract.
+- Task 11 Gate group 3 passed 11 files / 75 tests with one pre-existing Task 21
+  Windows quarantine skip. The built-process E2E persisted Trace/Finding
+  references, ignored a malformed stop marker, proved detached PID reaping,
+  restarted and reconciled a durable completion, exercised nondefault session
+  and retry policy values through production child env, and scanned
+  config/runtime-state/logs/SQLite for raw credentials.
+- `corepack pnpm typecheck` and `git diff --check` passed.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`; Docker 29.6.2 and
+  Chromium were available. No environmental block occurred.
+
 ## SETUP-00 — Engineering context, issue tracker, and review guidance (2026-08-17)
 
 component: complete

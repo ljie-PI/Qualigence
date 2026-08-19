@@ -88,6 +88,15 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(isPidAlive(pid as number)).toBe(false);
   });
 
+  it("ignores a stale ready event from a prior process in the same log", async () => {
+    const dir = await scratchDir("stale-ready");
+    const logFile = join(dir, "core.log");
+    await writeFile(logFile, `${JSON.stringify({ event: "core.ready", pid: 1 })}\n`);
+    const unit = new ChildProcessUnit({ name: "core", unhealthyCode: "CoreUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "hang" }, logFile, readyEvent: "core.ready", startupTimeoutMs: 100, shutdownGraceMs: 100 });
+
+    await expect(unit.start()).rejects.toMatchObject({ code: "StartupTimedOut" });
+  });
+
   it("rejects with StartupTimedOut and leaks no child when readiness never arrives", async () => {
     const dir = await scratchDir("hang");
     const unit = new ChildProcessUnit({
@@ -165,6 +174,23 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(unit.restartCount()).toBe(3);
     expect(unit.isSupervising()).toBe(false);
   });
+
+  it("records observable stop and reap events without clearing process identity early", async () => {
+    const dir = await scratchDir("lifecycle-events");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const unit = new ChildProcessUnit({ name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" }, logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready", startupTimeoutMs: 5_000, shutdownGraceMs: 1_000 });
+    cleanups.push(() => unit.stop());
+    await unit.start();
+    const pid = unit.pid();
+    await unit.stop();
+    const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
+    await expect(events).resolves.toEqual([
+      expect.objectContaining({ event: "runner:started", pid }),
+      expect.objectContaining({ event: "runner:stop_requested", pid }),
+      expect.objectContaining({ event: "runner:reaped", pid }),
+    ]);
+    expect(unit.pid()).toBeUndefined();
+  });
 });
 
 async function makeDataDir(name: string): Promise<{
@@ -233,7 +259,7 @@ describe("LocalDoctor diagnostics", () => {
   function config(dataDir: string): LocalConfig {
     return {
       dataDir,
-      core: { host: "127.0.0.1", port: 1 },
+      core: { host: "127.0.0.1", port: 1, httpPort: 2 },
       runner: { id: "runner-local", spoolSoftBytes: 1_000, spoolHardBytes: 2_000 },
       modelProfile: {
         provider: "openai-compatible",
@@ -242,6 +268,13 @@ describe("LocalDoctor diagnostics", () => {
         credentialRef: "env:KEY",
         visualInput: "disabled",
       },
+      auth: { bootstrapTtlMs: 600_000, userSessionTtlMs: 900_000 },
+      completionReconciliationRetryBaseMs: 1_000,
+      completionReconciliationRetryMaximumMs: 60_000,
+      completionReconciliationMaximumAttempts: 8,
+      completionReconciliationPollIntervalMs: 250,
+      completionReconciliationBatchSize: 64,
+      shutdown: { stopRequestPollIntervalMs: 250, stopRequestMaximumAgeMs: 30_000, stopRequestWaitTimeoutMs: 60_000, drainTimeoutMs: 30_000 },
     };
   }
 

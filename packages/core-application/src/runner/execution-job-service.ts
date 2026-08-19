@@ -9,7 +9,7 @@ import type {
 import { negotiateCapabilities } from "@qualigence/runner-protocol";
 import type { RunnerControlStore } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
-import type { LeaseOwner, RunOwnershipService } from "./run-ownership-service.js";
+import type { LeaseOwner, RunCompletionDisposition, RunOwnershipService } from "./run-ownership-service.js";
 
 export interface ExecutionJobServiceOptions {
   readonly store: RunnerControlStore;
@@ -116,8 +116,8 @@ export class ExecutionJobService {
     return this.ownership.renew(lease);
   }
 
-  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<void> {
-    await this.ownership.complete(lease, completion);
+  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<RunCompletionDisposition> {
+    return this.ownership.complete(lease, completion);
   }
 
   async completionOf(runId: string): Promise<ExecutionCompletion | undefined> {

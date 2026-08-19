@@ -60,6 +60,12 @@ export interface ArtifactStore {
   write(request: ArtifactWriteRequest): Promise<ArtifactManifest>;
   read(manifest: ArtifactManifest): Promise<Uint8Array>;
   verify(manifest: ArtifactManifest): Promise<boolean>;
+  delete?(manifest: ArtifactManifest): Promise<void>;
+}
+
+export interface FindingReference {
+  readonly findingId: string;
+  readonly createdAt: string;
 }
 
 export interface ArtifactManifestStore {

@@ -1,6 +1,7 @@
 import type {
   ExecutionCompletion,
 } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   CompleteLeaseResult,
   HashedResumeTokenRecord,
@@ -11,6 +12,7 @@ import type {
   ResumeTokenBinding,
   RotateResumeTokenInput,
   RotateResumeTokenResult,
+  RunnerCompletionRecord,
   RunnerControlStore,
 } from "@qualigence/runner-control";
 import {
@@ -189,6 +191,15 @@ export class InMemoryRunnerControlStore implements RunnerControlStore {
     return this.serialize(() => {
       this.completionReadCount += 1;
       return this.completions.get(runId);
+    });
+  }
+
+  completionRecord(runId: string): Promise<RunnerCompletionRecord | undefined> {
+    return this.serialize(() => {
+      const completion = this.completions.get(runId);
+      const lease = this.leases.get(runId);
+      if (completion === undefined || lease?.completedAt === undefined) return undefined;
+      return { runId, jobId: lease.job.jobId, jobSha256: canonicalPayloadHash(lease.job), completion, completedAt: lease.completedAt };
     });
   }
 
