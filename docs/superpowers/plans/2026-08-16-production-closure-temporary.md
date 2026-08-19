@@ -53,8 +53,11 @@ The word `implemented` in the status ledger means only that some planned files o
 | PR5-SCOPE Tasks 8-9 scope repair | merged as PR #44 | Merge commit `bfd6da2`; declared required protocol and moved-service test files. |
 | PR5-ATOMIC Tasks 8-9 delivery boundary | merged as PR #45 | Merge commit `aba6a59`; Tasks 8-9 are one compilable implementation/review unit. |
 | PR5-SCOPE-B AuthenticatedRunnerContext test migration | merged as PR #46 | Merge commit `d562f8d`; shared recovery identities are in Task 8's Files, focused Gate, and activation commit. |
-| PR5-R0 Tasks 8-9 stacked delivery | in_progress | Forensic branch `codex/pr5-core-protocol-application` at `230b6cd` is frozen. This prerequisite authorizes stacked inactive PRs plus one activation commit without changing Tasks 8-9 Interfaces or Files. |
-| 8-18 | pending | Proceed in the dependency order below only after PR5-R0 merges. |
+| 8-10 Runner protocol/control | merged | Tasks 8-9 activated in merge `86ea179`; Task 10 durable Runner control merged in PR #60 (`06becdb`) with completion follow-ups in PR #61 (`114affa`). |
+| 15 deterministic execution policy | merged | Task 15 merged in PR #63 (`5120c1f`) with strict project provenance follow-up in PR #65 (`923cfa7`). Required immutable policy and nonempty Job project provenance are now on `main`. |
+| 11 Local intake/Launcher loop | documentation authority in progress | This Task 11 rewrite is the sole implementation authority. After its one plan review, implement the complete Task 11 Files block and Gate, then request one final implementation review; do not interleave rolling downstream reviews. |
+| 12-14 Self-hosted follow-ons | pending and non-blocking for Task 11 | Findings or migration reservations in Tasks 12-14 do not block Task 11. Their sections remain unchanged and must resolve the migration-007 reservation conflict when each later task is executed. |
+| 16-18 | pending | Proceed only through their documented dependencies; they are not part of Task 11. |
 | 19-20 Windows native | blocked | Cargo is absent. Windows 11 is present but portable TypeScript/Rust planning is not native completion. |
 | 21-22 CI/docs | pending with Windows RED captured | The reviewed-stack full Gate passes 862 tests, skips 2, and fails the four known Windows baseline cases assigned to Task 21. Prerequisite Q may quarantine only these cases for integration; release completion still waits for their restoration, Tasks 19-20, and all platform CI artifacts. |
 
@@ -125,11 +128,10 @@ PR5-SCOPE (repair Tasks 8-9 exact implementation scope)
     ├── Task 10 (durable Core control state through neutral runner-control port)
     └── Task 15 (deterministic execution policy; must precede production dispatch)
 
-Task 10
-    → Task 11 design dossier only (documentation-only separate docs PR/commit/review permitted; no source/test RED, implementation, Task Gate, Task commit, or dispatch activation)
-
-Task 10 + merged Task 15
-    → Task 11 implementation, RED/Gate/commit, and Local dispatch activation
+Task 10 + Task 15 (merged on current main)
+    → Task 11 documentation authority commit and one plan review
+    → complete Task 11 implementation, RED/Gate/commit, and Local dispatch activation
+    → one final Task 11 implementation review (no rolling Task 12-14 review)
 
 Tasks 9-11 + Task 15
     → Task 12 (Self-hosted Mission/Run/Skill API and matching Console client)
@@ -177,18 +179,18 @@ or merging. No PR may claim a production Gate from a skipped dependency.
 | PR5-SCOPE | Tasks 8-9 scope repair | `codex/pr5-scope-prerequisite` | `main` | Declare the protocol wire/error and moved-service test files required by Tasks 8-9 | merged as PR #44 (`bfd6da2`) |
 | PR5-ATOMIC | Tasks 8-9 delivery boundary | `codex/pr5-atomic-scope` | `main` | Require one compilable transport + Core composition commit and joint Gate | merged as PR #45 (`aba6a59`) |
 | PR5-SCOPE-B | Task 8 identity test migration | `codex/pr5-identity-scope` | `main` | Add shared disconnect/recovery identities to the required scope migration | merged as PR #46 (`d562f8d`) |
-| PR5-R0 | Tasks 8-9 delivery packaging | `codex/pr5-r0-protocol-authority` | `main` | Authorize stacked inactive PRs plus one activation commit; freeze forensic `230b6cd`; change no product Interfaces or Files | in_progress |
-| PR5-R1 | Task 8 wire/client subset | `codex/pr5-r1-wire-client` | `main` | Exact `leaseToken` wire/error/type mapping and client waiter registry; production composition unchanged | pending |
-| PR5-R2 | Tasks 8-9 module move | `codex/pr5-r2-neutral-authority` | `main` | Neutral `@qualigence/runner-control` port and four lifecycle-module moves; Core Daemon re-exports previous paths | pending |
-| PR5-R3 | Task 8 stream shell | `codex/pr5-r3-grpc-stream-shell` | `main` | Bounded mailbox, fail-stop queue, generation fencing; existing production constructor remains valid | pending |
-| PR5-R4 | Task 9 authority | `codex/pr5-r4-core-authority` | `main` | `CoreRunnerProtocolApplication` and in-process tests; `apps/core-daemon/src/main.ts` stays pre-activation | pending |
-| 5 / PR5-R5 | 8, 9 | `codex/pr5-r5-protocol-activation` | `main` | Required application/authenticator, real SQLite/Trace composition, joint Gate, and the union commit | pending |
-| 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | pending |
-| 7 | 11 | `codex/pr7-local-run-intake` | `main` | Authenticated Local intake and Launcher/Runner registration proof | pending |
+| PR5-R0 | Tasks 8-9 delivery packaging | `codex/pr5-r0-protocol-authority` | `main` | Authorize stacked inactive PRs plus one activation commit; freeze forensic `230b6cd`; change no product Interfaces or Files | merged as PR #52 (`54ff198`) |
+| PR5-R1 | Task 8 wire/client subset | `codex/pr5-r1-wire-client` | `main` | Exact `leaseToken` wire/error/type mapping and client waiter registry; production composition unchanged | merged as PR #53 (`9761fad`) |
+| PR5-R2 | Tasks 8-9 module move | `codex/pr5-r2-neutral-authority` | `main` | Neutral `@qualigence/runner-control` port and four lifecycle-module moves; Core Daemon re-exports previous paths | merged as PR #54 (`f9d47c5`) |
+| PR5-R3 | Task 8 stream shell | `codex/pr5-r3-grpc-stream-shell` | `main` | Bounded mailbox, fail-stop queue, generation fencing; existing production constructor remains valid | merged as PR #55 (`76cd8a3`) |
+| PR5-R4 | Task 9 authority | `codex/pr5-r4-core-authority` | `main` | `CoreRunnerProtocolApplication` and in-process tests; `apps/core-daemon/src/main.ts` stays pre-activation | merged as PR #56 (`5e8dff4`) |
+| 5 / PR5-R5 | 8, 9 | `codex/pr5-r5-protocol-activation` | `main` | Required application/authenticator, real SQLite/Trace composition, joint Gate, and the union commit | merged as PR #57 (`86ea179`) |
+| 6 | 10 | `codex/pr6-runner-control-persistence` | `main` | Durable sessions, leases, resume tokens, Trace acknowledgements, and completion | merged as PR #60 (`06becdb`) plus PR #61 follow-ups (`114affa`) |
+| 7 | 11 | `codex/task11-local-intake-loop` | `main` at `923cfa7` | Authenticated durable Local intake, authoritative completion reconciliation, truthful Runner-capability readiness, and detached Launcher supervision | documentation authority only; implementation not started |
 | 8 | 12 | `codex/pr8-self-hosted-resources` | `main` | Mission, Run, Trace, and Skill public resources | pending |
 | 9 | 13 | `codex/pr9-intelligence-consumer` | `main` | Production Intelligence Result Inbox consumer | pending |
 | 10 | 14 | `codex/pr10-self-hosted-runner-data-plane` | `main` | External Runner gRPC data plane and full Compose loop | pending |
-| 11 | 15 | `codex/pr11-execution-policy` | `main` | Immutable deterministic Job policy snapshot | pending |
+| 11 | 15 | `codex/pr11-execution-policy` | `main` | Immutable deterministic Job policy snapshot | merged as PR #63 (`5120c1f`) plus PR #65 provenance follow-up (`923cfa7`) |
 | 12 | 16 | `codex/pr12-multistep-web` | `main` | Bounded multi-step Web execution and safe `valueRef` resolution | pending |
 | 13 | 17 | `codex/pr13-observation-graph-v1` | `main` | Live Graph v1 producer/consumer migration | pending |
 | 14 | 18 | `codex/pr14-desktop-runner-client` | `main` | Desktop Target dispatch and TypeScript Named Pipe client | pending |
@@ -1737,114 +1739,159 @@ git commit -m "feat(core): persist runner ownership state"
 
 ### Task 11: Add authenticated Local run intake and make Launcher prove Runner registration
 
-**Execution precondition:** Task 10 and merged Task 15 are complete.
+**Execution precondition and authority:** Task 10 and final Task 15 are merged on current `main` at `923cfa7`. This Task 11 section is the sole implementation authority. The separate dossier is explanatory and non-blocking; it is not staged with this plan or implementation. Review this plan once, implement the complete Task 11 scope, run the Gate and commit, then perform one final implementation review. Do not use rolling reviews of Task 12-14 and do not let their findings block Task 11.
 
-**Policy sequencing:** The only parallel Task 11 work authorized while Task 15 is in progress is the documentation-only dossier `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`. It may be committed and reviewed in a separate docs-only PR while Task 15 proceeds. That separate documentation commit is not Task 11's implementation commit and may not add Task 11 production/test source, create or run its RED test, run its Task Gate, or activate Local dispatch. Task 11 implementation, its RED test, its Gate and implementation commit, and all Local production dispatch activation begin only after Task 15 merges with required Job policy and no allow-all composition.
+**Exact boundary:** Task 11 owns Local HTTP/session, `LocalRunPolicyIssuer`, durable atomic Local intake/dispatch, configured Runner capability readiness, authoritative completion sink with startup reconciliation, and Launcher lifecycle. It excludes automatic lease-loss recovery claims or child Runs, Self-hosted provenance/composition, and every Task 12-14 source/test change. Migrations 001-006 are immutable. Task 11 exclusively allocates migration 007 to `local-run-intake`; the unchanged Task 12/13 sections still reserve 007/008 and must resolve that conflict when those later tasks execute. Do not renumber or edit those sections in Task 11.
 
 **Files:**
 - Create: `apps/core-daemon/src/local/local-session-service.ts`
 - Create: `apps/core-daemon/src/local/local-http-server.ts`
 - Create: `apps/core-daemon/src/local/local-run-coordinator.ts`
 - Create: `apps/core-daemon/src/local/local-run-policy-issuer.ts`
+- Create: `apps/core-daemon/src/local/local-readiness-service.ts`
+- Create: `apps/core-daemon/src/local/bootstrap-credential-handoff.ts`
 - Modify: `packages/core-application/src/runner/core-runner-protocol-application.ts`
+- Modify: `packages/core-application/src/runner/run-ownership-service.ts`
+- Modify: `packages/core-application/src/runner/execution-job-service.ts`
+- Modify: `packages/core-application/src/index.ts`
+- Modify: `packages/core-modules/evidence/src/persistence-ports.ts`
+- Modify: `packages/core-modules/evidence/src/trace-ingestor.ts`
+- Modify: `packages/core-modules/evidence/src/index.ts`
+- Modify: `packages/core-modules/runner-control/src/runner-control-store.ts`
+- Modify: `packages/core-modules/runner-control/src/index.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/ports.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`
+- Modify: `packages/protocol-adapters/grpc-runner-protocol/src/index.ts`
+- Modify: `packages/storage-providers/relational-kysely/src/schema.ts`
+- Modify: `packages/storage-providers/relational-kysely/src/catalog.ts`
+- Modify: `packages/storage-providers/relational-kysely/src/migrations.ts`
+- Create: `packages/storage-providers/relational-kysely/src/migrations/007-local-run-intake.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/database.ts`
+- Create: `packages/storage-providers/sqlite-runtime/src/sqlite-local-run-intake-store.ts`
+- Create: `packages/storage-providers/sqlite-runtime/src/sqlite-local-readiness-probe.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/index.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts`
+- Modify: `packages/storage-providers/sqlite-runtime/src/sqlite-trace-store.ts`
+- Modify: `packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts`
+- Modify: `packages/storage-providers/artifact-fs/src/local-artifact-store.ts`
+- Modify: `tests/helpers/in-memory-runner-control-store.ts`
 - Modify: `apps/core-daemon/src/main.ts`
 - Modify: `apps/core-daemon/src/config.ts`
+- Modify: `apps/core-daemon/src/index.ts`
+- Modify: `apps/core-daemon/package.json`
+- Modify: `apps/core-daemon/tsconfig.json`
+- Create: `apps/local-launcher/src/launcher-supervisor.ts`
+- Create: `apps/local-launcher/src/bootstrap-credential-handoff.ts`
 - Modify: `apps/local-launcher/src/main.ts`
+- Modify: `apps/local-launcher/src/child-process-unit.ts`
 - Modify: `apps/local-launcher/src/health-client.ts`
 - Modify: `apps/local-launcher/src/runtime-state.ts`
+- Modify: `apps/local-launcher/src/config.ts`
+- Modify: `apps/local-launcher/src/index.ts`
+- Modify: `packages/contracts/local-control/src/config.ts`
 - Modify: `packages/contracts/local-control/src/health.ts`
+- Create: `packages/contracts/local-control/src/bootstrap-credentials.ts`
+- Create: `packages/contracts/local-control/src/local-session.ts`
+- Create: `packages/contracts/local-control/src/quiesce.ts`
+- Modify: `packages/contracts/local-control/src/index.ts`
+- Modify: `deployments/local/config.example.yaml`
+- Modify: `pnpm-lock.yaml`
+- Create: `tests/unit/core-daemon/bootstrap-credential-handoff.test.ts`
+- Create: `tests/unit/core-daemon/local-session-service.test.ts`
+- Create: `tests/unit/core-daemon/local-http-server.test.ts`
 - Modify: `tests/e2e/local-launcher.test.ts`
 - Modify: `tests/component/core-runner/independent-process.test.ts`
 - Create: `tests/unit/core-daemon/local-run-policy-issuer.test.ts`
 - Create: `tests/unit/core-daemon/local-run-coordinator.test.ts`
-- Create: `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`
+- Create: `tests/unit/core-daemon/local-readiness-service.test.ts`
+- Modify: `tests/unit/core-daemon/config.test.ts`
+- Modify: `tests/unit/core-daemon/execution-job-service.test.ts`
+- Modify: `tests/unit/core-daemon/run-ownership-service.test.ts`
+- Modify: `tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts`
+- Modify: `tests/unit/local-launcher/config.test.ts`
+- Create: `tests/unit/local-launcher/bootstrap-credential-handoff.test.ts`
+- Create: `tests/unit/local-launcher/launcher-supervisor.test.ts`
+- Create: `tests/unit/local-launcher/health-client.test.ts`
+- Create: `tests/unit/local-launcher/quiesce.test.ts`
+- Modify: `tests/component/core-runner/core-composition.test.ts`
+- Modify: `tests/component/core-runner/disconnect-recovery.test.ts`
+- Create: `tests/contract/sqlite/local-run-intake-store.test.ts`
+- Create: `tests/contract/sqlite/local-readiness-probe.test.ts`
+- Modify: `tests/contract/sqlite/sqlite-runtime.test.ts`
+- Modify: `tests/contract/sqlite/sqlite-trace-store.test.ts`
+- Modify: `tests/contract/artifact-fs/local-artifact-store.test.ts`
+- Modify: `tests/contract/postgres/postgres-runtime.test.ts`
+- Modify: `tests/contract/runner-control/runner-control-store.contract.ts`
+- Modify: `tests/contract/runner-control/sqlite-runner-control-store.test.ts`
+- Modify: `tests/contract/runner-control/postgres-runner-control-store.test.ts`
+- Modify: `tests/contract/runner-control/in-memory-runner-control-store.test.ts`
+- Modify: `tests/conformance/runner-protocol/grpc-tls.test.ts`
+- Modify: `tests/conformance/storage/relational-schema.test.ts`
 - Modify: `docs/production-closure-status.md`
 
 **Interfaces:**
-- Produces `POST /api/v1/local/session`, `POST /api/v1/local/runs`, `GET /api/v1/local/runs/:runId`, `/health/live`, and `/health/ready` on loopback only.
-- Produces one-time bootstrap-token exchange and hashed short-lived local session tokens.
-- Consumes `GrpcRunnerProtocolServer.waitForConnection(runnerId)` and the persistent run/Trace stores.
-- Produces a completion callback that updates the same persisted Run created by the Local intake path.
-- Produces `LocalRunPolicyIssuer`, the only Local intake seam that creates a policy-bearing Job from validated `{ targetUrl, objective }` input.
+- Produces loopback-only `POST /api/v1/local/session`, `POST /api/v1/local/runs`, `GET /api/v1/local/runs/:runId`, `POST /api/v1/local/quiesce`, `GET /health/live`, `GET /health/internal-ready`, and `GET /health/ready`. HTTP and gRPC use separately configured ports and bind exactly `127.0.0.1`; Local config rejects `localhost`, wildcard/IPv6 hosts, forwarded-host trust, CORS, cookies, query credentials, unknown request fields, and any HTTP policy/project/config input.
+- `POST /api/v1/local/runs` accepts exactly `{ targetUrl, objective }` and returns exactly `202 { runId, status: "pending_runner" }` after the atomic commit, never after Runner acceptance. Authenticated `GET` returns the durable dispatch status (`pending_runner | dispatching | offer_outcome_unknown | offered`) or terminal Run status (`passed | finding | blocked | error`), safe optional error code, and ordered safe evidence references only. It never returns target URL, objective, Job/policy JSON, hashes, paths, media metadata, or credential data. Extend existing `TraceStore` only with `findingReferences(runId)`; use existing `ArtifactManifestStore.listForRun` and project both to ID/kind/created-at references.
+- `POST /api/v1/local/session` accepts only the user bootstrap Bearer and returns one short-lived 32-byte random user session token. Core stores SHA-256 hashes and metadata only in memory, compares fixed-size digests in constant time, and atomically permits one bootstrap exchange. User credentials authorize run POST/GET only; the supervisor credential authorizes quiesce only. A Core restart invalidates both user sessions and supervisor authority, so only a fresh Launcher start may establish a new controllable topology.
+- Launcher generates exactly two independent 32-byte credentials in memory before Core spawn. The shared `bootstrap-credentials.ts` contract is one exact bounded binary frame: `QLGBOOT1`, version 1, fixed 20-byte header, fixed 80-byte body, total 100 bytes, with user bytes, supervisor bytes, created-at epoch, and user-bootstrap expiry. `ChildProcessUnit` gives Core one inherited anonymous pipe at fd 3, writes exactly one frame, closes it, and retains no transport. Core reads fd 3 once under a bounded deadline before SQLite/listeners, validates exact length/version/EOF, hashes both values, closes fd 3, and zeroes mutable buffers on success/error. No secret enters file, environment, argv, log, state, YAML, or database; only non-secret `CORE_BOOTSTRAP_CREDENTIAL_FD=3` is configured.
+- Produces `LocalRunPolicyIssuer.issue({ kind: "web", url })`, the only Local issuance root. Validated Local/exact-loopback construction, injected clock, positive TTL, and issuer version produce exact `projectId: "local"` plus a frozen `isolated_test` snapshot with canonical origin, `['click']`, `Normal`, no exploration, one issued-at clock read, checked expiry, and deterministic lowercase SHA-256 `policyId`. It never emits staging/production or accepts policy/project from HTTP.
+- Evidence owns provider-neutral `LocalRunIntakeStore`. Migration 007 adds `local_run_intakes` with Run PK/FK, unique Job, immutable canonical Job JSON/hash, exact dispatch states `pending_runner | dispatching | offer_outcome_unknown | offered`, dispatch attempt/error/timestamps, and completion state `awaiting | applied | integrity_blocked` with attempt/error/timestamps. `create({ run, job, createdAt })` atomically inserts the initial running `execution_runs` row and intake marker in one SQLite immediate transaction before any network call. The stored Job is the retry authority and is never returned or logged.
+- `LocalRunIntakeStore` exposes only bounded intent operations: `pendingDispatches(limit)`, `beginOffer(runId, expectedAttempt, at)`, `markOffered(runId, attempt, at)`, `markOfferOutcomeUnknown(runId, attempt, code, at)`, `quarantineInterruptedDispatches(limit, at)`, `run(runId)`, `pendingCompletions(limit)`, and `applyCompletion(runId, completion, completedAt)`. Selectors validate a positive safe bounded limit and use stable `updated_at, created_at, run_id` order. Every transition is expected-state/attempt CAS; `applyCompletion` atomically updates the existing Run terminal fields and completion state. No method creates recovery intent, claims a lost lease, or creates a child Run.
+- One serialized `LocalRunCoordinator` dispatcher uses those operations. No configured authenticated connection/capability, or any failure proven to occur before `connection.offer` starts, leaves durable `pending_runner` retryable. Immediately before invoking `offer`, `beginOffer` CASes `dispatching`; a returned Lease CASes `offered`. Any throw after invocation begins CASes `offer_outcome_unknown`. On startup, bounded `quarantineInterruptedDispatches` moves every surviving `dispatching` record to `offer_outcome_unknown`, because the new process cannot prove whether the prior process began the write. Neither unknown state is automatically re-offered, converted into a recovery child, or reported terminal. Dispatch always requires exact `target:web-playwright` and never runs model/Playwright in Core or uses `RunnerBackedRunResourceFactory`.
+- Extend existing `RunnerConnectionPort` minimally with `authenticatedRunner: { runnerId, scope, capabilities: readonly string[] }`. `GrpcRunnerProtocolServer.connection(configuredRunnerId)` remains the connection registry; no second registry, dispatch port, or readiness Job is added. The snapshot is captured from the authenticated session/advertised capability tokens, not caller configuration. Local dispatch/readiness require `scope.kind === "local"`, the configured runnerId, and `target:web-playwright`.
+- Export application-level `RunCompletionSink.complete({ identity, jobId, runId, completion })`. Change `RunOwnershipService`/`ExecutionJobService` completion to return authoritative `completed | duplicate`; `CoreRunnerProtocolApplication` invokes the sink only after that Task 10 decision and with the canonical stored completion. Lease loss, conflict, or completion-store failure never invokes it. Local sink accepts only Local identity and a matching marked intake.
+- Add only the smallest restart read to `RunnerControlStore`: `completionRecord(runId): Promise<RunnerCompletionRecord | undefined>`, returning exact runId, jobId, canonical completion, and committed completedAt. Keep existing `completion()` for callers. SQLite, PostgreSQL, and the in-memory helper plus the shared/provider contracts are all in scope. This is Task 10 authority observation only; it adds no Self-hosted composition/provenance behavior.
+- Every created intake begins with durable completion state `awaiting`, so no sink failure can erase retry intent. The Local sink point-reads authoritative `completionRecord(runId)`, validates identity/equality, maps it to existing Run terminal statuses, and calls atomic `applyCompletion`; sink/apply failure leaves the Run nonterminal and `awaiting`, while duplicate apply is idempotent. Startup performs a bounded pass over `offered | offer_outcome_unknown` + `awaiting` rows, reads `completionRecord(runId)`, and retries before ready. An authoritative completion resolves an unknown offer outcome without re-offer; no completion leaves it quarantined. A mismatched authoritative record becomes `integrity_blocked`. Unmarked and `pending_runner` Runs are never inferred terminal; startup first quarantines every interrupted `dispatching` row before reconciliation.
+- `LocalReadinessService` is the single readiness decision module. Internal ready requires schema exactly 7, SQLite and Run/Trace/manifest rollback write probes, real Artifact-store byte write/read/hash/delete, healthy startup completion reconciliation, and both HTTP/gRPC bound. Final ready additionally requires the configured authenticated Local Runner snapshot with `target:web-playwright`. Live checks only process/event-loop liveness. Quiesce atomically consumes the supervisor credential, rejects new session/run intake, stops dispatcher claims, makes final readiness false, and allows bounded in-flight completion/reconciliation drain; replay returns safe `401`.
+- Preserve `SqliteRuntime` migration behavior for existing callers by adding `openMode?: "migrate" | "require-current"`; omitted remains current migrate behavior. Launcher uses existing `BackupManager` and `MigrationGuard`: first-use DB creation migrates directly to 007; an existing older DB gets a verified backup before migration, then a `require-current` reopen; current skips migration; malformed/newer fails before credentials or process spawn. Local Core always opens `require-current` and never migrates. Migrations 001-006 remain byte-for-byte unchanged.
+- Keep existing Launcher lifecycle seams. Launcher starts Core then Runner with `ChildProcessUnit`, waits final ready, and then creates detached `launcher-supervisor`. It forwards the supervisor credential exactly once over inherited Node IPC together with non-secret Core/Runner PID topology, waits for acknowledgement, publishes runtime state, prints the user bootstrap once, detaches the two child units, and exits. Live `ChildProcess`/`ChildProcessUnit` objects are not transferred across processes. `DataDirLock` exists only as the current optional interface and has no production implementation, so Task 11 adds no lock module, acquisition, handoff, reservation, or native helper. Single-instance checking remains the existing runtime-state/port startup flow.
+- `runtime-state.json` adds only supervisor/core/runner PIDs, HTTP/gRPC ports, configured runnerId, startedAt, and safe status metadata. Detached `commandStop` writes/awaits one strict non-secret `local-stop-request/v1` marker under the existing data-dir/runtime-state file seam; supervisor polls and atomically claims it. The marker carries only topology identity/timestamps, never authority. It causes one authenticated quiesce using the in-memory supervisor credential, then preserves the existing Runner-before-Core stop/reap order by PID through the existing `terminateProcess` process-tree adapter. Timeout/503/transport failure uses the same existing forced termination path. No signal wakeup, named pipe, native IPC, file credential, attached-process wrapper, or second process killer is added.
 
-- [ ] **Step 1: Add a failing true-process E2E**
+- [ ] **Step 1: Add focused RED tests at the existing seams**
 
-Before the process E2E, add `tests/unit/core-daemon/local-run-policy-issuer.test.ts` as the focused RED test surface for the issuer below. It must prove only Local loopback mode can issue; it always emits exact `environment: "isolated_test"` and never staging; the policy origin is exactly `new URL(targetUrl).origin`; action kinds are exactly `['click']`; maximum risk is `Normal`; exploration is false; injected clock plus configured TTL produce auditable deterministic `policyId`, `issuedAt`, and `expiresAt`; and non-loopback/non-Local configuration, invalid targets, and a zero/negative TTL reject.
+Add issuer/session/HTTP/coordinator/readiness/bootstrap tests first. Prove strict schemas/auth kinds; exact one-frame fd-3 codec, truncation/trailing/timeout/zeroization; deterministic isolated-only issuance; atomic Run+marker rollback; one dispatcher claim; known pre-offer retry; post-start uncertainty quarantine; no automatic lease recovery; completion sink ordering/failure/idempotency; startup reconciliation; and exact Runner identity/capability readiness. Extend all Runner-control adapters/helper/contracts for `completionRecord` in the same RED change.
 
-Add `tests/unit/core-daemon/local-run-coordinator.test.ts` as the issuer-to-offer RED seam. With a recording `LocalRunPolicyIssuer` and `RunnerConnectionPort`, prove the coordinator receives validated `{ targetUrl, objective }`, invokes the issuer once with the validated target, and passes the exact returned immutable `ExecutionPolicySnapshot` unchanged through required-policy `RunExecutionRequest`/`AcceptedExecutionJob` into `connection.offer`. Assert a request object with an extra `policy` field is schema-rejected before the issuer runs; no default, copied, or HTTP override may alter the issuer snapshot. The Launcher E2E repeats the public contract: `POST /api/v1/local/runs` accepts only `{ targetUrl, objective }`.
+- [ ] **Step 2: Implement migration 007 and migration ownership**
 
-Run real built Core and Runner processes, not `fake-process.mjs`. Assert Launcher:
+Create only `007-local-run-intake.ts`; update schema/catalog/version conformance and the SQLite adapter. Add `SqliteRuntime` `migrate`/`require-current` open modes without changing default callers. Preserve Launcher `BackupManager`/`MigrationGuard` and prove existing schema-6 backup-before-upgrade, first-use direct creation, Core refusal to migrate, and failure-before-spawn. Do not edit migrations 001-006 or Task 12-14.
 
-1. generates bootstrap material before Core starts;
-2. waits for Core readiness and then the configured Runner registration;
-3. outputs the bootstrap token exactly once;
-4. exchanges it for a local session;
-5. submits a Web run and observes a terminal Run plus persisted Trace/Finding;
-6. stops Runner before Core and leaves no child processes.
+- [ ] **Step 3: Implement Local credentials, HTTP, and policy intake**
 
-Use the local OpenAI-compatible mock server and real Chromium. If Chromium is absent, fail with `ChromiumUnavailable` rather than falling back to fake processes.
+Implement the shared fixed binary frame and thin Launcher/Core handoff modules, then hash-only bootstrap/session/quiesce authorization. Bind strict Fastify Local routes to exact `127.0.0.1`. Validate `{ targetUrl, objective }` before issuer invocation, create IDs/project/policy deterministically, atomically persist Run+marker, and immediately return durable `202 pending_runner`; request handling never waits for Runner acceptance.
 
-- [ ] **Step 2: Implement one-time bootstrap exchange**
+- [ ] **Step 4: Implement serialized dispatch and authoritative completion**
 
-Launcher creates 32 random bytes, writes the raw token to a restrictive temporary file under the data directory, passes `CORE_BOOTSTRAP_TOKEN_FILE`, and prints the token once. Core reads and deletes that file at startup, stores only SHA-256 plus consumed state, and exposes:
+Run one abortable dispatcher over the intake store. Retry only states/failures known not to have started `offer`; quarantine all post-start uncertainty. Extend the existing connection object with its authenticated capability snapshot rather than adding a registry. Return Task 10 completion disposition, invoke `RunCompletionSink` only after authority commits, persist retryable reconciliation state, and run bounded startup reconciliation through `completionRecord`. Do not call or extend automatic lease recovery APIs.
 
-```text
-POST /api/v1/local/session
-Authorization: Bearer <bootstrap-token>
-→ 201 { sessionToken, expiresAt }
-```
+- [ ] **Step 5: Implement truthful readiness and Launcher supervision**
 
-Consume with constant-time hash comparison. Store only the session-token hash. A second exchange returns 401. Bind HTTP to `127.0.0.1`; reject non-loopback host configuration in Local mode.
+Compose SQLite/Run/Trace/manifest and Artifact-byte probes, listener flags, reconciliation health, and configured Runner identity/capability into one readiness service. Launcher order is: migration preflight; generate two credentials; start Core with one fd-3 frame; wait internal ready; start Runner; wait final ready; start detached supervisor; send supervisor credential once over inherited Node IPC; wait acknowledgement; atomically write runtime state; print user bootstrap once; zero retained buffers; detach. Detached stop uses only the non-secret marker poll, authenticated quiesce, existing Runner-before-Core termination, cleanup, and runtime-state removal last. Add no `DataDirLock` implementation or handoff.
 
-- [ ] **Step 3: Implement Local run coordination and policy issuance**
+- [ ] **Step 6: Run the real built-process Gate and commit once**
 
-`POST /api/v1/local/runs` accepts only a schema-validated `{ targetUrl, objective }`, creates runId/jobId in deterministic code, inserts an `execution_runs` row, waits for the configured runner connection, and calls `connection.offer(job, ["target:web-playwright"])`. Return 202 with runId after accept; completion remains asynchronous. `GET` reads Run status and evidence refs from SQLite.
-
-Define `LocalRunPolicyIssuer` in `apps/core-daemon/src/local/local-run-policy-issuer.ts` as a deep Local-intake module. Its interface is `issue(target: { kind: "web"; url: string }): ExecutionPolicySnapshot`; constructor options are validated Local mode configuration, injected clock, and a positive configured policy TTL. It must not accept policy input from HTTP, must not depend on Runner adapters, and must fail non-Local or non-loopback construction. From the validated target it emits an immutable isolated-test snapshot with `allowedOrigins: [new URL(target.url).origin]`, `allowedActionKinds: ["click"]`, `maximumRisk: "Normal"`, `explorationAllowed: false`, injected `issuedAt`, `expiresAt = issuedAt + TTL`, and a deterministic auditable `policyId` derived from the issuer version, origin, issuedAt, and expiresAt. `LocalRunCoordinator` calls the issuer after request validation and before constructing its required-policy `RunExecutionRequest` or `AcceptedExecutionJob`; it passes that exact returned snapshot unchanged to the offer. It must never use a default policy, make policy optional, or accept an HTTP-supplied policy.
-
-Inject the following port into `CoreRunnerProtocolApplication` and call it only after `ExecutionJobService.complete` has authoritatively accepted the completion:
-
-```ts
-export interface RunCompletionSink {
-  complete(input: {
-    jobId: string;
-    runId: string;
-    completion: ExecutionCompletion;
-  }): Promise<void>;
-}
-```
-
-`LocalRunCoordinator` implements this port with `SqliteRunStore` plus the Task 10 completion record. Duplicate `complete_execution` messages return the stored terminal result and do not append another terminal event or Finding. A sink failure keeps the completion inbox retryable and prevents the Run from being reported terminal.
-
-Do not run a model or Playwright in Core. Do not use `RunnerBackedRunResourceFactory` for Task 11 dispatch; Task 15 removes its obsolete Core-side action pipeline, and Task 11's later coordinator must wait for the Runner's authoritative completion after offering its policy-bearing Job.
-
-- [ ] **Step 4: Make readiness truthful**
-
-`/health/live` checks only process/event-loop liveness. `/health/ready` checks SQLite schema/writeability, gRPC bind, and configured Runner registration. Launcher must wait for ready and must never treat an open TCP port alone as Runner-ready.
-
-- [ ] **Step 5: Preserve tokens in runtime state safely**
-
-Do not store raw bootstrap or session tokens in `runtime-state.json`, logs, YAML, or SQLite. Runtime state may store Core HTTP port, Core gRPC port, PIDs, runnerId, and non-secret expiry/status metadata.
-
-- [ ] **Step 6: Verify and commit**
+The E2E must run built Launcher, Core, Runner, local OpenAI-compatible mock, Web fixture, and real Chromium; do not use `fake-process.mjs`. It exchanges the once-printed bootstrap, submits through HTTP, observes `pending_runner` through terminal Run plus persisted Trace/Finding references, verifies configured Runner capability readiness, stops through the detached supervisor, proves Runner-before-Core/no surviving PIDs, and scans config/state/logs/database rows for forbidden credential bytes. The SQLite intake/Runner-control contracts separately close/reopen the same database to prove startup completion reconciliation. If Chromium is unavailable, fail explicitly with `ChromiumUnavailable`.
 
 Run:
 
 ```bash
 corepack pnpm build
-corepack pnpm vitest run tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts
+corepack pnpm vitest run tests/unit/core-daemon/bootstrap-credential-handoff.test.ts tests/unit/core-daemon/local-session-service.test.ts tests/unit/core-daemon/local-http-server.test.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/unit/core-daemon/local-readiness-service.test.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts
+corepack pnpm vitest run tests/contract/sqlite/local-run-intake-store.test.ts tests/contract/sqlite/local-readiness-probe.test.ts tests/contract/sqlite/sqlite-runtime.test.ts tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/artifact-fs/local-artifact-store.test.ts tests/conformance/storage/relational-schema.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/contract/runner-control/in-memory-runner-control-store.test.ts
+corepack pnpm vitest run tests/conformance/runner-protocol/grpc-tls.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/unit/local-launcher/config.test.ts tests/unit/local-launcher/bootstrap-credential-handoff.test.ts tests/unit/local-launcher/launcher-supervisor.test.ts tests/unit/local-launcher/health-client.test.ts tests/unit/local-launcher/quiesce.test.ts tests/e2e/local-launcher.test.ts
 corepack pnpm typecheck
 git diff --check
 ```
 
+The PostgreSQL Runner-control contract is mandatory because Task 11 changes `RunnerControlStore`; report `DockerUnavailable` only when Docker actually blocks it. Run one final Standards and Spec/architecture review against the exact merge-base after the complete implementation commit. Any Critical or Important finding requires a fix commit, affected Gate rerun, and fresh final review; Task 12-14 review remains later-task work.
+
+**Exact staging parity:** Stage exactly every path in **Files** and no other path. The explicit command below is intentionally identical to that inventory; if implementation requires another path, stop for architectural review before editing or staging it.
+
 Commit:
 
 ```bash
-git add apps/core-daemon/src/local apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/local-launcher/src packages/contracts/local-control/src/health.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/component/core-runner/independent-process.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
+git add apps/core-daemon/src/local/local-session-service.ts apps/core-daemon/src/local/local-http-server.ts apps/core-daemon/src/local/local-run-coordinator.ts apps/core-daemon/src/local/local-run-policy-issuer.ts apps/core-daemon/src/local/local-readiness-service.ts apps/core-daemon/src/local/bootstrap-credential-handoff.ts apps/core-daemon/src/main.ts apps/core-daemon/src/config.ts apps/core-daemon/src/index.ts apps/core-daemon/package.json apps/core-daemon/tsconfig.json packages/core-application/src/runner/core-runner-protocol-application.ts packages/core-application/src/runner/run-ownership-service.ts packages/core-application/src/runner/execution-job-service.ts packages/core-application/src/index.ts packages/core-modules/evidence/src/persistence-ports.ts packages/core-modules/evidence/src/trace-ingestor.ts packages/core-modules/evidence/src/index.ts packages/core-modules/runner-control/src/runner-control-store.ts packages/core-modules/runner-control/src/index.ts packages/protocol-adapters/grpc-runner-protocol/src/ports.ts packages/protocol-adapters/grpc-runner-protocol/src/server.ts packages/protocol-adapters/grpc-runner-protocol/src/index.ts packages/storage-providers/relational-kysely/src/schema.ts packages/storage-providers/relational-kysely/src/catalog.ts packages/storage-providers/relational-kysely/src/migrations.ts packages/storage-providers/relational-kysely/src/migrations/007-local-run-intake.ts packages/storage-providers/sqlite-runtime/src/database.ts packages/storage-providers/sqlite-runtime/src/sqlite-local-run-intake-store.ts packages/storage-providers/sqlite-runtime/src/sqlite-local-readiness-probe.ts packages/storage-providers/sqlite-runtime/src/index.ts packages/storage-providers/sqlite-runtime/src/sqlite-runner-control-store.ts packages/storage-providers/sqlite-runtime/src/sqlite-trace-store.ts packages/storage-providers/postgres-runtime/src/postgres-runner-control-store.ts packages/storage-providers/artifact-fs/src/local-artifact-store.ts apps/local-launcher/src/launcher-supervisor.ts apps/local-launcher/src/bootstrap-credential-handoff.ts apps/local-launcher/src/main.ts apps/local-launcher/src/child-process-unit.ts apps/local-launcher/src/health-client.ts apps/local-launcher/src/runtime-state.ts apps/local-launcher/src/config.ts apps/local-launcher/src/index.ts packages/contracts/local-control/src/config.ts packages/contracts/local-control/src/health.ts packages/contracts/local-control/src/bootstrap-credentials.ts packages/contracts/local-control/src/local-session.ts packages/contracts/local-control/src/quiesce.ts packages/contracts/local-control/src/index.ts deployments/local/config.example.yaml pnpm-lock.yaml tests/helpers/in-memory-runner-control-store.ts tests/unit/core-daemon/bootstrap-credential-handoff.test.ts tests/unit/core-daemon/local-session-service.test.ts tests/unit/core-daemon/local-http-server.test.ts tests/unit/core-daemon/local-run-policy-issuer.test.ts tests/unit/core-daemon/local-run-coordinator.test.ts tests/unit/core-daemon/local-readiness-service.test.ts tests/unit/core-daemon/config.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/core-daemon/run-ownership-service.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts tests/unit/local-launcher/config.test.ts tests/unit/local-launcher/bootstrap-credential-handoff.test.ts tests/unit/local-launcher/launcher-supervisor.test.ts tests/unit/local-launcher/health-client.test.ts tests/unit/local-launcher/quiesce.test.ts tests/component/core-runner/core-composition.test.ts tests/component/core-runner/disconnect-recovery.test.ts tests/component/core-runner/independent-process.test.ts tests/contract/sqlite/local-run-intake-store.test.ts tests/contract/sqlite/local-readiness-probe.test.ts tests/contract/sqlite/sqlite-runtime.test.ts tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/artifact-fs/local-artifact-store.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/contract/runner-control/runner-control-store.contract.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts tests/contract/runner-control/postgres-runner-control-store.test.ts tests/contract/runner-control/in-memory-runner-control-store.test.ts tests/conformance/storage/relational-schema.test.ts tests/conformance/runner-protocol/grpc-tls.test.ts tests/e2e/local-launcher.test.ts docs/production-closure-status.md
 git commit -m "feat(local): close launcher core runner loop"
 ```
-
-Before Task 15 merges, the only permitted Task 11 change is the dossier above. Its separate documentation-only PR stages only `docs/superpowers/designs/2026-08-18-task-11-local-run-intake-design-dossier.md`; it does not run Task 11's RED/Gate or use this implementation commit command. The dossier must record the `LocalRunPolicyIssuer` interface, its exact isolated-test-not-staging decision, fixed constraints, deterministic identity/time rule, Local/loopback preconditions, no-HTTP-policy invariant, and the issuer-to-`RunExecutionRequest`/`AcceptedExecutionJob`/offer snapshot-propagation seam after Task 15; it does not create source or tests.
 
 ---
 
