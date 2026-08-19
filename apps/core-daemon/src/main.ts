@@ -78,6 +78,9 @@ export async function startCoreDaemon(config: CoreDaemonConfig, dependencies: Co
     credentials = localEnabled
       ? await (dependencies.collectBootstrapCredentials?.() ?? collectBootstrapCredentialHandoff(createReadStream("", { fd: Number(process.env.CORE_BOOTSTRAP_CREDENTIAL_FD ?? "3"), autoClose: true }), 5_000))
       : undefined;
+    if (credentials !== undefined && credentials.userExpiresAtEpochMs <= Date.now()) {
+      throw new Error("Bootstrap credential has expired.");
+    }
     await mkdir(config.dataDir, { recursive: true });
     runtime = await SqliteRuntime.open({
       filename: join(config.dataDir, "qualigence.db"),

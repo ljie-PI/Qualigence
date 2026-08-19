@@ -59,8 +59,10 @@ async function launch(directory: string, ...args: string[]) {
 async function writeLauncherHarness(directory: string): Promise<string> {
   const harness = join(directory, "launcher-test-harness.mjs");
   const launcherModule = pathToFileURL(join(repoRoot, "apps", "local-launcher", "dist", "index.js")).href;
+  const supervisorModule = pathToFileURL(join(repoRoot, "apps", "local-launcher", "dist", "process-supervisor.js")).href;
   const localControlModule = pathToFileURL(join(repoRoot, "packages", "contracts", "local-control", "dist", "index.js")).href;
-  await writeFile(harness, `import { ProcessSupervisor, run } from ${JSON.stringify(launcherModule)};
+  await writeFile(harness, `import { run } from ${JSON.stringify(launcherModule)};
+import { runDetachedSupervisor } from ${JSON.stringify(supervisorModule)};
 import { encodeBootstrapFrame } from ${JSON.stringify(localControlModule)};
 const createBootstrapCredentials = ({ bootstrapTtlMs }) => {
   const createdAtEpochMs = Date.now();
@@ -71,7 +73,7 @@ const createBootstrapCredentials = ({ bootstrapTtlMs }) => {
     frame: () => encodeBootstrapFrame({ userBootstrap, supervisor, createdAtEpochMs, userExpiresAtEpochMs }),
     destroy: () => { userBootstrap.fill(0); supervisor.fill(0); } };
 };
-if (process.argv[2] === "__supervise") ProcessSupervisor.runDetachedChild();
+if (process.argv[2] === "__supervise") runDetachedSupervisor();
 else await run(process.argv.slice(2), undefined, process.env, { createBootstrapCredentials });
 `, "utf8");
   return harness;

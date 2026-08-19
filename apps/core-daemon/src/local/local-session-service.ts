@@ -18,7 +18,7 @@ export interface LocalSessionServiceOptions {
 export class LocalSessionService {
   private readonly bootstrapHash: Buffer;
   private readonly supervisorHash: Buffer;
-  private readonly sessions = new Map<string, number>();
+  private readonly sessions: Array<{ readonly hash: Buffer; readonly expiresAt: number }> = [];
   private readonly now: () => number;
   private readonly generate: () => Buffer;
   private bootstrapConsumed = false;
@@ -43,7 +43,7 @@ export class LocalSessionService {
     const raw = this.generate();
     try {
       const token = encodeBootstrapCredential(raw);
-      this.sessions.set(digest(raw).toString("hex"), expiresAtMs);
+      this.sessions.push({ hash: digest(raw), expiresAt: expiresAtMs });
       return { sessionToken: token, expiresAt: new Date(expiresAtMs).toISOString() };
     } finally { raw.fill(0); }
   }
@@ -52,8 +52,19 @@ export class LocalSessionService {
     if (this.quiesced) return false;
     const hash = presentedHash(presented);
     if (hash === undefined) return false;
-    const expiresAt = this.sessions.get(hash.toString("hex"));
-    return expiresAt !== undefined && expiresAt > this.now();
+    const now = this.now();
+    let authorized = false;
+    for (let index = this.sessions.length - 1; index >= 0; index -= 1) {
+      const session = this.sessions[index];
+      if (session === undefined) continue;
+      if (session.expiresAt <= now) {
+        session.hash.fill(0);
+        this.sessions.splice(index, 1);
+        continue;
+      }
+      authorized = timingSafeEqual(hash, session.hash) || authorized;
+    }
+    return authorized;
   }
 
   authorizeSupervisor(presented: string): boolean {

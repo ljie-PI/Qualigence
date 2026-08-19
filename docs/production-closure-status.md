@@ -7,8 +7,8 @@ production_wiring: present
 verification: passed
 implementation_commit: same commit as this ledger entry (`feat(local): close launcher core runner loop`)
 
-Final Task 11 finding closure is committed separately as
-`fix(local): close supervision and readiness gaps`. It makes post-start
+Final Task 11 finding closure is committed separately through
+`fix(local): close final task 11 lifecycle findings`. It makes post-start
 publication transactional with zeroization and reverse-order rollback, keeps
 unreaped process state diagnostic, derives reconciliation health from durable
 SQLite blockers across restart, and records safe process lifecycle events for
@@ -22,11 +22,12 @@ Final finding verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
 - Task 11 Gate group 1 passed 10 files / 61 tests.
 - Task 11 Gate group 2 passed 10 files / 103 tests, including the mandatory
   Docker-backed PostgreSQL Runner-control contract.
-- Task 11 Gate group 3 passed 11 files / 84 tests with one pre-existing Task 21
-  Windows quarantine skip. The built-process E2E passed 5 tests using real
+- Task 11 Gate group 3 passed 11 files / 84 tests with two pre-existing Task 21
+  Windows quarantine skips. The built-process E2E passed 5 tests using real
   Launcher/Core/Runner, Chromium, model, and web fixture processes. It proved
-  three post-start rollback failures, authenticated foreground SIGINT/SIGTERM
-  quiesce, Runner-before-Core reaping, detached stop order, and byte-level
+  three post-start rollback failures, authenticated foreground shutdown
+  (Windows stop-marker command; POSIX SIGINT/SIGTERM), Runner-before-Core
+  reaping, detached stop order, and byte-level
   credential absence across config, every captured runtime state, logs, and
   SQLite for raw 32-byte, lowercase/uppercase hex, padded/unpadded base64, and
   base64url representations.
@@ -42,6 +43,12 @@ interfaces while enforcing stop-marker tuple/freshness authority, canonical
 completion Job hash matching, recoverable retained reconciliation, authenticated
 foreground quiesce, complete Launcher-to-Core configuration propagation,
 header-first fd-3 collection, and strict HTTP target validation.
+
+Final scoped review findings were closed by `fix(local): close final task 11
+lifecycle findings`: constant-time session authorization, pre-bind bootstrap
+expiry rejection, startup cleanup/zeroization, atomic no-overwrite marker claims,
+platform-correct process-tree termination, private detached-supervisor helpers,
+and foreground use of the same authenticated marker/quiesce lifecycle.
 
 Task 11 extends the existing `ProcessSupervisor`, `ChildProcessUnit`,
 `RunnerControlStore`, Evidence read ports, Core application services,

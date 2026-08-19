@@ -31,7 +31,7 @@ export const migration007: Migration = {
       .addCheckConstraint("local_run_intakes_completion_sha256_check", sql`completion_sha256 IS NULL OR (length(completion_sha256) = 64 AND lower(completion_sha256) = completion_sha256 AND completion_sha256 NOT GLOB '*[^0-9a-f]*')`)
       .addCheckConstraint("local_run_intakes_dispatch_state_check", sql`dispatch_state IN ('pending_runner', 'dispatching', 'offer_outcome_unknown', 'offered')`)
       .addCheckConstraint("local_run_intakes_completion_state_check", sql`completion_state IN ('awaiting', 'applied', 'integrity_blocked', 'retry_exhausted')`)
-      .addCheckConstraint("local_run_intakes_attempt_check", sql`dispatch_attempt >= 0 AND completion_attempt >= 0`)
+      .addCheckConstraint("local_run_intakes_attempt_check", sql`typeof(dispatch_attempt) = 'integer' AND dispatch_attempt >= 0 AND typeof(completion_attempt) = 'integer' AND completion_attempt >= 0`)
       .execute();
     await db.schema.createIndex("local_run_intakes_pending_dispatch").on("local_run_intakes").columns(["updated_at", "run_id"]).where(sql<SqlBool>`dispatch_state = 'pending_runner'`).execute();
     await db.schema.createIndex("local_run_intakes_pending_completion").on("local_run_intakes").columns(["completion_next_attempt_at", "updated_at", "run_id"]).where(sql<SqlBool>`completion_state = 'awaiting' AND dispatch_state IN ('offered', 'offer_outcome_unknown')`).execute();

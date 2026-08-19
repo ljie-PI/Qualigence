@@ -144,7 +144,9 @@ export class ProcessSupervisor {
     this.recorded.push(event);
   }
 
-  static handoffDetached(input: {
+}
+
+export function handoffDetachedSupervisor(input: {
     readonly dataDir: string;
     readonly corePid: number;
     readonly runnerPid: number;
@@ -152,7 +154,7 @@ export class ProcessSupervisor {
     readonly startedAt: string;
     readonly supervisorCredential: Uint8Array;
     readonly shutdown: { readonly stopRequestPollIntervalMs: number; readonly stopRequestMaximumAgeMs: number; readonly drainTimeoutMs: number };
-  }): Promise<number> {
+}): Promise<number> {
     return new Promise((resolve, reject) => {
       const entry = process.argv[1]; if (entry === undefined) { reject(new LauncherError("SupervisorUnavailable", "launcher entrypoint is unavailable")); return; }
       const child = fork(entry, ["__supervise"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
@@ -176,18 +178,19 @@ export class ProcessSupervisor {
     });
   }
 
-  static runDetachedChild(): void {
+export function runDetachedSupervisor(): void {
     process.once("message", (value) => {
+      void (async () => {
       const input = parseDetachedInput(value);
       const lifecycleLogFile = join(input.dataDir, "logs", "lifecycle.jsonl");
       const units: ProcessUnit[] = [new PidProcessUnit("core", input.corePid, lifecycleLogFile), new PidProcessUnit("runner", input.runnerPid, lifecycleLogFile)];
       const supervisor = new ProcessSupervisor({ version: "0.1.0", units });
-      // These units are already running; seed only the supervisor's private list.
-      supervisor.running.push(...units);
+      await supervisor.start();
       process.send?.("ready");
-      void pollDetachedStop(supervisor, input).then(() => process.exit(0), () => process.exit(1));
+      await pollDetachedStop(supervisor, input);
+      process.exit(0);
+      })().catch(() => process.exit(1));
     });
-  }
 }
 
 class PidProcessUnit implements ProcessUnit {

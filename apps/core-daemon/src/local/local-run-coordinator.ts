@@ -66,6 +66,7 @@ export class LocalRunCoordinator implements RunCompletionSink {
     }
   }
   private async reconcileCandidate(candidate: { readonly runId: string; readonly jobId: string; readonly jobSha256: string; readonly expectedAttempt: number }): Promise<boolean> {
+    let authorityObserved = false;
     try {
       const authority = await this.options.controlStore?.completionRecord(candidate.runId);
       if (authority === undefined) {
@@ -73,6 +74,7 @@ export class LocalRunCoordinator implements RunCompletionSink {
         if (result.status === "blocked") this.durableBlocked = true;
         return result.status !== "blocked";
       }
+      authorityObserved = true;
       if (candidate.jobId !== authority.jobId || candidate.jobSha256 !== authority.jobSha256) {
         await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionIdentityMismatch", blockedAt: this.now() });
         this.durableBlocked = true;
@@ -81,7 +83,7 @@ export class LocalRunCoordinator implements RunCompletionSink {
       const outcome = await this.options.store.applyCompletion({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, jobId: authority.jobId, jobSha256: authority.jobSha256, completion: authority.completion, completedAt: authority.completedAt });
       if (outcome === "identity_mismatch" || outcome === "completion_conflict") { await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: outcome === "identity_mismatch" ? "CompletionIdentityMismatch" : "CompletionConflict", blockedAt: this.now() }); this.durableBlocked = true; }
       return true;
-    } catch { const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionAuthorityUnavailable", failedAt: this.now() }); if (result.status === "blocked") this.durableBlocked = true; return false; }
+    } catch { const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: authorityObserved ? "CompletionApplyFailed" : "CompletionAuthorityUnavailable", failedAt: this.now() }); if (result.status === "blocked") this.durableBlocked = true; return false; }
   }
   private now(): string { return this.options.now?.() ?? new Date().toISOString(); }
   private serialize(operation: () => Promise<void>): Promise<void> { const result = this.queue.then(operation); this.queue = result.catch(() => undefined); return result; }

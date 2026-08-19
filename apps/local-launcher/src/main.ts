@@ -30,7 +30,7 @@ import { LauncherError } from "./errors.js";
 import { HealthClient } from "./health-client.js";
 import { MigrationGuard } from "./migration-guard.js";
 import { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff.js";
-import { ProcessSupervisor } from "./process-supervisor.js";
+import { handoffDetachedSupervisor, ProcessSupervisor, runDetachedSupervisor } from "./process-supervisor.js";
 import {
   claimMatchingStopRequest,
   clearRuntimeState,
@@ -356,7 +356,7 @@ async function commandStart(
     const runnerPid = runner.pid();
     if (corePid === undefined || runnerPid === undefined) throw new LauncherError("CoreUnhealthy", "a supervised process did not report a PID.");
     const startedAt = new Date().toISOString();
-    const supervisorPid = foreground ? process.pid : await ProcessSupervisor.handoffDetached({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
+    const supervisorPid = foreground ? process.pid : await handoffDetachedSupervisor({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
     topology = { supervisorPid, corePid, runnerPid, corePort: ctx.config.core.port, dataDir: ctx.dataDir, startedAt };
     await writeRuntimeState(topology);
     io.out("Qualigence Local is running.");
@@ -394,7 +394,7 @@ function runForeground(
 ): Promise<void> {
   return new Promise<void>((resolvePromise, rejectPromise) => {
     const signals: readonly NodeJS.Signals[] = process.platform === "win32"
-      ? ["SIGBREAK"]
+      ? ["SIGINT", "SIGBREAK"]
       : ["SIGINT", "SIGTERM"];
     let shutdownPromise: Promise<void> | undefined;
     let polling = true;
@@ -635,6 +635,6 @@ const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  if (process.argv[2] === "__supervise") ProcessSupervisor.runDetachedChild();
+  if (process.argv[2] === "__supervise") runDetachedSupervisor();
   else void run(process.argv.slice(2));
 }

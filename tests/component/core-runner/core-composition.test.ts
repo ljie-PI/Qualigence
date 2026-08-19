@@ -222,7 +222,7 @@ describe("Core runner protocol production composition", () => {
         host: "127.0.0.1", port: grpcPort, httpPort, dataDir, deploymentMode: "local", configuredRunnerId: "runner-1", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
       }, {
-        collectBootstrapCredentials: async () => ({ userBootstrap: frame.subarray(20, 52), supervisor: frame.subarray(52, 84), createdAtEpochMs: 1, userExpiresAtEpochMs: 2, destroy }),
+        collectBootstrapCredentials: async () => ({ userBootstrap: frame.subarray(20, 52), supervisor: frame.subarray(52, 84), createdAtEpochMs: Date.now(), userExpiresAtEpochMs: Date.now() + 60_000, destroy }),
         startCoordinator: async () => { throw new Error("injected coordinator startup failure"); },
       })).rejects.toThrow("injected coordinator startup failure");
       expect(destroy).toHaveBeenCalledOnce();
