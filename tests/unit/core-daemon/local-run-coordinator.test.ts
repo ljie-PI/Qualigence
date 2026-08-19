@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { LocalRunCoordinator } from "../../../apps/core-daemon/src/local/local-run-coordinator.js";
+import { RunnerControlStoreError } from "@qualigence/runner-control";
 
 describe("LocalRunCoordinator", () => {
   it("quarantines offer uncertainty and never re-offers it", async () => {
@@ -44,6 +45,28 @@ describe("LocalRunCoordinator", () => {
 
     expect(store.applyCompletion).not.toHaveBeenCalled();
     expect(store.markIntegrityBlocked).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "CompletionIdentityMismatch" }));
+    expect(coordinator.isHealthy()).toBe(false);
+  });
+
+  it("integrity-blocks an inconsistent persisted completion identity immediately", async () => {
+    const store = {
+      pendingCompletions: vi.fn(async () => [{ runId: "run-1", jobId: "job-1", jobSha256: "a".repeat(64), expectedAttempt: 0 }]),
+      markIntegrityBlocked: vi.fn(async () => "blocked" as const),
+      recordCompletionFailure: vi.fn(),
+      hasCompletionBlockers: vi.fn(async () => true),
+    };
+    const coordinator = new LocalRunCoordinator({
+      store: store as never,
+      controlStore: { completionRecord: vi.fn(async () => { throw new RunnerControlStoreError("persisted completion identity is inconsistent", "CompletionIdentityMismatch"); }) } as never,
+      connection: () => undefined,
+      configuredRunnerId: "runner-1",
+      now: () => "2026-08-19T00:00:00.000Z",
+    });
+
+    await coordinator.reconciliationPass();
+
+    expect(store.markIntegrityBlocked).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "CompletionIdentityMismatch" }));
+    expect(store.recordCompletionFailure).not.toHaveBeenCalled();
     expect(coordinator.isHealthy()).toBe(false);
   });
 

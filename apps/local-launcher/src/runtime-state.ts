@@ -148,7 +148,6 @@ export async function clearRuntimeState(dataDir: string): Promise<void> {
 
 export async function clearOwnedTopologyFiles(dataDir: string, topology: Pick<RuntimeState, "supervisorPid" | "corePid" | "runnerPid" | "startedAt">): Promise<void> {
   const state = await readRuntimeState(dataDir);
-  if (state !== undefined && sameTopology(state, topology)) await clearRuntimeState(dataDir);
   for (const path of [join(dataDir, "local-stop-request.json"), join(dataDir, `local-stop-request.${topology.supervisorPid}.claim`)]) {
     try {
       const marker = parseStopRequest(JSON.parse(await readFile(path, "utf8")));
@@ -157,6 +156,7 @@ export async function clearOwnedTopologyFiles(dataDir: string, topology: Pick<Ru
       // A malformed or differently owned marker is not ours to remove.
     }
   }
+  if (state !== undefined && sameTopology(state, topology)) await clearRuntimeState(dataDir);
 }
 
 /** True when the OS process for `pid` is alive (and we may signal it). */

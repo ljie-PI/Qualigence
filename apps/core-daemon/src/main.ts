@@ -66,7 +66,10 @@ export async function startCoreDaemon(config: CoreDaemonConfig, dependencies: Co
   const recovery = config.legacyM1LocalRecoveryCandidate === undefined
     ? undefined
     : validateLegacyRecoveryCandidate(config.legacyM1LocalRecoveryCandidate, config);
-  const localEnabled = config.deploymentMode === "local" && config.httpPort !== undefined && config.configuredRunnerId !== undefined;
+  if (config.deploymentMode === "local" && (config.httpPort === undefined || config.configuredRunnerId === undefined || config.configuredRunnerId.trim().length === 0)) {
+    throw new Error("Local Core requires an HTTP port and configured Runner ID.");
+  }
+  const localEnabled = config.deploymentMode === "local";
   let credentials: ParsedBootstrapFrame | undefined;
   let runtime: SqliteRuntime | undefined;
   let coordinator: LocalRunCoordinator | undefined;

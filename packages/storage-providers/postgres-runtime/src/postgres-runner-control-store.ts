@@ -289,7 +289,7 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
     if (row === undefined) return undefined;
     const job = parseJob(row.job_json);
     const completion = JSON.parse(row.completion_json) as ExecutionCompletion;
-    if (job.runId !== row.run_id || job.jobId !== row.job_id || completion.runId !== row.run_id || completion.jobId !== row.job_id) throw new RunnerControlStoreError("persisted completion identity is inconsistent");
+    if (job.runId !== row.run_id || job.jobId !== row.job_id || completion.runId !== row.run_id || completion.jobId !== row.job_id) throw new RunnerControlStoreError("persisted completion identity is inconsistent", "CompletionIdentityMismatch");
     return { runId: row.run_id, jobId: row.job_id, jobSha256: canonicalPayloadHash(job), completion, completedAt: row.completed_at };
   }
 }

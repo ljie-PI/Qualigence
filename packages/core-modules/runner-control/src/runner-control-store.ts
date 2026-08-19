@@ -8,10 +8,11 @@ import {
 } from "@qualigence/runner-protocol";
 
 export class RunnerControlStoreError extends Error {
-  readonly code = "PolicyMissing" as const;
+  readonly code: "PolicyMissing" | "CompletionIdentityMismatch";
 
-  constructor(message = "persisted execution Job policy is missing or malformed") {
+  constructor(message = "persisted execution Job policy is missing or malformed", code: "PolicyMissing" | "CompletionIdentityMismatch" = "PolicyMissing") {
     super(message);
+    this.code = code;
     this.name = "RunnerControlStoreError";
   }
 }

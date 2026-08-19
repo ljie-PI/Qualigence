@@ -1,6 +1,7 @@
 import type { RunCompletionSink } from "@qualigence/core-application";
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
 import type { LocalRunIntakeStore, RunnerControlStore } from "@qualigence/runner-control";
+import { RunnerControlStoreError } from "@qualigence/runner-control";
 
 export class LocalRunCoordinator implements RunCompletionSink {
   private stopped = false;
@@ -83,7 +84,16 @@ export class LocalRunCoordinator implements RunCompletionSink {
       const outcome = await this.options.store.applyCompletion({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, jobId: authority.jobId, jobSha256: authority.jobSha256, completion: authority.completion, completedAt: authority.completedAt });
       if (outcome === "identity_mismatch" || outcome === "completion_conflict") { await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: outcome === "identity_mismatch" ? "CompletionIdentityMismatch" : "CompletionConflict", blockedAt: this.now() }); this.durableBlocked = true; }
       return true;
-    } catch { const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: authorityObserved ? "CompletionApplyFailed" : "CompletionAuthorityUnavailable", failedAt: this.now() }); if (result.status === "blocked") this.durableBlocked = true; return false; }
+    } catch (error) {
+      if (error instanceof RunnerControlStoreError && error.code === "CompletionIdentityMismatch") {
+        await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionIdentityMismatch", blockedAt: this.now() });
+        this.durableBlocked = true;
+        return true;
+      }
+      const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: authorityObserved ? "CompletionApplyFailed" : "CompletionAuthorityUnavailable", failedAt: this.now() });
+      if (result.status === "blocked") this.durableBlocked = true;
+      return false;
+    }
   }
   private now(): string { return this.options.now?.() ?? new Date().toISOString(); }
   private serialize(operation: () => Promise<void>): Promise<void> { const result = this.queue.then(operation); this.queue = result.catch(() => undefined); return result; }

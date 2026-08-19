@@ -59,6 +59,17 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
+async function testBootstrapCredentials() {
+  const backing = Buffer.alloc(100, 0x5a);
+  return {
+    userBootstrap: backing.subarray(20, 52),
+    supervisor: backing.subarray(52, 84),
+    createdAtEpochMs: Date.now(),
+    userExpiresAtEpochMs: Date.now() + 60_000,
+    destroy: () => backing.fill(0),
+  };
+}
+
 async function canBind(port: number): Promise<boolean> {
   const server = createServer();
   try {
@@ -168,6 +179,7 @@ describe("Core runner protocol production composition", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "qualigence-core-recovery-phase-b-"));
     const database = join(dataDir, "qualigence.db");
     const port = await freePort();
+    const httpPort = await freePort();
     const policyless = { jobId: "job-legacy", runId: "run-legacy", target: { kind: "web", url: "https://example.test/" }, objective: "legacy" };
     const policy = { policyId: "legacy-m1-local", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
     const seed = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
@@ -180,17 +192,17 @@ describe("Core runner protocol production composition", () => {
     const candidate = { format: "legacy-m1-local-recovery/v1" as const, records: [{ jobId: policyless.jobId, runId: policyless.runId, canonicalJobSha256: canonicalPayloadHash(policyless), policy }] };
     try {
       await expect(startCoreDaemon({
-        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        host: "127.0.0.1", port, httpPort, configuredRunnerId: "runner-1", dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
         legacyM1LocalRecoveryCandidate: { ...candidate, records: [{ ...candidate.records[0], canonicalJobSha256: "0".repeat(64) }] },
-      })).rejects.toThrow(/does not match/);
+      }, { collectBootstrapCredentials: testBootstrapCredentials })).rejects.toThrow(/does not match/);
       const reopened = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
       await reopened.close();
 
       const daemon = await startCoreDaemon({
-        host: "127.0.0.1", port, dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
+        host: "127.0.0.1", port, httpPort, configuredRunnerId: "runner-1", dataDir, deploymentMode: "local", leaseDurationMs: 30_000,
         tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key }, legacyM1LocalRecoveryCandidate: candidate,
-      });
+      }, { collectBootstrapCredentials: testBootstrapCredentials });
       cleanups.push(async () => { await daemon.shutdown(); await rm(dataDir, { recursive: true, force: true }); });
       const strictReaderRuntime = await SqliteRuntime.open({ filename: database, busyTimeoutMs: 5_000 });
       try {

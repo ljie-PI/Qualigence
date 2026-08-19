@@ -251,8 +251,6 @@ function mergeConfigSources(input: ConfigSources): Record<string, unknown> {
   }
   mergeInto(merged, envPartial(input.env ?? {}));
   mergeInto(merged, cliPartial(input.cli ?? {}));
-  // Local mode always binds Core to loopback regardless of any source.
-  (merged.core as Record<string, unknown>).host = "127.0.0.1";
   return merged;
 }
 
