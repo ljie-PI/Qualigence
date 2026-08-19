@@ -1,4 +1,6 @@
 import { mkdir } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -13,17 +15,25 @@ import {
   RunOwnershipService,
 } from "@qualigence/core-application";
 import { TraceIngestor } from "@qualigence/evidence";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { StructuredLogger } from "@qualigence/observability";
 import { canonicalPayloadHash, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionPolicySnapshot } from "@qualigence/runner-protocol";
-import { SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
+import { SqliteArtifactManifestStore, SqliteLocalReadinessProbe, SqliteLocalRunIntakeStore, SqliteRunStore, SqliteRuntime, SqliteTraceStore, SqliteRunnerControlStore } from "@qualigence/sqlite-runtime";
 import { loadCoreDaemonConfig, type CoreDaemonConfig } from "./config.js";
+import { collectBootstrapCredentialHandoff } from "./local/bootstrap-credential-handoff.js";
+import { buildLocalHttpServer } from "./local/local-http-server.js";
+import { LocalReadinessService } from "./local/local-readiness-service.js";
+import { LocalRunCoordinator } from "./local/local-run-coordinator.js";
+import { LocalRunPolicyIssuer } from "./local/local-run-policy-issuer.js";
+import { LocalSessionService } from "./local/local-session-service.js";
 
 export interface StartedCoreDaemon {
   readonly port: number;
   readonly server: GrpcRunnerProtocolServer;
   readonly application: CoreRunnerProtocolApplication;
   readonly traceStore: SqliteTraceStore;
+  readonly httpPort?: number;
   shutdown(): Promise<void>;
 }
 
@@ -50,19 +60,26 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
   const recovery = config.legacyM1LocalRecoveryCandidate === undefined
     ? undefined
     : validateLegacyRecoveryCandidate(config.legacyM1LocalRecoveryCandidate, config);
+  const localEnabled = config.deploymentMode === "local" && config.httpPort !== undefined && config.configuredRunnerId !== undefined;
+  const credentials = localEnabled ? await collectBootstrapCredentialHandoff(createReadStream("", { fd: Number(process.env.CORE_BOOTSTRAP_CREDENTIAL_FD ?? "3"), autoClose: true }), 5_000) : undefined;
   await mkdir(config.dataDir, { recursive: true });
-  const runtime = await SqliteRuntime.open({
+  let runtime: SqliteRuntime;
+  try { runtime = await SqliteRuntime.open({
     filename: join(config.dataDir, "qualigence.db"),
     busyTimeoutMs: 5_000,
-  });
+    ...(localEnabled ? { openMode: "require-current" as const } : {}),
+  }); } catch (error) { credentials?.destroy(); throw error; }
   const traceStore = new SqliteTraceStore(runtime);
   const runStore = new SqliteRunStore(runtime);
+  const manifestStore = new SqliteArtifactManifestStore(runtime);
+  const artifactStore = new LocalArtifactStore(join(config.dataDir, "artifacts"), { now: () => new Date().toISOString() });
   let controlStore: SqliteRunnerControlStore;
   try {
     const rawControlStore = new SqliteRunnerControlStore(runtime);
     if (recovery !== undefined) await applyVerifiedLegacyRecovery(runtime, recovery);
     controlStore = rawControlStore;
   } catch (error) {
+    credentials?.destroy();
     await runtime.close();
     throw error;
   }
@@ -93,10 +110,24 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     traceIngestor: new TraceIngestor(traceStore),
     ownership,
   });
+  let coordinator: LocalRunCoordinator | undefined;
+  let intake: SqliteLocalRunIntakeStore | undefined;
+  let readiness: LocalReadinessService | undefined;
+  let http = undefined as ReturnType<typeof buildLocalHttpServer> | undefined;
+  let httpBound = false;
+  let grpcBound = false;
+  if (localEnabled && credentials !== undefined) {
+    intake = new SqliteLocalRunIntakeStore(runtime, {
+      retryBaseMs: config.completionReconciliationRetryBaseMs ?? 1_000,
+      retryMaximumMs: config.completionReconciliationRetryMaximumMs ?? 60_000,
+      maximumAttempts: config.completionReconciliationMaximumAttempts ?? 8,
+    });
+  }
   const application = new CoreRunnerProtocolApplication({
     sessions,
     jobs,
     ownership,
+    ...(localEnabled ? { completionSink: { complete: async (input: Parameters<LocalRunCoordinator["complete"]>[0]) => coordinator?.complete(input) } } : {}),
     recordRun: async (job) => {
       if ((await runStore.get(job.runId)) !== undefined) return;
       await runStore.create({
@@ -117,11 +148,29 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     host: config.host,
     port: config.port,
   });
+  if (intake !== undefined) coordinator = new LocalRunCoordinator({ store: intake, controlStore, connection: () => server.connection(config.configuredRunnerId!), configuredRunnerId: config.configuredRunnerId!, batchSize: config.completionReconciliationBatchSize ?? 64 });
+
+  if (localEnabled && credentials !== undefined && coordinator !== undefined && intake !== undefined) {
+    const policyIssuer = new LocalRunPolicyIssuer();
+    const sessions = new LocalSessionService({ userBootstrap: credentials.userBootstrap, supervisor: credentials.supervisor, userBootstrapExpiresAtEpochMs: credentials.userExpiresAtEpochMs, userSessionTtlMs: config.userSessionTtlMs ?? 900_000 });
+    const probe = new SqliteLocalReadinessProbe(runtime);
+    readiness = new LocalReadinessService({ schemaVersion: () => runtime.schemaVersion(), storageProbe: () => probe.probe(), artifactProbe: async () => { const bytes = Buffer.from("local-readiness"); const manifest = await artifactStore.write({ artifactId: randomUUID(), runId: `readiness-${process.pid}`, name: "probe.bin", kind: "other", mediaType: "application/octet-stream", bytes }); try { const read = await artifactStore.read(manifest); if (!Buffer.from(read).equals(bytes)) throw new Error("Artifact readiness bytes differ."); } finally { await artifactStore.delete(manifest); } }, listeners: () => ({ http: httpBound, grpc: grpcBound }), reconciliationHealthy: () => coordinator!.isHealthy(), configuredRunnerId: config.configuredRunnerId!, connection: () => server.connection(config.configuredRunnerId!) });
+    http = buildLocalHttpServer({ sessions, createRun: async ({ targetUrl, objective }) => { const issued = policyIssuer.issue({ kind: "web", url: targetUrl }); const job = { jobId: randomUUID(), runId: randomUUID(), projectId: issued.projectId, target: { kind: "web" as const, url: targetUrl }, objective, policy: issued.policy }; await intake.create({ job, createdAt: new Date().toISOString() }); return { runId: job.runId, status: "pending_runner" }; }, readRun: async (runId) => { const record = await intake.run(runId); if (record === undefined) return undefined; const status = record.completionState === "applied" ? record.runStatus : record.completionState === "integrity_blocked" || record.completionState === "retry_exhausted" ? "error" : record.dispatchState === "offer_outcome_unknown" ? "offer_outcome_unknown" : record.dispatchState === "offered" ? "running" : "pending_runner"; const findings = await traceStore.findingReferences(runId); const artifacts = await manifestStore.listForRun(runId); const evidenceReferences = [...findings.map((finding) => ({ id: finding.findingId, kind: "finding", createdAt: finding.createdAt })), ...artifacts.map((artifact) => ({ id: artifact.artifactId, kind: artifact.kind, createdAt: artifact.createdAt }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)); return { runId, status, ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }), ...(evidenceReferences.length === 0 ? {} : { evidenceReferences }) }; }, quiesce: async () => { readiness!.quiesce(); coordinator!.stop(); }, health: readiness });
+    await coordinator.startup();
+    credentials.destroy();
+  }
 
   let port: number;
   try {
     port = await server.listen();
+    grpcBound = true;
+    if (http !== undefined && config.httpPort !== undefined) { await http.listen({ host: "127.0.0.1", port: config.httpPort }); httpBound = true; }
+    coordinator?.startLive(config.completionReconciliationPollIntervalMs ?? 250);
   } catch (error) {
+    credentials?.destroy();
+    await http?.close().catch(() => undefined);
+    await coordinator?.shutdown().catch(() => undefined);
+    await server.shutdown().catch(() => undefined);
     await runtime.close();
     throw error;
   }
@@ -131,7 +180,11 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     server,
     application,
     traceStore,
+    ...(config.httpPort === undefined ? {} : { httpPort: config.httpPort }),
     shutdown: async (): Promise<void> => {
+      readiness?.quiesce();
+      await http?.close();
+      await coordinator?.shutdown();
       await server.shutdown();
       await runtime.close();
     },

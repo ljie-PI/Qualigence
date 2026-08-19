@@ -11,7 +11,7 @@ function baseSources(overrides: Partial<ConfigSources> = {}): ConfigSources {
   return {
     yaml: {
       dataDir: "./.qualigence-local",
-      core: { port: 4000 },
+      core: { port: 4000, httpPort: 4001 },
       runner: { id: "runner-local", spoolSoftBytes: 1_000, spoolHardBytes: 2_000 },
       modelProfile: {
         provider: "openai-compatible",

@@ -1,5 +1,42 @@
 # Production closure status
 
+## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
+
+component: complete
+production_wiring: present
+verification: passed
+implementation_commit: same commit as this ledger entry (`feat(local): close launcher core runner loop`)
+
+Task 11 extends the existing `ProcessSupervisor`, `ChildProcessUnit`,
+`RunnerControlStore`, Evidence read ports, Core application services,
+`GrpcRunnerProtocolServer.connection`, `SqliteRuntime`, `BackupManager`, and
+`MigrationGuard`. It adds no parallel lifecycle, connection registry, recovery
+module, `DataDirLock`, Self-hosted composition, or automatic lease recovery.
+
+RED evidence:
+
+- With Git OpenSSL configured, the initial focused command failed 9 files / 1
+  collected test. Eight suites failed to resolve the absent Local credential,
+  session, HTTP, issuer, coordinator, and readiness modules/package exports;
+  the stop-marker case failed because `parseStopRequest` did not exist.
+
+GREEN evidence (Windows 11, Node 24, Corepack pnpm 11.7.0, 2026-08-19):
+
+- `corepack pnpm build` passed with `npm_config_offline=true`; TypeScript and the
+  Web Console Vite production build completed from the frozen installed graph.
+- Task 11 Gate group 1 passed 10 files / 49 tests.
+- Task 11 Gate group 2 passed 10 files / 101 tests, including Docker-backed
+  PostgreSQL migration/schema and Runner-control contracts.
+- Task 11 Gate group 3 passed 11 files / 68 tests with one pre-existing Task 21
+  Windows quarantine skip. Its E2E used built Launcher/Core/Runner processes,
+  the local OpenAI-compatible fixture, the web fixture, and real Chromium; it
+  did not use `fake-process.mjs`.
+- `corepack pnpm typecheck` passed, including build, test TypeScript, and Web
+  Console typecheck. `git diff --check` passed.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`.
+- No environmental block occurred. Docker PostgreSQL and Chromium both ran.
+
 ## SETUP-00 — Engineering context, issue tracker, and review guidance (2026-08-17)
 
 component: complete

@@ -101,7 +101,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     const openStores = vi.fn();
     const offer = vi.fn();
     const factory = new RunnerBackedRunResourceFactory({
-      connection: { offer, cancel: vi.fn() },
+      connection: { authenticatedRunner: runnerSnapshot, offer, cancel: vi.fn() },
       openStores,
       awaitCompletion: vi.fn(),
     });
@@ -127,7 +127,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     };
     const offer = vi.fn(async (_job: AcceptedExecutionJob, _reqs: readonly string[]) => lease);
     const cancel = vi.fn(async () => undefined);
-    const connection: RunnerConnectionPort = { offer, cancel };
+    const connection: RunnerConnectionPort = { authenticatedRunner: runnerSnapshot, offer, cancel };
 
     const awaitCompletion = vi.fn(async (acceptedLease: ExecutionJobLease): Promise<ExecutionCompletion> => ({
       jobId: acceptedLease.jobId,
@@ -164,7 +164,7 @@ describe("RunnerBackedRunResourceFactory", () => {
   it("rejects a Job from another project before offering it to a Runner", async () => {
     const offer = vi.fn();
     const factory = new RunnerBackedRunResourceFactory({
-      connection: { offer, cancel: vi.fn() },
+      connection: { authenticatedRunner: runnerSnapshot, offer, cancel: vi.fn() },
       openStores: async () => ({
         runs: new InMemoryRunStore(),
         traces: new InMemoryTraceStore(),
@@ -191,3 +191,5 @@ describe("RunnerBackedRunResourceFactory", () => {
     }
   });
 });
+
+const runnerSnapshot = { runnerId: "runner-1", scope: { kind: "local" as const }, capabilities: ["target:web-playwright"] };

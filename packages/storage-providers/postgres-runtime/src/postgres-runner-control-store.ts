@@ -2,6 +2,7 @@ import {
   RunnerControlStoreError,
 } from "@qualigence/runner-control";
 import { parseExecutionJob } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionCompletion,
@@ -17,6 +18,7 @@ import type {
   RotateResumeTokenInput,
   RotateResumeTokenResult,
   RunnerControlStore,
+  RunnerCompletionRecord,
 } from "@qualigence/runner-control";
 import { leaseBindingMatches, observedCompletionResult } from "@qualigence/runner-control";
 import type { Kysely, Transaction, UpdateQueryBuilder, UpdateResult } from "kysely";
@@ -277,6 +279,18 @@ export class PostgresRunnerControlStore implements RunnerControlStore {
 
   async completion(runId: string): Promise<ExecutionCompletion | undefined> {
     return readCompletion(this.db, this.tenantId, runId);
+  }
+
+  async completionRecord(runId: string): Promise<RunnerCompletionRecord | undefined> {
+    const row = await this.db.selectFrom("execution_completions")
+      .innerJoin("execution_leases", (join) => join.onRef("execution_leases.tenant_id", "=", "execution_completions.tenant_id").onRef("execution_leases.run_id", "=", "execution_completions.run_id"))
+      .select(["execution_completions.run_id", "execution_completions.job_id", "completion_json", "execution_completions.completed_at", "job_json"])
+      .where("execution_completions.tenant_id", "=", this.tenantId).where("execution_completions.run_id", "=", runId).executeTakeFirst();
+    if (row === undefined) return undefined;
+    const job = parseJob(row.job_json);
+    const completion = JSON.parse(row.completion_json) as ExecutionCompletion;
+    if (job.runId !== row.run_id || job.jobId !== row.job_id || completion.runId !== row.run_id || completion.jobId !== row.job_id) throw new RunnerControlStoreError("persisted completion identity is inconsistent");
+    return { runId: row.run_id, jobId: row.job_id, jobSha256: canonicalPayloadHash(job), completion, completedAt: row.completed_at };
   }
 }
 

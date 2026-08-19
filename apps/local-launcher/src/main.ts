@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import {
   type HealthCheck,
   type HealthReport,
   type LocalConfig,
+  encodeBootstrapCredential,
 } from "@qualigence/local-control";
 import { SqliteRuntime, SUPPORTED_SCHEMA_VERSION } from "@qualigence/sqlite-runtime";
 import { SystemClock } from "@qualigence/shared-kernel";
@@ -28,6 +29,8 @@ import { LocalDoctor } from "./doctor.js";
 import { LauncherError } from "./errors.js";
 import { HealthClient } from "./health-client.js";
 import { MigrationGuard } from "./migration-guard.js";
+import { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff.js";
+import { ProcessSupervisor } from "./process-supervisor.js";
 import {
   clearRuntimeState,
   isPidAlive,
@@ -90,6 +93,7 @@ function defaultConfig(dataDir: string, env: NodeJS.ProcessEnv): Record<string, 
     core: {
       host: "127.0.0.1",
       port: Number.parseInt(env.QUALIGENCE_CORE_PORT ?? "50555", 10),
+      httpPort: Number.parseInt(env.QUALIGENCE_CORE_HTTP_PORT ?? "50556", 10),
     },
     runner: {
       id: env.QUALIGENCE_RUNNER_ID ?? "qualigence-local-runner",
@@ -103,6 +107,13 @@ function defaultConfig(dataDir: string, env: NodeJS.ProcessEnv): Record<string, 
       credentialRef: env.QUALIGENCE_CREDENTIAL_REF ?? "local-model-credential",
       visualInput: env.QUALIGENCE_VISUAL_INPUT ?? "disabled",
     },
+    auth: { bootstrapTtlMs: 600_000, userSessionTtlMs: 900_000 },
+    completionReconciliationRetryBaseMs: 1_000,
+    completionReconciliationRetryMaximumMs: 60_000,
+    completionReconciliationMaximumAttempts: 8,
+    completionReconciliationPollIntervalMs: 250,
+    completionReconciliationBatchSize: 64,
+    shutdown: { stopRequestPollIntervalMs: 250, stopRequestMaximumAgeMs: 30_000, stopRequestWaitTimeoutMs: 60_000, drainTimeoutMs: 30_000 },
   };
 }
 
@@ -160,7 +171,7 @@ function tcpProbe(host: string, port: number): Promise<boolean> {
   });
 }
 
-function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv): ChildProcessUnit {
+function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv, frame: Buffer): ChildProcessUnit {
   const certs = certPathsFor(ctx.dataDir);
   const command = env.QUALIGENCE_CORE_COMMAND ?? process.execPath;
   const args = parseArgsJson(
@@ -171,6 +182,11 @@ function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv): ChildProce
     ...process.env,
     CORE_HOST: "127.0.0.1",
     CORE_PORT: String(ctx.config.core.port),
+    CORE_HTTP_PORT: String(ctx.config.core.httpPort),
+    CORE_DEPLOYMENT_MODE: "local",
+    CORE_CONFIGURED_RUNNER_ID: ctx.config.runner.id,
+    CORE_BOOTSTRAP_CREDENTIAL_FD: "3",
+    CORE_USER_SESSION_TTL_MS: String(ctx.config.auth.userSessionTtlMs),
     CORE_TLS_CA: certs.ca,
     CORE_TLS_CERT: certs.coreCert,
     CORE_TLS_KEY: certs.coreKey,
@@ -185,10 +201,11 @@ function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv): ChildProce
     env: childEnv,
     logFile: join(ctx.logsDir, "core.log"),
     readyEvent: "core-daemon.ready",
-    readyProbe: () => tcpProbe("127.0.0.1", ctx.config.core.port),
+    readyProbe: async () => (await new HealthClient(VERSION).coreHealth("127.0.0.1", ctx.config.core.httpPort ?? 50_556, "/health/internal-ready")).status === "pass",
     startupTimeoutMs: STARTUP_TIMEOUT_MS,
     shutdownGraceMs: SHUTDOWN_GRACE_MS,
     detached: true,
+    fd3Frame: frame,
   });
 }
 
@@ -253,7 +270,9 @@ async function commandInit(
 
   const productVersion = VERSION;
   if (existsSync(ctx.dbFile)) {
-    if (currentSchemaVersion(ctx.dbFile) < SUPPORTED_SCHEMA_VERSION) {
+    const current = currentSchemaVersion(ctx.dbFile);
+    if (current > SUPPORTED_SCHEMA_VERSION) throw new LauncherError("MigrationBlocked", "database schema is newer than this Launcher");
+    if (current < SUPPORTED_SCHEMA_VERSION) {
       const guard = new MigrationGuard(
         new BackupManager({
           dataDir: ctx.dataDir,
@@ -280,6 +299,8 @@ async function commandInit(
     });
     await runtime.close();
   }
+  const current = await SqliteRuntime.open({ filename: ctx.dbFile, busyTimeoutMs: 5_000, openMode: "require-current" });
+  await current.close();
 
   io.out(`Initialized Qualigence Local in ${ctx.dataDir}`);
   io.out(`  config: ${ctx.configPath}`);
@@ -302,19 +323,19 @@ async function commandStart(
   }
   await mkdir(ctx.logsDir, { recursive: true });
   await mkdir(ctx.artifactDir, { recursive: true });
+  const schema = await SqliteRuntime.open({ filename: ctx.dbFile, busyTimeoutMs: 5_000, openMode: "require-current" });
+  await schema.close();
 
-  const core = buildCoreUnit(ctx, env);
+  const credentials = createBootstrapCredentialHandoff({ bootstrapTtlMs: ctx.config.auth.bootstrapTtlMs });
+  const core = buildCoreUnit(ctx, env, credentials.frame());
   const runner = buildRunnerUnit(ctx, env);
-  const started: ChildProcessUnit[] = [];
+  const supervisor = new ProcessSupervisor({ version: VERSION, units: [core, runner] });
   try {
-    await core.start();
-    started.push(core);
-    await runner.start();
-    started.push(runner);
+    await supervisor.start();
+    const finalReady = await new HealthClient(VERSION).coreHealth("127.0.0.1", ctx.config.core.httpPort ?? 50_556, "/health/ready");
+    if (finalReady.status !== "pass") throw new LauncherError("RunnerUnhealthy", "configured Runner did not register required capability");
   } catch (error) {
-    for (const unit of started.reverse()) {
-      await unit.stop();
-    }
+    await supervisor.stop();
     throw error;
   }
 
@@ -324,21 +345,24 @@ async function commandStart(
     throw new LauncherError("CoreUnhealthy", "a supervised process did not report a PID.");
   }
 
+  const startedAt = new Date().toISOString();
+  const supervisorPid = foreground ? process.pid : await ProcessSupervisor.handoffDetached({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
   await writeRuntimeState({
+    supervisorPid,
     corePid,
     runnerPid,
     corePort: ctx.config.core.port,
     dataDir: ctx.dataDir,
-    startedAt: new Date().toISOString(),
+    startedAt,
   });
 
-  const token = randomBytes(24).toString("hex");
   io.out("Qualigence Local is running.");
-  io.out(`  Core:            https://127.0.0.1:${ctx.config.core.port}`);
-  io.out(`  bootstrap token: ${token}`);
+  io.out(`  Core:            http://127.0.0.1:${ctx.config.core.httpPort ?? 50_556}`);
+  io.out(`  bootstrap token: ${encodeBootstrapCredential(credentials.userBootstrap)}`);
+  credentials.destroy();
 
   if (foreground) {
-    await runForeground(core, runner, ctx, io);
+    await runForeground(supervisor, ctx, io);
   } else {
     core.detach();
     runner.detach();
@@ -346,16 +370,14 @@ async function commandStart(
 }
 
 function runForeground(
-  core: ChildProcessUnit,
-  runner: ChildProcessUnit,
+  supervisor: ProcessSupervisor,
   ctx: LauncherContext,
   io: LauncherIo,
 ): Promise<void> {
   return new Promise<void>((resolvePromise) => {
     const shutdown = (): void => {
       void (async () => {
-        await runner.stop();
-        await core.stop();
+        await supervisor.stop();
         await clearRuntimeState(ctx.dataDir);
         io.out("Qualigence Local stopped.");
         resolvePromise();
@@ -372,15 +394,13 @@ async function commandStop(ctx: LauncherContext, io: LauncherIo): Promise<void> 
     io.out("Qualigence Local is not running.");
     return;
   }
-  // Runner first so it can flush before Core withdraws its lease.
-  if (isPidAlive(state.runnerPid)) {
-    await terminateProcess(state.runnerPid, SHUTDOWN_GRACE_MS, true);
-  }
-  if (isPidAlive(state.corePid)) {
-    await terminateProcess(state.corePid, SHUTDOWN_GRACE_MS, true);
-  }
-  await clearRuntimeState(ctx.dataDir);
-  io.out("Qualigence Local stopped.");
+  if (!isPidAlive(state.supervisorPid)) throw new LauncherError("SupervisorUnavailable", "detached supervisor is unavailable");
+  const marker = { version: "local-stop-request/v1", supervisorPid: state.supervisorPid, corePid: state.corePid, runnerPid: state.runnerPid, startedAt: state.startedAt, requestedAt: new Date().toISOString() };
+  const temporary = join(ctx.dataDir, `local-stop-request.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+  await writeFile(temporary, JSON.stringify(marker), { encoding: "utf8", flag: "wx", flush: true }); await rename(temporary, join(ctx.dataDir, "local-stop-request.json"));
+  const deadline = Date.now() + ctx.config.shutdown.stopRequestWaitTimeoutMs;
+  while (Date.now() < deadline) { if ((await readRuntimeState(ctx.dataDir)) === undefined && !isPidAlive(state.supervisorPid) && !isPidAlive(state.runnerPid) && !isPidAlive(state.corePid)) { io.out("Qualigence Local stopped."); return; } await new Promise((resolve) => setTimeout(resolve, ctx.config.shutdown.stopRequestPollIntervalMs)); }
+  throw new LauncherError("StopTimedOut", "timed out waiting for detached topology shutdown");
 }
 
 async function statusReport(ctx: LauncherContext): Promise<HealthReport> {
@@ -559,5 +579,6 @@ const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  void run(process.argv.slice(2));
+  if (process.argv[2] === "__supervise") ProcessSupervisor.runDetachedChild();
+  else void run(process.argv.slice(2));
 }

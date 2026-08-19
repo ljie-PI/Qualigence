@@ -5,7 +5,7 @@ import type { HealthCheck } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 50;
-const REAP_TIMEOUT_MS = 3_000;
+export const REAP_TIMEOUT_MS = 3_000;
 
 export interface RestartPolicy {
   readonly maxRestarts: number;
@@ -35,6 +35,7 @@ export interface ChildProcessUnitOptions {
   readonly readinessChecksFn?: () => Promise<readonly HealthCheck[]>;
   readonly livenessChecksFn?: () => Promise<readonly HealthCheck[]>;
   readonly pollIntervalMs?: number;
+  readonly fd3Frame?: Buffer;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -165,7 +166,7 @@ export class ChildProcessUnit {
       child = spawn(this.options.command, [...this.options.args], {
         cwd: this.options.cwd,
         env: this.options.env ?? process.env,
-        stdio: ["ignore", fd, fd],
+        stdio: this.options.fd3Frame === undefined ? ["ignore", fd, fd] : ["ignore", fd, fd, "pipe"],
         detached: this.options.detached ?? false,
       });
     } finally {
@@ -175,6 +176,11 @@ export class ChildProcessUnit {
     this.child = child;
     this.currentPid = child.pid;
     this.childExited = false;
+    const fd3 = child.stdio[3];
+    if (this.options.fd3Frame !== undefined && fd3 !== undefined && fd3 !== null && "end" in fd3) {
+      const frame = this.options.fd3Frame;
+      fd3.end(frame, () => frame.fill(0));
+    }
 
     child.once("exit", () => {
       this.childExited = true;

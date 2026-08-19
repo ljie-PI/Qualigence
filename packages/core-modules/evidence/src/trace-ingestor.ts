@@ -4,6 +4,7 @@ import type {
   TraceEvent,
   TraceEventSubmission,
 } from "@qualigence/runner-protocol";
+import type { FindingReference } from "./persistence-ports.js";
 import {
   canonicalPayloadHash,
   canonicalTraceEventHash,
@@ -56,6 +57,7 @@ export interface TraceStore {
   ): Promise<FindingAppendResult>;
   eventAt(runId: RunId, sequenceNumber: number): Promise<TraceEvent | undefined>;
   nextTraceSequenceNumber(runId: RunId): Promise<number>;
+  findingReferences(runId: RunId): Promise<readonly FindingReference[]>;
 }
 
 export class TraceIngestor {
@@ -162,6 +164,13 @@ export class InMemoryTraceStore implements TraceStore {
 
   async nextTraceSequenceNumber(runId: RunId): Promise<number> {
     return (this.eventsByRun.get(runId)?.length ?? 0) + 1;
+  }
+
+  async findingReferences(runId: RunId): Promise<readonly FindingReference[]> {
+    return (this.findingsByRun.get(runId) ?? []).map((finding) => ({
+      findingId: finding.findingId,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    }));
   }
 
   eventsFor(runId: RunId): readonly TraceEvent[] {

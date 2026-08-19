@@ -61,6 +61,16 @@ export interface CoreRunnerProtocolApplicationOptions {
   readonly jobs: ExecutionJobService;
   readonly ownership: RunOwnershipService;
   readonly recordRun?: (job: AcceptedExecutionJob) => Promise<void>;
+  readonly completionSink?: RunCompletionSink;
+}
+
+export interface RunCompletionSink {
+  complete(input: {
+    readonly identity: AuthenticatedRunnerContext;
+    readonly jobId: string;
+    readonly runId: string;
+    readonly completion: ExecutionCompletion;
+  }): Promise<void>;
 }
 
 interface CanonicalOffer {
@@ -74,6 +84,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   readonly jobs: ExecutionJobService;
   readonly ownership: RunOwnershipService;
   private readonly recordRun: ((job: AcceptedExecutionJob) => Promise<void>) | undefined;
+  private readonly completionSink: RunCompletionSink | undefined;
   private readonly offersByJob = new Map<string, CanonicalOffer>();
   private readonly offersByRun = new Map<string, CanonicalOffer>();
   private processing: Promise<void> = Promise.resolve();
@@ -83,6 +94,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     this.jobs = options.jobs;
     this.ownership = options.ownership;
     this.recordRun = options.recordRun;
+    this.completionSink = options.completionSink;
   }
 
   openSession(
@@ -136,9 +148,11 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
         // connection (or a previous Core process). Session ownership is already
         // verified above, so the stored lease is the authority for completing.
         await this.ownership.completeStored(lease.runId, completion);
+        await this.invokeCompletionSink(sessionId, completion);
         return;
       }
       await this.jobs.complete(lease, completion);
+      await this.invokeCompletionSink(sessionId, completion);
     });
   }
 
@@ -201,6 +215,13 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     ) {
       throw new CoreApplicationError("LeaseLost", `session ${sessionId} does not own run ${runId}`);
     }
+  }
+
+  private async invokeCompletionSink(sessionId: string, completion: ExecutionCompletion): Promise<void> {
+    const sink = this.completionSink;
+    if (sink === undefined) return;
+    const session = this.requireSession(sessionId);
+    await sink.complete({ identity: session.identity, jobId: completion.jobId, runId: completion.runId, completion });
   }
 
   private serialize<TResult>(operation: () => Promise<TResult> | TResult): Promise<TResult> {

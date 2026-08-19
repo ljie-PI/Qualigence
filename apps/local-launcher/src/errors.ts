@@ -12,7 +12,11 @@ export type LauncherErrorCode =
   | "BackupFailed"
   | "BackupIntegrityFailed"
   | "MigrationBlocked"
-  | "InvalidConfiguration";
+  | "InvalidConfiguration"
+  | "StopTopologyChanged"
+  | "SupervisorUnavailable"
+  | "StopRequestInvalid"
+  | "StopTimedOut";
 
 export interface LauncherErrorOptions {
   readonly cause?: unknown;

@@ -233,7 +233,7 @@ describe("LocalDoctor diagnostics", () => {
   function config(dataDir: string): LocalConfig {
     return {
       dataDir,
-      core: { host: "127.0.0.1", port: 1 },
+      core: { host: "127.0.0.1", port: 1, httpPort: 2 },
       runner: { id: "runner-local", spoolSoftBytes: 1_000, spoolHardBytes: 2_000 },
       modelProfile: {
         provider: "openai-compatible",
@@ -242,6 +242,13 @@ describe("LocalDoctor diagnostics", () => {
         credentialRef: "env:KEY",
         visualInput: "disabled",
       },
+      auth: { bootstrapTtlMs: 600_000, userSessionTtlMs: 900_000 },
+      completionReconciliationRetryBaseMs: 1_000,
+      completionReconciliationRetryMaximumMs: 60_000,
+      completionReconciliationMaximumAttempts: 8,
+      completionReconciliationPollIntervalMs: 250,
+      completionReconciliationBatchSize: 64,
+      shutdown: { stopRequestPollIntervalMs: 250, stopRequestMaximumAgeMs: 30_000, stopRequestWaitTimeoutMs: 60_000, drainTimeoutMs: 30_000 },
     };
   }
 

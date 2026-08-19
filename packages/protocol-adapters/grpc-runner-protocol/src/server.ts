@@ -289,7 +289,8 @@ export class GrpcRunnerProtocolServer {
         this,
         this.options.application,
         call,
-        identity.runnerId,
+        identity,
+        capabilityTokens(hello),
         welcome.sessionId,
         generation,
         this.options.maximumConnectionPendingFrames ?? DEFAULT_MAXIMUM_HANDSHAKE_PENDING_FRAMES,
@@ -359,12 +360,18 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     private readonly server: GrpcRunnerProtocolServer,
     private readonly application: RunnerProtocolApplication,
     private readonly call: Duplex,
-    readonly runnerId: string,
+    readonly identity: Awaited<ReturnType<RunnerPeerAuthenticator["authenticate"]>>,
+    capabilities: readonly string[],
     readonly sessionId: string,
     readonly generation: number,
     private readonly maximumPendingFrames: number,
     private readonly maximumPendingBytes: number,
-  ) {}
+  ) {
+    this.authenticatedRunner = { runnerId: identity.runnerId, scope: identity.scope, capabilities };
+  }
+
+  readonly authenticatedRunner: RunnerConnectionPort["authenticatedRunner"];
+  get runnerId(): string { return this.identity.runnerId; }
 
   async offer(job: AcceptedExecutionJob, requirements: readonly string[]): Promise<ExecutionJobLease> {
     if (this.disposed) {
@@ -531,4 +538,14 @@ export { SUPPORTED_PROTOCOL_MAJORS };
 
 function listenerAddress(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+function capabilityTokens(hello: import("@qualigence/runner-protocol").RunnerHello): readonly string[] {
+  return [
+    ...hello.capabilities.targetAdapters.map((value) => `target:${value}`),
+    ...hello.capabilities.observationExtensions.map((value) => `observation:${value}`),
+    ...hello.capabilities.actionKinds.map((value) => `action:${value}`),
+    ...(hello.capabilities.model.structuredOutput ? ["model:structured-output"] : []),
+    ...(hello.capabilities.model.visionInput ? ["model:vision-input"] : []),
+  ];
 }

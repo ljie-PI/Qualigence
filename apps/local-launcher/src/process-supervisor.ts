@@ -4,6 +4,12 @@ import {
   type HealthReport,
 } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
+import { fork } from "node:child_process";
+import { readFile, rename, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { request } from "node:http";
+import { terminateProcess } from "./child-process-unit.js";
+import { clearRuntimeState, parseStopRequest, readRuntimeState } from "./runtime-state.js";
 
 /**
  * One supervised child process (Core or Runner). Concrete implementations spawn
@@ -33,6 +39,7 @@ export interface ProcessSupervisorOptions {
   readonly units: readonly ProcessUnit[];
   readonly lock?: DataDirLock;
 }
+
 
 /**
  * Orchestrates the ordered start, reverse-order rollback/shutdown and health
@@ -129,4 +136,89 @@ export class ProcessSupervisor {
   private record(event: string): void {
     this.recorded.push(event);
   }
+
+  static handoffDetached(input: {
+    readonly dataDir: string;
+    readonly corePid: number;
+    readonly runnerPid: number;
+    readonly coreHttpPort: number;
+    readonly startedAt: string;
+    readonly supervisorCredential: Uint8Array;
+    readonly shutdown: { readonly stopRequestPollIntervalMs: number; readonly stopRequestMaximumAgeMs: number; readonly drainTimeoutMs: number };
+  }): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const entry = process.argv[1]; if (entry === undefined) { reject(new LauncherError("SupervisorUnavailable", "launcher entrypoint is unavailable")); return; }
+      const child = fork(entry, ["__supervise"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const timeout = setTimeout(() => { child.kill(); reject(new LauncherError("SupervisorUnavailable", "detached supervisor did not acknowledge handoff")); }, 10_000);
+      child.once("message", (message) => {
+        if (message !== "ready" || child.pid === undefined) return;
+        clearTimeout(timeout); child.disconnect(); child.unref(); resolve(child.pid);
+      });
+      child.once("error", (error) => { clearTimeout(timeout); reject(new LauncherError("SupervisorUnavailable", "detached supervisor failed", { cause: error })); });
+      child.send({ ...input, supervisorCredential: Buffer.from(input.supervisorCredential).toString("base64url") });
+    });
+  }
+
+  static runDetachedChild(): void {
+    process.once("message", (value) => {
+      const input = parseDetachedInput(value);
+      const units: ProcessUnit[] = [new PidProcessUnit("core", input.corePid), new PidProcessUnit("runner", input.runnerPid)];
+      const supervisor = new ProcessSupervisor({ version: "0.1.0", units });
+      // These units are already running; seed only the supervisor's private list.
+      supervisor.running.push(...units);
+      process.send?.("ready");
+      void pollDetachedStop(supervisor, input).finally(() => process.exit(0));
+    });
+  }
+}
+
+class PidProcessUnit implements ProcessUnit {
+  constructor(readonly name: string, private readonly processId: number) {}
+  async start(): Promise<void> {}
+  async stop(): Promise<void> { await terminateProcess(this.processId, 5_000, true); }
+  async readinessChecks(): Promise<readonly HealthCheck[]> { return []; }
+  async livenessChecks(): Promise<readonly HealthCheck[]> { return []; }
+}
+
+interface DetachedInput {
+  readonly dataDir: string; readonly corePid: number; readonly runnerPid: number; readonly coreHttpPort: number;
+  readonly startedAt: string; readonly supervisorCredential: string;
+  readonly shutdown: { readonly stopRequestPollIntervalMs: number; readonly stopRequestMaximumAgeMs: number; readonly drainTimeoutMs: number };
+}
+
+function parseDetachedInput(value: unknown): DetachedInput {
+  if (typeof value !== "object" || value === null) throw new Error("Invalid detached supervisor handoff.");
+  const input = value as Partial<DetachedInput>;
+  if (typeof input.dataDir !== "string" || !Number.isSafeInteger(input.corePid) || !Number.isSafeInteger(input.runnerPid) || !Number.isSafeInteger(input.coreHttpPort) || typeof input.startedAt !== "string" || typeof input.supervisorCredential !== "string" || input.shutdown === undefined) throw new Error("Invalid detached supervisor handoff.");
+  return input as DetachedInput;
+}
+
+async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedInput): Promise<void> {
+  const canonical = join(input.dataDir, "local-stop-request.json");
+  const claim = join(input.dataDir, `local-stop-request.${process.pid}.claim`);
+  try {
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, input.shutdown.stopRequestPollIntervalMs));
+      try { await rename(canonical, claim); } catch { continue; }
+      try {
+        const marker = parseStopRequest(JSON.parse(await readFile(claim, "utf8")));
+        const state = await readRuntimeState(input.dataDir);
+        const now = Date.now(); const requestedAt = Date.parse(marker.requestedAt);
+        if (state === undefined || marker.supervisorPid !== process.pid || marker.corePid !== input.corePid || marker.runnerPid !== input.runnerPid || marker.startedAt !== input.startedAt || state.startedAt !== input.startedAt || requestedAt > now || now - requestedAt > input.shutdown.stopRequestMaximumAgeMs) continue;
+        await quiesce(input).catch(() => undefined);
+        break;
+      } finally { await rm(claim, { force: true }); }
+    }
+  } finally {
+    await supervisor.stop();
+    await clearRuntimeState(input.dataDir);
+    await rm(canonical, { force: true }); await rm(claim, { force: true });
+  }
+}
+
+function quiesce(input: DetachedInput): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const call = request({ host: "127.0.0.1", port: input.coreHttpPort, path: "/api/v1/local/quiesce", method: "POST", headers: { authorization: `Bearer ${input.supervisorCredential}` }, timeout: input.shutdown.drainTimeoutMs }, (response) => { response.resume(); response.statusCode === 204 ? resolve() : reject(new Error("quiesce refused")); });
+    call.once("error", reject); call.once("timeout", () => { call.destroy(); reject(new Error("quiesce timed out")); }); call.end();
+  });
 }

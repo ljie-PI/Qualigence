@@ -1,159 +1,117 @@
-import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../helpers/cli-process.js";
+import { startMockModelServer, type MockModelHandle } from "../fixtures/openai-compatible/mock-server.js";
+import { startCartFixture, type FixtureHandle } from "../fixtures/web-cart/server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 const launcherEntry = join(repoRoot, "apps", "local-launcher", "dist", "main.js");
-const fakeProcess = join(repoRoot, "tests", "fixtures", "local-launcher", "fake-process.mjs");
+const DEADLINE_MS = 120_000;
+const API_KEY = "sk-local-e2e-DO-NOT-LEAK";
 
-const DEADLINE_MS = 20_000;
-const CORE_PORT = 50_741;
-const trackedPids: number[] = [];
+let dataDir: string | undefined;
+let model: MockModelHandle | undefined;
+let cart: FixtureHandle | undefined;
+let grpcPort: number;
+let httpPort: number;
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Environment that redirects the real Core/Runner to the fake fixture. */
-function launcherEnv(dataDir: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    QUALIGENCE_DATA_DIR: dataDir,
-    QUALIGENCE_CORE_PORT: String(CORE_PORT),
-    QUALIGENCE_MODEL_API_KEY: "super-secret-api-key-value",
-    QUALIGENCE_CORE_COMMAND: process.execPath,
-    QUALIGENCE_CORE_ARGS: JSON.stringify([fakeProcess]),
-    QUALIGENCE_RUNNER_COMMAND: process.execPath,
-    QUALIGENCE_RUNNER_ARGS: JSON.stringify([fakeProcess]),
-    QUALIGENCE_CORE_EXTRA_ENV: JSON.stringify({
-      FAKE_MODE: "ready",
-      FAKE_READY_EVENT: "core-daemon.ready",
-      FAKE_PORT: String(CORE_PORT),
-    }),
-    QUALIGENCE_RUNNER_EXTRA_ENV: JSON.stringify({
-      FAKE_MODE: "ready",
-      FAKE_READY_EVENT: "runner.ready",
-    }),
-  };
-}
-
-function launch(dataDir: string, ...args: string[]) {
-  return runCli([launcherEntry, ...args], launcherEnv(dataDir), DEADLINE_MS, {
-    onStdout: (chunk) => {
-      for (const match of chunk.matchAll(/"pid":\s*(\d+)/g)) {
-        const pid = Number.parseInt(match[1] ?? "", 10);
-        if (Number.isFinite(pid)) trackedPids.push(pid);
-      }
-    },
-  });
-}
-
-let dataDir: string;
-
-beforeAll(() => {
-  if (!existsSync(launcherEntry)) {
-    execFileSync("pnpm", ["build"], { cwd: repoRoot, stdio: "inherit" });
-  }
+beforeAll(async () => {
+  if (!existsSync(launcherEntry)) throw new Error("Built Local Launcher is required.");
+  grpcPort = await freePort();
+  httpPort = await freePort();
 });
 
 afterEach(async () => {
-  if (dataDir === undefined) return;
-  const stateFile = join(dataDir, "runtime-state.json");
-  if (existsSync(stateFile)) {
-    try {
-      const state = JSON.parse(await readFile(stateFile, "utf8")) as {
-        corePid?: number;
-        runnerPid?: number;
-      };
-      for (const pid of [state.runnerPid, state.corePid]) {
-        if (pid !== undefined && isAlive(pid)) process.kill(pid, "SIGKILL");
-      }
-    } catch {
-      // best effort cleanup
-    }
+  if (dataDir !== undefined && existsSync(join(dataDir, "runtime-state.json"))) {
+    await launch(dataDir, "stop").catch(() => undefined);
   }
+  await cart?.close(); await model?.close();
+  if (dataDir !== undefined) await rm(dataDir, { recursive: true, force: true });
+  dataDir = undefined; cart = undefined; model = undefined;
 });
 
-afterAll(async () => {
-  for (const pid of trackedPids) {
-    if (isAlive(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    }
-  }
-  if (dataDir !== undefined) {
-    await rm(dataDir, { recursive: true, force: true });
-  }
-});
+function launcherEnv(directory: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    QUALIGENCE_DATA_DIR: directory,
+    QUALIGENCE_CORE_PORT: String(grpcPort),
+    QUALIGENCE_CORE_HTTP_PORT: String(httpPort),
+    QUALIGENCE_MODEL_BASE_URL: model?.url,
+    QUALIGENCE_MODEL_API_KEY: API_KEY,
+    QUALIGENCE_MODEL: "qualigence-mock-model",
+  };
+}
 
-describe("local-launcher end-to-end", () => {
-  it("initializes, starts, reports health, refuses double start, backs up, and stops", async () => {
+function launch(directory: string, ...args: string[]) {
+  return runCli([launcherEntry, ...args], launcherEnv(directory), DEADLINE_MS);
+}
+
+describe("local-launcher real process loop", () => {
+  it("authenticates intake, dispatches through the real Runner and Chromium, reconciles completion, and stops detached", async () => {
     dataDir = await mkdtemp(join(repoRoot, ".tmp-launcher-e2e-"));
+    model = await startMockModelServer();
+    cart = await startCartFixture("normal");
 
-    // init — first-time setup creates the data dir, certs, config and database.
     const init = await launch(dataDir, "init");
-    expect(init.exitCode).toBe(0);
-    expect(existsSync(join(dataDir, "config.yaml"))).toBe(true);
-    expect(existsSync(join(dataDir, "qualigence.db"))).toBe(true);
-    expect(existsSync(join(dataDir, "certs", "ca.crt"))).toBe(true);
-
-    // start — supervised launch of the (faked) Core and Runner.
+    expect(init.exitCode, init.stderr).toBe(0);
     const start = await launch(dataDir, "start");
-    expect(start.exitCode).toBe(0);
-    // The bootstrap token is printed exactly once.
-    const tokenMatches = start.stdout.match(/bootstrap token:/gi) ?? [];
-    expect(tokenMatches).toHaveLength(1);
-    expect(existsSync(join(dataDir, "runtime-state.json"))).toBe(true);
+    expect(start.exitCode, start.stderr).toBe(0);
+    const matches = [...start.stdout.matchAll(/bootstrap token:\s*([A-Za-z0-9_-]{43})/g)];
+    expect(matches).toHaveLength(1);
+    const bootstrap = matches[0]?.[1];
+    expect(bootstrap).toBeDefined();
 
-    // status — the running topology reports healthy.
-    const status = await launch(dataDir, "status", "--json");
-    expect(status.exitCode).toBe(0);
-    expect(JSON.parse(status.stdout).status).toBe("healthy");
+    const session = await fetch(`http://127.0.0.1:${httpPort}/api/v1/local/session`, {
+      method: "POST", headers: { authorization: `Bearer ${bootstrap}` },
+    });
+    expect(session.status).toBe(201);
+    const { sessionToken } = await session.json() as { sessionToken: string };
+    expect(sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
-    // start again — refused with a stable AlreadyRunning code and exit 3.
-    const second = await launch(dataDir, "start");
-    expect(second.exitCode).toBe(3);
-    expect(second.stderr).toContain("AlreadyRunning");
+    const accepted = await fetch(`http://127.0.0.1:${httpPort}/api/v1/local/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ targetUrl: cart.url, objective: "add one item to the cart" }),
+    });
+    expect(accepted.status).toBe(202);
+    const initial = await accepted.json() as { runId: string; status: string };
+    expect(initial.status).toBe("pending_runner");
 
-    // doctor — one-shot diagnostics succeed and leak no secret.
-    const doctor = await launch(dataDir, "doctor", "--json");
-    expect(doctor.exitCode).toBe(0);
-    expect(doctor.stdout).not.toContain("super-secret-api-key-value");
+    const terminal = await pollRun(initial.runId, sessionToken);
+    expect(terminal.status).toBe("passed");
+    expect(model.requestCount()).toBeGreaterThanOrEqual(2);
 
-    // backup — creates a verifiable backup directory.
-    const backup = await launch(dataDir, "backup", "--reason", "e2e checkpoint");
-    expect(backup.exitCode).toBe(0);
-    const backupDirs = await readdir(join(dataDir, "backups"));
-    expect(backupDirs.length).toBeGreaterThan(0);
-
-    // No secret ever reaches logs, config or backup manifests.
-    const configText = await readFile(join(dataDir, "config.yaml"), "utf8");
-    expect(configText).not.toContain("super-secret-api-key-value");
-    for (const log of await readdir(join(dataDir, "logs"))) {
-      const text = await readFile(join(dataDir, "logs", log), "utf8");
-      expect(text).not.toContain("super-secret-api-key-value");
-    }
-
-    // stop — graceful shutdown removes runtime state and reaps the children.
     const stop = await launch(dataDir, "stop");
-    expect(stop.exitCode).toBe(0);
+    expect(stop.exitCode, stop.stderr).toBe(0);
     expect(existsSync(join(dataDir, "runtime-state.json"))).toBe(false);
 
-    // status after stop — no longer healthy.
-    const stopped = await launch(dataDir, "status", "--json");
-    expect(JSON.parse(stopped.stdout).status).not.toBe("healthy");
-  }, 90_000);
+    const forbidden = [bootstrap!, sessionToken, API_KEY];
+    for (const file of [join(dataDir, "config.yaml"), join(dataDir, "qualigence.db"), ...((await readdir(join(dataDir, "logs"))).map((name) => join(dataDir!, "logs", name)))]) {
+      const text = await readFile(file, "latin1");
+      for (const value of forbidden) expect(text).not.toContain(value);
+    }
+  }, 180_000);
 });
+
+async function pollRun(runId: string, token: string): Promise<{ readonly status: string }> {
+  const deadline = Date.now() + DEADLINE_MS;
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:${httpPort}/api/v1/local/runs/${runId}`, { headers: { authorization: `Bearer ${token}` } });
+    const body = await response.json() as { status: string };
+    if (["passed", "finding", "blocked", "error"].includes(body.status)) return body;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Local Run did not reach a terminal status.");
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); if (address === null || typeof address === "string") throw new Error("Expected TCP port.");
+  await new Promise<void>((resolve) => server.close(() => resolve())); return address.port;
+}

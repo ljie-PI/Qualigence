@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 /** Persisted record of a running Local topology, shared across CLI invocations. */
 export interface RuntimeState {
+  readonly supervisorPid: number;
   readonly corePid: number;
   readonly runnerPid: number;
   readonly corePort: number;
@@ -27,6 +28,11 @@ export async function writeRuntimeState(state: RuntimeState): Promise<void> {
   await writeFile(stateFile(state.dataDir), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+export { localStopRequestSchema } from "@qualigence/local-control";
+export type { LocalStopRequest } from "@qualigence/local-control";
+import { localStopRequestSchema } from "@qualigence/local-control";
+export function parseStopRequest(value: unknown) { return localStopRequestSchema.parse(value); }
+
 export async function clearRuntimeState(dataDir: string): Promise<void> {
   await rm(stateFile(dataDir), { force: true });
 }
@@ -44,6 +50,6 @@ export function isPidAlive(pid: number): boolean {
 /** A running topology exists only if both recorded PIDs are still alive. */
 export function isTopologyRunning(state: RuntimeState | undefined): state is RuntimeState {
   return (
-    state !== undefined && isPidAlive(state.corePid) && isPidAlive(state.runnerPid)
+    state !== undefined && isPidAlive(state.supervisorPid) && isPidAlive(state.corePid) && isPidAlive(state.runnerPid)
   );
 }

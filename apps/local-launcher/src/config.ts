@@ -34,9 +34,16 @@ export class LocalConfigError extends Error {
 
 const DEFAULTS = {
   dataDir: "./.qualigence-local",
-  core: { host: "127.0.0.1", port: 50_555 },
+  core: { host: "127.0.0.1", port: 50_555, httpPort: 50_556 },
   runner: { spoolSoftBytes: 64 * 1024 * 1024, spoolHardBytes: 128 * 1024 * 1024 },
   modelProfile: { provider: "openai-compatible", visualInput: "disabled" as VisualInputMode },
+  auth: { bootstrapTtlMs: 600_000, userSessionTtlMs: 900_000 },
+  completionReconciliationRetryBaseMs: 1_000,
+  completionReconciliationRetryMaximumMs: 60_000,
+  completionReconciliationMaximumAttempts: 8,
+  completionReconciliationPollIntervalMs: 250,
+  completionReconciliationBatchSize: 64,
+  shutdown: { stopRequestPollIntervalMs: 250, stopRequestMaximumAgeMs: 30_000, stopRequestWaitTimeoutMs: 60_000, drainTimeoutMs: 30_000 },
 } as const;
 
 /**
@@ -133,7 +140,7 @@ function looksLikeSecretValue(value: string): boolean {
 
 type MutableConfig = {
   dataDir?: unknown;
-  core?: { host?: unknown; port?: unknown };
+  core?: { host?: unknown; port?: unknown; httpPort?: unknown };
   runner?: { id?: unknown; spoolSoftBytes?: unknown; spoolHardBytes?: unknown };
   modelProfile?: {
     provider?: unknown;
@@ -142,6 +149,13 @@ type MutableConfig = {
     credentialRef?: unknown;
     visualInput?: unknown;
   };
+  auth?: { bootstrapTtlMs?: unknown; userSessionTtlMs?: unknown };
+  completionReconciliationRetryBaseMs?: unknown;
+  completionReconciliationRetryMaximumMs?: unknown;
+  completionReconciliationMaximumAttempts?: unknown;
+  completionReconciliationPollIntervalMs?: unknown;
+  completionReconciliationBatchSize?: unknown;
+  shutdown?: { stopRequestPollIntervalMs?: unknown; stopRequestMaximumAgeMs?: unknown; stopRequestWaitTimeoutMs?: unknown; drainTimeoutMs?: unknown };
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -160,6 +174,7 @@ function envPartial(env: NodeJS.ProcessEnv): MutableConfig {
     () => ((partial.core ??= {}).port = env.QUALIGENCE_CORE_PORT),
     env.QUALIGENCE_CORE_PORT,
   );
+  set(() => ((partial.core ??= {}).httpPort = env.QUALIGENCE_CORE_HTTP_PORT), env.QUALIGENCE_CORE_HTTP_PORT);
   if (env.QUALIGENCE_RUNNER_ID) (partial.runner ??= {}).id = env.QUALIGENCE_RUNNER_ID;
   if (env.QUALIGENCE_SPOOL_SOFT_BYTES)
     (partial.runner ??= {}).spoolSoftBytes = env.QUALIGENCE_SPOOL_SOFT_BYTES;
@@ -180,6 +195,7 @@ function envPartial(env: NodeJS.ProcessEnv): MutableConfig {
 const CLI_KEY_TO_PATH: Readonly<Record<string, readonly string[]>> = {
   dataDir: ["dataDir"],
   corePort: ["core", "port"],
+  coreHttpPort: ["core", "httpPort"],
   runnerId: ["runner", "id"],
   spoolSoftBytes: ["runner", "spoolSoftBytes"],
   spoolHardBytes: ["runner", "spoolHardBytes"],
@@ -249,6 +265,7 @@ const localConfigSchema = z
       .object({
         host: z.literal("127.0.0.1"),
         port: z.coerce.number().int().min(1).max(65_535),
+        httpPort: z.coerce.number().int().min(1).max(65_535),
       })
       .strict(),
     runner: z
@@ -271,8 +288,20 @@ const localConfigSchema = z
         visualInput: z.enum(["disabled", "on-demand"]),
       })
       .strict(),
+    auth: z.object({ bootstrapTtlMs: z.coerce.number().int().positive().max(86_400_000), userSessionTtlMs: z.coerce.number().int().positive().max(86_400_000) }).strict(),
+    completionReconciliationRetryBaseMs: z.coerce.number().int().positive().max(60_000),
+    completionReconciliationRetryMaximumMs: z.coerce.number().int().positive().max(300_000),
+    completionReconciliationMaximumAttempts: z.coerce.number().int().positive().max(64),
+    completionReconciliationPollIntervalMs: z.coerce.number().int().positive().max(60_000),
+    completionReconciliationBatchSize: z.coerce.number().int().positive().max(256),
+    shutdown: z.object({ stopRequestPollIntervalMs: z.coerce.number().int().positive().max(5_000), stopRequestMaximumAgeMs: z.coerce.number().int().positive().max(300_000), stopRequestWaitTimeoutMs: z.coerce.number().int().positive().max(600_000), drainTimeoutMs: z.coerce.number().int().positive().max(300_000) }).strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    if (config.completionReconciliationPollIntervalMs > config.completionReconciliationRetryBaseMs || config.completionReconciliationRetryBaseMs > config.completionReconciliationRetryMaximumMs) context.addIssue({ code: "custom", message: "completion reconciliation timing relationship is invalid", path: ["completionReconciliationPollIntervalMs"] });
+    const minimumWait = config.shutdown.drainTimeoutMs + 2 * 5_000 + 2 * 3_000;
+    if (config.shutdown.stopRequestPollIntervalMs > config.shutdown.stopRequestMaximumAgeMs || config.shutdown.stopRequestMaximumAgeMs > config.shutdown.stopRequestWaitTimeoutMs || config.shutdown.stopRequestWaitTimeoutMs < minimumWait) context.addIssue({ code: "custom", message: "shutdown timing relationship is invalid", path: ["shutdown"] });
+  });
 
 /**
  * Merge configuration sources by precedence (safe defaults < YAML < environment
@@ -293,7 +322,7 @@ export function loadLocalConfig(input: ConfigSources): LocalConfig {
   const parsed = result.data;
   return {
     dataDir: resolve(parsed.dataDir),
-    core: { host: "127.0.0.1", port: parsed.core.port },
+    core: { host: "127.0.0.1", port: parsed.core.port, httpPort: parsed.core.httpPort },
     runner: {
       id: parsed.runner.id,
       spoolSoftBytes: parsed.runner.spoolSoftBytes,
@@ -306,5 +335,15 @@ export function loadLocalConfig(input: ConfigSources): LocalConfig {
       credentialRef: parsed.modelProfile.credentialRef,
       visualInput: parsed.modelProfile.visualInput,
     },
+    auth: parsed.auth,
+    completionReconciliationRetryBaseMs: parsed.completionReconciliationRetryBaseMs,
+    completionReconciliationRetryMaximumMs: parsed.completionReconciliationRetryMaximumMs,
+    completionReconciliationMaximumAttempts: parsed.completionReconciliationMaximumAttempts,
+    completionReconciliationPollIntervalMs: parsed.completionReconciliationPollIntervalMs,
+    completionReconciliationBatchSize: parsed.completionReconciliationBatchSize,
+    shutdown: parsed.shutdown,
   };
 }
+
+export const LOCAL_SHUTDOWN_GRACE_MS = 5_000;
+export const LOCAL_REAP_TIMEOUT_MS = 3_000;

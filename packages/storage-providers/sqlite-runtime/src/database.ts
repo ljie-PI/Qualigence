@@ -10,6 +10,7 @@ export interface SqliteRuntimeOptions {
   readonly filename: string;
   readonly busyTimeoutMs: number;
   readonly clock?: Clock;
+  readonly openMode?: "migrate" | "require-current";
 }
 
 export type PragmaValue = string | number;
@@ -59,7 +60,8 @@ export class SqliteRuntime {
     );
 
     try {
-      await runtime.migrate();
+      if ((options.openMode ?? "migrate") === "migrate") await runtime.migrate();
+      else await runtime.requireCurrent();
     } catch (cause) {
       await runtime.close();
       throw cause;
@@ -126,6 +128,16 @@ export class SqliteRuntime {
           })
           .execute();
       });
+    }
+  }
+
+  private async requireCurrent(): Promise<void> {
+    const currentVersion = await this.readSchemaVersion();
+    if (currentVersion > SUPPORTED_SCHEMA_VERSION) {
+      throw new SqliteRuntimeError("DatabaseVersionTooNew", `Database schema version ${currentVersion} is newer than the supported version ${SUPPORTED_SCHEMA_VERSION}`);
+    }
+    if (currentVersion !== SUPPORTED_SCHEMA_VERSION) {
+      throw new SqliteRuntimeError("DatabaseOpenFailed", `Database schema version ${currentVersion} is not the required version ${SUPPORTED_SCHEMA_VERSION}`);
     }
   }
 

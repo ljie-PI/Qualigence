@@ -18,6 +18,14 @@ export type {
   RunnerControlIntegrityEventSink,
   RunnerControlIntegrityKind,
   RunnerControlStore,
+  RunnerCompletionRecord,
+  LocalCompletionApplyResult,
+  LocalCompletionState,
+  LocalDispatchState,
+  LocalRunCompletionCandidate,
+  LocalRunDispatch,
+  LocalRunIntakeRecord,
+  LocalRunIntakeStore,
 } from "./runner-control-store.js";
 
 export {

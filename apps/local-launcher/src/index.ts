@@ -37,6 +37,7 @@ export { HealthClient } from "./health-client.js";
 export type { HealthTarget } from "./health-client.js";
 
 export { MigrationGuard } from "./migration-guard.js";
+export { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff.js";
 
 export { ProcessSupervisor } from "./process-supervisor.js";
 export type {

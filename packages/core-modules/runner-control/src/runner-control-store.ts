@@ -78,6 +78,68 @@ export interface PersistedExecutionLease {
   readonly recoveryOfRunId?: string;
 }
 
+export interface RunnerCompletionRecord {
+  readonly runId: string;
+  readonly jobId: string;
+  readonly jobSha256: string;
+  readonly completion: ExecutionCompletion;
+  readonly completedAt: string;
+}
+
+export type LocalDispatchState =
+  | "pending_runner"
+  | "dispatching"
+  | "offer_outcome_unknown"
+  | "offered";
+export type LocalCompletionState = "awaiting" | "applied" | "integrity_blocked" | "retry_exhausted";
+
+export interface LocalRunIntakeRecord {
+  readonly runId: string;
+  readonly jobId: string;
+  readonly dispatchState: LocalDispatchState;
+  readonly dispatchAttempt: number;
+  readonly completionState: LocalCompletionState;
+  readonly completionAttempt: number;
+  readonly completionNextAttemptAt: string;
+  readonly runStatus: "running" | "passed" | "finding" | "blocked" | "error";
+  readonly completedAt?: string;
+  readonly errorCode?: string;
+}
+
+export interface LocalRunDispatch {
+  readonly runId: string;
+  readonly expectedAttempt: number;
+  readonly job: AcceptedExecutionJob;
+}
+
+export interface LocalRunCompletionCandidate {
+  readonly runId: string;
+  readonly jobId: string;
+  readonly jobSha256: string;
+  readonly expectedAttempt: number;
+}
+
+export type LocalCompletionApplyResult =
+  | "applied"
+  | "duplicate"
+  | "stale"
+  | "identity_mismatch"
+  | "completion_conflict";
+
+export interface LocalRunIntakeStore {
+  create(input: { readonly job: AcceptedExecutionJob; readonly createdAt: string }): Promise<void>;
+  pendingDispatches(limit: number): Promise<readonly LocalRunDispatch[]>;
+  beginOffer(input: { readonly runId: string; readonly expectedAttempt: number; readonly startedAt: string }): Promise<boolean>;
+  markOffered(input: { readonly runId: string; readonly expectedAttempt: number; readonly offeredAt: string }): Promise<boolean>;
+  markOfferOutcomeUnknown(input: { readonly runId: string; readonly expectedAttempt: number; readonly failedAt: string; readonly errorCode: string }): Promise<boolean>;
+  quarantineInterruptedDispatches(quarantinedAt: string): Promise<number>;
+  run(runId: string): Promise<LocalRunIntakeRecord | undefined>;
+  pendingCompletions(input: { readonly now: string; readonly limit: number }): Promise<readonly LocalRunCompletionCandidate[]>;
+  recordCompletionFailure(input: { readonly runId: string; readonly expectedAttempt: number; readonly errorCode: "CompletionPending" | "CompletionAuthorityUnavailable" | "CompletionApplyFailed"; readonly failedAt: string }): Promise<{ readonly status: "scheduled"; readonly attempt: number; readonly nextAttemptAt: string } | { readonly status: "blocked" } | { readonly status: "stale" }>;
+  applyCompletion(input: { readonly runId: string; readonly expectedAttempt: number; readonly jobId: string; readonly jobSha256: string; readonly completion: ExecutionCompletion; readonly completedAt: string }): Promise<LocalCompletionApplyResult>;
+  markIntegrityBlocked(input: { readonly runId: string; readonly expectedAttempt: number; readonly errorCode: "CompletionIdentityMismatch" | "CompletionConflict"; readonly blockedAt: string }): Promise<"blocked" | "stale">;
+}
+
 /**
  * The result of one atomic completion attempt. A stored terminal completion is
  * exposed only when this attempt verified the lease binding and observed a
@@ -213,4 +275,5 @@ export interface RunnerControlStore {
   markLeaseLost(runId: string, lostAt: string): Promise<boolean>;
   lease(runId: string): Promise<PersistedExecutionLease | undefined>;
   completion(runId: string): Promise<ExecutionCompletion | undefined>;
+  completionRecord(runId: string): Promise<RunnerCompletionRecord | undefined>;
 }

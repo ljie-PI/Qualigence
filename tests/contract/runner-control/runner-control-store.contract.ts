@@ -136,6 +136,7 @@ export function runnerControlStoreContract(
         return {
           lease: await store.lease("run-1"),
           completion: await store.completion("run-1"),
+          completionRecord: await store.completionRecord("run-1"),
         };
       });
 
@@ -148,6 +149,7 @@ export function runnerControlStoreContract(
         completedAt: CHECKED_AT,
       });
       expect(stored.completion).toEqual(passed());
+      expect(stored.completionRecord).toMatchObject({ runId: "run-1", jobId: "job-run-1", jobSha256: expect.stringMatching(/^[a-f0-9]{64}$/), completion: passed(), completedAt: CHECKED_AT });
       expect(canonicalPayloadHash(stored.completion)).toBe(canonicalPayloadHash(passed()));
     });
 

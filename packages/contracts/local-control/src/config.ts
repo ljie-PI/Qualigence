@@ -13,6 +13,7 @@ export interface LocalConfig {
   readonly core: {
     readonly host: "127.0.0.1";
     readonly port: number;
+    readonly httpPort?: number;
   };
   readonly runner: {
     readonly id: string;
@@ -25,6 +26,21 @@ export interface LocalConfig {
     readonly model: string;
     readonly credentialRef: string;
     readonly visualInput: VisualInputMode;
+  };
+  readonly auth: {
+    readonly bootstrapTtlMs: number;
+    readonly userSessionTtlMs: number;
+  };
+  readonly completionReconciliationRetryBaseMs: number;
+  readonly completionReconciliationRetryMaximumMs: number;
+  readonly completionReconciliationMaximumAttempts: number;
+  readonly completionReconciliationPollIntervalMs: number;
+  readonly completionReconciliationBatchSize: number;
+  readonly shutdown: {
+    readonly stopRequestPollIntervalMs: number;
+    readonly stopRequestMaximumAgeMs: number;
+    readonly stopRequestWaitTimeoutMs: number;
+    readonly drainTimeoutMs: number;
   };
 }
 

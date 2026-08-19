@@ -18,5 +18,6 @@
     { "path": "../../packages/storage-providers/sqlite-runtime" },
     { "path": "../../packages/protocol-adapters/grpc-runner-protocol" },
     { "path": "../../packages/execution-application" }
+    ,{ "path": "../../packages/contracts/local-control" }
   ]
 }

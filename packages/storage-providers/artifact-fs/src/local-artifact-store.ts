@@ -104,6 +104,10 @@ export class LocalArtifactStore implements ArtifactStore {
     return bytes.length === manifest.size && sha256Hex(bytes) === manifest.sha256;
   }
 
+  async delete(manifest: ArtifactManifest): Promise<void> {
+    await rm(this.resolveSafePathFromRelative(manifest.relativePath), { force: true });
+  }
+
   private manifestFor(request: ArtifactWriteRequest): ArtifactManifest {
     return {
       artifactId: request.artifactId,

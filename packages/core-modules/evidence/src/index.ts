@@ -18,6 +18,7 @@ export type {
   ArtifactStore,
   ArtifactWriteRequest,
   ExecutionRunRecord,
+  FindingReference,
   ModelInvocationStore,
   ModelInvocationSummary,
   RunStatus,

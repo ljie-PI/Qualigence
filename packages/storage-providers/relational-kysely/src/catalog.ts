@@ -1186,6 +1186,28 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     foreignKeys: [],
     checks: [],
   },
+  // ---- Migration 007: Local run intake -------------------------------
+  {
+    name: "local_run_intakes",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("run_id"), t("job_id"), t("job_json"), t("job_sha256"), t("dispatch_state"),
+      i("dispatch_attempt"), t("dispatch_last_attempt_at", false), t("dispatch_error_code", false),
+      t("completion_state"), i("completion_attempt"), t("completion_last_attempt_at", false),
+      t("completion_next_attempt_at"), t("completion_error_code", false), t("completion_sha256", false),
+      t("completion_applied_at", false), t("completion_blocked_at", false), t("created_at"), t("updated_at"),
+    ],
+    primaryKey: ["run_id"],
+    uniques: [{ name: "local_run_intakes_job_id_unique", columns: ["job_id"] }],
+    foreignKeys: [{ columns: ["run_id"], references: { table: "execution_runs", columns: ["run_id"] } }],
+    checks: [
+      { name: "local_run_intakes_dispatch_state_check", predicate: "dispatch_state IN ('pending_runner', 'dispatching', 'offer_outcome_unknown', 'offered')" },
+      { name: "local_run_intakes_completion_state_check", predicate: "completion_state IN ('awaiting', 'applied', 'integrity_blocked', 'retry_exhausted')" },
+      { name: "local_run_intakes_attempt_check", predicate: "dispatch_attempt >= 0 AND completion_attempt >= 0" },
+    ],
+  },
 ];
 
 export const TENANT_OWNED_TABLES: readonly RelationalTableSpec[] =

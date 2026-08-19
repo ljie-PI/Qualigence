@@ -42,6 +42,8 @@ export interface RecoveredRun {
   readonly recoveryOfRunId: string;
 }
 
+export type RunCompletionDisposition = "completed" | "duplicate";
+
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 
 function hashToken(token: string): string {
@@ -151,9 +153,9 @@ export class RunOwnershipService {
     };
   }
 
-  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<void> {
+  async complete(lease: ExecutionJobLease, completion: ExecutionCompletion): Promise<RunCompletionDisposition> {
     const record = await this.requireMatchingLease(lease);
-    await this.completeAgainst(record, completion);
+    return this.completeAgainst(record, completion);
   }
 
   /**
@@ -165,7 +167,7 @@ export class RunOwnershipService {
    * with no stored lease or a lost lease is refused exactly like
    * {@link complete}.
    */
-  async completeStored(runId: string, completion: ExecutionCompletion): Promise<void> {
+  async completeStored(runId: string, completion: ExecutionCompletion): Promise<RunCompletionDisposition> {
     const record = await this.store.lease(runId);
     const nowIso = new Date(this.now()).toISOString();
     if (record === undefined) {
@@ -174,8 +176,7 @@ export class RunOwnershipService {
       });
     }
     if (record.completedAt !== undefined) {
-      await this.completeAgainst(record, completion, nowIso);
-      return;
+      return this.completeAgainst(record, completion, nowIso);
     }
     if (record.lostAt !== undefined) {
       throw new CoreApplicationError("LeaseLost", `run ${runId} has no active lease`, {
@@ -186,22 +187,21 @@ export class RunOwnershipService {
       if (!await this.store.markLeaseLost(runId, nowIso)) {
         const latest = await this.store.lease(runId);
         if (latest?.completedAt !== undefined) {
-          await this.completeAgainst(latest, completion, nowIso);
-          return;
+          return this.completeAgainst(latest, completion, nowIso);
         }
       }
       throw new CoreApplicationError("LeaseLost", `lease for run ${runId} has expired`, {
         details: { runId },
       });
     }
-    await this.completeAgainst(record, completion, nowIso);
+    return this.completeAgainst(record, completion, nowIso);
   }
 
   private async completeAgainst(
     record: PersistedExecutionLease,
     completion: ExecutionCompletion,
     checkedAt = new Date(this.now()).toISOString(),
-  ): Promise<void> {
+  ): Promise<RunCompletionDisposition> {
     const outcome = await this.store.completeLease({
       runId: record.job.runId,
       jobId: record.job.jobId,
@@ -235,6 +235,7 @@ export class RunOwnershipService {
         { details: { runId: record.job.runId } },
       );
     }
+    return outcome.outcome;
   }
 
   async mayStartAction(lease: ExecutionJobLease): Promise<boolean> {
