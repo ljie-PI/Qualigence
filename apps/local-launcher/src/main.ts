@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import { request } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
@@ -35,7 +35,9 @@ import {
   clearRuntimeState,
   isPidAlive,
   isTopologyRunning,
+  publishStopRequest,
   readRuntimeState,
+  sameTopology,
   writeRuntimeState,
 } from "./runtime-state.js";
 
@@ -187,6 +189,11 @@ function buildCoreUnit(ctx: LauncherContext, env: NodeJS.ProcessEnv, frame: Buff
     CORE_CONFIGURED_RUNNER_ID: ctx.config.runner.id,
     CORE_BOOTSTRAP_CREDENTIAL_FD: "3",
     CORE_USER_SESSION_TTL_MS: String(ctx.config.auth.userSessionTtlMs),
+    CORE_COMPLETION_RETRY_BASE_MS: String(ctx.config.completionReconciliationRetryBaseMs),
+    CORE_COMPLETION_RETRY_MAXIMUM_MS: String(ctx.config.completionReconciliationRetryMaximumMs),
+    CORE_COMPLETION_MAXIMUM_ATTEMPTS: String(ctx.config.completionReconciliationMaximumAttempts),
+    CORE_COMPLETION_POLL_INTERVAL_MS: String(ctx.config.completionReconciliationPollIntervalMs),
+    CORE_COMPLETION_BATCH_SIZE: String(ctx.config.completionReconciliationBatchSize),
     CORE_TLS_CA: certs.ca,
     CORE_TLS_CERT: certs.coreCert,
     CORE_TLS_KEY: certs.coreKey,
@@ -359,11 +366,11 @@ async function commandStart(
   io.out("Qualigence Local is running.");
   io.out(`  Core:            http://127.0.0.1:${ctx.config.core.httpPort ?? 50_556}`);
   io.out(`  bootstrap token: ${encodeBootstrapCredential(credentials.userBootstrap)}`);
-  credentials.destroy();
-
   if (foreground) {
-    await runForeground(supervisor, ctx, io);
+    credentials.userBootstrap.fill(0);
+    await runForeground(supervisor, ctx, io, credentials.supervisor, ctx.config.shutdown.drainTimeoutMs);
   } else {
+    credentials.destroy();
     core.detach();
     runner.detach();
   }
@@ -373,18 +380,41 @@ function runForeground(
   supervisor: ProcessSupervisor,
   ctx: LauncherContext,
   io: LauncherIo,
+  supervisorCredential: Uint8Array,
+  drainTimeoutMs: number,
 ): Promise<void> {
-  return new Promise<void>((resolvePromise) => {
+  return new Promise<void>((resolvePromise, rejectPromise) => {
+    let shutdownPromise: Promise<void> | undefined;
     const shutdown = (): void => {
-      void (async () => {
-        await supervisor.stop();
-        await clearRuntimeState(ctx.dataDir);
-        io.out("Qualigence Local stopped.");
-        resolvePromise();
+      shutdownPromise ??= (async () => {
+        try {
+          await quiesceCore(ctx.config.core.httpPort ?? 50_556, supervisorCredential, drainTimeoutMs).catch(() => undefined);
+          await supervisor.stop();
+          await clearRuntimeState(ctx.dataDir);
+          io.out("Qualigence Local stopped.");
+        } finally {
+          Buffer.from(supervisorCredential.buffer, supervisorCredential.byteOffset, supervisorCredential.byteLength).fill(0);
+          process.off("SIGINT", shutdown);
+          process.off("SIGTERM", shutdown);
+        }
       })();
+      shutdownPromise.then(resolvePromise, rejectPromise);
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+  });
+}
+
+function quiesceCore(port: number, credential: Uint8Array, timeoutMs: number): Promise<void> {
+  const bearer = encodeBootstrapCredential(credential);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const call = request({ host: "127.0.0.1", port, path: "/api/v1/local/quiesce", method: "POST", headers: { authorization: `Bearer ${bearer}` }, timeout: timeoutMs }, (response) => {
+      response.resume();
+      response.statusCode === 204 ? resolvePromise() : rejectPromise(new Error("quiesce refused"));
+    });
+    call.once("error", rejectPromise);
+    call.once("timeout", () => { call.destroy(); rejectPromise(new Error("quiesce timed out")); });
+    call.end();
   });
 }
 
@@ -395,11 +425,16 @@ async function commandStop(ctx: LauncherContext, io: LauncherIo): Promise<void> 
     return;
   }
   if (!isPidAlive(state.supervisorPid)) throw new LauncherError("SupervisorUnavailable", "detached supervisor is unavailable");
-  const marker = { version: "local-stop-request/v1", supervisorPid: state.supervisorPid, corePid: state.corePid, runnerPid: state.runnerPid, startedAt: state.startedAt, requestedAt: new Date().toISOString() };
-  const temporary = join(ctx.dataDir, `local-stop-request.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
-  await writeFile(temporary, JSON.stringify(marker), { encoding: "utf8", flag: "wx", flush: true }); await rename(temporary, join(ctx.dataDir, "local-stop-request.json"));
+  const marker = { version: "local-stop-request/v1" as const, supervisorPid: state.supervisorPid, corePid: state.corePid, runnerPid: state.runnerPid, startedAt: state.startedAt, requestedAt: new Date().toISOString() };
+  await publishStopRequest(ctx.dataDir, marker);
   const deadline = Date.now() + ctx.config.shutdown.stopRequestWaitTimeoutMs;
-  while (Date.now() < deadline) { if ((await readRuntimeState(ctx.dataDir)) === undefined && !isPidAlive(state.supervisorPid) && !isPidAlive(state.runnerPid) && !isPidAlive(state.corePid)) { io.out("Qualigence Local stopped."); return; } await new Promise((resolve) => setTimeout(resolve, ctx.config.shutdown.stopRequestPollIntervalMs)); }
+  while (Date.now() < deadline) {
+    const current = await readRuntimeState(ctx.dataDir);
+    if (current === undefined && !isPidAlive(state.supervisorPid) && !isPidAlive(state.runnerPid) && !isPidAlive(state.corePid)) { io.out("Qualigence Local stopped."); return; }
+    if (current !== undefined && !sameTopology(current, state)) throw new LauncherError("StopTopologyChanged", "running topology changed while waiting for shutdown");
+    if (!isPidAlive(state.supervisorPid)) throw new LauncherError("SupervisorUnavailable", "detached supervisor became unavailable during shutdown");
+    await new Promise((resolve) => setTimeout(resolve, ctx.config.shutdown.stopRequestPollIntervalMs));
+  }
   throw new LauncherError("StopTimedOut", "timed out waiting for detached topology shutdown");
 }
 

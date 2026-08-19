@@ -60,6 +60,9 @@ describe("core/runner independent-process integration", () => {
 
     const session = await client.connect(makeHello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
+    expect(connection.authenticatedRunner.runnerId).toBe("runner-1");
+    expect(connection.authenticatedRunner.scope).toEqual({ kind: "local" });
+    expect(connection.authenticatedRunner.capabilities).toContain(WEB_TARGET_TOKEN);
 
     const job = webJob();
     const leasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);

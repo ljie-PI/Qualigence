@@ -155,7 +155,7 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     const sessions = new LocalSessionService({ userBootstrap: credentials.userBootstrap, supervisor: credentials.supervisor, userBootstrapExpiresAtEpochMs: credentials.userExpiresAtEpochMs, userSessionTtlMs: config.userSessionTtlMs ?? 900_000 });
     const probe = new SqliteLocalReadinessProbe(runtime);
     readiness = new LocalReadinessService({ schemaVersion: () => runtime.schemaVersion(), storageProbe: () => probe.probe(), artifactProbe: async () => { const bytes = Buffer.from("local-readiness"); const manifest = await artifactStore.write({ artifactId: randomUUID(), runId: `readiness-${process.pid}`, name: "probe.bin", kind: "other", mediaType: "application/octet-stream", bytes }); try { const read = await artifactStore.read(manifest); if (!Buffer.from(read).equals(bytes)) throw new Error("Artifact readiness bytes differ."); } finally { await artifactStore.delete(manifest); } }, listeners: () => ({ http: httpBound, grpc: grpcBound }), reconciliationHealthy: () => coordinator!.isHealthy(), configuredRunnerId: config.configuredRunnerId!, connection: () => server.connection(config.configuredRunnerId!) });
-    http = buildLocalHttpServer({ sessions, createRun: async ({ targetUrl, objective }) => { const issued = policyIssuer.issue({ kind: "web", url: targetUrl }); const job = { jobId: randomUUID(), runId: randomUUID(), projectId: issued.projectId, target: { kind: "web" as const, url: targetUrl }, objective, policy: issued.policy }; await intake.create({ job, createdAt: new Date().toISOString() }); return { runId: job.runId, status: "pending_runner" }; }, readRun: async (runId) => { const record = await intake.run(runId); if (record === undefined) return undefined; const status = record.completionState === "applied" ? record.runStatus : record.completionState === "integrity_blocked" || record.completionState === "retry_exhausted" ? "error" : record.dispatchState === "offer_outcome_unknown" ? "offer_outcome_unknown" : record.dispatchState === "offered" ? "running" : "pending_runner"; const findings = await traceStore.findingReferences(runId); const artifacts = await manifestStore.listForRun(runId); const evidenceReferences = [...findings.map((finding) => ({ id: finding.findingId, kind: "finding", createdAt: finding.createdAt })), ...artifacts.map((artifact) => ({ id: artifact.artifactId, kind: artifact.kind, createdAt: artifact.createdAt }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)); return { runId, status, ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }), ...(evidenceReferences.length === 0 ? {} : { evidenceReferences }) }; }, quiesce: async () => { readiness!.quiesce(); coordinator!.stop(); }, health: readiness });
+    http = buildLocalHttpServer({ sessions, createRun: async ({ targetUrl, objective }) => { const issued = policyIssuer.issue({ kind: "web", url: targetUrl }); const job = { jobId: randomUUID(), runId: randomUUID(), projectId: issued.projectId, target: { kind: "web" as const, url: targetUrl }, objective, policy: issued.policy }; await intake.create({ job, createdAt: new Date().toISOString() }); return { runId: job.runId, status: "pending_runner" }; }, readRun: async (runId) => { const record = await intake.run(runId); if (record === undefined) return undefined; const blocked = record.completionState === "integrity_blocked" || record.completionState === "retry_exhausted"; const status = record.completionState === "applied" ? record.runStatus : blocked ? "error" : record.dispatchState === "offer_outcome_unknown" ? "offer_outcome_unknown" : record.dispatchState === "offered" ? "running" : "pending_runner"; const errorCode = blocked ? record.completionErrorCode : record.errorCode; const findings = await traceStore.findingReferences(runId); const artifacts = await manifestStore.listForRun(runId); const evidenceReferences = [...findings.map((finding) => ({ id: finding.findingId, kind: "finding", createdAt: finding.createdAt })), ...artifacts.map((artifact) => ({ id: artifact.artifactId, kind: artifact.kind, createdAt: artifact.createdAt }))].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)); return { runId, status, ...(errorCode === undefined ? {} : { errorCode }), ...(evidenceReferences.length === 0 ? {} : { evidenceReferences }) }; }, quiesce: async () => { readiness!.quiesce(); await coordinator!.shutdown(); }, health: readiness });
     await coordinator.startup();
     credentials.destroy();
   }
@@ -183,10 +183,16 @@ export async function startCoreDaemon(config: CoreDaemonConfig): Promise<Started
     ...(config.httpPort === undefined ? {} : { httpPort: config.httpPort }),
     shutdown: async (): Promise<void> => {
       readiness?.quiesce();
-      await http?.close();
-      await coordinator?.shutdown();
-      await server.shutdown();
-      await runtime.close();
+      let failure: unknown;
+      for (const close of [
+        async () => http?.close(),
+        async () => coordinator?.shutdown(),
+        async () => server.shutdown(),
+        async () => runtime.close(),
+      ]) {
+        try { await close(); } catch (error) { failure ??= error; }
+      }
+      if (failure !== undefined) throw failure;
     },
   };
 }

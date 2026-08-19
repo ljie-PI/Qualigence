@@ -54,6 +54,20 @@ describe("loadLocalConfig precedence", () => {
     expect(config.core.port).toBe(4000);
     expect(config.runner.id).toBe("runner-local");
   });
+
+  it("preserves nondefault reconciliation, session, readiness, and shutdown values", () => {
+    const config = loadLocalConfig(baseSources({ yaml: {
+      ...(baseSources().yaml as Record<string, unknown>),
+      auth: { bootstrapTtlMs: 1_200, userSessionTtlMs: 1_500 },
+      completionReconciliationRetryBaseMs: 400,
+      completionReconciliationRetryMaximumMs: 800,
+      completionReconciliationMaximumAttempts: 5,
+      completionReconciliationPollIntervalMs: 200,
+      completionReconciliationBatchSize: 7,
+      shutdown: { stopRequestPollIntervalMs: 100, stopRequestMaximumAgeMs: 20_000, stopRequestWaitTimeoutMs: 50_000, drainTimeoutMs: 30_000 },
+    } }));
+    expect(config).toMatchObject({ auth: { bootstrapTtlMs: 1_200, userSessionTtlMs: 1_500 }, completionReconciliationRetryBaseMs: 400, completionReconciliationRetryMaximumMs: 800, completionReconciliationMaximumAttempts: 5, completionReconciliationPollIntervalMs: 200, completionReconciliationBatchSize: 7, shutdown: { stopRequestPollIntervalMs: 100, stopRequestMaximumAgeMs: 20_000, stopRequestWaitTimeoutMs: 50_000, drainTimeoutMs: 30_000 } });
+  });
 });
 
 describe("loadLocalConfig validation", () => {

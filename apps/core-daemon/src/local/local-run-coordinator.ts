@@ -4,7 +4,8 @@ import type { LocalRunIntakeStore, RunnerControlStore } from "@qualigence/runner
 
 export class LocalRunCoordinator implements RunCompletionSink {
   private stopped = false;
-  private healthy = true;
+  private passHealthy = true;
+  private integrityBlocked = false;
   private queue: Promise<void> = Promise.resolve();
   private readonly abort = new AbortController();
   private livePromise: Promise<void> | undefined;
@@ -16,7 +17,7 @@ export class LocalRunCoordinator implements RunCompletionSink {
     readonly now?: () => string;
     readonly batchSize?: number;
   }) {}
-  isHealthy(): boolean { return this.healthy; }
+  isHealthy(): boolean { return this.passHealthy && !this.integrityBlocked; }
   stop(): void { this.stopped = true; }
   async complete(input: Parameters<RunCompletionSink["complete"]>[0]): Promise<void> {
     if (input.identity.scope.kind !== "local") return;
@@ -36,20 +37,42 @@ export class LocalRunCoordinator implements RunCompletionSink {
   }); }
   reconciliationPass(): Promise<void> { return this.serialize(async () => {
     if (this.stopped || this.options.controlStore === undefined) return;
-    for (const candidate of await this.options.store.pendingCompletions({ now: this.now(), limit: this.options.batchSize ?? 64 })) await this.reconcileCandidate(candidate);
+    try {
+      let passHealthy = true;
+      for (const candidate of await this.options.store.pendingCompletions({ now: this.now(), limit: this.options.batchSize ?? 64 })) passHealthy = await this.reconcileCandidate(candidate) && passHealthy;
+      this.passHealthy = passHealthy;
+    } catch (error) {
+      this.passHealthy = false;
+      throw error;
+    }
   }); }
   async startup(): Promise<void> { await this.options.store.quarantineInterruptedDispatches(this.now()); await this.reconciliationPass(); }
   startLive(pollIntervalMs: number): void { this.livePromise ??= this.live(pollIntervalMs); }
-  async shutdown(): Promise<void> { this.stopped = true; this.abort.abort(); await this.livePromise; }
-  private async live(pollIntervalMs: number): Promise<void> { while (!this.stopped) { await this.dispatchPass(); await this.reconciliationPass(); await delay(pollIntervalMs, this.abort.signal); } }
-  private async reconcileCandidate(candidate: { readonly runId: string; readonly jobId: string; readonly jobSha256: string; readonly expectedAttempt: number }): Promise<void> {
+  async shutdown(): Promise<void> { this.stopped = true; this.abort.abort(); await this.livePromise; await this.queue; }
+  private async live(pollIntervalMs: number): Promise<void> {
+    while (!this.stopped) {
+      try {
+        await this.dispatchPass();
+        await this.reconciliationPass();
+      } catch {
+        this.passHealthy = false;
+      }
+      await delay(pollIntervalMs, this.abort.signal);
+    }
+  }
+  private async reconcileCandidate(candidate: { readonly runId: string; readonly jobId: string; readonly jobSha256: string; readonly expectedAttempt: number }): Promise<boolean> {
     try {
       const authority = await this.options.controlStore?.completionRecord(candidate.runId);
-      if (authority === undefined) { await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionPending", failedAt: this.now() }); return; }
-      const expectedHash = candidate.jobSha256 || authority.jobSha256;
-      const outcome = await this.options.store.applyCompletion({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, jobId: authority.jobId, jobSha256: expectedHash, completion: authority.completion, completedAt: authority.completedAt });
-      if (outcome === "identity_mismatch" || outcome === "completion_conflict") { await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: outcome === "identity_mismatch" ? "CompletionIdentityMismatch" : "CompletionConflict", blockedAt: this.now() }); this.healthy = false; }
-    } catch { const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionAuthorityUnavailable", failedAt: this.now() }); if (result.status === "blocked") this.healthy = false; }
+      if (authority === undefined) { await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionPending", failedAt: this.now() }); return true; }
+      if (candidate.jobId !== authority.jobId || candidate.jobSha256 !== authority.jobSha256) {
+        await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionIdentityMismatch", blockedAt: this.now() });
+        this.integrityBlocked = true;
+        return true;
+      }
+      const outcome = await this.options.store.applyCompletion({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, jobId: authority.jobId, jobSha256: authority.jobSha256, completion: authority.completion, completedAt: authority.completedAt });
+      if (outcome === "identity_mismatch" || outcome === "completion_conflict") { await this.options.store.markIntegrityBlocked({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: outcome === "identity_mismatch" ? "CompletionIdentityMismatch" : "CompletionConflict", blockedAt: this.now() }); this.integrityBlocked = true; }
+      return true;
+    } catch { const result = await this.options.store.recordCompletionFailure({ runId: candidate.runId, expectedAttempt: candidate.expectedAttempt, errorCode: "CompletionAuthorityUnavailable", failedAt: this.now() }); if (result.status === "blocked") this.integrityBlocked = true; return false; }
   }
   private now(): string { return this.options.now?.() ?? new Date().toISOString(); }
   private serialize(operation: () => Promise<void>): Promise<void> { const result = this.queue.then(operation); this.queue = result.catch(() => undefined); return result; }

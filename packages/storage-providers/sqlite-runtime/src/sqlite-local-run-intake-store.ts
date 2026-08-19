@@ -89,7 +89,7 @@ export class SqliteLocalRunIntakeStore implements LocalRunIntakeStore {
 
   async run(runId: string): Promise<LocalRunIntakeRecord | undefined> {
     const row = await this.runtime.db.selectFrom("local_run_intakes").innerJoin("execution_runs", "execution_runs.run_id", "local_run_intakes.run_id")
-      .select(["local_run_intakes.run_id", "local_run_intakes.job_id", "dispatch_state", "dispatch_attempt", "completion_state", "completion_attempt", "completion_next_attempt_at", "execution_runs.status", "execution_runs.completed_at", "execution_runs.error_code"])
+      .select(["local_run_intakes.run_id", "local_run_intakes.job_id", "dispatch_state", "dispatch_attempt", "completion_state", "completion_attempt", "completion_next_attempt_at", "completion_error_code", "execution_runs.status", "execution_runs.completed_at", "execution_runs.error_code"])
       .where("local_run_intakes.run_id", "=", runId).executeTakeFirst();
     if (row === undefined) return undefined;
     return {
@@ -99,6 +99,7 @@ export class SqliteLocalRunIntakeStore implements LocalRunIntakeStore {
       runStatus: row.status as LocalRunIntakeRecord["runStatus"],
       ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
       ...(row.error_code === null ? {} : { errorCode: row.error_code }),
+      ...(row.completion_error_code === null ? {} : { completionErrorCode: row.completion_error_code }),
     };
   }
 

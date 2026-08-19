@@ -104,6 +104,7 @@ export interface LocalRunIntakeRecord {
   readonly runStatus: "running" | "passed" | "finding" | "blocked" | "error";
   readonly completedAt?: string;
   readonly errorCode?: string;
+  readonly completionErrorCode?: string;
 }
 
 export interface LocalRunDispatch {

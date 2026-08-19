@@ -22,4 +22,73 @@ describe("LocalRunCoordinator", () => {
     expect(store.markOfferOutcomeUnknown).toHaveBeenCalledOnce();
     expect(offer).toHaveBeenCalledOnce();
   });
+
+  it("blocks a mismatched authoritative Job hash without applying completion", async () => {
+    const store = {
+      pendingCompletions: vi.fn(async () => [{ runId: "run-1", jobId: "job-1", jobSha256: "a".repeat(64), expectedAttempt: 0 }]),
+      applyCompletion: vi.fn(),
+      markIntegrityBlocked: vi.fn(async () => "blocked" as const),
+      recordCompletionFailure: vi.fn(),
+    };
+    const coordinator = new LocalRunCoordinator({
+      store: store as never,
+      controlStore: { completionRecord: vi.fn(async () => ({ runId: "run-1", jobId: "job-1", jobSha256: "b".repeat(64), completion: { jobId: "job-1", runId: "run-1", status: "passed" }, completedAt: "2026-08-19T00:00:01.000Z" })) } as never,
+      connection: () => undefined,
+      configuredRunnerId: "runner-1",
+      now: () => "2026-08-19T00:00:02.000Z",
+    });
+
+    await coordinator.reconciliationPass();
+
+    expect(store.applyCompletion).not.toHaveBeenCalled();
+    expect(store.markIntegrityBlocked).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "CompletionIdentityMismatch" }));
+    expect(coordinator.isHealthy()).toBe(false);
+  });
+
+  it("keeps the retained loop alive after a recoverable pass error and restores health", async () => {
+    let reconciliationCalls = 0;
+    const store = {
+      pendingDispatches: vi.fn(async () => []),
+      pendingCompletions: vi.fn(async () => {
+        reconciliationCalls += 1;
+        if (reconciliationCalls === 1) throw new Error("sqlite busy");
+        return [];
+      }),
+    };
+    const coordinator = new LocalRunCoordinator({
+      store: store as never,
+      controlStore: {} as never,
+      connection: () => undefined,
+      configuredRunnerId: "runner-1",
+    });
+
+    coordinator.startLive(50);
+    await expect.poll(() => reconciliationCalls).toBe(1);
+    expect(coordinator.isHealthy()).toBe(false);
+    await expect.poll(() => reconciliationCalls).toBeGreaterThanOrEqual(2);
+    expect(coordinator.isHealthy()).toBe(true);
+    await coordinator.shutdown();
+  });
+
+  it("marks a recoverable candidate failure unhealthy until a later successful pass", async () => {
+    let attempts = 0;
+    const store = {
+      pendingCompletions: vi.fn(async () => attempts === 0 ? [{ runId: "run-1", jobId: "job-1", jobSha256: "a".repeat(64), expectedAttempt: 0 }] : []),
+      recordCompletionFailure: vi.fn(async () => { attempts += 1; return { status: "scheduled" as const, attempt: 1, nextAttemptAt: "2026-08-19T00:00:01.000Z" }; }),
+    };
+    const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: { completionRecord: vi.fn(async () => { throw new Error("sqlite busy"); }) } as never, connection: () => undefined, configuredRunnerId: "runner-1", now: () => "2026-08-19T00:00:00.000Z" });
+
+    await coordinator.reconciliationPass();
+    expect(coordinator.isHealthy()).toBe(false);
+    await coordinator.reconciliationPass();
+    expect(coordinator.isHealthy()).toBe(true);
+  });
+
+  it("aborts a retained poll delay and awaits loop exit during shutdown", async () => {
+    const store = { pendingDispatches: vi.fn(async () => []), pendingCompletions: vi.fn(async () => []) };
+    const coordinator = new LocalRunCoordinator({ store: store as never, controlStore: {} as never, connection: () => undefined, configuredRunnerId: "runner-1" });
+    coordinator.startLive(60_000);
+    await expect.poll(() => store.pendingCompletions).toHaveBeenCalled();
+    await expect(coordinator.shutdown()).resolves.toBeUndefined();
+  });
 });

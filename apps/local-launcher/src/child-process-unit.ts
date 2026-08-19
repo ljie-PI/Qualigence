@@ -126,6 +126,7 @@ export class ChildProcessUnit {
   private restarts = 0;
   private exhausted = false;
   private readonly pollIntervalMs: number;
+  private readyLogOffset = 0;
 
   constructor(private readonly options: ChildProcessUnitOptions) {
     this.name = options.name;
@@ -160,6 +161,7 @@ export class ChildProcessUnit {
   }
 
   private async spawnOnce(signal?: AbortSignal): Promise<void> {
+    this.readyLogOffset = await readFile(this.options.logFile).then((content) => content.byteLength, () => 0);
     const fd = openSync(this.options.logFile, "a");
     let child: ChildProcess;
     try {
@@ -243,7 +245,7 @@ export class ChildProcessUnit {
     } catch {
       return false;
     }
-    for (const line of content.split("\n")) {
+    for (const line of content.slice(this.readyLogOffset).split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) {
         continue;

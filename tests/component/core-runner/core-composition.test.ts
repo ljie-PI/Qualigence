@@ -272,6 +272,10 @@ describe("Core runner protocol production composition", () => {
     const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
     await session.complete(renewed, completion);
     await expect.poll(async () => daemon.application.jobs.completionOf(job.runId)).toEqual(completion);
+    const reader = await SqliteRuntime.open({ filename: join(dataDir, "qualigence.db"), busyTimeoutMs: 5_000, openMode: "require-current" });
+    try {
+      await expect(new SqliteRunnerControlStore(reader).completionRecord(job.runId)).resolves.toEqual({ runId: job.runId, jobId: job.jobId, jobSha256: canonicalPayloadHash(job), completion, completedAt: expect.any(String) });
+    } finally { await reader.close(); }
 
     await expect(session.renew({ ...renewed, leaseToken: "wrong" })).rejects.toMatchObject({
       code: "LeaseLost",

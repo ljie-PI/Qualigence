@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encodeBootstrapCredential } from "@qualigence/local-control";
 import { LocalSessionService } from "../../../apps/core-daemon/src/local/local-session-service.js";
 import { buildLocalHttpServer } from "../../../apps/core-daemon/src/local/local-http-server.js";

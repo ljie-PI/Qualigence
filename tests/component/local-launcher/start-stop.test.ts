@@ -88,6 +88,15 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(isPidAlive(pid as number)).toBe(false);
   });
 
+  it("ignores a stale ready event from a prior process in the same log", async () => {
+    const dir = await scratchDir("stale-ready");
+    const logFile = join(dir, "core.log");
+    await writeFile(logFile, `${JSON.stringify({ event: "core.ready", pid: 1 })}\n`);
+    const unit = new ChildProcessUnit({ name: "core", unhealthyCode: "CoreUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "hang" }, logFile, readyEvent: "core.ready", startupTimeoutMs: 100, shutdownGraceMs: 100 });
+
+    await expect(unit.start()).rejects.toMatchObject({ code: "StartupTimedOut" });
+  });
+
   it("rejects with StartupTimedOut and leaks no child when readiness never arrives", async () => {
     const dir = await scratchDir("hang");
     const unit = new ChildProcessUnit({

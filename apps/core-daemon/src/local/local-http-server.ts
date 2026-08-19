@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { localRunRequestSchema } from "@qualigence/local-control";
 import type { LocalRunAccepted, LocalRunStatusResponse } from "@qualigence/local-control";
+import { isValidExecutionTargetUrl } from "@qualigence/execution-application";
 import type { LocalSessionService } from "./local-session-service.js";
 
 export function buildLocalHttpServer(options: {
@@ -21,7 +22,7 @@ export function buildLocalHttpServer(options: {
   });
   app.post("/api/v1/local/runs", async (request, reply) => {
     const bearer = token(request.headers.authorization); if (bearer === undefined || !options.sessions.authorizeUser(bearer)) return reply.code(401).send({ code: "Unauthorized" });
-    const parsed = localRunRequestSchema.safeParse(request.body); if (!parsed.success || request.url.includes("?")) return reply.code(400).send({ code: "InvalidRequest" });
+    const parsed = localRunRequestSchema.safeParse(request.body); if (!parsed.success || request.url.includes("?") || !isValidExecutionTargetUrl(parsed.data.targetUrl)) return reply.code(400).send({ code: "InvalidRequest" });
     return reply.code(202).send(await options.createRun(parsed.data));
   });
   app.get<{ Params: { runId: string } }>("/api/v1/local/runs/:runId", async (request, reply) => {

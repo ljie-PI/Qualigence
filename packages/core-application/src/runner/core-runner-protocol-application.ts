@@ -147,12 +147,12 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
         // connection: the run was accepted or renewed on a pre-disconnect
         // connection (or a previous Core process). Session ownership is already
         // verified above, so the stored lease is the authority for completing.
-        await this.ownership.completeStored(lease.runId, completion);
-        await this.invokeCompletionSink(sessionId, completion);
+        const disposition = await this.ownership.completeStored(lease.runId, completion);
+        await this.invokeCompletionSink(sessionId, completion, disposition);
         return;
       }
-      await this.jobs.complete(lease, completion);
-      await this.invokeCompletionSink(sessionId, completion);
+      const disposition = await this.jobs.complete(lease, completion);
+      await this.invokeCompletionSink(sessionId, completion, disposition);
     });
   }
 
@@ -217,11 +217,13 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     }
   }
 
-  private async invokeCompletionSink(sessionId: string, completion: ExecutionCompletion): Promise<void> {
+  private async invokeCompletionSink(sessionId: string, completion: ExecutionCompletion, disposition: "completed" | "duplicate"): Promise<void> {
     const sink = this.completionSink;
     if (sink === undefined) return;
     const session = this.requireSession(sessionId);
-    await sink.complete({ identity: session.identity, jobId: completion.jobId, runId: completion.runId, completion });
+    const authoritative = disposition === "duplicate" ? await this.jobs.completionOf(completion.runId) : completion;
+    if (authoritative === undefined) return;
+    await sink.complete({ identity: session.identity, jobId: authoritative.jobId, runId: authoritative.runId, completion: authoritative });
   }
 
   private serialize<TResult>(operation: () => Promise<TResult> | TResult): Promise<TResult> {

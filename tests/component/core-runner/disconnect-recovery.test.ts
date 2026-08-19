@@ -162,6 +162,17 @@ describe("core/runner disconnect recovery Gate", () => {
     expect(session.completedLease?.leaseToken).toBe("renewed-token");
   });
 
+  it("forwards the canonical stored completion to the sink on an authoritative duplicate", async () => {
+    const store = new InMemoryRunnerControlStore();
+    const ownership = new RunOwnershipService({ store, integrityEvents: { emit: () => undefined }, now: () => Date.parse("2026-08-19T00:00:01.000Z") });
+    const job = webJob({ jobId: "job-duplicate-sink", runId: "run-duplicate-sink" });
+    const lease = await ownership.grant(job, { runnerId: "runner-1", sessionId: "session-1" });
+    const completion = { jobId: job.jobId, runId: job.runId, status: "passed" } as const;
+    await ownership.complete(lease, completion);
+    await expect(ownership.complete(lease, completion)).resolves.toBe("duplicate");
+    await expect(store.completionRecord(job.runId)).resolves.toMatchObject({ completion, jobSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
+
   it("loses no accepted trace when a runner disconnects mid-run and replays in order on reconnect", async () => {
     const { server, port } = await startTestServer(pki);
     const cert = pki.clientFor("runner-1");

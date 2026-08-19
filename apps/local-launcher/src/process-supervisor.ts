@@ -9,7 +9,7 @@ import { readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:http";
 import { terminateProcess } from "./child-process-unit.js";
-import { clearRuntimeState, parseStopRequest, readRuntimeState } from "./runtime-state.js";
+import { clearRuntimeState, parseStopRequest, readRuntimeState, sameTopology, stopRequestMatchesTopology } from "./runtime-state.js";
 
 /**
  * One supervised child process (Core or Runner). Concrete implementations spawn
@@ -72,7 +72,7 @@ export class ProcessSupervisor {
         this.record(`${unit.name}:ready`);
       }
     } catch (error) {
-      await this.rollback();
+      await this.rollback().catch(() => undefined);
       await this.releaseLock();
       throw error;
     }
@@ -80,8 +80,11 @@ export class ProcessSupervisor {
   }
 
   async stop(): Promise<void> {
-    await this.rollback();
-    await this.releaseLock();
+    try {
+      await this.rollback();
+    } finally {
+      await this.releaseLock();
+    }
   }
 
   async status(): Promise<HealthReport> {
@@ -110,11 +113,13 @@ export class ProcessSupervisor {
 
   private async rollback(): Promise<void> {
     // Stop already-started units in reverse order so dependants shut down first.
+    let failure: unknown;
     while (this.running.length > 0) {
       const unit = this.running.pop() as ProcessUnit;
       this.record(`${unit.name}:stop`);
-      await unit.stop();
+      try { await unit.stop(); } catch (error) { failure ??= error; }
     }
+    if (failure !== undefined) throw failure;
   }
 
   private async acquireLock(): Promise<void> {
@@ -196,24 +201,48 @@ function parseDetachedInput(value: unknown): DetachedInput {
 async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedInput): Promise<void> {
   const canonical = join(input.dataDir, "local-stop-request.json");
   const claim = join(input.dataDir, `local-stop-request.${process.pid}.claim`);
-  try {
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, input.shutdown.stopRequestPollIntervalMs));
-      try { await rename(canonical, claim); } catch { continue; }
-      try {
-        const marker = parseStopRequest(JSON.parse(await readFile(claim, "utf8")));
-        const state = await readRuntimeState(input.dataDir);
-        const now = Date.now(); const requestedAt = Date.parse(marker.requestedAt);
-        if (state === undefined || marker.supervisorPid !== process.pid || marker.corePid !== input.corePid || marker.runnerPid !== input.runnerPid || marker.startedAt !== input.startedAt || state.startedAt !== input.startedAt || requestedAt > now || now - requestedAt > input.shutdown.stopRequestMaximumAgeMs) continue;
-        await quiesce(input).catch(() => undefined);
-        break;
-      } finally { await rm(claim, { force: true }); }
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, input.shutdown.stopRequestPollIntervalMs));
+    try { await rename(canonical, claim); } catch { continue; }
+    let matches = false;
+    try {
+      matches = await claimedStopMatches(claim, input, Date.now());
+    } catch {
+      matches = false;
+    } finally {
+      await rm(claim, { force: true });
     }
-  } finally {
+    if (!matches) continue;
+    await quiesce(input).catch(() => undefined);
     await supervisor.stop();
+    await removeMatchingReplay(canonical, claim, input);
     await clearRuntimeState(input.dataDir);
-    await rm(canonical, { force: true }); await rm(claim, { force: true });
+    return;
   }
+}
+
+async function claimedStopMatches(path: string, input: DetachedInput, now: number): Promise<boolean> {
+  const marker = parseStopRequest(JSON.parse(await readFile(path, "utf8")));
+  const state = await readRuntimeState(input.dataDir);
+  if (state === undefined) return false;
+  const topology = { supervisorPid: process.pid, corePid: input.corePid, runnerPid: input.runnerPid, startedAt: input.startedAt };
+  return stopRequestMatchesTopology(marker, topology, now, input.shutdown.stopRequestMaximumAgeMs) &&
+    sameTopology(state, topology);
+}
+
+async function removeMatchingReplay(canonical: string, claim: string, input: DetachedInput): Promise<void> {
+  try { await rename(canonical, claim); } catch { return; }
+  try {
+    const marker = parseStopRequest(JSON.parse(await readFile(claim, "utf8")));
+    if (marker.supervisorPid !== process.pid || marker.corePid !== input.corePid || marker.runnerPid !== input.runnerPid || marker.startedAt !== input.startedAt) {
+      await rename(claim, canonical).catch(() => undefined);
+      return;
+    }
+  } catch {
+    await rename(claim, canonical).catch(() => undefined);
+    return;
+  }
+  await rm(claim, { force: true });
 }
 
 function quiesce(input: DetachedInput): Promise<void> {

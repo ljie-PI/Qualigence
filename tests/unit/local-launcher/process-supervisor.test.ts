@@ -170,6 +170,19 @@ describe("ProcessSupervisor.stop", () => {
       "core:stop",
     ]);
   });
+
+  it("still stops Core when Runner stop fails, then reports the shutdown error", async () => {
+    const core = new FakeProcessUnit("core");
+    const runner = new FakeProcessUnit("runner");
+    runner.stopSpy.mockImplementationOnce(() => { throw new Error("runner stop failed"); });
+    const supervisor = supervisorWith(core, runner);
+    await supervisor.start();
+
+    await expect(supervisor.stop()).rejects.toThrow("runner stop failed");
+
+    expect(core.stopSpy).toHaveBeenCalledOnce();
+    expect(supervisor.events().slice(-2)).toEqual(["runner:stop", "core:stop"]);
+  });
 });
 
 describe("ProcessSupervisor.status", () => {

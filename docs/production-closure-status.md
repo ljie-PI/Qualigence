@@ -7,6 +7,13 @@ production_wiring: present
 verification: passed
 implementation_commit: same commit as this ledger entry (`feat(local): close launcher core runner loop`)
 
+Final review fixes are committed separately as
+`fix(local): harden intake lifecycle authority`. They preserve the Task 11
+interfaces while enforcing stop-marker tuple/freshness authority, canonical
+completion Job hash matching, recoverable retained reconciliation, authenticated
+foreground quiesce, complete Launcher-to-Core configuration propagation,
+header-first fd-3 collection, and strict HTTP target validation.
+
 Task 11 extends the existing `ProcessSupervisor`, `ChildProcessUnit`,
 `RunnerControlStore`, Evidence read ports, Core application services,
 `GrpcRunnerProtocolServer.connection`, `SqliteRuntime`, `BackupManager`, and
@@ -36,6 +43,24 @@ GREEN evidence (Windows 11, Node 24, Corepack pnpm 11.7.0, 2026-08-19):
 - Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
   `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`.
 - No environmental block occurred. Docker PostgreSQL and Chromium both ran.
+
+Final review-fix verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
+2026-08-19):
+
+- `corepack pnpm build` passed after the final source change.
+- Task 11 Gate group 1 passed 10 files / 59 tests.
+- Task 11 Gate group 2 passed 10 files / 102 tests, including the mandatory
+  Docker-backed PostgreSQL Runner-control provider contract.
+- Task 11 Gate group 3 passed 11 files / 75 tests with one pre-existing Task 21
+  Windows quarantine skip. The built-process E2E persisted Trace/Finding
+  references, ignored a malformed stop marker, proved detached PID reaping,
+  restarted and reconciled a durable completion, exercised nondefault session
+  and retry policy values through production child env, and scanned
+  config/runtime-state/logs/SQLite for raw credentials.
+- `corepack pnpm typecheck` and `git diff --check` passed.
+- Git OpenSSL was resolved with `C:\Program Files\Git\usr\bin` on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`; Docker 29.6.2 and
+  Chromium were available. No environmental block occurred.
 
 ## SETUP-00 — Engineering context, issue tracker, and review guidance (2026-08-17)
 
