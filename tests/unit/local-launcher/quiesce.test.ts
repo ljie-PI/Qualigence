@@ -27,7 +27,7 @@ describe("detached stop marker", () => {
     expect(stopRequestMatchesTopology(marker, topology, Date.parse("2026-08-19T00:00:09.999Z"), 10_000)).toBe(false);
   });
 
-  it("atomically replaces malformed or mismatched markers and makes concurrent matching callers idempotent", async () => {
+  it("claims malformed markers, preserves different markers, and makes concurrent matching callers idempotent", async () => {
     const directory = await mkdtemp(join(process.cwd(), ".tmp-stop-marker-"));
     const canonical = join(directory, "local-stop-request.json");
     const marker = parseStopRequest({ version: "local-stop-request/v1", supervisorPid: 10, corePid: 11, runnerPid: 12, startedAt: "2026-08-19T00:00:00.000Z", requestedAt: "2026-08-19T00:00:10.000Z" });
@@ -36,7 +36,12 @@ describe("detached stop marker", () => {
       await publishStopRequest(directory, marker);
       expect(parseStopRequest(JSON.parse(await readFile(canonical, "utf8")))).toEqual(marker);
 
-      await writeFile(canonical, JSON.stringify({ ...marker, corePid: 99 }));
+      const different = { ...marker, corePid: 99 };
+      await writeFile(canonical, JSON.stringify(different));
+      await expect(publishStopRequest(directory, marker)).rejects.toThrow(/different topology/);
+      expect(JSON.parse(await readFile(canonical, "utf8"))).toEqual(different);
+
+      await rm(canonical);
       await Promise.all([publishStopRequest(directory, marker), publishStopRequest(directory, marker)]);
       expect(parseStopRequest(JSON.parse(await readFile(canonical, "utf8")))).toEqual(marker);
     } finally {

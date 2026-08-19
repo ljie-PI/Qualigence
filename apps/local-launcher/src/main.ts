@@ -22,6 +22,7 @@ import { BackupManager } from "./backup-manager.js";
 import { certPathsFor, ensureLocalCerts } from "./certs.js";
 import { loadLocalConfig, loadYaml, LocalConfigError } from "./config.js";
 import {
+  claimMatchingStopRequest,
   ChildProcessUnit,
   terminateProcess,
 } from "./child-process-unit.js";
@@ -52,6 +53,10 @@ export interface LauncherIo {
   out(line: string): void;
   err(line: string): void;
   exit(code: number): void;
+}
+
+export interface LauncherDependencies {
+  readonly createBootstrapCredentials?: typeof createBootstrapCredentialHandoff;
 }
 
 const defaultIo: LauncherIo = {
@@ -324,6 +329,7 @@ async function commandStart(
   env: NodeJS.ProcessEnv,
   io: LauncherIo,
   foreground: boolean,
+  dependencies: LauncherDependencies,
 ): Promise<void> {
   const existing = await readRuntimeState(ctx.dataDir);
   if (isTopologyRunning(existing)) {
@@ -337,7 +343,7 @@ async function commandStart(
   const schema = await SqliteRuntime.open({ filename: ctx.dbFile, busyTimeoutMs: 5_000, openMode: "require-current" });
   await schema.close();
 
-  const credentials = createBootstrapCredentialHandoff({ bootstrapTtlMs: ctx.config.auth.bootstrapTtlMs });
+  const credentials = (dependencies.createBootstrapCredentials ?? createBootstrapCredentialHandoff)({ bootstrapTtlMs: ctx.config.auth.bootstrapTtlMs });
   const core = buildCoreUnit(ctx, env, credentials.frame());
   const runner = buildRunnerUnit(ctx, env);
   const supervisor = new ProcessSupervisor({ version: VERSION, units: [core, runner] });
@@ -387,7 +393,11 @@ function runForeground(
   topology: RuntimeState,
 ): Promise<void> {
   return new Promise<void>((resolvePromise, rejectPromise) => {
+    const signals: readonly NodeJS.Signals[] = process.platform === "win32"
+      ? ["SIGBREAK"]
+      : ["SIGINT", "SIGTERM"];
     let shutdownPromise: Promise<void> | undefined;
+    let polling = true;
     const shutdown = (): void => {
       shutdownPromise ??= (async () => {
         try {
@@ -396,15 +406,22 @@ function runForeground(
           await clearOwnedTopologyFiles(ctx.dataDir, topology);
           io.out("Qualigence Local stopped.");
         } finally {
+          polling = false;
           Buffer.from(supervisorCredential.buffer, supervisorCredential.byteOffset, supervisorCredential.byteLength).fill(0);
-          process.off("SIGINT", shutdown);
-          process.off("SIGTERM", shutdown);
+          for (const signal of signals) process.off(signal, shutdown);
         }
       })();
       shutdownPromise.then(resolvePromise, rejectPromise);
     };
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
+    for (const signal of signals) process.once(signal, shutdown);
+    void (async () => {
+      while (polling && shutdownPromise === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, ctx.config.shutdown.stopRequestPollIntervalMs));
+        if (await claimMatchingStopRequest(ctx.dataDir, topology, Date.now(), ctx.config.shutdown.stopRequestMaximumAgeMs, process.pid)) {
+          shutdown();
+        }
+      }
+    })().catch(rejectPromise);
   });
 }
 
@@ -413,7 +430,7 @@ function quiesceCore(port: number, credential: Uint8Array, timeoutMs: number): P
   return new Promise((resolvePromise, rejectPromise) => {
     const call = request({ host: "127.0.0.1", port, path: "/api/v1/local/quiesce", method: "POST", headers: { authorization: `Bearer ${bearer}` }, timeout: timeoutMs }, (response) => {
       response.resume();
-      response.statusCode === 204 ? resolvePromise() : rejectPromise(new Error("quiesce refused"));
+      response.statusCode === 200 ? resolvePromise() : rejectPromise(new Error("quiesce refused"));
     });
     call.once("error", rejectPromise);
     call.once("timeout", () => { call.destroy(); rejectPromise(new Error("quiesce timed out")); });
@@ -530,6 +547,7 @@ export async function run(
   argv: readonly string[],
   io: LauncherIo = defaultIo,
   env: NodeJS.ProcessEnv = process.env,
+  dependencies: LauncherDependencies = {},
 ): Promise<void> {
   const program = new Command();
   program
@@ -570,7 +588,7 @@ export async function run(
     .description("supervised start of Core and Runner")
     .option("--foreground", "run in the foreground and supervise until interrupted")
     .action((options: { foreground?: boolean }) =>
-      withContext((ctx) => commandStart(ctx, env, io, options.foreground === true))(),
+      withContext((ctx) => commandStart(ctx, env, io, options.foreground === true, dependencies))(),
     );
 
   program

@@ -69,7 +69,7 @@ export function isPidAlive(pid: number): boolean {
 }
 
 function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
-  const targets = group ? [-pid, pid] : [pid];
+  const targets = group && process.platform !== "win32" ? [-pid, pid] : [pid];
   for (const target of targets) {
     try {
       process.kill(target, signal);
@@ -91,6 +91,21 @@ export async function terminateProcess(
 ): Promise<void> {
   if (!isPidAlive(pid)) {
     return;
+  }
+  if (process.platform === "win32") {
+    await taskkill(pid, false);
+    const softDeadline = Date.now() + graceMs;
+    while (Date.now() < softDeadline) {
+      if (!isPidAlive(pid)) return;
+      await sleepKeepAlive(20);
+    }
+    await taskkill(pid, true);
+    const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
+    while (Date.now() < hardDeadline) {
+      if (!isPidAlive(pid)) return;
+      await sleepKeepAlive(20);
+    }
+    throw new LauncherError("ProcessReapTimedOut", `process ${String(pid)} remained alive after forced termination`);
   }
   killPid(pid, "SIGTERM", group);
   const softDeadline = Date.now() + graceMs;
@@ -364,4 +379,13 @@ export class ChildProcessUnit {
       safeMessage: `${this.name} ${kind}: process ${alive ? "alive" : "not running"}`,
     };
   }
+}
+
+function taskkill(pid: number, force: boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const args = ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])];
+    const child = spawn("taskkill.exe", args, { stdio: "ignore", windowsHide: true });
+    child.once("error", () => resolve());
+    child.once("close", () => resolve());
+  });
 }

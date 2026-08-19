@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { LauncherError } from "./errors.js";
 
 /** Persisted record of a running Local topology, shared across CLI invocations. */
 export interface RuntimeState {
@@ -73,20 +74,49 @@ export async function publishStopRequest(dataDir: string, marker: LocalStopReque
   await writeFile(temporary, JSON.stringify(marker), { encoding: "utf8", flag: "wx", flush: true });
   try {
     for (;;) {
-      try { await rename(temporary, canonical); return; } catch {
+      try { await link(temporary, canonical); return; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      let existing: LocalStopRequest;
+      try {
+        existing = parseStopRequest(JSON.parse(await readFile(canonical, "utf8")));
+      } catch {
         const stale = join(dataDir, `local-stop-request.${process.pid}.${randomBytes(8).toString("hex")}.stale`);
         try { await rename(canonical, stale); } catch { continue; }
-        let matching = false;
-        try { matching = sameTopology(parseStopRequest(JSON.parse(await readFile(stale, "utf8"))), marker); } catch { matching = false; }
-        if (matching) {
-          try { await rename(stale, canonical); } catch { await rm(stale, { force: true }); }
-          return;
-        }
         await rm(stale, { force: true });
+        continue;
       }
+      if (sameTopology(existing, marker)) return;
+      throw new LauncherError("StopRequestInvalid", "a stop request for a different topology already exists");
     }
   } finally {
     await rm(temporary, { force: true });
+  }
+}
+
+export async function claimMatchingStopRequest(
+  dataDir: string,
+  topology: Pick<RuntimeState, "supervisorPid" | "corePid" | "runnerPid" | "startedAt">,
+  now: number,
+  maximumAgeMs: number,
+  claimantPid: number,
+): Promise<boolean> {
+  const canonical = join(dataDir, "local-stop-request.json");
+  const claim = join(dataDir, `local-stop-request.${claimantPid}.claim`);
+  try {
+    await rename(canonical, claim);
+  } catch {
+    return false;
+  }
+  try {
+    const marker = parseStopRequest(JSON.parse(await readFile(claim, "utf8")));
+    const state = await readRuntimeState(dataDir);
+    return state !== undefined && sameTopology(state, topology) &&
+      stopRequestMatchesTopology(marker, topology, now, maximumAgeMs);
+  } catch {
+    return false;
+  } finally {
+    await rm(claim, { force: true });
   }
 }
 

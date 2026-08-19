@@ -9,7 +9,7 @@ import { appendFile, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:http";
 import { terminateProcess } from "./child-process-unit.js";
-import { clearOwnedTopologyFiles, parseStopRequest, readRuntimeState, sameTopology, stopRequestMatchesTopology } from "./runtime-state.js";
+import { claimMatchingStopRequest, clearOwnedTopologyFiles, parseStopRequest, sameTopology } from "./runtime-state.js";
 
 /**
  * One supervised child process (Core or Runner). Concrete implementations spawn
@@ -224,15 +224,12 @@ async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedIn
   const claim = join(input.dataDir, `local-stop-request.${process.pid}.claim`);
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, input.shutdown.stopRequestPollIntervalMs));
-    try { await rename(canonical, claim); } catch { continue; }
-    let matches = false;
-    try {
-      matches = await claimedStopMatches(claim, input, Date.now());
-    } catch {
-      matches = false;
-    } finally {
-      await rm(claim, { force: true });
-    }
+    const matches = await claimMatchingStopRequest(input.dataDir, {
+      supervisorPid: process.pid,
+      corePid: input.corePid,
+      runnerPid: input.runnerPid,
+      startedAt: input.startedAt,
+    }, Date.now(), input.shutdown.stopRequestMaximumAgeMs, process.pid);
     if (!matches) continue;
     await quiesce(input).catch(() => undefined);
     await supervisor.stop();
@@ -240,15 +237,6 @@ async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedIn
     await clearOwnedTopologyFiles(input.dataDir, { supervisorPid: process.pid, corePid: input.corePid, runnerPid: input.runnerPid, startedAt: input.startedAt });
     return;
   }
-}
-
-async function claimedStopMatches(path: string, input: DetachedInput, now: number): Promise<boolean> {
-  const marker = parseStopRequest(JSON.parse(await readFile(path, "utf8")));
-  const state = await readRuntimeState(input.dataDir);
-  if (state === undefined) return false;
-  const topology = { supervisorPid: process.pid, corePid: input.corePid, runnerPid: input.runnerPid, startedAt: input.startedAt };
-  return stopRequestMatchesTopology(marker, topology, now, input.shutdown.stopRequestMaximumAgeMs) &&
-    sameTopology(state, topology);
 }
 
 async function removeMatchingReplay(canonical: string, claim: string, input: DetachedInput): Promise<void> {

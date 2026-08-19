@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   ProcessSupervisor,
@@ -200,13 +201,23 @@ describe("ProcessSupervisor.stop", () => {
 });
 
 describe("terminateProcess", () => {
-  it("throws ProcessReapTimedOut when the PID remains alive after SIGKILL", async () => {
+  it.skipIf(process.platform === "win32")("throws ProcessReapTimedOut when the PID remains alive after SIGKILL", async () => {
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
     try {
       await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
       expect(kill).toHaveBeenCalledWith(2_147_000_000, "SIGKILL");
     } finally { kill.mockRestore(); }
   }, 5_000);
+
+  it("terminates and reaps a real child process", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    expect(child.pid).toBeDefined();
+    await terminateProcess(child.pid as number, 100, true);
+    expect(() => process.kill(child.pid as number, 0)).toThrow();
+  });
 });
 
 describe("ProcessSupervisor.status", () => {

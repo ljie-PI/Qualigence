@@ -1,7 +1,8 @@
 import { createServer } from "node:net";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import BetterSqlite3 from "better-sqlite3";
@@ -15,6 +16,8 @@ const repoRoot = join(here, "..", "..");
 const launcherEntry = join(repoRoot, "apps", "local-launcher", "dist", "main.js");
 const DEADLINE_MS = 120_000;
 const API_KEY = "sk-local-e2e-DO-NOT-LEAK";
+const USER_BOOTSTRAP = Buffer.alloc(32, 0x31);
+const SUPERVISOR_CREDENTIAL = Buffer.alloc(32, 0xa7);
 
 let dataDir: string | undefined;
 let model: MockModelHandle | undefined;
@@ -48,8 +51,30 @@ function launcherEnv(directory: string): NodeJS.ProcessEnv {
   };
 }
 
-function launch(directory: string, ...args: string[]) {
-  return runCli([launcherEntry, ...args], launcherEnv(directory), DEADLINE_MS);
+async function launch(directory: string, ...args: string[]) {
+  const harness = await writeLauncherHarness(directory);
+  return runCli([harness, ...args], launcherEnv(directory), DEADLINE_MS);
+}
+
+async function writeLauncherHarness(directory: string): Promise<string> {
+  const harness = join(directory, "launcher-test-harness.mjs");
+  const launcherModule = pathToFileURL(join(repoRoot, "apps", "local-launcher", "dist", "index.js")).href;
+  const localControlModule = pathToFileURL(join(repoRoot, "packages", "contracts", "local-control", "dist", "index.js")).href;
+  await writeFile(harness, `import { ProcessSupervisor, run } from ${JSON.stringify(launcherModule)};
+import { encodeBootstrapFrame } from ${JSON.stringify(localControlModule)};
+const createBootstrapCredentials = ({ bootstrapTtlMs }) => {
+  const createdAtEpochMs = Date.now();
+  const userExpiresAtEpochMs = createdAtEpochMs + bootstrapTtlMs;
+  const userBootstrap = Buffer.alloc(32, 0x31);
+  const supervisor = Buffer.alloc(32, 0xa7);
+  return { userBootstrap, supervisor, createdAtEpochMs, userExpiresAtEpochMs,
+    frame: () => encodeBootstrapFrame({ userBootstrap, supervisor, createdAtEpochMs, userExpiresAtEpochMs }),
+    destroy: () => { userBootstrap.fill(0); supervisor.fill(0); } };
+};
+if (process.argv[2] === "__supervise") ProcessSupervisor.runDetachedChild();
+else await run(process.argv.slice(2), undefined, process.env, { createBootstrapCredentials });
+`, "utf8");
+  return harness;
 }
 
 describe("local-launcher real process loop", () => {
@@ -173,7 +198,7 @@ describe("local-launcher real process loop", () => {
     expect(await pollRun(initial.runId, policySessionToken)).toMatchObject({ status: "error", errorCode: "CompletionIdentityMismatch" });
     expect((await launch(dataDir, "stop")).exitCode).toBe(0);
 
-    const forbidden = [bootstrap!, sessionToken, restartedBootstrap!, restartedSessionToken, policyBootstrap!, policySessionToken];
+    const forbidden = [USER_BOOTSTRAP.toString("base64url"), SUPERVISOR_CREDENTIAL.toString("base64url"), bootstrap!, sessionToken, restartedBootstrap!, restartedSessionToken, policyBootstrap!, policySessionToken];
     for (const file of [join(dataDir, "config.yaml"), join(dataDir, "qualigence.db"), ...((await readdir(join(dataDir, "logs"))).map((name) => join(dataDir!, "logs", name)))]) {
       const bytes = await readFile(file);
       assertNoCredentialRepresentations(bytes, forbidden);
@@ -211,25 +236,41 @@ describe("local-launcher real process loop", () => {
     expect(events.map((event) => event.event).slice(-4)).toEqual(["runner:stop_requested", "runner:reaped", "core:stop_requested", "core:reaped"]);
   }, 60_000);
 
-  it("quiesces authentically and reaps Runner before Core for SIGINT and SIGTERM foreground shutdown", async () => {
-    dataDir = await mkdtemp(join(repoRoot, ".tmp-launcher-foreground-"));
-    model = await startMockModelServer();
-    expect((await launch(dataDir, "init")).exitCode).toBe(0);
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      [grpcPort, httpPort] = await distinctPorts();
-      const output: string[] = []; const errors: string[] = []; const exits: number[] = [];
-      const foreground = run(["start", "--foreground"], { out: (line) => output.push(line), err: (line) => errors.push(line), exit: (code) => exits.push(code) }, launcherEnv(dataDir));
-      await expect.poll(() => output.join("\n"), { timeout: 20_000, interval: 100, message: errors.join("\n") }).toContain("bootstrap token:");
-      const state = JSON.parse(await readFile(join(dataDir, "runtime-state.json"), "utf8")) as { corePid: number; runnerPid: number };
-      process.emit(signal, signal);
-      await expect(foreground).resolves.toBeUndefined();
-      expect(exits, errors.join("\n")).toEqual([]);
+  it("quiesces authentically and reaps Runner before Core in foreground mode", async () => {
+    const signals: readonly (NodeJS.Signals | "STOP_COMMAND")[] = process.platform === "win32"
+      ? ["STOP_COMMAND"]
+      : ["SIGINT", "SIGTERM"];
+    for (const signal of signals) {
+      dataDir = await mkdtemp(join(repoRoot, `.tmp-launcher-foreground-${signal.toLowerCase()}-`));
+      const state = await runHostSignalProof(dataDir, signal);
       expect(existsSync(join(dataDir, "runtime-state.json"))).toBe(false);
-      expect(isPidAlive(state.runnerPid)).toBe(false); expect(isPidAlive(state.corePid)).toBe(false);
       await expectStopOrder(dataDir, state.runnerPid, state.corePid, true);
+      await removeEventually(dataDir);
+      dataDir = undefined;
     }
-  }, 120_000);
+  }, 600_000);
 });
+
+async function runHostSignalProof(directory: string, signal: NodeJS.Signals | "STOP_COMMAND"): Promise<{ readonly corePid: number; readonly runnerPid: number }> {
+  [grpcPort, httpPort] = await distinctPorts();
+  expect((await runCli([launcherEntry, "--data-dir", directory, "init"], launcherEnv(directory), DEADLINE_MS)).exitCode).toBe(0);
+  const child = spawn(process.execPath, [launcherEntry, "--data-dir", directory, "start", "--foreground"], { env: launcherEnv(directory), stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = ""; let stderr = "";
+  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; }); child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+  await expect.poll(() => stdout, { timeout: 30_000, interval: 100, message: stderr }).toContain("bootstrap token:");
+  const state = JSON.parse(await readFile(join(directory, "runtime-state.json"), "utf8")) as { corePid: number; runnerPid: number };
+  if (signal === "STOP_COMMAND") {
+    const stopped = await runCli([launcherEntry, "--data-dir", directory, "stop"], launcherEnv(directory), DEADLINE_MS);
+    expect(stopped.exitCode, stopped.stderr).toBe(0);
+  } else {
+    process.kill(child.pid as number, signal);
+  }
+  const exit = await new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((resolve, reject) => { child.once("error", reject); child.once("close", (code, closedBy) => resolve({ code, signal: closedBy })); });
+  expect(exit, `stdout:\n${stdout}\nstderr:\n${stderr}`).toEqual({ code: 0, signal: null });
+  expect(isPidAlive(state.runnerPid)).toBe(false); expect(isPidAlive(state.corePid)).toBe(false);
+  return state;
+}
 
 interface LifecycleEvent { readonly event: string; readonly pid: number; readonly at: string }
 

@@ -55,4 +55,4 @@ export {
 export type { RuntimeState } from "./runtime-state.js";
 
 export { run } from "./main.js";
-export type { LauncherIo } from "./main.js";
+export type { LauncherDependencies, LauncherIo } from "./main.js";
