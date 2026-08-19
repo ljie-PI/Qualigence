@@ -22,8 +22,8 @@ Final finding verification (Windows 11, Node 24, Corepack pnpm 11.7.0,
 - Task 11 Gate group 1 passed 10 files / 61 tests.
 - Task 11 Gate group 2 passed 10 files / 103 tests, including the mandatory
   Docker-backed PostgreSQL Runner-control contract.
-- Task 11 Gate group 3 passed 11 files / 84 tests with two pre-existing Task 21
-  Windows quarantine skips. The built-process E2E passed 5 tests using real
+- Task 11 Gate group 3 passed 11 files / 85 tests with one pre-existing Task 21
+  Windows quarantine skip. The built-process E2E passed 5 tests using real
   Launcher/Core/Runner, Chromium, model, and web fixture processes. It proved
   three post-start rollback failures, authenticated foreground shutdown
   (Windows stop-marker command; POSIX SIGINT/SIGTERM), Runner-before-Core

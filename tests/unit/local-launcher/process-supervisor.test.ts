@@ -201,11 +201,11 @@ describe("ProcessSupervisor.stop", () => {
 });
 
 describe("terminateProcess", () => {
-  it.skipIf(process.platform === "win32")("throws ProcessReapTimedOut when the PID remains alive after SIGKILL", async () => {
+  it("throws ProcessReapTimedOut when the PID remains alive after forced termination", async () => {
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
     try {
       await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
-      expect(kill).toHaveBeenCalledWith(2_147_000_000, "SIGKILL");
+      expect(kill).toHaveBeenCalledWith(2_147_000_000, 0);
     } finally { kill.mockRestore(); }
   }, 5_000);
 
