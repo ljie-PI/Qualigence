@@ -77,16 +77,34 @@ export async function publishStopRequest(dataDir: string, marker: LocalStopReque
       try { await link(temporary, canonical); return; } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
-      let existing: LocalStopRequest;
+      const claimed = join(dataDir, `local-stop-request.${process.pid}.${randomBytes(8).toString("hex")}.claimed`);
       try {
-        existing = parseStopRequest(JSON.parse(await readFile(canonical, "utf8")));
+        await rename(canonical, claimed);
       } catch {
-        const stale = join(dataDir, `local-stop-request.${process.pid}.${randomBytes(8).toString("hex")}.stale`);
-        try { await rename(canonical, stale); } catch { continue; }
-        await rm(stale, { force: true });
         continue;
       }
-      if (sameTopology(existing, marker)) return;
+      let existing: LocalStopRequest | undefined;
+      try {
+        existing = parseStopRequest(JSON.parse(await readFile(claimed, "utf8")));
+      } catch {
+        existing = undefined;
+      }
+      if (existing !== undefined) {
+        try { await link(claimed, canonical); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+      }
+      await rm(claimed, { force: true });
+      if (existing === undefined) continue;
+      if (sameTopology(existing, marker)) {
+        const current = await readFile(canonical, "utf8").catch(() => undefined);
+        if (current !== undefined) {
+          try {
+            if (sameTopology(parseStopRequest(JSON.parse(current)), marker)) return;
+          } catch { /* retry through the atomic claim path */ }
+        }
+        continue;
+      }
       throw new LauncherError("StopRequestInvalid", "a stop request for a different topology already exists");
     }
   } finally {

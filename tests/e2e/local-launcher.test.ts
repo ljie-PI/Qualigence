@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -254,19 +254,27 @@ describe("local-launcher real process loop", () => {
 async function runHostSignalProof(directory: string, signal: NodeJS.Signals | "STOP_COMMAND"): Promise<{ readonly corePid: number; readonly runnerPid: number }> {
   [grpcPort, httpPort] = await distinctPorts();
   expect((await runCli([launcherEntry, "--data-dir", directory, "init"], launcherEnv(directory), DEADLINE_MS)).exitCode).toBe(0);
-  const child = spawn(process.execPath, [launcherEntry, "--data-dir", directory, "start", "--foreground"], { env: launcherEnv(directory), stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = ""; let stderr = "";
-  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => { stdout += chunk; }); child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-  await expect.poll(() => stdout, { timeout: 30_000, interval: 100, message: stderr }).toContain("bootstrap token:");
+  const stdoutPath = join(directory, "foreground.stdout.log");
+  const stderrPath = join(directory, "foreground.stderr.log");
+  const stdoutFd = openSync(stdoutPath, "a");
+  const stderrFd = openSync(stderrPath, "a");
+  const child = spawn(process.execPath, [launcherEntry, "--data-dir", directory, "start", "--foreground"], { env: launcherEnv(directory), stdio: ["ignore", stdoutFd, stderrFd] });
+  closeSync(stdoutFd);
+  closeSync(stderrFd);
+  await expect.poll(async () => readFile(stdoutPath, "utf8"), { timeout: 30_000, interval: 100, message: await readFile(stderrPath, "utf8").catch(() => "") }).toContain("bootstrap token:");
   const state = JSON.parse(await readFile(join(directory, "runtime-state.json"), "utf8")) as { corePid: number; runnerPid: number };
+  const exited = new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((resolve, reject) => { child.once("error", reject); child.once("exit", (code, closedBy) => resolve({ code, signal: closedBy })); });
   if (signal === "STOP_COMMAND") {
     const stopped = await runCli([launcherEntry, "--data-dir", directory, "stop"], launcherEnv(directory), DEADLINE_MS);
     expect(stopped.exitCode, stopped.stderr).toBe(0);
   } else {
     process.kill(child.pid as number, signal);
   }
-  const exit = await new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>((resolve, reject) => { child.once("error", reject); child.once("close", (code, closedBy) => resolve({ code, signal: closedBy })); });
+  const exit = await exited;
+  child.removeAllListeners();
+  child.unref();
+  const stdout = await readFile(stdoutPath, "utf8");
+  const stderr = await readFile(stderrPath, "utf8");
   expect(exit, `stdout:\n${stdout}\nstderr:\n${stderr}`).toEqual({ code: 0, signal: null });
   expect(isPidAlive(state.runnerPid)).toBe(false); expect(isPidAlive(state.corePid)).toBe(false);
   return state;

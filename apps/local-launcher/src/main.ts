@@ -22,7 +22,6 @@ import { BackupManager } from "./backup-manager.js";
 import { certPathsFor, ensureLocalCerts } from "./certs.js";
 import { loadLocalConfig, loadYaml, LocalConfigError } from "./config.js";
 import {
-  claimMatchingStopRequest,
   ChildProcessUnit,
   terminateProcess,
 } from "./child-process-unit.js";
@@ -33,6 +32,7 @@ import { MigrationGuard } from "./migration-guard.js";
 import { createBootstrapCredentialHandoff } from "./bootstrap-credential-handoff.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import {
+  claimMatchingStopRequest,
   clearRuntimeState,
   clearOwnedTopologyFiles,
   isPidAlive,
@@ -430,7 +430,7 @@ function quiesceCore(port: number, credential: Uint8Array, timeoutMs: number): P
   return new Promise((resolvePromise, rejectPromise) => {
     const call = request({ host: "127.0.0.1", port, path: "/api/v1/local/quiesce", method: "POST", headers: { authorization: `Bearer ${bearer}` }, timeout: timeoutMs }, (response) => {
       response.resume();
-      response.statusCode === 200 ? resolvePromise() : rejectPromise(new Error("quiesce refused"));
+      response.statusCode === 204 ? resolvePromise() : rejectPromise(new Error("quiesce refused"));
     });
     call.once("error", rejectPromise);
     call.once("timeout", () => { call.destroy(); rejectPromise(new Error("quiesce timed out")); });
