@@ -50,6 +50,11 @@ expiry rejection, startup cleanup/zeroization, atomic no-overwrite marker claims
 platform-correct process-tree termination, private detached-supervisor helpers,
 and foreground use of the same authenticated marker/quiesce lifecycle.
 
+The exact-head scoped review fix `fix(local): close final scoped spec findings`
+also makes persisted completion identity errors immediately integrity-blocking,
+requires complete Local composition configuration, rejects unsafe host overrides,
+and atomically claims runtime state before deleting only the matching topology.
+
 Task 11 extends the existing `ProcessSupervisor`, `ChildProcessUnit`,
 `RunnerControlStore`, Evidence read ports, Core application services,
 `GrpcRunnerProtocolServer.connection`, `SqliteRuntime`, `BackupManager`, and

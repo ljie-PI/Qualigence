@@ -147,7 +147,6 @@ export async function clearRuntimeState(dataDir: string): Promise<void> {
 }
 
 export async function clearOwnedTopologyFiles(dataDir: string, topology: Pick<RuntimeState, "supervisorPid" | "corePid" | "runnerPid" | "startedAt">): Promise<void> {
-  const state = await readRuntimeState(dataDir);
   for (const path of [join(dataDir, "local-stop-request.json"), join(dataDir, `local-stop-request.${topology.supervisorPid}.claim`)]) {
     try {
       const marker = parseStopRequest(JSON.parse(await readFile(path, "utf8")));
@@ -156,7 +155,29 @@ export async function clearOwnedTopologyFiles(dataDir: string, topology: Pick<Ru
       // A malformed or differently owned marker is not ours to remove.
     }
   }
-  if (state !== undefined && sameTopology(state, topology)) await clearRuntimeState(dataDir);
+  const claimedState = join(dataDir, `runtime-state.${process.pid}.${randomBytes(8).toString("hex")}.claim`);
+  try {
+    await rename(stateFile(dataDir), claimedState);
+  } catch {
+    return;
+  }
+  let claimed: RuntimeState | undefined;
+  try {
+    claimed = parseRuntimeState(JSON.parse(await readFile(claimedState, "utf8")));
+  } catch {
+    claimed = undefined;
+  }
+  if (claimed !== undefined && sameTopology(claimed, topology)) {
+    await rm(claimedState, { force: true });
+    return;
+  }
+  try {
+    await link(claimedState, stateFile(dataDir));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  } finally {
+    await rm(claimedState, { force: true });
+  }
 }
 
 /** True when the OS process for `pid` is alive (and we may signal it). */
