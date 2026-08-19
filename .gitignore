@@ -6,6 +6,9 @@ coverage/
 *.tsbuildinfo
 .tmp-*/
 
+# .NET/MSBuild intermediate output (Windows reference fixtures).
+**/obj/
+
 # Rust (M3 Desktop Companion, apps/companion) build artifacts. Cargo.lock is
 # committed for the binary crate to keep Companion builds reproducible.
 /target/
