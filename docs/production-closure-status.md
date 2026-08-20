@@ -47,8 +47,8 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: pending dedicated PR merge
-implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`
+verification: round-2 clean review and PR pending
+implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
   offline advisory lock, with each step transactional and failed steps resumable.
@@ -65,6 +65,16 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`
 - Core Application no longer imports or references PostgreSQL Runtime. The
   Worker injects the storage-owned transaction guard, and the intelligence
   consumer retains a provider-neutral transaction interface.
+- Round-1 blockers are fixed: Core has no advisory-lock key or fallback and
+  every queue caller injects the provider-neutral transaction guard; PostgreSQL
+  revokes database `TEMPORARY` from `PUBLIC` and both runtime roles while the
+  owner retains it; startup and migration validate exact auxiliary tables,
+  columns, primary keys, forced RLS, tenant policy, and runtime grants before a
+  marker can be accepted or completed.
+- Round-1 fix verification passed the amended focused Docker Gate at 6 files /
+  32 tests with zero skips, plus `corepack pnpm typecheck` and
+  `git diff --check`. Round-2 exact-base review evidence and the dedicated PR
+  remain pending.
 - On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
   focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
   Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup
