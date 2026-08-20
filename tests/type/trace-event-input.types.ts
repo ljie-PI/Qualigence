@@ -13,6 +13,19 @@ const observationInput: TraceEventInput = {
 
 observationInput satisfies TraceEventInput;
 
+const indexedDecisionInput: TraceEventInput = {
+  runId: "run-1",
+  stepIndex: 0,
+  stage: "decision",
+  payload: {
+    kind: "click",
+    target: { nodeId: "node-1" },
+    reason: "execute the first immutable plan step",
+  },
+};
+
+indexedDecisionInput satisfies TraceEventInput;
+
 const completedInput: TraceEventInput = {
   runId: "run-1",
   stage: "run_completed",

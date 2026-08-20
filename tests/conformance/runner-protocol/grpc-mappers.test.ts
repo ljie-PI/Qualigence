@@ -149,18 +149,21 @@ describe("grpc runner protocol mappers", () => {
         projectId: "project-1",
         target: { kind: "web", url: "https://example.test/" },
         objective: "add the item to the cart",
-        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["navigate", "click", "input", "select", "scroll"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
         plan: {
           missionId: "mission-1",
           missionRevision: 2,
           testCaseId: "case-1",
           steps: [
-            { kind: "navigate", path: "/cart" },
-            { kind: "click", target: { role: "button", name: "Add", purpose: "add item" } },
-            { kind: "verify", claimIds: ["claim-1"] },
+            { stepIndex: 0, kind: "navigate", path: "/cart" },
+            { stepIndex: 1, kind: "click", target: { role: "button", name: "Add", purpose: "add item" } },
+            { stepIndex: 2, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "customer.email" },
+            { stepIndex: 3, kind: "select", target: { role: "combobox", purpose: "choose country" }, valueRef: "customer.country" },
+            { stepIndex: 4, kind: "scroll", target: { purpose: "review order" }, direction: "down", amount: "small" },
+            { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
           ],
           expectedClaimIds: ["claim-1"],
-          budget: { maximumStepsPerJob: 3, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+          budget: { maximumStepsPerJob: 6, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
         },
       },
       requiredCapabilities: ["target:web-playwright"],
@@ -203,6 +206,7 @@ describe("grpc runner protocol mappers", () => {
       idempotencyKey: "run-attempt-1:1",
       runId: "run-attempt-1",
       sequenceNumber: 1,
+      stepIndex: 2,
       stage: "observation",
       occurredAt: "2026-08-01T00:00:00.000Z",
       payloadHash: "0".repeat(64),
@@ -219,6 +223,31 @@ describe("grpc runner protocol mappers", () => {
       events: [event],
     };
     expect(wireRoundTrip("ExecutionEventBatch", eventBatchToWire, eventBatchFromWire, batch)).toEqual(batch);
+  });
+
+  it("does not materialize a step index on legacy Trace events", () => {
+    const event: TraceEvent = {
+      protocolVersion: "runner-protocol/v1",
+      schemaVersion: "trace-event/v1",
+      messageId: "run-attempt-1:legacy",
+      idempotencyKey: "run-attempt-1:legacy",
+      runId: "run-attempt-1",
+      sequenceNumber: 1,
+      stage: "run_completed",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      payloadHash: "0".repeat(64),
+      payload: { status: "passed" },
+    };
+    const batch: ExecutionEventBatch = {
+      batchId: "batch-legacy",
+      runId: "run-attempt-1",
+      firstSequenceNumber: 1,
+      events: [event],
+    };
+
+    const back = wireRoundTrip("ExecutionEventBatch", eventBatchToWire, eventBatchFromWire, batch);
+    expect(back).toEqual(batch);
+    expect("stepIndex" in back.events[0]!).toBe(false);
   });
 
   it("round-trips ExecutionEventAck through the protobuf wire", () => {

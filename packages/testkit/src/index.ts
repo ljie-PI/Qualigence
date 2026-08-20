@@ -60,6 +60,7 @@ function withEnvelope(
     idempotencyKey: `${input.runId}:${sequenceNumber}`,
     runId: input.runId,
     sequenceNumber,
+    ...(input.stepIndex === undefined ? {} : { stepIndex: input.stepIndex }),
     occurredAt: "2026-07-30T00:00:00.000Z",
   } as const;
 

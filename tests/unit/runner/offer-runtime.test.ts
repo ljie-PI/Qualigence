@@ -79,6 +79,37 @@ describe("RunnerOfferRuntime", () => {
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ errorCode: "PolicyDenied" }));
   });
 
+  it.each([
+    ["malformed", [{ stepIndex: 1, kind: "navigate", path: "/checkout" }]],
+    ["unsupported", [{ stepIndex: 0, kind: "script", source: "alert(1)" }]],
+    ["policy-incompatible", [{ stepIndex: 0, kind: "navigate", path: "/checkout" }]],
+  ])("blocks a %s plan before target construction", async (_name, steps) => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" })),
+      complete: vi.fn(async () => undefined),
+    };
+    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: {} as never, config: {} as never });
+
+    await runtime.run({
+      offerId: "offer-1",
+      job: {
+        jobId: "job-1",
+        runId: "run-1",
+        projectId: "project-test",
+        target: { kind: "web", url: "https://example.test/" },
+        objective: "must block",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },
+        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps, expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } },
+      },
+      requiredCapabilities: [],
+      leaseDurationMs: 30_000,
+    } as never);
+
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ status: "blocked" }));
+  });
+
   it("passes only staging policy origins to an admitted target", async () => {
     executorGates.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };

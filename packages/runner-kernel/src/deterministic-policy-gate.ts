@@ -1,4 +1,5 @@
 import {
+  ExecutionPlanPolicyError,
   ExecutionPolicySnapshotError,
   parseExecutionJob,
   parseExecutionPolicySnapshot,
@@ -38,6 +39,9 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     try {
       accepted = parseExecutionJob(job);
     } catch (error) {
+      if (error instanceof ExecutionPlanPolicyError) {
+        return { status: "denied", code: "PolicyDenied", message: "PlanActionDenied" };
+      }
       if (error instanceof ExecutionPolicySnapshotError) {
         return { status: "denied", code: "PolicyMissing", message: "execution Job policy is required" };
       }
@@ -55,6 +59,11 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     }
     if ((target.protocol !== "http:" && target.protocol !== "https:") || !policy.allowedOrigins.includes(target.origin)) {
       return { status: "denied", code: "PolicyDenied", message: "TargetOriginDenied" };
+    }
+    if (accepted.plan?.steps.some((step) =>
+      step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
+    )) {
+      return { status: "denied", code: "PolicyDenied", message: "PlanActionDenied" };
     }
     return { status: "allowed", gate: new DeterministicRunnerPolicyGate(policy, options) };
   }

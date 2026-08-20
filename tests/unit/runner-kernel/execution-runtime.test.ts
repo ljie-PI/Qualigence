@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
   ExecutionRuntime,
+  resolvedActionNodeId,
+  toDecisionTracePayload,
+  toResolvedActionTracePayload,
+  type AnyProposedAction,
+  type AnyResolvedAction,
   type RunnerPolicyGate,
 } from "@qualigence/runner-kernel";
 import {
@@ -13,6 +18,87 @@ import {
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
 
 describe("ExecutionRuntime", () => {
+  it.each([
+    [
+      { kind: "navigate", path: "/checkout", reason: "open checkout" } as AnyProposedAction,
+      { targetKind: "web", kind: "navigate", url: "https://example.test/checkout" } as AnyResolvedAction,
+    ],
+    [
+      { kind: "click", target: { nodeId: "button-1" }, reason: "continue" } as AnyProposedAction,
+      { targetKind: "web", kind: "click", target: { nodeId: "button-1", selector: "token-1" }, graphId: "graph-1" } as AnyResolvedAction,
+    ],
+    [
+      { kind: "input", target: { nodeId: "email-1" }, valueRef: "customer.email", reason: "enter email" } as AnyProposedAction,
+      { targetKind: "web", kind: "input", target: { nodeId: "email-1", selector: "token-2" }, graphId: "graph-1", valueRef: "customer.email" } as AnyResolvedAction,
+    ],
+    [
+      { kind: "select", target: { nodeId: "country-1" }, valueRef: "customer.country", reason: "choose country" } as AnyProposedAction,
+      { targetKind: "web", kind: "select", target: { nodeId: "country-1", selector: "token-3" }, graphId: "graph-1", valueRef: "customer.country" } as AnyResolvedAction,
+    ],
+    [
+      { kind: "scroll", target: { nodeId: "summary-1" }, direction: "down", amount: "small", reason: "review summary" } as AnyProposedAction,
+      { targetKind: "web", kind: "scroll", target: { nodeId: "summary-1", selector: "token-4" }, graphId: "graph-1", direction: "down", amount: "small" } as AnyResolvedAction,
+    ],
+  ])("maps a lossless %s decision and Web resolution trace payload", (proposal, resolved) => {
+    expect(toDecisionTracePayload(proposal)).toEqual(proposal);
+    expect(toResolvedActionTracePayload(resolved)).toEqual(resolved);
+  });
+
+  it("records a Desktop window resolution honestly instead of fabricating a click", () => {
+    const resolved: AnyResolvedAction = {
+      targetKind: "desktop",
+      kind: "window",
+      actionId: "action-1",
+      graphId: "graph-1",
+      nodeId: "window-1",
+      resolution: "semantic",
+      windowOperation: "focus",
+    };
+    expect(toResolvedActionTracePayload(resolved)).toEqual(resolved);
+  });
+
+  it("returns no node id for navigation", () => {
+    expect(resolvedActionNodeId({ targetKind: "web", kind: "navigate", url: "https://example.test/checkout" })).toBeUndefined();
+  });
+
+  it("preserves the indexed action step through public run and Trace recording", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const observations = [
+      { graphId: "graph-before", nodes: [] },
+      { graphId: "graph-after", nodes: [] },
+    ];
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observations.shift()! },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "button-1" }, reason: "execute step zero" }),
+      resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "button-1", selector: "token-1" }, graphId: "graph-before" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "passed", claims: [] }) },
+      traceRecorder,
+    });
+
+    await runtime.run({
+      jobId: "job-indexed",
+      runId: "run-indexed",
+      projectId: "project-test",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "click",
+      policy,
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps: [{ stepIndex: 0, kind: "click", target: { purpose: "continue" } }],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
+    });
+
+    const actionEvents = traceRecorder.eventsFor("run-indexed").filter((event) => event.stage !== "run_completed");
+    expect(actionEvents).not.toHaveLength(0);
+    expect(actionEvents.every((event) => event.stepIndex === 0)).toBe(true);
+  });
+
   it.each([
     ["action-kind mismatch", { allowedActionKinds: ["navigate"] as const, maximumRisk: "Normal" as const }],
     ["risk above ceiling", { allowedActionKinds: ["window"] as const, maximumRisk: "Normal" as const }],
@@ -277,6 +363,14 @@ describe("ExecutionRuntime", () => {
       target: { kind: "web", url: "https://example.test" },
       objective: "Verify cart total",
       policy,
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps: [{ stepIndex: 0, kind: "click", target: { purpose: "verify cart total" } }],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
     });
 
     expect(completion.status).toBe("finding");
@@ -300,6 +394,8 @@ describe("ExecutionRuntime", () => {
       "finding",
       "run_completed",
     ]);
+    const indexedEvents = traceRecorder.eventsFor("run-failed").filter((event) => event.stage !== "run_completed");
+    expect(indexedEvents.every((event) => event.stepIndex === 0)).toBe(true);
   });
 
   it("blocks immediately when the action executor reports a failed outcome", async () => {

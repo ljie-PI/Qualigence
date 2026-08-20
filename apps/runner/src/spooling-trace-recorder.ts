@@ -42,6 +42,7 @@ function withEnvelope(input: TraceEventInput, sequenceNumber: number): TraceEven
     idempotencyKey: `${input.runId}:${sequenceNumber}`,
     runId: input.runId,
     sequenceNumber,
+    ...(input.stepIndex === undefined ? {} : { stepIndex: input.stepIndex }),
     occurredAt: "2026-08-01T00:00:00.000Z",
   } as const;
 

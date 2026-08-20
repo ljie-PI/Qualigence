@@ -54,6 +54,37 @@ const owner1 = { runnerId: "runner-1", sessionId: "session-1" } as const;
 const webCaps = capabilities({ targetAdapters: ["web-playwright"] });
 
 describe("ExecutionJobService", () => {
+  it.each([
+    ["malformed", [{ stepIndex: 1, kind: "navigate", path: "/checkout" }]],
+    ["unsupported", [{ stepIndex: 0, kind: "script", source: "alert(1)" }]],
+    ["policy-incompatible", [{ stepIndex: 0, kind: "navigate", path: "/checkout" }]],
+  ])("rejects a %s plan before offer storage or payload exposure", async (_name, steps) => {
+    let nextOfferId = 0;
+    const { ownership, store } = makeOwnership();
+    const service = new ExecutionJobService(ownership, {
+      store,
+      generateOfferId: () => `offer-${++nextOfferId}`,
+    });
+    const invalid = {
+      ...job("run-invalid"),
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps,
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
+    };
+
+    await expect(service.offer({ owner: owner1, capabilities: webCaps, job: invalid as never, requiredCapabilities: [] }))
+      .rejects.toMatchObject({ code: "PolicyMissing" });
+    await expect(service.accept("offer-1")).rejects.toMatchObject({ code: "UnknownOffer" });
+
+    const validOffer = await service.offer({ owner: owner1, capabilities: webCaps, job: job("run-valid"), requiredCapabilities: [] });
+    expect(validOffer.offerId).toBe("offer-1");
+  });
+
   it("offers a web job to a runner that advertises web-playwright", async () => {
     const service = makeService();
     const offer = await service.offer({
