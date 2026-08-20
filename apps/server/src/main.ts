@@ -39,7 +39,7 @@ export async function main(
   loadConfig: (env: NodeJS.ProcessEnv) => ServerConfig = loadServerConfig,
 ): Promise<void> {
   const config = loadConfig(env);
-  await assertSchema(config.postgres);
+  await assertSchema(config.postgres, config.postgres.user);
 
   const jwksEntries = JSON.parse(config.oidc.jwksJson) as readonly JwksEntry[];
   const keys: OidcSigningKey[] = jwksEntries.map((entry) =>

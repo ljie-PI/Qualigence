@@ -28,7 +28,7 @@ export async function main(
   assertSchema = assertPostgresSchemaCurrent,
 ): Promise<void> {
   const config = loadWorkerConfig(env);
-  await assertSchema(config.postgres);
+  await assertSchema(config.postgres, config.serverPostgresRole);
 
   const queue = new PostgresIntelligenceQueue(
     {

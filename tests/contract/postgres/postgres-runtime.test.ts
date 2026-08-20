@@ -254,9 +254,9 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
         },
       });
       expect(applied).toEqual([4, 5, 6, 7]);
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaBehind" });
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaBehind" });
       await markAuxSchemaCurrent(admin);
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaMalformed" });
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaMalformed" });
     } finally {
       await partial.stop();
     }
@@ -289,24 +289,24 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
       );
       await failedStepTable.end();
       expect(failedStep.rows[0]?.exists).toBe(false);
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({
         code: "SchemaBehind",
       } satisfies Partial<PostgresSchemaError>);
       await migratePostgres({ admin });
       await markAuxSchemaCurrent(admin);
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaMalformed" });
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaMalformed" });
 
       const client = new Client(admin);
       await client.connect();
       await client.query("delete from schema_migrations where version = 4");
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({
         code: "SchemaMalformed",
       } satisfies Partial<PostgresSchemaError>);
       await client.query(
         "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (8, 'future', now()::text)",
       );
       await client.end();
-      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+      await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({
         code: "SchemaAhead",
       } satisfies Partial<PostgresSchemaError>);
     } finally {

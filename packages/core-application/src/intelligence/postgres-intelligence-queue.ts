@@ -76,8 +76,11 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
 
   constructor(
     config: PostgresIntelligenceQueueConfig,
-    transactionGuard: TransactionGuard,
+    transactionGuard?: TransactionGuard,
   ) {
+    if (transactionGuard === undefined) {
+      throw new Error("PostgresIntelligenceQueue requires an explicit transaction guard");
+    }
     this.transactionGuard = transactionGuard;
     this.pool = new Pool({
       host: config.host,

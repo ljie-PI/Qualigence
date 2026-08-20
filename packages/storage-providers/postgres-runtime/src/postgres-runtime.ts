@@ -225,6 +225,7 @@ export async function readSchemaVersion(
 
 export async function assertPostgresSchemaCurrent(
   config: PostgresConnectionConfig,
+  serverRole: string,
 ): Promise<void> {
   const db = createKysely(config);
   try {
@@ -253,7 +254,7 @@ export async function assertPostgresSchemaCurrent(
           version,
         );
       }
-      await assertPostgresAuxSchema(trx);
+      await assertPostgresAuxSchema(trx, serverRole);
     });
   } finally {
     await db.destroy();

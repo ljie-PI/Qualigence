@@ -1,4 +1,4 @@
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { PostgresSchemaError } from "./postgres-schema-error.js";
 
 interface AuxColumnSpec {
@@ -12,6 +12,10 @@ interface AuxTableSpec {
   readonly columns: readonly AuxColumnSpec[];
   readonly primaryKey: readonly string[];
 }
+
+type AuxSchemaConnection<Database extends object> =
+  | Kysely<Database>
+  | Transaction<Database>;
 
 const text = (name: string, nullable = false): AuxColumnSpec => ({
   name,
@@ -69,19 +73,19 @@ const REQUIRED_POLICY_EXPRESSION =
   "(tenant_id = current_setting('app.tenant_id'::text, true))";
 const REQUIRED_PRIVILEGES = ["DELETE", "INSERT", "SELECT", "UPDATE"];
 
-export async function assertPostgresAuxSchema(
-  db: Kysely<any>,
-  expectedServerRole?: string,
+export async function assertPostgresAuxSchema<Database extends object>(
+  db: AuxSchemaConnection<Database>,
+  expectedServerRole: string,
 ): Promise<void> {
   for (const table of AUX_TABLES) {
     await assertTable(db, table);
-    const role = await assertPolicy(db, table.name, expectedServerRole);
-    await assertGrants(db, table.name, role);
+    await assertPolicy(db, table.name, expectedServerRole);
+    await assertGrants(db, table.name, expectedServerRole);
   }
 }
 
-export async function markPostgresAuxSchemaCurrent(
-  db: Kysely<any>,
+export async function markPostgresAuxSchemaCurrent<Database extends object>(
+  db: AuxSchemaConnection<Database>,
   serverRole: string,
 ): Promise<void> {
   await assertPostgresAuxSchema(db, serverRole);
@@ -93,7 +97,10 @@ export async function markPostgresAuxSchemaCurrent(
   `.execute(db);
 }
 
-async function assertTable(db: Kysely<any>, table: AuxTableSpec): Promise<void> {
+async function assertTable<Database extends object>(
+  db: AuxSchemaConnection<Database>,
+  table: AuxTableSpec,
+): Promise<void> {
   const relation = await sql<{ relkind: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>`
     select c.relkind, c.relrowsecurity, c.relforcerowsecurity
       from pg_class c
@@ -140,11 +147,11 @@ async function assertTable(db: Kysely<any>, table: AuxTableSpec): Promise<void> 
   }
 }
 
-async function assertPolicy(
-  db: Kysely<any>,
+async function assertPolicy<Database extends object>(
+  db: AuxSchemaConnection<Database>,
   table: string,
-  expectedServerRole?: string,
-): Promise<string> {
+  expectedServerRole: string,
+): Promise<void> {
   const policies = await sql<{
     policyname: string;
     permissive: boolean;
@@ -174,15 +181,17 @@ async function assertPolicy(
     policy.qual_matches !== true ||
     policy.check_matches !== true ||
     policy.role_count !== 1 ||
-    policy.role_name === "public" ||
-    (expectedServerRole !== undefined && policy.role_name !== expectedServerRole)
+    policy.role_name !== expectedServerRole
   ) {
     malformed(`auxiliary table ${table} tenant isolation policy is malformed`);
   }
-  return policy.role_name;
 }
 
-async function assertGrants(db: Kysely<any>, table: string, serverRole: string): Promise<void> {
+async function assertGrants<Database extends object>(
+  db: AuxSchemaConnection<Database>,
+  table: string,
+  serverRole: string,
+): Promise<void> {
   const grants = await sql<{ grantee: string | null; privilege_type: string; is_owner: boolean }>`
     select grantee.rolname as grantee, acl.privilege_type,
            acl.grantee = c.relowner as is_owner

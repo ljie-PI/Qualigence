@@ -13,6 +13,8 @@ import {
   readSchemaVersion,
   PostgresSchemaError,
 } from "@qualigence/postgres-runtime";
+import { main as serverMain } from "../../../apps/server/src/main.js";
+import { main as workerMain } from "../../../apps/intelligence-worker/src/main.js";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 
 const { Client } = pg;
@@ -172,7 +174,10 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
         },
       })).rejects.toThrow("injected auxiliary schema failure");
       expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(7);
-      await expect(assertPostgresSchemaCurrent(isolatedConfig.postgres.admin)).rejects.toMatchObject({
+      await expect(assertPostgresSchemaCurrent(
+        isolatedConfig.postgres.admin,
+        isolatedConfig.postgres.server.name,
+      )).rejects.toMatchObject({
         code: "SchemaBehind",
       } satisfies Partial<PostgresSchemaError>);
 
@@ -181,7 +186,10 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
         runBackup: async (_config, input) => backupResult(input),
       });
       expect(repaired.action).toBe("migrated");
-      await expect(assertPostgresSchemaCurrent(isolatedConfig.postgres.admin)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(
+        isolatedConfig.postgres.admin,
+        isolatedConfig.postgres.server.name,
+      )).resolves.toBeUndefined();
     } finally {
       await isolated.stop();
     }
@@ -197,20 +205,20 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       });
       const serverConfig = runtimeConfig(isolatedConfig, "server");
       const workerConfig = runtimeConfig(isolatedConfig, "worker");
-      await expect(assertPostgresSchemaCurrent(serverConfig)).resolves.toBeUndefined();
-      await expect(assertPostgresSchemaCurrent(workerConfig)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(serverConfig, "aux_guard_server")).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(workerConfig, "aux_guard_server")).resolves.toBeUndefined();
 
       const admin = new Client(isolatedConfig.postgres.admin);
       await admin.connect();
       try {
         await admin.query("revoke select on runner_principals from aux_guard_server");
-        await expect(assertPostgresSchemaCurrent(serverConfig)).rejects.toMatchObject({
+        await expect(assertPostgresSchemaCurrent(serverConfig, "aux_guard_server")).rejects.toMatchObject({
           code: "SchemaMalformed",
         });
         await admin.query("grant select on runner_principals to aux_guard_server");
 
         await admin.query("drop policy tenant_isolation on prd_revisions");
-        await expect(assertPostgresSchemaCurrent(workerConfig)).rejects.toMatchObject({
+        await expect(assertPostgresSchemaCurrent(workerConfig, "aux_guard_server")).rejects.toMatchObject({
           code: "SchemaMalformed",
         });
         await admin.query(`create policy tenant_isolation on prd_revisions
@@ -219,18 +227,63 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
           with check (tenant_id = current_setting('app.tenant_id', true))`);
 
         await admin.query("alter table targets disable row level security");
-        await expect(assertPostgresSchemaCurrent(serverConfig)).rejects.toMatchObject({
+        await expect(assertPostgresSchemaCurrent(serverConfig, "aux_guard_server")).rejects.toMatchObject({
           code: "SchemaMalformed",
         });
         await admin.query("alter table targets enable row level security");
 
         await admin.query("alter table runner_enrollments drop column token_hash");
-        await expect(assertPostgresSchemaCurrent(workerConfig)).rejects.toMatchObject({
+        await expect(assertPostgresSchemaCurrent(workerConfig, "aux_guard_server")).rejects.toMatchObject({
           code: "SchemaMalformed",
         });
       } finally {
         await admin.end();
       }
+    } finally {
+      await isolated.stop();
+    }
+  }, 120_000);
+
+  it("rejects Server and Worker startup when auxiliary policy and grants target the Worker role", async () => {
+    const isolated = await startPostgres();
+    const isolatedConfig = configFor(isolated, "aux_worker_authority");
+    try {
+      await runMigrate(isolatedConfig, {
+        invocationId: "aux-worker-authority-seed",
+        runBackup: async (_config, input) => backupResult(input),
+      });
+      const admin = new Client(isolatedConfig.postgres.admin);
+      await admin.connect();
+      try {
+        await admin.query("drop policy tenant_isolation on runner_principals");
+        await admin.query(`create policy tenant_isolation on runner_principals
+          to aux_worker_authority_worker
+          using (tenant_id = current_setting('app.tenant_id', true))
+          with check (tenant_id = current_setting('app.tenant_id', true))`);
+        await admin.query("revoke all on runner_principals from aux_worker_authority_server");
+        await admin.query(
+          "grant select, insert, update, delete on runner_principals to aux_worker_authority_worker",
+        );
+      } finally {
+        await admin.end();
+      }
+
+      const assertConfiguredServerRole = async (
+        postgres: Parameters<typeof assertPostgresSchemaCurrent>[0],
+        serverRole: string,
+      ): Promise<void> => {
+        expect(serverRole).toBe("aux_worker_authority_server");
+        await assertPostgresSchemaCurrent(postgres, serverRole);
+      };
+      await expect(serverMain(
+        {},
+        assertConfiguredServerRole,
+        () => serverStartupConfig(isolatedConfig),
+      )).rejects.toMatchObject({ code: "SchemaMalformed" });
+      await expect(workerMain(
+        workerStartupEnv(isolatedConfig),
+        assertConfiguredServerRole,
+      )).rejects.toMatchObject({ code: "SchemaMalformed" });
     } finally {
       await isolated.stop();
     }
@@ -308,6 +361,45 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       ...input.postgres.admin,
       user: input.postgres[role].name,
       password: input.postgres[role].password,
+    };
+  }
+
+  function serverStartupConfig(input: SelfHostedAdminConfig) {
+    return {
+      host: "127.0.0.1",
+      port: 8080,
+      postgres: runtimeConfig(input, "server"),
+      oidc: {
+        issuer: "https://issuer.example",
+        audience: "qualigence",
+        allowedAlgorithms: ["RS256" as const],
+        jwksJson: "[]",
+        claimMapper: {
+          tenantClaim: "tenant",
+          rolesClaim: "roles",
+          allowedTenants: ["tenant-a"],
+          roleMap: { admin: "admin" as const },
+        },
+      },
+      runnerCa: { certificatePem: "unused", privateKeyPem: "unused" },
+    };
+  }
+
+  function workerStartupEnv(input: SelfHostedAdminConfig): NodeJS.ProcessEnv {
+    const postgres = runtimeConfig(input, "worker");
+    return {
+      WORKER_PG_HOST: postgres.host,
+      WORKER_PG_PORT: String(postgres.port),
+      WORKER_PG_DATABASE: postgres.database,
+      WORKER_PG_USER: postgres.user,
+      WORKER_PG_PASSWORD: postgres.password,
+      WORKER_PG_SERVER_ROLE: input.postgres.server.name,
+      WORKER_S3_BUCKET: "unused",
+      WORKER_S3_ACCESS_KEY_ID: "unused",
+      WORKER_S3_SECRET_ACCESS_KEY: "unused",
+      WORKER_MODEL_BASE_URL: "https://model.example",
+      WORKER_MODEL_API_KEY: "unused",
+      WORKER_MODEL_NAME: "unused",
     };
   }
 });

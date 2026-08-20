@@ -47,7 +47,7 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: round-2 clean review and PR pending
+verification: round-2 blockers fixed; fresh exact-base review and PR pending
 implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
@@ -73,8 +73,20 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
   marker can be accepted or completed.
 - Round-1 fix verification passed the amended focused Docker Gate at 6 files /
   32 tests with zero skips, plus `corepack pnpm typecheck` and
-  `git diff --check`. Round-2 exact-base review evidence and the dedicated PR
-  remain pending.
+  `git diff --check`.
+- Round-2 RED passed as evidence: the two Server/Worker startup files failed all
+  7 tests because neither Composition Root supplied the configured Server role
+  and Worker accepted no explicit Server-role configuration. Round-2 fixes make
+  auxiliary policy/grant validation require that role, including a Docker case
+  where both startup paths reject policy/grants reassigned to the Worker role.
+  `aux-schema.ts` now uses a minimal generic Kysely/transaction constraint with
+  no `any` or unsafe assertion. The three exact Worker component callers remain
+  in the amended Ticket 02 scope and Gate; the Ticket 12 `compose.test.ts` diff
+  was removed completely.
+- Round-2 GREEN passed the full amended focused Docker Gate at 9 files / 46
+  tests with zero skips, plus `corepack pnpm typecheck` and
+  `git diff --check`. A fresh exact-base review and the dedicated PR remain
+  pending.
 - On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
   focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
   Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup

@@ -9,10 +9,7 @@ import {
   type IntelligenceJobStore,
   type IntelligenceResultInbox,
 } from "@qualigence/core-application";
-import {
-  acquirePostgresOperationLock,
-  createPostgresRuntime,
-} from "@qualigence/postgres-runtime";
+import { createPostgresRuntime } from "@qualigence/postgres-runtime";
 import { WorkerLoop, type Clock, type JobProcessor } from "@qualigence/intelligence-worker";
 import type { IntelligenceJob } from "@qualigence/intelligence";
 import { dockerAvailable } from "../../helpers/docker-container.js";
@@ -276,16 +273,13 @@ describe.skipIf(!dockerAvailable())(
       await seedInvestigationCase(adminConfig(), { tenantId, caseId, version: 0 });
       await seedJob(adminConfig(), job);
 
-      const queue = new PostgresIntelligenceQueue(
-        {
-          host: fx.container.host,
-          port: fx.container.port,
-          database: fx.container.database,
-          user: "qualigence_worker",
-          password: "worker_pw",
-        },
-        acquirePostgresOperationLock,
-      );
+      const queue = new PostgresIntelligenceQueue({
+        host: fx.container.host,
+        port: fx.container.port,
+        database: fx.container.database,
+        user: "qualigence_worker",
+        password: "worker_pw",
+      });
       const processor: JobProcessor = {
         process: async (leased: IntelligenceJob) => {
           expect(leased.jobId).toBe("job-loop-e2e");

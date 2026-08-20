@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 /** Resolved runtime configuration for the standalone Intelligence Worker. */
 export interface IntelligenceWorkerConfig {
   readonly workerId: string;
+  readonly serverPostgresRole: string;
   readonly postgres: {
     readonly host: string;
     readonly port: number;
@@ -59,6 +60,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): Intellig
       user: required("WORKER_PG_USER", env),
       password: fromFileOrValue("WORKER_PG_PASSWORD", env),
     },
+    serverPostgresRole: required("WORKER_PG_SERVER_ROLE", env),
     artifacts: {
       region: env.WORKER_S3_REGION ?? "us-east-1",
       ...(env.WORKER_S3_ENDPOINT !== undefined ? { endpoint: env.WORKER_S3_ENDPOINT } : {}),

@@ -10,6 +10,7 @@ describe("Server schema startup guard", () => {
       });
       await expect(main({}, assertSchema, () => serverConfig())).rejects.toMatchObject({ code });
       expect(assertSchema).toHaveBeenCalledOnce();
+      expect(assertSchema).toHaveBeenCalledWith(serverConfig().postgres, "server");
     });
   }
 });
