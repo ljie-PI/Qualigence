@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { PostgresIntelligenceQueue } from "@qualigence/core-application";
+import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupPostgresFixture, type PostgresFixture } from "../../helpers/postgres-fixture.js";
 import { buildJobPair, seedInvestigationCase, seedJob } from "../../helpers/intelligence-fixtures.js";
@@ -27,7 +28,7 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
       database: fixture.workerConfig.database,
       user: fixture.workerConfig.user,
       password: fixture.workerConfig.password,
-    });
+    }, acquirePostgresOperationLock);
   }
 
   const now = () => new Date().toISOString();

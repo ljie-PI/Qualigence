@@ -14,7 +14,7 @@ export {
 export type {
   IntelligenceQueueErrorCode,
   PostgresIntelligenceQueueConfig,
-  PostgresTransactionGuard,
+  TransactionGuard,
 } from "./intelligence/postgres-intelligence-queue.js";
 export {
   ServerIntelligenceResultConsumer,

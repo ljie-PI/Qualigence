@@ -3,6 +3,7 @@ import pg from "pg";
 import {
   assertPostgresSchemaCurrent,
   acquirePostgresMigrationLock,
+  acquirePostgresOperationLock,
   migratePostgres,
   createPostgresRuntime,
   readSchemaVersion,
@@ -169,9 +170,19 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
       try {
         await expect(client.query("create table runtime_ddl_forbidden (id integer)"))
           .rejects.toMatchObject({ code: "42501" });
+        await expect(client.query("create temporary table runtime_temp_forbidden (id integer)"))
+          .rejects.toMatchObject({ code: "42501" });
       } finally {
         await client.end();
       }
+    }
+    const owner = new Client(fixture.adminConfig);
+    await owner.connect();
+    try {
+      await expect(owner.query("create temporary table owner_temp_allowed (id integer)"))
+        .resolves.toMatchObject({ command: "CREATE" });
+    } finally {
+      await owner.end();
     }
   });
 
@@ -205,7 +216,10 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
 
   it("blocks Worker queue operations while the exclusive migration lock is held", async () => {
     const lock = await acquirePostgresMigrationLock(fixture.adminConfig);
-    const queue = new PostgresIntelligenceQueue(fixture.workerConfig);
+    const queue = new PostgresIntelligenceQueue(
+      fixture.workerConfig,
+      acquirePostgresOperationLock,
+    );
     let settled = false;
     const lease = queue.lease({
       workerId: "lock-test-worker",
@@ -242,7 +256,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
       expect(applied).toEqual([4, 5, 6, 7]);
       await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaBehind" });
       await markAuxSchemaCurrent(admin);
-      await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaMalformed" });
     } finally {
       await partial.stop();
     }
@@ -280,7 +294,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
       } satisfies Partial<PostgresSchemaError>);
       await migratePostgres({ admin });
       await markAuxSchemaCurrent(admin);
-      await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaMalformed" });
 
       const client = new Client(admin);
       await client.connect();

@@ -4,6 +4,7 @@ import {
   ServerIntelligenceResultConsumer,
 } from "@qualigence/core-application";
 import {
+  acquirePostgresOperationLock,
   createPostgresRuntime,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
@@ -40,7 +41,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
       database: fixture.workerConfig.database,
       user: fixture.workerConfig.user,
       password: fixture.workerConfig.password,
-    });
+    }, acquirePostgresOperationLock);
   }
 
   const now = () => new Date().toISOString();

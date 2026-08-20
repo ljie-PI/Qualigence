@@ -6,8 +6,8 @@ export {
   assertPostgresSchemaCurrent,
   acquirePostgresMigrationLock,
   acquirePostgresOperationLock,
-  PostgresSchemaError,
 } from "./postgres-runtime.js";
+export { PostgresSchemaError } from "./postgres-schema-error.js";
 
 export type {
   PostgresConnectionConfig,
@@ -16,8 +16,8 @@ export type {
   PostgresMigrationResult,
   PostgresMigrationStep,
   PostgresMigrationLock,
-  PostgresSchemaErrorCode,
 } from "./postgres-runtime.js";
+export type { PostgresSchemaErrorCode } from "./postgres-schema-error.js";
 
 export type { PostgresDatabase } from "./postgres-database.js";
 
@@ -39,5 +39,9 @@ export {
 export type { PostgresRuntimeRoles } from "./migrations/row-level-security.js";
 
 export { createTenantSchema, createTenantSchemaTables } from "./postgres-schema.js";
+export {
+  assertPostgresAuxSchema,
+  markPostgresAuxSchemaCurrent,
+} from "./aux-schema.js";
 export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";

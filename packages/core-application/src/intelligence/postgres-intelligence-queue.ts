@@ -49,11 +49,7 @@ interface ActiveLease {
   expiresAt: string;
 }
 
-export type PostgresTransactionGuard = (client: pg.PoolClient) => Promise<void>;
-
-const localTransactionGuard: PostgresTransactionGuard = async (client) => {
-  await client.query("select pg_advisory_xact_lock_shared($1)", [0x5175_6d69]);
-};
+export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -76,11 +72,11 @@ function hashToken(token: string): string {
 export class PostgresIntelligenceQueue implements IntelligenceJobStore, IntelligenceResultInbox {
   private readonly pool: pg.Pool;
   private readonly leases = new Map<string, ActiveLease>();
-  private readonly transactionGuard: PostgresTransactionGuard;
+  private readonly transactionGuard: TransactionGuard;
 
   constructor(
     config: PostgresIntelligenceQueueConfig,
-    transactionGuard: PostgresTransactionGuard = localTransactionGuard,
+    transactionGuard: TransactionGuard,
   ) {
     this.transactionGuard = transactionGuard;
     this.pool = new Pool({

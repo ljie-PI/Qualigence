@@ -16,26 +16,12 @@ import {
   POSTGRES_MIGRATION_LOCK_KEY,
   type TenantTransactionProvider,
 } from "./tenant-transaction.js";
+import { assertPostgresAuxSchema } from "./aux-schema.js";
+import { PostgresSchemaError } from "./postgres-schema-error.js";
 
 const { Pool } = pg;
 const REQUIRED_AUX_SCHEMA_COMPONENT = "server_aux";
 const REQUIRED_AUX_SCHEMA_VERSION = 1;
-
-export type PostgresSchemaErrorCode =
-  | "SchemaMalformed"
-  | "SchemaAhead"
-  | "SchemaBehind";
-
-export class PostgresSchemaError extends Error {
-  constructor(
-    readonly code: PostgresSchemaErrorCode,
-    message: string,
-    readonly appliedVersion?: number,
-  ) {
-    super(`${code}: ${message}`);
-    this.name = "PostgresSchemaError";
-  }
-}
 
 export interface PostgresConnectionConfig {
   readonly host: string;
@@ -267,6 +253,7 @@ export async function assertPostgresSchemaCurrent(
           version,
         );
       }
+      await assertPostgresAuxSchema(trx);
     });
   } finally {
     await db.destroy();

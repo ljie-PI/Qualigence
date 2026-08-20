@@ -147,6 +147,9 @@ export async function createRuntimeRoles(
     `.execute(db);
   }
   const dbRef = sql.ref(input.database);
+  await sql`revoke temporary on database ${dbRef} from public, ${sql.ref(input.server.name)}, ${sql.ref(input.worker.name)}`.execute(
+    db,
+  );
   await sql`grant connect on database ${dbRef} to ${sql.ref(input.server.name)}, ${sql.ref(input.worker.name)}`.execute(
     db,
   );

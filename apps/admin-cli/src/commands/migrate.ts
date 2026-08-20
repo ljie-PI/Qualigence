@@ -4,6 +4,8 @@ import pg from "pg";
 import {
   acquirePostgresMigrationLock,
   migratePostgres,
+  assertPostgresAuxSchema,
+  markPostgresAuxSchemaCurrent,
   provisionPostgres,
   readSchemaVersion,
   type MigratePostgresInput,
@@ -84,20 +86,22 @@ export async function runMigrate(
       );
     }
     if (fromVersion === SUPPORTED_SCHEMA_VERSION) {
-      const current = new pg.Client(config.postgres.admin);
-      await current.connect();
+      const current = new Kysely<AuxDatabase>({
+        dialect: new PostgresDialect({ pool: new Pool(config.postgres.admin) }),
+      });
       try {
-        const aux = await current.query<{ current: boolean }>(`
+        const marker = await sql<{ current: boolean }>`
           select coalesce((
             select version = 1 and completed_at is not null
               from schema_components where component = 'server_aux'
           ), false) as current
-        `).catch(() => ({ rows: [{ current: false }] }));
-        if (aux.rows[0]?.current === true) {
+        `.execute(current).catch(() => ({ rows: [{ current: false }] }));
+        if (marker.rows[0]?.current === true) {
+          await assertPostgresAuxSchema(current, config.postgres.server.name);
           return { action: "already-current", schemaVersion: fromVersion };
         }
       } finally {
-        await current.end();
+        await current.destroy();
       }
     }
     backupResult = await backup(config, backupInput);
@@ -156,12 +160,7 @@ export async function runMigrate(
             $cleanup$
           `.execute(trx);
           await (deps.provisionAuxSchema ?? provisionAuxSchema)(trx, config.postgres.server.name);
-          await sql`
-            insert into schema_components (component, version, completed_at)
-            values ('server_aux', 1, ${new Date().toISOString()})
-            on conflict (component) do update
-              set version = excluded.version, completed_at = excluded.completed_at
-          `.execute(trx);
+          await markPostgresAuxSchemaCurrent(trx, config.postgres.server.name);
         });
       } finally {
         await aux.destroy();

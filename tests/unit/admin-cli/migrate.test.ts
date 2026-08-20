@@ -187,6 +187,87 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     }
   }, 120_000);
 
+  it("rejects auxiliary column, RLS, policy, and grant corruption at startup", async () => {
+    const isolated = await startPostgres();
+    const isolatedConfig = configFor(isolated, "aux_guard");
+    try {
+      await runMigrate(isolatedConfig, {
+        invocationId: "aux-guard-seed",
+        runBackup: async (_config, input) => backupResult(input),
+      });
+      const serverConfig = runtimeConfig(isolatedConfig, "server");
+      const workerConfig = runtimeConfig(isolatedConfig, "worker");
+      await expect(assertPostgresSchemaCurrent(serverConfig)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaCurrent(workerConfig)).resolves.toBeUndefined();
+
+      const admin = new Client(isolatedConfig.postgres.admin);
+      await admin.connect();
+      try {
+        await admin.query("revoke select on runner_principals from aux_guard_server");
+        await expect(assertPostgresSchemaCurrent(serverConfig)).rejects.toMatchObject({
+          code: "SchemaMalformed",
+        });
+        await admin.query("grant select on runner_principals to aux_guard_server");
+
+        await admin.query("drop policy tenant_isolation on prd_revisions");
+        await expect(assertPostgresSchemaCurrent(workerConfig)).rejects.toMatchObject({
+          code: "SchemaMalformed",
+        });
+        await admin.query(`create policy tenant_isolation on prd_revisions
+          to aux_guard_server
+          using (tenant_id = current_setting('app.tenant_id', true))
+          with check (tenant_id = current_setting('app.tenant_id', true))`);
+
+        await admin.query("alter table targets disable row level security");
+        await expect(assertPostgresSchemaCurrent(serverConfig)).rejects.toMatchObject({
+          code: "SchemaMalformed",
+        });
+        await admin.query("alter table targets enable row level security");
+
+        await admin.query("alter table runner_enrollments drop column token_hash");
+        await expect(assertPostgresSchemaCurrent(workerConfig)).rejects.toMatchObject({
+          code: "SchemaMalformed",
+        });
+      } finally {
+        await admin.end();
+      }
+    } finally {
+      await isolated.stop();
+    }
+  }, 120_000);
+
+  it("does not bless a malformed pre-existing auxiliary table through IF NOT EXISTS", async () => {
+    const isolated = await startPostgres();
+    const isolatedConfig = configFor(isolated, "aux_malformed");
+    const admin = new Client(isolatedConfig.postgres.admin);
+    let adminConnected = false;
+    try {
+      await admin.connect();
+      adminConnected = true;
+      await admin.query("create table projects (tenant_id text not null)");
+      await admin.end();
+      adminConnected = false;
+
+      await expect(runMigrate(isolatedConfig, {
+        invocationId: "aux-malformed",
+        runBackup: async (_config, input) => backupResult(input),
+      })).rejects.toMatchObject({ code: "SchemaMalformed" });
+
+      const verify = new Client(isolatedConfig.postgres.admin);
+      await verify.connect();
+      const marker = await verify.query<{ version: number; completed_at: string | null }>(
+        "select version, completed_at from schema_components where component = 'server_aux'",
+      );
+      await verify.end();
+      expect(marker.rows[0]).toEqual({ version: 0, completed_at: null });
+    } finally {
+      if (adminConnected) {
+        await admin.end().catch(() => undefined);
+      }
+      await isolated.stop();
+    }
+  }, 120_000);
+
   it("rejects malformed durable backup byte records and totals", () => {
     const valid = {
       version: "backup-index/v1" as const,
@@ -201,4 +282,32 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       "object totals",
     );
   });
+
+  function configFor(instance: StartedPostgres, rolePrefix: string): SelfHostedAdminConfig {
+    return {
+      ...config(),
+      postgres: {
+        admin: {
+          host: instance.host,
+          port: instance.port,
+          database: instance.database,
+          user: instance.superuser,
+          password: instance.password,
+        },
+        server: { name: `${rolePrefix}_server`, password: "server_pw" },
+        worker: { name: `${rolePrefix}_worker`, password: "worker_pw" },
+      },
+    };
+  }
+
+  function runtimeConfig(
+    input: SelfHostedAdminConfig,
+    role: "server" | "worker",
+  ) {
+    return {
+      ...input.postgres.admin,
+      user: input.postgres[role].name,
+      password: input.postgres[role].password,
+    };
+  }
 });
