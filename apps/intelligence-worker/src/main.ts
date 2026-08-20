@@ -3,7 +3,10 @@ import { pathToFileURL } from "node:url";
 import { ModelGateway } from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
 import { PostgresIntelligenceQueue } from "@qualigence/core-application";
-import { assertPostgresSchemaCurrent } from "@qualigence/postgres-runtime";
+import {
+  acquirePostgresOperationLock,
+  assertPostgresSchemaCurrent,
+} from "@qualigence/postgres-runtime";
 import type { IntelligenceJobType } from "@qualigence/intelligence";
 import { loadWorkerConfig } from "./config.js";
 import { InvestigationJobProcessor } from "./investigation-job-processor.js";
@@ -27,13 +30,16 @@ export async function main(
   const config = loadWorkerConfig(env);
   await assertSchema(config.postgres);
 
-  const queue = new PostgresIntelligenceQueue({
-    host: config.postgres.host,
-    port: config.postgres.port,
-    database: config.postgres.database,
-    user: config.postgres.user,
-    password: config.postgres.password,
-  });
+  const queue = new PostgresIntelligenceQueue(
+    {
+      host: config.postgres.host,
+      port: config.postgres.port,
+      database: config.postgres.database,
+      user: config.postgres.user,
+      password: config.postgres.password,
+    },
+    acquirePostgresOperationLock,
+  );
 
   const provider = new OpenAICompatibleModelProvider({
     baseUrl: config.model.baseUrl,

@@ -8,7 +8,11 @@ import {
   runMigrate,
   type SelfHostedAdminConfig,
 } from "@qualigence/admin-cli";
-import { readSchemaVersion } from "@qualigence/postgres-runtime";
+import {
+  assertPostgresSchemaCurrent,
+  readSchemaVersion,
+  PostgresSchemaError,
+} from "@qualigence/postgres-runtime";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 
 const { Client } = pg;
@@ -141,6 +145,46 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     const row = await verify.query("select objective from execution_runs where run_id = 'run-safe'");
     await verify.end();
     expect(row.rows[0]?.objective).toBe("preserved");
+  }, 120_000);
+
+  it("durably rejects a relationally-current schema until failed auxiliary provisioning is retried", async () => {
+    const isolated = await startPostgres();
+    const isolatedConfig: SelfHostedAdminConfig = {
+      ...config(),
+      postgres: {
+        admin: {
+          host: isolated.host,
+          port: isolated.port,
+          database: isolated.database,
+          user: isolated.superuser,
+          password: isolated.password,
+        },
+        server: { name: "aux_failure_server", password: "server_pw" },
+        worker: { name: "aux_failure_worker", password: "worker_pw" },
+      },
+    };
+    try {
+      await expect(runMigrate(isolatedConfig, {
+        invocationId: "aux-failure",
+        runBackup: async (_config, input) => backupResult(input),
+        provisionAuxSchema: async () => {
+          throw new Error("injected auxiliary schema failure");
+        },
+      })).rejects.toThrow("injected auxiliary schema failure");
+      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(7);
+      await expect(assertPostgresSchemaCurrent(isolatedConfig.postgres.admin)).rejects.toMatchObject({
+        code: "SchemaBehind",
+      } satisfies Partial<PostgresSchemaError>);
+
+      const repaired = await runMigrate(isolatedConfig, {
+        invocationId: "aux-retry",
+        runBackup: async (_config, input) => backupResult(input),
+      });
+      expect(repaired.action).toBe("migrated");
+      await expect(assertPostgresSchemaCurrent(isolatedConfig.postgres.admin)).resolves.toBeUndefined();
+    } finally {
+      await isolated.stop();
+    }
   }, 120_000);
 
   it("rejects malformed durable backup byte records and totals", () => {

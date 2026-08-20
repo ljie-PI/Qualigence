@@ -175,6 +175,34 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     }
   });
 
+  it("denies Worker mutation of Intelligence Job authority columns", async () => {
+    const admin = new Client(fixture.adminConfig);
+    await admin.connect();
+    await admin.query(`insert into intelligence_jobs (
+      tenant_id, job_id, job_type, schema_version, project_id, aggregate_type,
+      aggregate_id, base_aggregate_version, model_profile_id, data_policy_id,
+      priority, idempotency_key, causation_id, expected_result_schema, job_json, created_at
+    ) values (
+      'tenant-worker-grant', 'job-worker-grant', 'prd.planning', 'intelligence-job/v1',
+      'project-1', 'skill', 'skill-1', 3, 'profile-1', 'policy-1', 'normal',
+      'idem-worker-grant', 'cause-1', 'intelligence-result/v1', '{}', now()::text
+    )`);
+    await admin.end();
+
+    const worker = new Client(fixture.workerConfig);
+    await worker.connect();
+    try {
+      await expect(worker.query(
+        "update intelligence_jobs set job_json = '{\"forged\":true}' where job_id = 'job-worker-grant'",
+      )).rejects.toMatchObject({ code: "42501" });
+      await expect(worker.query(
+        "update intelligence_jobs set base_aggregate_version = 99 where job_id = 'job-worker-grant'",
+      )).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await worker.end();
+    }
+  });
+
   it("blocks Worker queue operations while the exclusive migration lock is held", async () => {
     const lock = await acquirePostgresMigrationLock(fixture.adminConfig);
     const queue = new PostgresIntelligenceQueue(fixture.workerConfig);
@@ -212,6 +240,8 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
         },
       });
       expect(applied).toEqual([4, 5, 6, 7]);
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({ code: "SchemaBehind" });
+      await markAuxSchemaCurrent(admin);
       await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
     } finally {
       await partial.stop();
@@ -249,6 +279,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
         code: "SchemaBehind",
       } satisfies Partial<PostgresSchemaError>);
       await migratePostgres({ admin });
+      await markAuxSchemaCurrent(admin);
       await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
 
       const client = new Client(admin);
@@ -269,3 +300,18 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     }
   }, 120_000);
 });
+
+async function markAuxSchemaCurrent(config: pg.ClientConfig): Promise<void> {
+  const client = new Client(config);
+  await client.connect();
+  try {
+    await client.query(`
+      insert into schema_components (component, version, completed_at)
+      values ('server_aux', 1, now()::text)
+      on conflict (component) do update
+        set version = excluded.version, completed_at = excluded.completed_at
+    `);
+  } finally {
+    await client.end();
+  }
+}

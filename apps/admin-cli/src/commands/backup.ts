@@ -3,13 +3,12 @@ import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import pg from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { readSchemaVersion } from "@qualigence/postgres-runtime";
 import { MetricsRegistry, StructuredLogger } from "@qualigence/observability";
 import type { SelfHostedAdminConfig } from "./../config.js";
 import { AdminCliError } from "./../errors.js";
 import type { PgToolRunner } from "./../pg-tools.js";
 import { BackupLease } from "./../backup/backup-lease.js";
-import { createS3Client, enumerateObjects, getObjectBytes } from "./../s3-ops.js";
+import { createS3Client, getObjectBytes } from "./../s3-ops.js";
 import {
   BACKUP_COMPLETE_MARKER,
   BACKUP_DATABASE_DUMP,
@@ -34,6 +33,21 @@ export interface BackupDeps {
   readonly logger?: StructuredLogger;
   readonly metrics?: MetricsRegistry;
   readonly migration?: MigrationBackupBinding;
+  readonly acquireLease?: (config: SelfHostedAdminConfig["postgres"]["admin"]) => Promise<{ release(): Promise<void> }>;
+  readonly withSnapshot?: typeof withExportedSnapshot;
+  readonly readObject?: (key: string) => Promise<Uint8Array>;
+}
+
+export interface SnapshotArtifactManifest {
+  readonly key: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+}
+
+export interface BackupSnapshot {
+  readonly snapshotId: string;
+  readonly schemaVersion: number;
+  readonly artifactManifests: readonly SnapshotArtifactManifest[];
 }
 
 export interface BackupResult {
@@ -72,33 +86,37 @@ export async function runBackup(
   const finalDir = join(config.backupDir, slug);
   const stagingDir = join(config.backupDir, `.staging-${slug}`);
   const objectsDir = join(stagingDir, BACKUP_OBJECTS_DIR);
-  const s3Client = deps.s3Client ?? createS3Client(config.s3);
-  const ownsClient = deps.s3Client === undefined;
+  const s3Client = deps.s3Client ?? (deps.readObject === undefined ? createS3Client(config.s3) : undefined);
+  const ownsClient = deps.s3Client === undefined && s3Client !== undefined;
 
   logger.info("backup started", { directory: finalDir });
-  const lease = await BackupLease.acquire(config.postgres.admin);
+  const lease = await (deps.acquireLease ?? BackupLease.acquire)(config.postgres.admin);
   try {
     await rm(stagingDir, { recursive: true, force: true });
     await mkdir(objectsDir, { recursive: true });
 
     // 1. Consistent database dump pinned to an exported snapshot.
-    const snapshotId = await withExportedSnapshot(config, async (id) => {
+    const snapshot = await (deps.withSnapshot ?? withExportedSnapshot)(config, async (captured) => {
       await deps.pgTool.dump(config.postgres.admin, {
-        snapshotId: id,
+        snapshotId: captured.snapshotId,
         outFile: join(stagingDir, BACKUP_DATABASE_DUMP),
       });
-      return id;
+      return captured;
     });
     const dumpDigest = await hashFile(join(stagingDir, BACKUP_DATABASE_DUMP));
-    const schemaVersion = await readSchemaVersion(config.postgres.admin);
 
-    // 2. Copy every referenced object's real bytes, recomputing SHA-256/size.
-    const summaries = await enumerateObjects(s3Client, config.s3.bucket);
+    // 2. Copy exactly the objects referenced by snapshot-visible manifests.
     const objects: BackupObjectRecord[] = [];
     let totalBytes = 0;
-    for (const summary of summaries) {
-      const bytes = await getObjectBytes(s3Client, config.s3.bucket, summary.key);
+    for (const manifest of snapshot.artifactManifests) {
+      const bytes = await (deps.readObject ?? ((key) => {
+        if (s3Client === undefined) throw new Error("S3 client is unavailable");
+        return getObjectBytes(s3Client, config.s3.bucket, key);
+      }))(manifest.key);
       const sha256 = sha256Hex(bytes);
+      if (bytes.length !== manifest.sizeBytes || sha256 !== manifest.sha256) {
+        throw new AdminCliError("BackupFailed", `object ${manifest.key} does not match its snapshot manifest`);
+      }
       const relativePath = objectRelativePath(sha256);
       const absolute = join(objectsDir, relativePath);
       await mkdir(join(objectsDir, sha256.slice(0, 2)), { recursive: true });
@@ -106,9 +124,9 @@ export async function runBackup(
       // Re-hash the bytes we actually wrote so the index never trusts memory alone.
       const written = await hashFile(absolute);
       if (written.sha256 !== sha256 || written.size !== bytes.length) {
-        throw new AdminCliError("BackupFailed", `object ${summary.key} failed write verification`);
+        throw new AdminCliError("BackupFailed", `object ${manifest.key} failed write verification`);
       }
-      objects.push({ key: summary.key, relativePath, sizeBytes: bytes.length, sha256 });
+      objects.push({ key: manifest.key, relativePath, sizeBytes: bytes.length, sha256 });
       totalBytes += bytes.length;
       objectCounter.inc();
       byteCounter.inc(bytes.length);
@@ -123,8 +141,8 @@ export async function runBackup(
         format: "custom",
         sizeBytes: dumpDigest.size,
         sha256: dumpDigest.sha256,
-        schemaVersion,
-        snapshotId,
+        schemaVersion: snapshot.schemaVersion,
+        snapshotId: snapshot.snapshotId,
       },
       objects,
       tenants: tenantsFromKeys(objects.map((object) => object.key)),
@@ -148,7 +166,7 @@ export async function runBackup(
       directory: finalDir,
       objectCount: index.objectCount,
       totalObjectBytes: totalBytes,
-      schemaVersion,
+      schemaVersion: snapshot.schemaVersion,
     });
     return { directory: finalDir, index };
   } catch (error) {
@@ -159,7 +177,7 @@ export async function runBackup(
     throw new AdminCliError("BackupFailed", "the backup could not be completed", { cause: error });
   } finally {
     if (ownsClient) {
-      s3Client.destroy();
+      s3Client?.destroy();
     }
     await lease.release();
   }
@@ -173,10 +191,11 @@ export async function runBackup(
  */
 async function withExportedSnapshot<T>(
   config: SelfHostedAdminConfig,
-  use: (snapshotId: string) => Promise<T>,
+  use: (snapshot: BackupSnapshot) => Promise<T>,
 ): Promise<T> {
   const client = new Client(config.postgres.admin);
   await client.connect();
+  let completed = false;
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
     const row = await client.query<{ snapshot: string }>("SELECT pg_export_snapshot() AS snapshot");
@@ -184,10 +203,36 @@ async function withExportedSnapshot<T>(
     if (snapshotId === undefined) {
       throw new AdminCliError("BackupFailed", "unable to export a database snapshot");
     }
-    const result = await use(snapshotId);
+    const tables = await client.query<{ migrations: boolean; manifests: boolean }>(`
+      select to_regclass('public.schema_migrations') is not null as migrations,
+             to_regclass('public.artifact_manifests') is not null as manifests
+    `);
+    const versions = tables.rows[0]?.migrations === true
+      ? await client.query<{ version: number }>("select version from schema_migrations order by version")
+      : { rows: [] };
+    const schemaVersion = Number(versions.rows.at(-1)?.version ?? 0);
+    const manifests = tables.rows[0]?.manifests === true
+      ? await client.query<{ key: string; sha256: string; size_bytes: string | number }>(
+          `select relative_path as key, sha256, size_bytes
+             from artifact_manifests order by relative_path`,
+        )
+      : { rows: [] };
+    const result = await use({
+      snapshotId,
+      schemaVersion,
+      artifactManifests: manifests.rows.map((manifest) => ({
+        key: manifest.key,
+        sha256: manifest.sha256,
+        sizeBytes: Number(manifest.size_bytes),
+      })),
+    });
     await client.query("ROLLBACK");
+    completed = true;
     return result;
   } finally {
+    if (!completed) {
+      await client.query("ROLLBACK").catch(() => undefined);
+    }
     await client.end().catch(() => undefined);
   }
 }

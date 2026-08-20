@@ -591,9 +591,6 @@ importers:
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../core-modules/intelligence
-      '@qualigence/postgres-runtime':
-        specifier: workspace:*
-        version: link:../storage-providers/postgres-runtime
       '@qualigence/runner-control':
         specifier: workspace:*
         version: link:../core-modules/runner-control

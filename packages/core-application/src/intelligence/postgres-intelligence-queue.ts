@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
-import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
 import type {
   AppendResultInput,
@@ -50,6 +49,12 @@ interface ActiveLease {
   expiresAt: string;
 }
 
+export type PostgresTransactionGuard = (client: pg.PoolClient) => Promise<void>;
+
+const localTransactionGuard: PostgresTransactionGuard = async (client) => {
+  await client.query("select pg_advisory_xact_lock_shared($1)", [0x5175_6d69]);
+};
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -71,8 +76,13 @@ function hashToken(token: string): string {
 export class PostgresIntelligenceQueue implements IntelligenceJobStore, IntelligenceResultInbox {
   private readonly pool: pg.Pool;
   private readonly leases = new Map<string, ActiveLease>();
+  private readonly transactionGuard: PostgresTransactionGuard;
 
-  constructor(config: PostgresIntelligenceQueueConfig) {
+  constructor(
+    config: PostgresIntelligenceQueueConfig,
+    transactionGuard: PostgresTransactionGuard = localTransactionGuard,
+  ) {
+    this.transactionGuard = transactionGuard;
     this.pool = new Pool({
       host: config.host,
       port: config.port,
@@ -102,17 +112,9 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     let keepClient = false;
     try {
       await client.query("begin");
-      await acquirePostgresOperationLock(client);
+      await this.transactionGuard(client);
       const result = await client.query(
-        `select j.job_json
-           from intelligence_jobs j
-          where j.job_type = any($1::text[])
-            and not exists (
-              select 1 from intelligence_results r where r.job_id = j.job_id
-            )
-          order by j.created_at asc
-          for update skip locked
-          limit 1`,
+        "select job_json from worker_lock_intelligence_job($1::text[])",
         [[...input.acceptedTypes]],
       );
       const row = result.rows[0] as { job_json: string } | undefined;
@@ -272,7 +274,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      await acquirePostgresOperationLock(client);
+      await this.transactionGuard(client);
       const existing = await client.query(
         `select 1 from intelligence_results where idempotency_key = $1 and job_id = $2 limit 1`,
         [result.idempotencyKey, result.jobId],

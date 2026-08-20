@@ -1,5 +1,4 @@
 import type { Transaction } from "kysely";
-import type { PostgresDatabase, TenantTransactionProvider } from "@qualigence/postgres-runtime";
 import {
   IntelligenceResultApplier,
   type AggregateVersionReader,
@@ -23,6 +22,45 @@ const AGGREGATE_TABLES: Readonly<
   investigation: { table: "investigation_cases", idColumn: "case_id" },
 };
 
+interface IntelligenceDatabase {
+  intelligence_results: {
+    tenant_id: string;
+    idempotency_key: string;
+    job_id: string;
+    terminal_status: string;
+    confidence: number;
+    result_json: string;
+    created_at: string;
+  };
+  intelligence_jobs: {
+    tenant_id: string;
+    job_id: string;
+    job_json: string;
+  };
+  intelligence_applied_results: {
+    tenant_id: string;
+    idempotency_key: string;
+    aggregate_type: string;
+    aggregate_id: string;
+    new_version: number;
+    summary: string;
+    created_at: string;
+  };
+  investigation_cases: {
+    tenant_id: string;
+    case_id: string;
+    version: number;
+    updated_at: string;
+  };
+}
+
+interface IntelligenceTransactionProvider<Database extends IntelligenceDatabase> {
+  withTenant<T>(
+    tenantId: string,
+    operation: (stores: { readonly db: Transaction<Database> }) => Promise<T>,
+  ): Promise<T>;
+}
+
 export interface ConsumeSummary {
   readonly applied: number;
   readonly duplicate: number;
@@ -40,8 +78,8 @@ export interface ConsumeSummary {
  * results and only then bumps the aggregate version. The Worker never imports
  * this class or the applier — it can only append Results to the inbox.
  */
-export class ServerIntelligenceResultConsumer {
-  constructor(private readonly provider: TenantTransactionProvider) {}
+export class ServerIntelligenceResultConsumer<Database extends IntelligenceDatabase> {
+  constructor(private readonly provider: IntelligenceTransactionProvider<Database>) {}
 
   /**
    * Apply every not-yet-applied Result belonging to `tenantId`. Runs entirely
@@ -50,7 +88,8 @@ export class ServerIntelligenceResultConsumer {
    */
   async consumeForTenant(tenantId: string): Promise<ConsumeSummary> {
     return this.provider.withTenant(tenantId, async ({ db }) => {
-      const pending = await db
+      const intelligenceDb = db as Transaction<IntelligenceDatabase>;
+      const pending = await intelligenceDb
         .selectFrom("intelligence_results as r")
         .innerJoin("intelligence_jobs as j", "j.job_id", "r.job_id")
         .leftJoin(
@@ -63,9 +102,9 @@ export class ServerIntelligenceResultConsumer {
         .orderBy("r.created_at", "asc")
         .execute();
 
-      const ledger = new TransactionAppliedResultLedger(db, tenantId);
-      const versions = new TransactionAggregateVersionReader(db);
-      const executor = new TransactionCommandExecutor(db);
+      const ledger = new TransactionAppliedResultLedger(intelligenceDb, tenantId);
+      const versions = new TransactionAggregateVersionReader(intelligenceDb);
+      const executor = new TransactionCommandExecutor(intelligenceDb);
       const applier = new IntelligenceResultApplier({ ledger, versions, executor });
 
       const dispositions: ApplyResult["status"][] = [];
@@ -84,7 +123,7 @@ export class ServerIntelligenceResultConsumer {
 
 class TransactionAppliedResultLedger implements AppliedResultLedger {
   constructor(
-    private readonly db: Transaction<PostgresDatabase>,
+    private readonly db: Transaction<IntelligenceDatabase>,
     private readonly tenantId: string,
   ) {}
 
@@ -123,7 +162,7 @@ class TransactionAppliedResultLedger implements AppliedResultLedger {
 }
 
 class TransactionAggregateVersionReader implements AggregateVersionReader {
-  constructor(private readonly db: Transaction<PostgresDatabase>) {}
+  constructor(private readonly db: Transaction<IntelligenceDatabase>) {}
 
   async currentVersion(ref: IntelligenceAggregateRef): Promise<number | undefined> {
     const mapping = AGGREGATE_TABLES[ref.type];
@@ -140,7 +179,7 @@ class TransactionAggregateVersionReader implements AggregateVersionReader {
 }
 
 class TransactionCommandExecutor implements IntelligenceCommandExecutor {
-  constructor(private readonly db: Transaction<PostgresDatabase>) {}
+  constructor(private readonly db: Transaction<IntelligenceDatabase>) {}
 
   async execute(job: IntelligenceJob, result: IntelligenceResult): Promise<AppliedEffect> {
     const mapping = AGGREGATE_TABLES[job.aggregateRef.type];

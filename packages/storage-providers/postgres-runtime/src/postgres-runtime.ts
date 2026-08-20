@@ -18,6 +18,8 @@ import {
 } from "./tenant-transaction.js";
 
 const { Pool } = pg;
+const REQUIRED_AUX_SCHEMA_COMPONENT = "server_aux";
+const REQUIRED_AUX_SCHEMA_VERSION = 1;
 
 export type PostgresSchemaErrorCode =
   | "SchemaMalformed"
@@ -148,6 +150,7 @@ export async function migratePostgres(
     : await acquirePostgresMigrationLock(input.admin);
   const db = createKysely(input.admin);
   try {
+    await ensureSchemaComponentsTable(db);
     const fromVersion = await inspectSchemaVersion(db);
     if (fromVersion > targetVersion) {
       throw new PostgresSchemaError(
@@ -157,6 +160,9 @@ export async function migratePostgres(
       );
     }
     const appliedVersions: number[] = [];
+    if (fromVersion < targetVersion) {
+      await markAuxSchemaIncomplete(db);
+    }
     for (const step of RELATIONAL_SCHEMA_VERSIONS) {
       if (step.version <= fromVersion || step.version > targetVersion) continue;
       await input.beforeStep?.({ version: step.version, name: step.name });
@@ -176,6 +182,9 @@ export async function migratePostgres(
           .execute();
       });
       appliedVersions.push(step.version);
+    }
+    if (input.roles !== undefined) {
+      await applyRowLevelSecurity(db, input.roles);
     }
     return { fromVersion, toVersion: targetVersion, appliedVersions };
   } finally {
@@ -250,10 +259,48 @@ export async function assertPostgresSchemaCurrent(
           version,
         );
       }
+      const auxCurrent = await isAuxSchemaCurrent(trx);
+      if (!auxCurrent) {
+        throw new PostgresSchemaError(
+          "SchemaBehind",
+          "required Server auxiliary schema is incomplete",
+          version,
+        );
+      }
     });
   } finally {
     await db.destroy();
   }
+}
+
+async function ensureSchemaComponentsTable(db: Kysely<PostgresDatabase>): Promise<void> {
+  await sql`
+    create table if not exists schema_components (
+      component text primary key,
+      version integer not null,
+      completed_at text
+    )
+  `.execute(db);
+}
+
+async function markAuxSchemaIncomplete(db: Kysely<PostgresDatabase>): Promise<void> {
+  await sql`
+    insert into schema_components (component, version, completed_at)
+    values (${REQUIRED_AUX_SCHEMA_COMPONENT}, 0, null)
+    on conflict (component) do update set version = 0, completed_at = null
+  `.execute(db);
+}
+
+async function isAuxSchemaCurrent(db: Kysely<PostgresDatabase>): Promise<boolean> {
+  const table = await sql<{ exists: boolean }>`
+    select to_regclass('public.schema_components') is not null as exists
+  `.execute(db);
+  if (table.rows[0]?.exists !== true) return false;
+  const row = await sql<{ version: number; completed_at: string | null }>`
+    select version, completed_at from schema_components
+    where component = ${REQUIRED_AUX_SCHEMA_COMPONENT}
+  `.execute(db);
+  return row.rows[0]?.version === REQUIRED_AUX_SCHEMA_VERSION && row.rows[0].completed_at !== null;
 }
 
 async function inspectSchemaVersion(db: Kysely<PostgresDatabase>): Promise<number> {

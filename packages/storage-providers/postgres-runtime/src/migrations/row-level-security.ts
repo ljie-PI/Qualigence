@@ -48,6 +48,7 @@ export async function applyRowLevelSecurity(
   await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}, ${workerRole}`.execute(
     db,
   );
+  await sql`grant select on table ${sql.table("schema_components")} to ${serverRole}, ${workerRole}`.execute(db);
 
   const selected = tableNames === undefined ? undefined : new Set(tableNames);
   for (const table of TENANT_OWNED_TABLES) {
@@ -81,11 +82,33 @@ export async function applyRowLevelSecurity(
     `.execute(db);
   }
 
-  // The Worker may lease jobs (select/update) and append results (select/insert)
+  // The Worker may lease jobs through the constrained lock function and append
+  // results (select/insert). It receives no direct UPDATE authority over jobs.
   // — and nothing else. Every other tenant table has no grant, so a worker read
   // fails closed with SQLSTATE 42501 before RLS is even consulted.
   if (selected === undefined || selected.has("intelligence_jobs")) {
-    await sql`grant select, update on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
+    await sql`revoke update on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
+    await sql`grant select on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
+    await sql`
+      create or replace function public.worker_lock_intelligence_job(accepted_types text[])
+      returns table (job_json text)
+      language sql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+        select j.job_json
+          from public.intelligence_jobs j
+         where j.job_type = any(accepted_types)
+           and not exists (
+             select 1 from public.intelligence_results r where r.job_id = j.job_id
+           )
+         order by j.created_at asc
+         for update of j skip locked
+         limit 1
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_lock_intelligence_job(text[]) from public`.execute(db);
+    await sql`grant execute on function public.worker_lock_intelligence_job(text[]) to ${workerRole}`.execute(db);
   }
   if (selected === undefined || selected.has("intelligence_results")) {
     await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(db);
