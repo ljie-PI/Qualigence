@@ -363,6 +363,14 @@ describe("ExecutionRuntime", () => {
       target: { kind: "web", url: "https://example.test" },
       objective: "Verify cart total",
       policy,
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps: [{ stepIndex: 0, kind: "click", target: { purpose: "verify cart total" } }],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
     });
 
     expect(completion.status).toBe("finding");
@@ -386,6 +394,8 @@ describe("ExecutionRuntime", () => {
       "finding",
       "run_completed",
     ]);
+    const indexedEvents = traceRecorder.eventsFor("run-failed").filter((event) => event.stage !== "run_completed");
+    expect(indexedEvents.every((event) => event.stepIndex === 0)).toBe(true);
   });
 
   it("blocks immediately when the action executor reports a failed outcome", async () => {

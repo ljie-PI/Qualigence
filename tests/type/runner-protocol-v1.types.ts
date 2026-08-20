@@ -11,6 +11,7 @@ import type {
   ExecutionJobOffer,
   IndexedExecutionPlanStep,
   ExecutionPlanStep,
+  LegacyExecutionPlanStep,
   ExecutionLeaseState,
   ProtocolVersionMismatch,
   ResumeToken,
@@ -98,9 +99,21 @@ void indexedPlanSteps;
 
 indexedPlanSteps satisfies readonly IndexedExecutionPlanStep[];
 
+const legacyPlanSteps = [
+  { kind: "navigate", path: "/checkout" },
+  { kind: "click", target: { purpose: "begin checkout" } },
+  { kind: "input", target: { purpose: "enter email" }, valueRef: "customer.email" },
+  { kind: "verify", claimIds: ["claim-1"] },
+] as const satisfies readonly LegacyExecutionPlanStep[];
+void legacyPlanSteps;
+
 // @ts-expect-error newly authored indexed steps cannot omit their provenance index
 const unindexedNavigate: IndexedExecutionPlanStep = { kind: "navigate", path: "/checkout" };
 void unindexedNavigate;
+
+// @ts-expect-error indexed verification carries the exact plan-step provenance
+const unindexedVerify: IndexedExecutionPlanStep = { kind: "verify", claimIds: ["claim-1"] };
+void unindexedVerify;
 
 // @ts-expect-error select values are Plan-owned references and every new select step is indexed
 const unindexedSelect: ExecutionPlanStep = { kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" };

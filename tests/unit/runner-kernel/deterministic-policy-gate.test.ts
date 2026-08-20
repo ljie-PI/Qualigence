@@ -109,6 +109,22 @@ describe("DeterministicRunnerPolicyGate", () => {
     });
   });
 
+  it("admits the preserved unindexed plan without applying indexed action compatibility", () => {
+    expect(DeterministicRunnerPolicyGate.admitJob(job({
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps: [
+          { kind: "navigate", path: "/checkout" },
+          { kind: "verify", claimIds: ["claim-1"] },
+        ],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+      },
+    }), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
+  });
+
   it("allows the exact bounded staging click and denies staging exploration and fallbacks", async () => {
     const staging = { ...policy, environment: "staging" as const };
     const now = () => Date.parse("2026-08-18T00:00:30.000Z");

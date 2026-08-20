@@ -129,8 +129,11 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
     ]);
   });
 
-  it("keeps only the concrete pre-index plan shape as legacy compatibility", () => {
-    const job = parseExecutionJob(plannedJob);
+  it("keeps the concrete pre-index plan compatible without applying indexed policy checks", () => {
+    const job = parseExecutionJob({
+      ...plannedJob,
+      policy: legacyJob.policy,
+    });
 
     expect(job.plan?.steps).toEqual(planSnapshot.steps);
     expect(job.plan?.steps.every((step) => !("stepIndex" in step))).toBe(true);

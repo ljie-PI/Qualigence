@@ -418,6 +418,7 @@ export class ExecutionRuntime {
     const finding = findingFromVerification(job.runId, verification, observation, after);
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "finding",
       payload: finding,
     });

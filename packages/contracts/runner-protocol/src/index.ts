@@ -170,7 +170,9 @@ export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
   const identity = parseExecutionJobIdentity(raw);
   const policy = parseExecutionPolicySnapshot(raw.policy);
   const plan = raw.plan === undefined ? undefined : parseExecutionJobPlanSnapshot(raw.plan);
-  if (plan?.steps.some((step) => step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind))) {
+  if (plan?.steps.some((step) =>
+    step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
+  )) {
     throw new ExecutionPlanPolicyError();
   }
   return plan === undefined ? { ...identity, policy } : { ...identity, policy, plan };
@@ -415,7 +417,7 @@ export type IndexedExecutionPlanStep =
       readonly amount: "small" | "page";
     }
   | {
-      readonly stepIndex?: number;
+      readonly stepIndex: number;
       readonly kind: "verify";
       readonly claimIds: readonly [string, ...string[]];
     };
