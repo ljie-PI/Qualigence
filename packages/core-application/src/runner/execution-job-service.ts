@@ -6,7 +6,7 @@ import type {
   ExecutionJobOffer,
   RunnerCapabilities,
 } from "@qualigence/runner-protocol";
-import { negotiateCapabilities } from "@qualigence/runner-protocol";
+import { ExecutionPolicySnapshotError, negotiateCapabilities, parseExecutionJob } from "@qualigence/runner-protocol";
 import type { RunnerControlStore } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 import type { LeaseOwner, RunCompletionDisposition, RunOwnershipService } from "./run-ownership-service.js";
@@ -72,13 +72,22 @@ export class ExecutionJobService {
    * Offer is stored and no Job payload is exposed.
    */
   async offer(request: OfferRequest): Promise<ExecutionJobOffer> {
+    let job: AcceptedExecutionJob;
+    try {
+      job = parseExecutionJob(request.job);
+    } catch (error) {
+      if (error instanceof ExecutionPolicySnapshotError) {
+        throw new CoreApplicationError("PolicyMissing", "execution Job is malformed or policy-incompatible", { cause: error });
+      }
+      throw error;
+    }
     const negotiation = negotiateCapabilities(request.capabilities, request.requiredCapabilities);
     if (negotiation.outcome === "rejected") {
       throw new CoreApplicationError("CapabilityMismatch", "runner is missing required capabilities", {
         details: { missingCapabilities: negotiation.rejection.missingCapabilities },
       });
     }
-    const pendingOffer = await this.resolveRecovery(request);
+    const pendingOffer = await this.resolveRecovery({ ...request, job });
     const offerId = this.generateOfferId();
     const offer: ExecutionJobOffer = {
       offerId,

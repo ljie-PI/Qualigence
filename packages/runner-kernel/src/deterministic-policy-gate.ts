@@ -1,4 +1,5 @@
 import {
+  ExecutionPlanPolicyError,
   ExecutionPolicySnapshotError,
   parseExecutionJob,
   parseExecutionPolicySnapshot,
@@ -38,6 +39,9 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     try {
       accepted = parseExecutionJob(job);
     } catch (error) {
+      if (error instanceof ExecutionPlanPolicyError) {
+        return { status: "denied", code: "PolicyDenied", message: "PlanActionDenied" };
+      }
       if (error instanceof ExecutionPolicySnapshotError) {
         return { status: "denied", code: "PolicyMissing", message: "execution Job policy is required" };
       }

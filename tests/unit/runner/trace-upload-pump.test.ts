@@ -18,6 +18,7 @@ const LIMIT = { maximumEvents: 100, maximumBytes: 1_000_000 };
 class RecordingCore implements TraceBatchSubmitter {
   private nextExpected = 1;
   readonly accepted: number[] = [];
+  readonly events: ExecutionEventBatch["events"][number][] = [];
   failNext = false;
 
   async submit(batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
@@ -28,6 +29,7 @@ class RecordingCore implements TraceBatchSubmitter {
     for (const event of batch.events) {
       if (event.sequenceNumber >= this.nextExpected) {
         this.accepted.push(event.sequenceNumber);
+        this.events.push(event);
         this.nextExpected = event.sequenceNumber + 1;
       }
     }
@@ -76,6 +78,23 @@ afterEach(async () => {
 });
 
 describe("TraceUploadPump", () => {
+  it("preserves stepIndex through the production recorder and durable spool", async () => {
+    const spool = await newSpool();
+    const recorder = new SpoolingTraceRecorder(spool);
+    await recorder.append({
+      runId: RUN_ID,
+      stepIndex: 2,
+      stage: "decision",
+      payload: { kind: "click", target: { nodeId: "node-a" }, reason: "third step" },
+    });
+    const core = new RecordingCore();
+
+    await new TraceUploadPump(spool, core, RUN_ID, LIMIT).drain();
+
+    expect(core.events).toHaveLength(1);
+    expect(core.events[0]).toMatchObject({ stepIndex: 2, stage: "decision" });
+  });
+
   it("drains every spooled event to Core in order and clears the spool", async () => {
     const spool = await newSpool();
     await recordThreeEvents(spool);

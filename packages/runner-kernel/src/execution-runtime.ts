@@ -16,13 +16,17 @@ import type {
 
 export type { ResolvedDesktopAction } from "@qualigence/runner-protocol";
 
-export interface ProposedAction {
-  readonly kind: "click";
-  readonly target: {
-    readonly nodeId: string;
-  };
-  readonly reason: string;
-}
+type ProposedActionUnion =
+  | { readonly kind: "navigate"; readonly path: string; readonly reason: string }
+  | { readonly kind: "click"; readonly target: { readonly nodeId: string }; readonly reason: string }
+  | { readonly kind: "input"; readonly target: { readonly nodeId: string }; readonly valueRef: string; readonly reason: string }
+  | { readonly kind: "select"; readonly target: { readonly nodeId: string }; readonly valueRef: string; readonly reason: string }
+  | { readonly kind: "scroll"; readonly target?: { readonly nodeId: string }; readonly direction: "up" | "down" | "left" | "right"; readonly amount: "small" | "page"; readonly reason: string }
+  | { readonly kind: "window"; readonly target: { readonly nodeId: string }; readonly operation: "focus" | "minimize" | "restore" | "close"; readonly reason: string };
+
+export type ProposedActionKind = ProposedActionUnion["kind"];
+export type ProposedAction<TKind extends ProposedActionKind = "click"> = Extract<ProposedActionUnion, { readonly kind: TKind }>;
+export type AnyProposedAction = ProposedAction<ProposedActionKind>;
 
 /**
  * A resolved Web action. `targetKind` is the discriminator introduced by LS-13
@@ -32,13 +36,30 @@ export interface ProposedAction {
  * compiling unchanged. The Playwright adapter now emits `targetKind: "web"`
  * explicitly, and an absent `targetKind` is treated as Web.
  */
-export interface ResolvedWebAction {
-  readonly targetKind?: "web";
-  readonly kind: "click";
+interface ResolvedWebElementAction {
+  readonly targetKind: "web";
   readonly target: {
     readonly nodeId: string;
     readonly selector: string;
   };
+  readonly graphId: string;
+}
+
+type ResolvedWebActionUnion =
+  | { readonly targetKind: "web"; readonly kind: "navigate"; readonly url: string }
+  | (ResolvedWebElementAction & { readonly kind: "click" })
+  | (ResolvedWebElementAction & { readonly kind: "input"; readonly valueRef: string })
+  | (ResolvedWebElementAction & { readonly kind: "select"; readonly valueRef: string })
+  | ({ readonly targetKind: "web"; readonly kind: "scroll"; readonly graphId: string; readonly target?: { readonly nodeId: string; readonly selector: string }; readonly direction: "up" | "down" | "left" | "right"; readonly amount: "small" | "page" });
+
+export type ResolvedWebActionKind = ResolvedWebActionUnion["kind"];
+export type ResolvedWebAction<TKind extends ResolvedWebActionKind = "click"> = Extract<ResolvedWebActionUnion, { readonly kind: TKind }>;
+export type AnyResolvedWebAction = ResolvedWebAction<ResolvedWebActionKind>;
+
+interface LegacyResolvedWebClick {
+  readonly targetKind?: never;
+  readonly kind: "click";
+  readonly target: { readonly nodeId: string; readonly selector: string };
   readonly graphId: string;
 }
 
@@ -49,23 +70,25 @@ export interface ResolvedWebAction {
  * owned by `@qualigence/desktop-contracts` and re-exported through Runner
  * Protocol.
  */
-export type ResolvedAction = ResolvedWebAction | ResolvedDesktopAction;
+export type ResolvedAction = ResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
+export type AnyResolvedAction = AnyResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
 
 /** True when a resolved action targets a Windows Desktop app via UIA. */
 export function isDesktopAction(
-  action: ResolvedAction,
+  action: AnyResolvedAction,
 ): action is ResolvedDesktopAction {
   return action.targetKind === "desktop";
 }
 
 /** True when a resolved action targets a Web page (explicit or legacy). */
-export function isWebAction(action: ResolvedAction): action is ResolvedWebAction {
+export function isWebAction(action: AnyResolvedAction): action is AnyResolvedWebAction | LegacyResolvedWebClick {
   return action.targetKind !== "desktop";
 }
 
 /** The observation node id a resolved action targets, regardless of platform. */
-export function resolvedActionNodeId(action: ResolvedAction): string {
-  return isDesktopAction(action) ? action.nodeId : action.target.nodeId;
+export function resolvedActionNodeId(action: AnyResolvedAction): string | undefined {
+  if (isDesktopAction(action)) return action.nodeId;
+  return action.kind === "navigate" ? undefined : action.target?.nodeId;
 }
 
 /**
@@ -262,9 +285,13 @@ export class ExecutionRuntime {
   }
 
   private async runUntilCompletion(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+    // Ticket 19 replaces this compatibility pipeline with the bounded indexed
+    // loop. Until then, only the current first action can own recorded stages.
+    const stepIndex = job.plan?.steps[0]?.stepIndex;
     const observation = await this.dependencies.observer.capture(job);
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "observation",
       payload: observation,
     });
@@ -275,6 +302,7 @@ export class ExecutionRuntime {
     });
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "decision",
       payload: toDecisionTracePayload(decision),
     });
@@ -282,6 +310,7 @@ export class ExecutionRuntime {
     const action = await this.dependencies.resolver.resolve(decision, observation);
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "action_resolved",
       payload: toResolvedActionTracePayload(action),
     });
@@ -294,6 +323,7 @@ export class ExecutionRuntime {
     if (policyDecision.status === "denied") {
       await this.record({
         runId: job.runId,
+        ...(stepIndex === undefined ? {} : { stepIndex }),
         stage: "policy_denied",
         payload: toDeniedPolicyTracePayload(policyDecision),
       });
@@ -316,6 +346,7 @@ export class ExecutionRuntime {
 
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "policy_authorized",
       payload: toAuthorizedPolicyTracePayload(policyDecision),
     });
@@ -324,6 +355,7 @@ export class ExecutionRuntime {
     const outcome = await this.dependencies.actionExecutor.execute(action, permit);
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "action_executed",
       payload: toActionOutcomeTracePayload(outcome),
     });
@@ -350,6 +382,7 @@ export class ExecutionRuntime {
     const after = await this.dependencies.observer.capture(job);
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "observation",
       payload: after,
     });
@@ -363,6 +396,7 @@ export class ExecutionRuntime {
     });
     await this.record({
       runId: job.runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
       stage: "verification",
       payload: toVerificationTracePayload(verification),
     });
@@ -409,21 +443,15 @@ export class ExecutionRuntime {
   }
 }
 
-function toDecisionTracePayload(action: ProposedAction): DecisionTracePayload {
+export function toDecisionTracePayload(action: AnyProposedAction): DecisionTracePayload {
   return action;
 }
 
-function toResolvedActionTracePayload(
-  action: ResolvedAction,
+export function toResolvedActionTracePayload(
+  action: AnyResolvedAction,
 ): ResolvedActionTracePayload {
   if (isDesktopAction(action)) {
-    // Desktop actions keep the M1 click trace shape with an ignorable, derived
-    // UIA locator token; richer Desktop trace fidelity is the adapter's concern.
-    return {
-      kind: "click",
-      target: { nodeId: action.nodeId, selector: `uia:${action.nodeId}` },
-      graphId: action.graphId,
-    };
+    return action;
   }
   return action;
 }

@@ -44,6 +44,10 @@ const planSnapshot: ExecutionJobPlanSnapshot = {
 
 const plannedJob: AcceptedExecutionJob = {
   ...legacyJob,
+  policy: {
+    ...legacyJob.policy,
+    allowedActionKinds: ["navigate", "click", "input"],
+  },
   plan: planSnapshot,
 };
 
@@ -123,6 +127,35 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
       { stepIndex: 4, kind: "scroll", direction: "down", amount: "page" },
       { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
     ]);
+  });
+
+  it("keeps only the concrete pre-index plan shape as legacy compatibility", () => {
+    const job = parseExecutionJob(plannedJob);
+
+    expect(job.plan?.steps).toEqual(planSnapshot.steps);
+    expect(job.plan?.steps.every((step) => !("stepIndex" in step))).toBe(true);
+  });
+
+  it.each([
+    ["an unindexed select", [{ kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" }]],
+    ["an unindexed scroll", [{ kind: "scroll", direction: "down", amount: "small" }]],
+    ["unknown step fields", [{ stepIndex: 0, kind: "navigate", path: "/checkout", selector: "body" }]],
+  ])("rejects a new plan form with %s", (_name, steps) => {
+    expect(() => parseExecutionJob({
+      ...legacyJob,
+      policy: { ...legacyJob.policy, allowedActionKinds: ["navigate", "select", "scroll"] },
+      plan: { ...planSnapshot, steps },
+    })).toThrow();
+  });
+
+  it("rejects a plan action that its immutable policy does not allow", () => {
+    expect(() => parseExecutionJob({
+      ...legacyJob,
+      plan: {
+        ...planSnapshot,
+        steps: [{ stepIndex: 0, kind: "navigate", path: "/checkout" }],
+      },
+    })).toThrow();
   });
 
   it("rejects model-owned select option text even when a valueRef is present", () => {

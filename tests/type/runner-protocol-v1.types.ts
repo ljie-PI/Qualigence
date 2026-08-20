@@ -9,6 +9,7 @@ import type {
   ExecutionEventBatchOutcome,
   ExecutionJobLease,
   ExecutionJobOffer,
+  IndexedExecutionPlanStep,
   ExecutionPlanStep,
   ExecutionLeaseState,
   ProtocolVersionMismatch,
@@ -94,6 +95,12 @@ const indexedPlanSteps = [
   { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
 ] as const satisfies readonly ExecutionPlanStep[];
 void indexedPlanSteps;
+
+indexedPlanSteps satisfies readonly IndexedExecutionPlanStep[];
+
+// @ts-expect-error newly authored indexed steps cannot omit their provenance index
+const unindexedNavigate: IndexedExecutionPlanStep = { kind: "navigate", path: "/checkout" };
+void unindexedNavigate;
 
 // @ts-expect-error select values are Plan-owned references and every new select step is indexed
 const unindexedSelect: ExecutionPlanStep = { kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" };
