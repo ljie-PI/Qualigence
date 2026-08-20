@@ -74,6 +74,17 @@ verification: pending dedicated PR merge
   passed 9 files / 101 tests. Root `corepack pnpm typecheck` and
   `git diff --check` also passed. Fresh exact-base review and dedicated PR merge
   evidence remain pending.
+- Round-2 Important fix: abort during an in-flight retry or structured-output
+  correction now throws a typed Gateway abort error carrying all known prior
+  attempt usage and any usage reported by the interrupted attempt. Model Agent
+  charges that aggregate exactly once before propagating wall timeout/abort;
+  if the interrupted attempted call has no usage under the finite budget, it
+  instead preserves `ModelUsageUnavailable`. Abort racing retains a rejection
+  handler for late provider settlement, preventing unhandled late rejections.
+- Round-2 affected files passed: Gateway 20 tests, Model Agent 17 tests, and
+  Runtime 24 tests. The exact row-17 focused Gate above passed 9 files / 107 tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run per
+  the ticket review-fix protocol; fresh exact-base review remains pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

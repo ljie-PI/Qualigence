@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ModelBackedDecisionProvider,
   ModelBackedVerifier,
 } from "@qualigence/model-agent";
 import { ModelGateway } from "@qualigence/model-gateway";
-import { DeterministicExecutionBudget, ExecutionRuntime } from "@qualigence/runner-kernel";
+import {
+  DeterministicExecutionBudget,
+  ExecutionBudgetError,
+  ExecutionRuntime,
+} from "@qualigence/runner-kernel";
+import type { ExecutionBudget, ModelUsage } from "@qualigence/runner-kernel";
 import {
   AllowAllRunnerPolicyGate,
   InMemoryTraceRecorder,
@@ -18,6 +23,10 @@ import type {
 import type { ModelProviderRequest } from "@qualigence/model-provider";
 
 describe("model-backed runner components", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("passes the remaining output ceiling and accounts decision usage", async () => {
     const gateway = new UsageGateway({ inputTokens: 4, outputTokens: 3, totalTokens: 7 });
     const budget = activeBudget();
@@ -232,6 +241,92 @@ describe("model-backed runner components", () => {
 
     expect(modelProvider.requests).toHaveLength(3);
     expect(budget.maximumOutputTokens("run-1")).toBe(91);
+  });
+
+  it("charges accumulated abort usage exactly once before propagating the abort reason", async () => {
+    const controller = new AbortController();
+    const modelProvider = new AbortCorrectionModelProvider({ totalTokens: 3 });
+    const budget = new RecordingBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+    const decision = provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+      signal: controller.signal,
+    });
+    await modelProvider.correctionStarted;
+
+    const reason = new ExecutionBudgetError("WallClockBudgetExceeded");
+    controller.abort(reason);
+
+    await expect(decision).rejects.toBe(reason);
+
+    expect(budget.usages).toEqual([{ totalTokens: 7 }]);
+  });
+
+  it("preserves unavailable-usage classification after charging prior abort usage once", async () => {
+    const controller = new AbortController();
+    const modelProvider = new AbortCorrectionModelProvider();
+    const budget = new RecordingBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+    const decision = provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+      signal: controller.signal,
+    });
+    await modelProvider.correctionStarted;
+
+    controller.abort(new ExecutionBudgetError("WallClockBudgetExceeded"));
+
+    await expect(decision).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
+
+    expect(budget.usages).toEqual([{ totalTokens: 4 }]);
+  });
+
+  it("charges abort usage before Runtime propagates wall timeout classification", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const modelProvider = new AbortCorrectionModelProvider({ totalTokens: 3 });
+    const budget = new RecordingBudget(() => now);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]) },
+      decisionProvider: new ModelBackedDecisionProvider(
+        new ModelGateway({ provider: modelProvider }),
+        "test-model",
+      ),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+    const completionPromise = runtime.run(job());
+    await modelProvider.correctionStarted;
+
+    now = 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const completion = await completionPromise;
+
+    expect(completion).toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(budget.usages).toEqual([{ totalTokens: 7 }]);
   });
 
   it("preserves only validated graph/node evidence references in failed verification", async () => {
@@ -607,4 +702,66 @@ class UsageRetryCorrectionProvider implements ModelProvider {
       usage: { totalTokens: this.requests.length === 2 ? 3 : 4 },
     };
   }
+}
+
+class AbortCorrectionModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly correctionStarted: Promise<void>;
+  private attempts = 0;
+  private markCorrectionStarted: (() => void) | undefined;
+
+  constructor(private readonly abortUsage?: ModelUsage) {
+    this.correctionStarted = new Promise((resolve) => {
+      this.markCorrectionStarted = resolve;
+    });
+  }
+
+  async invoke(request: ModelProviderRequest) {
+    this.attempts += 1;
+    if (this.attempts === 1) {
+      return {
+        output: { malformed: true },
+        model: request.model,
+        finishReason: "stop",
+        usage: { totalTokens: 4 },
+      };
+    }
+
+    this.markCorrectionStarted?.();
+    return new Promise<never>((_resolve, reject) => {
+      if (this.abortUsage === undefined) return;
+      request.signal?.addEventListener("abort", () => {
+        reject({
+          code: "TimedOut",
+          message: "aborted",
+          usage: this.abortUsage,
+        });
+      }, { once: true });
+    });
+  }
+}
+
+class RecordingBudget implements ExecutionBudget {
+  readonly usages: ModelUsage[] = [];
+
+  constructor(private readonly now: () => number = () => 0) {}
+
+  begin(): void {}
+  beforeStep(): void {}
+  remainingWallClockMs(): number {
+    const remaining = 1_000 - this.now();
+    if (remaining <= 0) throw new ExecutionBudgetError("WallClockBudgetExceeded");
+    return remaining;
+  }
+  maximumOutputTokens(): number { return 100; }
+  consumeModelUsage(_runId: string, usage: ModelUsage | undefined): void {
+    if (usage === undefined) throw new ExecutionBudgetError("ModelUsageUnavailable");
+    this.usages.push(usage);
+  }
+  finish(): void {}
 }

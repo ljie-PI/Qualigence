@@ -1,4 +1,4 @@
-export { ModelGateway, ModelGatewayError } from "./model-gateway.js";
+export { ModelGateway, ModelGatewayAbortError, ModelGatewayError } from "./model-gateway.js";
 
 export { VisualInputPolicyError, assertVisualInputAllowed } from "./data-policy.js";
 

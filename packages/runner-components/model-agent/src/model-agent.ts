@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { randomBytes } from "node:crypto";
-import { ModelGatewayError } from "@qualigence/model-gateway";
+import { ModelGatewayAbortError, ModelGatewayError } from "@qualigence/model-gateway";
 import type { StructuredModelInvoker } from "@qualigence/model-gateway";
-import { ExecutionBlockedError, resolvedActionNodeId } from "@qualigence/runner-kernel";
+import {
+  ExecutionBlockedError,
+  ExecutionBudgetError,
+  resolvedActionNodeId,
+} from "@qualigence/runner-kernel";
 import type {
   JsonSchema,
   StructuredOutputContract,
@@ -176,6 +180,9 @@ export class ModelBackedVerifier implements Verifier {
 }
 
 function throwModelExecutionError(error: unknown): never {
+  if (error instanceof ModelGatewayAbortError) {
+    throw error.reason;
+  }
   if (error instanceof ModelGatewayError && error.code === "InvalidStructuredOutput") {
     throw new ExecutionBlockedError(error.code);
   }
@@ -187,6 +194,29 @@ function consumeErrorUsage(
   context: AgentContext | VerificationContext,
   error: unknown,
 ): void {
+  if (error instanceof ModelGatewayAbortError) {
+    const budget = context.budget;
+    if (budget === undefined) return;
+    if (!error.usageUnavailable) {
+      budget.consumeModelUsage(context.job.runId, error.usage);
+      return;
+    }
+
+    try {
+      budget.consumeModelUsage(context.job.runId, error.usage);
+    } catch (budgetError) {
+      if (
+        budgetError instanceof ExecutionBudgetError &&
+        (budgetError.code === "ModelUsageUnavailable" ||
+          budgetError.code === "ModelBudgetExceeded" ||
+          budgetError.code === "WallClockBudgetExceeded")
+      ) {
+        throw new ExecutionBudgetError("ModelUsageUnavailable");
+      }
+      throw budgetError;
+    }
+    throw new ExecutionBudgetError("ModelUsageUnavailable");
+  }
   if (error instanceof ModelGatewayError && error.providerAttempted) {
     context.budget?.consumeModelUsage(context.job.runId, error.usage);
   }

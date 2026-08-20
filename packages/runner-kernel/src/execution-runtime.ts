@@ -500,7 +500,7 @@ export class ExecutionRuntime {
           timeout = setTimeout(checkDeadline, Math.min(remaining, 2_147_483_647));
         } catch (error) {
           controller.abort(error);
-          reject(error);
+          timeout = setTimeout(() => reject(error), 0);
         }
       };
       timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));

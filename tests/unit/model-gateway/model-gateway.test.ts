@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ModelGateway,
+  ModelGatewayAbortError,
   ModelGatewayError,
   type ModelProvider,
   type StructuredOutputContract,
@@ -291,6 +292,147 @@ describe("ModelGateway", () => {
     }, decisionContract)).rejects.toThrow("deadline");
     expect(provider.requests).toHaveLength(1);
     expect(reports).toEqual([]);
+  });
+
+  it("returns accumulated usage when an in-flight correction is aborted without usage", async () => {
+    const controller = new AbortController();
+    let rejectLate: ((error: Error) => void) | undefined;
+    let correctionStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      correctionStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke(providerRequest) {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            output: { malformed: true },
+            model: providerRequest.model,
+            finishReason: "stop",
+            usage: { totalTokens: 4 },
+          };
+        }
+        correctionStarted?.();
+        return new Promise((_resolve, reject) => {
+          rejectLate = reject;
+        });
+      },
+    };
+    const invocation = new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 4 },
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+    rejectLate?.(new Error("late provider rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("returns accumulated usage when an in-flight transient retry is aborted", async () => {
+    const controller = new AbortController();
+    let retryStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      retryStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw { code: "TimedOut", message: "timed out", usage: { totalTokens: 4 } };
+        }
+        retryStarted?.();
+        return new Promise(() => {});
+      },
+    };
+    const invocation = new ModelGateway({ provider, delay: async () => {} }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 4 },
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+  });
+
+  it("includes interrupted-attempt usage when the provider reports it on abort", async () => {
+    const controller = new AbortController();
+    let correctionStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      correctionStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke(providerRequest) {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            output: { malformed: true },
+            model: providerRequest.model,
+            finishReason: "stop",
+            usage: { totalTokens: 4 },
+          };
+        }
+        correctionStarted?.();
+        return new Promise((_resolve, reject) => {
+          providerRequest.signal?.addEventListener("abort", () => {
+            reject({
+              code: "TimedOut",
+              message: "aborted",
+              usage: { totalTokens: 3 },
+            });
+          }, { once: true });
+        });
+      },
+    };
+    const invocation = new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 7 },
+      usageUnavailable: false,
+    } satisfies Partial<ModelGatewayAbortError>);
   });
 });
 
