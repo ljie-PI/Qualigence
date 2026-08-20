@@ -10,6 +10,7 @@ Context documents define stable terms, ownership, seams, invariants, entrypoints
 
 - Before exploring, changing, or reviewing a production area, read `CONTEXT-MAP.md` and every selected context.
 - Read system-wide and context-scoped ADRs that affect the area. If no ADR directory exists, proceed silently; create ADRs lazily only when a resolved decision warrants one.
+- If a domain-documentation category does not exist, proceed silently rather than proposing it up front; `/domain-modeling` creates documentation lazily when a genuine gap is resolved.
 - Read the architecture sections and LS Specs referenced by the selected contexts when work affects a public contract, persistence, security, deployment, or stable ownership.
 - Read the complete selected Task in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md` before editing closure work.
 - Treat `docs/production-closure-status.md` as evidence history, not proof that production wiring exists.

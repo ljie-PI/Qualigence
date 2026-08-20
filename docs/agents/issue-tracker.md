@@ -12,6 +12,8 @@ Issues and specs for this repo live as Markdown files under `.scratch/`. GitHub 
 
 When a skill says to publish tracked work, create or update the corresponding Markdown file instead of calling a remote issue tracker.
 
+When a skill says to fetch a ticket, read the referenced path. The user will normally provide either that path or its issue number.
+
 ## Closure Tasks
 
 The production-closure plan is the task authority. Create or update a local issue when a task is blocked, review identifies work outside its approved Files block, or a deferred non-blocking finding needs an owner.
@@ -39,5 +41,7 @@ Never put secrets, PRD plaintext, raw evidence, tokens, certificates, connection
 - `Type:` records `research`, `prototype`, `grilling`, or `task`.
 - `Status:` records the canonical triage role, or `claimed`/`resolved` for active wayfinding work.
 - `Blocked by: NN, NN` lists prerequisite tickets.
+- A ticket is unblocked when every listed blocker is `resolved`.
+- The frontier is the first numbered open, unblocked, unclaimed ticket under `.scratch/<effort>/issues/`.
 - Claim a ticket by setting `Status: claimed` before work.
 - Resolve it by adding `## Answer`, setting `Status: resolved`, and adding a context pointer to the map.

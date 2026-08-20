@@ -20,6 +20,8 @@ This is a temporary execution document dated 2026-08-16. It records the observed
 
 The word `implemented` in the status ledger means only that some planned files or component tests exist. A capability is complete only when its production Composition Root uses it and the task's black-box Gate passes.
 
+Operational engineering-skill configuration, including the active issue-tracker backend and triage vocabulary, is owned by `AGENTS.md` and `docs/agents/*.md`. Reconfiguring that backend does not change this plan's task authority or rewrite historical GitHub Issue references.
+
 ## Global Constraints
 
 - Use Node.js 24 and exactly `corepack pnpm --version` = `11.7.0`. Do not use an ambient/fallback `pnpm` binary.
@@ -325,7 +327,7 @@ open; Q stays visible until Task 21 restores all four tests on Windows and Linux
 
 **Interfaces:**
 - Produces `AGENTS.md` describing agent skills, issue-tracker usage, multi-context reading rules, and plan boundary constraints.
-- Produces `docs/agents/issue-tracker.md` configuring GitHub Issues in `ljie-PI/Qualigence` as the issue tracker for `/code-review` and engineering skills.
+- Produces `docs/agents/issue-tracker.md`; SETUP-00 initially configured GitHub Issues in `ljie-PI/Qualigence`, while later operational configuration may select another supported backend without changing closure task authority.
 - Produces `CONTEXT-MAP.md` routing execution, product, protocol, intelligence, evidence, storage, deployment, and windows domains to `docs/contexts/*/CONTEXT.md`.
 - Produces eight domain `CONTEXT.md` files defining stable terms, ownership, seams, invariants, entrypoints, cited architecture/spec references, and verification commands.
 - Ignores `.worktrees/` in `.gitignore` without altering build manifests, runtime packages, lockfiles, or product code.
