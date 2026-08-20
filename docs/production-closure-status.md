@@ -47,13 +47,17 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: not_applicable
-verification: pending exact-head review
-implementation_commit: same commit as this ledger entry
+verification: passed
+implementation_commit: `bedfa41`
+review_fix_commit: `79ad800`
 
 - Document consistency checks cover all 35 tickets, the two dependency lanes,
   migrations 001-013, exact Files/focused Gates/post-review acceptance, current
   host facts, Evidence revoke-before-delete, and Graph set/order authority.
 - `corepack pnpm typecheck` and `git diff --check` passed.
+- Fresh exact-base Standards and Spec reviews at `79ad800` reported no
+  findings after the first-round authority fixes. This closure update receives
+  one final exact-head review before ticket resolution.
 - A supplemental final full-suite baseline was run with Git OpenSSL on `PATH` and
   `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`. It reported 154
   passed files, 5 failed, and 1 skipped; 1110 tests passed, 9 failed, and 6
