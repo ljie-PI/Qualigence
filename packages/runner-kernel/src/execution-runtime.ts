@@ -13,6 +13,11 @@ import type {
   TraceEvent,
   VerificationTracePayload,
 } from "@qualigence/runner-protocol";
+import {
+  DeterministicExecutionBudget,
+  ExecutionBudgetError,
+  type ExecutionBudget,
+} from "./execution-budget.js";
 
 export type { ResolvedDesktopAction } from "@qualigence/runner-protocol";
 
@@ -179,6 +184,7 @@ export interface ExecutionDecisionProvider {
 export interface AgentContext {
   readonly job: AcceptedExecutionJob;
   readonly observation: ObservationGraph;
+  readonly budget?: ExecutionBudget;
 }
 
 export interface ActionResolver {
@@ -214,6 +220,7 @@ export interface VerificationContext {
   readonly after: ObservationGraph;
   readonly action: ResolvedAction;
   readonly outcome: ActionOutcome;
+  readonly budget?: ExecutionBudget;
 }
 
 export interface TraceRecorder {
@@ -234,6 +241,7 @@ export interface ExecutionRuntimeDependencies {
   readonly actionExecutor: ActionExecutor;
   readonly verifier: Verifier;
   readonly traceRecorder: TraceRecorder;
+  readonly budget?: ExecutionBudget;
 }
 
 const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
@@ -256,13 +264,25 @@ export class ExecutionPermit {
 }
 
 export class ExecutionRuntime {
-  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {}
+  private readonly budget: ExecutionBudget;
+
+  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {
+    this.budget = dependencies.budget ?? new DeterministicExecutionBudget();
+  }
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+    let budgetStarted = false;
     try {
+      this.budget.begin(job);
+      budgetStarted = true;
       return await this.runUntilCompletion(job);
     } catch (error) {
-      if (!(error instanceof ExecutionBlockedError)) {
+      const errorCode = error instanceof ExecutionBlockedError
+        ? error.errorCode
+        : error instanceof ExecutionBudgetError
+          ? error.code
+          : undefined;
+      if (errorCode === undefined) {
         throw error;
       }
 
@@ -271,7 +291,7 @@ export class ExecutionRuntime {
         stage: "run_completed",
         payload: {
           status: "blocked",
-          errorCode: error.errorCode,
+          errorCode,
         },
       });
 
@@ -279,8 +299,12 @@ export class ExecutionRuntime {
         jobId: job.jobId,
         runId: job.runId,
         status: "blocked",
-        errorCode: error.errorCode,
+        errorCode,
       };
+    } finally {
+      if (budgetStarted) {
+        this.budget.finish(job.runId);
+      }
     }
   }
 
@@ -288,6 +312,7 @@ export class ExecutionRuntime {
     // Ticket 19 replaces this compatibility pipeline with the bounded indexed
     // loop. Until then, only the current first action can own recorded stages.
     const stepIndex = job.plan?.steps[0]?.stepIndex;
+    this.budget.beforeStep(job.runId, stepIndex ?? 0);
     const observation = await this.dependencies.observer.capture(job);
     await this.record({
       runId: job.runId,
@@ -299,6 +324,7 @@ export class ExecutionRuntime {
     const decision = await this.dependencies.decisionProvider.decide({
       job,
       observation,
+      budget: this.budget,
     });
     await this.record({
       runId: job.runId,
@@ -351,6 +377,7 @@ export class ExecutionRuntime {
       payload: toAuthorizedPolicyTracePayload(policyDecision),
     });
 
+    this.budget.maximumOutputTokens(job.runId);
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
     const outcome = await this.dependencies.actionExecutor.execute(action, permit);
     await this.record({
@@ -393,6 +420,7 @@ export class ExecutionRuntime {
       after,
       action,
       outcome,
+      budget: this.budget,
     });
     await this.record({
       runId: job.runId,

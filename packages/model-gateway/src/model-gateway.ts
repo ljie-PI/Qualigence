@@ -3,6 +3,7 @@ import type {
   ModelInvocationContext,
   ModelProvider,
   ModelProviderErrorCode,
+  ModelUsage,
   StructuredModelRequest,
   StructuredOutputContract,
   StructuredOutputValidationError,
@@ -23,6 +24,7 @@ export class ModelGatewayError extends Error {
   constructor(
     readonly code: ModelGatewayErrorCode,
     message: string,
+    readonly usage?: ModelUsage,
   ) {
     super(message);
     this.name = "ModelGatewayError";
@@ -116,11 +118,24 @@ export class ModelGateway implements StructuredModelInvoker {
       );
     }
 
+    if (
+      request.maximumOutputTokens !== undefined &&
+      (!Number.isSafeInteger(request.maximumOutputTokens) || request.maximumOutputTokens <= 0)
+    ) {
+      throw new ModelGatewayError(
+        "InvalidRequest",
+        "maximumOutputTokens must be a positive safe integer.",
+      );
+    }
+
     this.assertVisualInputAllowed(request, this.dependencies.provider.capabilities);
 
     let schemaAttempts = 0;
     let transientAttempts = 0;
     let providerRequest = request;
+    let accumulatedUsage: ModelUsage | undefined;
+    let accumulatedTotalTokens = 0;
+    let usageAvailable = true;
 
     while (true) {
       const providerRequestWithSchema = {
@@ -132,13 +147,25 @@ export class ModelGateway implements StructuredModelInvoker {
         response = await this.dependencies.provider.invoke(providerRequestWithSchema);
       } catch (error) {
         const normalized = normalizeProviderError(error);
-        if (!isTransient(normalized.code) || transientAttempts >= 2) {
+        if (!isTransient(normalized.code) || transientAttempts >= 1) {
           throw normalized;
         }
 
         transientAttempts += 1;
         await this.delay(100 * 2 ** (transientAttempts - 1));
         continue;
+      }
+
+      if (response.usage === undefined) {
+        usageAvailable = false;
+      } else {
+        const responseTotal = usageTotal(response.usage);
+        if (responseTotal === undefined) {
+          usageAvailable = false;
+        } else {
+          accumulatedTotalTokens += responseTotal;
+        }
+        accumulatedUsage = addUsage(accumulatedUsage, response.usage);
       }
 
       try {
@@ -149,7 +176,9 @@ export class ModelGateway implements StructuredModelInvoker {
           ...(response.providerRequestId === undefined
             ? {}
             : { providerRequestId: response.providerRequestId }),
-          ...(response.usage === undefined ? {} : { usage: response.usage }),
+          ...(usageAvailable && accumulatedUsage !== undefined
+            ? { usage: normalizedUsage(accumulatedUsage, accumulatedTotalTokens) }
+            : {}),
         };
       } catch (error) {
         if (!isStructuredOutputValidationError(error)) {
@@ -160,6 +189,9 @@ export class ModelGateway implements StructuredModelInvoker {
           throw new ModelGatewayError(
             "InvalidStructuredOutput",
             `The provider returned output that does not match ${output.name}.`,
+            usageAvailable && accumulatedUsage !== undefined
+              ? normalizedUsage(accumulatedUsage, accumulatedTotalTokens)
+              : undefined,
           );
         }
 
@@ -218,6 +250,46 @@ export class ModelGateway implements StructuredModelInvoker {
       throw error;
     }
   }
+}
+
+function normalizedUsage(usage: ModelUsage, totalTokens: number): ModelUsage {
+  return { ...usage, totalTokens };
+}
+
+function usageTotal(usage: ModelUsage): number | undefined {
+  if (isNonNegativeSafeInteger(usage.totalTokens)) return usage.totalTokens;
+  if (
+    isNonNegativeSafeInteger(usage.inputTokens) &&
+    isNonNegativeSafeInteger(usage.outputTokens)
+  ) {
+    const total = usage.inputTokens + usage.outputTokens;
+    return Number.isSafeInteger(total) ? total : undefined;
+  }
+  return undefined;
+}
+
+function isNonNegativeSafeInteger(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0;
+}
+
+function addUsage(current: ModelUsage | undefined, next: ModelUsage): ModelUsage {
+  return {
+    ...addUsageField("inputTokens", current, next),
+    ...addUsageField("outputTokens", current, next),
+    ...addUsageField("totalTokens", current, next),
+  };
+}
+
+function addUsageField(
+  field: keyof ModelUsage,
+  current: ModelUsage | undefined,
+  next: ModelUsage,
+): Partial<ModelUsage> {
+  const nextValue = next[field];
+  if (nextValue === undefined) {
+    return {};
+  }
+  return { [field]: (current?.[field] ?? 0) + nextValue };
 }
 
 function errorCodeOf(error: unknown): string {

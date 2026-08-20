@@ -36,6 +36,7 @@ describe("OpenAICompatibleModelProvider", () => {
         messages: [{ role: "user", content: "choose" }],
         responseSchema: { type: "object" },
         timeoutMs: 1_000,
+        maximumOutputTokens: 321,
       });
 
       expect(result).toMatchObject({
@@ -50,6 +51,7 @@ describe("OpenAICompatibleModelProvider", () => {
           model: "compatible-model",
           messages: [{ role: "user", content: "choose" }],
           response_format: expect.objectContaining({ type: "json_schema" }),
+          max_completion_tokens: 321,
         }),
       ]);
     } finally {

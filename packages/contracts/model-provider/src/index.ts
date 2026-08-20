@@ -57,6 +57,7 @@ export interface ModelProviderRequest {
   readonly messages: readonly ModelMessage[];
   readonly responseSchema: JsonSchema;
   readonly timeoutMs: number;
+  readonly maximumOutputTokens?: number;
 }
 
 export interface ModelProviderResponse {
@@ -89,6 +90,7 @@ export interface StructuredModelRequest {
   readonly model: string;
   readonly messages: readonly ModelMessage[];
   readonly timeoutMs: number;
+  readonly maximumOutputTokens?: number;
   readonly invocation?: ModelInvocationContext;
   readonly dataPolicy?: ModelDataPolicy;
 }

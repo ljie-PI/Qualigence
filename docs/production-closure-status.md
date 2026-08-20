@@ -43,6 +43,27 @@ scenarios, local-console/RDP execution, and two-person signed evidence remain
 blocking. Git OpenSSL must be resolved explicitly from
 `C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
 
+### Ticket 17 - Execution budget and model usage (2026-08-20)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR merge
+
+- Model output limits and provider usage are preserved through the
+  provider, Gateway, Model Agent, and Runner Runtime seams. Gateway transient
+  retry and structured-output correction are each bounded to exactly one.
+- `DeterministicExecutionBudget` enforces positive finite step, monotonic
+  wall-clock, output-token, and consumed-token limits. Missing finite usage is
+  classified as `ModelUsageUnavailable`; overruns retain consumed usage and
+  classify as `ModelBudgetExceeded` before an action Permit is minted.
+- Runtime emits one stable blocked terminal event for budget failures and
+  clears per-run budget state in `finally`. Ticket 18 valueRef resolution and
+  Ticket 19 bounded indexed execution remain pending and are not implemented
+  here.
+- The row-17 focused Gate passed 9 files / 88 tests. Root
+  `corepack pnpm typecheck` and `git diff --check` also passed. Completion
+  remains pending this ticket's dedicated PR and merge.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

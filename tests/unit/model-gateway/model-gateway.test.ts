@@ -74,6 +74,72 @@ describe("ModelGateway", () => {
     });
   });
 
+  it("forwards the output limit and preserves usage from the single correction", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
+        { output: { action: { kind: "click", nodeId: "add" }, reason: "add item" }, usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11 } },
+      ],
+    );
+    const gateway = new ModelGateway({ provider });
+
+    const result = await gateway.invokeStructured(
+      { ...request(), maximumOutputTokens: 17 },
+      decisionContract,
+    );
+
+    expect(provider.requests.map((providerRequest) => providerRequest.maximumOutputTokens)).toEqual([17, 17]);
+    expect(result.usage).toEqual({ inputTokens: 13, outputTokens: 5, totalTokens: 18 });
+  });
+
+  it("preserves the complete consumed total when correction usage fields differ", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { totalTokens: 7 } },
+        { output: { action: { kind: "click", nodeId: "add" }, reason: "add item" }, usage: { inputTokens: 8, outputTokens: 3 } },
+      ],
+    );
+
+    const result = await new ModelGateway({ provider }).invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toEqual({ inputTokens: 8, outputTokens: 3, totalTokens: 18 });
+  });
+
+  it("returns aggregate usage on exhausted structured-output correction", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { totalTokens: 7 } },
+        { output: { stillMalformed: true }, usage: { totalTokens: 11 } },
+      ],
+    );
+
+    await expect(
+      new ModelGateway({ provider }).invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({
+      code: "InvalidStructuredOutput",
+      usage: { totalTokens: 18 },
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.POSITIVE_INFINITY])(
+    "rejects invalid output limit %s before invoking the provider",
+    async (maximumOutputTokens) => {
+      const provider = fakeProvider({ structuredOutput: true });
+      const gateway = new ModelGateway({ provider });
+
+      await expect(
+        gateway.invokeStructured(
+          { ...request(), maximumOutputTokens },
+          decisionContract,
+        ),
+      ).rejects.toMatchObject({ code: "InvalidRequest" });
+      expect(provider.requests).toHaveLength(0);
+    },
+  );
+
   it("propagates a non-validation parser defect without retrying the provider", async () => {
     const parserDefect = new TypeError("contract bug");
     const provider = fakeProvider(
@@ -141,10 +207,10 @@ describe("ModelGateway", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
-  it("normalizes a timeout after bounded transient retries", async () => {
+  it("normalizes a timeout after exactly one transient retry", async () => {
     const provider = fakeProvider(
       { structuredOutput: true },
-      [new Error("timed out"), new Error("timed out"), new Error("timed out")],
+      [new Error("timed out"), new Error("timed out")],
       "TimedOut",
     );
     const delays: number[] = [];
@@ -158,8 +224,8 @@ describe("ModelGateway", () => {
     await expect(
       gateway.invokeStructured(request(), decisionContract),
     ).rejects.toMatchObject({ code: "TimedOut" } satisfies Partial<ModelGatewayError>);
-    expect(provider.requests).toHaveLength(3);
-    expect(delays).toEqual([100, 200]);
+    expect(provider.requests).toHaveLength(2);
+    expect(delays).toEqual([100]);
   });
 });
 
@@ -196,13 +262,22 @@ function fakeProvider(
         };
       }
 
+      const scripted = isScriptedResponse(response) ? response : { output: response };
       return {
-        output: response,
+        output: scripted.output,
         model: providerRequest.model,
         finishReason: "stop",
+        ...(scripted.usage === undefined ? {} : { usage: scripted.usage }),
       };
     },
   };
 
   return provider;
+}
+
+function isScriptedResponse(value: unknown): value is {
+  readonly output: unknown;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number };
+} {
+  return typeof value === "object" && value !== null && "output" in value;
 }

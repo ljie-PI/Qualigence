@@ -4,7 +4,7 @@ import {
   ModelBackedVerifier,
 } from "@qualigence/model-agent";
 import { ModelGateway } from "@qualigence/model-gateway";
-import { ExecutionRuntime } from "@qualigence/runner-kernel";
+import { DeterministicExecutionBudget, ExecutionRuntime } from "@qualigence/runner-kernel";
 import {
   AllowAllRunnerPolicyGate,
   InMemoryTraceRecorder,
@@ -18,6 +18,37 @@ import type {
 import type { ModelProviderRequest } from "@qualigence/model-provider";
 
 describe("model-backed runner components", () => {
+  it("passes the remaining output ceiling and accounts decision usage", async () => {
+    const gateway = new UsageGateway({ inputTokens: 4, outputTokens: 3, totalTokens: 7 });
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model");
+
+    await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    });
+
+    expect(gateway.requests[0]?.maximumOutputTokens).toBe(100);
+    expect(budget.maximumOutputTokens("run-1")).toBe(93);
+  });
+
+  it("passes the remaining output ceiling and accounts verification usage", async () => {
+    const gateway = new UsageGateway(
+      { inputTokens: 6, outputTokens: 4, totalTokens: 10 },
+      { status: "passed", summary: "verified", claims: [] },
+    );
+    const budget = activeBudget();
+    const verifier = new ModelBackedVerifier(gateway, "test-model");
+
+    await verifier.verify({ ...verificationContext(), budget });
+
+    expect(gateway.requests[0]?.maximumOutputTokens).toBe(100);
+    expect(budget.maximumOutputTokens("run-1")).toBe(90);
+  });
+
   it("maps a model decision to a node-only click action", async () => {
     const gateway = new ScriptedGateway([
       { action: { kind: "click", nodeId: "node-add" }, reason: "add the item" },
@@ -128,6 +159,42 @@ describe("model-backed runner components", () => {
       "observation",
       "run_completed",
     ]);
+  });
+
+  it("accounts both invalid structured responses before blocking", async () => {
+    const modelProvider = new ScriptedModelProvider([
+      { action: { kind: "click", nodeId: "unknown-1" }, reason: "missing" },
+      { action: { kind: "click", nodeId: "unknown-2" }, reason: "missing" },
+    ]);
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", []),
+      budget,
+    })).rejects.toMatchObject({ errorCode: "InvalidStructuredOutput" });
+
+    expect(budget.maximumOutputTokens("run-1")).toBe(96);
+  });
+
+  it("classifies absent usage from exhausted correction as unavailable", async () => {
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: new NoUsageModelProvider([
+        { action: { kind: "click", nodeId: "unknown-1" }, reason: "missing" },
+        { action: { kind: "click", nodeId: "unknown-2" }, reason: "missing" },
+      ]) }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", []),
+      budget: activeBudget(),
+    })).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
   });
 
   it("preserves only validated graph/node evidence references in failed verification", async () => {
@@ -345,6 +412,22 @@ function verificationContext() {
   };
 }
 
+function activeBudget() {
+  const budget = new DeterministicExecutionBudget();
+  budget.begin({
+    ...job(),
+    plan: {
+      missionId: "mission-1",
+      missionRevision: 1,
+      testCaseId: "case-1",
+      steps: [{ stepIndex: 0, kind: "click" as const, target: { purpose: "test" } }],
+      expectedClaimIds: ["claim-1"],
+      budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 },
+    },
+  });
+  return budget;
+}
+
 function failedVerification(claim: {
   readonly expected: { readonly graphId: string; readonly nodeId: string; readonly text: string };
   readonly observed: { readonly graphId: string; readonly nodeId: string; readonly text: string };
@@ -376,6 +459,30 @@ class ScriptedGateway implements StructuredModelInvoker {
   }
 }
 
+class UsageGateway implements StructuredModelInvoker {
+  readonly requests: StructuredModelRequest[] = [];
+
+  constructor(
+    private readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly totalTokens: number },
+    private readonly value: unknown = { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+  ) {}
+
+  async invokeStructured<T>(request: StructuredModelRequest): Promise<{
+    readonly value: T;
+    readonly model: string;
+    readonly finishReason: string;
+    readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly totalTokens: number };
+  }> {
+    this.requests.push(request);
+    return {
+      value: this.value as T,
+      model: "test-model",
+      finishReason: "stop",
+      usage: this.usage,
+    };
+  }
+}
+
 class ScriptedModelProvider implements ModelProvider {
   readonly capabilities = {
     structuredOutput: true,
@@ -389,6 +496,26 @@ class ScriptedModelProvider implements ModelProvider {
 
   async invoke(request: ModelProviderRequest) {
     this.requests.push(request);
+    return {
+      output: this.outputs.shift(),
+      model: request.model,
+      finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    };
+  }
+}
+
+class NoUsageModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+
+  constructor(private readonly outputs: unknown[]) {}
+
+  async invoke(request: ModelProviderRequest) {
     return {
       output: this.outputs.shift(),
       model: request.model,

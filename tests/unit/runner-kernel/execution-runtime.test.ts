@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
+  DeterministicExecutionBudget,
   ExecutionRuntime,
   resolvedActionNodeId,
   toDecisionTracePayload,
@@ -18,6 +19,79 @@ import {
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
 
 describe("ExecutionRuntime", () => {
+  it("classifies missing finite model usage once before resolution or permit minting", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let resolverCalls = 0;
+    let executorCalls = 0;
+    const budget = new DeterministicExecutionBudget();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async (context) => {
+          context.budget?.consumeModelUsage(context.job.runId, undefined);
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "not reached" };
+        },
+      },
+      resolver: {
+        resolve: async () => {
+          resolverCalls += 1;
+          return { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" };
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toMatchObject({ status: "blocked", errorCode: "ModelUsageUnavailable" });
+    expect(resolverCalls).toBe(0);
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").map((event) => event.stage)).toEqual([
+      "observation",
+      "run_completed",
+    ]);
+    expect(() => budget.beforeStep("run-indexed", 0)).toThrowError(
+      expect.objectContaining({ code: "ExecutionBudgetNotActive" }),
+    );
+  });
+
+  it("classifies wall-clock exhaustion before permit minting", async () => {
+    let now = 0;
+    let policyCalls = 0;
+    let executorCalls = 0;
+    const traceRecorder = new InMemoryTraceRecorder();
+    const budget = new DeterministicExecutionBudget({ clock: { now: () => now } });
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async () => {
+          now = 1_000;
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "test" };
+        },
+      },
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: { authorize: async () => { policyCalls += 1; return { status: "allowed", reason: "allowed" }; } },
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toMatchObject({ status: "blocked", errorCode: "WallClockBudgetExceeded" });
+    expect(policyCalls).toBe(1);
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+  });
+
   it.each([
     [
       { kind: "navigate", path: "/checkout", reason: "open checkout" } as AnyProposedAction,
@@ -475,3 +549,22 @@ describe("ExecutionRuntime", () => {
     });
   });
 });
+
+function indexedJob() {
+  return {
+    jobId: "job-indexed",
+    runId: "run-indexed",
+    projectId: "project-test",
+    target: { kind: "web" as const, url: "https://example.test/" },
+    objective: "click",
+    policy,
+    plan: {
+      missionId: "mission-1",
+      missionRevision: 1,
+      testCaseId: "case-1",
+      steps: [{ stepIndex: 0, kind: "click" as const, target: { purpose: "continue" } }] as const,
+      expectedClaimIds: ["claim-1"] as [string],
+      budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+    },
+  };
+}

@@ -111,7 +111,7 @@ describe("ModelGateway invocation reporting", () => {
       gateway.invokeStructured(request(), decisionContract),
     ).rejects.toMatchObject({ code: "TimedOut" });
 
-    expect(attempts).toBe(3);
+    expect(attempts).toBe(2);
     expect(reports).toHaveLength(1);
     expect(reports[0]).toMatchObject({
       status: "failed",

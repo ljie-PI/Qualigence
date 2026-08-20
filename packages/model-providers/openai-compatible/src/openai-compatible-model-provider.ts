@@ -52,6 +52,9 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
               schema: request.responseSchema,
             },
           },
+          ...(request.maximumOutputTokens === undefined
+            ? {}
+            : { max_completion_tokens: request.maximumOutputTokens }),
         },
         { timeout: request.timeoutMs },
       );

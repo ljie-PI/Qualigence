@@ -88,6 +88,7 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
 
   async decide(context: AgentContext): Promise<ProposedAction> {
     try {
+      const maximumOutputTokens = context.budget?.maximumOutputTokens(context.job.runId);
       const result = await this.gateway.invokeStructured(
         {
           operation: "execution.decision",
@@ -107,13 +108,16 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
             },
           ],
           timeoutMs: 30_000,
+          ...(maximumOutputTokens === undefined ? {} : { maximumOutputTokens }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
         decisionContract(context),
       );
+      context.budget?.consumeModelUsage(context.job.runId, result.usage);
 
       return toProposedAction(result.value);
     } catch (error) {
+      consumeErrorUsage(context, error);
       throwModelExecutionError(error);
     }
   }
@@ -127,6 +131,7 @@ export class ModelBackedVerifier implements Verifier {
 
   async verify(context: VerificationContext): Promise<VerificationResult> {
     try {
+      const maximumOutputTokens = context.budget?.maximumOutputTokens(context.job.runId);
       const result = await this.gateway.invokeStructured(
         {
           operation: "execution.verification",
@@ -153,13 +158,16 @@ export class ModelBackedVerifier implements Verifier {
             },
           ],
           timeoutMs: 30_000,
+          ...(maximumOutputTokens === undefined ? {} : { maximumOutputTokens }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
         verificationContract(context),
       );
+      context.budget?.consumeModelUsage(context.job.runId, result.usage);
 
       return result.value;
     } catch (error) {
+      consumeErrorUsage(context, error);
       throwModelExecutionError(error);
     }
   }
@@ -171,6 +179,15 @@ function throwModelExecutionError(error: unknown): never {
   }
 
   throw error;
+}
+
+function consumeErrorUsage(
+  context: AgentContext | VerificationContext,
+  error: unknown,
+): void {
+  if (error instanceof ModelGatewayError && error.code === "InvalidStructuredOutput") {
+    context.budget?.consumeModelUsage(context.job.runId, error.usage);
+  }
 }
 
 /**
