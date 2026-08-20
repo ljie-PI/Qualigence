@@ -1,9 +1,17 @@
+# Dependencies
 node_modules/
-.worktrees/
+
+# Build and test output
 dist/
 coverage/
 .vitest/
 *.tsbuildinfo
+
+# Worktrees, agent state, and local scratch data
+.worktrees/
+.scratch/
+.pi-subagents/
+.tmp/
 .tmp-*/
 
 # .NET/MSBuild intermediate output (Windows reference fixtures).

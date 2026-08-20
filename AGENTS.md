@@ -4,11 +4,15 @@
 
 ### Issue Tracker
 
-Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
+Issues and specs live as Local Markdown under `.scratch/<feature>/`. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
+
+### Triage Labels
+
+Use the five canonical local issue status labels. See `docs/agents/triage-labels.md`.
 
 ### Domain Docs
 
-Before changing or reviewing any production module, read `docs/agents/domain.md` and every context selected by `CONTEXT-MAP.md`.
+This repo uses multi-context domain documentation selected by `CONTEXT-MAP.md`. Before changing or reviewing any production module, read `docs/agents/domain.md` and every selected context.
 
 ### Preserve Existing Design
 
