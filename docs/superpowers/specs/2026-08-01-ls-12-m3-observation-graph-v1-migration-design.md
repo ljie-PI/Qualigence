@@ -89,12 +89,14 @@ export interface VersionedExtension {
 
 ## 4. Canonical 与验证不变量
 
+**Authority amendment (2026-08-20):** 本节的 semantic-set/business-order 规则取代早期“所有数组均保留顺序”的歧义。`nodes`、每个 node 的 `relations`、`rootNodeIds` 以及 Graph `evidenceRefs` 是 semantic sets。精确排序键是：nodes 按 NFC-normalized `id`；relations 按 NFC-normalized `(type, targetNodeId)` tuple；root IDs 与 Graph evidence refs 按 NFC-normalized string。相同 key 必须是 byte-identical entry，否则验证失败，hash 不使用输入顺序作为 tie-breaker。业务顺序数组保留顺序；extension 数组只有在 extension schema 明确声明 set 语义时排序，未声明的数组保留顺序。
+
 - `graphId` 在单 Run 唯一；Node ID 在 Graph 内唯一且只能被本 Graph 引用。
 - rootNodeIds 和所有 relation target 必须存在。
 - confidence 为 `[0,1]`；bounds width/height 非负，数值有限。
 - secret 节点 `value` 必须省略或掩码；不能靠日志层补救。
 - evidenceRefs 指向已登记、哈希有效 Artifact。
-- canonical JSON 采用排序对象键、保留数组顺序、UTF-8/NFC；hash 算法 SHA-256。
+- canonical JSON 采用排序对象键、上述 semantic-set 稳定排序、业务及未声明数组保序、UTF-8/NFC；hash 算法 SHA-256。
 - Schema minor 只增可选字段；major 改动必须新设计和协商。
 
 ## 5. pre-v1 资产分类
@@ -158,7 +160,7 @@ Freeze 后 `observation-graph/v1` major 受兼容承诺；移动端必须扩展�
 
 - Conformance：Web/UIA fixtures 对共同字段、extension round-trip、unknown minor/major。
 - Migration：代表性 M1/M2 Trace/Skill golden files、断点续跑、幂等、损坏 source。
-- Property：任意节点顺序 canonical hash 稳定；无 dangling relation。
+- Property：任意 nodes/relations/rootNodeIds/Graph evidenceRefs semantic-set 排列得到相同 canonical hash；业务顺序或未声明 extension 数组的排列变化会改变 canonical bytes/hash；无 dangling relation。
 - Replay：重新编译 Skill 在目标版本运行且 checkpoint 一致。
 
 ## 9. 出口 Gate

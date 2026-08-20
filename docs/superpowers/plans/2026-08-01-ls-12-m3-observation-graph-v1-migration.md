@@ -85,6 +85,8 @@ git commit -m "feat(observation): define graph v1 candidate contract"
 
 ### Task 2: Implement canonical validation and extension compatibility
 
+**Authority amendment (2026-08-20):** 以下早期“array/node order remains meaningful”和“preserves arrays”步骤仅保留为设计历史。当前规则是：对象键排序并规范化 NFC；nodes 按 NFC-normalized `id`，relations 按 NFC-normalized `(type, targetNodeId)` tuple，root IDs 与 Graph evidence refs 按 NFC-normalized string 排序；相同 key 必须是 byte-identical entry，否则验证失败，不得使用输入顺序作为 hash tie-breaker。业务顺序数组保序；extension 数组仅在 schema 明确声明 set 语义时排序，未声明数组保序。Ticket 22 in the remaining-closure authority owns implementation and property-test migration.
+
 **Files:**
 
 - Create: `packages/contracts/observation/src/canonical.ts`

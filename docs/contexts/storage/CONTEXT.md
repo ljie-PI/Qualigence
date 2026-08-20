@@ -17,7 +17,7 @@
 
 ## Invariants
 
-- Historical migrations 001-005 are immutable.
+- Historical migrations 001-007 are immutable.
 - New schema is additive and versioned; upgrades require verified backup evidence.
 - PostgreSQL tenant tables use forced RLS and tenant-inclusive keys or references.
 - Every persistence decision that protects ownership, idempotency, or completion is atomic.
