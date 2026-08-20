@@ -67,7 +67,9 @@ review_fix_commit: `79ad800`
   retained as failed baseline evidence, not counted as this ticket's Gate.
 - Delivery rule: every remaining ticket uses one dedicated isolated branch,
   worktree, and pull request. Completion requires merge followed by deletion of
-  the remote/local ticket branches and removal of its worktree.
+  the remote/local ticket branches and removal of its worktree. This tracked
+  ledger records the PR URL and final head before merge; the ignored local
+  ticket records the resulting merge commit after merge without a second PR.
 
 ## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
 

@@ -199,10 +199,12 @@ one dedicated pull request. Never combine multiple tickets in one PR. Parallel
 implementation is permitted only when branches/worktrees and Files scopes are
 isolated; changes to shared contracts, protocols, authority, or status merge
 serially. A local commit, clean review, or passing E2E does not complete a
-ticket. The ticket remains `claimed` until its PR is merged. After merge, record
-the PR URL and merge commit in the local ticket, set it to `resolved`, delete
-the remote and local ticket branches, and remove the ticket worktree before
-starting dependent work.
+ticket. Before merge, production status records the PR URL, final head, Gates,
+review, and applicable E2E. The ticket remains `claimed` until its PR is merged.
+After merge, record the PR URL and merge commit in the ignored local ticket,
+set it to `resolved`, delete the remote and local ticket branches, and remove
+the ticket worktree before starting dependent work. Do not create a second
+closure PR solely to record the merge SHA.
 
 For every ticket, implementation and review fixes run only the focused
 non-E2E Gate in the table, `corepack pnpm typecheck`, and `git diff --check`.
