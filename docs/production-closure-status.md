@@ -65,6 +65,9 @@ review_fix_commit: `79ad800`
   exploration-policy validation and SQLite cleanup, Local process timeout/reap
   tests, and the Core entrypoint's stale missing-config expectation. They are
   retained as failed baseline evidence, not counted as this ticket's Gate.
+- Delivery rule: every remaining ticket uses one dedicated isolated branch,
+  worktree, and pull request. Completion requires merge followed by deletion of
+  the remote/local ticket branches and removal of its worktree.
 
 ## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
 
