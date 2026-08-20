@@ -46,9 +46,9 @@ blocking. Git OpenSSL must be resolved explicitly from
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete
-production_wiring: not_applicable
-verification: passed
-implementation_commit: same commit as this ledger entry (`feat(runner): expand multi-step plan contracts`)
+production_wiring: present
+verification: pending dedicated PR merge
+implementation_commits: `3e65405`, `1578926`, `e0a722a`
 
 - Runner Protocol accepts additive immutable indexed `navigate`, `click`,
   `input`, `select`, `scroll`, and `verify` steps while preserving existing
@@ -63,6 +63,12 @@ implementation_commit: same commit as this ledger entry (`feat(runner): expand m
 - Focused Gate, `corepack pnpm typecheck`, and `git diff --check` passed on
   2026-08-20. No browser, product E2E, or full suite was run for this expand
   ticket.
+- The expanded Files/Gate authority was explicitly approved after review proved
+  Core pre-offer admission and production Trace recorders were required to
+  satisfy lossless indexed-plan acceptance. Final focused verification passed
+  124 tests, including the legacy SQLite Runner-control compatibility case.
+- The final Standards and Spec review reported no blocking findings. Completion
+  remains pending this ticket's dedicated PR and merge.
 
 ### Remaining authority reconciliation evidence
 
