@@ -109,6 +109,7 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           ],
           timeoutMs: 30_000,
           ...(maximumOutputTokens === undefined ? {} : { maximumOutputTokens }),
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
         decisionContract(context),
@@ -159,6 +160,7 @@ export class ModelBackedVerifier implements Verifier {
           ],
           timeoutMs: 30_000,
           ...(maximumOutputTokens === undefined ? {} : { maximumOutputTokens }),
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
         verificationContract(context),
@@ -185,7 +187,7 @@ function consumeErrorUsage(
   context: AgentContext | VerificationContext,
   error: unknown,
 ): void {
-  if (error instanceof ModelGatewayError && error.code === "InvalidStructuredOutput") {
+  if (error instanceof ModelGatewayError && error.providerAttempted) {
     context.budget?.consumeModelUsage(context.job.runId, error.usage);
   }
 }

@@ -56,7 +56,10 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
             ? {}
             : { max_completion_tokens: request.maximumOutputTokens }),
         },
-        { timeout: request.timeoutMs },
+        {
+          timeout: request.timeoutMs,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        },
       );
       const content = completion.choices[0]?.message.content;
       let output: unknown = content;
@@ -119,29 +122,94 @@ function mapProviderError(error: unknown): ModelProviderError {
     : undefined;
 
   if (status === 401 || status === 403) {
-    return modelProviderError("AuthenticationFailed", "The model provider rejected authentication.");
+    return modelProviderError(
+      "AuthenticationFailed",
+      "The model provider rejected authentication.",
+      usageFromError(error),
+    );
   }
   if (status === 429) {
-    return modelProviderError("RateLimited", "The model provider rate limited the request.");
+    return modelProviderError(
+      "RateLimited",
+      "The model provider rate limited the request.",
+      usageFromError(error),
+    );
   }
   if (status === 408) {
-    return modelProviderError("TimedOut", "The model provider request timed out.");
+    return modelProviderError(
+      "TimedOut",
+      "The model provider request timed out.",
+      usageFromError(error),
+    );
   }
   if (typeof status === "number" && status >= 400 && status < 500) {
-    return modelProviderError("InvalidRequest", "The model provider rejected the request.");
+    return modelProviderError(
+      "InvalidRequest",
+      "The model provider rejected the request.",
+      usageFromError(error),
+    );
   }
   if (error instanceof OpenAI.APIConnectionTimeoutError) {
-    return modelProviderError("TimedOut", "The model provider request timed out.");
+    return modelProviderError(
+      "TimedOut",
+      "The model provider request timed out.",
+      usageFromError(error),
+    );
   }
 
-  return modelProviderError("ProviderUnavailable", "The model provider request failed.");
+  return modelProviderError(
+    "ProviderUnavailable",
+    "The model provider request failed.",
+    usageFromError(error),
+  );
 }
 
 function modelProviderError(
   code: ModelProviderError["code"],
   message: string,
+  usage: ModelProviderError["usage"],
 ): NormalizedModelProviderError {
-  return { code, message, [normalizedModelProviderErrorBrand]: true };
+  return {
+    code,
+    message,
+    ...(usage === undefined ? {} : { usage }),
+    [normalizedModelProviderErrorBrand]: true,
+  };
+}
+
+function usageFromError(error: unknown): ModelProviderError["usage"] {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidateError = error as {
+    readonly usage?: unknown;
+    readonly error?: { readonly usage?: unknown };
+  };
+  const usage = candidateError.usage ?? candidateError.error?.usage;
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const candidate = usage as {
+    readonly inputTokens?: unknown;
+    readonly outputTokens?: unknown;
+    readonly totalTokens?: unknown;
+    readonly prompt_tokens?: unknown;
+    readonly completion_tokens?: unknown;
+    readonly total_tokens?: unknown;
+  };
+  const inputTokens = tokenCount(candidate.inputTokens ?? candidate.prompt_tokens);
+  const outputTokens = tokenCount(candidate.outputTokens ?? candidate.completion_tokens);
+  const totalTokens = tokenCount(candidate.totalTokens ?? candidate.total_tokens);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  };
+}
+
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function isModelProviderError(error: unknown): error is NormalizedModelProviderError {

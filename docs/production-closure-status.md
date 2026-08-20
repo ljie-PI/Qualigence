@@ -56,13 +56,24 @@ verification: pending dedicated PR merge
   wall-clock, output-token, and consumed-token limits. Missing finite usage is
   classified as `ModelUsageUnavailable`; overruns retain consumed usage and
   classify as `ModelBudgetExceeded` before an action Permit is minted.
-- Runtime emits one stable blocked terminal event for budget failures and
+- Round-1 Spec blockers are fixed: `ModelUsageUnavailable` emits one
+  infrastructure `error` Trace/completion while policy, step, wall-clock, and
+  model-budget exhaustion retain the approved `blocked` classification.
+- Gateway retry/correction accounting includes every attempted provider call,
+  including usage attached to provider errors. Any attempted call with missing
+  finite usage makes the logical invocation usage unavailable, so a later
+  successful retry cannot conceal it; each attempt is charged exactly once.
+- Runtime bounds observer, decision, resolver, policy, action, and verifier
+  awaits by the remaining monotonic deadline and passes an abort signal through
+  existing cancellation seams. It emits stable `WallClockBudgetExceeded` and
   clears per-run budget state in `finally`. Ticket 18 valueRef resolution and
-  Ticket 19 bounded indexed execution remain pending and are not implemented
-  here.
-- The row-17 focused Gate passed 9 files / 88 tests. Root
-  `corepack pnpm typecheck` and `git diff --check` also passed. Completion
-  remains pending this ticket's dedicated PR and merge.
+  Ticket 19 bounded indexed execution remain pending and are not implemented.
+- Round-1 affected single files passed: Runtime 24, Gateway 17, Model Agent 14,
+  OpenAI-compatible provider 12. The exact row-17 focused Gate
+  `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts`
+  passed 9 files / 101 tests. Root `corepack pnpm typecheck` and
+  `git diff --check` also passed. Fresh exact-base review and dedicated PR merge
+  evidence remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

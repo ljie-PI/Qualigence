@@ -197,6 +197,43 @@ describe("model-backed runner components", () => {
     })).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
   });
 
+  it("classifies missing usage from a failed retry attempt as unavailable after success", async () => {
+    const modelProvider = new RetryModelProvider();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider, delay: async () => {} }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget: activeBudget(),
+    })).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
+    expect(modelProvider.requests).toHaveLength(2);
+  });
+
+  it("charges failed retry and correction attempts exactly once", async () => {
+    const modelProvider = new UsageRetryCorrectionProvider();
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider, delay: async () => {} }),
+      "test-model",
+    );
+
+    await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    });
+
+    expect(modelProvider.requests).toHaveLength(3);
+    expect(budget.maximumOutputTokens("run-1")).toBe(91);
+  });
+
   it("preserves only validated graph/node evidence references in failed verification", async () => {
     const gateway = new ScriptedGateway([
       {
@@ -520,6 +557,54 @@ class NoUsageModelProvider implements ModelProvider {
       output: this.outputs.shift(),
       model: request.model,
       finishReason: "stop",
+    };
+  }
+}
+
+class RetryModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly requests: ModelProviderRequest[] = [];
+
+  async invoke(request: ModelProviderRequest) {
+    this.requests.push(request);
+    if (this.requests.length === 1) {
+      throw { code: "TimedOut", message: "timed out" };
+    }
+    return {
+      output: { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+      model: request.model,
+      finishReason: "stop",
+      usage: { totalTokens: 2 },
+    };
+  }
+}
+
+class UsageRetryCorrectionProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly requests: ModelProviderRequest[] = [];
+
+  async invoke(request: ModelProviderRequest) {
+    this.requests.push(request);
+    if (this.requests.length === 1) {
+      throw { code: "TimedOut", message: "timed out", usage: { totalTokens: 2 } };
+    }
+    return {
+      output: this.requests.length === 2
+        ? { malformed: true }
+        : { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+      model: request.model,
+      finishReason: "stop",
+      usage: { totalTokens: this.requests.length === 2 ? 3 : 4 },
     };
   }
 }

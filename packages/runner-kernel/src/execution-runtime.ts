@@ -174,7 +174,7 @@ export class ExecutionBlockedError extends Error {
 }
 
 export interface Observer {
-  capture(job: AcceptedExecutionJob): Promise<ObservationGraph>;
+  capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
 }
 
 export interface ExecutionDecisionProvider {
@@ -185,18 +185,21 @@ export interface AgentContext {
   readonly job: AcceptedExecutionJob;
   readonly observation: ObservationGraph;
   readonly budget?: ExecutionBudget;
+  readonly signal?: AbortSignal;
 }
 
 export interface ActionResolver {
   resolve(
     action: ProposedAction,
     graph: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<ResolvedAction>;
 }
 
 export interface RunnerPolicyContext {
   readonly job: AcceptedExecutionJob;
   readonly action: ResolvedAction;
+  readonly signal?: AbortSignal;
 }
 
 export interface RunnerPolicyGate {
@@ -207,7 +210,7 @@ export interface RunnerPolicyGate {
 }
 
 export interface ActionExecutor {
-  execute(action: ResolvedAction, permit: ExecutionPermit): Promise<ActionOutcome>;
+  execute(action: ResolvedAction, permit: ExecutionPermit, signal?: AbortSignal): Promise<ActionOutcome>;
 }
 
 export interface Verifier {
@@ -221,6 +224,7 @@ export interface VerificationContext {
   readonly action: ResolvedAction;
   readonly outcome: ActionOutcome;
   readonly budget?: ExecutionBudget;
+  readonly signal?: AbortSignal;
 }
 
 export interface TraceRecorder {
@@ -286,11 +290,12 @@ export class ExecutionRuntime {
         throw error;
       }
 
+      const status = errorCode === "ModelUsageUnavailable" ? "error" : "blocked";
       await this.record({
         runId: job.runId,
         stage: "run_completed",
         payload: {
-          status: "blocked",
+          status,
           errorCode,
         },
       });
@@ -298,7 +303,7 @@ export class ExecutionRuntime {
       return {
         jobId: job.jobId,
         runId: job.runId,
-        status: "blocked",
+        status,
         errorCode,
       };
     } finally {
@@ -313,7 +318,8 @@ export class ExecutionRuntime {
     // loop. Until then, only the current first action can own recorded stages.
     const stepIndex = job.plan?.steps[0]?.stepIndex;
     this.budget.beforeStep(job.runId, stepIndex ?? 0);
-    const observation = await this.dependencies.observer.capture(job);
+    const observation = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.observer.capture(job, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -321,11 +327,13 @@ export class ExecutionRuntime {
       payload: observation,
     });
 
-    const decision = await this.dependencies.decisionProvider.decide({
-      job,
-      observation,
-      budget: this.budget,
-    });
+    const decision = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.decisionProvider.decide({
+        job,
+        observation,
+        budget: this.budget,
+        signal,
+      }));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -333,7 +341,8 @@ export class ExecutionRuntime {
       payload: toDecisionTracePayload(decision),
     });
 
-    const action = await this.dependencies.resolver.resolve(decision, observation);
+    const action = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.resolver.resolve(decision, observation, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -341,10 +350,12 @@ export class ExecutionRuntime {
       payload: toResolvedActionTracePayload(action),
     });
 
-    const policyDecision = await this.dependencies.policyGate.authorize(action, {
-      job,
-      action,
-    });
+    const policyDecision = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.policyGate.authorize(action, {
+        job,
+        action,
+        signal,
+      }));
 
     if (policyDecision.status === "denied") {
       await this.record({
@@ -379,7 +390,8 @@ export class ExecutionRuntime {
 
     this.budget.maximumOutputTokens(job.runId);
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
-    const outcome = await this.dependencies.actionExecutor.execute(action, permit);
+    const outcome = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.actionExecutor.execute(action, permit, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -406,7 +418,8 @@ export class ExecutionRuntime {
       };
     }
 
-    const after = await this.dependencies.observer.capture(job);
+    const after = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.observer.capture(job, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -414,14 +427,16 @@ export class ExecutionRuntime {
       payload: after,
     });
 
-    const verification = await this.dependencies.verifier.verify({
-      job,
-      before: observation,
-      after,
-      action,
-      outcome,
-      budget: this.budget,
-    });
+    const verification = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.verifier.verify({
+        job,
+        before: observation,
+        after,
+        action,
+        outcome,
+        budget: this.budget,
+        signal,
+      }));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -469,6 +484,32 @@ export class ExecutionRuntime {
 
   private async record(input: TraceEventInput): Promise<void> {
     await this.dependencies.traceRecorder.append(input);
+  }
+
+  private async withinWallClock<T>(
+    runId: string,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const remainingMs = this.budget.remainingWallClockMs(runId);
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      const checkDeadline = () => {
+        try {
+          const remaining = this.budget.remainingWallClockMs(runId);
+          timeout = setTimeout(checkDeadline, Math.min(remaining, 2_147_483_647));
+        } catch (error) {
+          controller.abort(error);
+          reject(error);
+        }
+      };
+      timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));
+    });
+    try {
+      return await Promise.race([operation(controller.signal), deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
   }
 }
 

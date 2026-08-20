@@ -227,6 +227,71 @@ describe("ModelGateway", () => {
     expect(provider.requests).toHaveLength(2);
     expect(delays).toEqual([100]);
   });
+
+  it("accounts usage from a failed transient attempt and its successful retry", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out"), usage: { totalTokens: 4 } },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+
+    const result = await new ModelGateway({ provider, delay: async () => {} })
+      .invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2, totalTokens: 9 });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("does not hide missing usage from a failed attempt behind a successful retry", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out") },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+
+    const result = await new ModelGateway({ provider, delay: async () => {} })
+      .invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toBeUndefined();
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("does not retry or report after an invocation is aborted", async () => {
+    const controller = new AbortController();
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [new Error("timed out"), { action: { kind: "click", nodeId: "add" }, reason: "late" }],
+      "TimedOut",
+    );
+    const reports: unknown[] = [];
+    const gateway = new ModelGateway({
+      provider,
+      delay: async () => {
+        controller.abort(new Error("deadline"));
+      },
+      invocationObserver: { record: async (report) => { reports.push(report); } },
+    });
+
+    await expect(gateway.invokeStructured({
+      ...request(),
+      signal: controller.signal,
+      invocation: { runId: "run-1", invocationId: "invocation-1" },
+    }, decisionContract)).rejects.toThrow("deadline");
+    expect(provider.requests).toHaveLength(1);
+    expect(reports).toEqual([]);
+  });
 });
 
 function request() {
@@ -262,6 +327,14 @@ function fakeProvider(
         };
       }
 
+      if (isScriptedError(response)) {
+        throw {
+          code: errorCode,
+          message: response.error.message,
+          ...(response.usage === undefined ? {} : { usage: response.usage }),
+        };
+      }
+
       const scripted = isScriptedResponse(response) ? response : { output: response };
       return {
         output: scripted.output,
@@ -273,6 +346,13 @@ function fakeProvider(
   };
 
   return provider;
+}
+
+function isScriptedError(value: unknown): value is {
+  readonly error: Error;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number };
+} {
+  return typeof value === "object" && value !== null && "error" in value;
 }
 
 function isScriptedResponse(value: unknown): value is {

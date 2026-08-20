@@ -28,6 +28,7 @@ export class ExecutionBudgetError extends Error {
 export interface ExecutionBudget {
   begin(job: AcceptedExecutionJob): void;
   beforeStep(runId: string, stepIndex: number): void;
+  remainingWallClockMs(runId: string): number;
   maximumOutputTokens(runId: string): number;
   consumeModelUsage(runId: string, usage: ModelUsage | undefined): void;
   finish(runId: string): void;
@@ -112,6 +113,15 @@ export class DeterministicExecutionBudget implements ExecutionBudget {
     return remaining;
   }
 
+  remainingWallClockMs(runId: string): number {
+    const state = this.active(runId);
+    const remaining = state.maximumWallClockMs - this.elapsed(state);
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      throw new ExecutionBudgetError("WallClockBudgetExceeded");
+    }
+    return remaining;
+  }
+
   consumeModelUsage(runId: string, usage: ModelUsage | undefined): void {
     const state = this.active(runId);
     const consumed = totalTokens(usage);
@@ -138,10 +148,14 @@ export class DeterministicExecutionBudget implements ExecutionBudget {
   }
 
   private assertWallClock(state: RunBudgetState): void {
-    const elapsed = this.clock.now() - state.startedAtMs;
+    const elapsed = this.elapsed(state);
     if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= state.maximumWallClockMs) {
       throw new ExecutionBudgetError("WallClockBudgetExceeded");
     }
+  }
+
+  private elapsed(state: RunBudgetState): number {
+    return this.clock.now() - state.startedAtMs;
   }
 }
 

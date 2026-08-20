@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
   DeterministicExecutionBudget,
@@ -19,6 +19,10 @@ import {
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
 
 describe("ExecutionRuntime", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("classifies missing finite model usage once before resolution or permit minting", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     let resolverCalls = 0;
@@ -47,13 +51,17 @@ describe("ExecutionRuntime", () => {
 
     const completion = await runtime.run(indexedJob());
 
-    expect(completion).toMatchObject({ status: "blocked", errorCode: "ModelUsageUnavailable" });
+    expect(completion).toMatchObject({ status: "error", errorCode: "ModelUsageUnavailable" });
     expect(resolverCalls).toBe(0);
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-indexed").map((event) => event.stage)).toEqual([
       "observation",
       "run_completed",
     ]);
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      status: "error",
+      errorCode: "ModelUsageUnavailable",
+    });
     expect(() => budget.beforeStep("run-indexed", 0)).toThrowError(
       expect.objectContaining({ code: "ExecutionBudgetNotActive" }),
     );
@@ -84,13 +92,117 @@ describe("ExecutionRuntime", () => {
     const completion = await runtime.run(indexedJob());
 
     expect(completion).toMatchObject({ status: "blocked", errorCode: "WallClockBudgetExceeded" });
-    expect(policyCalls).toBe(1);
+    expect(policyCalls).toBe(0);
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
       status: "blocked",
       errorCode: "WallClockBudgetExceeded",
     });
   });
+
+  it("keeps model-budget exhaustion in the approved blocked classification", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async (context) => {
+          context.budget?.consumeModelUsage(context.job.runId, { totalTokens: 1_001 });
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "not reached" };
+        },
+      },
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toEqual({
+      jobId: "job-indexed",
+      runId: "run-indexed",
+      status: "blocked",
+      errorCode: "ModelBudgetExceeded",
+    });
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "ModelBudgetExceeded",
+    });
+  });
+
+  it.each(["observer", "decision", "resolver", "policy", "action", "verifier"] as const)(
+    "bounds a hanging %s call by the remaining wall-clock budget",
+    async (hangingStage) => {
+      vi.useFakeTimers();
+      let now = 0;
+      let captureCalls = 0;
+      let aborted = false;
+      const never = (signal: AbortSignal | undefined) => new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      });
+      const traceRecorder = new InMemoryTraceRecorder();
+      const runtime = new ExecutionRuntime({
+        observer: {
+          capture: async (_job, signal) => {
+            captureCalls += 1;
+            if (hangingStage === "observer") {
+              return never(signal);
+            }
+            return { graphId: `graph-${captureCalls}`, nodes: [] };
+          },
+        },
+        decisionProvider: {
+          decide: async (context) => hangingStage === "decision"
+            ? never(context.signal)
+            : { kind: "click", target: { nodeId: "node-1" }, reason: "test" },
+        },
+        resolver: {
+          resolve: async (_decision, _observation, signal) => hangingStage === "resolver"
+            ? never(signal)
+            : { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" },
+        },
+        policyGate: {
+          authorize: async (_action, context) => hangingStage === "policy"
+            ? never(context.signal)
+            : { status: "allowed", reason: "allowed" },
+        },
+        actionExecutor: {
+          execute: async (_action, _permit, signal) => hangingStage === "action"
+            ? never(signal)
+            : { status: "ok" },
+        },
+        verifier: {
+          verify: async (context) => hangingStage === "verifier"
+            ? never(context.signal)
+            : { status: "passed", summary: "passed", claims: [] },
+        },
+        traceRecorder,
+        budget: new DeterministicExecutionBudget({ clock: { now: () => now } }),
+      });
+
+      const completionPromise = runtime.run(indexedJob());
+      await vi.advanceTimersByTimeAsync(0);
+      now = 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const completion = await completionPromise;
+
+      expect(completion).toEqual({
+        jobId: "job-indexed",
+        runId: "run-indexed",
+        status: "blocked",
+        errorCode: "WallClockBudgetExceeded",
+      });
+      expect(aborted).toBe(true);
+      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+        status: "blocked",
+        errorCode: "WallClockBudgetExceeded",
+      });
+    },
+  );
 
   it.each([
     [
