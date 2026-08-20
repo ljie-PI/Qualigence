@@ -415,7 +415,7 @@ Evidence Capsule 在 Runner 侧完成脱敏和信封加密，并受类型白名�
 
 签名的 Mission Policy Bundle 必须携带 `EvidenceEncryptionProfile`，声明接收方 Server、数据区域、包装密钥 ID、公钥/证书、允许算法和有效期。Runner 为每个 Capsule 生成一次性 Data Encryption Key（DEK），使用 AEAD 加密 Capsule，再使用目标 Local Core、Self-hosted Server 或 Cloud 区域 KMS 的包装公钥加密 DEK。Runner 上传密文、Wrapped DEK、Key ID 和策略元数据，不上传明文 DEK。
 
-授权的 Server 调查 Worker 可以在 Runner 离线后，通过目标区域的 Key Management Provider 解包 DEK 并受限解密；每次解密必须校验 Tenant、Case、Purpose、数据策略和 TTL，并写入审计事件。Self-hosted 使用企业自己的 KMS 或 Server wrapping key；Cloud 只能使用数据驻留区域内的 KMS。`local_only` 不生成任何面向远端 Server 的 Wrapped DEK。TTL 到期时删除密文并撤销对应解包能力。
+授权的 Server 调查 Worker 可以在 Runner 离线后，通过目标区域的 Key Management Provider 解包 DEK 并受限解密；每次解密必须校验 Tenant、Case、Purpose、数据策略和 TTL，并写入审计事件。Self-hosted 使用企业自己的 KMS 或 Server wrapping key；Cloud 只能使用数据驻留区域内的 KMS。`local_only` 不生成任何面向远端 Server 的 Wrapped DEK。TTL 到期时生命周期固定为 `active -> revoking -> revoked -> deleting -> deleted`：先撤销解包能力并持久化审计，成功后才删除密文。撤销失败保留密文；删除失败保留可审计、可重试的 `revoked` 记录；审计失败时敏感操作 fail closed。
 
 ## 9. 数据与存储
 

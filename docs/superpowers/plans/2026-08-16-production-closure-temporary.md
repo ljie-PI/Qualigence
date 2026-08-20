@@ -111,6 +111,190 @@ Operational engineering-skill configuration, including the active issue-tracker 
 
 ## Dependency order
 
+## Remaining closure authority amendment (2026-08-20)
+
+This amendment is the execution entrypoint for all work after completed Tasks
+1-11 and 15. It supersedes the stale current-state rows, dependency graph, PR
+packaging rows, migration reservations, and implementation instructions for
+Tasks 12-14 and 16-22 below. Those older sections remain unchanged as historical
+evidence; agents must not execute them directly when they conflict with this
+amendment. Product source fixed point is
+`dbc2db8a8854a5559624fa7a7434d75c654f6b82`; this documentation amendment is
+reviewed from merge commit `609ab3d0bc85bcf1916534989cda33c8df03fd72`.
+
+### Current state and environment
+
+| Legacy Task | Current state | Authority |
+|---|---|---|
+| 1-7 | complete, wired, verified | Merged evidence in `docs/production-closure-status.md` |
+| 8-9 | complete, wired, verified | PR5-R1 through PR5-R5, activated by merge `86ea179` |
+| 10 | complete, wired, verified | PR #60 and follow-up evidence |
+| 11 | complete, wired, verified | PR #66 and the Task 11 status entry |
+| 15 | complete, wired, verified | PR #63 plus PR #65 provenance follow-up |
+| 12-14, 16-22 | pending | Tickets 02-35 below; ticket 01 is this docs-only authority prerequisite |
+
+Current host: Windows 11; Node `v24.13.0`; Corepack pnpm `11.7.0`;
+Docker client/server `29.6.2`; Cargo/rustc `1.96.1`. Cargo is available, but
+native Tasks still require the committed pinned toolchain, Windows-only native
+tests, real WPF/WinUI scenarios, local-console/RDP evidence, and the signed
+checklist. Git OpenSSL is at
+`C:\Program Files\Git\usr\bin\openssl.exe` and is not assumed to be on `PATH`.
+
+### Frozen cross-cutting decisions
+
+- Migrations 001-007 are immutable. PostgreSQL upgrades are offline,
+  owner-role, backup-gated, and sequential; runtime roles have no DDL authority.
+- Remaining migration ownership is exact: 008 Target/Test Plan revisions
+  (ticket 03); 009 Mission/Run/attempt/provenance/outbox and its atomic dispatch
+  wakeup (04); 010 durable
+  Intelligence leases/Result inbox (07); 011 tenant wakeups/dispositions (08);
+  012 Artifact manifests/chunks/ACK state (11); 013 Evidence lifecycle (13).
+  No other ticket owns a migration without a reviewed plan amendment.
+- Evidence lifecycle is
+  `active -> revoking -> revoked -> deleting -> deleted`. Successful revocation
+  and audit precede deletion; revoke failure retains ciphertext, delete failure
+  retains an auditable retryable revoked record, and audit failure fails closed.
+- Graph canonicalization sorts semantic sets (`nodes`, each node's `relations`,
+  `rootNodeIds`, and Graph `evidenceRefs`) by stable keys. Business-order
+  arrays retain order. Extension arrays sort only when their schema explicitly
+  declares set semantics; unspecified arrays retain order. Exact v1 sort keys
+  are: nodes by NFC-normalized `id`; relations by NFC-normalized
+  `(type, targetNodeId)` tuple; root IDs and Graph evidence refs by their
+  NFC-normalized string value. Equal keys require byte-identical entries or
+  validation fails, so no input-order tie-breaker enters the hash.
+- `select` uses a Plan-owned `valueRef`; the model never supplies option text.
+  Runner mTLS identity is reused for Companion proof with ECDSA P-256/SHA-256
+  or RSA-PSS/SHA-256 according to the certificate key.
+- Graph v1 remains `candidate` until ticket 35 validates serialized migration,
+  Web/Desktop schema, native/manual Windows, CI, and release-manifest evidence.
+
+### Delivery graph
+
+```text
+01 -> 02 -> 03 -> 04 -> 05
+                  \-> 06
+05 + 06 -> 07 -> 08 -> 09 -> 10
+10 + 16 -> 11 -> 12 -> 13 -> 14 -> 15
+
+01 -> 16 -> 17 -> 18 -> 19 -> 20 -> 21
+                         \-> 22 -> 23
+21 + 23 -> 24 -> 25 -> 26 -> 27 -> 28 -> 29 -> 30 -> 31
+
+15 + 21 + 31 -> 32 -> 33 -> 34 -> 35
+```
+
+The Self-hosted and Runtime/Windows lanes may proceed in parallel. Changes to a
+shared contract or protocol merge serially. A dependent ticket may start only
+when every listed predecessor is resolved.
+
+### Review and Gate protocol
+
+For every ticket, implementation and review fixes run only the focused
+non-E2E Gate in the table, `corepack pnpm typecheck`, and `git diff --check`.
+Commit before a scoped exact-base Standards and Spec review. Provision external
+E2E only after that review reports no Critical or Important findings. A code
+change after E2E requires affected focused tests and a fresh review before E2E
+is rerun. Stop after five review rounds; unresolved Critical/Important findings
+create a ready-for-agent remediation ticket, block dependents, set the original
+ticket to `needs-info`, and move to another independent frontier. Ticket 01 is
+docs-only and runs no product E2E.
+
+### Ticket Files and focused Gates
+
+Each listed Files entry is the complete allowed scope root for that ticket;
+files outside it require a reviewed amendment before editing. Tests may be
+created only under the listed test roots. Every Gate is followed by root
+typecheck and diff check. External/browser/native/manual/release E2E described
+by the ticket runs only after clean review. In the table, `status` means the
+exact file `docs/production-closure-status.md`; brace notation expands only the
+literal comma-separated paths shown and is not an open-ended glob.
+
+| Ticket | Legacy allocation | Files | Focused non-E2E Gate |
+|---:|---|---|---|
+| 01 | Authority prerequisite | `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md`; this plan; `docs/production-closure-status.md`; `docs/contexts/storage/CONTEXT.md`; LS-12 design/plan | document consistency plus `git diff --check` |
+| 02 | Task 12 prerequisite | `apps/admin-cli/src/commands/{migrate,backup,restore}.ts`; `packages/storage-providers/{relational-kysely,postgres-runtime}/src`; `tests/{conformance/storage,contract/postgres}`; status | `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts tests/contract/postgres/postgres-runtime.test.ts` |
+| 03 | Task 12 product intake | `packages/core-modules/{project-target,mission}/{src,package.json,tsconfig.json}`; `packages/contracts/public-api/{src,package.json,tsconfig.json}`; `packages/storage-providers/{relational-kysely,sqlite-runtime,postgres-runtime}/{src,package.json,tsconfig.json}`; `apps/server/src/{routes,server.ts,server-context.ts,main.ts,config.ts}`; `apps/server/{package.json,tsconfig.json}`; `apps/web-console/src`; `apps/web-console/{package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{unit/core-modules,contract/public-api,contract/sqlite,contract/postgres,component/web-console}`; status | `corepack pnpm vitest run tests/unit/core-modules/project-target tests/unit/core-modules/mission/test-plan-approval.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts` |
+| 04 | Task 12 scheduling/Mission start | `packages/core-modules/{mission,runner-control}/{src,package.json,tsconfig.json}`; `packages/contracts/public-api/{src,package.json,tsconfig.json}`; `packages/storage-providers/{relational-kysely,sqlite-runtime,postgres-runtime}/{src,package.json,tsconfig.json}`; `apps/server/src/{mission-dispatch-service.ts,routes/missions.ts,server.ts,server-context.ts}`; `apps/server/{package.json,tsconfig.json}`; `apps/web-console/src/api/client.ts`; `pnpm-lock.yaml`; `tests/{unit/core-modules/mission,contract/mission,contract/sqlite,contract/postgres,contract/public-api,component/prd-planning}`; status | `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts` |
+| 05 | Task 12 dispatch | `apps/server/src/mission-dispatch-loop.ts`; `apps/server/{package.json,tsconfig.json}`; `packages/core-application/{src/runner,package.json,tsconfig.json}`; `packages/core-modules/runner-control/{src,package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{unit/core-daemon,contract/runner-control,component/core-runner}`; status | `corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner` |
+| 06 | Task 12 Skill paths | `packages/core-modules/skill/{src,package.json,tsconfig.json}`; `packages/contracts/public-api/{src,package.json,tsconfig.json}`; `packages/storage-providers/{sqlite-runtime,postgres-runtime}/{src,package.json,tsconfig.json}`; `apps/server/src/{routes/skills.ts,server.ts,server-context.ts,main.ts,config.ts}`; `apps/server/{package.json,tsconfig.json}`; `apps/web-console/src`; `apps/web-console/{package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/helpers/server-fixture.ts`; `tests/{unit/core-modules/skill,contract/sqlite,contract/postgres,contract/public-api,component/web-console}`; status | `corepack pnpm vitest run tests/unit/core-modules/skill tests/contract/sqlite/skill-store.test.ts tests/contract/postgres/skill-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts` |
+| 07 | Task 13 durable Worker authority | `packages/core-modules/intelligence/{src,package.json,tsconfig.json}`; `packages/storage-providers/{relational-kysely,postgres-runtime}/{src,package.json,tsconfig.json}`; `apps/intelligence-worker/{src,package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{unit/intelligence-worker,unit/core-modules/intelligence,component/intelligence-worker,contract/postgres}`; status | `corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts` |
+| 08 | Task 13 Server consumer | `packages/core-modules/intelligence/{src,package.json,tsconfig.json}`; `packages/core-application/{src/intelligence,package.json,tsconfig.json}`; `packages/storage-providers/{relational-kysely,postgres-runtime}/{src,package.json,tsconfig.json}`; `apps/server/src/{intelligence-result-consumer-loop,main,config}.ts`; `apps/server/{package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{unit/core-modules/intelligence,component/intelligence-worker,contract/postgres}`; status | `corepack pnpm vitest run tests/unit/core-modules/intelligence/result-applier.test.ts tests/component/intelligence-worker/result-inbox.test.ts tests/component/intelligence-worker/server-consumer-loop.test.ts tests/contract/postgres/intelligence-result-wakeup-store.test.ts` |
+| 09 | Task 14 tenant composition | `apps/server/src/self-hosted-runner-protocol.ts`; `apps/server/{package.json,tsconfig.json}`; `packages/core-application/{src,package.json,tsconfig.json}`; `packages/core-modules/runner-control/{src,package.json,tsconfig.json}`; `packages/protocol-adapters/grpc-runner-protocol/{src,package.json,tsconfig.json}`; `packages/storage-providers/postgres-runtime/{src,package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{contract/runner-identity,contract/postgres,conformance/runner-protocol,component/core-runner}`; status | `corepack pnpm vitest run tests/contract/runner-identity tests/contract/postgres/tenant-isolation.test.ts tests/conformance/runner-protocol tests/component/core-runner` |
+| 10 | Task 14 persistence/completion and Run/Trace reads | `packages/core-modules/{evidence,mission,runner-control}/{src,package.json,tsconfig.json}`; `packages/core-application/{src/runner,package.json,tsconfig.json}`; `packages/contracts/public-api/{src,package.json,tsconfig.json}`; `packages/storage-providers/{postgres-runtime,sqlite-runtime}/{src,package.json,tsconfig.json}`; `apps/server/src/{routes/runs.ts,server.ts,server-context.ts}`; `apps/server/{package.json,tsconfig.json}`; `apps/web-console/src/api/client.ts`; `pnpm-lock.yaml`; `tests/{contract/sqlite,contract/postgres,contract/runner-control,contract/public-api}`; status | `corepack pnpm vitest run tests/contract/runner-control tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/sqlite/sqlite-record-stores.test.ts tests/contract/postgres/postgres-trace-store.test.ts tests/contract/postgres/postgres-run-store.test.ts tests/contract/postgres/self-hosted-completion.test.ts tests/contract/public-api/api-v1.test.ts` |
+| 11 | Task 14 Artifact data plane | `packages/{contracts/runner-protocol,protocol-adapters/grpc-runner-protocol,core-modules/evidence,core-modules/runner-control,storage-providers/relational-kysely,storage-providers/postgres-runtime,storage-providers/artifact-fs,storage-providers/artifact-s3,runner-components/runner-spool}/{src,package.json,tsconfig.json}`; `packages/contracts/runner-protocol/proto`; `apps/{runner,server}/{src,package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{conformance/runner-protocol,contract/runner-spool,contract/artifact-fs,contract/artifact-s3,contract/postgres,unit/runner}`; status | `corepack pnpm vitest run tests/conformance/runner-protocol tests/contract/runner-spool tests/contract/artifact-fs tests/contract/artifact-s3 tests/contract/postgres/artifact-upload.test.ts tests/unit/runner/trace-upload-pump.test.ts` |
+| 12 | Task 14 Compose loop | `apps/server/**`; `deployments/self-hosted/compose/**`; `tests/component/server/**`; status | `docker compose --env-file deployments/self-hosted/compose/.env.example -f deployments/self-hosted/compose/compose.yaml config --quiet` and `corepack pnpm vitest run tests/component/server` |
+| 13 | LS-11 Evidence closure | `packages/core-modules/evidence/{src,package.json,tsconfig.json}`; `packages/storage-providers/{relational-kysely,postgres-runtime,artifact-s3,kms-self-hosted}/{src,package.json,tsconfig.json}`; `apps/server/src/{routes/evidence.ts,server.ts,server-context.ts,main.ts,config.ts}`; `apps/server/{package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/helpers/server-fixture.ts`; `tests/{contract/evidence-crypto,contract/kms-self-hosted,contract/artifact-s3,contract/public-api,component/investigation}`; status | `corepack pnpm vitest run tests/contract/evidence-crypto tests/contract/kms-self-hosted tests/contract/artifact-s3 tests/contract/public-api/api-v1.test.ts tests/component/investigation` |
+| 14 | LS-11 auth/operations closure | `packages/{auth/oidc,observability}/{src,package.json,tsconfig.json}`; `apps/{server,intelligence-worker}/{src,package.json,tsconfig.json}`; `apps/web-console/{src,package.json,tsconfig.json}`; `deployments/self-hosted/compose/**`; `pnpm-lock.yaml`; `tests/{contract/auth,unit/observability,component/server,component/intelligence-worker,component/web-console}`; status | `corepack pnpm vitest run tests/contract/auth/oidc.test.ts tests/unit/observability tests/component/server tests/component/intelligence-worker tests/component/web-console/oidc-flow.test.ts` |
+| 15 | LS-11 acceptance | `apps/admin-cli/src/commands/{backup,restore,doctor}.ts`; `deployments/self-hosted/**`; `tests/{unit/admin-cli,component/local-launcher,contract/public-api,component/web-console}`; status | `corepack pnpm vitest run tests/unit/admin-cli/backup-index.test.ts tests/component/local-launcher/backup-manager.test.ts`; the clean backup/restore acceptance waits for clean review |
+| 16 | Task 16 contract expand | `packages/contracts/runner-protocol/{src,proto}`; `packages/runner-kernel/src`; `packages/protocol-adapters/grpc-runner-protocol/src/mappers.ts`; `tests/{type,conformance/runner-protocol,unit/runner-kernel}`; status | `corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts` |
+| 17 | Task 16 budget/usage | `packages/{contracts/model-provider,model-gateway,model-providers/openai-compatible,runner-components/model-agent,runner-kernel}/src`; `tests/{unit/model-gateway,unit/runner-components,unit/runner-kernel,contract/model-providers}`; status | `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts` |
+| 18 | Task 16 valueRef | `apps/runner/src/{action-value-provider,config,main,index}.ts`; `packages/target-adapters/web-playwright/src`; `tests/{unit/runner,unit/target-adapters/web-playwright,component/web-execution}`; status | `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/component/web-execution` |
+| 19 | Task 16 bounded Runtime | `packages/{runner-kernel,runner-components/model-agent,target-adapters/web-playwright,execution-application}/src`; `apps/runner/src`; `tests/{unit/runner-kernel,unit/runner-components,unit/target-adapters/web-playwright,component/web-execution}`; status | `corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright tests/component/web-execution` |
+| 20 | LS-09 closure | `packages/{runner-components/exploration,core-modules/mission,storage-providers/sqlite-runtime}/src`; `tests/{unit/runner-components/exploration,replay/exploration,contract/sqlite}`; status | `corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts` |
+| 21 | LS-09 Reference benchmark | `packages/benchmarking/detection/**`; `apps/benchmark-runner/**`; `benchmarks/detection-v1/**`; `pnpm-lock.yaml`; `tests/{unit/benchmarking/detection,contract/sqlite/benchmark-store.test.ts,e2e/detection-benchmark}`; status | `corepack pnpm vitest run tests/unit/benchmarking/detection tests/contract/sqlite/benchmark-store.test.ts` with the model provider replaced only by the existing contract seam during edit-time tests |
+| 22 | Task 17 Graph expand | `packages/contracts/observation/**`; `packages/contracts/runner-protocol/src`; `tests/{conformance/observation,property/observation-graph.test.ts}`; `docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md`; `docs/superpowers/plans/2026-08-01-ls-12-m3-observation-graph-v1-migration.md`; status | `corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts` |
+| 23 | Task 17 producer migration | `packages/{target-adapters/web-playwright,runner-kernel,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`; `tests/{unit/target-adapters/web-playwright,component/web-execution,conformance/runner-protocol,conformance/observation}`; status | `corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation` |
+| 24 | Task 17 consumer migration | `packages/{runner-components/model-agent,runner-components/exploration,execution-application,observation-migration}/src`; `apps/benchmark-runner/src`; `tests/{unit/runner-components,unit/execution-application,replay,property}`; status | `corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` |
+| 25 | Task 17 contract phase | `packages/{runner-kernel,runner-components/model-agent,runner-components/exploration,execution-application,target-adapters/web-playwright,observation-migration}/**`; `apps/{runner,benchmark-runner}/src`; `tests/{conformance/observation,property,migration/observation-v1,replay}`; `docs/testing/observation-graph-v1-freeze-checklist.md`; status | `corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` and `rg -l "\bObservationGraph\b" apps packages tests` |
+| 26 | Task 18 Desktop protocol | `packages/{core-modules/project-target,contracts/desktop,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`; `packages/contracts/runner-protocol/proto`; `tests/{type,contract/desktop,unit/core-modules/project-target,conformance/runner-protocol}`; status | `corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/conformance/runner-protocol` |
+| 27 | Task 18 TypeScript client | `packages/{contracts/desktop,target-adapters/desktop-windows-uia}/src`; `tests/contract/desktop/**`; status | `corepack pnpm vitest run tests/contract/desktop` |
+| 28 | Task 18 Runner composition | `apps/runner/{src,package.json,tsconfig.json}`; `packages/{runner-kernel,target-adapters/desktop-windows-uia,target-adapters/web-playwright}/{src,package.json,tsconfig.json}`; `pnpm-lock.yaml`; `tests/{unit/runner-kernel,contract/desktop,component/windows-uia,component/web-execution}`; status | `corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` |
+| 29 | Task 19 | `rust-toolchain.toml`; `Cargo.lock`; `apps/companion/{Cargo.toml,src/ipc/**}`; `tests/rust/companion/{ipc_acl,handshake,windows_named_pipe}.rs`; status | `cargo fmt --check`; `cargo build --workspace`; `cargo test --workspace`; `corepack pnpm vitest run tests/contract/desktop/named-pipe-client.test.ts` |
+| 30 | Task 20 implementation | `Cargo.lock`; `apps/companion/{Cargo.toml,src/uia/**,src/process/**,src/tray.rs,src/main.rs}`; `tests/{rust/companion,component/windows-uia,replay/windows-uia,conformance/observation/windows-uia.test.ts}`; `docs/testing/windows-m3-manual-checklist.md`; status | `cargo fmt --check`; `cargo build --workspace`; `cargo test --workspace`; `corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` |
+| 31 | Task 20 native acceptance | `docs/testing/windows-m3-manual-checklist.md`; `artifacts/manual-acceptance/**`; status | `cargo fmt --check`; `cargo build --workspace`; `cargo test --workspace`; `corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` before local-console/RDP manual execution |
+| 32 | Task 21 quarantines | `tests/component/{local-launcher/start-stop.test.ts,skill-lifecycle/recording-to-replay.test.ts,web-execution/playwright-web-target.test.ts}`; `tests/contract/kms-local/skill-signing.test.ts`; `apps/local-launcher/src/child-process-unit.ts`; `packages/target-adapters/web-playwright/src/browser-session.ts`; `packages/storage-providers/kms-local/src/local-skill-signer.ts`; `tests/helpers/windows-file-acl.ts`; status | `corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts` and `rg -n 'TODO\(Task 21\)' tests` |
+| 33 | Task 21 CI/browser | `.github/workflows/{ci,windows-companion,self-hosted}.yml`; `package.json`; `tests/e2e/web-console/browser-workflow.test.ts`; `tests/helpers/{server-fixture,oidc-jwt,infrastructure-preflight}.ts`; status | `corepack pnpm vitest run tests/component/web-console/workflow.test.ts`; rendered-browser and CI-equivalent platform Gates wait for clean review |
+| 34 | Task 21 release | `.github/workflows/release.yml`; `Dockerfile`; `pnpm-workspace.yaml`; `pnpm-lock.yaml`; `deployments/self-hosted/docker/**`; `deployments/self-hosted/compose/{compose.release.yaml,release-manifest.schema.json}`; `scripts/verify-release-manifest.mjs`; `tests/release/{image-contents,release-manifest}.test.ts`; `README.md`; status | `corepack pnpm vitest run tests/release/image-contents.test.ts tests/release/release-manifest.test.ts` without publishing images |
+| 35 | Task 22 | `docs/production-closure-status.md`; `docs/superpowers/implementation-status.md`; `docs/superpowers/plans/{2026-08-01-ls-02-m1-playwright-web-target.md,2026-08-01-ls-05-m1-core-runner-transport-hardening.md,2026-08-01-ls-11-m2-self-hosted-runtime-deployment.md,2026-08-01-ls-13-m3-windows-desktop-target.md}`; `docs/superpowers/roadmaps/2026-08-01-local-self-hosted-through-m3.md`; `docs/testing/{observation-graph-v1-freeze-checklist.md,windows-m3-manual-checklist.md}`; `README.md`; `packages/observation-migration/src/freeze-gate.ts`; `tests/migration/observation-v1/{freeze-decision,freeze-gate-report}.test.ts` | `corepack pnpm vitest run tests/migration/observation-v1/freeze-decision.test.ts tests/migration/observation-v1/freeze-gate-report.test.ts` |
+
+### Post-review acceptance ownership
+
+The following files are additive to the Files column only for the named
+post-review acceptance. They may be created during implementation, but the
+commands are not run until scoped review is clean. No unlisted acceptance file
+is in scope.
+
+| Ticket | Exact acceptance files | Post-review command/evidence |
+|---:|---|---|
+| 02 | `tests/e2e/self-hosted/backup-restore.test.ts` | Run the file against sequentially upgraded PostgreSQL and a clean restore target |
+| 03 | `tests/e2e/web-console/target-test-plan.test.ts` | Run the rendered/API Target -> Test Plan -> Mission creation workflow |
+| 05 | `tests/e2e/self-hosted/bound-runner-dispatch.test.ts` | Run exact bound/offline/mismatched Runner dispatch cases |
+| 06 | `tests/e2e/web-console/skill-lifecycle.test.ts` | Run rendered version read, promotion conflict, and deprecation |
+| 07 | `tests/e2e/self-hosted/intelligence-worker-lease.test.ts` | Run real Worker lease/renew/restart/RLS cases |
+| 08 | `tests/e2e/self-hosted/intelligence-result-loop.test.ts` | Run Server/Worker restart, retry, readiness, and shutdown |
+| 09 | `tests/e2e/self-hosted/tenant-runner-isolation.test.ts` | Run two-tenant same-Runner-ID admission and isolation |
+| 10 | `tests/e2e/self-hosted/run-trace-completion.test.ts` | Run atomic terminal Run/attempt/Job/Mission projection |
+| 11 | `tests/e2e/self-hosted/artifact-upload.test.ts` | Run reconnect/resume against real object storage |
+| 12 | `tests/e2e/self-hosted/{compose,external-runner}.test.ts` | Run real Compose with an external Runner; Docker absence is `DockerUnavailable` |
+| 13 | `tests/e2e/self-hosted/evidence-api.test.ts` | Run authorized S3/KMS lifecycle and unavailable-provider failures |
+| 14 | `tests/e2e/self-hosted/readiness.test.ts` | Run dependency failure/recovery transitions through Server/Worker/Console/proxy |
+| 15 | `tests/e2e/self-hosted/{backup-restore,acceptance}.test.ts` | Run clean-environment LS-11 backup/restore and full product acceptance |
+| 18 | `tests/e2e/web-execution/value-ref.test.ts` | Run real Chromium input/select redaction workflow |
+| 19 | `tests/e2e/web-execution/multi-step-plan.test.ts` | Run the complete bounded multi-step Chromium workflow |
+| 20 | `tests/e2e/exploration/restart-resume.test.ts` | Interrupt the process and resume from the last safe checkpoint |
+| 21 | `tests/e2e/detection-benchmark/reference-model-profile.test.ts` | Run configured frozen Reference Model Profile; no fixture walker satisfies it |
+| 22 | `tests/e2e/web-execution/graph-v1-canonical.test.ts` | Run real Web capture against canonical/schema properties |
+| 23 | `tests/e2e/web-execution/graph-v1-producer.test.ts` | Run Chromium producer plus Graph/extension capability negotiation |
+| 24 | `tests/e2e/observation-v1/consumer-migration.test.ts` | Run model/resolver/exploration/evidence/benchmark/replay consumers together |
+| 25 | `tests/e2e/observation-v1/candidate-acceptance.test.ts` | Run migration inventory and candidate-only acceptance |
+| 27 | `tests/e2e/windows/companion-client.test.ts` | Run the built TypeScript client against a separate-process authenticated Named Pipe contract fixture; this is not native Companion evidence |
+| 28 | `tests/e2e/windows/desktop-runner.test.ts` | Run built Runner Target Runtime through the same contract fixture without Web fallback; native Companion remains owned by tickets 29-30 |
+| 29 | `tests/rust/companion/windows_named_pipe.rs`; `tests/e2e/windows/named-pipe-authority.test.ts` | Run Windows 11 native identity/replay process E2E |
+| 30 | `tests/rust/companion/reference_app_scenario.rs`; `tests/e2e/windows/companion-daemon.test.ts` | Run WPF/WinUI native daemon integration after clean review |
+| 31 | `artifacts/manual-acceptance/<version>/<date>-windows-m3.md` | Execute and independently sign the local-console/RDP checklist |
+| 32 | the four ticket-32 test files; `.github/workflows/{ci,windows-companion}.yml` | Run both Windows and Linux platform jobs with zero quarantine skips |
+| 33 | `tests/e2e/web-console/browser-workflow.test.ts`; `.github/workflows/{ci,windows-companion,self-hosted}.yml` | Run rendered browser E2E and mandatory named CI jobs |
+| 34 | `.github/workflows/release.yml`; `artifacts/release/<version>/{release-manifest.json,sbom.spdx.json}` | Run BuildKit/SBOM/attestation and manifest verification against immutable digests |
+| 35 | `artifacts/release/<version>/{release-manifest.json,graph-freeze-decision.json}` | Run `gate:fast`, `gate:self-hosted`, `benchmark:detection`, and `gate:release`; validate serialized evidence |
+
+Absence of required infrastructure is a stable failure code, never a skip
+counted as evidence.
+- Ticket 31 remains `ready-for-human`; automated preparation does not replace
+  the independent Windows 11 checklist executor and reviewer.
+- Ticket 35 may record `frozen` only when every serialized evidence input and
+  release artifact validates. Otherwise it deterministically records
+  `candidate` and exact blockers.
+
 ```text
 Tasks 1-3 (already implemented)
     ├── Task 4 (close entrypoint Gates + create committed status ledger)

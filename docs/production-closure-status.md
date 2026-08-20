@@ -1,5 +1,67 @@
 # Production closure status
 
+## Current authority view (2026-08-20)
+
+This section is the current capability index. Detailed entries below are an
+append-only evidence history; their historical `pending`, `not_run`, branch,
+environment, and future-work statements are not current status when this table
+supersedes them. Remaining implementation authority is the 2026-08-20 amendment
+in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
+
+| Legacy Task/capability | component | production_wiring | verification | Current evidence or blocker |
+|---|---|---|---|---|
+| Tasks 1-2 Admin CLI and Node entrypoints | complete | complete | passed | PR #38; built-binary and seven-entrypoint evidence below |
+| Tasks 3-5 Review routes/provider contracts | complete | complete | passed | PR #39; shared SQLite/PostgreSQL contract and public conflict envelope |
+| Task 6 Console OIDC | complete | complete | passed | PR #40; 39 focused tests and final two-axis review |
+| Task 7 Runner renewal | complete | complete | passed | PR #43; lease renewal focused Gate and final review |
+| Tasks 8-9 Runner protocol/Core authority | complete | present | passed | PR5-R1 through PR5-R5, production activation merge `86ea179` |
+| Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
+| Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
+| Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
+| Task 12 Self-hosted product/scheduling | partial | missing | blocked | Remaining tickets 02-06; no complete versioned Target/Test Plan/Mission dispatch loop |
+| Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
+| Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
+| Task 16 bounded Web execution | partial | missing | blocked | Remaining tickets 16-19; production Runtime remains pre-closure |
+| LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
+| Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
+| Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
+| Tasks 19-20 native Windows Companion | partial | missing | blocked | Remaining tickets 29-31; native implementation and signed local-console/RDP evidence absent |
+| Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
+| Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
+
+Current relational schema is version 7. Migrations 001-007 are immutable;
+remaining allocations are 008 (Target/Test Plan), 009 (Mission/Run/outbox and
+its atomic dispatch wakeup),
+010 (Intelligence leases/Result inbox), 011 (Intelligence wakeups/dispositions), 012
+(Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
+reserved without a reviewed plan amendment.
+
+Current execution host evidence: Windows 11; Node `v24.13.0`; Corepack pnpm
+`11.7.0`; Docker client/server `29.6.2`; Cargo/rustc `1.96.1`. Cargo is no
+longer unavailable, but a pinned toolchain, native Windows tests, real WPF/WinUI
+scenarios, local-console/RDP execution, and two-person signed evidence remain
+blocking. Git OpenSSL must be resolved explicitly from
+`C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
+
+### Remaining authority reconciliation evidence
+
+component: complete
+production_wiring: not_applicable
+verification: pending exact-head review
+implementation_commit: same commit as this ledger entry
+
+- Document consistency checks cover all 35 tickets, the two dependency lanes,
+  migrations 001-013, exact Files/focused Gates/post-review acceptance, current
+  host facts, Evidence revoke-before-delete, and Graph set/order authority.
+- `corepack pnpm typecheck` and `git diff --check` passed.
+- The required final full suite was run with Git OpenSSL on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`. It reported 154
+  passed files, 5 failed, and 1 skipped; 1110 tests passed, 9 failed, and 6
+  skipped. The failures are outside this docs-only change: Detection Benchmark
+  exploration-policy validation and SQLite cleanup, Local process timeout/reap
+  tests, and the Core entrypoint's stale missing-config expectation. They are
+  retained as failed baseline evidence, not counted as this ticket's Gate.
+
 ## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
 
 component: complete
