@@ -18,7 +18,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | missing | blocked | Remaining tickets 02-06; no complete versioned Target/Test Plan/Mission dispatch loop |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 02 component is implemented but pending its dedicated PR merge; tickets 03-06 still own the Target/Test Plan/Mission dispatch loop |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
@@ -42,6 +42,36 @@ longer unavailable, but a pinned toolchain, native Windows tests, real WPF/WinUI
 scenarios, local-console/RDP execution, and two-person signed evidence remain
 blocking. Git OpenSSL must be resolved explicitly from
 `C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
+
+### Ticket 02 - PostgreSQL forward upgrades and backup guard (2026-08-20)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR merge
+implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`
+
+- PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
+  offline advisory lock, with each step transactional and failed steps resumable.
+  Server, Worker, tenant transactions, and Worker queue operations take the
+  shared runtime lock and refuse malformed, ahead, behind, or incomplete
+  auxiliary schema state.
+- Runtime roles retain forced RLS and cannot create schema objects. Worker Job
+  locking uses its constrained security-definer function without granting direct
+  mutation of Intelligence Job authority columns.
+- Migration requires a newly verified, invocation- and target-bound durable
+  backup. Backup and restore share canonical byte verification, and backup copies
+  only Artifact bytes named by manifests visible in the exported PostgreSQL
+  snapshot.
+- Core Application no longer imports or references PostgreSQL Runtime. The
+  Worker injects the storage-owned transaction guard, and the intelligence
+  consumer retains a provider-neutral transaction interface.
+- On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
+  focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
+  Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup
+  cases. `corepack pnpm typecheck` and `git diff --check` also passed.
+- No E2E was run. `tests/e2e/self-hosted/backup-restore.test.ts` is prepared but
+  remains gated on a clean exact-base review. No pull request exists yet, and
+  component completion is not final verification until the dedicated PR merges.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
