@@ -66,6 +66,49 @@ describe("DeterministicRunnerPolicyGate", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(projectless, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyMissing" });
   });
 
+  it.each([
+    ["unsupported action", [{ stepIndex: 0, kind: "script", source: "alert(1)" }]],
+    ["non-contiguous indices", [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { stepIndex: 2, kind: "verify", claimIds: ["claim-1"] },
+    ]],
+    ["unbounded scroll", [{ stepIndex: 0, kind: "scroll", direction: "down", amount: "pixels" }]],
+  ])("rejects a malformed plan with %s before runtime admission", (_name, steps) => {
+    expect(DeterministicRunnerPolicyGate.admitJob(job({
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps,
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 5, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+      } as never,
+    }), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({
+      status: "denied",
+      code: "PolicyMissing",
+    });
+  });
+
+  it("rejects an indexed plan whose immutable action kind is unsupported by policy", () => {
+    expect(DeterministicRunnerPolicyGate.admitJob(job({
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-1",
+        steps: [
+          { stepIndex: 0, kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" },
+          { stepIndex: 1, kind: "verify", claimIds: ["claim-1"] },
+        ],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
+      },
+    }), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({
+      status: "denied",
+      code: "PolicyDenied",
+      message: "PlanActionDenied",
+    });
+  });
+
   it("allows the exact bounded staging click and denies staging exploration and fallbacks", async () => {
     const staging = { ...policy, environment: "staging" as const };
     const now = () => Date.parse("2026-08-18T00:00:30.000Z");

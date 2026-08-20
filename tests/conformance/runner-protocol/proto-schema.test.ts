@@ -239,4 +239,18 @@ describe("runner protocol v1 proto schema", () => {
     expect(messages.get("AcceptedExecutionJob")?.fields.get("policy")).toBe(6);
     expect(messages.get("AcceptedExecutionJob")?.fields.get("project_id")).toBe(7);
   });
+
+  it("adds indexed select and bounded scroll plan variants without reusing tags", () => {
+    expect(messages.get("ExecutionPlanStep")?.fields).toEqual(new Map([
+      ["step_index", 7], ["navigate", 1], ["click", 2], ["input", 3],
+      ["verify", 4], ["select", 5], ["scroll", 6],
+    ]));
+    expect(messages.get("ExecutionPlanSelect")?.fields).toEqual(new Map([
+      ["target", 1], ["value_ref", 2],
+    ]));
+    expect(messages.get("ExecutionPlanScroll")?.fields).toEqual(new Map([
+      ["target", 1], ["direction", 2], ["amount", 3],
+    ]));
+    expect(messages.get("TraceEventEnvelope")?.fields.get("step_index")).toBe(11);
+  });
 });

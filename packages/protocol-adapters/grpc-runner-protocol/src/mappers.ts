@@ -209,31 +209,62 @@ function planTargetFromWire(wire: unknown): ExecutionPlanTarget {
 }
 
 function planStepToWire(step: ExecutionPlanStep): Wire {
+  const indexed = step.stepIndex === undefined ? {} : { step_index: step.stepIndex };
   switch (step.kind) {
     case "navigate":
-      return { navigate: { path: step.path } };
+      return { ...indexed, navigate: { path: step.path } };
     case "click":
-      return { click: { target: planTargetToWire(step.target) } };
+      return { ...indexed, click: { target: planTargetToWire(step.target) } };
     case "input":
-      return { input: { target: planTargetToWire(step.target), value_ref: step.valueRef } };
+      return { ...indexed, input: { target: planTargetToWire(step.target), value_ref: step.valueRef } };
+    case "select":
+      return { ...indexed, select: { target: planTargetToWire(step.target), value_ref: step.valueRef } };
+    case "scroll":
+      return {
+        ...indexed,
+        scroll: {
+          ...(step.target === undefined ? {} : { target: planTargetToWire(step.target) }),
+          direction: step.direction,
+          amount: step.amount,
+        },
+      };
     case "verify":
-      return { verify: { claim_ids: [...step.claimIds] } };
+      return { ...indexed, verify: { claim_ids: [...step.claimIds] } };
   }
 }
 
 function planStepFromWire(wire: unknown): ExecutionPlanStep {
   const step = (wire ?? {}) as Wire;
-  if (step.navigate !== undefined) return { kind: "navigate", path: asString((step.navigate as Wire).path) };
-  if (step.click !== undefined) return { kind: "click", target: planTargetFromWire((step.click as Wire).target) };
+  const stepIndex = step.step_index === undefined ? undefined : asNumber(step.step_index);
+  const indexed = stepIndex === undefined ? {} : { stepIndex };
+  if (step.navigate !== undefined) return { ...indexed, kind: "navigate", path: asString((step.navigate as Wire).path) };
+  if (step.click !== undefined) return { ...indexed, kind: "click", target: planTargetFromWire((step.click as Wire).target) };
   if (step.input !== undefined) {
     const input = step.input as Wire;
-    return { kind: "input", target: planTargetFromWire(input.target), valueRef: asString(input.value_ref) };
+    return { ...indexed, kind: "input", target: planTargetFromWire(input.target), valueRef: asString(input.value_ref) };
+  }
+  if (step.select !== undefined) {
+    const select = step.select as Wire;
+    if (stepIndex === undefined) throw new ExecutionPolicySnapshotError();
+    return { stepIndex, kind: "select", target: planTargetFromWire(select.target), valueRef: asString(select.value_ref) };
+  }
+  if (step.scroll !== undefined) {
+    const scroll = step.scroll as Wire;
+    if (stepIndex === undefined) throw new ExecutionPolicySnapshotError();
+    const target = scroll.target === undefined ? undefined : planTargetFromWire(scroll.target);
+    return {
+      stepIndex,
+      kind: "scroll",
+      ...(target === undefined ? {} : { target }),
+      direction: asString(scroll.direction) as Extract<ExecutionPlanStep, { kind: "scroll" }>["direction"],
+      amount: asString(scroll.amount) as Extract<ExecutionPlanStep, { kind: "scroll" }>["amount"],
+    };
   }
   const verify = (step.verify ?? {}) as Wire;
   const claimIds = asArray<string>(verify.claim_ids);
   const [firstClaimId, ...remainingClaimIds] = claimIds;
   if (firstClaimId === undefined) throw new ExecutionPolicySnapshotError();
-  return { kind: "verify", claimIds: [firstClaimId, ...remainingClaimIds] };
+  return { ...indexed, kind: "verify", claimIds: [firstClaimId, ...remainingClaimIds] };
 }
 
 function planToWire(plan: ExecutionJobPlanSnapshot): Wire {
@@ -377,7 +408,7 @@ export function renewLeaseFromWire(wire: Wire): ExecutionJobLease {
 // --- TraceEvent / ExecutionEventBatch -------------------------------------
 
 function traceEventToWire(event: TraceEvent): Wire {
-  return {
+  const wire: Wire = {
     protocol_version: event.protocolVersion,
     schema_version: event.schemaVersion,
     message_id: event.messageId,
@@ -389,9 +420,12 @@ function traceEventToWire(event: TraceEvent): Wire {
     payload_hash: event.payloadHash,
     payload_json: JSON.stringify(event.payload),
   };
+  if (event.stepIndex !== undefined) wire.step_index = event.stepIndex;
+  return wire;
 }
 
 function traceEventFromWire(wire: Wire): TraceEvent {
+  const stepIndex = wire.step_index === undefined ? undefined : asNumber(wire.step_index);
   const envelope = {
     protocolVersion: asString(wire.protocol_version) as TraceEvent["protocolVersion"],
     schemaVersion: asString(wire.schema_version) as TraceEvent["schemaVersion"],
@@ -399,6 +433,7 @@ function traceEventFromWire(wire: Wire): TraceEvent {
     idempotencyKey: asString(wire.idempotency_key),
     runId: asString(wire.run_id),
     sequenceNumber: asNumber(wire.sequence_number),
+    ...(stepIndex === undefined ? {} : { stepIndex }),
     stage: asString(wire.stage) as TraceStage,
     occurredAt: asString(wire.occurred_at),
     payloadHash: asString(wire.payload_hash),

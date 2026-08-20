@@ -21,7 +21,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | missing | blocked | Remaining tickets 02-06; no complete versioned Target/Test Plan/Mission dispatch loop |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | partial | missing | blocked | Remaining tickets 16-19; production Runtime remains pre-closure |
+| Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -42,6 +42,27 @@ longer unavailable, but a pinned toolchain, native Windows tests, real WPF/WinUI
 scenarios, local-console/RDP execution, and two-person signed evidence remain
 blocking. Git OpenSSL must be resolved explicitly from
 `C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
+
+### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
+
+component: complete
+production_wiring: not_applicable
+verification: passed
+implementation_commit: same commit as this ledger entry (`feat(runner): expand multi-step plan contracts`)
+
+- Runner Protocol accepts additive immutable indexed `navigate`, `click`,
+  `input`, `select`, `scroll`, and `verify` steps while preserving existing
+  objective-only Jobs and unindexed legacy plan snapshots.
+- `select` carries only a Plan-owned `valueRef`; scroll is restricted to fixed
+  directions and `small|page`, with an optional semantic target. Protobuf and
+  gRPC mappers preserve every plan field and optional Trace `stepIndex`.
+- Contract parsing and Runner Kernel admission reject malformed indices,
+  unsupported actions/parameters, over-budget plans, and policy-disallowed
+  indexed action kinds before execution. Production bounded execution remains
+  owned by tickets 17-19.
+- Focused Gate, `corepack pnpm typecheck`, and `git diff --check` passed on
+  2026-08-20. No browser, product E2E, or full suite was run for this expand
+  ticket.
 
 ### Remaining authority reconciliation evidence
 

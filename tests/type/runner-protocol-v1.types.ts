@@ -9,6 +9,7 @@ import type {
   ExecutionEventBatchOutcome,
   ExecutionJobLease,
   ExecutionJobOffer,
+  ExecutionPlanStep,
   ExecutionLeaseState,
   ProtocolVersionMismatch,
   ResumeToken,
@@ -83,6 +84,24 @@ const offer: ExecutionJobOffer = {
 };
 
 offer satisfies ExecutionJobOffer;
+
+const indexedPlanSteps = [
+  { stepIndex: 0, kind: "navigate", path: "/checkout" },
+  { stepIndex: 1, kind: "click", target: { purpose: "begin checkout" } },
+  { stepIndex: 2, kind: "input", target: { purpose: "enter email" }, valueRef: "customer.email" },
+  { stepIndex: 3, kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" },
+  { stepIndex: 4, kind: "scroll", direction: "down", amount: "page" },
+  { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
+] as const satisfies readonly ExecutionPlanStep[];
+void indexedPlanSteps;
+
+// @ts-expect-error select values are Plan-owned references and every new select step is indexed
+const unindexedSelect: ExecutionPlanStep = { kind: "select", target: { purpose: "choose country" }, valueRef: "customer.country" };
+void unindexedSelect;
+
+// @ts-expect-error arbitrary pixel scrolling is not a supported immutable plan action
+const pixelScroll: ExecutionPlanStep = { stepIndex: 0, kind: "scroll", direction: "down", amount: "pixels" };
+void pixelScroll;
 
 // Task 15 freezes policy as a required Job snapshot. This is intentionally RED
 // until the protocol contract adds the required field.

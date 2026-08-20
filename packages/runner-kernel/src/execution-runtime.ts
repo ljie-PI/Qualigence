@@ -199,7 +199,7 @@ export interface TraceRecorder {
 
 export type TraceEventInput = TraceEvent extends infer TEvent
   ? TEvent extends TraceEvent
-    ? Pick<TEvent, "runId" | "stage" | "payload">
+    ? Pick<TEvent, "runId" | "stage" | "payload"> & Pick<Partial<TEvent>, "stepIndex">
     : never
   : never;
 

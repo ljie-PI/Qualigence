@@ -56,6 +56,11 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     if ((target.protocol !== "http:" && target.protocol !== "https:") || !policy.allowedOrigins.includes(target.origin)) {
       return { status: "denied", code: "PolicyDenied", message: "TargetOriginDenied" };
     }
+    if (accepted.plan?.steps.some((step) =>
+      step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
+    )) {
+      return { status: "denied", code: "PolicyDenied", message: "PlanActionDenied" };
+    }
     return { status: "allowed", gate: new DeterministicRunnerPolicyGate(policy, options) };
   }
 

@@ -169,10 +169,13 @@ export function parseExecutionJob(value: unknown): AcceptedExecutionJob {
 function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot {
   const plan = record(value);
   const steps = array(plan.steps).map(parseExecutionPlanStep);
+  validateStepIndices(steps);
   const expectedClaimIds = stringTuple(plan.expectedClaimIds);
   const [firstStep, ...remainingSteps] = steps;
   if (firstStep === undefined) throw new ExecutionPolicySnapshotError();
   const budget = record(plan.budget);
+  const maximumStepsPerJob = positiveSafeInteger(budget.maximumStepsPerJob);
+  if (steps.length > maximumStepsPerJob) throw new ExecutionPolicySnapshotError();
   return {
     missionId: nonEmptyString(plan.missionId),
     missionRevision: positiveSafeInteger(plan.missionRevision),
@@ -180,7 +183,7 @@ function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot
     steps: [firstStep, ...remainingSteps],
     expectedClaimIds,
     budget: {
-      maximumStepsPerJob: positiveSafeInteger(budget.maximumStepsPerJob),
+      maximumStepsPerJob,
       maximumWallClockMs: positiveSafeInteger(budget.maximumWallClockMs),
       maximumModelTokens: positiveSafeInteger(budget.maximumModelTokens),
     },
@@ -189,19 +192,45 @@ function parseExecutionJobPlanSnapshot(value: unknown): ExecutionJobPlanSnapshot
 
 function parseExecutionPlanStep(value: unknown): ExecutionPlanStep {
   const step = record(value);
+  const stepIndex = step.stepIndex === undefined ? undefined : nonNegativeSafeInteger(step.stepIndex);
+  const indexed = stepIndex === undefined ? {} : { stepIndex };
   switch (step.kind) {
     case "navigate":
-      return { kind: "navigate", path: nonEmptyString(step.path) };
+      return { ...indexed, kind: "navigate", path: nonEmptyString(step.path) };
     case "click":
-      return { kind: "click", target: parseExecutionPlanTarget(step.target) };
+      return { ...indexed, kind: "click", target: parseExecutionPlanTarget(step.target) };
     case "input": {
-      return { kind: "input", target: parseExecutionPlanTarget(step.target), valueRef: nonEmptyString(step.valueRef) };
+      return { ...indexed, kind: "input", target: parseExecutionPlanTarget(step.target), valueRef: nonEmptyString(step.valueRef) };
+    }
+    case "select":
+      if (step.option !== undefined) throw new ExecutionPolicySnapshotError();
+      return {
+        stepIndex: nonNegativeSafeInteger(step.stepIndex),
+        kind: "select",
+        target: parseExecutionPlanTarget(step.target),
+        valueRef: nonEmptyString(step.valueRef),
+      };
+    case "scroll": {
+      const target = step.target === undefined ? undefined : parseExecutionPlanTarget(step.target);
+      return {
+        stepIndex: nonNegativeSafeInteger(step.stepIndex),
+        kind: "scroll",
+        ...(target === undefined ? {} : { target }),
+        direction: enumValue(step.direction, ["up", "down", "left", "right"] as const),
+        amount: enumValue(step.amount, ["small", "page"] as const),
+      };
     }
     case "verify":
-      return { kind: "verify", claimIds: stringTuple(step.claimIds) };
+      return { ...indexed, kind: "verify", claimIds: stringTuple(step.claimIds) };
     default:
       throw new ExecutionPolicySnapshotError();
   }
+}
+
+function validateStepIndices(steps: readonly ExecutionPlanStep[]): void {
+  const indexed = steps.some((step) => step.stepIndex !== undefined);
+  if (!indexed) return;
+  if (steps.some((step, index) => step.stepIndex !== index)) throw new ExecutionPolicySnapshotError();
 }
 
 function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
@@ -239,6 +268,11 @@ function nonEmptyString(value: unknown): string {
 
 function positiveSafeInteger(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new ExecutionPolicySnapshotError();
+  return value;
+}
+
+function nonNegativeSafeInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new ExecutionPolicySnapshotError();
   return value;
 }
 
@@ -319,14 +353,29 @@ export interface ExecutionPlanTarget {
  * keys by the Core command handler), never raw semantic keys.
  */
 export type ExecutionPlanStep =
-  | { readonly kind: "navigate"; readonly path: string }
-  | { readonly kind: "click"; readonly target: ExecutionPlanTarget }
+  | { readonly stepIndex?: number; readonly kind: "navigate"; readonly path: string }
+  | { readonly stepIndex?: number; readonly kind: "click"; readonly target: ExecutionPlanTarget }
   | {
+      readonly stepIndex?: number;
       readonly kind: "input";
       readonly target: ExecutionPlanTarget;
       readonly valueRef: string;
     }
   | {
+      readonly stepIndex: number;
+      readonly kind: "select";
+      readonly target: ExecutionPlanTarget;
+      readonly valueRef: string;
+    }
+  | {
+      readonly stepIndex: number;
+      readonly kind: "scroll";
+      readonly target?: ExecutionPlanTarget;
+      readonly direction: "up" | "down" | "left" | "right";
+      readonly amount: "small" | "page";
+    }
+  | {
+      readonly stepIndex?: number;
       readonly kind: "verify";
       readonly claimIds: readonly [string, ...string[]];
     };
@@ -400,6 +449,7 @@ interface TraceEventEnvelope<TStage extends TraceStage, TPayload> {
   readonly idempotencyKey: IdempotencyKey;
   readonly runId: RunId;
   readonly sequenceNumber: number;
+  readonly stepIndex?: number;
   readonly stage: TStage;
   readonly occurredAt: string;
   readonly payloadHash: string;

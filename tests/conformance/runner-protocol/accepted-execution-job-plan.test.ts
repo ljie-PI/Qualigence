@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash, parseExecutionJob } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
   ExecutionJobPlanSnapshot,
@@ -93,6 +93,93 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
     expect(canonicalPayloadHash(plannedJob)).not.toBe(
       canonicalPayloadHash(legacyJob),
     );
+  });
+
+  it("accepts all six immutable indexed plan step kinds", () => {
+    const job = parseExecutionJob({
+      ...legacyJob,
+      policy: {
+        ...legacyJob.policy,
+        allowedActionKinds: ["navigate", "click", "input", "select", "scroll"],
+      },
+      plan: {
+        ...planSnapshot,
+        steps: [
+          { stepIndex: 0, kind: "navigate", path: "/checkout" },
+          { stepIndex: 1, kind: "click", target: { role: "button", purpose: "begin checkout" } },
+          { stepIndex: 2, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "customer.email" },
+          { stepIndex: 3, kind: "select", target: { role: "combobox", purpose: "choose country" }, valueRef: "customer.country" },
+          { stepIndex: 4, kind: "scroll", direction: "down", amount: "page" },
+          { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
+        ],
+      },
+    });
+
+    expect(job.plan?.steps).toEqual([
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { stepIndex: 1, kind: "click", target: { role: "button", purpose: "begin checkout" } },
+      { stepIndex: 2, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "customer.email" },
+      { stepIndex: 3, kind: "select", target: { role: "combobox", purpose: "choose country" }, valueRef: "customer.country" },
+      { stepIndex: 4, kind: "scroll", direction: "down", amount: "page" },
+      { stepIndex: 5, kind: "verify", claimIds: ["claim-1"] },
+    ]);
+  });
+
+  it("rejects model-owned select option text even when a valueRef is present", () => {
+    expect(() => parseExecutionJob({
+      ...legacyJob,
+      plan: {
+        ...planSnapshot,
+        steps: [{
+          stepIndex: 0,
+          kind: "select",
+          target: { role: "combobox", purpose: "choose country" },
+          valueRef: "customer.country",
+          option: "Canada",
+        }],
+      },
+    })).toThrow();
+  });
+
+  it.each([
+    ["a duplicate index", [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { stepIndex: 0, kind: "verify", claimIds: ["claim-1"] },
+    ]],
+    ["a skipped index", [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { stepIndex: 2, kind: "verify", claimIds: ["claim-1"] },
+    ]],
+    ["a mixed indexed/unindexed sequence", [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { kind: "verify", claimIds: ["claim-1"] },
+    ]],
+    ["more steps than its immutable budget", [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" },
+      { stepIndex: 1, kind: "verify", claimIds: ["claim-1"] },
+    ]],
+  ])("rejects an indexed plan with %s", (_name, steps) => {
+    expect(() => parseExecutionJob({
+      ...legacyJob,
+      plan: {
+        ...planSnapshot,
+        steps,
+        ...(_name === "more steps than its immutable budget"
+          ? { budget: { ...planSnapshot.budget, maximumStepsPerJob: 1 } }
+          : {}),
+      },
+    })).toThrow();
+  });
+
+  it.each([
+    ["pixels", { stepIndex: 0, kind: "scroll", direction: "down", amount: "pixels" }],
+    ["arbitrary direction", { stepIndex: 0, kind: "scroll", direction: "diagonal", amount: "small" }],
+    ["missing select valueRef", { stepIndex: 0, kind: "select", target: { purpose: "choose country" } }],
+  ])("rejects unsupported plan parameters: %s", (_name, step) => {
+    expect(() => parseExecutionJob({
+      ...legacyJob,
+      plan: { ...planSnapshot, steps: [step] },
+    })).toThrow();
   });
 
   it("reserves a frozen wire field number for the plan snapshot", () => {
