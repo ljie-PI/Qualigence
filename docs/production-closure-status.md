@@ -48,14 +48,15 @@ blocking. Git OpenSSL must be resolved explicitly from
 component: complete
 production_wiring: not_applicable
 verification: passed
-implementation_commit: `bedfa41`
-review_fix_commit: `79ad800`
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/69`
+implementation_commit: `f3f1b82`
+review_fix_commits: `23ef80b`, `6d7c9df`
 
 - Document consistency checks cover all 35 tickets, the two dependency lanes,
   migrations 001-013, exact Files/focused Gates/post-review acceptance, current
   host facts, Evidence revoke-before-delete, and Graph set/order authority.
 - `corepack pnpm typecheck` and `git diff --check` passed.
-- Fresh exact-base Standards and Spec reviews at `79ad800` reported no
+- Fresh exact-base Standards and Spec reviews reported no
   findings after the first-round authority fixes. This closure update receives
   one final exact-head review before ticket resolution.
 - A supplemental final full-suite baseline was run with Git OpenSSL on `PATH` and
@@ -68,8 +69,9 @@ review_fix_commit: `79ad800`
 - Delivery rule: every remaining ticket uses one dedicated isolated branch,
   worktree, and pull request. Completion requires merge followed by deletion of
   the remote/local ticket branches and removal of its worktree. This tracked
-  ledger records the PR URL and final head before merge; the ignored local
-  ticket records the resulting merge commit after merge without a second PR.
+  ledger records the PR URL and implementation/review heads before merge;
+  GitHub PR metadata identifies the exact final head. The ignored local ticket
+  records the resulting merge commit after merge without a second PR.
 
 ## Task 11 - Authenticated Local intake and Launcher loop (2026-08-19)
 

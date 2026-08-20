@@ -199,8 +199,10 @@ one dedicated pull request. Never combine multiple tickets in one PR. Parallel
 implementation is permitted only when branches/worktrees and Files scopes are
 isolated; changes to shared contracts, protocols, authority, or status merge
 serially. A local commit, clean review, or passing E2E does not complete a
-ticket. Before merge, production status records the PR URL, final head, Gates,
-review, and applicable E2E. The ticket remains `claimed` until its PR is merged.
+ticket. Before merge, production status records the PR URL, implementation and
+review heads, Gates, review, and applicable E2E. GitHub PR metadata plus the
+final exact-head review identify the final head without a self-referential
+status commit. The ticket remains `claimed` until its PR is merged.
 After merge, record the PR URL and merge commit in the ignored local ticket,
 set it to `resolved`, delete the remote and local ticket branches, and remove
 the ticket worktree before starting dependent work. Do not create a second
