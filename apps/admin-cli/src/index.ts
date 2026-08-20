@@ -46,11 +46,18 @@ export {
   parseIndex,
   sha256Hex,
   tenantsFromKeys,
+  verifyBackupDirectory,
   type BackupIndexV1,
   type BackupObjectRecord,
   type BackupDatabaseRecord,
+  type MigrationBackupBinding,
 } from "./backup/backup-index.js";
-export { runMigrate, type MigrateResult } from "./commands/migrate.js";
+export {
+  runMigrate,
+  type MigrateResult,
+  type MigrateDeps,
+  type MigrationBackupInput,
+} from "./commands/migrate.js";
 export { runDoctor, type DoctorOptions, type HttpProbe } from "./commands/doctor.js";
 export { runBackup, type BackupDeps, type BackupResult } from "./commands/backup.js";
 export {

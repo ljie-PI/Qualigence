@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { ModelGateway } from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
 import { PostgresIntelligenceQueue } from "@qualigence/core-application";
+import { assertPostgresSchemaCurrent } from "@qualigence/postgres-runtime";
 import type { IntelligenceJobType } from "@qualigence/intelligence";
 import { loadWorkerConfig } from "./config.js";
 import { InvestigationJobProcessor } from "./investigation-job-processor.js";
@@ -19,8 +20,12 @@ const ACCEPTED_TYPES: readonly IntelligenceJobType[] = [
  * least-privilege Worker role, wire the Model Gateway + investigation agent +
  * S3 context source, and run the lease/process/append loop until interrupted.
  */
-export async function main(): Promise<void> {
-  const config = loadWorkerConfig();
+export async function main(
+  env: NodeJS.ProcessEnv = process.env,
+  assertSchema = assertPostgresSchemaCurrent,
+): Promise<void> {
+  const config = loadWorkerConfig(env);
+  await assertSchema(config.postgres);
 
   const queue = new PostgresIntelligenceQueue({
     host: config.postgres.host,

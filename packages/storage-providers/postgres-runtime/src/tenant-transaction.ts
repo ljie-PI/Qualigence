@@ -1,6 +1,8 @@
 import { Kysely, sql, type Transaction } from "kysely";
 import type { PostgresDatabase } from "./postgres-database.js";
 
+export const POSTGRES_MIGRATION_LOCK_KEY = 0x5175_6d69;
+
 /** The tenant-scoped stores exposed inside a tenant transaction. */
 export interface RuntimeStores {
   /** A transaction whose `app.tenant_id` GUC is already set. */
@@ -33,6 +35,7 @@ export class PostgresTenantTransactionProvider
       throw new Error("A tenant context requires a non-empty tenantId.");
     }
     return this.db.transaction().execute(async (trx) => {
+      await sql`select pg_advisory_xact_lock_shared(${POSTGRES_MIGRATION_LOCK_KEY})`.execute(trx);
       await sql`select set_config('app.tenant_id', ${tenantId}, true)`.execute(
         trx,
       );

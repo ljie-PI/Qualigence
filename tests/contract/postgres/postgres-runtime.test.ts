@@ -1,15 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import {
+  assertPostgresSchemaCurrent,
+  acquirePostgresMigrationLock,
+  migratePostgres,
   createPostgresRuntime,
   readSchemaVersion,
+  PostgresSchemaError,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
+import { PostgresIntelligenceQueue } from "@qualigence/core-application";
 import {
   relationalTableNames,
   tenantOwnedTableNames,
 } from "@qualigence/relational-kysely";
 import { dockerAvailable } from "../../helpers/docker-container.js";
+import { startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 import {
   executionRunRow,
   setupPostgresFixture,
@@ -155,4 +161,111 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     expect(found?.run_id).toBe("run-1");
     expect(found?.tenant_id).toBe("tenant-a");
   });
+
+  it("denies DDL to both runtime roles", async () => {
+    for (const config of [fixture.serverConfig, fixture.workerConfig]) {
+      const client = new Client(config);
+      await client.connect();
+      try {
+        await expect(client.query("create table runtime_ddl_forbidden (id integer)"))
+          .rejects.toMatchObject({ code: "42501" });
+      } finally {
+        await client.end();
+      }
+    }
+  });
+
+  it("blocks Worker queue operations while the exclusive migration lock is held", async () => {
+    const lock = await acquirePostgresMigrationLock(fixture.adminConfig);
+    const queue = new PostgresIntelligenceQueue(fixture.workerConfig);
+    let settled = false;
+    const lease = queue.lease({
+      workerId: "lock-test-worker",
+      acceptedTypes: ["skill.induction"],
+      now: new Date().toISOString(),
+      leaseDurationMs: 60_000,
+    }).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toBe(false);
+    await lock.release();
+    await expect(lease).resolves.toBeUndefined();
+    await queue.close();
+  });
+
+  it("upgrades supported persisted versions sequentially without skipping steps", async () => {
+    const applied: number[] = [];
+    const partial = await startPostgres();
+    const admin = {
+      host: partial.host,
+      port: partial.port,
+      database: partial.database,
+      user: partial.superuser,
+      password: partial.password,
+    };
+    try {
+      await migratePostgres({ admin, targetVersion: 3 });
+      expect(await readSchemaVersion(admin)).toBe(3);
+      await migratePostgres({
+        admin,
+        beforeStep: ({ version }) => {
+          applied.push(version);
+        },
+      });
+      expect(applied).toEqual([4, 5, 6, 7]);
+      await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
+    } finally {
+      await partial.stop();
+    }
+  }, 120_000);
+
+  it("rolls back a failed step and resumes from the last committed version", async () => {
+    const partial = await startPostgres();
+    const admin = {
+      host: partial.host,
+      port: partial.port,
+      database: partial.database,
+      user: partial.superuser,
+      password: partial.password,
+    };
+    try {
+      await migratePostgres({ admin, targetVersion: 2 });
+      await expect(
+        migratePostgres({
+          admin,
+          afterStepSchema: ({ version }) => {
+            if (version === 4) throw new Error("injected migration failure");
+          },
+        }),
+      ).rejects.toThrow("injected migration failure");
+      expect(await readSchemaVersion(admin)).toBe(3);
+      const failedStepTable = new Client(admin);
+      await failedStepTable.connect();
+      const failedStep = await failedStepTable.query<{ exists: boolean }>(
+        "select to_regclass('public.benchmark_runs') is not null as exists",
+      );
+      await failedStepTable.end();
+      expect(failedStep.rows[0]?.exists).toBe(false);
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+        code: "SchemaBehind",
+      } satisfies Partial<PostgresSchemaError>);
+      await migratePostgres({ admin });
+      await expect(assertPostgresSchemaCurrent(admin)).resolves.toBeUndefined();
+
+      const client = new Client(admin);
+      await client.connect();
+      await client.query("delete from schema_migrations where version = 4");
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+        code: "SchemaMalformed",
+      } satisfies Partial<PostgresSchemaError>);
+      await client.query(
+        "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (8, 'future', now()::text)",
+      );
+      await client.end();
+      await expect(assertPostgresSchemaCurrent(admin)).rejects.toMatchObject({
+        code: "SchemaAhead",
+      } satisfies Partial<PostgresSchemaError>);
+    } finally {
+      await partial.stop();
+    }
+  }, 120_000);
 });

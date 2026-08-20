@@ -17,10 +17,12 @@ import {
   BACKUP_OBJECTS_DIR,
   canonicalizeIndex,
   objectRelativePath,
+  parseIndex,
   sha256Hex,
   tenantsFromKeys,
   type BackupIndexV1,
   type BackupObjectRecord,
+  type MigrationBackupBinding,
 } from "./../backup/backup-index.js";
 
 const { Client } = pg;
@@ -31,6 +33,7 @@ export interface BackupDeps {
   readonly now?: () => string;
   readonly logger?: StructuredLogger;
   readonly metrics?: MetricsRegistry;
+  readonly migration?: MigrationBackupBinding;
 }
 
 export interface BackupResult {
@@ -62,7 +65,10 @@ export async function runBackup(
   const byteCounter = metrics.counter("backup_object_bytes_total", "object bytes copied during backup");
 
   const createdAt = now();
-  const slug = createdAt.replace(/[:.]/g, "-");
+  const invocationSuffix = deps.migration === undefined
+    ? ""
+    : `-${sha256Hex(new TextEncoder().encode(deps.migration.invocationId)).slice(0, 12)}`;
+  const slug = `${createdAt.replace(/[:.]/g, "-")}${invocationSuffix}`;
   const finalDir = join(config.backupDir, slug);
   const stagingDir = join(config.backupDir, `.staging-${slug}`);
   const objectsDir = join(stagingDir, BACKUP_OBJECTS_DIR);
@@ -99,7 +105,7 @@ export async function runBackup(
       await writeFile(absolute, bytes);
       // Re-hash the bytes we actually wrote so the index never trusts memory alone.
       const written = await hashFile(absolute);
-      if (written.sha256 !== sha256) {
+      if (written.sha256 !== sha256 || written.size !== bytes.length) {
         throw new AdminCliError("BackupFailed", `object ${summary.key} failed write verification`);
       }
       objects.push({ key: summary.key, relativePath, sizeBytes: bytes.length, sha256 });
@@ -124,9 +130,14 @@ export async function runBackup(
       tenants: tenantsFromKeys(objects.map((object) => object.key)),
       objectCount: objects.length,
       totalObjectBytes: totalBytes,
+      ...(deps.migration === undefined ? {} : { migration: deps.migration }),
     };
 
-    await writeFile(join(stagingDir, BACKUP_INDEX_FILE), canonicalizeIndex(index), "utf8");
+    const canonicalIndex = canonicalizeIndex(index);
+    await writeFile(join(stagingDir, BACKUP_INDEX_FILE), canonicalIndex, "utf8");
+    if (canonicalizeIndex(parseIndex(canonicalIndex)) !== canonicalIndex) {
+      throw new AdminCliError("BackupFailed", "the durable backup index failed verification");
+    }
     // The completion marker is written last: an unmarked directory is never trusted.
     await writeFile(join(stagingDir, BACKUP_COMPLETE_MARKER), `${createdAt}\n`, "utf8");
 

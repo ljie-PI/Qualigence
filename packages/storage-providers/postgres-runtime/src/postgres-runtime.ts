@@ -1,8 +1,11 @@
 import { Kysely, PostgresDialect, sql, type Transaction } from "kysely";
 import pg from "pg";
-import { SUPPORTED_SCHEMA_VERSION } from "@qualigence/relational-kysely";
+import {
+  RELATIONAL_SCHEMA_VERSIONS,
+  SUPPORTED_SCHEMA_VERSION,
+} from "@qualigence/relational-kysely";
 import type { PostgresDatabase } from "./postgres-database.js";
-import { createTenantSchema } from "./postgres-schema.js";
+import { createTenantSchemaTables } from "./postgres-schema.js";
 import {
   applyRowLevelSecurity,
   createRuntimeRoles,
@@ -10,10 +13,27 @@ import {
 } from "./migrations/row-level-security.js";
 import {
   PostgresTenantTransactionProvider,
+  POSTGRES_MIGRATION_LOCK_KEY,
   type TenantTransactionProvider,
 } from "./tenant-transaction.js";
 
 const { Pool } = pg;
+
+export type PostgresSchemaErrorCode =
+  | "SchemaMalformed"
+  | "SchemaAhead"
+  | "SchemaBehind";
+
+export class PostgresSchemaError extends Error {
+  constructor(
+    readonly code: PostgresSchemaErrorCode,
+    message: string,
+    readonly appliedVersion?: number,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = "PostgresSchemaError";
+  }
+}
 
 export interface PostgresConnectionConfig {
   readonly host: string;
@@ -58,6 +78,110 @@ export interface ProvisionPostgresInput {
     readonly server: { readonly name: string; readonly password: string };
     readonly worker: { readonly name: string; readonly password: string };
   };
+  /** False only when the caller already owns the exclusive migration lock. */
+  readonly acquireMigrationLock?: boolean;
+}
+
+export interface PostgresMigrationStep {
+  readonly version: number;
+  readonly name: string;
+}
+
+export interface MigratePostgresInput {
+  readonly admin: PostgresConnectionConfig;
+  readonly targetVersion?: number;
+  readonly acquireLock?: boolean;
+  readonly beforeStep?: (step: PostgresMigrationStep) => void | Promise<void>;
+  readonly afterStepSchema?: (step: PostgresMigrationStep) => void | Promise<void>;
+  readonly roles?: PostgresRuntimeRoles;
+}
+
+export interface PostgresMigrationResult {
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly appliedVersions: readonly number[];
+}
+
+export interface PostgresMigrationLock {
+  release(): Promise<void>;
+}
+
+export async function acquirePostgresMigrationLock(
+  config: PostgresConnectionConfig,
+): Promise<PostgresMigrationLock> {
+  const client = new pg.Client(config);
+  await client.connect();
+  try {
+    await client.query("select pg_advisory_lock($1)", [POSTGRES_MIGRATION_LOCK_KEY]);
+  } catch (error) {
+    await client.end().catch(() => undefined);
+    throw error;
+  }
+  return {
+    release: async () => {
+      try {
+        await client.query("select pg_advisory_unlock($1)", [POSTGRES_MIGRATION_LOCK_KEY]);
+      } finally {
+        await client.end().catch(() => undefined);
+      }
+    },
+  };
+}
+
+export async function acquirePostgresOperationLock(client: pg.PoolClient): Promise<void> {
+  await client.query("select pg_advisory_xact_lock_shared($1)", [POSTGRES_MIGRATION_LOCK_KEY]);
+}
+
+export async function migratePostgres(
+  input: MigratePostgresInput,
+): Promise<PostgresMigrationResult> {
+  const targetVersion = input.targetVersion ?? SUPPORTED_SCHEMA_VERSION;
+  if (!Number.isInteger(targetVersion) || targetVersion < 1 || targetVersion > SUPPORTED_SCHEMA_VERSION) {
+    throw new PostgresSchemaError(
+      "SchemaAhead",
+      `unsupported migration target ${targetVersion}`,
+      targetVersion,
+    );
+  }
+  const lock = input.acquireLock === false
+    ? undefined
+    : await acquirePostgresMigrationLock(input.admin);
+  const db = createKysely(input.admin);
+  try {
+    const fromVersion = await inspectSchemaVersion(db);
+    if (fromVersion > targetVersion) {
+      throw new PostgresSchemaError(
+        "SchemaAhead",
+        `database schema version ${fromVersion} is newer than target ${targetVersion}`,
+        fromVersion,
+      );
+    }
+    const appliedVersions: number[] = [];
+    for (const step of RELATIONAL_SCHEMA_VERSIONS) {
+      if (step.version <= fromVersion || step.version > targetVersion) continue;
+      await input.beforeStep?.({ version: step.version, name: step.name });
+      await db.transaction().execute(async (trx) => {
+        await createTenantSchemaTables(trx, step.tables);
+        if (input.roles !== undefined) {
+          await applyRowLevelSecurity(trx, input.roles, step.tables);
+        }
+        await input.afterStepSchema?.({ version: step.version, name: step.name });
+        await trx
+          .insertInto("schema_migrations")
+          .values({
+            version: step.version,
+            name: step.name,
+            applied_at: new Date().toISOString(),
+          })
+          .execute();
+      });
+      appliedVersions.push(step.version);
+    }
+    return { fromVersion, toVersion: targetVersion, appliedVersions };
+  } finally {
+    await db.destroy();
+    await lock?.release();
+  }
 }
 
 /**
@@ -70,17 +194,6 @@ export async function provisionPostgres(
 ): Promise<void> {
   const db = createKysely(input.admin);
   try {
-    await createTenantSchema(db);
-    for (let version = 1; version <= SUPPORTED_SCHEMA_VERSION; version += 1) {
-      await db
-        .insertInto("schema_migrations")
-        .values({
-          version,
-          name: `relational-v${version}`,
-          applied_at: new Date().toISOString(),
-        })
-        .execute();
-    }
     await createRuntimeRoles(db, {
       database: input.admin.database,
       server: input.roles.server,
@@ -90,6 +203,13 @@ export async function provisionPostgres(
       server: input.roles.server.name,
       worker: input.roles.worker.name,
     };
+    await migratePostgres({
+      admin: input.admin,
+      roles: roleNames,
+      ...(input.acquireMigrationLock === undefined
+        ? {}
+        : { acquireLock: input.acquireMigrationLock }),
+    });
     await applyRowLevelSecurity(db, roleNames);
   } finally {
     await db.destroy();
@@ -102,14 +222,86 @@ export async function readSchemaVersion(
 ): Promise<number> {
   const db = createKysely(config);
   try {
-    const row = await db
-      .selectFrom("schema_migrations")
-      .select((builder) => builder.fn.max("version").as("version"))
-      .executeTakeFirst();
-    return Number(row?.version ?? 0);
+    return await inspectSchemaVersion(db);
   } finally {
     await db.destroy();
   }
+}
+
+export async function assertPostgresSchemaCurrent(
+  config: PostgresConnectionConfig,
+): Promise<void> {
+  const db = createKysely(config);
+  try {
+    await db.transaction().execute(async (trx) => {
+      await sql`select pg_advisory_xact_lock_shared(${POSTGRES_MIGRATION_LOCK_KEY})`.execute(trx);
+      const version = await inspectSchemaVersion(trx);
+      if (version < SUPPORTED_SCHEMA_VERSION) {
+        throw new PostgresSchemaError(
+          "SchemaBehind",
+          `database schema version ${version} is behind ${SUPPORTED_SCHEMA_VERSION}`,
+          version,
+        );
+      }
+      if (version > SUPPORTED_SCHEMA_VERSION) {
+        throw new PostgresSchemaError(
+          "SchemaAhead",
+          `database schema version ${version} is newer than ${SUPPORTED_SCHEMA_VERSION}`,
+          version,
+        );
+      }
+    });
+  } finally {
+    await db.destroy();
+  }
+}
+
+async function inspectSchemaVersion(db: Kysely<PostgresDatabase>): Promise<number> {
+  const exists = await sql<{ exists: boolean }>`
+    select to_regclass('public.schema_migrations') is not null as exists
+  `.execute(db);
+  if (exists.rows[0]?.exists !== true) return 0;
+
+  const rows = await db
+    .selectFrom("schema_migrations")
+    .select(["version", "name"])
+    .orderBy("version")
+    .execute();
+  const lastVersion = Number(rows.at(-1)?.version ?? 0);
+  if (lastVersion > SUPPORTED_SCHEMA_VERSION) {
+    throw new PostgresSchemaError(
+      "SchemaAhead",
+      `database schema version ${lastVersion} is newer than ${SUPPORTED_SCHEMA_VERSION}`,
+      lastVersion,
+    );
+  }
+  for (const [index, row] of rows.entries()) {
+    const expected = RELATIONAL_SCHEMA_VERSIONS[index];
+    if (
+      expected === undefined ||
+      row.version !== index + 1 ||
+      (row.name !== expected.name && row.name !== `relational-v${row.version}`)
+    ) {
+      throw new PostgresSchemaError(
+        "SchemaMalformed",
+        "schema migration history is not a contiguous supported sequence",
+        Number(row.version),
+      );
+    }
+    for (const table of expected.tables) {
+      const present = await sql<{ exists: boolean }>`
+        select to_regclass(${`public.${table}`}) is not null as exists
+      `.execute(db);
+      if (present.rows[0]?.exists !== true) {
+        throw new PostgresSchemaError(
+          "SchemaMalformed",
+          `schema version ${row.version} is missing table ${table}`,
+          Number(row.version),
+        );
+      }
+    }
+  }
+  return rows.length;
 }
 
 export { sql };

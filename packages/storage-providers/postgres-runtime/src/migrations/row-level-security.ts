@@ -35,6 +35,7 @@ function assertIdentifier(value: string, label: string): void {
 export async function applyRowLevelSecurity(
   db: Kysely<any>,
   roles: PostgresRuntimeRoles,
+  tableNames?: readonly string[],
 ): Promise<void> {
   assertIdentifier(roles.server, "server role");
   assertIdentifier(roles.worker, "worker role");
@@ -44,15 +45,18 @@ export async function applyRowLevelSecurity(
   await sql`grant usage on schema public to ${serverRole}, ${workerRole}`.execute(
     db,
   );
-  await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}`.execute(
+  await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}, ${workerRole}`.execute(
     db,
   );
 
+  const selected = tableNames === undefined ? undefined : new Set(tableNames);
   for (const table of TENANT_OWNED_TABLES) {
+    if (selected !== undefined && !selected.has(table.name)) continue;
     const ref = sql.table(table.name);
     await sql`alter table ${ref} enable row level security`.execute(db);
     await sql`alter table ${ref} force row level security`.execute(db);
 
+    await sql`drop policy if exists tenant_isolation on ${ref}`.execute(db);
     await sql`
       create policy tenant_isolation on ${ref}
         to ${serverRole}
@@ -66,7 +70,9 @@ export async function applyRowLevelSecurity(
   }
 
   for (const table of WORKER_ACCESSIBLE_TABLES) {
+    if (selected !== undefined && !selected.has(table.name)) continue;
     const ref = sql.table(table.name);
+    await sql`drop policy if exists worker_access on ${ref}`.execute(db);
     await sql`
       create policy worker_access on ${ref}
         to ${workerRole}
@@ -78,12 +84,15 @@ export async function applyRowLevelSecurity(
   // The Worker may lease jobs (select/update) and append results (select/insert)
   // — and nothing else. Every other tenant table has no grant, so a worker read
   // fails closed with SQLSTATE 42501 before RLS is even consulted.
-  await sql`grant select, update on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(
-    db,
-  );
-  await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(
-    db,
-  );
+  if (selected === undefined || selected.has("intelligence_jobs")) {
+    await sql`grant select, update on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
+  }
+  if (selected === undefined || selected.has("intelligence_results")) {
+    await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(db);
+  }
+
+  await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);
+  await sql`revoke create on schema public from public`.execute(db);
 }
 
 /** Provision the least-privilege runtime roles. */
@@ -103,8 +112,15 @@ export async function createRuntimeRoles(
     const ref = sql.ref(role.name);
     const password = sql.lit(role.password);
     await sql`
-      create role ${ref} login password ${password}
-        nosuperuser nobypassrls nocreatedb nocreaterole inherit
+      do $role$
+      begin
+        create role ${ref} login password ${password}
+          nosuperuser nobypassrls nocreatedb nocreaterole inherit;
+      exception when duplicate_object then
+        alter role ${ref} login password ${password}
+          nosuperuser nobypassrls nocreatedb nocreaterole inherit;
+      end
+      $role$
     `.execute(db);
   }
   const dbRef = sql.ref(input.database);

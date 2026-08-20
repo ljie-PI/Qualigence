@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
+import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
 import type {
   AppendResultInput,
@@ -101,6 +102,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     let keepClient = false;
     try {
       await client.query("begin");
+      await acquirePostgresOperationLock(client);
       const result = await client.query(
         `select j.job_json
            from intelligence_jobs j
@@ -269,11 +271,17 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
   ): Promise<AppendDisposition | undefined> {
     const client = await this.pool.connect();
     try {
+      await client.query("begin");
+      await acquirePostgresOperationLock(client);
       const existing = await client.query(
         `select 1 from intelligence_results where idempotency_key = $1 and job_id = $2 limit 1`,
         [result.idempotencyKey, result.jobId],
       );
+      await client.query("commit");
       return existing.rowCount === 1 ? "duplicate" : undefined;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
     } finally {
       client.release();
     }

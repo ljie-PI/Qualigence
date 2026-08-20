@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import pg from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
@@ -14,12 +14,10 @@ import {
   putObjectBytes,
 } from "./../s3-ops.js";
 import {
-  BACKUP_COMPLETE_MARKER,
   BACKUP_DATABASE_DUMP,
-  BACKUP_INDEX_FILE,
   BACKUP_OBJECTS_DIR,
-  parseIndex,
   sha256Hex,
+  verifyBackupDirectory,
   type BackupIndexV1,
 } from "./../backup/backup-index.js";
 
@@ -68,20 +66,11 @@ export async function runRestore(
   const ownsClient = deps.s3Client === undefined;
 
   try {
-    // 1. Load and structurally validate the index + completion marker.
-    const marker = join(config.backupDir, BACKUP_COMPLETE_MARKER);
-    if (!(await exists(marker))) {
-      throw new AdminCliError(
-        "BackupIncomplete",
-        "the backup has no completion marker and cannot be trusted",
-      );
-    }
-    const index = parseIndex(
-      await readFile(join(config.backupDir, BACKUP_INDEX_FILE), "utf8"),
-    );
-
-    // 2. Verify every backed-up byte stream against the index, before mutating.
-    await verifyBackupBytes(config, index);
+    const index = await verifyBackupDirectory(config.backupDir).catch((error) => {
+      throw new AdminCliError("BackupIncomplete", "the backup failed byte verification", {
+        cause: error,
+      });
+    });
 
     // 3. Require an empty target unless explicitly restoring into a scratch DB.
     if (deps.allowNonEmptyTarget !== true) {
@@ -122,35 +111,6 @@ export async function runRestore(
   } finally {
     if (ownsClient) {
       s3Client.destroy();
-    }
-  }
-}
-
-/** Recompute SHA-256/size for the dump and every object file in the backup. */
-async function verifyBackupBytes(
-  config: SelfHostedAdminConfig,
-  index: BackupIndexV1,
-): Promise<void> {
-  const dumpPath = join(config.backupDir, BACKUP_DATABASE_DUMP);
-  if (!(await exists(dumpPath))) {
-    throw new AdminCliError("BackupIncomplete", "the database dump is missing from the backup");
-  }
-  const dump = await readFile(dumpPath);
-  if (dump.length !== index.database.sizeBytes || sha256Hex(dump) !== index.database.sha256) {
-    throw new AdminCliError("BackupIncomplete", "the database dump failed integrity verification");
-  }
-  for (const object of index.objects) {
-    const path = join(config.backupDir, BACKUP_OBJECTS_DIR, object.relativePath);
-    if (!(await exists(path))) {
-      throw new AdminCliError("BackupIncomplete", `backup object bytes are missing for ${object.key}`, {
-        details: { key: object.key },
-      });
-    }
-    const bytes = await readFile(path);
-    if (bytes.length !== object.sizeBytes || sha256Hex(bytes) !== object.sha256) {
-      throw new AdminCliError("BackupIncomplete", `backup object bytes are corrupt for ${object.key}`, {
-        details: { key: object.key },
-      });
     }
   }
 }
@@ -230,14 +190,5 @@ async function assertTenantIntegrity(config: SelfHostedAdminConfig): Promise<voi
     }
   } finally {
     await client.end().catch(() => undefined);
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
   }
 }

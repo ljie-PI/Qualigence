@@ -7,6 +7,7 @@ import {
   relationalTableNames,
   tenantOwnedTableNames,
   RELATIONAL_TABLES,
+  RELATIONAL_SCHEMA_VERSIONS,
 } from "@qualigence/relational-kysely";
 
 let dir: string;
@@ -43,6 +44,15 @@ describe("shared relational schema catalog", () => {
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(7);
+  });
+
+  it("assigns every relational table to one sequential released schema version", () => {
+    expect(RELATIONAL_SCHEMA_VERSIONS.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
+    expect(RELATIONAL_SCHEMA_VERSIONS.flatMap((migration) => migration.tables)).toEqual(
+      relationalTableNames(),
+    );
   });
 
   it("adds the migration-007 Local intake authority", async () => {

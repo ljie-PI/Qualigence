@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 /** The verifiable digest + size of one byte stream captured by a backup. */
 export interface BackupObjectRecord {
@@ -20,6 +22,12 @@ export interface BackupDatabaseRecord {
   readonly snapshotId: string;
 }
 
+export interface MigrationBackupBinding {
+  readonly invocationId: string;
+  readonly targetDatabaseSha256: string;
+  readonly targetSchemaVersion: number;
+}
+
 /**
  * The canonical, self-describing manifest that binds a PostgreSQL dump and every
  * copied object byte stream to its SHA-256 and size. A restore validates every
@@ -37,6 +45,7 @@ export interface BackupIndexV1 {
   readonly tenants: readonly string[];
   readonly objectCount: number;
   readonly totalObjectBytes: number;
+  readonly migration?: MigrationBackupBinding;
 }
 
 /** The name of the file that carries the canonical index inside a backup. */
@@ -79,20 +88,119 @@ export function canonicalizeIndex(index: BackupIndexV1): string {
     tenants: [...index.tenants].sort((a, b) => a.localeCompare(b)),
     objectCount: index.objectCount,
     totalObjectBytes: index.totalObjectBytes,
+    ...(index.migration === undefined
+      ? {}
+      : {
+          migration: {
+            invocationId: index.migration.invocationId,
+            targetDatabaseSha256: index.migration.targetDatabaseSha256,
+            targetSchemaVersion: index.migration.targetSchemaVersion,
+          },
+        }),
   };
   return JSON.stringify(canonical, null, 2);
 }
 
 /** Parse a canonical index and validate its shape (never trusts an alien file). */
 export function parseIndex(text: string): BackupIndexV1 {
-  const raw = JSON.parse(text) as Partial<BackupIndexV1>;
-  if (raw.version !== "backup-index/v1") {
-    throw new Error(`unsupported backup index version: ${String(raw.version)}`);
+  const raw: unknown = JSON.parse(text);
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("backup index must be an object");
   }
-  if (raw.database === undefined || !Array.isArray(raw.objects)) {
+  const candidate = raw as Partial<BackupIndexV1>;
+  if (candidate.version !== "backup-index/v1") {
+    throw new Error(`unsupported backup index version: ${String(candidate.version)}`);
+  }
+  if (candidate.database === undefined || !Array.isArray(candidate.objects)) {
     throw new Error("backup index is missing its database record or objects");
   }
-  return raw as BackupIndexV1;
+  if (
+    candidate.database.dumpFile !== BACKUP_DATABASE_DUMP ||
+    candidate.database.format !== "custom" ||
+    !isNonNegativeInteger(candidate.database.sizeBytes) ||
+    !isSha256(candidate.database.sha256) ||
+    !isNonNegativeInteger(candidate.database.schemaVersion) ||
+    typeof candidate.database.snapshotId !== "string" ||
+    candidate.database.snapshotId.length === 0
+  ) {
+    throw new Error("backup index has an invalid database record");
+  }
+  const keys = new Set<string>();
+  for (const object of candidate.objects) {
+    if (
+      typeof object.key !== "string" || object.key.length === 0 || keys.has(object.key) ||
+      !isSha256(object.sha256) ||
+      object.relativePath !== objectRelativePath(object.sha256) ||
+      !isNonNegativeInteger(object.sizeBytes)
+    ) {
+      throw new Error("backup index has an invalid or duplicate object record");
+    }
+    keys.add(object.key);
+  }
+  if (
+    candidate.objectCount !== candidate.objects.length ||
+    !isNonNegativeInteger(candidate.totalObjectBytes) ||
+    candidate.totalObjectBytes !== candidate.objects.reduce((total, object) => total + object.sizeBytes, 0)
+  ) {
+    throw new Error("backup index object totals do not match its records");
+  }
+  if (candidate.migration !== undefined && (
+    typeof candidate.migration.invocationId !== "string" ||
+    candidate.migration.invocationId.length === 0 ||
+    !isSha256(candidate.migration.targetDatabaseSha256) ||
+    !isNonNegativeInteger(candidate.migration.targetSchemaVersion)
+  )) {
+    throw new Error("backup index has an invalid migration binding");
+  }
+  return candidate as BackupIndexV1;
+}
+
+export async function verifyBackupDirectory(directory: string): Promise<BackupIndexV1> {
+  await stat(join(directory, BACKUP_COMPLETE_MARKER)).catch(() => {
+    throw new Error("backup completion marker is missing");
+  });
+  const indexText = await readFile(join(directory, BACKUP_INDEX_FILE), "utf8");
+  const index = parseIndex(indexText);
+  if (canonicalizeIndex(index) !== indexText) {
+    throw new Error("backup index is not canonical");
+  }
+  await verifyFile(
+    join(directory, index.database.dumpFile),
+    index.database.sizeBytes,
+    index.database.sha256,
+    "database dump",
+  );
+  for (const object of index.objects) {
+    await verifyFile(
+      join(directory, BACKUP_OBJECTS_DIR, object.relativePath),
+      object.sizeBytes,
+      object.sha256,
+      `object ${object.key}`,
+    );
+  }
+  return index;
+}
+
+async function verifyFile(
+  path: string,
+  expectedSize: number,
+  expectedSha256: string,
+  label: string,
+): Promise<void> {
+  const bytes = await readFile(path).catch(() => {
+    throw new Error(`backup ${label} is missing`);
+  });
+  if (bytes.length !== expectedSize || sha256Hex(bytes) !== expectedSha256) {
+    throw new Error(`backup ${label} failed byte verification`);
+  }
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 /**

@@ -69,6 +69,12 @@ export interface RelationalTableSpec {
   readonly partialIndexes?: readonly PartialIndexSpec[];
 }
 
+export interface RelationalSchemaVersion {
+  readonly version: number;
+  readonly name: string;
+  readonly tables: readonly string[];
+}
+
 const t = (name: string, notNull = true): ColumnSpec => ({
   name,
   type: "text",
@@ -1209,6 +1215,34 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     ],
   },
 ];
+
+export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
+  { version: 1, name: "initial-schema", tables: tablesThrough("model_invocations") },
+  { version: 2, name: "prd-mission", tables: tablesFromTo("prd_documents", "execution_job_attempts") },
+  { version: 3, name: "skill", tables: tablesFromTo("recordings", "skill_revocations") },
+  { version: 4, name: "exploration-benchmark", tables: tablesFromTo("benchmark_runs", "benchmark_reports") },
+  { version: 5, name: "investigation-review", tables: tablesFromTo("investigation_cases", "evidence_audit_events") },
+  { version: 6, name: "runner-control", tables: tablesFromTo("runner_sessions", "execution_completions") },
+  { version: 7, name: "local-run-intake", tables: tablesFrom("local_run_intakes") },
+];
+
+function tablesThrough(last: string): readonly string[] {
+  return RELATIONAL_TABLES.slice(0, tableIndex(last) + 1).map(({ name }) => name);
+}
+
+function tablesFrom(first: string): readonly string[] {
+  return RELATIONAL_TABLES.slice(tableIndex(first)).map(({ name }) => name);
+}
+
+function tablesFromTo(first: string, last: string): readonly string[] {
+  return RELATIONAL_TABLES.slice(tableIndex(first), tableIndex(last) + 1).map(({ name }) => name);
+}
+
+function tableIndex(name: string): number {
+  const index = RELATIONAL_TABLES.findIndex((table) => table.name === name);
+  if (index < 0) throw new Error(`Unknown relational table ${name}`);
+  return index;
+}
 
 export const TENANT_OWNED_TABLES: readonly RelationalTableSpec[] =
   RELATIONAL_TABLES.filter((table) => table.tenantOwned);

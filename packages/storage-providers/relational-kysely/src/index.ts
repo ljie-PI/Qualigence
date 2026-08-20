@@ -6,6 +6,7 @@ export type { Migration } from "./migrations.js";
 
 export {
   RELATIONAL_TABLES,
+  RELATIONAL_SCHEMA_VERSIONS,
   TENANT_OWNED_TABLES,
   WORKER_ACCESSIBLE_TABLES,
   tenantOwnedTableNames,
@@ -17,4 +18,5 @@ export type {
   ForeignKeySpec,
   LogicalColumnType,
   RelationalTableSpec,
+  RelationalSchemaVersion,
 } from "./catalog.js";

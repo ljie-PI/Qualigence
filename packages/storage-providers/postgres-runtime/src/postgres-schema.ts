@@ -48,7 +48,18 @@ function compositeKey(
  * foreign keys always match the RLS policies applied on top.
  */
 export async function createTenantSchema(db: Kysely<any>): Promise<void> {
+  await createTenantSchemaTables(db, RELATIONAL_TABLES.map(({ name }) => name));
+}
+
+export async function createTenantSchemaTables(
+  db: Kysely<any>,
+  tableNames: readonly string[],
+): Promise<void> {
+  const selected = new Set(tableNames);
   for (const table of RELATIONAL_TABLES) {
+    if (!selected.has(table.name)) {
+      continue;
+    }
     // The builder tracks added columns in its type; because it is reassigned in
     // a loop we treat it structurally and rely on the catalog for correctness.
     let builder: any = db.schema.createTable(table.name);
