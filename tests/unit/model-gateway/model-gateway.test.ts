@@ -383,6 +383,38 @@ describe("ModelGateway", () => {
     } satisfies Partial<ModelGatewayAbortError>);
   });
 
+  it("handles a late rejection when the provider aborts before returning its promise", async () => {
+    const controller = new AbortController();
+    const reason = new Error("deadline");
+    let rejectLate: ((error: Error) => void) | undefined;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      invoke() {
+        controller.abort(reason);
+        return new Promise((_resolve, reject) => {
+          rejectLate = reject;
+        });
+      },
+    };
+
+    await expect(new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract)).rejects.toMatchObject({
+      reason,
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+
+    rejectLate?.(new Error("late provider rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
   it("includes interrupted-attempt usage when the provider reports it on abort", async () => {
     const controller = new AbortController();
     let correctionStarted: (() => void) | undefined;

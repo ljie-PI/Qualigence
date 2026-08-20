@@ -420,7 +420,6 @@ class ProviderInvocationAborted extends Error {}
 
 async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return promise;
-  if (signal.aborted) throw new ProviderInvocationAborted();
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -440,6 +439,7 @@ async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal | unde
       (value) => settle(() => resolve(value)),
       (error: unknown) => settle(() => reject(error)),
     );
+    if (signal.aborted) onAbort();
   });
 }
 

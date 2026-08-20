@@ -81,8 +81,8 @@ verification: pending dedicated PR merge
   if the interrupted attempted call has no usage under the finite budget, it
   instead preserves `ModelUsageUnavailable`. Abort racing retains a rejection
   handler for late provider settlement, preventing unhandled late rejections.
-- Round-2 affected files passed: Gateway 20 tests, Model Agent 17 tests, and
-  Runtime 24 tests. The exact row-17 focused Gate above passed 9 files / 107 tests. Root
+- Round-2 affected files passed: Gateway 21 tests, Model Agent 17 tests, and
+  Runtime 24 tests. The exact row-17 focused Gate above passed 9 files / 108 tests. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run per
   the ticket review-fix protocol; fresh exact-base review remains pending.
 
