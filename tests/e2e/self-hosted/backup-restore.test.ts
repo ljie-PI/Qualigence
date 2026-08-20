@@ -85,6 +85,40 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   }
 
+  async function insertArtifactManifest(input: {
+    readonly artifactId: string;
+    readonly tenantId: string;
+    readonly runId: string;
+    readonly key: string;
+    readonly sha256: string;
+    readonly sizeBytes: number;
+    readonly mediaType: string;
+  }): Promise<void> {
+    const client = new Client(pgFixture.adminConfig);
+    await client.connect();
+    try {
+      await client.query(
+        `INSERT INTO artifact_manifests (
+          tenant_id, artifact_id, run_id, kind, media_type, relative_path,
+          sha256, size_bytes, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          input.tenantId,
+          input.artifactId,
+          input.runId,
+          "observation",
+          input.mediaType,
+          input.key,
+          input.sha256,
+          input.sizeBytes,
+          "2026-08-01T00:00:00.000Z",
+        ],
+      );
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
   async function runRows(): Promise<Array<{ tenant_id: string; run_id: string; objective: string }>> {
     const client = new Client(pgFixture.adminConfig);
     await client.connect();
@@ -126,16 +160,47 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
       await insertRun(executionRunRow(run));
     }
 
-    // Seed real object bytes across two tenants.
+    // Seed real object bytes and their snapshot-visible manifests across two tenants.
     const specs = [
-      { key: "tenant-a/project-a/observation-1.json", text: '{"finding":"alpha","n":1}' },
-      { key: "tenant-a/project-a/observation-2.json", text: '{"finding":"beta","n":2}' },
-      { key: "tenant-b/project-b/observation-3.bin", text: "\u0000\u0001\u0002binary-ish\u00ff" },
+      {
+        artifactId: "artifact-a-1",
+        tenantId: "tenant-a",
+        runId: "run-a-1",
+        key: "tenant-a/project-a/observation-1.json",
+        mediaType: "application/json",
+        text: '{"finding":"alpha","n":1}',
+      },
+      {
+        artifactId: "artifact-a-2",
+        tenantId: "tenant-a",
+        runId: "run-a-2",
+        key: "tenant-a/project-a/observation-2.json",
+        mediaType: "application/json",
+        text: '{"finding":"beta","n":2}',
+      },
+      {
+        artifactId: "artifact-b-1",
+        tenantId: "tenant-b",
+        runId: "run-b-1",
+        key: "tenant-b/project-b/observation-3.bin",
+        mediaType: "application/octet-stream",
+        text: "\u0000\u0001\u0002binary-ish\u00ff",
+      },
     ];
     for (const spec of specs) {
       const bytes = new TextEncoder().encode(spec.text);
+      const sha256 = sha256Hex(bytes);
       await putObjectBytes(s3Client, BUCKET, spec.key, bytes);
-      seededObjects.push({ key: spec.key, bytes, sha256: sha256Hex(bytes) });
+      await insertArtifactManifest({
+        artifactId: spec.artifactId,
+        tenantId: spec.tenantId,
+        runId: spec.runId,
+        key: spec.key,
+        sha256,
+        sizeBytes: bytes.length,
+        mediaType: spec.mediaType,
+      });
+      seededObjects.push({ key: spec.key, bytes, sha256 });
     }
 
     // Capture one canonical good backup used to reset state between tests
