@@ -162,6 +162,11 @@ checklist. Git OpenSSL is at
   `(type, targetNodeId)` tuple; root IDs and Graph evidence refs by their
   NFC-normalized string value. Equal keys require byte-identical entries or
   validation fails, so no input-order tie-breaker enters the hash.
+- The typed `web/v1` extension contains canonical origin, pathname, title, and
+  viewport plus only Target-policy-allowlisted query keys. Every retained query
+  value is the fixed redaction marker, fragments are omitted, and Graph hashing
+  covers exactly that redacted representation. Normalized text and private
+  locator/DOM provenance are not substitutes for these required fields.
 - `select` uses a Plan-owned `valueRef`; the model never supplies option text.
   Runner mTLS identity is reused for Companion proof with ECDSA P-256/SHA-256
   or RSA-PSS/SHA-256 according to the certificate key.

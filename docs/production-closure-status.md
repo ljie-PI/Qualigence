@@ -54,7 +54,7 @@ implementation_commit: same commit as this ledger entry
   migrations 001-013, exact Files/focused Gates/post-review acceptance, current
   host facts, Evidence revoke-before-delete, and Graph set/order authority.
 - `corepack pnpm typecheck` and `git diff --check` passed.
-- The required final full suite was run with Git OpenSSL on `PATH` and
+- A supplemental final full-suite baseline was run with Git OpenSSL on `PATH` and
   `OPENSSL_CONF=C:\Program Files\Git\usr\ssl\openssl.cnf`. It reported 154
   passed files, 5 failed, and 1 skipped; 1110 tests passed, 9 failed, and 6
   skipped. The failures are outside this docs-only change: Detection Benchmark
