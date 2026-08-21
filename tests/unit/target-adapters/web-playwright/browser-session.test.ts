@@ -33,6 +33,7 @@ function fakeLauncher(): { launcher: BrowserLauncher; launch: ReturnType<typeof 
   };
   const context = {
     newPage: vi.fn(async () => page),
+    addInitScript: vi.fn(async () => undefined),
     setDefaultTimeout: vi.fn(),
     setDefaultNavigationTimeout: vi.fn(),
     close: vi.fn(async () => undefined),

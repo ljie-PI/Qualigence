@@ -512,6 +512,41 @@ parent_head: `7f265c1`
   `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
   not run pending fresh coordinator review.
 
+### Ticket 41 - Shadow DOM, scheduler, and Runner log remediation (2026-08-22)
+
+component: complete
+production_wiring: present
+verification: pending dedicated remediation PR
+parent_ticket: `40`
+parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/79`
+base_head: `37e947ab42f687142b83c4cdfc8d6f28c78c65e7`
+implementation_head: pending commit
+pull_request: pending
+
+- Runner reconnect/fatal logging accepts stable codes only from the repository's
+  known error classes and a closed readonly allowlist. Unknown, malformed,
+  attacker-controlled, message/cause-only, and hostile `toString` values map to
+  exactly `UnexpectedRunnerError`; message and cause are never serialized.
+- Sensitive DOM/property snapshots, mutation observation, and Observation
+  collection recurse through every open shadow root under caps of 64 roots,
+  4,096 traversed elements, 512 candidates, 64 KiB per node, and 2 MiB per
+  snapshot before Graph/JSON/screenshot materialization. Root identity/count,
+  registry integrity, or a relevant closed-root mutation that cannot be
+  inspected poisons all later evidence as `SensitiveEvidenceUnproven`.
+- Open-root input/text reflections retain exact causal handles, are fixed-redacted
+  in Graph/Observation JSON, and are fully masked in screenshot crops. A causal
+  closed-root reflection fails before registering any new Graph or Artifact.
+- Timer, interval, animation-frame, microtask, and Promise continuation wrappers
+  count registration before native registration or wrapper allocation.
+  Registration and execution use separate 64-entry budgets; either overflow
+  poisons attribution only. Native callbacks still run, intervals continue until
+  the application clears them, tracker code never cancels them, and wrappers are
+  restored on tracker close.
+- Exact non-E2E command: `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
+  It passed 10 files / 155 tests: 154 passed and 1 existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. Per coordinator
+  instruction, no E2E was run before review.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

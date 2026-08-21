@@ -4,21 +4,92 @@ import { pathToFileURL } from "node:url";
 import type { ExecutionJobOffer } from "@qualigence/runner-protocol";
 import {
   GrpcRunnerProtocolClient,
+  RunnerProtocolError,
   type RunnerSession,
 } from "@qualigence/grpc-runner-protocol";
 import {
   AesGcmSpoolCrypto,
+  RunnerSpoolError,
   loadOrCreateSpoolKey,
   SqliteRunnerSpool,
   type RunnerSpool,
 } from "@qualigence/runner-spool";
+import { ExecutionBudgetError } from "@qualigence/runner-kernel";
+import { WebTargetError } from "@qualigence/web-playwright";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
+import { RunnerAppError } from "./errors.js";
+import { LeaseRenewalTimeoutError } from "./lease-renewal-controller.js";
 import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
 
+const RUNNER_SAFE_LOG_CODES: readonly string[] = Object.freeze([
+  "ActionInfrastructureFailure",
+  "ActionTimedOut",
+  "AmbiguousTarget",
+  "BrowserLaunchFailed",
+  "CapabilityMismatch",
+  "ConcurrentSessionOperation",
+  "ExecutionBudgetAlreadyActive",
+  "ExecutionBudgetInvalid",
+  "ExecutionBudgetNotActive",
+  "LeaseExpired",
+  "LeaseLost",
+  "LeaseRenewalTimeout",
+  "LeaseWindowUnsafe",
+  "ModelBudgetExceeded",
+  "ModelUsageUnavailable",
+  "NavigationFailed",
+  "NavigationTimedOut",
+  "OriginViolation",
+  "PolicyDenied",
+  "PolicyMissing",
+  "ProtocolVersionMismatch",
+  "ProtocolViolation",
+  "ResumeRejected",
+  "RunIdentityMismatch",
+  "RunnerAlreadyConnected",
+  "RunnerIdentityMismatch",
+  "SensitiveEvidenceUnproven",
+  "SensitiveTargetUnproven",
+  "SessionClosed",
+  "SpoolCapacityExceeded",
+  "SpoolIntegrityViolation",
+  "SpoolKeyInvalid",
+  "SpoolKeyUnavailable",
+  "SpoolLeaseIntegrityViolation",
+  "SpoolOpenFailed",
+  "SpoolUnavailable",
+  "StaleObservation",
+  "StepBudgetExceeded",
+  "TargetNotFound",
+  "TlsPeerRejected",
+  "TraceGap",
+  "TraceIntegrityViolation",
+  "TransportError",
+  "UnknownObservationNode",
+  "UnknownOffer",
+  "UnknownSession",
+  "UnsupportedAction",
+  "WallClockBudgetExceeded",
+]);
+const runnerSafeLogCodes = new Set(RUNNER_SAFE_LOG_CODES);
+
 export function runnerErrorForLog(error: unknown): { readonly errorCode: string } {
-  if (error instanceof Error && "code" in error && typeof error.code === "string") {
-    return { errorCode: error.code };
+  try {
+    if (
+      (error instanceof RunnerAppError ||
+        error instanceof LeaseRenewalTimeoutError ||
+        error instanceof RunnerProtocolError ||
+        error instanceof RunnerSpoolError ||
+        error instanceof ExecutionBudgetError ||
+        error instanceof WebTargetError) &&
+      typeof error.code === "string" &&
+      runnerSafeLogCodes.has(error.code)
+    ) {
+      return { errorCode: error.code };
+    }
+  } catch {
+    // A forged error object must not escape the stable fallback.
   }
   return { errorCode: "UnexpectedRunnerError" };
 }

@@ -7,6 +7,8 @@ import {
   MAXIMUM_OBSERVATION_CANDIDATES,
   MAXIMUM_OBSERVATION_NODE_BYTES,
   MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+  MAXIMUM_OBSERVATION_SHADOW_ROOTS,
+  MAXIMUM_OBSERVATION_DOM_ELEMENTS,
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
   type PlaywrightBrowserSession,
@@ -95,6 +97,8 @@ function collectCandidates(identity: {
   readonly maximumCandidates: number;
   readonly maximumNodeBytes: number;
   readonly maximumSnapshotBytes: number;
+  readonly maximumShadowRoots: number;
+  readonly maximumDomElements: number;
 }): {
   readonly candidates: ObservationCandidate[];
   readonly sensitiveIndexes: readonly number[];
@@ -118,14 +122,34 @@ function collectCandidates(identity: {
     return bytes;
   };
   const boundedText = (element: Element): string => {
-    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     const chunks: string[] = [];
     let bytes = 0;
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      const value = node.nodeValue ?? "";
-      bytes += utf8Bytes(value);
-      if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
-      chunks.push(value);
+    const roots: Node[] = [element];
+    if (element.shadowRoot !== null) roots.push(element.shadowRoot);
+    let elements = 0;
+    for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+      const root = roots[rootIndex];
+      if (root === undefined) throw new Error("text-root-unprovable");
+      const walker = element.ownerDocument.createTreeWalker(
+        root,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+      );
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if (node instanceof CharacterData) {
+          bytes += utf8Bytes(node.data);
+          if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
+          chunks.push(node.data);
+        } else if (node instanceof Element) {
+          elements += 1;
+          if (elements > identity.maximumDomElements) throw new Error("dom-element-overflow");
+          if (node.shadowRoot !== null) {
+            roots.push(node.shadowRoot);
+            if (roots.length > identity.maximumShadowRoots + 1) {
+              throw new Error("shadow-root-overflow");
+            }
+          }
+        }
+      }
     }
     return chunks.join("");
   };
@@ -201,7 +225,12 @@ function collectCandidates(identity: {
     if (labelledBy) {
       const joined = labelledBy
         .split(/\s+/)
-        .map((id) => document.getElementById(id))
+        .map((id) => {
+          const root = element.getRootNode();
+          return root instanceof Document || root instanceof ShadowRoot
+            ? root.getElementById(id)
+            : null;
+        })
         .filter((node): node is HTMLElement => node !== null)
         .map((node) => boundedText(node))
         .join(" ")
@@ -215,7 +244,10 @@ function collectCandidates(identity: {
         typeof CSS !== "undefined" && CSS.escape
           ? CSS.escape(element.id)
           : element.id;
-      const label = document.querySelector(`label[for="${escaped}"]`);
+      const root = element.getRootNode();
+      const label = root instanceof Document || root instanceof ShadowRoot
+        ? root.querySelector(`label[for="${escaped}"]`)
+        : null;
       if (label) {
         const text = boundedText(label);
         if (text.trim() !== "") return text;
@@ -252,30 +284,48 @@ function collectCandidates(identity: {
   const selector =
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
   const elements: Element[] = [];
-  const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, {
-    acceptNode(node) {
-      return node instanceof Element && node.matches(selector)
-        ? NodeFilter.FILTER_ACCEPT
-        : NodeFilter.FILTER_SKIP;
-    },
-  });
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (!(node instanceof Element)) {
+  const roots: (Document | ShadowRoot)[] = [document];
+  let domElements = 0;
+  for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+    const root = roots[rootIndex];
+    if (root === undefined || new Set(roots).size !== roots.length ||
+        rootIndex > identity.maximumShadowRoots) {
       return {
         candidates: [],
         sensitiveIndexes: [],
         sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
-        failure: "candidate-unprovable",
+        failure: "shadow-root-identity-unprovable",
       };
     }
-    elements.push(node);
-    if (elements.length > identity.maximumCandidates) {
-      return {
-        candidates: [],
-        sensitiveIndexes: [],
-        sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
-        failure: "candidate-overflow",
-      };
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (!(node instanceof Element)) {
+        return {
+          candidates: [],
+          sensitiveIndexes: [],
+          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          failure: "candidate-unprovable",
+        };
+      }
+      domElements += 1;
+      if (domElements > identity.maximumDomElements) {
+        return {
+          candidates: [],
+          sensitiveIndexes: [],
+          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          failure: "dom-element-overflow",
+        };
+      }
+      if (node.matches(selector)) elements.push(node);
+      if (node.shadowRoot !== null) roots.push(node.shadowRoot);
+      if (elements.length > identity.maximumCandidates) {
+        return {
+          candidates: [],
+          sensitiveIndexes: [],
+          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          failure: "candidate-overflow",
+        };
+      }
     }
   }
   const candidates: ObservationCandidate[] = [];
@@ -399,6 +449,12 @@ export class PlaywrightObserver implements Observer {
           : Number.MAX_SAFE_INTEGER,
         maximumSnapshotBytes: bounded
           ? MAXIMUM_OBSERVATION_SNAPSHOT_BYTES
+          : Number.MAX_SAFE_INTEGER,
+        maximumShadowRoots: bounded
+          ? MAXIMUM_OBSERVATION_SHADOW_ROOTS
+          : Number.MAX_SAFE_INTEGER,
+        maximumDomElements: bounded
+          ? MAXIMUM_OBSERVATION_DOM_ELEMENTS
           : Number.MAX_SAFE_INTEGER,
       });
       if (captured.failure !== undefined) {

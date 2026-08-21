@@ -513,6 +513,127 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expectSolidCrop(image, boxes.unrelated!, [0, 255, 0, 255]);
   });
 
+  it("redacts and masks causal text and input reflections in an open shadow root", async () => {
+    const secret = "open-shadow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        innerHTML: string;
+        attachShadow(init: { mode: "open" }): TestRoot;
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+      }
+      interface TestRoot {
+        innerHTML: string;
+        querySelector(selector: string): TestElement | null;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestElement): void };
+          createElement(tag: string): TestElement;
+          querySelector(selector: string): TestElement | null;
+        };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const host = state.document.createElement("div");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <p data-qualigence-observe id="shadow-text" style="position:fixed;left:500px;top:80px;background:rgb(255,0,0);width:120px;height:40px;margin:0"></p>
+        <input aria-label="Shadow reflection" style="position:fixed;left:500px;top:140px;background:rgb(255,0,0);border:0;padding:0;width:120px;height:40px" />
+      `;
+      state.document.body.append(host);
+      source?.addEventListener("input", (event) => {
+        const value = event.target.value;
+        const text = root.querySelector("#shadow-text");
+        const input = root.querySelector('input[aria-label="Shadow reflection"]');
+        if (text !== null) text.textContent = value;
+        if (input !== null) input.value = value;
+      });
+    }));
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.open-shadow"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    const screenshot = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "image/png");
+    const boxes = await session.withPage(async (page) => ({
+      text: await page.locator("#shadow-text").boundingBox(),
+      input: await page.getByRole("textbox", { name: "Shadow reflection" }).boundingBox(),
+    }));
+    if (screenshot === undefined || boxes.text === null || boxes.input === null) {
+      throw new Error("Expected open-shadow screenshot evidence.");
+    }
+
+    expect(JSON.stringify(after)).not.toContain(secret);
+    expect(after.nodes.filter((node) => node.name === "[REDACTED]")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "[REDACTED]" }),
+        expect.objectContaining({ value: "[REDACTED]" }),
+      ]),
+    );
+    const image = decodePng(screenshot.bytes);
+    expectSolidCrop(image, boxes.text, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.input, [0, 0, 0, 255]);
+  });
+
+  it("poisons evidence when a causal reflection enters a closed shadow root", async () => {
+    const secret = "closed-shadow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        attachShadow(init: { mode: "closed" }): { append(element: TestElement): void };
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestElement): void };
+          createElement(tag: string): TestElement;
+          querySelector(selector: string): TestElement | null;
+        };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const host = state.document.createElement("div");
+      const root = host.attachShadow({ mode: "closed" });
+      const reflection = state.document.createElement("p");
+      root.append(reflection);
+      state.document.body.append(host);
+      source?.addEventListener("input", (event) => {
+        reflection.textContent = event.target.value;
+      });
+    }));
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.closed-shadow"),
+      before,
+    );
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+    expect(() => session.artifactsFor(before.graphId)).toThrowError(
+      expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+    );
+  });
+
   it("redacts causally reflected URL fields and document title before serialization", async () => {
     const secret = "route-secret";
     session = new PlaywrightBrowserSession(options());
@@ -947,6 +1068,191 @@ describe("Playwright resolve + execute against real Chromium", () => {
     await expect(observer.capture(job)).rejects.toMatchObject({
       code: "SensitiveEvidenceUnproven",
     });
+  });
+
+  it("poisons over 64 pending registrations while preserving every native callback", async () => {
+    const secret = "registration-overflow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.registration-overflow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement { addEventListener(type: string, listener: () => void): void }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): TestElement | null };
+        registrationCounter?: number;
+        setTimeout(callback: () => void, timeout: number): unknown;
+        queueMicrotask(callback: () => void): void;
+        requestAnimationFrame(callback: () => void): unknown;
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      state.registrationCounter = 0;
+      source?.addEventListener("input", () => {
+        for (let index = 0; index < 65; index += 1) {
+          const increment = () => {
+            state.registrationCounter = (state.registrationCounter ?? 0) + 1;
+          };
+          if (index % 3 === 0) state.setTimeout(increment, 0);
+          else if (index % 3 === 1) state.queueMicrotask(increment);
+          else state.requestAnimationFrame(increment);
+        }
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { registrationCounter?: number }).registrationCounter,
+    ))).toBe(65);
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
+  it("never clears an application interval after tracking is poisoned", async () => {
+    const secret = "interval-overflow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.interval-overflow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement { addEventListener(type: string, listener: () => void): void }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): TestElement | null };
+        intervalCounter?: number;
+        intervalId?: unknown;
+        clearIntervalCalls?: number;
+        setTimeout(callback: () => void, timeout: number): unknown;
+        setInterval(callback: () => void, timeout: number): unknown;
+        clearInterval(id?: unknown): void;
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      state.intervalCounter = 0;
+      state.clearIntervalCalls = 0;
+      const nativeClearInterval = state.clearInterval;
+      state.clearInterval = (id?: unknown) => {
+        state.clearIntervalCalls = (state.clearIntervalCalls ?? 0) + 1;
+        nativeClearInterval(id);
+      };
+      source?.addEventListener("input", () => {
+        for (let index = 0; index < 64; index += 1) state.setTimeout(() => undefined, 0);
+        state.intervalId = state.setInterval(() => {
+          state.intervalCounter = (state.intervalCounter ?? 0) + 1;
+        }, 10);
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { intervalCounter?: number }).intervalCounter,
+    ))).toBeGreaterThanOrEqual(3);
+    const beforeClear = await session.withPage(async (page) => page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        intervalCounter?: number;
+        clearIntervalCalls?: number;
+      };
+      return { counter: state.intervalCounter ?? 0, clearCalls: state.clearIntervalCalls ?? 0 };
+    }));
+    expect(beforeClear.clearCalls).toBe(0);
+    await session.withPage(async (page) => page.evaluate(() => {
+      const state = globalThis as unknown as { intervalId?: unknown; clearInterval(id?: unknown): void };
+      state.clearInterval(state.intervalId);
+    }));
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { clearIntervalCalls?: number }).clearIntervalCalls,
+    ))).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { intervalCounter?: number }).intervalCounter,
+    ))).toBe(beforeClear.counter);
+  });
+
+  it("bounds Promise registrations and restores scheduler wrappers on close", async () => {
+    const secret = "promise-overflow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.promise-overflow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement { addEventListener(type: string, listener: () => void): void }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): TestElement | null };
+        promiseCounter?: number;
+        originalSchedulers?: readonly unknown[];
+        setTimeout: unknown;
+        setInterval: unknown;
+        requestAnimationFrame: unknown;
+        queueMicrotask: unknown;
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      state.promiseCounter = 0;
+      state.originalSchedulers = [
+        state.setTimeout,
+        state.setInterval,
+        state.requestAnimationFrame,
+        state.queueMicrotask,
+        Promise.prototype.then,
+        Promise.prototype.catch,
+        Promise.prototype.finally,
+      ];
+      source?.addEventListener("input", () => {
+        for (let index = 0; index < 65; index += 1) {
+          Promise.resolve().then(() => {
+            state.promiseCounter = (state.promiseCounter ?? 0) + 1;
+          });
+        }
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { promiseCounter?: number }).promiseCounter,
+    ))).toBe(65);
+    await session.abandonSensitiveActionTracking();
+    expect(await session.withPage(async (page) => page.evaluate(() => {
+      const expected = (globalThis as typeof globalThis & {
+        originalSchedulers?: readonly unknown[];
+      }).originalSchedulers;
+      const state = globalThis as unknown as {
+        setTimeout: unknown;
+        setInterval: unknown;
+        requestAnimationFrame: unknown;
+        queueMicrotask: unknown;
+      };
+      return expected?.every((original, index) => original === [
+        state.setTimeout,
+        state.setInterval,
+        state.requestAnimationFrame,
+        state.queueMicrotask,
+        Promise.prototype.then,
+        Promise.prototype.catch,
+        Promise.prototype.finally,
+      ][index]);
+    }))).toBe(true);
   });
 
   it.each([

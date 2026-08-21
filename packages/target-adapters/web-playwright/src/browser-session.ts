@@ -116,9 +116,13 @@ export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
 const MAXIMUM_SENSITIVE_ACTION_MUTATIONS = 128;
 const MAXIMUM_SENSITIVE_ACTION_CANDIDATES = 512;
 const MAXIMUM_SENSITIVE_SCHEDULED_CALLBACKS = 64;
+const MAXIMUM_SENSITIVE_SHADOW_ROOTS = 64;
+const MAXIMUM_SENSITIVE_DOM_ELEMENTS = 4_096;
 export const MAXIMUM_OBSERVATION_CANDIDATES = 512;
 export const MAXIMUM_OBSERVATION_NODE_BYTES = 64 * 1024;
 export const MAXIMUM_OBSERVATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+export const MAXIMUM_OBSERVATION_SHADOW_ROOTS = MAXIMUM_SENSITIVE_SHADOW_ROOTS;
+export const MAXIMUM_OBSERVATION_DOM_ELEMENTS = MAXIMUM_SENSITIVE_DOM_ELEMENTS;
 const SENSITIVE_ACTION_CANDIDATE_SELECTOR =
   "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
 const SENSITIVE_ACTION_ATTRIBUTES = [
@@ -154,7 +158,20 @@ interface SensitiveActionMutationTracker {
   candidates: readonly SensitiveActionCandidateSnapshot[];
   readonly records: SensitiveActionMutationRecord[];
   readonly causalElements: Element[];
-  readonly observer: MutationObserver;
+  readonly observers: MutationObserver[];
+  readonly roots: (Document | ShadowRoot)[];
+  readonly shadowRegistry: {
+    readonly snapshot: (maximumRoots: number) => {
+      readonly openRoots: readonly ShadowRoot[];
+      readonly closedHosts: readonly Element[];
+      readonly closedMutationCount: number;
+      readonly count: number;
+      readonly overflow: boolean;
+      readonly intact: boolean;
+    };
+    readonly subscribe: (listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void) => boolean;
+    readonly unsubscribe: (listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void) => boolean;
+  };
   readonly restore: () => boolean;
   readonly beginCausalAction: (target: Element) => boolean;
   readonly endCausalAction: (target: Element) => boolean;
@@ -164,6 +181,8 @@ interface SensitiveActionMutationTracker {
   overflow: boolean;
   observerError: boolean;
   scheduledPoison: boolean;
+  shadowPoison: boolean;
+  closedMutationBaseline: number;
 }
 
 interface SensitivePageMetadataSnapshot {
@@ -422,17 +441,34 @@ export class PlaywrightBrowserSession {
           return new TextEncoder().encode(text).byteLength;
         };
         const boundedText = (candidate: Element): string => {
-          const walker = candidate.ownerDocument.createTreeWalker(
-            candidate,
-            NodeFilter.SHOW_TEXT,
-          );
           const chunks: string[] = [];
           let bytes = 0;
-          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-            const value = node.nodeValue ?? "";
-            bytes += byteLength(value);
-            if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
-            chunks.push(value);
+          const roots: Node[] = [candidate];
+          if (candidate.shadowRoot !== null) roots.push(candidate.shadowRoot);
+          let elements = 0;
+          for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+            const root = roots[rootIndex];
+            if (root === undefined) throw new Error("text-root-unprovable");
+            const walker = candidate.ownerDocument.createTreeWalker(
+              root,
+              NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+            );
+            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+              if (node instanceof CharacterData) {
+                bytes += byteLength(node.data);
+                if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+                chunks.push(node.data);
+              } else if (node instanceof Element) {
+                elements += 1;
+                if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
+                if (node.shadowRoot !== null) {
+                  roots.push(node.shadowRoot);
+                  if (roots.length > limits.maximumShadowRoots + 1) {
+                    throw new Error("shadow-root-overflow");
+                  }
+                }
+              }
+            }
           }
           return chunks.join("");
         };
@@ -472,23 +508,42 @@ export class PlaywrightBrowserSession {
 
         const forms = input.forms;
 
+        const registry = (globalThis as typeof globalThis & {
+          readonly __qualigenceShadowRegistry?: SensitiveActionMutationTracker["shadowRegistry"];
+        }).__qualigenceShadowRegistry;
+        if (registry === undefined) throw new Error("shadow-registry-unavailable");
         const boundedCandidates = (): readonly Element[] => {
+          const shadow = registry.snapshot(limits.maximumShadowRoots);
+          if (!shadow.intact || shadow.overflow ||
+              shadow.count !== shadow.openRoots.length + shadow.closedHosts.length) {
+            throw new Error("shadow-root-identity-unprovable");
+          }
           const found: Element[] = [];
-          const walker = element.ownerDocument.createTreeWalker(
-            element.ownerDocument,
-            NodeFilter.SHOW_ELEMENT,
-            {
-              acceptNode(node) {
-                return node instanceof Element && node.matches(limits.candidateSelector)
-                  ? NodeFilter.FILTER_ACCEPT
-                  : NodeFilter.FILTER_SKIP;
-              },
-            },
-          );
-          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-            if (!(node instanceof Element)) throw new Error("candidate-unprovable");
-            found.push(node);
-            if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
+          let elements = 0;
+          const roots: (Document | ShadowRoot)[] = [element.ownerDocument];
+          for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+            const root = roots[rootIndex];
+            if (root === undefined) throw new Error("shadow-root-identity-unprovable");
+            const walker = element.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+              if (!(node instanceof Element)) throw new Error("candidate-unprovable");
+              elements += 1;
+              if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
+              if (node.matches(limits.candidateSelector)) {
+                found.push(node);
+                if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
+              }
+              if (node.shadowRoot !== null) {
+                roots.push(node.shadowRoot);
+                if (roots.length > limits.maximumShadowRoots + 1) {
+                  throw new Error("shadow-root-overflow");
+                }
+              }
+            }
+          }
+          if (new Set(roots).size !== roots.length || roots.length !== shadow.openRoots.length + 1 ||
+              shadow.openRoots.some((root) => !roots.includes(root))) {
+            throw new Error("shadow-root-identity-unprovable");
           }
           return found;
         };
@@ -526,12 +581,16 @@ export class PlaywrightBrowserSession {
           overflow: false,
           observerError: false,
           scheduledPoison: false,
+          shadowPoison: false,
+          closedMutationBaseline: 0,
           preparedElements: undefined,
+          roots: [],
+          shadowRegistry: registry,
         } as Omit<
           SensitiveActionMutationTracker,
-          "observer" | "restore" | "beginCausalAction" | "endCausalAction"
+          "observers" | "restore" | "beginCausalAction" | "endCausalAction"
         > & {
-          observer?: MutationObserver;
+          observers?: MutationObserver[];
           restore?: () => boolean;
           beginCausalAction?: (target: Element) => boolean;
           endCausalAction?: (target: Element) => boolean;
@@ -554,16 +613,26 @@ export class PlaywrightBrowserSession {
             tracker.observerError = true;
           }
         };
-        const observer = new MutationObserver((mutations) => {
-          appendRecords(mutations, false);
-        });
-        tracker.observer = observer;
-        observer.observe(element.ownerDocument, {
-          attributes: true,
-          characterData: true,
-          childList: true,
-          subtree: true,
-        });
+        const observers: MutationObserver[] = [];
+        tracker.observers = observers;
+        const observeRoot = (root: Document | ShadowRoot): void => {
+          if (tracker.roots.includes(root)) return;
+          if (tracker.roots.length >= limits.maximumShadowRoots + 1) {
+            tracker.shadowPoison = true;
+            return;
+          }
+          tracker.roots.push(root);
+          const observer = new MutationObserver((mutations) => appendRecords(mutations, false));
+          observers.push(observer);
+          observer.observe(root, {
+            attributes: true,
+            characterData: true,
+            childList: true,
+            subtree: true,
+          });
+        };
+        observeRoot(element.ownerDocument);
+        for (const root of registry.snapshot(limits.maximumShadowRoots).openRoots) observeRoot(root);
 
         const values = (properties: SensitiveActionPropertySnapshot): readonly (string | null)[] => [
           properties.inputValue,
@@ -590,7 +659,7 @@ export class PlaywrightBrowserSession {
         };
         const finishCausalScope = (before: readonly SensitiveActionCandidateSnapshot[]): void => {
           try {
-            appendRecords(observer.takeRecords(), true);
+            for (const observer of observers) appendRecords(observer.takeRecords(), true);
             const after = capture();
             const totalCandidates = before.length + after.filter((candidate) =>
               !before.some((prior) => prior.element === candidate.element)).length;
@@ -680,8 +749,16 @@ export class PlaywrightBrowserSession {
           remainingCallbacks: number;
         }
         let nextGeneration = 0;
+        let scheduledRegistrations = 0;
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
+        const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
+          if (mode === "open") observeRoot(root);
+          else if (activeGeneration !== undefined || callbackGeneration !== undefined) {
+            tracker.shadowPoison = true;
+          }
+        };
+        if (!registry.subscribe(attachedShadow)) tracker.shadowPoison = true;
         let eventSnapshot: readonly SensitiveActionCandidateSnapshot[] | undefined;
         let eventMetadata: SensitivePageMetadataSnapshot | undefined;
         const finishExactTargetEvent = (): void => {
@@ -744,25 +821,34 @@ export class PlaywrightBrowserSession {
         };
         const generationForSchedule = (): GenerationToken | undefined =>
           callbackGeneration ?? activeGeneration;
+        const registerGeneration = (): GenerationToken | undefined => {
+          const generation = generationForSchedule();
+          if (generation === undefined) return undefined;
+          scheduledRegistrations += 1;
+          if (scheduledRegistrations > limits.maximumScheduledCallbacks) {
+            tracker.scheduledPoison = true;
+            return undefined;
+          }
+          return generation;
+        };
         const wrappedSetTimeout = ((
           handler: TimerHandler,
           timeout?: number,
           ...args: unknown[]
         ): number => {
           if (typeof handler !== "function") {
-            tracker.observerError = true;
-            return Number(originalSetTimeout.call(window, () => undefined, timeout));
+            return originalSetTimeout(handler, timeout, ...args);
           }
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           if (generation === undefined) {
-            return Number(originalSetTimeout.call(window, () => handler(...args), timeout));
+            return originalSetTimeout(handler, timeout, ...args);
           }
           return Number(originalSetTimeout.call(window, () => {
             runCausal(generation, () => handler(...args));
           }, timeout));
         }) as typeof window.setTimeout;
         const wrappedQueueMicrotask = (callback: VoidFunction): void => {
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           if (generation === undefined) {
             originalQueueMicrotask.call(window, callback);
           } else {
@@ -775,29 +861,21 @@ export class PlaywrightBrowserSession {
           ...args: unknown[]
         ): number => {
           if (typeof handler !== "function") {
-            tracker.observerError = true;
-            return Number(originalSetInterval.call(window, () => undefined, timeout));
+            return originalSetInterval(handler, timeout, ...args);
           }
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           if (generation === undefined) {
-            return Number(originalSetInterval.call(window, () => handler(...args), timeout));
+            return originalSetInterval(handler, timeout, ...args);
           }
-          let intervalId = 0;
-          intervalId = Number(originalSetInterval.call(window, () => {
-            if (Date.now() > generation.deadline || generation.remainingCallbacks <= 0) {
-              tracker.scheduledPoison = true;
-              originalClearInterval.call(window, intervalId);
-              return;
-            }
+          return Number(originalSetInterval.call(window, () => {
             runCausal(generation, () => handler(...args));
           }, timeout));
-          return intervalId;
         }) as typeof window.setInterval;
         const wrappedClearInterval = ((id?: number): void => {
           originalClearInterval.call(window, id);
         }) as typeof window.clearInterval;
         const wrappedRequestAnimationFrame = ((callback: FrameRequestCallback): number => {
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           if (generation === undefined) {
             return originalRequestAnimationFrame.call(window, callback);
           }
@@ -818,7 +896,7 @@ export class PlaywrightBrowserSession {
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
         ): Promise<TResult1 | TResult2> {
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           return originalThen.call(
             this,
             wrapContinuation(generation, onfulfilled),
@@ -829,14 +907,14 @@ export class PlaywrightBrowserSession {
           this: Promise<T>,
           onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
         ): Promise<T | TResult> {
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           return originalCatch.call(this, wrapContinuation(generation, onrejected));
         };
         const wrappedFinally = function <T>(
           this: Promise<T>,
           onfinally?: (() => void) | null,
         ): Promise<T> {
-          const generation = generationForSchedule();
+          const generation = registerGeneration();
           return originalFinally.call(
             this,
             generation === undefined || onfinally == null
@@ -876,6 +954,10 @@ export class PlaywrightBrowserSession {
               deadline: Date.now() + limits.maximumScheduledMs,
               remainingCallbacks: limits.maximumScheduledCallbacks,
             };
+            scheduledRegistrations = 0;
+            tracker.closedMutationBaseline = registry.snapshot(
+              limits.maximumShadowRoots,
+            ).closedMutationCount;
             return true;
           } catch {
             tracker.observerError = true;
@@ -890,13 +972,16 @@ export class PlaywrightBrowserSession {
           activeGeneration = undefined;
           try {
             finishExactTargetEvent();
+            if (registry.snapshot(limits.maximumShadowRoots).closedMutationCount !==
+                tracker.closedMutationBaseline) tracker.shadowPoison = true;
           } catch {
             tracker.observerError = true;
           }
-          return !tracker.observerError && !tracker.overflow;
+          return !tracker.observerError && !tracker.overflow && !tracker.shadowPoison;
         };
         tracker.restore = (): boolean => {
           window.removeEventListener(eventType, exactTargetEvent, true);
+          const registryIntact = registry.unsubscribe(attachedShadow);
           const intact = window.setTimeout === wrappedSetTimeout &&
             window.setInterval === wrappedSetInterval &&
             window.clearInterval === wrappedClearInterval &&
@@ -907,7 +992,7 @@ export class PlaywrightBrowserSession {
             Promise.prototype.catch === wrappedCatch &&
             Promise.prototype.finally === wrappedFinally &&
             history.replaceState === wrappedReplaceState &&
-            history.pushState === wrappedPushState;
+            history.pushState === wrappedPushState && registryIntact;
           if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
           if (window.setInterval === wrappedSetInterval) window.setInterval = originalSetInterval;
           if (window.clearInterval === wrappedClearInterval) window.clearInterval = originalClearInterval;
@@ -925,7 +1010,7 @@ export class PlaywrightBrowserSession {
           if (Promise.prototype.finally === wrappedFinally) Promise.prototype.finally = originalFinally;
           if (history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
           if (history.pushState === wrappedPushState) history.pushState = originalPushState;
-          observer.disconnect();
+          for (const observer of observers) observer.disconnect();
           return intact;
         };
         return tracker as SensitiveActionMutationTracker;
@@ -940,6 +1025,8 @@ export class PlaywrightBrowserSession {
           maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
           maximumScheduledCallbacks: MAXIMUM_SENSITIVE_SCHEDULED_CALLBACKS,
           maximumScheduledMs: this.options.actionTimeoutMs,
+          maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+          maximumDomElements: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
           candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
           attributes: SENSITIVE_ACTION_ATTRIBUTES,
         },
@@ -1125,7 +1212,7 @@ export class PlaywrightBrowserSession {
     for (const tracker of this.sensitiveActionTrackers) {
       const invalid = await tracker.evaluate((state) =>
         state.overflow || state.observerError || state.scheduledPoison ||
-          state.ambiguousEvent).catch(() => true);
+          state.shadowPoison || state.ambiguousEvent).catch(() => true);
       if (invalid) {
         throw this.sensitiveEvidenceFailure(
           "Sensitive action provenance tracking exceeded its bounds.",
@@ -1276,31 +1363,58 @@ export class PlaywrightBrowserSession {
             return new TextEncoder().encode(text).byteLength;
           };
           const boundedText = (candidate: Element): string => {
-            const walker = candidate.ownerDocument.createTreeWalker(
-              candidate,
-              NodeFilter.SHOW_TEXT,
-            );
             const chunks: string[] = [];
             let bytes = 0;
-            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-              const value = node.nodeValue ?? "";
-              bytes += byteLength(value);
-              if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
-              chunks.push(value);
+            const textRoots: Node[] = [candidate];
+            if (candidate.shadowRoot !== null) textRoots.push(candidate.shadowRoot);
+            let elements = 0;
+            for (let rootIndex = 0; rootIndex < textRoots.length; rootIndex += 1) {
+              const textRoot = textRoots[rootIndex];
+              if (textRoot === undefined) throw new Error("text-root-unprovable");
+              const walker = candidate.ownerDocument.createTreeWalker(
+                textRoot,
+                NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+              );
+              for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+                if (node instanceof CharacterData) {
+                  bytes += byteLength(node.data);
+                  if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+                  chunks.push(node.data);
+                } else if (node instanceof Element) {
+                  elements += 1;
+                  if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
+                  if (node.shadowRoot !== null) {
+                    textRoots.push(node.shadowRoot);
+                    if (textRoots.length > limits.maximumShadowRoots + 1) {
+                      throw new Error("shadow-root-overflow");
+                    }
+                  }
+                }
+              }
             }
             return chunks.join("");
           };
-          const pending = state.observer.takeRecords();
-          if (state.records.length + pending.length > limits.maximumMutations) {
-            state.overflow = true;
-          } else {
-            for (const record of pending) state.records.push({ record, causal: false });
+          for (const observer of state.observers) {
+            const pending = observer.takeRecords();
+            if (state.records.length + pending.length > limits.maximumMutations) {
+              state.overflow = true;
+            } else {
+              for (const record of pending) state.records.push({ record, causal: false });
+            }
           }
           if (state.observerError) return fail("observer-error");
           if (state.overflow) return fail("tracker-overflow");
           if (state.scheduledPoison) return fail("scheduled-causality-bounds-exceeded");
+          if (state.shadowPoison) return fail("shadow-root-unproven");
           if (state.ambiguousEvent) return fail("event-target-causality-ambiguous");
           if (!state.target.isConnected) return fail("target-replaced");
+          const shadow = state.shadowRegistry.snapshot(limits.maximumShadowRoots);
+          if (!shadow.intact || shadow.overflow ||
+              shadow.count !== shadow.openRoots.length + shadow.closedHosts.length ||
+              state.roots.length !== shadow.openRoots.length + 1 ||
+              shadow.closedMutationCount !== state.closedMutationBaseline) {
+            return fail("shadow-root-identity-unproven");
+          }
 
           const snapshot = (candidate: Element): {
             readonly properties: SensitiveActionPropertySnapshot;
@@ -1343,21 +1457,29 @@ export class PlaywrightBrowserSession {
           const containsForm = (property: string | null): boolean =>
             property !== null && state.forms.some((form) => property.includes(form));
           const nodes: Element[] = [];
-          const walker = state.target.ownerDocument.createTreeWalker(
-            state.target.ownerDocument,
-            NodeFilter.SHOW_ELEMENT,
-            {
-              acceptNode(node) {
-                return node instanceof Element && node.matches(limits.candidateSelector)
-                  ? NodeFilter.FILTER_ACCEPT
-                  : NodeFilter.FILTER_SKIP;
-              },
-            },
-          );
-          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-            if (!(node instanceof Element)) return fail("candidate-unprovable");
-            nodes.push(node);
-            if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
+          const roots: (Document | ShadowRoot)[] = [state.target.ownerDocument];
+          let domElements = 0;
+          for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+            const root = roots[rootIndex];
+            if (root === undefined) return fail("shadow-root-identity-unproven");
+            const walker = state.target.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+              if (!(node instanceof Element)) return fail("candidate-unprovable");
+              domElements += 1;
+              if (domElements > limits.maximumDomElements) return fail("dom-element-overflow");
+              if (node.matches(limits.candidateSelector)) {
+                nodes.push(node);
+                if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
+              }
+              if (node.shadowRoot !== null) {
+                roots.push(node.shadowRoot);
+                if (roots.length > limits.maximumShadowRoots + 1) return fail("shadow-root-overflow");
+              }
+            }
+          }
+          if (new Set(roots).size !== roots.length || roots.length !== shadow.openRoots.length + 1 ||
+              shadow.openRoots.some((root) => !roots.includes(root))) {
+            return fail("shadow-root-identity-unproven");
           }
           const current: SensitiveActionCandidateSnapshot[] = [];
           let snapshotBytes = 0;
@@ -1522,6 +1644,8 @@ export class PlaywrightBrowserSession {
         maximumTargets: MAXIMUM_SENSITIVE_ACTION_TARGETS,
         maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
         maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+        maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+        maximumDomElements: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
         candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
         attributes: SENSITIVE_ACTION_ATTRIBUTES,
         privateTargetAttribute: PRIVATE_TARGET_ATTRIBUTE,
@@ -1690,6 +1814,80 @@ export class PlaywrightBrowserSession {
       context.setDefaultTimeout(this.options.actionTimeoutMs);
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
       this.context = context;
+
+      if (typeof context.addInitScript !== "function") {
+        throw new WebTargetError("BrowserLaunchFailed");
+      }
+      await context.addInitScript(({ registryName, maximumRoots }) => {
+        const host = globalThis as typeof globalThis & Record<string, unknown>;
+        if (host[registryName] !== undefined) return;
+        const originalAttachShadow = Element.prototype.attachShadow;
+        const openRoots: ShadowRoot[] = [];
+        const closedHosts: Element[] = [];
+        const closedObservers: MutationObserver[] = [];
+        const listeners = new Set<(element: Element, root: ShadowRoot, mode: ShadowRootMode) => void>();
+        let count = 0;
+        let overflow = false;
+        let closedMutationCount = 0;
+        const wrappedAttachShadow = function (
+          this: Element,
+          init: ShadowRootInit,
+        ): ShadowRoot {
+          const root = originalAttachShadow.call(this, init);
+          count += 1;
+          if (count > maximumRoots) {
+            overflow = true;
+          } else if (init.mode === "open") {
+            openRoots.push(root);
+          } else {
+            closedHosts.push(this);
+            const observer = new MutationObserver((records) => {
+              closedMutationCount += records.length;
+            });
+            observer.observe(root, {
+              attributes: true,
+              characterData: true,
+              childList: true,
+              subtree: true,
+            });
+            closedObservers.push(observer);
+          }
+          for (const listener of listeners) listener(this, root, init.mode);
+          return root;
+        };
+        Element.prototype.attachShadow = wrappedAttachShadow;
+        const registry = Object.freeze({
+          snapshot(limit: number) {
+            for (const observer of closedObservers) {
+              closedMutationCount += observer.takeRecords().length;
+            }
+            return {
+              openRoots: openRoots.slice(0, limit),
+              closedHosts: closedHosts.slice(0, limit),
+              count,
+              closedMutationCount,
+              overflow: overflow || count > limit,
+              intact: Element.prototype.attachShadow === wrappedAttachShadow,
+            };
+          },
+          subscribe(listener: (element: Element, root: ShadowRoot, mode: ShadowRootMode) => void) {
+            listeners.add(listener);
+            return Element.prototype.attachShadow === wrappedAttachShadow;
+          },
+          unsubscribe(listener: (element: Element, root: ShadowRoot, mode: ShadowRootMode) => void) {
+            return listeners.delete(listener) && Element.prototype.attachShadow === wrappedAttachShadow;
+          },
+        });
+        Object.defineProperty(host, registryName, {
+          configurable: false,
+          enumerable: false,
+          writable: false,
+          value: registry,
+        });
+      }, {
+        registryName: "__qualigenceShadowRegistry",
+        maximumRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+      });
 
       const page = await context.newPage();
       this.page = page;

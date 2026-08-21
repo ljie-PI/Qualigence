@@ -55,6 +55,26 @@ describe("RunnerOfferRuntime", () => {
     expect(captured).not.toContain(normalized);
   });
 
+  it("maps unapproved or malformed errors to the exact stable log fallback", () => {
+    const secret = "attacker-log-secret";
+    const cases: unknown[] = [
+      { code: `Attacker${secret}` },
+      { code: "ActionInfrastructureFailure" },
+      { code: 123 },
+      new Error(`message:${secret}`, { cause: new Error(`cause:${secret}`) }),
+      {
+        toString() {
+          throw new Error(`toString:${secret}`);
+        },
+      },
+    ];
+
+    for (const error of cases) {
+      expect(runnerErrorForLog(error)).toEqual({ errorCode: "UnexpectedRunnerError" });
+      expect(JSON.stringify(runnerErrorForLog(error))).toBe('{"errorCode":"UnexpectedRunnerError"}');
+    }
+  });
+
   it("blocks a policyless offer before target construction or browser navigation", async () => {
     const target = {
       start: vi.fn(), // Browser launch and initial page.goto are behind start.
