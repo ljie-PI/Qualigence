@@ -267,10 +267,12 @@ verification: passed; pending dedicated PR
   removes them from post-action Observation nodes/metadata and observation JSON
   Artifacts. The complete serialized Trace and verifier context after a real
   Chromium input contain no plaintext; input/select actions and outcomes still
-  carry only `valueRef` and stable codes.
+  carry only `valueRef` and stable codes. Playwright infrastructure failures are
+  rethrown with a stable adapter code rather than raw call logs that could embed
+  the action argument.
 - Round-1 RED reproduced 3 provider failures and 2 Chromium redaction failures.
   GREEN passed the affected provider file at 17 tests and Chromium action file
-  at 9 tests. The exact row-18 focused Gate passed 8 files / 61 passed with 1
+  at 9 tests. The exact row-18 focused Gate passed 8 files / 62 passed with 1
   existing Task 21 skip; POSIX permission and nonregular/FIFO enforcement run
   through exported pure validators on Windows, while real POSIX integration is
   registered only on POSIX. Root `corepack pnpm typecheck` and

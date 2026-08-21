@@ -137,7 +137,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (isInfrastructureFailure(message)) {
-          throw error;
+          throw new WebTargetError("ActionInfrastructureFailure");
         }
         if (/timeout/i.test(message)) {
           return { status: "failed", errorCode: "ActionTimedOut" };

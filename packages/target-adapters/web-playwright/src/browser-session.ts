@@ -11,6 +11,7 @@ export type WebTargetErrorCode =
   | "AmbiguousTarget"
   | "OriginViolation"
   | "ActionTimedOut"
+  | "ActionInfrastructureFailure"
   | "UnsupportedAction"
   | "ConcurrentSessionOperation"
   | "SessionClosed";

@@ -156,4 +156,36 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.email",
     }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
   });
+
+  it("rethrows an infrastructure failure without Playwright plaintext", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        fill: async () => { throw new Error('Target closed while running fill("plaintext-secret")'); },
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => "plaintext-secret",
+    });
+
+    const failure = await executor.execute({
+      targetKind: "web",
+      kind: "input",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.email",
+    }, permit).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "ActionInfrastructureFailure" });
+    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
+  });
 });
