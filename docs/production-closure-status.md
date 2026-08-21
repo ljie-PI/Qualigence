@@ -520,7 +520,7 @@ verification: pending dedicated remediation PR
 parent_ticket: `40`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/79`
 base_head: `37e947ab42f687142b83c4cdfc8d6f28c78c65e7`
-implementation_head: pending commit
+implementation_head: `39bb6798f5462c2416028328e1853cd6441ea37c`
 pull_request: pending
 
 - Runner reconnect/fatal logging accepts stable codes only from the repository's
