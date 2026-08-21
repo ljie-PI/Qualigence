@@ -4,6 +4,7 @@ import type {
   ModelProvider,
   ModelProviderErrorCode,
   ModelUsage,
+  ModelUsageState,
   StructuredModelRequest,
   StructuredOutputContract,
   StructuredOutputValidationError,
@@ -21,25 +22,44 @@ export type ModelGatewayErrorCode =
   | VisualInputErrorCode;
 
 export class ModelGatewayError extends Error {
+  readonly usageState: ModelUsageState;
+
   constructor(
     readonly code: ModelGatewayErrorCode,
     message: string,
     readonly usage?: ModelUsage,
     readonly providerAttempted = false,
+    readonly usageUnavailable = providerAttempted && usage === undefined,
   ) {
     super(message);
     this.name = "ModelGatewayError";
+    this.usageState = usageState(usage, usageUnavailable);
   }
 }
 
-export class ModelGatewayAbortError extends Error {
+export class ModelGatewayInvocationError extends Error {
+  readonly usage: ModelUsage | undefined;
+  readonly usageUnavailable: boolean;
+
   constructor(
     readonly reason: unknown,
-    readonly usage?: ModelUsage,
-    readonly usageUnavailable = false,
+    readonly usageState: ModelUsageState,
     readonly providerAttempted = false,
   ) {
-    super(reason instanceof Error ? reason.message : "The model invocation was aborted.");
+    super(reason instanceof Error ? reason.message : "The model invocation failed.");
+    this.name = "ModelGatewayInvocationError";
+    this.usage = usageFromState(usageState);
+    this.usageUnavailable = usageState.status === "unavailable";
+  }
+}
+
+export class ModelGatewayAbortError extends ModelGatewayInvocationError {
+  constructor(
+    reason: unknown,
+    usageState: ModelUsageState,
+    providerAttempted = false,
+  ) {
+    super(reason, usageState, providerAttempted);
     this.name = "ModelGatewayAbortError";
   }
 }
@@ -57,8 +77,10 @@ export interface ModelInvocationReport {
   readonly latencyMs: number;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
+  readonly totalTokens?: number;
   readonly providerRequestId?: string;
   readonly errorCode?: string;
+  readonly usageStatus?: ModelUsageState["status"];
   readonly occurredAt: string;
 }
 
@@ -97,33 +119,48 @@ export class ModelGateway implements StructuredModelInvoker {
     try {
       const result = await this.runStructured(request, output);
       request.signal?.throwIfAborted();
+      const resultUsage = result.usageState === undefined
+        ? result.usage
+        : usageFromState(result.usageState);
       await this.report(request, startedAtMs, {
         status: "succeeded",
         model: result.model,
         ...(result.providerRequestId === undefined
           ? {}
           : { providerRequestId: result.providerRequestId }),
-        ...(result.usage?.inputTokens === undefined
+        ...(resultUsage?.inputTokens === undefined
           ? {}
-          : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage?.outputTokens === undefined
+          : { inputTokens: resultUsage.inputTokens }),
+        ...(resultUsage?.outputTokens === undefined
           ? {}
-          : { outputTokens: result.usage.outputTokens }),
+          : { outputTokens: resultUsage.outputTokens }),
+        ...(resultUsage?.totalTokens === undefined
+          ? {}
+          : { totalTokens: resultUsage.totalTokens }),
+        ...(result.usageState === undefined
+          ? {}
+          : { usageStatus: result.usageState.status }),
       });
       return result;
     } catch (error) {
-      if (error instanceof ModelGatewayAbortError) {
-        throw error;
-      }
-      if (request.signal?.aborted === true) {
-        throw request.signal.reason;
-      }
+      const invocationError = asInvocationError(error, request.signal);
+      const knownUsage = usageFromState(invocationError.usageState);
       await this.report(request, startedAtMs, {
         status: "failed",
         model: request.model,
-        errorCode: errorCodeOf(error),
+        errorCode: invocationError instanceof ModelGatewayAbortError
+          ? "Aborted"
+          : errorCodeOf(
+              invocationError instanceof ModelGatewayInvocationError
+                ? invocationError.reason
+                : invocationError,
+            ),
+        usageStatus: invocationError.usageState.status,
+        ...(knownUsage?.inputTokens === undefined ? {} : { inputTokens: knownUsage.inputTokens }),
+        ...(knownUsage?.outputTokens === undefined ? {} : { outputTokens: knownUsage.outputTokens }),
+        ...(knownUsage?.totalTokens === undefined ? {} : { totalTokens: knownUsage.totalTokens }),
       });
-      throw error;
+      throw invocationError;
     }
   }
 
@@ -218,8 +255,9 @@ export class ModelGateway implements StructuredModelInvoker {
           throw new ModelGatewayError(
             normalized.code,
             normalized.message,
-            completeUsage(accumulatedUsage, accumulatedTotalTokens, usageAvailable),
+            knownUsage(accumulatedUsage, accumulatedTotalTokens, knownUsageAvailable),
             true,
+            !usageAvailable,
           );
         }
 
@@ -267,6 +305,12 @@ export class ModelGateway implements StructuredModelInvoker {
 
       try {
         const usage = completeUsage(accumulatedUsage, accumulatedTotalTokens, usageAvailable);
+        const state = accumulatedUsageState(
+          accumulatedUsage,
+          accumulatedTotalTokens,
+          knownUsageAvailable,
+          usageAvailable,
+        );
         const result = {
           value: output.parse(response.output),
           model: response.model,
@@ -275,6 +319,7 @@ export class ModelGateway implements StructuredModelInvoker {
             ? {}
             : { providerRequestId: response.providerRequestId }),
           ...(usage === undefined ? {} : { usage }),
+          usageState: state,
         };
         if (isAborted(request.signal)) {
           throw abortError(
@@ -291,15 +336,25 @@ export class ModelGateway implements StructuredModelInvoker {
           throw error;
         }
         if (!isStructuredOutputValidationError(error)) {
-          throw error;
+          throw new ModelGatewayInvocationError(
+            error,
+            accumulatedUsageState(
+              accumulatedUsage,
+              accumulatedTotalTokens,
+              knownUsageAvailable,
+              usageAvailable,
+            ),
+            true,
+          );
         }
 
         if (schemaAttempts >= 1) {
           throw new ModelGatewayError(
             "InvalidStructuredOutput",
             `The provider returned output that does not match ${output.name}.`,
-            completeUsage(accumulatedUsage, accumulatedTotalTokens, usageAvailable),
+            knownUsage(accumulatedUsage, accumulatedTotalTokens, knownUsageAvailable),
             true,
+            !usageAvailable,
           );
         }
 
@@ -327,8 +382,10 @@ export class ModelGateway implements StructuredModelInvoker {
       readonly model: string;
       readonly inputTokens?: number;
       readonly outputTokens?: number;
+      readonly totalTokens?: number;
       readonly providerRequestId?: string;
       readonly errorCode?: string;
+      readonly usageStatus?: ModelUsageState["status"];
     },
   ): Promise<void> {
     const observer = this.dependencies.invocationObserver;
@@ -372,6 +429,26 @@ function completeUsage(
   return available && usage !== undefined ? normalizedUsage(usage, totalTokens) : undefined;
 }
 
+function knownUsage(
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  known: boolean,
+): ModelUsage | undefined {
+  return known && usage !== undefined ? normalizedUsage(usage, totalTokens) : usage;
+}
+
+function accumulatedUsageState(
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  known: boolean,
+  available: boolean,
+): ModelUsageState {
+  const accumulated = knownUsage(usage, totalTokens, known);
+  return available && accumulated !== undefined
+    ? { status: "available", usage: accumulated }
+    : { status: "unavailable", ...(accumulated === undefined ? {} : { knownUsage: accumulated }) };
+}
+
 function accumulateUsage(
   current: ModelUsage | undefined,
   currentTotalTokens: number,
@@ -410,10 +487,35 @@ function abortError(
 ): ModelGatewayAbortError {
   return new ModelGatewayAbortError(
     signal?.reason,
-    knownUsageAvailable && usage !== undefined ? normalizedUsage(usage, totalTokens) : usage,
-    usageUnavailable,
+    accumulatedUsageState(
+      usage,
+      totalTokens,
+      knownUsageAvailable,
+      !usageUnavailable,
+    ),
     true,
   );
+}
+
+function usageState(usage: ModelUsage | undefined, unavailable: boolean): ModelUsageState {
+  if (!unavailable && usage !== undefined) return { status: "available", usage };
+  return { status: "unavailable", ...(usage === undefined ? {} : { knownUsage: usage }) };
+}
+
+function usageFromState(state: ModelUsageState): ModelUsage | undefined {
+  return state.status === "available" ? state.usage : state.knownUsage;
+}
+
+function asInvocationError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): ModelGatewayInvocationError | ModelGatewayError {
+  if (error instanceof ModelGatewayInvocationError) return error;
+  if (error instanceof ModelGatewayError) return error;
+  if (signal?.aborted === true) {
+    return new ModelGatewayAbortError(signal.reason, { status: "unavailable" });
+  }
+  return new ModelGatewayInvocationError(error, { status: "unavailable" });
 }
 
 class ProviderInvocationAborted extends Error {}
@@ -478,7 +580,8 @@ function addUsageField(
 ): Partial<ModelUsage> {
   const nextValue = next[field];
   if (nextValue === undefined) {
-    return {};
+    const currentValue = current?.[field];
+    return currentValue === undefined ? {} : { [field]: currentValue };
   }
   return { [field]: (current?.[field] ?? 0) + nextValue };
 }

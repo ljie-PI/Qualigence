@@ -246,6 +246,8 @@ export interface ExecutionRuntimeDependencies {
   readonly verifier: Verifier;
   readonly traceRecorder: TraceRecorder;
   readonly budget?: ExecutionBudget;
+  readonly objectiveOnlyMaximumWallClockMs?: number;
+  readonly objectiveOnlyMaximumModelTokens?: number;
 }
 
 const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
@@ -271,7 +273,18 @@ export class ExecutionRuntime {
   private readonly budget: ExecutionBudget;
 
   constructor(private readonly dependencies: ExecutionRuntimeDependencies) {
-    this.budget = dependencies.budget ?? new DeterministicExecutionBudget();
+    if (dependencies.budget !== undefined) {
+      this.budget = dependencies.budget;
+      return;
+    }
+    this.budget = new DeterministicExecutionBudget({
+      ...(dependencies.objectiveOnlyMaximumWallClockMs === undefined
+        ? {}
+        : { objectiveOnlyMaximumWallClockMs: dependencies.objectiveOnlyMaximumWallClockMs }),
+      ...(dependencies.objectiveOnlyMaximumModelTokens === undefined
+        ? {}
+        : { objectiveOnlyMaximumModelTokens: dependencies.objectiveOnlyMaximumModelTokens }),
+    });
   }
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
@@ -291,14 +304,26 @@ export class ExecutionRuntime {
       }
 
       const status = errorCode === "ModelUsageUnavailable" ? "error" : "blocked";
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status,
-          errorCode,
-        },
-      });
+      try {
+        if (!budgetStarted) {
+          throw error;
+        }
+        await this.record({
+          runId: job.runId,
+          stage: "run_completed",
+          payload: {
+            status,
+            errorCode,
+          },
+        });
+      } catch (recordError) {
+        if (
+          !(recordError instanceof ExecutionBudgetError) ||
+          recordError.code !== "WallClockBudgetExceeded"
+        ) {
+          throw recordError;
+        }
+      }
 
       return {
         jobId: job.jobId,
@@ -483,7 +508,8 @@ export class ExecutionRuntime {
   }
 
   private async record(input: TraceEventInput): Promise<void> {
-    await this.dependencies.traceRecorder.append(input);
+    await this.withinWallClock(input.runId, () =>
+      this.dependencies.traceRecorder.append(input));
   }
 
   private async withinWallClock<T>(

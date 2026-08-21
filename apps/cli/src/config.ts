@@ -10,6 +10,7 @@ export interface ModelConfig {
   readonly baseUrl: string;
   readonly apiKey: string;
   readonly modelName: string;
+  readonly maximumTokensPerCall?: number;
 }
 
 export interface CliConfig {
@@ -50,6 +51,11 @@ const environmentSchema = z.object({
     .string()
     .trim()
     .min(1, "QUALIGENCE_MODEL_NAME is required"),
+  QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL: z.coerce
+    .number()
+    .int()
+    .positive("QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL must be a positive integer")
+    .safe(),
   QUALIGENCE_DATA_DIR: z.string().trim().min(1).optional(),
 });
 
@@ -70,6 +76,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): CliConfig {
       baseUrl: parsed.data.QUALIGENCE_MODEL_BASE_URL,
       apiKey: parsed.data.QUALIGENCE_MODEL_API_KEY,
       modelName: parsed.data.QUALIGENCE_MODEL_NAME,
+      maximumTokensPerCall: parsed.data.QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL,
     },
     dataDir: parsed.data.QUALIGENCE_DATA_DIR ?? DEFAULT_DATA_DIR,
   };

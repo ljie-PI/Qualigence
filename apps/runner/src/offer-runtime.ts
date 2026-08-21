@@ -63,6 +63,8 @@ export class RunnerOfferRuntime {
         verifier: new ModelBackedVerifier(gateway, this.options.config.model.modelName),
         spool: this.options.spool,
         capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+        objectiveOnlyMaximumWallClockMs: this.options.config.actionTimeoutMs,
+        objectiveOnlyMaximumModelTokens: this.options.config.model.maximumTokensPerCall,
       });
       const result = await executor.execute(offer, this.options.session as RunnerSession);
       await new TraceUploadPump(this.options.spool, this.options.session, offer.job.runId, {

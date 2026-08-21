@@ -17,6 +17,10 @@ import {
 } from "@qualigence/testkit";
 
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+const objectiveOnlyBudget = {
+  objectiveOnlyMaximumWallClockMs: 1_000,
+  objectiveOnlyMaximumModelTokens: 1_000,
+} as const;
 
 describe("ExecutionRuntime", () => {
   afterEach(() => {
@@ -95,8 +99,8 @@ describe("ExecutionRuntime", () => {
     expect(policyCalls).toBe(0);
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
-      status: "blocked",
-      errorCode: "WallClockBudgetExceeded",
+      graphId: "graph-1",
+      nodes: [],
     });
   });
 
@@ -197,12 +201,62 @@ describe("ExecutionRuntime", () => {
         errorCode: "WallClockBudgetExceeded",
       });
       expect(aborted).toBe(true);
-      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).not.toMatchObject({
         status: "blocked",
         errorCode: "WallClockBudgetExceeded",
       });
     },
   );
+
+  it("bounds Trace appends by the run deadline and observes a late rejection", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let rejectLate: ((error: Error) => void) | undefined;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async () => new Promise<never>((_resolve, reject) => { rejectLate = reject; }),
+      },
+      budget: new DeterministicExecutionBudget({
+        clock: { now: () => now },
+        objectiveOnlyMaximumWallClockMs: 100,
+        objectiveOnlyMaximumModelTokens: 10,
+      }),
+    });
+
+    const completionPromise = runtime.run({
+      jobId: "job-objective",
+      runId: "run-objective",
+      projectId: "project-test",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "click",
+      policy,
+    });
+    for (let attempt = 0; attempt < 10 && rejectLate === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(rejectLate).toBeDefined();
+    now = 100;
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.runOnlyPendingTimersAsync();
+
+    await expect(completionPromise).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    rejectLate?.(new Error("late Trace rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 
   it.each([
     [
@@ -304,6 +358,7 @@ describe("ExecutionRuntime", () => {
       actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" as const }; } },
       verifier: { verify: async () => ({ status: "passed" as const, summary: "not reached", claims: [] }) },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
     const completion = await runtime.run({ jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "test", policy });
     expect(completion).toMatchObject({ status: "blocked", errorCode: "PolicyDenied" });
@@ -365,6 +420,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -444,6 +500,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -540,6 +597,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -628,6 +686,7 @@ describe("ExecutionRuntime", () => {
         },
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({

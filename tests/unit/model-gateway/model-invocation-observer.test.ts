@@ -120,6 +120,47 @@ describe("ModelGateway invocation reporting", () => {
     });
   });
 
+  it("reports an aborted invocation with known usage and no prompt or abort secret", async () => {
+    const { observer, reports } = collectingObserver();
+    const controller = new AbortController();
+    let correctionStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { correctionStarted = resolve; });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: { structuredOutput: true, visionInput: false, toolCalling: false, streaming: false },
+      async invoke(providerRequest) {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            output: {},
+            model: providerRequest.model,
+            finishReason: "stop",
+            usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+          };
+        }
+        correctionStarted?.();
+        return new Promise(() => undefined);
+      },
+    };
+    const invocation = new ModelGateway({ provider, invocationObserver: observer })
+      .invokeStructured({ ...request(), signal: controller.signal }, decisionContract);
+    await started;
+
+    controller.abort(new Error("abort-secret-DO-NOT-LEAK"));
+    await expect(invocation).rejects.toMatchObject({ name: "ModelGatewayAbortError" });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      status: "failed",
+      errorCode: "Aborted",
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+      usageStatus: "unavailable",
+    });
+    expect(JSON.stringify(reports[0])).not.toContain("secret");
+  });
+
   it("emits no report when the request carries no invocation context", async () => {
     const { observer, reports } = collectingObserver();
     const provider: ModelProvider = {

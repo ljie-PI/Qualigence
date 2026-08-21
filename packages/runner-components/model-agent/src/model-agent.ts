@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { randomBytes } from "node:crypto";
-import { ModelGatewayAbortError, ModelGatewayError } from "@qualigence/model-gateway";
+import {
+  ModelGatewayAbortError,
+  ModelGatewayError,
+  ModelGatewayInvocationError,
+} from "@qualigence/model-gateway";
 import type { StructuredModelInvoker } from "@qualigence/model-gateway";
 import {
   ExecutionBlockedError,
@@ -118,7 +122,7 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
         },
         decisionContract(context),
       );
-      context.budget?.consumeModelUsage(context.job.runId, result.usage);
+      consumeUsageState(context, result.usageState, result.usage);
 
       return toProposedAction(result.value);
     } catch (error) {
@@ -169,7 +173,7 @@ export class ModelBackedVerifier implements Verifier {
         },
         verificationContract(context),
       );
-      context.budget?.consumeModelUsage(context.job.runId, result.usage);
+      consumeUsageState(context, result.usageState, result.usage);
 
       return result.value;
     } catch (error) {
@@ -180,6 +184,9 @@ export class ModelBackedVerifier implements Verifier {
 }
 
 function throwModelExecutionError(error: unknown): never {
+  if (error instanceof ModelGatewayInvocationError && !(error instanceof ModelGatewayAbortError)) {
+    throwModelExecutionError(error.reason);
+  }
   if (error instanceof ModelGatewayAbortError) {
     throw error.reason;
   }
@@ -194,16 +201,18 @@ function consumeErrorUsage(
   context: AgentContext | VerificationContext,
   error: unknown,
 ): void {
-  if (error instanceof ModelGatewayAbortError) {
+  if (error instanceof ModelGatewayInvocationError) {
     const budget = context.budget;
-    if (budget === undefined) return;
-    if (!error.usageUnavailable) {
-      budget.consumeModelUsage(context.job.runId, error.usage);
+    if (budget === undefined || !error.providerAttempted) return;
+    if (error.usageState.status === "available") {
+      budget.consumeModelUsage(context.job.runId, error.usageState.usage);
       return;
     }
 
     try {
-      budget.consumeModelUsage(context.job.runId, error.usage);
+      if (error.usageState.knownUsage !== undefined) {
+        budget.consumeModelUsage(context.job.runId, error.usageState.knownUsage);
+      }
     } catch (budgetError) {
       if (
         budgetError instanceof ExecutionBudgetError &&
@@ -218,8 +227,29 @@ function consumeErrorUsage(
     throw new ExecutionBudgetError("ModelUsageUnavailable");
   }
   if (error instanceof ModelGatewayError && error.providerAttempted) {
-    context.budget?.consumeModelUsage(context.job.runId, error.usage);
+    consumeUsageState(context, error.usageState, error.usage);
   }
+}
+
+function consumeUsageState(
+  context: AgentContext | VerificationContext,
+  state: import("@qualigence/model-gateway").ModelUsageState | undefined,
+  legacyUsage: import("@qualigence/runner-kernel").ModelUsage | undefined,
+): void {
+  const budget = context.budget;
+  if (budget === undefined) return;
+  if (state === undefined) {
+    budget.consumeModelUsage(context.job.runId, legacyUsage);
+    return;
+  }
+  if (state.status === "available") {
+    budget.consumeModelUsage(context.job.runId, state.usage);
+    return;
+  }
+  if (state.knownUsage !== undefined) {
+    budget.consumeModelUsage(context.job.runId, state.knownUsage);
+  }
+  throw new ExecutionBudgetError("ModelUsageUnavailable");
 }
 
 /**

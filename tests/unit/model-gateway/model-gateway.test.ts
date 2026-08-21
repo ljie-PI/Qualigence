@@ -3,6 +3,7 @@ import {
   ModelGateway,
   ModelGatewayAbortError,
   ModelGatewayError,
+  ModelGatewayInvocationError,
   type ModelProvider,
   type StructuredOutputContract,
 } from "@qualigence/model-gateway";
@@ -141,7 +142,7 @@ describe("ModelGateway", () => {
     },
   );
 
-  it("propagates a non-validation parser defect without retrying the provider", async () => {
+  it("returns typed usage with a non-validation parser defect without retrying", async () => {
     const parserDefect = new TypeError("contract bug");
     const provider = fakeProvider(
       { structuredOutput: true },
@@ -156,7 +157,11 @@ describe("ModelGateway", () => {
       },
     };
 
-    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(parserDefect);
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toMatchObject({
+      reason: parserDefect,
+      usageState: { status: "available", usage: { totalTokens: 2 } },
+      providerAttempted: true,
+    } satisfies Partial<ModelGatewayInvocationError>);
     expect(provider.requests).toHaveLength(1);
   });
 
@@ -174,9 +179,11 @@ describe("ModelGateway", () => {
       },
     };
 
-    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(
-      requestConstructionDefect,
-    );
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toMatchObject({
+      reason: requestConstructionDefect,
+      providerAttempted: false,
+      usageState: { status: "unavailable" },
+    } satisfies Partial<ModelGatewayInvocationError>);
     expect(provider.requests).toHaveLength(0);
   });
 
@@ -269,7 +276,42 @@ describe("ModelGateway", () => {
     expect(provider.requests).toHaveLength(2);
   });
 
-  it("does not retry or report after an invocation is aborted", async () => {
+  it("reports known retry usage while marking the accumulated usage unavailable", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out") },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+    const reports: import("@qualigence/model-gateway").ModelInvocationReport[] = [];
+    const gateway = new ModelGateway({
+      provider,
+      delay: async () => {},
+      invocationObserver: { record: async (report) => { reports.push(report); } },
+    });
+
+    await gateway.invokeStructured({
+      ...request(),
+      invocation: { runId: "run-1", invocationId: "invocation-1" },
+    }, decisionContract);
+
+    expect(reports).toEqual([
+      expect.objectContaining({
+        status: "succeeded",
+        usageStatus: "unavailable",
+        inputTokens: 3,
+        outputTokens: 2,
+        totalTokens: 5,
+      }),
+    ]);
+  });
+
+  it("does not retry and reports unavailable usage after an invocation is aborted", async () => {
     const controller = new AbortController();
     const provider = fakeProvider(
       { structuredOutput: true },
@@ -291,7 +333,13 @@ describe("ModelGateway", () => {
       invocation: { runId: "run-1", invocationId: "invocation-1" },
     }, decisionContract)).rejects.toThrow("deadline");
     expect(provider.requests).toHaveLength(1);
-    expect(reports).toEqual([]);
+    expect(reports).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        errorCode: "Aborted",
+        usageStatus: "unavailable",
+      }),
+    ]);
   });
 
   it("returns accumulated usage when an in-flight correction is aborted without usage", async () => {
@@ -514,7 +562,7 @@ function fakeProvider(
         output: scripted.output,
         model: providerRequest.model,
         finishReason: "stop",
-        ...(scripted.usage === undefined ? {} : { usage: scripted.usage }),
+        usage: scripted.usage ?? { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       };
     },
   };

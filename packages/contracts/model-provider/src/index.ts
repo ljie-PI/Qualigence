@@ -51,6 +51,10 @@ export interface ModelUsage {
   readonly totalTokens?: number;
 }
 
+export type ModelUsageState =
+  | { readonly status: "available"; readonly usage: ModelUsage }
+  | { readonly status: "unavailable"; readonly knownUsage?: ModelUsage };
+
 export interface ModelProviderRequest {
   readonly operation: ModelOperation;
   readonly model: string;
@@ -120,4 +124,5 @@ export interface ValidatedModelResult<T> {
   readonly providerRequestId?: string;
   readonly finishReason: string;
   readonly usage?: ModelUsage;
+  readonly usageState?: ModelUsageState;
 }

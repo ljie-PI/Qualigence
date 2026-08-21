@@ -53,9 +53,6 @@ interface RunBudgetState {
   consumedModelTokens: number;
 }
 
-const DEFAULT_ONE_CALL_CEILING = 4_096;
-const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
-
 export class DeterministicExecutionBudget implements ExecutionBudget {
   private readonly runs = new Map<string, RunBudgetState>();
   private readonly clock: MonotonicClock;
@@ -64,12 +61,14 @@ export class DeterministicExecutionBudget implements ExecutionBudget {
 
   constructor(options: DeterministicExecutionBudgetOptions = {}) {
     this.clock = options.clock ?? { now: () => performance.now() };
-    this.objectiveOnlyMaximumWallClockMs =
-      options.objectiveOnlyMaximumWallClockMs ?? DEFAULT_ACTION_TIMEOUT_MS;
-    this.objectiveOnlyMaximumModelTokens =
-      options.objectiveOnlyMaximumModelTokens ?? DEFAULT_ONE_CALL_CEILING;
-    validateLimit(this.objectiveOnlyMaximumWallClockMs);
-    validateLimit(this.objectiveOnlyMaximumModelTokens);
+    this.objectiveOnlyMaximumWallClockMs = options.objectiveOnlyMaximumWallClockMs ?? 0;
+    this.objectiveOnlyMaximumModelTokens = options.objectiveOnlyMaximumModelTokens ?? 0;
+    if (options.objectiveOnlyMaximumWallClockMs !== undefined) {
+      validateLimit(this.objectiveOnlyMaximumWallClockMs);
+    }
+    if (options.objectiveOnlyMaximumModelTokens !== undefined) {
+      validateLimit(this.objectiveOnlyMaximumModelTokens);
+    }
   }
 
   begin(job: AcceptedExecutionJob): void {

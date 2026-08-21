@@ -150,6 +150,8 @@ describe("model-backed runner components", () => {
         },
       },
       traceRecorder,
+      objectiveOnlyMaximumWallClockMs: 1_000,
+      objectiveOnlyMaximumModelTokens: 100,
     });
 
     const completion = await runtime.run(job());
@@ -450,6 +452,8 @@ describe("model-backed runner components", () => {
         "test-model",
       ),
       traceRecorder,
+      objectiveOnlyMaximumWallClockMs: 1_000,
+      objectiveOnlyMaximumModelTokens: 100,
     });
 
     const completion = await runtime.run(job());

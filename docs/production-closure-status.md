@@ -85,6 +85,27 @@ verification: pending dedicated PR merge
   Runtime 24 tests. The exact row-17 focused Gate above passed 9 files / 108 tests. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run per
   the ticket review-fix protocol; fresh exact-base review remains pending.
+- Round-3 approved scope adds both production composition roots and their exact
+  tests to Ticket 17 authority. Every attempted Gateway invocation now returns
+  typed available/unavailable usage state, including parser defects and aborts;
+  Model Agent charges known aggregate usage once before rethrow or stable budget
+  classification.
+- Aborted and failed invocation reports are emitted once with only de-identified
+  context, status, safe code, and known token fields. Unknown usage stays marked
+  unavailable and prompts, output, provider messages, abort reasons, and secrets
+  are not copied into the report.
+- Runtime bounds every Trace append by the same monotonic Run wall deadline and
+  retains a rejection handler for late settlement. A deadline-exhausted terminal
+  append is not falsely claimed as persisted.
+- Objective-only limits no longer have Runner Kernel defaults. Standalone Runner
+  composition supplies configured action timeout and required one-call token
+  ceiling; Local CLI composition supplies the request action timeout and its
+  required configured one-call token ceiling. The same ceiling bounds provider
+  output and accumulated consumed tokens.
+- Round-3 amended focused Gate:
+  `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts tests/unit/runner/job-executor.test.ts tests/component/web-execution/local-run-composition-root.test.ts`.
+  Final verification passed 11 files / 122 tests, plus root typecheck and diff
+  check. No E2E or full suite was run.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
