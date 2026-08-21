@@ -5,14 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  ExecutionJobLease,
   ExecutionCompletion,
   ExecutionEventBatch,
   ExecutionJobOffer,
   ExecutionPlanStep,
   ObservationGraph,
 } from "@qualigence/runner-protocol";
+import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
+import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "../../component/web-execution/fixtures.js";
 
@@ -103,6 +106,7 @@ describe("production valueRef browser execution", () => {
 
     const logs: string[] = [];
     const batches: ExecutionEventBatch[] = [];
+    const spooledEvents: ExecutionEventBatch["events"][number][] = [];
     const completions: ExecutionCompletion[] = [];
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
       logs.push(String(chunk));
@@ -112,9 +116,21 @@ describe("production valueRef browser execution", () => {
       logs.push(String(chunk));
       return true;
     }) as typeof process.stderr.write);
-    const session = {
-      welcome: { traceBatchMaximumEvents: 100, traceBatchMaximumBytes: 1_000_000 },
-      accept: async (offerId: string) => ({
+    const session: RunnerSession = {
+      welcome: {
+        sessionId: "session-value-ref",
+        resumeToken: "resume-value-ref",
+        selectedProtocolMajor: 1,
+        serverVersion: "test",
+        heartbeatIntervalMs: 10_000,
+        leaseDurationMs: 60_000,
+        traceBatchMaximumEvents: 100,
+        traceBatchMaximumBytes: 1_000_000,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 1_000_000,
+      },
+      nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+      accept: async (offerId: string): Promise<ExecutionJobLease> => ({
         jobId: offerId.replace("offer", "job"),
         runId: offerId.replace("offer", "run"),
         leaseToken: `lease-${offerId}`,
@@ -123,6 +139,10 @@ describe("production valueRef browser execution", () => {
       }),
       renew: async () => { throw new Error("Unexpected lease renewal"); },
       submit: async (batch: ExecutionEventBatch) => {
+        spooledEvents.push(...await spool!.pending(batch.runId, batch.firstSequenceNumber, {
+          maximumEvents: 100,
+          maximumBytes: 1_000_000,
+        }));
         batches.push(batch);
         return {
           batchId: batch.batchId,
@@ -130,22 +150,28 @@ describe("production valueRef browser execution", () => {
           nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
         };
       },
-      complete: async (_lease: unknown, completion: ExecutionCompletion) => { completions.push(completion); },
+      complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
       close: async () => undefined,
     };
+    const config: RunnerConfig = {
+      runnerId: "runner-value-ref",
+      coreAddress: "unused",
+      authority: "unused",
+      tls: { ca: Buffer.alloc(0), cert: Buffer.alloc(0), key: Buffer.alloc(0) },
+      dataDir: root,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      model: {
+        baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
+        apiKey: "acceptance-api-key",
+        modelName: "ticket-18-model",
+        maximumTokensPerCall: 100,
+      },
+    };
     const runtime = new RunnerOfferRuntime({
-      config: {
-        headed: false,
-        navigationTimeoutMs: 15_000,
-        actionTimeoutMs: 10_000,
-        model: {
-          baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
-          apiKey: "acceptance-api-key",
-          modelName: "ticket-18-model",
-          maximumTokensPerCall: 100,
-        },
-      } as never,
-      session: session as never,
+      config,
+      session,
       spool,
       valueProvider,
     });
@@ -180,7 +206,7 @@ describe("production valueRef browser execution", () => {
     spool = undefined;
     const spoolBytes = await readFile(spoolFile);
     const serializedSecuritySurface = Buffer.concat([
-      Buffer.from(JSON.stringify({ trace, completions, logs, modelRequests }), "utf8"),
+      Buffer.from(JSON.stringify({ trace, spool: spooledEvents, completions, logs, modelRequests }), "utf8"),
       spoolBytes,
     ]).toString("utf8");
     expect(serializedSecuritySurface).not.toContain(INPUT_VALUE);
