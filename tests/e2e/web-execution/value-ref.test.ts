@@ -26,7 +26,7 @@ import { htmlDocument, startFixtureServer, type FixtureServer } from "../../comp
 
 const LF_INPUT_VALUE = "e2e-lf-first-line\ne2e-lf-second-line\n";
 const CRLF_INPUT_VALUE = "a\r\nb\r\n";
-const CRLF_BROWSER_VALUE = "a\nb\n";
+const CRLF_BROWSER_VALUE = "ab";
 const SELECT_VALUE = "e2e-private-country-code";
 const SELECT_LABEL_SOURCE = "e2e-private-country\r\n    normalized-label";
 const SELECT_LABEL_BROWSER_VALUE = "e2e-private-country normalized-label";
@@ -55,7 +55,7 @@ describe("production valueRef browser execution", () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
         <label>LF secret <textarea aria-label="LF secret"></textarea></label>
-        <label>CRLF secret <textarea aria-label="CRLF secret"></textarea></label>
+        <label>CRLF secret <input aria-label="CRLF secret" /></label>
         <label>Country
           <select aria-label="Country">
             <option value="">Choose a country</option>
@@ -66,12 +66,13 @@ describe("production valueRef browser execution", () => {
         <p data-qualigence-observe>e2e-lf-first-line remains unrelated</p>
         <p data-qualigence-observe>ab</p>
         <script>
-          const inputs = document.querySelectorAll('textarea');
+          const lfInput = document.querySelector('textarea');
+          const crlfInput = document.querySelector('input');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
-          inputs[0].addEventListener('input', () => { status.textContent = 'LF ready'; });
-          inputs[1].addEventListener('input', () => { status.textContent = 'CRLF ready'; });
-          country.addEventListener('change', () => { status.textContent = country.selectedOptions[0].text; });
+          lfInput.addEventListener('input', () => { status.textContent = 'LF ready'; });
+          crlfInput.addEventListener('input', () => { status.textContent = 'CRLF ready'; });
+          country.addEventListener('change', () => { status.textContent = 'Country ready'; });
         </script>
       `, "ValueRef acceptance"),
     });
@@ -239,7 +240,10 @@ describe("production valueRef browser execution", () => {
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) => node.text === "LF ready")).toBe(true);
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "CRLF ready")).toBe(true);
-    expect(finalObservation(trace, "run-select").nodes.some((node) => node.text === "[redacted]")).toBe(true);
+    expect(nodeNamed(finalObservation(trace, "run-input-crlf"), "CRLF secret"))
+      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(finalObservation(trace, "run-select"), "Country"))
+      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) =>
       node.text === "e2e-lf-first-line remains unrelated")).toBe(true);
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "ab")).toBe(true);
@@ -253,7 +257,19 @@ describe("production valueRef browser execution", () => {
       .map(({ runId, artifact }) => ({ runId, name: artifact.name, mediaType: artifact.mediaType }));
     expect(observationArtifacts).toHaveLength(6);
     expect(screenshotMetadata).toHaveLength(6);
-    expect(observationArtifacts.some((artifact) => artifact.includes('"text":"ab"'))).toBe(true);
+    const parsedObservationArtifacts = observationArtifacts.map((artifact) =>
+      JSON.parse(artifact) as ObservationGraph);
+    const crlfArtifact = parsedObservationArtifacts.find((graph) =>
+      graph.graphId === finalObservation(trace, "run-input-crlf").graphId);
+    const selectArtifact = parsedObservationArtifacts.find((graph) =>
+      graph.graphId === finalObservation(trace, "run-select").graphId);
+    expect(crlfArtifact).toBeDefined();
+    expect(selectArtifact).toBeDefined();
+    expect(nodeNamed(crlfArtifact!, "CRLF secret"))
+      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(selectArtifact!, "Country"))
+      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(crlfArtifact!.nodes.some((node) => node.text === CRLF_BROWSER_VALUE)).toBe(true);
 
     await spool.close();
     spool = undefined;
@@ -274,7 +290,6 @@ describe("production valueRef browser execution", () => {
     const sensitiveForms = [
       LF_INPUT_VALUE,
       CRLF_INPUT_VALUE,
-      CRLF_BROWSER_VALUE,
       SELECT_VALUE,
       SELECT_LABEL_SOURCE,
       SELECT_LABEL_BROWSER_VALUE,
@@ -287,6 +302,12 @@ describe("production valueRef browser execution", () => {
     }
   }, 60_000);
 });
+
+function nodeNamed(graph: ObservationGraph, name: string) {
+  const node = graph.nodes.find((candidate) => candidate.name === name);
+  if (node === undefined) throw new Error(`Expected node named ${name}.`);
+  return node;
+}
 
 function offer(
   id: string,

@@ -110,12 +110,10 @@ describe("PlaywrightActionExecutor value resolution", () => {
       isEnabled: async () => true,
       getAttribute: async () => null,
       fill: async (value: string) => { calls.push(`fill:${value}`); },
-      inputValue: async () => "plaintext-secret",
       selectOption: async (value: string) => {
         calls.push(`selectOption:${value}`);
         return [value];
       },
-      evaluate: async () => ["plaintext-secret", "Private label", "Private text"],
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -138,7 +136,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
   });
 
-  it("registers only the source and exact browser-observable input forms", async () => {
+  it("keeps browser-normalized input forms out of global redaction", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerObservation(graphId, {
@@ -146,14 +144,13 @@ describe("PlaywrightActionExecutor value resolution", () => {
       artifacts: [],
     });
     const source = "a\r\nb\r\n";
-    const browserValue = "a\nb\n";
+    const browserValue = "ab";
     const locator = {
       count: async () => 1,
       isVisible: async () => true,
       isEnabled: async () => true,
       getAttribute: async () => null,
       fill: async () => undefined,
-      inputValue: async () => browserValue,
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -169,12 +166,35 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.notes",
     }, permit)).resolves.toEqual({ status: "ok" });
 
-    expect(session.redactSensitiveText(source)).toBe("[redacted]");
-    expect(session.redactSensitiveText(browserValue)).toBe("[redacted]");
+    expect(session.redactSensitiveText(source)).toBe("[REDACTED]");
+    expect(session.redactSensitiveText(browserValue)).toBe(browserValue);
     expect(session.redactSensitiveText("ab")).toBe("ab");
   });
 
-  it("registers the exact selected values and labels observed from the browser", async () => {
+  it("maps a sensitive target descriptor to its next observation identity", async () => {
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    const descriptor = { kind: "role", role: "textbox", name: "Notes" } as const;
+    session.registerSensitiveActionTarget("n-old", descriptor);
+
+    expect(session.sensitiveTargetFor(new Map<string, LocatorDescriptor>([
+      ["n-unrelated", { kind: "text", role: "text", text: "ab" } as const],
+      ["n-new", descriptor],
+    ]))).toEqual({ nodeId: "n-new", descriptor });
+  });
+
+  it("clears sensitive target and source state when the session closes", async () => {
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    const descriptor = { kind: "role", role: "textbox", name: "Notes" } as const;
+    session.registerSensitiveActionTarget("n-old", descriptor);
+    session.registerSensitiveValue("source-secret");
+
+    await session.close();
+
+    expect(session.sensitiveTargetFor(new Map([["n-new", descriptor]]))).toBeUndefined();
+    expect(session.redactSensitiveText("source-secret")).toBe("source-secret");
+  });
+
+  it("keeps browser-normalized select forms out of global redaction", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerObservation(graphId, {
@@ -187,11 +207,6 @@ describe("PlaywrightActionExecutor value resolution", () => {
       isEnabled: async () => true,
       getAttribute: async () => null,
       selectOption: async () => ["browser-selected-option"],
-      evaluate: async () => [
-        "browser-normalized-option",
-        "Browser normalized label",
-        "Browser normalized text",
-      ],
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -209,10 +224,8 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.country",
     }, permit)).resolves.toEqual({ status: "ok" });
 
-    expect(session.redactSensitiveText("browser-selected-option")).toBe("[redacted]");
-    expect(session.redactSensitiveText("browser-normalized-option")).toBe("[redacted]");
-    expect(session.redactSensitiveText("Browser normalized label")).toBe("[redacted]");
-    expect(session.redactSensitiveText("Browser normalized text")).toBe("[redacted]");
+    expect(session.redactSensitiveText("provider-option")).toBe("[REDACTED]");
+    expect(session.redactSensitiveText("browser-selected-option")).toBe("browser-selected-option");
     expect(session.redactSensitiveText("browser-selected remains unrelated")).toBe(
       "browser-selected remains unrelated",
     );

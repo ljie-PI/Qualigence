@@ -10,12 +10,23 @@ import {
 } from "./observation-builder.js";
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
+import { locatorFor } from "./action-locator.js";
 
-async function captureScreenshot(page: Page): Promise<Uint8Array> {
+const REDACTED = "[REDACTED]";
+
+async function captureScreenshot(
+  page: Page,
+  sensitiveDescriptor?: Parameters<typeof locatorFor>[1],
+): Promise<Uint8Array> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return new Uint8Array(await page.screenshot({ timeout: 5000 }));
+      return new Uint8Array(await page.screenshot({
+        timeout: 5000,
+        ...(sensitiveDescriptor === undefined
+          ? {}
+          : { mask: [locatorFor(page, sensitiveDescriptor)] }),
+      }));
     } catch (error) {
       lastError = error;
       await page.waitForTimeout(50);
@@ -223,18 +234,33 @@ export class PlaywrightObserver implements Observer {
       const title = this.session.redactSensitiveText(await page.title());
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
-      const { graph, descriptors } = buildObservationGraph(
+      const preliminary = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
         { url, ...(title !== "" ? { title } : {}) },
       );
+      const sensitiveTarget = this.session.sensitiveTargetFor(preliminary.descriptors);
+      const serializedCandidates = sensitiveTarget === undefined
+        ? raw
+        : raw.map((candidate, index) =>
+            preliminary.graph.nodes[index]?.id === sensitiveTarget.nodeId
+              ? { ...candidate, text: REDACTED, value: REDACTED }
+              : candidate);
+      const { graph, descriptors } = sensitiveTarget === undefined
+        ? preliminary
+        : buildObservationGraph(
+            job.runId,
+            ordinal,
+            serializedCandidates,
+            { url, ...(title !== "" ? { title } : {}) },
+          );
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
       };
 
-      const screenshot = await captureScreenshot(page);
+      const screenshot = await captureScreenshot(page, sensitiveTarget?.descriptor);
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.registerObservation(graphWithRefs.graphId, {
         descriptors,

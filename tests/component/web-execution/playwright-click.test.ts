@@ -70,13 +70,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
-          <label>Multiline secret <textarea aria-label="Multiline secret"></textarea></label>
+          <label>Normalized secret <input aria-label="Normalized secret" /></label>
           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
           <p data-qualigence-observe id="values"></p>
           <p data-qualigence-observe>ab</p>
           <script>
             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
-            document.querySelector('textarea').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', () => document.getElementById('values').textContent = 'Normalized ready');
             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
           </script>
         `,
@@ -224,13 +224,16 @@ describe("Playwright resolve + execute against real Chromium", () => {
 
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
+    const afterSelect = await observer.capture(job);
+    expect(nodeNamed(afterSelect, "Country"))
+      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     const serializedPublicValues = JSON.stringify([
       inputAction,
       inputOutcome,
       afterInput,
       selectAction,
       selectOutcome,
-      await observer.capture(job),
+      afterSelect,
     ]);
     expect(serializedPublicValues).not.toContain("private@example.test");
     expect(serializedPublicValues).not.toContain("private-country-code");
@@ -276,9 +279,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
 
-  it("redacts the source and actual Chromium input forms without guessing other forms", async () => {
+  it("redacts only the acted node after Chromium normalizes a single-line input", async () => {
     const source = "a\r\nb\r\n";
-    const browserValue = "a\nb\n";
+    const browserValue = "ab";
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
@@ -286,16 +289,23 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const executor = new PlaywrightActionExecutor(session, { resolve: async () => source });
     const before = await observer.capture(job);
     const action = await resolver.resolve(
-      valued("input", nodeNamed(before, "Multiline secret").id, "customer.multiline"),
+      valued("input", nodeNamed(before, "Normalized secret").id, "customer.normalized"),
       before,
     );
 
     expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
     const after = await observer.capture(job);
     const serialized = JSON.stringify(after);
+    const target = nodeNamed(after, "Normalized secret");
+    const artifact = session.artifactsFor(after.graphId)
+      .find((candidate) => candidate.mediaType === "application/json");
+    const artifactGraph = JSON.parse(new TextDecoder().decode(artifact?.bytes)) as ObservationGraph;
+    const artifactTarget = nodeNamed(artifactGraph, "Normalized secret");
 
     expect(serialized).not.toContain(source);
-    expect(serialized).not.toContain(browserValue);
+    expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(artifactTarget).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
+    expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
   });
 });

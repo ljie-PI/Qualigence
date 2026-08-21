@@ -124,29 +124,16 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
           // Register the source before Playwright can echo it in an error. Any
-          // browser normalization is learned from the control after success.
+          // browser normalization is redacted only on this target after success.
           this.session.registerSensitiveValue(value);
           if (action.kind === "input") {
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
-            this.session.registerSensitiveValue(await locator.inputValue({
-              timeout: this.session.actionTimeoutMs,
-            }));
           } else {
-            const selectedValues = await locator.selectOption(value, {
+            await locator.selectOption(value, {
               timeout: this.session.actionTimeoutMs,
             });
-            for (const selectedValue of selectedValues) {
-              this.session.registerSensitiveValue(selectedValue);
-            }
-            const browserValues = await locator.evaluate((element) => {
-              if (!(element instanceof HTMLSelectElement)) return [];
-              const option = element.selectedOptions.item(0);
-              return option === null ? [] : [option.value, option.label, option.text];
-            });
-            for (const browserValue of browserValues) {
-              this.session.registerSensitiveValue(browserValue);
-            }
           }
+          this.session.registerSensitiveActionTarget(actionTarget.nodeId, descriptor);
         } else if (action.kind === "click") {
           await locator.click({ timeout: this.session.actionTimeoutMs });
         } else {

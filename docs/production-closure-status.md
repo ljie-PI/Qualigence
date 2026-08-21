@@ -362,6 +362,18 @@ implementation_head: `a50cd4a`
   failed before analysis because the OpenCode review runner could not start its
   Windows subagent process (`/usr/bin/env`/server error). E2E was therefore not
   run; clean review, E2E, remediation PR, and coordinator review remain pending.
+- The remaining Important fix keeps only exact provider source values in the
+  session-wide error/log defense. A successful input/select records one bounded
+  private target node/descriptor; the next observation re-identifies that exact
+  descriptor and forces only its value/text representation to `[REDACTED]`
+  before Graph and Observation JSON serialization. Screenshot capture masks the
+  same descriptor, and close clears both source and target state.
+- The prepared E2E now uses a real single-line input for source `a\r\nb\r\n`,
+  which Chromium normalizes to `ab`, and proves unrelated visible `ab` remains
+  in Trace and Observation artifacts while the input and real select targets
+  are fixed-redacted. It was not run pending fresh review. The amended focused
+  non-E2E Gate passed 8 files / 104 tests with 1 existing Task 21 skip; root
+  `corepack pnpm typecheck` and `git diff --check` passed.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

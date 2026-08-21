@@ -72,6 +72,18 @@ export interface StoredObservation {
   readonly artifacts: readonly CapturedArtifact[];
 }
 
+interface SensitiveActionTarget {
+  readonly nodeId: string;
+  readonly descriptor: LocatorDescriptor;
+}
+
+function descriptorsEqual(left: LocatorDescriptor, right: LocatorDescriptor): boolean {
+  return left.kind === right.kind &&
+    left.role === right.role &&
+    left.name === right.name &&
+    left.text === right.text;
+}
+
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
@@ -83,6 +95,7 @@ export class PlaywrightBrowserSession {
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
   private readonly sensitiveValues = new Set<string>();
+  private sensitiveActionTarget: SensitiveActionTarget | undefined;
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -134,10 +147,38 @@ export class PlaywrightBrowserSession {
     if (value !== "") this.sensitiveValues.add(value);
   }
 
+  registerSensitiveActionTarget(nodeId: string, descriptor: LocatorDescriptor): void {
+    this.sensitiveActionTarget = { nodeId, descriptor };
+  }
+
+  sensitiveTargetFor(
+    descriptors: ReadonlyMap<string, LocatorDescriptor>,
+  ): SensitiveActionTarget | undefined {
+    const target = this.sensitiveActionTarget;
+    if (target === undefined) return undefined;
+
+    const matches = [...descriptors].filter(([, descriptor]) =>
+      descriptorsEqual(descriptor, target.descriptor));
+    if (matches.length === 0) {
+      this.sensitiveActionTarget = undefined;
+      return undefined;
+    }
+    if (matches.length > 1) {
+      throw new WebTargetError(
+        "AmbiguousTarget",
+        "The sensitive action target no longer resolves uniquely.",
+      );
+    }
+
+    const [nodeId, descriptor] = matches[0]!;
+    this.sensitiveActionTarget = { nodeId, descriptor };
+    return this.sensitiveActionTarget;
+  }
+
   redactSensitiveText(value: string): string {
     let redacted = value;
     for (const sensitive of [...this.sensitiveValues].sort((left, right) => right.length - left.length)) {
-      redacted = redacted.replaceAll(sensitive, "[redacted]");
+      redacted = redacted.replaceAll(sensitive, "[REDACTED]");
     }
     return redacted;
   }
@@ -299,6 +340,7 @@ export class PlaywrightBrowserSession {
       this.browser = undefined;
     }
     this.sensitiveValues.clear();
+    this.sensitiveActionTarget = undefined;
     return firstError;
   }
 }
