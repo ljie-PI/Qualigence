@@ -516,7 +516,9 @@ parent_head: `7f265c1`
 
 component: complete
 production_wiring: present
-verification: pending dedicated remediation PR
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
+remediation_ticket: `42`
 parent_ticket: `40`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/79`
 base_head: `37e947ab42f687142b83c4cdfc8d6f28c78c65e7`
