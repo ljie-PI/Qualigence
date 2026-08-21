@@ -120,6 +120,14 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
   or skips. `corepack pnpm typecheck` and `git diff --check` passed. The E2E was
   not run and evidence remains pending exact-base coordinator review, the
   post-review E2E, and the dedicated PR.
+- Remediation review fixes (2026-08-21) remove the old-schema option from the
+  shared PostgreSQL fixture completely and keep schema-1 role/migration setup in
+  the authorized acceptance file. Independent literals now snapshot every
+  column of every seeded `execution_runs` and `artifact_manifests` row, plus
+  fixed object bytes, in stable order before migration, after production
+  `runMigrate` reaches sequential history `[1,2,3,4,5,6,7]`, and after clean
+  restore. The Compose render, focused Gate (10 files / 48 tests), typecheck,
+  and diff check pass; no E2E was run before fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

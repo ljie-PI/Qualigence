@@ -1,14 +1,8 @@
 import {
-  createRuntimeRoles,
-  migratePostgres,
   provisionPostgres,
   type PostgresConnectionConfig,
 } from "@qualigence/postgres-runtime";
-import { Kysely, PostgresDialect } from "kysely";
-import pg from "pg";
 import { startPostgres, type StartedPostgres } from "./docker-container.js";
-
-const { Pool } = pg;
 
 export interface PostgresFixture {
   readonly container: StartedPostgres;
@@ -28,9 +22,7 @@ const WORKER_PASSWORD = "worker_pw";
  * forced RLS, and create the least-privilege Server and Worker roles. Returns
  * connection configs for the owner/admin role plus the two runtime roles.
  */
-export async function setupPostgresFixture(
-  options: { readonly targetVersion?: number } = {},
-): Promise<PostgresFixture> {
+export async function setupPostgresFixture(): Promise<PostgresFixture> {
   const container = await startPostgres();
   const adminConfig: PostgresConnectionConfig = {
     host: container.host,
@@ -40,31 +32,13 @@ export async function setupPostgresFixture(
     password: container.password,
   };
 
-  const roles = {
-    server: { name: SERVER_ROLE, password: SERVER_PASSWORD },
-    worker: { name: WORKER_ROLE, password: WORKER_PASSWORD },
-  };
-  if (options.targetVersion === undefined) {
-    await provisionPostgres({ admin: adminConfig, roles });
-  } else {
-    const db = new Kysely<unknown>({
-      dialect: new PostgresDialect({ pool: new Pool(adminConfig) }),
-    });
-    try {
-      await createRuntimeRoles(db, {
-        database: adminConfig.database,
-        server: roles.server,
-        worker: roles.worker,
-      });
-    } finally {
-      await db.destroy();
-    }
-    await migratePostgres({
-      admin: adminConfig,
-      targetVersion: options.targetVersion,
-      roles: { server: roles.server.name, worker: roles.worker.name },
-    });
-  }
+  await provisionPostgres({
+    admin: adminConfig,
+    roles: {
+      server: { name: SERVER_ROLE, password: SERVER_PASSWORD },
+      worker: { name: WORKER_ROLE, password: WORKER_PASSWORD },
+    },
+  });
 
   const serverConfig: PostgresConnectionConfig = {
     ...adminConfig,
