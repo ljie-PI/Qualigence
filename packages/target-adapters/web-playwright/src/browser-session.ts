@@ -611,6 +611,8 @@ interface SensitiveActionMutationTracker {
   overflow: boolean;
   observerError: boolean;
   scheduledPoison: boolean;
+  scheduledRegistrations: number;
+  scheduledExecutions: number;
   shadowPoison: boolean;
   closedMutationBaseline: number;
 }
@@ -1014,6 +1016,8 @@ export class PlaywrightBrowserSession {
           overflow: false,
           observerError: false,
           scheduledPoison: false,
+          scheduledRegistrations: 0,
+          scheduledExecutions: 0,
           shadowPoison: false,
           closedMutationBaseline: 0,
           preparedElements: undefined,
@@ -1130,7 +1134,6 @@ export class PlaywrightBrowserSession {
         const originalThen = Promise.prototype.then;
         const originalCatch = Promise.prototype.catch;
         const originalFinally = Promise.prototype.finally;
-        const originalPromiseResolve = Promise.resolve;
         const metadataSnapshot = (): SensitivePageMetadataSnapshot => ({
           href: location.href,
           pathname: location.pathname,
@@ -1188,12 +1191,6 @@ export class PlaywrightBrowserSession {
         let scheduledRegistrations = 0;
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
-        let delegatedPromiseRegistration: {
-          readonly receiver: Promise<unknown>;
-          readonly onfulfilled: unknown;
-          readonly onrejected: unknown;
-          available: boolean;
-        } | undefined;
         const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
           observeRoot(root);
         };
@@ -1235,6 +1232,7 @@ export class PlaywrightBrowserSession {
         window.addEventListener(eventType, exactTargetEvent, true);
 
         const runCausal = <T>(token: GenerationToken, callback: () => T): T => {
+          tracker.scheduledExecutions += 1;
           if (Date.now() > token.deadline || token.remainingCallbacks <= 0) {
             tracker.scheduledPoison = true;
             return callback();
@@ -1264,6 +1262,7 @@ export class PlaywrightBrowserSession {
           const generation = generationForSchedule();
           if (generation === undefined) return undefined;
           scheduledRegistrations += 1;
+          tracker.scheduledRegistrations = scheduledRegistrations;
           if (scheduledRegistrations > limits.maximumScheduledCallbacks) {
             tracker.scheduledPoison = true;
             return undefined;
@@ -1335,93 +1334,12 @@ export class PlaywrightBrowserSession {
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
         ): Promise<TResult1 | TResult2> {
-          if (delegatedPromiseRegistration?.receiver === this &&
-              delegatedPromiseRegistration.onfulfilled === onfulfilled &&
-              delegatedPromiseRegistration.onrejected === onrejected &&
-              delegatedPromiseRegistration.available) {
-            delegatedPromiseRegistration.available = false;
-            return originalThen.call(this, onfulfilled, onrejected) as Promise<TResult1 | TResult2>;
-          }
           const generation = registerGeneration();
           return originalThen.call(
             this,
             wrapContinuation(generation, onfulfilled),
             wrapContinuation(generation, onrejected),
           ) as Promise<TResult1 | TResult2>;
-        };
-        const delegatedThen = <T, TResult1 = T, TResult2 = never>(
-          receiver: Promise<T>,
-          onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-        ): Promise<TResult1 | TResult2> => {
-          const priorRegistration = delegatedPromiseRegistration;
-          delegatedPromiseRegistration = {
-            receiver,
-            onfulfilled,
-            onrejected,
-            available: true,
-          };
-          try {
-            return receiver.then(onfulfilled, onrejected);
-          } finally {
-            delegatedPromiseRegistration = priorRegistration;
-          }
-        };
-        const wrappedCatch = function <T, TResult = never>(
-          this: Promise<T>,
-          onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
-        ): Promise<T | TResult> {
-          const generation = registerGeneration();
-          return delegatedThen(this, undefined, wrapContinuation(generation, onrejected));
-        };
-        const wrappedFinally = function <T>(
-          this: Promise<T>,
-          onfinally?: (() => void) | null,
-        ): Promise<T> {
-          const generation = registerGeneration();
-          if (typeof onfinally !== "function") {
-            return delegatedThen(this, onfinally, onfinally) as Promise<T>;
-          }
-          const constructor = (this as Promise<T> & { constructor?: unknown }).constructor;
-          if (constructor !== undefined &&
-              (typeof constructor !== "object" && typeof constructor !== "function" ||
-                constructor === null)) {
-            throw new TypeError("Promise constructor is not an object.");
-          }
-          const species = constructor === undefined
-            ? undefined
-            : (constructor as { readonly [Symbol.species]?: unknown })[Symbol.species];
-          const resultConstructor = species == null ? Promise : species;
-          if (typeof resultConstructor !== "function") {
-            throw new TypeError("Promise species is not a constructor.");
-          }
-          const runFinally = (): unknown => generation === undefined
-            ? onfinally()
-            : runCausal(generation, onfinally);
-          const continueFinally = <TResult>(preserve: () => TResult): PromiseLike<TResult> => {
-            const resolved = originalPromiseResolve.call(
-              resultConstructor as PromiseConstructor,
-              runFinally(),
-            );
-            const continuation = resolved.then === wrappedThen
-              ? delegatedThen(resolved, preserve)
-              : resolved.then(preserve);
-            return {
-              then: <TResult1 = TResult, TResult2 = never>(
-                onfulfilled?: ((value: TResult) => TResult1 | PromiseLike<TResult1>) | null,
-                onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-              ) => originalThen.call(
-                continuation,
-                onfulfilled,
-                onrejected,
-              ) as Promise<TResult1 | TResult2>,
-            };
-          };
-          return delegatedThen(
-            this,
-            (value) => continueFinally(() => value),
-            (reason) => continueFinally(() => { throw reason; }),
-          ) as Promise<T>;
         };
         window.setTimeout = wrappedSetTimeout;
         window.setInterval = wrappedSetInterval;
@@ -1430,8 +1348,6 @@ export class PlaywrightBrowserSession {
         window.cancelAnimationFrame = wrappedCancelAnimationFrame;
         window.queueMicrotask = wrappedQueueMicrotask;
         Promise.prototype.then = wrappedThen;
-        Promise.prototype.catch = wrappedCatch;
-        Promise.prototype.finally = wrappedFinally;
         const originalReplaceState = history.replaceState;
         const originalPushState = history.pushState;
         const wrapHistory = (original: History["replaceState"]): History["replaceState"] =>
@@ -1490,8 +1406,8 @@ export class PlaywrightBrowserSession {
             window.cancelAnimationFrame === wrappedCancelAnimationFrame &&
             window.queueMicrotask === wrappedQueueMicrotask &&
             Promise.prototype.then === wrappedThen &&
-            Promise.prototype.catch === wrappedCatch &&
-            Promise.prototype.finally === wrappedFinally &&
+            Promise.prototype.catch === originalCatch &&
+            Promise.prototype.finally === originalFinally &&
             history.replaceState === wrappedReplaceState &&
             history.pushState === wrappedPushState && registryIntact;
           if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
@@ -1507,8 +1423,6 @@ export class PlaywrightBrowserSession {
             window.queueMicrotask = originalQueueMicrotask;
           }
           if (Promise.prototype.then === wrappedThen) Promise.prototype.then = originalThen;
-          if (Promise.prototype.catch === wrappedCatch) Promise.prototype.catch = originalCatch;
-          if (Promise.prototype.finally === wrappedFinally) Promise.prototype.finally = originalFinally;
           if (history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
           if (history.pushState === wrappedPushState) history.pushState = originalPushState;
           for (const observer of observers) observer.disconnect();
@@ -1824,6 +1738,24 @@ export class PlaywrightBrowserSession {
         );
       }
     }
+  }
+
+  /** Internal test evidence for the bounded page scheduler tracker. */
+  async sensitiveSchedulerCounts(): Promise<{
+    readonly registrations: number;
+    readonly executions: number;
+  }> {
+    let registrations = 0;
+    let executions = 0;
+    for (const tracker of this.sensitiveActionTrackers) {
+      const counts = await tracker.evaluate((state) => ({
+        registrations: state.scheduledRegistrations,
+        executions: state.scheduledExecutions,
+      }));
+      registrations += counts.registrations;
+      executions += counts.executions;
+    }
+    return { registrations, executions };
   }
 
   async abandonSensitiveActionTracking(): Promise<void> {

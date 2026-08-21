@@ -628,6 +628,36 @@ pull_request: pending
   case passed in the complete focused Gate and failed only under full-suite
   concurrency. No E2E was run per final-round instruction.
 
+### Ticket 42 - Promise finally semantics remediation (2026-08-22)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR
+pull_request: pending
+parent_ticket: `41`
+parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
+base_head: `6940f773e94238536cb7c908f5a47c5c308a4fdc`
+implementation_head: pending
+
+- Promise instrumentation now wraps only the current `Promise.prototype.then`
+  call boundary. Native `catch` and `finally` remain untouched, naturally route
+  through the current receiver `then`, preserve browser species and thenable
+  assimilation semantics, and propagate causal generations by wrapped `then`
+  callbacks. There is no delegation suppression.
+- A fresh-page Chromium oracle matrix compares exact serialized ordered events,
+  custom `then` calls, species constructor calls, callback calls, settlement and
+  value/reason identity against the instrumented session for base fulfillment
+  and rejection, returned values/promises/thenables, default and overridden
+  species, instance/prototype/returned-promise custom `then`, hostile multi-call
+  thenables, and native `catch` dispatch. The matrix also asserts exact tracker
+  registration/execution counts and native `catch`/`finally` identity/source.
+- The existing 64 registration and execution bounds remain fail-closed for
+  evidence attribution only; overflow still poisons without suppressing native
+  callbacks. The full Ticket 41 focused command passed 12 files / 208 tests:
+  207 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. Exact-base review remains pending; the Ticket 18
+  Chromium E2E is prepared and, per closure protocol, was not run before review.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

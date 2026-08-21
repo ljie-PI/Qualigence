@@ -20,6 +20,7 @@ import {
   PlaywrightBrowserSession,
   PlaywrightObserver,
   PRIVATE_TARGET_ATTRIBUTE,
+  chromiumLauncher,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -55,6 +56,255 @@ const job: AcceptedExecutionJob = {
   objective: "Exercise clicks",
   policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://placeholder.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
 };
+
+type PromiseScenario =
+  | "base-undefined"
+  | "base-value"
+  | "base-resolved-promise"
+  | "base-rejected-promise"
+  | "base-source-rejection"
+  | "base-custom-thenable"
+  | "subclass-default-species"
+  | "subclass-overridden-species"
+  | "instance-custom-then"
+  | "prototype-custom-then"
+  | "returned-promise-custom-then"
+  | "hostile-thenable"
+  | "catch-current-then";
+
+interface PromiseScenarioObservation {
+  readonly events: readonly string[];
+  readonly customThenCalls: number;
+  readonly speciesConstructorCalls: number;
+  readonly callbackCalls: number;
+  readonly settlement: "fulfilled" | "rejected";
+  readonly settledValueIdentity: boolean;
+  readonly settledReasonIdentity: boolean;
+  readonly nativeCatchUnchanged: boolean;
+  readonly nativeFinallyUnchanged: boolean;
+  readonly catchSource: string;
+  readonly finallySource: string;
+}
+
+async function promiseScenarioPage(
+  input: { readonly scenario: PromiseScenario; readonly installOnInput: boolean },
+): Promise<PromiseScenarioObservation | { readonly installed: true }> {
+  const nativeCatch = Promise.prototype.catch;
+  const nativeFinally = Promise.prototype.finally;
+  const run = async (): Promise<PromiseScenarioObservation> => {
+    const events: string[] = [];
+    const sourceValue = { identity: "source-value" };
+    const sourceReason = { identity: "source-reason" };
+    const callbackValue = { identity: "callback-value" };
+    const callbackReason = { identity: "callback-reason" };
+    let expectedValue: unknown = sourceValue;
+    let expectedReason: unknown;
+    let customThenCalls = 0;
+    let speciesConstructorCalls = 0;
+    let callbackCalls = 0;
+    let result: Promise<unknown>;
+
+    const onfinally = (returned: unknown): (() => unknown) => () => {
+      callbackCalls += 1;
+      events.push("finally-callback");
+      return returned;
+    };
+
+    events.push("scenario-start");
+    switch (input.scenario) {
+      case "base-undefined":
+        result = Promise.resolve(sourceValue).finally(onfinally(undefined));
+        break;
+      case "base-value":
+        result = Promise.resolve(sourceValue).finally(onfinally(callbackValue));
+        break;
+      case "base-resolved-promise":
+        result = Promise.resolve(sourceValue).finally(onfinally(Promise.resolve(callbackValue)));
+        break;
+      case "base-rejected-promise":
+        expectedValue = undefined;
+        expectedReason = callbackReason;
+        result = Promise.resolve(sourceValue).finally(onfinally(Promise.reject(callbackReason)));
+        break;
+      case "base-source-rejection":
+        expectedValue = undefined;
+        expectedReason = sourceReason;
+        result = Promise.reject(sourceReason).finally(onfinally(undefined));
+        break;
+      case "base-custom-thenable":
+        result = Promise.resolve(sourceValue).finally(onfinally({
+          then(resolve: (value: unknown) => void): void {
+            customThenCalls += 1;
+            events.push("custom-then");
+            resolve(callbackValue);
+          },
+        }));
+        break;
+      case "subclass-default-species": {
+        class DefaultSpeciesPromise<T> extends Promise<T> {
+          constructor(executor: (
+            resolve: (value: T | PromiseLike<T>) => void,
+            reject: (reason?: unknown) => void,
+          ) => void) {
+            speciesConstructorCalls += 1;
+            events.push("default-species-constructor");
+            super(executor);
+          }
+        }
+        result = new DefaultSpeciesPromise<unknown>((resolve) => resolve(sourceValue))
+          .finally(onfinally(callbackValue));
+        break;
+      }
+      case "subclass-overridden-species": {
+        class ResultSpeciesPromise<T> extends Promise<T> {
+          constructor(executor: (
+            resolve: (value: T | PromiseLike<T>) => void,
+            reject: (reason?: unknown) => void,
+          ) => void) {
+            speciesConstructorCalls += 1;
+            events.push("result-species-constructor");
+            super(executor);
+          }
+        }
+        class ReceiverPromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return ResultSpeciesPromise; }
+        }
+        result = new ReceiverPromise<unknown>((resolve) => resolve(sourceValue))
+          .finally(onfinally(callbackValue));
+        break;
+      }
+      case "instance-custom-then": {
+        const receiver = Promise.resolve(sourceValue);
+        const inheritedThen = receiver.then;
+        receiver.then = function (...args) {
+          customThenCalls += 1;
+          events.push("instance-then");
+          return Reflect.apply(inheritedThen, this, args);
+        };
+        result = receiver.finally(onfinally(callbackValue));
+        break;
+      }
+      case "prototype-custom-then": {
+        class PrototypeThenPromise<T> extends Promise<T> {
+          constructor(executor: (
+            resolve: (value: T | PromiseLike<T>) => void,
+            reject: (reason?: unknown) => void,
+          ) => void) {
+            speciesConstructorCalls += 1;
+            events.push("prototype-species-constructor");
+            super(executor);
+          }
+
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            customThenCalls += 1;
+            events.push("prototype-then");
+            return super.then(onfulfilled, onrejected);
+          }
+        }
+        result = new PrototypeThenPromise<unknown>((resolve) => resolve(sourceValue))
+          .finally(onfinally(callbackValue));
+        break;
+      }
+      case "returned-promise-custom-then": {
+        const returned = Promise.resolve(callbackValue);
+        const inheritedThen = returned.then;
+        returned.then = function (...args) {
+          customThenCalls += 1;
+          events.push("returned-promise-then");
+          return Reflect.apply(inheritedThen, this, args);
+        };
+        result = Promise.resolve(sourceValue).finally(onfinally(returned));
+        break;
+      }
+      case "hostile-thenable":
+        result = Promise.resolve(sourceValue).finally(onfinally({
+          then(resolve: (value: unknown) => void, reject: (reason: unknown) => void): void {
+            customThenCalls += 1;
+            events.push("hostile-then");
+            events.push("resolve-first");
+            resolve(callbackValue);
+            events.push("reject-second");
+            reject(sourceReason);
+            events.push("resolve-third");
+            resolve(sourceValue);
+            events.push("throw-after-resolve");
+            throw callbackReason;
+          },
+        }));
+        break;
+      case "catch-current-then": {
+        const receiver = Promise.reject(sourceReason);
+        const inheritedThen = receiver.then;
+        receiver.then = function (...args) {
+          customThenCalls += 1;
+          events.push("catch-receiver-then");
+          return Reflect.apply(inheritedThen, this, args);
+        };
+        expectedValue = callbackValue;
+        result = receiver.catch((reason) => {
+          callbackCalls += 1;
+          events.push("catch-callback");
+          if (reason !== sourceReason) throw new Error("reason identity changed");
+          return callbackValue;
+        });
+        break;
+      }
+    }
+
+    try {
+      const value = await result;
+      events.push("settled-fulfilled");
+      return {
+        events,
+        customThenCalls,
+        speciesConstructorCalls,
+        callbackCalls,
+        settlement: "fulfilled",
+        settledValueIdentity: value === expectedValue,
+        settledReasonIdentity: false,
+        nativeCatchUnchanged: Promise.prototype.catch === nativeCatch,
+        nativeFinallyUnchanged: Promise.prototype.finally === nativeFinally,
+        catchSource: Function.prototype.toString.call(Promise.prototype.catch),
+        finallySource: Function.prototype.toString.call(Promise.prototype.finally),
+      };
+    } catch (reason) {
+      events.push("settled-rejected");
+      return {
+        events,
+        customThenCalls,
+        speciesConstructorCalls,
+        callbackCalls,
+        settlement: "rejected",
+        settledValueIdentity: false,
+        settledReasonIdentity: reason === expectedReason,
+        nativeCatchUnchanged: Promise.prototype.catch === nativeCatch,
+        nativeFinallyUnchanged: Promise.prototype.finally === nativeFinally,
+        catchSource: Function.prototype.toString.call(Promise.prototype.catch),
+        finallySource: Function.prototype.toString.call(Promise.prototype.finally),
+      };
+    }
+  };
+
+  if (!input.installOnInput) return run();
+  const source = (globalThis as unknown as {
+    document: {
+      querySelector(selector: string): {
+        addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+      } | null;
+    };
+  }).document.querySelector('input[aria-label="Email"]');
+  if (source === null) throw new Error("matrix input unavailable");
+  source.addEventListener("input", () => {
+    void (async () => {
+      (globalThis as typeof globalThis & { promiseScenarioObservation?: PromiseScenarioObservation })
+        .promiseScenarioObservation = await run();
+    })();
+  }, { once: true });
+  return { installed: true };
+}
 
 describe("Playwright resolve + execute against real Chromium", () => {
   let fixture: FixtureServer;
@@ -1580,7 +1830,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
 
   it.each([
     ["catch", 64],
-    ["finally", 64],
+    ["finally", 21],
   ] as const)(
     "counts each Promise.%s application continuation exactly once at %i registrations",
     async (method, registrations) => {
@@ -1625,8 +1875,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
   it.each([
     ["catch", 32, false],
     ["catch", 33, true],
-    ["finally", 32, false],
-    ["finally", 33, true],
+    ["finally", 16, false],
+    ["finally", 17, true],
   ] as const)(
     "counts a Promise.%s override's second super.then at the %i boundary",
     async (method, registrations, poisoned) => {
@@ -1753,6 +2003,83 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }))).toEqual([2, "fulfilled", "rejected"]);
   });
 
+  it.each([
+    "base-undefined",
+    "base-value",
+    "base-resolved-promise",
+    "base-rejected-promise",
+    "base-source-rejection",
+    "base-custom-thenable",
+    "subclass-default-species",
+    "subclass-overridden-species",
+    "instance-custom-then",
+    "prototype-custom-then",
+    "returned-promise-custom-then",
+    "hostile-thenable",
+    "catch-current-then",
+  ] as const)("matches a fresh native page for Promise scenario %s", async (scenario) => {
+    const browser = await chromiumLauncher.launch({ headless: true });
+    const context = await browser.newContext();
+    const nativePage = await context.newPage();
+    let native: PromiseScenarioObservation;
+    try {
+      await nativePage.goto(fixture.url);
+      native = await nativePage.evaluate(promiseScenarioPage, {
+        scenario,
+        installOnInput: false,
+      }) as PromiseScenarioObservation;
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => `matrix-${scenario}` });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, `customer.matrix-${scenario}`),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(promiseScenarioPage, {
+      scenario,
+      installOnInput: true,
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { promiseScenarioObservation?: PromiseScenarioObservation })
+        .promiseScenarioObservation,
+    ))).toEqual(native);
+    const instrumented = await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { promiseScenarioObservation?: PromiseScenarioObservation })
+        .promiseScenarioObservation,
+    ));
+    expect(JSON.stringify(instrumented)).toBe(JSON.stringify(native));
+    expect(instrumented?.nativeCatchUnchanged).toBe(true);
+    expect(instrumented?.nativeFinallyUnchanged).toBe(true);
+
+    const counts = await session.sensitiveSchedulerCounts();
+    const expectedCounts: Record<PromiseScenario, readonly [number, number]> = {
+      "base-undefined": [3, 3],
+      "base-value": [3, 3],
+      "base-resolved-promise": [3, 3],
+      "base-rejected-promise": [3, 2],
+      "base-source-rejection": [3, 3],
+      "base-custom-thenable": [3, 3],
+      "subclass-default-species": [4, 4],
+      "subclass-overridden-species": [4, 4],
+      "instance-custom-then": [3, 3],
+      "prototype-custom-then": [4, 4],
+      "returned-promise-custom-then": [3, 3],
+      "hostile-thenable": [3, 3],
+      "catch-current-then": [1, 1],
+    };
+    expect([counts.registrations, counts.executions]).toEqual(expectedCounts[scenario]);
+  });
+
   it("preserves Promise species and captured resolve semantics", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -1829,7 +2156,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     ))).toEqual([true, true, 1, 1, 1, "caught-error", "value"]);
   });
 
-  it.each([[32, false], [33, true]] as const)(
+  it.each([[21, false], [22, true]] as const)(
     "counts returned species custom then registrations at the %i finally boundary",
     async (registrations, poisoned) => {
       session = new PlaywrightBrowserSession(options());
@@ -1877,7 +2204,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
       }
       await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
         (globalThis as typeof globalThis & { speciesThenCalls?: number }).speciesThenCalls,
-      ))).toBe(registrations);
+      ))).toBe(registrations * 2);
     },
   );
 
