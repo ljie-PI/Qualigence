@@ -1,6 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { DeterministicRunnerPolicyGate } from "@qualigence/runner-kernel";
-import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
+import { describe, expect, it, vi } from "vitest";
+import {
+  DeterministicRunnerPolicyGate,
+  ExecutionRuntime,
+  type ActionExecutor,
+  type ActionResolver,
+  type AgentContext,
+  type AnyProposedAction,
+  type AnyResolvedAction,
+} from "@qualigence/runner-kernel";
+import type { AcceptedExecutionJob, ExecutionPolicyRisk } from "@qualigence/runner-protocol";
+import { InMemoryTraceRecorder } from "@qualigence/testkit";
 
 const policy = {
   policyId: "policy-isolated",
@@ -60,38 +69,121 @@ describe("DeterministicRunnerPolicyGate", () => {
   });
 
   it.each(["input", "select"] as const)(
-    "classifies Web %s as ExternalSideEffect before value-provider or executor effects",
+    "enforces ExternalSideEffect policy for Web %s through the public runtime pipeline",
     async (kind) => {
       const now = () => Date.parse("2026-08-18T00:00:30.000Z");
-      const actionBase = {
-        targetKind: "web" as const,
-        target: { nodeId: "field-1", selector: "field" },
-        graphId: "graph-1",
+      const currentStep = Object.freeze({
+        stepIndex: 0,
+        kind,
+        target: Object.freeze({ role: kind === "input" ? "textbox" : "combobox", purpose: "customer value" }),
         valueRef: "customer.value",
-      };
-      const action = kind === "input"
-        ? { ...actionBase, kind: "input" as const }
-        : { ...actionBase, kind: "select" as const };
-      let valueProviderCalls = 0;
-      let executorCalls = 0;
-      const attemptEffects = async (maximumRisk: "Normal" | "ExternalSideEffect") => {
+      });
+      const plan = Object.freeze({
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: `case-${kind}`,
+        steps: Object.freeze([currentStep] as const),
+        expectedClaimIds: Object.freeze(["claim-1"] as const),
+        budget: Object.freeze({ maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 }),
+      });
+      const proposedAction = Object.freeze({
+        kind,
+        target: Object.freeze({ nodeId: "field-1" }),
+        valueRef: currentStep.valueRef,
+        reason: `execute immutable ${kind} step`,
+      }) as AnyProposedAction;
+      const resolvedAction = Object.freeze({
+        targetKind: "web" as const,
+        kind,
+        target: Object.freeze({ nodeId: "field-1", selector: "field" }),
+        graphId: "graph-1",
+        valueRef: currentStep.valueRef,
+      }) as AnyResolvedAction;
+
+      const run = async (maximumRisk: ExecutionPolicyRisk) => {
         const scopedPolicy = { ...policy, allowedActionKinds: [kind], maximumRisk };
-        const gate = new DeterministicRunnerPolicyGate(scopedPolicy, { now });
-        const decision = await gate.authorize(action as never, { job: job({ policy: scopedPolicy }), action: action as never });
-        if (decision.status === "allowed") {
-          valueProviderCalls += 1;
-          executorCalls += 1;
-        }
-        return decision;
+        const scopedJob = Object.freeze(job({
+          jobId: `job-${kind}-${maximumRisk}`,
+          runId: `run-${kind}-${maximumRisk}`,
+          objective: `${kind} customer value`,
+          policy: scopedPolicy,
+          plan,
+        }));
+        const valueProvider = { resolve: vi.fn(async (_valueRef: string) => "resolved-secret") };
+        const execute = vi.fn<ActionExecutor["execute"]>(async () => {
+          await valueProvider.resolve(currentStep.valueRef);
+          return { status: "ok" as const };
+        });
+        const decide = vi.fn(async (context: AgentContext) => {
+          expect(Object.isFrozen(plan)).toBe(true);
+          expect(Object.isFrozen(currentStep)).toBe(true);
+          expect(context.job.plan).toBe(plan);
+          expect(plan.steps[0]).toBe(currentStep);
+          return proposedAction as never;
+        });
+        const resolve = vi.fn(async (action: Parameters<ActionResolver["resolve"]>[0]) => {
+          expect(action).toBe(proposedAction);
+          return resolvedAction as never;
+        });
+        const traceRecorder = new InMemoryTraceRecorder();
+        const runtime = new ExecutionRuntime({
+          observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+          decisionProvider: { decide },
+          resolver: { resolve },
+          policyGate: new DeterministicRunnerPolicyGate(scopedPolicy, { now }),
+          actionExecutor: { execute },
+          verifier: { verify: async () => ({ status: "passed", summary: "passed", claims: [] }) },
+          traceRecorder,
+        });
+
+        return {
+          completion: await runtime.run(scopedJob),
+          events: traceRecorder.eventsFor(scopedJob.runId),
+          execute,
+          valueProvider,
+        };
       };
 
-      await expect(attemptEffects("Normal")).resolves.toMatchObject({ status: "denied", reason: "RiskDenied" });
-      expect(valueProviderCalls).toBe(0);
-      expect(executorCalls).toBe(0);
+      const denied = await run("Normal");
+      expect(denied.completion).toEqual({
+        jobId: `job-${kind}-Normal`,
+        runId: `run-${kind}-Normal`,
+        status: "blocked",
+        errorCode: "PolicyDenied",
+      });
+      expect(denied.valueProvider.resolve).not.toHaveBeenCalled();
+      expect(denied.execute).not.toHaveBeenCalled();
+      expect(denied.events.map((event) => event.stage)).toEqual([
+        "observation",
+        "decision",
+        "action_resolved",
+        "policy_denied",
+        "run_completed",
+      ]);
+      expect(denied.events.at(-2)?.payload).toEqual({ status: "denied", reason: "RiskDenied" });
+      expect(denied.events.at(-1)?.payload).toEqual({ status: "blocked", errorCode: "PolicyDenied" });
 
-      await expect(attemptEffects("ExternalSideEffect")).resolves.toMatchObject({ status: "allowed" });
-      expect(valueProviderCalls).toBe(1);
-      expect(executorCalls).toBe(1);
+      const allowed = await run("ExternalSideEffect");
+      expect(allowed.completion).toEqual({
+        jobId: `job-${kind}-ExternalSideEffect`,
+        runId: `run-${kind}-ExternalSideEffect`,
+        status: "passed",
+      });
+      expect(allowed.execute).toHaveBeenCalledOnce();
+      expect(allowed.execute.mock.calls[0]?.[0]).toBe(resolvedAction);
+      expect(allowed.execute.mock.calls[0]?.[2]).toBeInstanceOf(AbortSignal);
+      expect(allowed.valueProvider.resolve).toHaveBeenCalledOnce();
+      expect(allowed.valueProvider.resolve).toHaveBeenCalledWith(currentStep.valueRef);
+      expect(allowed.events.map((event) => event.stage)).toEqual([
+        "observation",
+        "decision",
+        "action_resolved",
+        "policy_authorized",
+        "action_executed",
+        "observation",
+        "verification",
+        "run_completed",
+      ]);
     },
   );
 
