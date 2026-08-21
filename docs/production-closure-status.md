@@ -433,7 +433,9 @@ latest_standards_blocker_fix: `fbce773`
 
 component: complete
 production_wiring: present
-verification: pending remediation PR
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/79`
+remediation_ticket: `41`
 parent_ticket: `39`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/78`
 parent_head: `7f265c1`
