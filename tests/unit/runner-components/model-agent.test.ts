@@ -16,6 +16,7 @@ import {
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
 import type {
+  ModelInvocationReport,
   ModelProvider,
   StructuredModelInvoker,
   StructuredModelRequest,
@@ -243,6 +244,121 @@ describe("model-backed runner components", () => {
 
     expect(modelProvider.requests).toHaveLength(3);
     expect(budget.maximumOutputTokens("run-1")).toBe(91);
+  });
+
+  it("charges successful usage once when invocation reporting rejects", async () => {
+    const auditError = new Error("audit unavailable");
+    const budget = new RecordingBudget();
+    const reports: ModelInvocationReport[] = [];
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({
+        provider: new ScriptedModelProvider([
+          { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+        ]),
+        invocationObserver: {
+          record: async (report) => {
+            reports.push(report);
+            throw auditError;
+          },
+        },
+      }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    })).rejects.toBe(auditError);
+
+    expect(budget.usages).toEqual([{ inputTokens: 1, outputTokens: 1, totalTokens: 2 }]);
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+  });
+
+  it("bounds hanging invocation reporting by the run deadline without late duplicate reporting", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const reports: ModelInvocationReport[] = [];
+    let rejectLate: ((error: Error) => void) | undefined;
+    let markReportStarted: (() => void) | undefined;
+    const reportStarted = new Promise<void>((resolve) => { markReportStarted = resolve; });
+    const budget = new RecordingBudget(() => now);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]) },
+      decisionProvider: new ModelBackedDecisionProvider(
+        new ModelGateway({
+          provider: new ScriptedModelProvider([
+            { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+          ]),
+          invocationObserver: {
+            record: async (report) => {
+              reports.push(report);
+              markReportStarted?.();
+              return new Promise<never>((_resolve, reject) => { rejectLate = reject; });
+            },
+          },
+        }),
+        "test-model",
+      ),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+    const completionPromise = runtime.run(job());
+    await reportStarted;
+
+    now = 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.runOnlyPendingTimersAsync();
+    const completion = await completionPromise;
+
+    expect(completion).toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(budget.usages).toEqual([{ inputTokens: 1, outputTokens: 1, totalTokens: 2 }]);
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+
+    rejectLate?.(new Error("late audit rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+  });
+
+  it("charges known failed usage once and preserves the model failure when reporting rejects", async () => {
+    const budget = new RecordingBudget();
+    const reports: ModelInvocationReport[] = [];
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({
+        provider: new FailedUsageModelProvider(),
+        invocationObserver: {
+          record: async (report) => {
+            reports.push(report);
+            throw new Error("audit unavailable");
+          },
+        },
+      }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    })).rejects.toMatchObject({ code: "AuthenticationFailed" });
+
+    expect(budget.usages).toEqual([{ totalTokens: 3 }]);
+    expect(reports.map((report) => report.status)).toEqual(["failed"]);
   });
 
   it("charges accumulated abort usage exactly once before propagating the abort reason", async () => {
@@ -704,6 +820,23 @@ class UsageRetryCorrectionProvider implements ModelProvider {
       model: request.model,
       finishReason: "stop",
       usage: { totalTokens: this.requests.length === 2 ? 3 : 4 },
+    };
+  }
+}
+
+class FailedUsageModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+
+  async invoke(): Promise<never> {
+    throw {
+      code: "AuthenticationFailed",
+      message: "authentication failed",
+      usage: { totalTokens: 3 },
     };
   }
 }
