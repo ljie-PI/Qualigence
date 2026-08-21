@@ -137,6 +137,12 @@ function collectCandidates(identity: {
     if (total > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
     return total;
   };
+  const boundedProperty = (value: string | null): string | null => {
+    if (value !== null && utf8Bytes(value) > identity.maximumNodeBytes) {
+      throw new Error("node-byte-overflow");
+    }
+    return value;
+  };
 
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
@@ -153,7 +159,7 @@ function collectCandidates(identity: {
   }
 
   function roleOf(element: Element): string {
-    const explicit = element.getAttribute("role");
+    const explicit = boundedProperty(element.getAttribute("role"));
     if (explicit) {
       return explicit;
     }
@@ -187,11 +193,11 @@ function collectCandidates(identity: {
   }
 
   function accessibleName(element: Element): string {
-    const ariaLabel = element.getAttribute("aria-label");
+    const ariaLabel = boundedProperty(element.getAttribute("aria-label"));
     if (ariaLabel && ariaLabel.trim() !== "") {
       return ariaLabel;
     }
-    const labelledBy = element.getAttribute("aria-labelledby");
+    const labelledBy = boundedProperty(element.getAttribute("aria-labelledby"));
     if (labelledBy) {
       const joined = labelledBy
         .split(/\s+/)
@@ -235,8 +241,9 @@ function collectCandidates(identity: {
       ) {
         return element.value;
       }
-      if (element.placeholder !== "") {
-        return element.placeholder;
+      const placeholder = boundedProperty(element.placeholder);
+      if (placeholder !== null && placeholder !== "") {
+        return placeholder;
       }
     }
     return "";
@@ -290,7 +297,7 @@ function collectCandidates(identity: {
     if (isFormField) {
       const type = (element.getAttribute("type") ?? "text").toLowerCase();
       if (type !== "password" && element.value !== "") {
-        value = element.value;
+        value = boundedProperty(element.value) ?? undefined;
       }
     }
 

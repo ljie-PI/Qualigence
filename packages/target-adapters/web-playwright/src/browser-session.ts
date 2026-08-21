@@ -340,6 +340,21 @@ export class PlaywrightBrowserSession {
           throw new Error("target-disconnected");
         }
         const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
+        const boundedText = (candidate: Element): string => {
+          const walker = candidate.ownerDocument.createTreeWalker(
+            candidate,
+            NodeFilter.SHOW_TEXT,
+          );
+          const chunks: string[] = [];
+          let bytes = 0;
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const value = node.nodeValue ?? "";
+            bytes += byteLength(value);
+            if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+            chunks.push(value);
+          }
+          return chunks.join("");
+        };
         const snapshot = (candidate: Element): {
           readonly properties: SensitiveActionPropertySnapshot;
           readonly bytes: number;
@@ -354,7 +369,7 @@ export class PlaywrightBrowserSession {
               : null,
             selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
             selectedOptionText: selectedOption?.text ?? null,
-            textContent: candidate.textContent,
+            textContent: boundedText(candidate),
             attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
           };
           let bytes = 0;
@@ -429,7 +444,14 @@ export class PlaywrightBrowserSession {
               tracker.overflow = true;
               return;
             }
-            for (const record of mutations) records.push({ record, causal });
+            for (const record of mutations) {
+              if (record.addedNodes.length > limits.maximumCandidates ||
+                  record.removedNodes.length > limits.maximumCandidates) {
+                tracker.overflow = true;
+                return;
+              }
+              records.push({ record, causal });
+            }
           } catch {
             tracker.observerError = true;
           }
@@ -588,10 +610,12 @@ export class PlaywrightBrowserSession {
           attributes: SENSITIVE_ACTION_ATTRIBUTES,
         },
       });
-    } catch {
+    } catch (error) {
       this.sensitiveActionTracker = undefined;
       throw this.sensitiveEvidenceFailure(
-        "The browser-normalized sensitive value and bounded tracker could not be proven.",
+        `The browser-normalized sensitive value and bounded tracker could not be proven: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     }
   }
@@ -602,8 +626,11 @@ export class PlaywrightBrowserSession {
     value: string,
   ): Promise<readonly string[]> {
     if (this.context === undefined) throw new Error("browser-context-unavailable");
-    const control = await target.evaluate((element, actionKind) => {
-      if (actionKind === "select" && element instanceof HTMLSelectElement) {
+    const control = await target.evaluate((element, input) => {
+      if (input.actionKind === "select" && element instanceof HTMLSelectElement) {
+        if (element.options.length > input.maximumOptions) {
+          throw new Error("normalization-option-overflow");
+        }
         return {
           tag: "select" as const,
           options: [...element.options].map((option) => ({
@@ -613,18 +640,14 @@ export class PlaywrightBrowserSession {
           })),
         };
       }
-      if (actionKind === "input" && element instanceof HTMLInputElement) {
+      if (input.actionKind === "input" && element instanceof HTMLInputElement) {
         return { tag: "input" as const, type: element.type };
       }
-      if (actionKind === "input" && element instanceof HTMLTextAreaElement) {
+      if (input.actionKind === "input" && element instanceof HTMLTextAreaElement) {
         return { tag: "textarea" as const };
       }
       throw new Error("normalization-target-unprovable");
-    }, kind);
-    if (control.tag === "select" && control.options.length > MAXIMUM_SENSITIVE_ACTION_CANDIDATES) {
-      throw new Error("normalization-option-overflow");
-    }
-
+    }, { actionKind: kind, maximumOptions: MAXIMUM_SENSITIVE_ACTION_CANDIDATES });
     const normalizationPage = await this.context.newPage();
     try {
       await normalizationPage.setContent("<!doctype html><html><body></body></html>");
@@ -734,6 +757,21 @@ export class PlaywrightBrowserSession {
         const fail = (reason: string) => ({ reason, elements: [] as Element[] });
         try {
           const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
+          const boundedText = (candidate: Element): string => {
+            const walker = candidate.ownerDocument.createTreeWalker(
+              candidate,
+              NodeFilter.SHOW_TEXT,
+            );
+            const chunks: string[] = [];
+            let bytes = 0;
+            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+              const value = node.nodeValue ?? "";
+              bytes += byteLength(value);
+              if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+              chunks.push(value);
+            }
+            return chunks.join("");
+          };
           const pending = state.observer.takeRecords();
           if (state.records.length + pending.length > limits.maximumMutations) {
             state.overflow = true;
@@ -756,7 +794,7 @@ export class PlaywrightBrowserSession {
                   candidate instanceof HTMLTextAreaElement ? candidate.value : null,
               selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
               selectedOptionText: selectedOption?.text ?? null,
-              textContent: candidate.textContent,
+              textContent: boundedText(candidate),
               attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
             };
             let bytes = 0;
@@ -888,7 +926,10 @@ export class PlaywrightBrowserSession {
               }
               for (const node of mutation.addedNodes) {
                 const candidate = node instanceof Element ? node : node.parentElement;
-                const reason = inspect(node.textContent, candidate, tracked.causal, mutation.type);
+                const text = node instanceof Element
+                  ? boundedText(node)
+                  : node.nodeValue;
+                const reason = inspect(text, candidate, tracked.causal, mutation.type);
                 if (reason !== undefined) return fail(reason);
               }
             } else {
