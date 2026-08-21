@@ -75,6 +75,10 @@ review_round_3_remediation: passed on 2026-08-21
   `corepack pnpm vitest run tests/e2e/web-console/target-test-plan.test.ts`
   passed 1 file / 1 test against the real Console client, Fastify Server, OIDC,
   and Docker PostgreSQL workflow.
+- The separately approved schema-8 compatibility acceptance
+  `corepack pnpm vitest run tests/e2e/self-hosted/backup-restore.test.ts` passed
+  1 file / 3 tests with Docker PostgreSQL and MinIO; only current schema-version
+  expectations changed, with no Ticket 02 behavior change.
 
 - PRD identity, project revision assignment, immutable document construction,
   idempotent replay, and persistence now live in `TestPlanService`; the Fastify
