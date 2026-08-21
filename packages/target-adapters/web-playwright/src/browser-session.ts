@@ -136,6 +136,146 @@ const SENSITIVE_ACTION_ATTRIBUTES = [
 ] as const;
 const PRIVATE_SHADOW_REGISTRY_DESCRIPTION = "qualigence.private.shadow-registry";
 
+export interface BoundedCdpSession {
+  send(method: string, params?: Readonly<Record<string, unknown>>): Promise<unknown>;
+}
+
+interface CdpDomNode {
+  readonly nodeId: number;
+  readonly backendNodeId: number;
+  readonly nodeType: number;
+  readonly childNodeCount: number;
+  readonly shadowRootType: string | undefined;
+  readonly children: readonly CdpDomNode[];
+  readonly shadowRoots: readonly CdpDomNode[];
+  readonly contentDocument: CdpDomNode | undefined;
+  readonly templateContent: CdpDomNode | undefined;
+}
+
+function asRecord(value: unknown): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("cdp-node-unproven");
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function asCdpNode(value: unknown): CdpDomNode {
+  const source = asRecord(value);
+  const number = (name: string, fallback?: number): number => {
+    const candidate = source[name] ?? fallback;
+    if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0) {
+      throw new Error("cdp-node-unproven");
+    }
+    return candidate;
+  };
+  const nodes = (name: string): readonly CdpDomNode[] => {
+    const candidate = source[name];
+    if (candidate === undefined) return [];
+    if (!Array.isArray(candidate)) throw new Error("cdp-node-unproven");
+    return candidate.map(asCdpNode);
+  };
+  const optionalNode = (name: string): CdpDomNode | undefined =>
+    source[name] === undefined ? undefined : asCdpNode(source[name]);
+  const shadowRootType = source.shadowRootType;
+  if (shadowRootType !== undefined && typeof shadowRootType !== "string") {
+    throw new Error("cdp-node-unproven");
+  }
+  return {
+    nodeId: number("nodeId"),
+    backendNodeId: number("backendNodeId"),
+    nodeType: number("nodeType"),
+    childNodeCount: number("childNodeCount", 0),
+    shadowRootType,
+    children: nodes("children"),
+    shadowRoots: nodes("shadowRoots"),
+    contentDocument: optionalNode("contentDocument"),
+    templateContent: optionalNode("templateContent"),
+  };
+}
+
+function cdpResponseNode(response: unknown, name: "root" | "node"): CdpDomNode {
+  return asCdpNode(asRecord(response)[name]);
+}
+
+export async function inventoryPiercedDom(
+  session: BoundedCdpSession,
+  limits: {
+    readonly maximumNodes: number;
+    readonly maximumShadowRoots: number;
+    readonly maximumFrames: number;
+  },
+): Promise<{
+  readonly shadowHosts: readonly { readonly backendNodeId: number; readonly mode: string }[];
+  readonly shadowRootCount: number;
+  readonly frameCount: number;
+  readonly nodeCount: number;
+}> {
+  if (limits.maximumNodes < 1 || limits.maximumShadowRoots < 0 || limits.maximumFrames < 0) {
+    throw new Error("cdp-limits-unproven");
+  }
+  const root = cdpResponseNode(await session.send("DOM.getDocument", {
+    depth: 0,
+    pierce: true,
+  }), "root");
+  const queue: CdpDomNode[] = [];
+  const seen = new Set<number>();
+  const shadowHosts: { readonly backendNodeId: number; readonly mode: string }[] = [];
+  let requestCount = 1;
+  let shadowRootCount = 0;
+  let frameCount = 0;
+  const append = (node: CdpDomNode, kind: "node" | "shadow" | "frame"): void => {
+    if (seen.has(node.backendNodeId)) return;
+    if (seen.size >= limits.maximumNodes || queue.length >= limits.maximumNodes) {
+      throw new Error("dom-node-overflow");
+    }
+    if (kind === "shadow") {
+      if (shadowRootCount >= limits.maximumShadowRoots) throw new Error("shadow-root-overflow");
+      shadowRootCount += 1;
+    } else if (kind === "frame") {
+      if (frameCount >= limits.maximumFrames) throw new Error("frame-overflow");
+      frameCount += 1;
+    }
+    seen.add(node.backendNodeId);
+    queue.push(node);
+  };
+  append(root, "node");
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const shallow = queue[index];
+    if (shallow === undefined) throw new Error("shadow-node-unproven");
+    if (shallow.childNodeCount > limits.maximumNodes - seen.size) {
+      throw new Error("dom-node-overflow");
+    }
+    if (requestCount >= limits.maximumNodes) throw new Error("dom-request-overflow");
+    requestCount += 1;
+    const params = shallow.nodeId > 0
+      ? { nodeId: shallow.nodeId, depth: 1, pierce: true }
+      : { backendNodeId: shallow.backendNodeId, depth: 1, pierce: true };
+    const described = cdpResponseNode(await session.send("DOM.describeNode", params), "node");
+    if (described.backendNodeId !== shallow.backendNodeId ||
+        described.children.length !== described.childNodeCount) {
+      throw new Error("shadow-node-identity-unproven");
+    }
+    for (const child of described.children) append(child, "node");
+    for (const shadowRoot of described.shadowRoots) {
+      if (shadowRoot.shadowRootType === "user-agent") continue;
+      shadowHosts.push({
+        backendNodeId: described.backendNodeId,
+        mode: shadowRoot.shadowRootType ?? "",
+      });
+      append(shadowRoot, "shadow");
+    }
+    if (described.contentDocument !== undefined) append(described.contentDocument, "frame");
+    if (described.templateContent !== undefined) append(described.templateContent, "node");
+  }
+  return {
+    shadowHosts,
+    shadowRootCount,
+    frameCount,
+    nodeCount: seen.size,
+  };
+}
+
 interface SensitiveActionPropertySnapshot {
   readonly inputValue: string | null;
   readonly selectValue: string | null;
@@ -719,6 +859,7 @@ export class PlaywrightBrowserSession {
         const originalThen = Promise.prototype.then;
         const originalCatch = Promise.prototype.catch;
         const originalFinally = Promise.prototype.finally;
+        const originalPromiseResolve = Promise.resolve;
         const metadataSnapshot = (): SensitivePageMetadataSnapshot => ({
           href: location.href,
           pathname: location.pathname,
@@ -776,7 +917,12 @@ export class PlaywrightBrowserSession {
         let scheduledRegistrations = 0;
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
-        let delegatedPromiseMethod = 0;
+        let delegatedPromiseRegistration: {
+          readonly receiver: Promise<unknown>;
+          readonly onfulfilled: unknown;
+          readonly onrejected: unknown;
+          available: boolean;
+        } | undefined;
         const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
           observeRoot(root);
         };
@@ -918,7 +1064,11 @@ export class PlaywrightBrowserSession {
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
         ): Promise<TResult1 | TResult2> {
-          if (delegatedPromiseMethod > 0) {
+          if (delegatedPromiseRegistration?.receiver === this &&
+              delegatedPromiseRegistration.onfulfilled === onfulfilled &&
+              delegatedPromiseRegistration.onrejected === onrejected &&
+              delegatedPromiseRegistration.available) {
+            delegatedPromiseRegistration.available = false;
             return originalThen.call(this, onfulfilled, onrejected) as Promise<TResult1 | TResult2>;
           }
           const generation = registerGeneration();
@@ -928,40 +1078,77 @@ export class PlaywrightBrowserSession {
             wrapContinuation(generation, onrejected),
           ) as Promise<TResult1 | TResult2>;
         };
+        const delegatedThen = <T, TResult1 = T, TResult2 = never>(
+          receiver: Promise<T>,
+          onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ): Promise<TResult1 | TResult2> => {
+          const priorRegistration = delegatedPromiseRegistration;
+          delegatedPromiseRegistration = {
+            receiver,
+            onfulfilled,
+            onrejected,
+            available: true,
+          };
+          try {
+            return receiver.then(onfulfilled, onrejected);
+          } finally {
+            delegatedPromiseRegistration = priorRegistration;
+          }
+        };
         const wrappedCatch = function <T, TResult = never>(
           this: Promise<T>,
           onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
         ): Promise<T | TResult> {
           const generation = registerGeneration();
-          delegatedPromiseMethod += 1;
-          try {
-            return originalCatch.call(
-              this,
-              wrapContinuation(generation, onrejected),
-            );
-          } finally {
-            delegatedPromiseMethod -= 1;
-          }
+          return delegatedThen(this, undefined, wrapContinuation(generation, onrejected));
         };
         const wrappedFinally = function <T>(
           this: Promise<T>,
           onfinally?: (() => void) | null,
         ): Promise<T> {
           const generation = registerGeneration();
-          const callback = typeof onfinally === "function"
-            ? () => {
-              const result = generation === undefined ? onfinally() : runCausal(generation, onfinally);
-              delegatedPromiseMethod += 1;
-              originalQueueMicrotask.call(window, () => { delegatedPromiseMethod -= 1; });
-              return result;
-            }
-            : onfinally;
-          delegatedPromiseMethod += 1;
-          try {
-            return originalFinally.call(this, callback);
-          } finally {
-            delegatedPromiseMethod -= 1;
+          if (typeof onfinally !== "function") {
+            return delegatedThen(this, onfinally, onfinally) as Promise<T>;
           }
+          const constructor = (this as Promise<T> & { constructor?: unknown }).constructor;
+          if (constructor !== undefined &&
+              (typeof constructor !== "object" && typeof constructor !== "function" ||
+                constructor === null)) {
+            throw new TypeError("Promise constructor is not an object.");
+          }
+          const species = constructor === undefined
+            ? undefined
+            : (constructor as { readonly [Symbol.species]?: unknown })[Symbol.species];
+          const resultConstructor = species == null ? Promise : species;
+          if (typeof resultConstructor !== "function") {
+            throw new TypeError("Promise species is not a constructor.");
+          }
+          const runFinally = (): unknown => generation === undefined
+            ? onfinally()
+            : runCausal(generation, onfinally);
+          const continueFinally = <TResult>(result: TResult): PromiseLike<TResult> => {
+            const resolved = originalPromiseResolve.call(
+              resultConstructor as PromiseConstructor,
+              runFinally(),
+            );
+            const continuation = originalThen.call(resolved, () => result) as Promise<TResult>;
+            return {
+              then: <TResult1 = TResult, TResult2 = never>(
+                onfulfilled?: ((value: TResult) => TResult1 | PromiseLike<TResult1>) | null,
+                onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+              ) => originalThen.call(
+                continuation,
+                onfulfilled,
+                onrejected,
+              ) as Promise<TResult1 | TResult2>,
+            };
+          };
+          return delegatedThen(
+            this,
+            (value) => continueFinally(value),
+            (reason) => continueFinally(reason).then(() => { throw reason; }),
+          ) as Promise<T>;
         };
         window.setTimeout = wrappedSetTimeout;
         window.setInterval = wrappedSetInterval;
@@ -1254,6 +1441,7 @@ export class PlaywrightBrowserSession {
       if (frames.length > MAXIMUM_SENSITIVE_SHADOW_ROOTS + 1) {
         throw new Error("frame-overflow");
       }
+      let registeredCount = 0;
       for (const frame of frames) {
         const boundedElements = await frame.evaluate((maximumElements) => {
           const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
@@ -1265,8 +1453,7 @@ export class PlaywrightBrowserSession {
           return true;
         }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
         if (!boundedElements) throw new Error("dom-element-overflow");
-        if (frame === this.page.mainFrame()) continue;
-        const foreignRoots = await frame.evaluate(({ registryKey, accessToken, maximumRoots }) => {
+        const realmRoots = await frame.evaluate(({ registryKey, accessToken, maximumRoots }) => {
           const gateway = (globalThis as typeof globalThis & Record<symbol, unknown>)[
             Symbol.for(registryKey)
           ] as { access(candidate: string): PrivateShadowRegistry | undefined } | undefined;
@@ -1278,50 +1465,25 @@ export class PlaywrightBrowserSession {
           accessToken: this.shadowRegistryAccessToken,
           maximumRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
         });
-        if (foreignRoots !== 0) throw new Error("cross-realm-shadow-root-unproven");
+        if (realmRoots < 0 || registeredCount + realmRoots > MAXIMUM_SENSITIVE_SHADOW_ROOTS) {
+          throw new Error("cross-realm-shadow-root-unproven");
+        }
+        registeredCount += realmRoots;
       }
-      const registeredCount = await this.shadowRegistry.evaluate((registry, maximumRoots) => {
-        const snapshot = registry.snapshot(maximumRoots);
-        return snapshot.intact && !snapshot.overflow && snapshot.count === snapshot.roots.length &&
-          snapshot.count === snapshot.hosts.length
-          ? snapshot.count
-          : -1;
-      }, MAXIMUM_SENSITIVE_SHADOW_ROOTS);
-      if (registeredCount < 0) throw new Error("shadow-registry-unproven");
       const session = await this.page.context().newCDPSession(this.page);
       try {
-        const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-        let roots = 0;
-        let elements = 0;
-        let frames = 0;
-        const shadowHosts: { readonly backendNodeId: number; readonly mode: string }[] = [];
-        const pending = [document.root];
-        while (pending.length > 0) {
-          const node = pending.pop();
-          if (node === undefined) throw new Error("shadow-node-unproven");
-          if (node.nodeType === 1) {
-            elements += 1;
-            if (elements > MAXIMUM_SENSITIVE_DOM_ELEMENTS) throw new Error("dom-element-overflow");
-          }
-          if (node.shadowRoots !== undefined) {
-            for (const root of node.shadowRoots) {
-              if (root.shadowRootType === "user-agent") continue;
-              roots += 1;
-              shadowHosts.push({ backendNodeId: node.backendNodeId, mode: root.shadowRootType ?? "" });
-            }
-            if (roots > MAXIMUM_SENSITIVE_SHADOW_ROOTS) throw new Error("shadow-root-overflow");
-            pending.push(...node.shadowRoots);
-          }
-          if (node.contentDocument !== undefined) {
-            frames += 1;
-            if (frames > MAXIMUM_SENSITIVE_SHADOW_ROOTS) throw new Error("frame-overflow");
-            pending.push(node.contentDocument);
-          }
-          if (node.children !== undefined) pending.push(...node.children);
-          if (node.templateContent !== undefined) pending.push(node.templateContent);
+        const inventory = await inventoryPiercedDom(
+          session as unknown as BoundedCdpSession,
+          {
+            maximumNodes: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
+            maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+            maximumFrames: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+          },
+        );
+        if (inventory.shadowRootCount !== registeredCount) {
+          throw new Error("shadow-root-identity-unproven");
         }
-        if (roots !== registeredCount) throw new Error("shadow-root-identity-unproven");
-        for (const host of shadowHosts) {
+        for (const host of inventory.shadowHosts) {
           const resolved = await session.send("DOM.resolveNode", {
             backendNodeId: host.backendNodeId,
             objectGroup: "qualigence-shadow-proof",

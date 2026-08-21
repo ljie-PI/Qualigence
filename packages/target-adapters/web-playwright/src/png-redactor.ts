@@ -10,69 +10,33 @@ export interface ScreenshotRectangle {
 const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
 const MAXIMUM_PNG_DIMENSION = 16_384;
 const MAXIMUM_PNG_BYTES = 256 * 1024 * 1024;
+const SUPPORTED_ANCILLARY_CHUNKS = new Set([
+  "cHRM",
+  "gAMA",
+  "sBIT",
+  "sRGB",
+  "bKGD",
+  "pHYs",
+  "tRNS",
+  "tEXt",
+  "zTXt",
+  "iTXt",
+]);
+
+interface PngChunk {
+  readonly type: string;
+  readonly data: Uint8Array;
+  readonly bytes: Uint8Array;
+}
 
 export function redactPngRectangles(
   source: Uint8Array,
   rectangles: readonly ScreenshotRectangle[],
   expectedDimensions: { readonly width: number; readonly height: number },
 ): Uint8Array {
-  if (source.byteLength > MAXIMUM_PNG_BYTES || source.byteLength < PNG_SIGNATURE.length + 12) {
-    throw new Error("png-size-unproven");
-  }
-  for (let index = 0; index < PNG_SIGNATURE.length; index += 1) {
-    if (source[index] !== PNG_SIGNATURE[index]) throw new Error("png-signature-unproven");
-  }
-
-  let width = 0;
-  let height = 0;
-  let colorType = -1;
-  let header: Uint8Array | undefined;
-  let sawEnd = false;
-  const compressed: Buffer[] = [];
-  for (let offset = PNG_SIGNATURE.length; offset < source.byteLength;) {
-    if (source.byteLength - offset < 12) throw new Error("png-chunk-unproven");
-    const view = new DataView(source.buffer, source.byteOffset + offset, source.byteLength - offset);
-    const length = view.getUint32(0);
-    const end = offset + 12 + length;
-    if (end > source.byteLength) throw new Error("png-chunk-unproven");
-    const typeBytes = source.subarray(offset + 4, offset + 8);
-    const type = String.fromCharCode(...typeBytes);
-    const data = source.subarray(offset + 8, offset + 8 + length);
-    const expectedCrc = new DataView(
-      source.buffer,
-      source.byteOffset + offset + 8 + length,
-      4,
-    ).getUint32(0);
-    if (crc32(source.subarray(offset + 4, offset + 8 + length)) !== expectedCrc) {
-      throw new Error("png-crc-unproven");
-    }
-    if (type === "IHDR") {
-      if (header !== undefined || length !== 13) throw new Error("png-header-unproven");
-      header = Uint8Array.from(data);
-      const dimensions = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      width = dimensions.getUint32(0);
-      height = dimensions.getUint32(4);
-      colorType = data[9] ?? -1;
-      if (data[8] !== 8 || (colorType !== 2 && colorType !== 6) ||
-          data[10] !== 0 || data[11] !== 0 || data[12] !== 0) {
-        throw new Error("png-format-unproven");
-      }
-    } else if (type === "IDAT") {
-      if (header === undefined || sawEnd) throw new Error("png-order-unproven");
-      compressed.push(Buffer.from(data));
-    } else if (type === "IEND") {
-      if (length !== 0 || sawEnd) throw new Error("png-end-unproven");
-      sawEnd = true;
-      if (end !== source.byteLength) throw new Error("png-trailing-data");
-    } else if ((typeBytes[0]! & 0x20) === 0) {
-      throw new Error("png-critical-chunk-unproven");
-    }
-    offset = end;
-  }
-  if (header === undefined || !sawEnd || compressed.length === 0 ||
-      width <= 0 || height <= 0 || width > MAXIMUM_PNG_DIMENSION ||
-      height > MAXIMUM_PNG_DIMENSION || width !== expectedDimensions.width ||
-      height !== expectedDimensions.height) {
+  const parsed = parsePng(source);
+  const { width, height, colorType, header, beforeIdat, afterIdat, compressed, end } = parsed;
+  if (width !== expectedDimensions.width || height !== expectedDimensions.height) {
     throw new Error("png-dimensions-unproven");
   }
 
@@ -82,13 +46,17 @@ export function redactPngRectangles(
   if (!Number.isSafeInteger(expectedFilteredBytes) || expectedFilteredBytes > MAXIMUM_PNG_BYTES) {
     throw new Error("png-pixel-bounds-unproven");
   }
-  const filtered = inflateSync(Buffer.concat(compressed), { maxOutputLength: expectedFilteredBytes });
+  const filtered = inflateSync(Buffer.concat(compressed.map((data) => Buffer.from(data))), {
+    maxOutputLength: expectedFilteredBytes,
+  });
   if (filtered.byteLength !== expectedFilteredBytes) throw new Error("png-pixels-unproven");
   const pixels = Buffer.allocUnsafe(stride * height);
+  const filters = Buffer.allocUnsafe(height);
   let sourceOffset = 0;
   for (let row = 0; row < height; row += 1) {
     const filter = filtered[sourceOffset++];
     if (filter === undefined || filter > 4) throw new Error("png-filter-unproven");
+    filters[row] = filter;
     const rowOffset = row * stride;
     for (let column = 0; column < stride; column += 1) {
       const raw = filtered[sourceOffset++];
@@ -102,6 +70,12 @@ export function redactPngRectangles(
     }
   }
 
+  const transparentRgb = parsed.transparency === undefined
+    ? undefined
+    : [parsed.transparency[1]!, parsed.transparency[3]!, parsed.transparency[5]!] as const;
+  if (transparentRgb?.every((value) => value === 0)) {
+    throw new Error("png-mask-transparency-unproven");
+  }
   for (const rectangle of rectangles) {
     if (![rectangle.x, rectangle.y, rectangle.width, rectangle.height].every(Number.isFinite) ||
         rectangle.width <= 0 || rectangle.height <= 0) {
@@ -123,18 +97,204 @@ export function redactPngRectangles(
     }
   }
 
-  const raw = Buffer.allocUnsafe(expectedFilteredBytes);
+  const refiltered = Buffer.allocUnsafe(expectedFilteredBytes);
   for (let row = 0; row < height; row += 1) {
-    const targetOffset = row * (stride + 1);
-    raw[targetOffset] = 0;
-    pixels.copy(raw, targetOffset + 1, row * stride, (row + 1) * stride);
+    const filter = filters[row]!;
+    const rowOffset = row * stride;
+    let targetOffset = row * (stride + 1);
+    refiltered[targetOffset++] = filter;
+    for (let column = 0; column < stride; column += 1) {
+      const value = pixels[rowOffset + column]!;
+      const left = column >= channels ? pixels[rowOffset + column - channels]! : 0;
+      const above = row > 0 ? pixels[rowOffset - stride + column]! : 0;
+      const upperLeft = row > 0 && column >= channels
+        ? pixels[rowOffset - stride + column - channels]!
+        : 0;
+      refiltered[targetOffset + column] =
+        (value - filterDelta(filter, left, above, upperLeft)) & 0xff;
+    }
   }
   return Buffer.concat([
     Buffer.from(PNG_SIGNATURE),
-    pngChunk("IHDR", header),
-    pngChunk("IDAT", deflateSync(raw)),
-    pngChunk("IEND", new Uint8Array()),
+    Buffer.from(header.bytes),
+    ...beforeIdat.map((chunk) => Buffer.from(chunk.bytes)),
+    pngChunk("IDAT", deflateSync(refiltered)),
+    ...afterIdat.map((chunk) => Buffer.from(chunk.bytes)),
+    Buffer.from(end.bytes),
   ]);
+}
+
+function parsePng(source: Uint8Array): {
+  readonly width: number;
+  readonly height: number;
+  readonly colorType: 2 | 6;
+  readonly header: PngChunk;
+  readonly beforeIdat: readonly PngChunk[];
+  readonly afterIdat: readonly PngChunk[];
+  readonly compressed: readonly Uint8Array[];
+  readonly end: PngChunk;
+  readonly transparency: Uint8Array | undefined;
+} {
+  if (source.byteLength > MAXIMUM_PNG_BYTES || source.byteLength < PNG_SIGNATURE.length + 12) {
+    throw new Error("png-size-unproven");
+  }
+  for (let index = 0; index < PNG_SIGNATURE.length; index += 1) {
+    if (source[index] !== PNG_SIGNATURE[index]) throw new Error("png-signature-unproven");
+  }
+
+  const chunks: PngChunk[] = [];
+  for (let offset = PNG_SIGNATURE.length; offset < source.byteLength;) {
+    if (source.byteLength - offset < 12) throw new Error("png-chunk-unproven");
+    const view = new DataView(source.buffer, source.byteOffset + offset, source.byteLength - offset);
+    const length = view.getUint32(0);
+    const end = offset + 12 + length;
+    if (!Number.isSafeInteger(end) || end > source.byteLength) throw new Error("png-chunk-unproven");
+    const typeBytes = source.subarray(offset + 4, offset + 8);
+    if (![...typeBytes].every((byte) =>
+      (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122))) {
+      throw new Error("png-chunk-type-unproven");
+    }
+    if ((typeBytes[2]! & 0x20) !== 0) throw new Error("png-chunk-type-unproven");
+    const type = String.fromCharCode(...typeBytes);
+    const data = source.subarray(offset + 8, offset + 8 + length);
+    const expectedCrc = new DataView(source.buffer, source.byteOffset + offset + 8 + length, 4)
+      .getUint32(0);
+    if (crc32(source.subarray(offset + 4, offset + 8 + length)) !== expectedCrc) {
+      throw new Error("png-crc-unproven");
+    }
+    chunks.push({ type, data, bytes: source.subarray(offset, end) });
+    offset = end;
+  }
+  if (chunks.length < 3 || chunks[0]?.type !== "IHDR") throw new Error("png-header-unproven");
+  const header = chunks[0];
+  if (header === undefined || header.data.byteLength !== 13 ||
+      chunks.filter(({ type }) => type === "IHDR").length !== 1) {
+    throw new Error("png-header-unproven");
+  }
+  const last = chunks.at(-1);
+  if (last === undefined || last.type !== "IEND" || last.data.byteLength !== 0 ||
+      chunks.filter(({ type }) => type === "IEND").length !== 1) {
+    throw new Error("png-end-unproven");
+  }
+  const dimensions = new DataView(header.data.buffer, header.data.byteOffset, header.data.byteLength);
+  const width = dimensions.getUint32(0);
+  const height = dimensions.getUint32(4);
+  const colorType = header.data[9];
+  if (header.data[8] !== 8 || (colorType !== 2 && colorType !== 6) ||
+      header.data[10] !== 0 || header.data[11] !== 0 || header.data[12] !== 0 ||
+      width <= 0 || height <= 0 || width > MAXIMUM_PNG_DIMENSION || height > MAXIMUM_PNG_DIMENSION) {
+    throw new Error("png-format-unproven");
+  }
+
+  const idatIndexes = chunks.flatMap((chunk, index) => chunk.type === "IDAT" ? [index] : []);
+  if (idatIndexes.length === 0) throw new Error("png-pixels-unproven");
+  const firstIdat = idatIndexes[0]!;
+  const lastIdat = idatIndexes.at(-1)!;
+  if (lastIdat - firstIdat + 1 !== idatIndexes.length) throw new Error("png-order-unproven");
+  const beforeIdat = chunks.slice(1, firstIdat);
+  const afterIdat = chunks.slice(lastIdat + 1, -1);
+  const ancillary = [...beforeIdat, ...afterIdat];
+  for (const chunk of ancillary) {
+    if (chunk.type === "PLTE") continue;
+    if ((chunk.type.charCodeAt(0) & 0x20) === 0) throw new Error("png-critical-chunk-unproven");
+    if (!SUPPORTED_ANCILLARY_CHUNKS.has(chunk.type)) throw new Error("png-ancillary-chunk-unproven");
+  }
+  validateAncillary(beforeIdat, afterIdat, colorType);
+  const transparency = beforeIdat.find(({ type }) => type === "tRNS")?.data;
+  return {
+    width,
+    height,
+    colorType,
+    header,
+    beforeIdat,
+    afterIdat,
+    compressed: chunks.slice(firstIdat, lastIdat + 1).map(({ data }) => data),
+    end: last,
+    transparency,
+  };
+}
+
+function validateAncillary(
+  beforeIdat: readonly PngChunk[],
+  afterIdat: readonly PngChunk[],
+  colorType: 2 | 6,
+): void {
+  const all = [...beforeIdat, ...afterIdat];
+  const singleton = new Set(["PLTE", "cHRM", "gAMA", "sBIT", "sRGB", "bKGD", "pHYs", "tRNS"]);
+  for (const type of singleton) {
+    if (all.filter((chunk) => chunk.type === type).length > 1) throw new Error("png-ancillary-order-unproven");
+  }
+  const beforeOnly = new Set(["PLTE", "cHRM", "gAMA", "sBIT", "sRGB", "bKGD", "pHYs", "tRNS"]);
+  if (afterIdat.some(({ type }) => beforeOnly.has(type))) throw new Error("png-ancillary-order-unproven");
+  const paletteIndex = beforeIdat.findIndex(({ type }) => type === "PLTE");
+  if (paletteIndex >= 0) {
+    const mustPrecedePalette = new Set(["cHRM", "gAMA", "sBIT", "sRGB"]);
+    if (beforeIdat.some((chunk, index) => index > paletteIndex && mustPrecedePalette.has(chunk.type)) ||
+        beforeIdat.some((chunk, index) => index < paletteIndex &&
+          (chunk.type === "bKGD" || chunk.type === "tRNS"))) {
+      throw new Error("png-ancillary-order-unproven");
+    }
+  }
+  const exactLengths: Readonly<Record<string, number>> = {
+    cHRM: 32,
+    gAMA: 4,
+    sBIT: colorType === 2 ? 3 : 4,
+    sRGB: 1,
+    bKGD: 6,
+    pHYs: 9,
+  };
+  for (const chunk of all) {
+    if (chunk.type === "PLTE" && (chunk.data.byteLength === 0 ||
+        chunk.data.byteLength > 768 || chunk.data.byteLength % 3 !== 0)) {
+      throw new Error("png-palette-unproven");
+    }
+    const exactLength = exactLengths[chunk.type];
+    if (exactLength !== undefined && chunk.data.byteLength !== exactLength) {
+      throw new Error("png-ancillary-format-unproven");
+    }
+    if (["tEXt", "zTXt", "iTXt"].includes(chunk.type)) validateTextChunk(chunk);
+  }
+  const transparency = beforeIdat.find(({ type }) => type === "tRNS");
+  if (transparency !== undefined) {
+    if (colorType !== 2 || transparency.data.byteLength !== 6 ||
+        transparency.data[0] !== 0 || transparency.data[2] !== 0 || transparency.data[4] !== 0) {
+      throw new Error("png-transparency-unproven");
+    }
+  }
+  const renderingIntent = all.find(({ type }) => type === "sRGB")?.data[0];
+  if (renderingIntent !== undefined && renderingIntent > 3) throw new Error("png-color-profile-unproven");
+  const gamma = all.find(({ type }) => type === "gAMA")?.data;
+  if (gamma !== undefined && new DataView(gamma.buffer, gamma.byteOffset, gamma.byteLength).getUint32(0) === 0) {
+    throw new Error("png-gamma-unproven");
+  }
+}
+
+function validateTextChunk(chunk: PngChunk): void {
+  const separator = chunk.data.indexOf(0);
+  if (separator < 1 || separator > 79) throw new Error("png-text-unproven");
+  if (chunk.type === "tEXt") return;
+  if (chunk.type === "zTXt") {
+    if (chunk.data[separator + 1] !== 0 || separator + 2 >= chunk.data.byteLength) {
+      throw new Error("png-text-unproven");
+    }
+    inflateSync(Buffer.from(chunk.data.subarray(separator + 2)), {
+      maxOutputLength: MAXIMUM_PNG_BYTES,
+    });
+    return;
+  }
+  const compressionFlag = chunk.data[separator + 1];
+  const compressionMethod = chunk.data[separator + 2];
+  if ((compressionFlag !== 0 && compressionFlag !== 1) || compressionMethod !== 0) {
+    throw new Error("png-text-unproven");
+  }
+  const languageEnd = chunk.data.indexOf(0, separator + 3);
+  const translatedEnd = languageEnd < 0 ? -1 : chunk.data.indexOf(0, languageEnd + 1);
+  if (languageEnd < 0 || translatedEnd < 0) throw new Error("png-text-unproven");
+  const text = chunk.data.subarray(translatedEnd + 1);
+  const decoded = compressionFlag === 1
+    ? inflateSync(Buffer.from(text), { maxOutputLength: MAXIMUM_PNG_BYTES })
+    : text;
+  new TextDecoder("utf-8", { fatal: true }).decode(decoded);
 }
 
 function pngChunk(type: string, data: Uint8Array): Buffer {

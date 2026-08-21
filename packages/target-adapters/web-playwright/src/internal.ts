@@ -19,6 +19,8 @@ export {
   MAXIMUM_OBSERVATION_DOM_ELEMENTS,
   MAXIMUM_SENSITIVE_ACTION_TARGETS,
   PRIVATE_TARGET_ATTRIBUTE,
+  inventoryPiercedDom,
+  type BoundedCdpSession,
   type BrowserLauncher,
   type StoredObservation,
   type SensitiveActionTarget,
@@ -34,6 +36,10 @@ export {
 export { PlaywrightObserver } from "./playwright-observer.js";
 export { PlaywrightActionResolver } from "./playwright-action-resolver.js";
 export { PlaywrightActionExecutor } from "./playwright-action-executor.js";
+export {
+  redactPngRectangles,
+  type ScreenshotRectangle,
+} from "./png-redactor.js";
 export { actionToken, isActionToken } from "./action-token.js";
 export type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 export {

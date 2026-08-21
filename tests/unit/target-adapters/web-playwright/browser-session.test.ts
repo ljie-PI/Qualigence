@@ -3,6 +3,7 @@ import {
   PlaywrightBrowserSession,
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
+  inventoryPiercedDom,
   isOriginAllowed,
   normalizeOrigin,
   type BrowserLauncher,
@@ -72,6 +73,69 @@ function fakeLauncher(): {
 }
 
 describe("PlaywrightBrowserSession", () => {
+  it("stops bounded pierced CDP inventory before a hostile shadow tree exceeds its cap", async () => {
+    const requests: { readonly method: string; readonly depth: number | undefined }[] = [];
+    const session = {
+      send: vi.fn(async (method: string, params: { readonly nodeId?: number; readonly depth?: number }) => {
+        requests.push({ method, depth: params.depth });
+        if (method === "DOM.getDocument") {
+          return {
+            root: { nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", childNodeCount: 1 },
+          };
+        }
+        if (method !== "DOM.describeNode" || params.nodeId === undefined) {
+          throw new Error(`Unexpected CDP method ${method}`);
+        }
+        const nodeId = params.nodeId;
+        if (nodeId === 1 || nodeId >= 3) {
+          return {
+            node: {
+              nodeId,
+              backendNodeId: nodeId,
+              nodeType: nodeId === 1 ? 9 : 1,
+              nodeName: nodeId === 1 ? "#document" : "DIV",
+              childNodeCount: 1,
+              children: [{
+                nodeId: nodeId + 1,
+                backendNodeId: nodeId + 1,
+                nodeType: 1,
+                nodeName: "DIV",
+                childNodeCount: 0,
+              }],
+            },
+          };
+        }
+        return {
+          node: {
+            nodeId,
+            backendNodeId: nodeId,
+            nodeType: 1,
+            nodeName: "DIV",
+            childNodeCount: 0,
+            shadowRoots: [{
+              nodeId: 3,
+              backendNodeId: 3,
+              nodeType: 11,
+              nodeName: "#document-fragment",
+              childNodeCount: 1,
+              shadowRootType: "open",
+            }],
+          },
+        };
+      }),
+    };
+
+    await expect(inventoryPiercedDom(session as never, {
+      maximumNodes: 4_096,
+      maximumShadowRoots: 64,
+      maximumFrames: 64,
+    })).rejects.toThrow();
+
+    expect(requests.every(({ depth }) => depth === 0 || depth === 1)).toBe(true);
+    expect(requests.some(({ method }) => method === "DOMSnapshot.captureSnapshot")).toBe(false);
+    expect(requests.length).toBeLessThanOrEqual(4_096);
+  });
+
   it("starts once and closes idempotently", async () => {
     const { launcher, launch, closed } = fakeLauncher();
     const session = new PlaywrightBrowserSession(baseOptions(), launcher);

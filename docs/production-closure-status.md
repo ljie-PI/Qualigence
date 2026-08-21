@@ -574,6 +574,33 @@ pull_request: pending
   Gate passed 10 files / 168 tests: 167 passed and 1 existing Task 21 skip.
   Root `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run
   pending fresh review.
+- Round-3 remediation replaces the unbounded pierced CDP document request with
+  a shallow root request and iterative depth-1 child inventory. Node, request,
+  shadow-root, and frame caps are checked before every request or append; any
+  malformed response, truncation, cap, or identity mismatch poisons evidence.
+  The instrumented hostile-shadow test proves no request depth exceeds 1 and
+  the request count stops at 4,096 without using DOMSnapshot.
+- Promise delegation uses an exact receiver/callback one-shot token for only the
+  first internal base-then registration. Extra or nested registrations,
+  different receivers, and species promises count normally; standard
+  catch/finally count once and preserve callback, value, error, captured resolve,
+  and species behavior.
+- PNG masking now validates the complete chunk stream and CRCs, permits only an
+  explicit supported ancillary allowlist, preserves supported ancillary bytes
+  and order, rejects unsafe transparency, and re-encodes only contiguous IDAT
+  data using the original row filter types. RGB tRNS unrelated transparency,
+  sRGB/gAMA/pHYs/text metadata, unknown ancillary, CRC, ordering, and trailing
+  byte cases are covered.
+- Round-3 affected non-E2E command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/unit/target-adapters/web-playwright/png-redactor.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
+  It passed 12 files / 189 tests: 188 passed and 1 existing Task 21 skip. No E2E
+  was run per coordinator instruction.
+- Root `corepack pnpm typecheck` and `git diff --check` passed. The full
+  non-E2E command `corepack pnpm vitest run --exclude "tests/e2e/**" --exclude
+  "tests/live/**"` ran 159 files / 1,311 tests with Git OpenSSL explicitly
+  selected: 1,300 passed, 5 skipped, and 6 pre-existing unrelated baseline
+  tests failed (stale execution-budget/config fixtures and entrypoint-message
+  expectations). No changed web-adapter test failed; no E2E was run.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

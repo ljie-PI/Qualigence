@@ -413,6 +413,45 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
+  it.each([32, 33] as const)(
+    "counts a different-receiver Promise registration at the %i boundary",
+    async (registrations) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "receiver-secret" });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, "customer.receiver-boundary"),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate((count) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          for (let index = 0; index < count; index += 1) {
+            const receiver = Promise.reject(index);
+            const baseThen = receiver.then;
+            receiver.then = function (...args) {
+              Promise.resolve(index).then(() => undefined);
+              return Reflect.apply(baseThen, this, args);
+            };
+            receiver.catch(() => undefined);
+          }
+        });
+      }, registrations));
+
+      const execution = executor.execute(action, allowedPermit());
+      if (registrations === 33) {
+        await expect(execution).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      } else {
+        await expect(execution).resolves.toEqual({ status: "ok" });
+      }
+    },
+  );
+
   it("redacts input plaintext from the complete Trace and verifier context", async () => {
     const secret = "trace-secret@example.test";
     session = new PlaywrightBrowserSession(options());
@@ -1540,10 +1579,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
   });
 
   it.each([
-    ["catch", 32],
-    ["catch", 33],
-    ["finally", 32],
-    ["finally", 33],
+    ["catch", 64],
+    ["finally", 64],
   ] as const)(
     "counts each Promise.%s application continuation exactly once at %i registrations",
     async (method, registrations) => {
@@ -1582,6 +1619,53 @@ describe("Playwright resolve + execute against real Chromium", () => {
           .promiseBoundaryCallbacks,
       ))).toBe(registrations);
       await session.close();
+    },
+  );
+
+  it.each([
+    ["catch", 32, false],
+    ["catch", 33, true],
+    ["finally", 32, false],
+    ["finally", 33, true],
+  ] as const)(
+    "counts a Promise.%s override's second super.then at the %i boundary",
+    async (method, registrations, poisoned) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "override-secret" });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.${method}-override`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(({ continuation, count }) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          for (let index = 0; index < count; index += 1) {
+            const receiver = continuation === "catch"
+              ? Promise.reject(index)
+              : Promise.resolve(index);
+            const baseThen = receiver.then;
+            receiver.then = function (...args) {
+              Reflect.apply(baseThen, this, [undefined, () => undefined]);
+              return Reflect.apply(baseThen, this, args);
+            };
+            if (continuation === "catch") receiver.catch(() => undefined);
+            else receiver.finally(() => undefined);
+          }
+        });
+      }, { continuation: method, count: registrations }));
+
+      const execution = executor.execute(action, allowedPermit());
+      if (poisoned) {
+        await expect(execution).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      } else {
+        await expect(execution).resolves.toEqual({ status: "ok" });
+      }
     },
   );
 
