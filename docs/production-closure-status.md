@@ -50,6 +50,7 @@ production_wiring: present
 verification: pending dedicated remediation PR
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/72`
 remediation_ticket: `37`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 - Model output limits and provider usage are preserved through the
   provider, Gateway, Model Agent, and Runner Runtime seams. Gateway transient
@@ -123,8 +124,9 @@ remediation_ticket: `37`
   and failed invocation plus known usage was replaced by the observer error.
   GREEN passed the Ticket 17 focused Gate: 11 files / 125 tests. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No full suite, E2E,
-  or review was run per the remediation request; the dedicated PR remains
-  pending.
+  or full-suite review was run per the remediation request. The scoped
+  remediation Standards/Spec review reported no blocking findings; PR #73
+  remains pending merge into the parent Ticket 17 branch.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
