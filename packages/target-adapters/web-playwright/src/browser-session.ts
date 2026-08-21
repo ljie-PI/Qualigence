@@ -109,6 +109,7 @@ export interface PrivateActionTarget {
 
 export interface SensitiveActionTarget extends PrivateActionTarget {
   readonly nodeId: string | undefined;
+  readonly closedShadowRoot: boolean;
 }
 
 export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
@@ -133,6 +134,7 @@ const SENSITIVE_ACTION_ATTRIBUTES = [
   "alt",
   "value",
 ] as const;
+const PRIVATE_SHADOW_REGISTRY_DESCRIPTION = "qualigence.private.shadow-registry";
 
 interface SensitiveActionPropertySnapshot {
   readonly inputValue: string | null;
@@ -152,6 +154,28 @@ interface SensitiveActionMutationRecord {
   readonly causal: boolean;
 }
 
+interface PrivateShadowRootEntry {
+  readonly host: Element;
+  readonly root: ShadowRoot;
+  readonly mode: ShadowRootMode;
+}
+
+export interface PrivateShadowRegistry {
+  readonly snapshot: (maximumRoots: number) => {
+    readonly roots: readonly PrivateShadowRootEntry[];
+    readonly closedMutationCount: number;
+    readonly count: number;
+    readonly overflow: boolean;
+    readonly intact: boolean;
+  };
+  readonly subscribe: (
+    listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void,
+  ) => boolean;
+  readonly unsubscribe: (
+    listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void,
+  ) => boolean;
+}
+
 interface SensitiveActionMutationTracker {
   readonly target: Element;
   readonly forms: readonly string[];
@@ -160,18 +184,7 @@ interface SensitiveActionMutationTracker {
   readonly causalElements: Element[];
   readonly observers: MutationObserver[];
   readonly roots: (Document | ShadowRoot)[];
-  readonly shadowRegistry: {
-    readonly snapshot: (maximumRoots: number) => {
-      readonly openRoots: readonly ShadowRoot[];
-      readonly closedHosts: readonly Element[];
-      readonly closedMutationCount: number;
-      readonly count: number;
-      readonly overflow: boolean;
-      readonly intact: boolean;
-    };
-    readonly subscribe: (listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void) => boolean;
-    readonly unsubscribe: (listener: (host: Element, root: ShadowRoot, mode: ShadowRootMode) => void) => boolean;
-  };
+  readonly shadowRegistry: PrivateShadowRegistry;
   readonly restore: () => boolean;
   readonly beginCausalAction: (target: Element) => boolean;
   readonly endCausalAction: (target: Element) => boolean;
@@ -220,6 +233,9 @@ export class PlaywrightBrowserSession {
   private browser: Browser | undefined;
   private context: BrowserContext | undefined;
   private page: Page | undefined;
+  private shadowRegistry: JSHandle<PrivateShadowRegistry> | undefined;
+  private readonly shadowRegistryKey = `${PRIVATE_SHADOW_REGISTRY_DESCRIPTION}:${crypto.randomUUID()}`;
+  private readonly shadowRegistryAccessToken = crypto.randomUUID();
   private operation: Promise<unknown> = Promise.resolve();
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
@@ -333,7 +349,7 @@ export class PlaywrightBrowserSession {
           "The sensitive action target no longer has its resolution-bound identity.",
         );
       }
-      const registered = { ...target, nodeId };
+      const registered = { ...target, nodeId, closedShadowRoot: false };
       this.sensitiveActionTargets.set(target.token, registered);
       try {
         target.markerInstalled = true;
@@ -367,7 +383,7 @@ export class PlaywrightBrowserSession {
         "The sensitive action target lost its private marker.",
       );
     }
-    const registered = { ...target, nodeId, markerInstalled: true };
+    const registered = { ...target, nodeId, markerInstalled: true, closedShadowRoot: false };
     this.privateActionTargets.set(`${graphId}\0${nodeId}`, registered);
     this.sensitiveActionTargets.set(target.token, registered);
   }
@@ -375,6 +391,13 @@ export class PlaywrightBrowserSession {
   sensitiveTargets(): readonly SensitiveActionTarget[] {
     this.assertSensitiveEvidenceProven();
     return [...this.sensitiveActionTargets.values()];
+  }
+
+  shadowRegistryForEvidence(): JSHandle<PrivateShadowRegistry> {
+    if (this.shadowRegistry === undefined) {
+      throw this.sensitiveEvidenceFailure("The private shadow-root registry is unavailable.");
+    }
+    return this.shadowRegistry;
   }
 
   sensitiveEvidenceFailure(_message?: string): WebTargetError {
@@ -423,6 +446,7 @@ export class PlaywrightBrowserSession {
       );
     }
     try {
+      if (this.shadowRegistry === undefined) throw new Error("shadow-registry-unavailable");
       if (value.length > MAXIMUM_OBSERVATION_NODE_BYTES) {
         throw new Error("source-form-length-overflow");
       }
@@ -508,19 +532,16 @@ export class PlaywrightBrowserSession {
 
         const forms = input.forms;
 
-        const registry = (globalThis as typeof globalThis & {
-          readonly __qualigenceShadowRegistry?: SensitiveActionMutationTracker["shadowRegistry"];
-        }).__qualigenceShadowRegistry;
-        if (registry === undefined) throw new Error("shadow-registry-unavailable");
+        const registry = input.shadowRegistry;
         const boundedCandidates = (): readonly Element[] => {
           const shadow = registry.snapshot(limits.maximumShadowRoots);
-          if (!shadow.intact || shadow.overflow ||
-              shadow.count !== shadow.openRoots.length + shadow.closedHosts.length) {
+          if (!shadow.intact || shadow.overflow || shadow.count !== shadow.roots.length) {
             throw new Error("shadow-root-identity-unprovable");
           }
           const found: Element[] = [];
           let elements = 0;
           const roots: (Document | ShadowRoot)[] = [element.ownerDocument];
+          for (const entry of shadow.roots) roots.push(entry.root);
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
             if (root === undefined) throw new Error("shadow-root-identity-unprovable");
@@ -533,16 +554,10 @@ export class PlaywrightBrowserSession {
                 found.push(node);
                 if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
               }
-              if (node.shadowRoot !== null) {
-                roots.push(node.shadowRoot);
-                if (roots.length > limits.maximumShadowRoots + 1) {
-                  throw new Error("shadow-root-overflow");
-                }
-              }
             }
           }
-          if (new Set(roots).size !== roots.length || roots.length !== shadow.openRoots.length + 1 ||
-              shadow.openRoots.some((root) => !roots.includes(root))) {
+          if (new Set(roots).size !== roots.length || roots.length !== shadow.roots.length + 1 ||
+              shadow.roots.some((entry) => !roots.includes(entry.root))) {
             throw new Error("shadow-root-identity-unprovable");
           }
           return found;
@@ -632,7 +647,9 @@ export class PlaywrightBrowserSession {
           });
         };
         observeRoot(element.ownerDocument);
-        for (const root of registry.snapshot(limits.maximumShadowRoots).openRoots) observeRoot(root);
+        for (const entry of registry.snapshot(limits.maximumShadowRoots).roots) {
+          observeRoot(entry.root);
+        }
 
         const values = (properties: SensitiveActionPropertySnapshot): readonly (string | null)[] => [
           properties.inputValue,
@@ -753,10 +770,7 @@ export class PlaywrightBrowserSession {
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
         const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
-          if (mode === "open") observeRoot(root);
-          else if (activeGeneration !== undefined || callbackGeneration !== undefined) {
-            tracker.shadowPoison = true;
-          }
+          observeRoot(root);
         };
         if (!registry.subscribe(attachedShadow)) tracker.shadowPoison = true;
         let eventSnapshot: readonly SensitiveActionCandidateSnapshot[] | undefined;
@@ -908,19 +922,56 @@ export class PlaywrightBrowserSession {
           onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
         ): Promise<T | TResult> {
           const generation = registerGeneration();
-          return originalCatch.call(this, wrapContinuation(generation, onrejected));
+          return originalThen.call(
+            this,
+            undefined,
+            wrapContinuation(generation, onrejected),
+          ) as Promise<T | TResult>;
         };
         const wrappedFinally = function <T>(
           this: Promise<T>,
           onfinally?: (() => void) | null,
         ): Promise<T> {
           const generation = registerGeneration();
-          return originalFinally.call(
+          if (typeof onfinally !== "function") {
+            return originalThen.call(this, onfinally, onfinally) as Promise<T>;
+          }
+          const runFinally = (): unknown => generation === undefined
+            ? onfinally()
+            : runCausal(generation, onfinally);
+          return originalThen.call(
             this,
-            generation === undefined || onfinally == null
-              ? onfinally
-              : () => runCausal(generation, onfinally),
-          );
+            (value) => {
+              const result = runFinally();
+              return {
+                then<TResult1 = T, TResult2 = never>(
+                  resolve?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+                  reject?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+                ): PromiseLike<TResult1 | TResult2> {
+                  return originalThen.call(
+                    Promise.resolve(result),
+                    () => resolve === undefined || resolve === null ? value : resolve(value),
+                    reject,
+                  ) as Promise<TResult1 | TResult2>;
+                },
+              };
+            },
+            (reason) => {
+              const result = runFinally();
+              return {
+                then<TResult1 = T, TResult2 = never>(
+                  _resolve?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+                  reject?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+                ): PromiseLike<TResult1 | TResult2> {
+                  return originalThen.call(
+                    Promise.resolve(result),
+                    () => reject === undefined || reject === null ? Promise.reject(reason) : reject(reason),
+                    reject,
+                  ) as Promise<TResult1 | TResult2>;
+                },
+              };
+            },
+          ) as Promise<T>;
         };
         window.setTimeout = wrappedSetTimeout;
         window.setInterval = wrappedSetInterval;
@@ -972,8 +1023,8 @@ export class PlaywrightBrowserSession {
           activeGeneration = undefined;
           try {
             finishExactTargetEvent();
-            if (registry.snapshot(limits.maximumShadowRoots).closedMutationCount !==
-                tracker.closedMutationBaseline) tracker.shadowPoison = true;
+            finishCausalScope(tracker.candidates);
+            if (!registry.snapshot(limits.maximumShadowRoots).intact) tracker.shadowPoison = true;
           } catch {
             tracker.observerError = true;
           }
@@ -1017,6 +1068,7 @@ export class PlaywrightBrowserSession {
       }, {
         kind,
         forms,
+        shadowRegistry: this.shadowRegistry,
         limits: {
           maximumCandidates: this.observationCandidateLimit(),
           maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
@@ -1410,9 +1462,8 @@ export class PlaywrightBrowserSession {
           if (!state.target.isConnected) return fail("target-replaced");
           const shadow = state.shadowRegistry.snapshot(limits.maximumShadowRoots);
           if (!shadow.intact || shadow.overflow ||
-              shadow.count !== shadow.openRoots.length + shadow.closedHosts.length ||
-              state.roots.length !== shadow.openRoots.length + 1 ||
-              shadow.closedMutationCount !== state.closedMutationBaseline) {
+              shadow.count !== shadow.roots.length ||
+              state.roots.length !== shadow.roots.length + 1) {
             return fail("shadow-root-identity-unproven");
           }
 
@@ -1458,6 +1509,7 @@ export class PlaywrightBrowserSession {
             property !== null && state.forms.some((form) => property.includes(form));
           const nodes: Element[] = [];
           const roots: (Document | ShadowRoot)[] = [state.target.ownerDocument];
+          for (const entry of shadow.roots) roots.push(entry.root);
           let domElements = 0;
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
@@ -1471,14 +1523,10 @@ export class PlaywrightBrowserSession {
                 nodes.push(node);
                 if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
               }
-              if (node.shadowRoot !== null) {
-                roots.push(node.shadowRoot);
-                if (roots.length > limits.maximumShadowRoots + 1) return fail("shadow-root-overflow");
-              }
             }
           }
-          if (new Set(roots).size !== roots.length || roots.length !== shadow.openRoots.length + 1 ||
-              shadow.openRoots.some((root) => !roots.includes(root))) {
+          if (new Set(roots).size !== roots.length || roots.length !== shadow.roots.length + 1 ||
+              shadow.roots.some((entry) => !roots.includes(entry.root))) {
             return fail("shadow-root-identity-unproven");
           }
           const current: SensitiveActionCandidateSnapshot[] = [];
@@ -1745,6 +1793,10 @@ export class PlaywrightBrowserSession {
           handle,
           markerInstalled: true,
           nodeId: undefined,
+          closedShadowRoot: await handle.evaluate((element) => {
+            const root = element.getRootNode();
+            return root instanceof ShadowRoot && root.mode === "closed";
+          }),
         };
         this.sensitiveActionTargets.set(token, target);
         registered.push(target);
@@ -1818,17 +1870,20 @@ export class PlaywrightBrowserSession {
       if (typeof context.addInitScript !== "function") {
         throw new WebTargetError("BrowserLaunchFailed");
       }
-      await context.addInitScript(({ registryName, maximumRoots }) => {
-        const host = globalThis as typeof globalThis & Record<string, unknown>;
-        if (host[registryName] !== undefined) return;
+      await context.addInitScript(({ registryKey, accessToken, maximumRoots }) => {
+        const host = globalThis as typeof globalThis & Record<symbol, unknown>;
+        const registrySymbol = Symbol.for(registryKey);
+        if (host[registrySymbol] !== undefined) return;
         const originalAttachShadow = Element.prototype.attachShadow;
-        const openRoots: ShadowRoot[] = [];
-        const closedHosts: Element[] = [];
+        const originalDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
+        if (originalDescriptor?.value !== originalAttachShadow) return;
+        const roots: PrivateShadowRootEntry[] = [];
         const closedObservers: MutationObserver[] = [];
         const listeners = new Set<(element: Element, root: ShadowRoot, mode: ShadowRootMode) => void>();
         let count = 0;
         let overflow = false;
         let closedMutationCount = 0;
+        let listenerError = false;
         const wrappedAttachShadow = function (
           this: Element,
           init: ShadowRootInit,
@@ -1837,37 +1892,58 @@ export class PlaywrightBrowserSession {
           count += 1;
           if (count > maximumRoots) {
             overflow = true;
-          } else if (init.mode === "open") {
-            openRoots.push(root);
           } else {
-            closedHosts.push(this);
-            const observer = new MutationObserver((records) => {
-              closedMutationCount += records.length;
-            });
-            observer.observe(root, {
-              attributes: true,
-              characterData: true,
-              childList: true,
-              subtree: true,
-            });
-            closedObservers.push(observer);
+            roots.push(Object.freeze({ host: this, root, mode: init.mode }));
+            if (init.mode === "closed") {
+              const observer = new MutationObserver((records) => {
+                closedMutationCount += records.length;
+              });
+              observer.observe(root, {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true,
+              });
+              closedObservers.push(observer);
+            }
           }
-          for (const listener of listeners) listener(this, root, init.mode);
+          for (const listener of listeners) {
+            try {
+              listener(this, root, init.mode);
+            } catch {
+              listenerError = true;
+            }
+          }
           return root;
         };
-        Element.prototype.attachShadow = wrappedAttachShadow;
-        const registry = Object.freeze({
+        Object.defineProperties(wrappedAttachShadow, {
+          name: { configurable: true, value: originalAttachShadow.name },
+          length: { configurable: true, value: originalAttachShadow.length },
+          toString: {
+            configurable: true,
+            value: () => originalAttachShadow.toString(),
+          },
+        });
+        Object.defineProperty(Element.prototype, "attachShadow", {
+          ...originalDescriptor,
+          value: wrappedAttachShadow,
+        });
+        const authority: PrivateShadowRegistry = Object.freeze({
           snapshot(limit: number) {
             for (const observer of closedObservers) {
               closedMutationCount += observer.takeRecords().length;
             }
+            const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
             return {
-              openRoots: openRoots.slice(0, limit),
-              closedHosts: closedHosts.slice(0, limit),
+              roots: roots.slice(0, limit),
               count,
               closedMutationCount,
               overflow: overflow || count > limit,
-              intact: Element.prototype.attachShadow === wrappedAttachShadow,
+              intact: !listenerError && descriptor?.value === wrappedAttachShadow &&
+                descriptor.configurable === originalDescriptor.configurable &&
+                descriptor.enumerable === originalDescriptor.enumerable &&
+                descriptor.writable === originalDescriptor.writable &&
+                host[registrySymbol] === gateway,
             };
           },
           subscribe(listener: (element: Element, root: ShadowRoot, mode: ShadowRootMode) => void) {
@@ -1878,14 +1954,20 @@ export class PlaywrightBrowserSession {
             return listeners.delete(listener) && Element.prototype.attachShadow === wrappedAttachShadow;
           },
         });
-        Object.defineProperty(host, registryName, {
+        const gateway = Object.freeze({
+          access(candidate: string): PrivateShadowRegistry | undefined {
+            return candidate === accessToken ? authority : undefined;
+          },
+        });
+        Object.defineProperty(host, registrySymbol, {
           configurable: false,
           enumerable: false,
           writable: false,
-          value: registry,
+          value: gateway,
         });
       }, {
-        registryName: "__qualigenceShadowRegistry",
+        registryKey: this.shadowRegistryKey,
+        accessToken: this.shadowRegistryAccessToken,
         maximumRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
       });
 
@@ -1896,6 +1978,20 @@ export class PlaywrightBrowserSession {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
+      const registry = await page.evaluateHandle(({ registryKey, accessToken }) => {
+        const gateway = (globalThis as typeof globalThis & Record<symbol, unknown>)[
+          Symbol.for(registryKey)
+        ] as { access(candidate: string): PrivateShadowRegistry | undefined } | undefined;
+        return gateway?.access(accessToken);
+      }, {
+        registryKey: this.shadowRegistryKey,
+        accessToken: this.shadowRegistryAccessToken,
+      });
+      const proven = await registry.evaluate((candidate, maximumRoots) =>
+        candidate?.snapshot(maximumRoots).intact === true,
+      MAXIMUM_SENSITIVE_SHADOW_ROOTS);
+      if (proven) this.shadowRegistry = registry as JSHandle<PrivateShadowRegistry>;
+      else await registry.dispose();
     } catch (error) {
       await this.disposeResources();
       this.state = "closed";
@@ -2013,6 +2109,10 @@ export class PlaywrightBrowserSession {
       }
       await this.page.close().catch(record);
       this.page = undefined;
+    }
+    if (this.shadowRegistry) {
+      await this.shadowRegistry.dispose().catch(record);
+      this.shadowRegistry = undefined;
     }
     for (const target of targets.values()) {
       await target.handle.dispose().catch(() => undefined);

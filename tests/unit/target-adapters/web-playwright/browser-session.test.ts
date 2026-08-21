@@ -22,18 +22,35 @@ function baseOptions(
   };
 }
 
-function fakeLauncher(): { launcher: BrowserLauncher; launch: ReturnType<typeof vi.fn>; closed: () => boolean } {
+function fakeLauncher(): {
+  launcher: BrowserLauncher;
+  launch: ReturnType<typeof vi.fn>;
+  addInitScript: ReturnType<typeof vi.fn>;
+  newPage: ReturnType<typeof vi.fn>;
+  closed: () => boolean;
+} {
   let browserClosed = false;
+  const registry = {
+    snapshot: () => ({ roots: [], count: 0, closedMutationCount: 0, overflow: false, intact: true }),
+  };
+  const registryHandle = {
+    evaluate: vi.fn(async (callback: (value: typeof registry, maximumRoots: number) => unknown, maximumRoots: number) =>
+      callback(registry, maximumRoots)),
+    dispose: vi.fn(async () => undefined),
+  };
   const page = {
     goto: vi.fn(async () => null),
     url: () => "https://example.test/",
     close: vi.fn(async () => undefined),
     setDefaultTimeout: vi.fn(),
     setDefaultNavigationTimeout: vi.fn(),
+    evaluateHandle: vi.fn(async () => registryHandle),
   };
+  const newPage = vi.fn(async () => page);
+  const addInitScript = vi.fn(async () => undefined);
   const context = {
-    newPage: vi.fn(async () => page),
-    addInitScript: vi.fn(async () => undefined),
+    newPage,
+    addInitScript,
     setDefaultTimeout: vi.fn(),
     setDefaultNavigationTimeout: vi.fn(),
     close: vi.fn(async () => undefined),
@@ -48,6 +65,8 @@ function fakeLauncher(): { launcher: BrowserLauncher; launch: ReturnType<typeof 
   return {
     launcher: { launch } as unknown as BrowserLauncher,
     launch,
+    addInitScript,
+    newPage,
     closed: () => browserClosed,
   };
 }
@@ -63,6 +82,19 @@ describe("PlaywrightBrowserSession", () => {
     await session.close();
     await session.close();
     expect(closed()).toBe(true);
+  });
+
+  it("installs the private shadow hook before creating the application page", async () => {
+    const { launcher, addInitScript, newPage } = fakeLauncher();
+    const session = new PlaywrightBrowserSession(baseOptions(), launcher);
+
+    await session.start();
+
+    expect(addInitScript).toHaveBeenCalledOnce();
+    expect(newPage).toHaveBeenCalledOnce();
+    expect(addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+      newPage.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("removes an installed private target marker before closing the page", async () => {

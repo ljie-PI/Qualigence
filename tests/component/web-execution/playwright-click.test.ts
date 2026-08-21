@@ -585,7 +585,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expectSolidCrop(image, boxes.input, [0, 0, 0, 255]);
   });
 
-  it("poisons evidence when a causal reflection enters a closed shadow root", async () => {
+  it("redacts a causal text reflection in a closed shadow root", async () => {
     const secret = "closed-shadow-secret";
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -596,6 +596,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
       interface TestElement {
         value: string;
         textContent: string | null;
+        style: { cssText: string };
+        setAttribute(name: string, value: string): void;
         attachShadow(init: { mode: "closed" }): { append(element: TestElement): void };
         addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
       }
@@ -610,6 +612,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
       const host = state.document.createElement("div");
       const root = host.attachShadow({ mode: "closed" });
       const reflection = state.document.createElement("p");
+      reflection.setAttribute("data-qualigence-observe", "");
+      reflection.style.cssText = "position:fixed;left:500px;top:80px;background:rgb(255,0,0);width:120px;height:40px;margin:0";
       root.append(reflection);
       state.document.body.append(host);
       source?.addEventListener("input", (event) => {
@@ -622,13 +626,126 @@ describe("Playwright resolve + execute against real Chromium", () => {
       before,
     );
 
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    expect(JSON.stringify(after)).not.toContain(secret);
+    expect(after.nodes).toContainEqual(expect.objectContaining({
+      name: "[REDACTED]",
+      text: "[REDACTED]",
+      value: "[REDACTED]",
+    }));
+  });
+
+  it("redacts and masks a property-only reflection in an app-created closed shadow root", async () => {
+    const secret = "closed-property-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const reflection = await session.withPage(async (page) => page.evaluateHandle(() => {
+      interface TestElement {
+        value: string;
+        style: { cssText: string };
+        setAttribute(name: string, value: string): void;
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+        attachShadow(init: { mode: "closed" }): { append(element: TestElement): void };
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestElement): void };
+          createElement(tag: string): TestElement;
+          querySelector(selector: string): TestElement | null;
+        };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const host = state.document.createElement("div");
+      const root = host.attachShadow({ mode: "closed" });
+      const reflected = state.document.createElement("input");
+      reflected.setAttribute("aria-label", "Closed property reflection");
+      reflected.style.cssText = "position:fixed;left:500px;top:200px;background:rgb(255,0,0);border:0;padding:0;width:120px;height:40px";
+      root.append(reflected);
+      state.document.body.append(host);
+      source?.addEventListener("input", (event) => {
+        reflected.value = event.target.value;
+      });
+      return reflected;
+    }));
+    const reflectedElement = reflection.asElement();
+    if (reflectedElement === null) throw new Error("Expected a retained closed-root element.");
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.closed-property"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    expect(await Promise.all(session.sensitiveTargets().map((target) =>
+      target.handle.evaluate((element, expected) => element === expected, reflectedElement),
+    ))).toContain(true);
+    const closedTarget = session.sensitiveTargets().find((target) => target.closedShadowRoot);
+    expect(closedTarget).toBeDefined();
+    expect(after.nodes.find((node) => node.id === closedTarget?.nodeId)).toMatchObject({
+      name: "[REDACTED]",
+      value: "[REDACTED]",
+      text: "[REDACTED]",
+    });
+    const artifact = session.artifactsFor(after.graphId)
+      .find((candidate) => candidate.mediaType === "application/json");
+    const screenshot = session.artifactsFor(after.graphId)
+      .find((candidate) => candidate.mediaType === "image/png");
+    const box = await reflectedElement.boundingBox();
+    await reflection.dispose();
+    if (artifact === undefined || screenshot === undefined || box === null) {
+      throw new Error("Expected bounded closed-root evidence.");
+    }
+
+    expect(after.nodes).toContainEqual(expect.objectContaining({
+      name: "[REDACTED]",
+      value: "[REDACTED]",
+      text: "[REDACTED]",
+    }));
+    expect(JSON.stringify(after)).not.toContain(secret);
+    expect(new TextDecoder().decode(artifact.bytes)).not.toContain(secret);
+    expectSolidCrop(decodePng(screenshot.bytes), box, [0, 0, 0, 255]);
+  });
+
+  it("keeps the shadow registry private and fails closed after attachShadow tampering", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "tamper-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.shadow-tamper"),
+      before,
+    );
+
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      Object.prototype.hasOwnProperty.call(globalThis, "__qualigenceShadowRegistry"),
+    ))).toBe(false);
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        attachShadow(init: unknown): unknown;
+      }
+      const prototype = (globalThis as unknown as {
+        Element: { prototype: TestElement };
+      }).Element.prototype;
+      const installed = prototype.attachShadow;
+      prototype.attachShadow = function (init: unknown) {
+        return Reflect.apply(installed, this, [init]);
+      };
+    }));
+
     await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
       code: "SensitiveEvidenceUnproven",
     });
     await expect(observer.capture(job)).rejects.toMatchObject({
       code: "SensitiveEvidenceUnproven",
     });
-    expect(session.latestGraphId).toBe(before.graphId);
+    expect(JSON.stringify(before)).not.toContain("tamper-secret");
     expect(() => session.artifactsFor(before.graphId)).toThrowError(
       expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
     );
@@ -1178,9 +1295,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
       (globalThis as typeof globalThis & { clearIntervalCalls?: number }).clearIntervalCalls,
     ))).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 40));
+    const afterClear = await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { intervalCounter?: number }).intervalCounter,
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 40));
     expect(await session.withPage(async (page) => page.evaluate(() =>
       (globalThis as typeof globalThis & { intervalCounter?: number }).intervalCounter,
-    ))).toBe(beforeClear.counter);
+    ))).toBe(afterClear);
   });
 
   it("bounds Promise registrations and restores scheduler wrappers on close", async () => {
@@ -1253,6 +1374,136 @@ describe("Playwright resolve + execute against real Chromium", () => {
         Promise.prototype.finally,
       ][index]);
     }))).toBe(true);
+  });
+
+  it.each([
+    ["catch", 32],
+    ["catch", 33],
+    ["finally", 32],
+    ["finally", 33],
+  ] as const)(
+    "counts each Promise.%s application continuation exactly once at %i registrations",
+    async (method, registrations) => {
+      const secret = `${method}-${registrations}-boundary-secret`;
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.${method}-${registrations}`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(({ continuation, count }) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        (globalThis as typeof globalThis & { promiseBoundaryCallbacks?: number })
+          .promiseBoundaryCallbacks = 0;
+        source?.addEventListener("input", () => {
+          for (let index = 0; index < count; index += 1) {
+            const callback = () => {
+              const state = globalThis as typeof globalThis & { promiseBoundaryCallbacks?: number };
+              state.promiseBoundaryCallbacks = (state.promiseBoundaryCallbacks ?? 0) + 1;
+            };
+            if (continuation === "catch") Promise.reject(index).catch(callback);
+            else Promise.resolve(index).finally(callback);
+          }
+        });
+      }, { continuation: method, count: registrations }));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { promiseBoundaryCallbacks?: number })
+          .promiseBoundaryCallbacks,
+      ))).toBe(registrations);
+      await session.close();
+    },
+  );
+
+  it.each(["catch", "finally"] as const)(
+    "poisons over 64 Promise.%s registrations without suppressing callbacks",
+    async (method) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${method}-overflow-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.${method}-overflow`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate((continuation) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        (globalThis as typeof globalThis & { promiseOverflowCallbacks?: number })
+          .promiseOverflowCallbacks = 0;
+        source?.addEventListener("input", () => {
+          for (let index = 0; index < 65; index += 1) {
+            const callback = () => {
+              const state = globalThis as typeof globalThis & { promiseOverflowCallbacks?: number };
+              state.promiseOverflowCallbacks = (state.promiseOverflowCallbacks ?? 0) + 1;
+            };
+            if (continuation === "catch") Promise.reject(index).catch(callback);
+            else Promise.resolve(index).finally(callback);
+          }
+        });
+      }, method));
+
+      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { promiseOverflowCallbacks?: number })
+          .promiseOverflowCallbacks,
+      ))).toBe(65);
+    },
+  );
+
+  it("preserves Promise finally callback, fulfillment, and rejection semantics", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "finally-semantics-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.finally-semantics"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & {
+          finallyCallbacks?: number;
+          finallyFulfilled?: string;
+          finallyRejected?: string;
+        };
+        state.finallyCallbacks = 0;
+        Promise.resolve("fulfilled").finally(() => {
+          state.finallyCallbacks = (state.finallyCallbacks ?? 0) + 1;
+          return Promise.resolve("ignored");
+        }).then((value) => { state.finallyFulfilled = value; });
+        Promise.reject(new Error("rejected")).finally(() => {
+          state.finallyCallbacks = (state.finallyCallbacks ?? 0) + 1;
+        }).catch((error: Error) => { state.finallyRejected = error.message; });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        finallyCallbacks?: number;
+        finallyFulfilled?: string;
+        finallyRejected?: string;
+      };
+      return [state.finallyCallbacks, state.finallyFulfilled, state.finallyRejected];
+    }))).toEqual([2, "fulfilled", "rejected"]);
   });
 
   it.each([

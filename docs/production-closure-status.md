@@ -543,9 +543,19 @@ pull_request: pending
   the application clears them, tracker code never cancels them, and wrappers are
   restored on tracker close.
 - Exact non-E2E command: `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
-  It passed 10 files / 155 tests: 154 passed and 1 existing Task 21 skip. Root
+  The review-blocker remediation passed 10 files / 164 tests: 163 passed and 1
+  existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. Per coordinator
   instruction, no E2E was run before review.
+- Browser-context init now installs one adapter-owned `attachShadow` wrapper
+  before page creation. A token-gated symbol/closure authority retains at most
+  64 exact open/closed host-root-mode entries; Graph snapshots, property diffs,
+  and screenshot masks consume its private handle. Missing, predating,
+  overflowed, or tampered authority poisons sensitive evidence. Closed-root
+  `.value`-only reflection is redacted from Graph/JSON and masked in PNG.
+- Promise `catch` and `finally` register through the saved native `then` once.
+  Exact 32/33 boundaries do not poison, every callback runs once, and 65
+  registrations poison attribution without suppressing application callbacks.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

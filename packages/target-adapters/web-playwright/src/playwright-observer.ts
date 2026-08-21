@@ -12,13 +12,14 @@ import {
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
   type PlaywrightBrowserSession,
+  type PrivateShadowRegistry,
   type SensitiveActionTarget,
 } from "./browser-session.js";
 import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 
 const REDACTED = "[REDACTED]";
@@ -34,7 +35,35 @@ async function captureScreenshot(
         return new Uint8Array(await page.screenshot({ timeout: 5000 }));
       }
       const locators = [];
+      const overlays: Locator[] = [];
+      const closedBounds = new Map<SensitiveActionTarget, {
+        readonly x: number;
+        readonly y: number;
+        readonly width: number;
+        readonly height: number;
+      }>();
       for (const sensitiveTarget of sensitiveTargets) {
+        if (sensitiveTarget.closedShadowRoot) {
+          const overlayToken = `${sensitiveTarget.token}-closed-overlay`;
+          const bounds = await sensitiveTarget.handle.evaluate((element, identity) => {
+            const rect = element.getBoundingClientRect();
+            if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+                rect.width <= 0 || rect.height <= 0) return undefined;
+            const overlay = document.createElement("div");
+            overlay.setAttribute(identity.attribute, identity.token);
+            overlay.style.cssText = `position:fixed;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;z-index:2147483647;pointer-events:none`;
+            document.documentElement.append(overlay);
+            return overlay.getAttribute(identity.attribute) === identity.token
+              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : undefined;
+          }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: overlayToken });
+          if (bounds === undefined) throw new WebTargetError("SensitiveTargetUnproven");
+          const overlay = page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}="${overlayToken}"]`);
+          overlays.push(overlay);
+          closedBounds.set(sensitiveTarget, bounds);
+          locators.push(overlay);
+          continue;
+        }
         const locator = page.locator(
           `[${PRIVATE_TARGET_ATTRIBUTE}="${sensitiveTarget.token}"]`,
         );
@@ -59,26 +88,48 @@ async function captureScreenshot(
         }
         locators.push(locator);
       }
-      const screenshot = new Uint8Array(await page.screenshot({
-        timeout: 5000,
-        mask: locators,
-        maskColor: "#000000",
-      }));
-      for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
-        const locator = locators[index]!;
-        const postHandle = await locator.elementHandle();
-        const remainsExact = postHandle !== null && await page.evaluate(
-          ([located, retained]) => located === retained,
-          [postHandle, sensitiveTarget.handle],
-        );
-        if (await locator.count() !== 1 || !remainsExact) {
-          throw new WebTargetError(
-            "SensitiveTargetUnproven",
-            "A sensitive target identity changed during screenshot capture.",
+      try {
+        const screenshot = new Uint8Array(await page.screenshot({
+          timeout: 5000,
+          mask: locators,
+          maskColor: "#000000",
+        }));
+        for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
+          if (sensitiveTarget.closedShadowRoot) {
+            const before = closedBounds.get(sensitiveTarget);
+            const overlay = locators[index]!;
+            const unchanged = before !== undefined && await sensitiveTarget.handle.evaluate(
+              (element, expected) => {
+                const rect = element.getBoundingClientRect();
+                return element.isConnected && rect.x === expected.x && rect.y === expected.y &&
+                  rect.width === expected.width && rect.height === expected.height;
+              },
+              before,
+            );
+            if (!unchanged || await overlay.count() !== 1) {
+              throw new WebTargetError("SensitiveTargetUnproven");
+            }
+            continue;
+          }
+          const locator = locators[index]!;
+          const postHandle = await locator.elementHandle();
+          const remainsExact = postHandle !== null && await page.evaluate(
+            ([located, retained]) => located === retained,
+            [postHandle, sensitiveTarget.handle],
           );
+          if (await locator.count() !== 1 || !remainsExact) {
+            throw new WebTargetError(
+              "SensitiveTargetUnproven",
+              "A sensitive target identity changed during screenshot capture.",
+            );
+          }
         }
+        return screenshot;
+      } finally {
+        await Promise.all(overlays.map((overlay) => overlay.evaluateAll((elements) => {
+          for (const element of elements) element.remove();
+        }).catch(() => undefined)));
       }
-      return screenshot;
     } catch (error) {
       if (error instanceof WebTargetError) throw error;
       lastError = error;
@@ -94,6 +145,7 @@ async function captureScreenshot(
  */
 function collectCandidates(identity: {
   readonly sensitiveElements: readonly Element[];
+  readonly shadowRegistry: PrivateShadowRegistry | undefined;
   readonly maximumCandidates: number;
   readonly maximumNodeBytes: number;
   readonly maximumSnapshotBytes: number;
@@ -284,7 +336,18 @@ function collectCandidates(identity: {
   const selector =
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
   const elements: Element[] = [];
+  const shadow = identity.shadowRegistry?.snapshot(identity.maximumShadowRoots);
+  if (shadow !== undefined &&
+      (!shadow.intact || shadow.overflow || shadow.count !== shadow.roots.length)) {
+    return {
+      candidates: [],
+      sensitiveIndexes: [],
+      sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+      failure: "shadow-root-identity-unprovable",
+    };
+  }
   const roots: (Document | ShadowRoot)[] = [document];
+  if (shadow !== undefined) for (const entry of shadow.roots) roots.push(entry.root);
   let domElements = 0;
   for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
     const root = roots[rootIndex];
@@ -317,7 +380,7 @@ function collectCandidates(identity: {
         };
       }
       if (node.matches(selector)) elements.push(node);
-      if (node.shadowRoot !== null) roots.push(node.shadowRoot);
+      if (shadow === undefined && node.shadowRoot !== null) roots.push(node.shadowRoot);
       if (elements.length > identity.maximumCandidates) {
         return {
           candidates: [],
@@ -441,6 +504,7 @@ export class PlaywrightObserver implements Observer {
       const bounded = this.session.hasSensitiveActionTracker();
       const captured = await page.evaluate(collectCandidates, {
         sensitiveElements: sensitiveTargets.map((target) => target.handle),
+        shadowRegistry: bounded ? this.session.shadowRegistryForEvidence() : undefined,
         maximumCandidates: bounded
           ? this.session.observationCandidateLimit()
           : Number.MAX_SAFE_INTEGER,
