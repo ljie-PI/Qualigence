@@ -1,10 +1,14 @@
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FileActionValueProvider,
+  isActionValuePathInsideRoot,
   openActionValueProvider,
+  validateActionValueFileMetadata,
+  validateActionValueFilePermissions,
+  validateActionValueFilename,
 } from "../../../apps/runner/src/action-value-provider.js";
 
 const roots: string[] = [];
@@ -50,6 +54,26 @@ describe("FileActionValueProvider", () => {
     await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
   });
 
+  it.each([
+    ["a Windows drive-relative filename", "C:secret.txt"],
+    ["a Windows UNC filename", "\\\\server\\share\\secret.txt"],
+    ["a Windows device namespace", "\\\\.\\pipe\\qualigence-secret"],
+    ["a Windows extended device namespace", "\\\\?\\C:\\secret.txt"],
+    ["a reserved Windows device name", "values\\NUL.txt"],
+  ])("rejects %s before filesystem access", async (_name, filename) => {
+    expect(() => validateActionValueFilename(filename)).toThrow();
+    const root = await temporaryRoot();
+    const configFile = join(root, "values.json");
+    await writeFile(configFile, JSON.stringify({ value: filename }));
+
+    await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
+  });
+
+  it("rejects a cross-volume relative result with Windows path semantics", () => {
+    expect(isActionValuePathInsideRoot("C:\\values", "D:\\secret", win32)).toBe(false);
+    expect(isActionValuePathInsideRoot("C:\\values", "C:\\values\\secret", win32)).toBe(true);
+  });
+
   it("rejects duplicate valueRef keys instead of accepting JSON's last value", async () => {
     const root = await temporaryRoot();
     const configFile = join(root, "values.json");
@@ -58,12 +82,11 @@ describe("FileActionValueProvider", () => {
     await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
   });
 
-  it("rejects a symlink that leaves the canonical root during initialization", async () => {
+  it("rejects every symlink before opening it", async () => {
     const root = await temporaryRoot();
-    const outside = await temporaryRoot();
     const configFile = join(root, "values.json");
-    await writeFile(join(outside, "secret.txt"), "not-for-runner", { mode: 0o600 });
-    await symlink(join(outside, "secret.txt"), join(root, "linked.txt"), "file");
+    await writeFile(join(root, "secret.txt"), "not-for-runner", { mode: 0o600 });
+    await symlink(join(root, "secret.txt"), join(root, "linked.txt"), "file");
     await writeFile(configFile, JSON.stringify({ "customer.email": "linked.txt" }));
     await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
   });
@@ -80,16 +103,31 @@ describe("FileActionValueProvider", () => {
     await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
   });
 
-  it("rejects permissive POSIX files during initialization", async () => {
-    if (process.platform === "win32") return;
-    const root = await temporaryRoot();
-    await writeFile(join(root, "value"), "secret", { mode: 0o644 });
-    await chmod(join(root, "value"), 0o644);
-    const configFile = join(root, "values.json");
-    await writeFile(configFile, JSON.stringify({ value: "value" }));
-
-    await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
+  it("enforces POSIX secret-file permissions on every test platform", () => {
+    expect(() => validateActionValueFilePermissions(0o100600, "linux")).not.toThrow();
+    expect(() => validateActionValueFilePermissions(0o100640, "linux")).toThrow();
+    expect(() => validateActionValueFilePermissions(0o100604, "darwin")).toThrow();
+    expect(() => validateActionValueFilePermissions(0o100666, "win32")).not.toThrow();
   });
+
+  it("rejects FIFO and other nonregular metadata without opening the path", () => {
+    const fifoMetadata = { isFile: () => false, size: 0, mode: 0o10600 };
+    expect(() => validateActionValueFileMetadata(fifoMetadata)).toThrow(
+      "Action value must be stored in a regular file.",
+    );
+  });
+
+  if (process.platform !== "win32") {
+    it("rejects a real permissive POSIX file during initialization", async () => {
+      const root = await temporaryRoot();
+      await writeFile(join(root, "value"), "secret", { mode: 0o644 });
+      await chmod(join(root, "value"), 0o644);
+      const configFile = join(root, "values.json");
+      await writeFile(configFile, JSON.stringify({ value: "value" }));
+
+      await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
+    });
+  }
 
   it("fails closed when a configured value disappears and for an unknown ref", async () => {
     const root = await temporaryRoot();

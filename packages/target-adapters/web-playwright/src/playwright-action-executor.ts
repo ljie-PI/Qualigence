@@ -123,6 +123,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           } catch {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
+          this.session.registerSensitiveValue(value);
           if (action.kind === "input") {
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {

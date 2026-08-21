@@ -1,5 +1,6 @@
-import { open, readFile, realpath, stat, type FileHandle } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readFile, realpath, type FileHandle } from "node:fs/promises";
+import { isAbsolute, posix, relative, resolve, win32 } from "node:path";
 
 export interface ActionValueProvider {
   resolve(valueRef: string): Promise<string>;
@@ -11,6 +12,49 @@ export interface FileActionValueProviderOptions {
 }
 
 const MAXIMUM_ACTION_VALUE_BYTES = 64 * 1024;
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
+
+export interface ActionValuePathSemantics {
+  isAbsolute(path: string): boolean;
+  relative(from: string, to: string): string;
+}
+
+export function validateActionValueFilename(filename: string): void {
+  const windowsRoot = win32.parse(filename).root;
+  if (
+    filename.includes("\0") ||
+    isAbsolute(filename) ||
+    posix.isAbsolute(filename) ||
+    win32.isAbsolute(filename) ||
+    windowsRoot !== "" ||
+    filename.split(/[\\/]/u).some((part) => part.includes(":") || WINDOWS_DEVICE_NAME.test(part.replace(/[ .]+$/u, "")))
+  ) {
+    throw new Error("Action value filenames must be portable relative paths.");
+  }
+}
+
+export function isActionValuePathInsideRoot(
+  root: string,
+  candidate: string,
+  paths: ActionValuePathSemantics = { isAbsolute, relative },
+): boolean {
+  const fromRoot = paths.relative(root, candidate);
+  return !(
+    paths.isAbsolute(fromRoot) ||
+    fromRoot === ".." ||
+    fromRoot.startsWith("../") ||
+    fromRoot.startsWith("..\\")
+  );
+}
+
+export function validateActionValueFilePermissions(
+  mode: number,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== "win32" && (mode & 0o077) !== 0) {
+    throw new Error("Action value file permissions are too broad.");
+  }
+}
 
 export async function openActionValueProvider(
   env: NodeJS.ProcessEnv = process.env,
@@ -38,12 +82,9 @@ export class FileActionValueProvider implements ActionValueProvider {
       if (valueRef.length === 0 || filename.length === 0) {
         throw new Error("Action value configuration entries must map non-empty refs to filenames.");
       }
-      if (isAbsolute(filename)) {
-        throw new Error("Action value filenames must be relative.");
-      }
+      validateActionValueFilename(filename);
       const candidate = resolve(root, filename);
-      const fromRoot = relative(root, candidate);
-      if (fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+      if (!isActionValuePathInsideRoot(root, candidate)) {
         throw new Error("Action value filenames must stay under the configured root.");
       }
       const file = await openValidatedValueFile(root, candidate);
@@ -76,27 +117,53 @@ export class FileActionValueProvider implements ActionValueProvider {
 }
 
 async function openValidatedValueFile(root: string, filename: string): Promise<FileHandle> {
-  const file = await open(filename, "r");
+  const pathMetadata = await lstat(filename);
+  if (pathMetadata.isSymbolicLink()) {
+    throw new Error("Action value must not be a symbolic link.");
+  }
+  validateActionValueFileMetadata(pathMetadata);
+
+  const canonical = await realpath(filename);
+  if (!isActionValuePathInsideRoot(root, canonical)) {
+    throw new Error("Action value file escapes the configured root.");
+  }
+
+  const flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+  const file = await open(filename, flags);
   try {
-    const canonical = await realpath(filename);
-    const fromRoot = relative(root, canonical);
-    if (fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    const [metadata, currentPathMetadata, currentCanonical] = await Promise.all([
+      file.stat(),
+      lstat(filename),
+      realpath(filename),
+    ]);
+    if (currentPathMetadata.isSymbolicLink()) {
+      throw new Error("Action value must not be a symbolic link.");
+    }
+    if (!isActionValuePathInsideRoot(root, currentCanonical)) {
       throw new Error("Action value file escapes the configured root.");
     }
-    const [metadata, pathMetadata] = await Promise.all([file.stat(), stat(canonical)]);
-    if (metadata.dev !== pathMetadata.dev || metadata.ino !== pathMetadata.ino) {
+    if (
+      metadata.dev !== pathMetadata.dev ||
+      metadata.ino !== pathMetadata.ino ||
+      metadata.dev !== currentPathMetadata.dev ||
+      metadata.ino !== currentPathMetadata.ino
+    ) {
       throw new Error("Action value file changed while it was opened.");
     }
-    if (!metadata.isFile()) throw new Error("Action value must be stored in a regular file.");
-    if (metadata.size > MAXIMUM_ACTION_VALUE_BYTES) throw new Error("Action value exceeds the maximum size.");
-    if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
-      throw new Error("Action value file permissions are too broad.");
-    }
+    validateActionValueFileMetadata(metadata);
     return file;
   } catch (error) {
     await file.close();
     throw error;
   }
+}
+
+export function validateActionValueFileMetadata(
+  metadata: Pick<Stats, "isFile" | "size" | "mode">,
+): void {
+  if (!metadata.isFile()) throw new Error("Action value must be stored in a regular file.");
+  if (metadata.size > MAXIMUM_ACTION_VALUE_BYTES) throw new Error("Action value exceeds the maximum size.");
+  validateActionValueFilePermissions(metadata.mode);
 }
 
 function parseConfiguration(source: string): ReadonlyMap<string, string> {

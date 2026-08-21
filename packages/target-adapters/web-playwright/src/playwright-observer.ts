@@ -211,9 +211,16 @@ export class PlaywrightObserver implements Observer {
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
-      const raw = (await page.evaluate(collectCandidates)) as ObservationCandidate[];
-      const url = page.url();
-      const title = await page.title();
+      const captured = (await page.evaluate(collectCandidates)) as ObservationCandidate[];
+      const raw = captured.map((candidate) => ({
+        role: candidate.role,
+        ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
+        ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
+        ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+        ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
+      }));
+      const url = this.session.redactSensitiveText(page.url());
+      const title = this.session.redactSensitiveText(await page.title());
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       const { graph, descriptors } = buildObservationGraph(

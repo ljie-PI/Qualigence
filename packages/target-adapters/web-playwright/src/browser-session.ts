@@ -81,6 +81,7 @@ export class PlaywrightBrowserSession {
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
+  private readonly sensitiveValues = new Set<string>();
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -126,6 +127,18 @@ export class PlaywrightBrowserSession {
       );
     }
     return observation.artifacts;
+  }
+
+  registerSensitiveValue(value: string): void {
+    if (value !== "") this.sensitiveValues.add(value);
+  }
+
+  redactSensitiveText(value: string): string {
+    let redacted = value;
+    for (const sensitive of [...this.sensitiveValues].sort((left, right) => right.length - left.length)) {
+      redacted = redacted.replaceAll(sensitive, "[redacted]");
+    }
+    return redacted;
   }
 
   async start(): Promise<void> {

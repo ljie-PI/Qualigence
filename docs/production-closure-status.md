@@ -257,6 +257,25 @@ verification: passed; pending dedicated PR
 - The focused Gate passed 8 files / 54 tests with 1 existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E, full suite, or
   implementation review was run; the dedicated PR remains pending.
+- Round-1 remediation rejects POSIX absolute/traversal and Windows
+  drive-relative, drive-absolute, UNC, device-namespace, reserved-device, and
+  cross-volume paths before file access. `lstat`/`realpath` reject symlinks and
+  nonregular files before `open`; nonblocking/no-follow flags are used where the
+  host exposes them, and post-open `fstat` plus path identity/confinement checks
+  detect replacement races before any bytes are read.
+- Observer-boundary redaction tracks only adapter-private resolved values and
+  removes them from post-action Observation nodes/metadata and observation JSON
+  Artifacts. The complete serialized Trace and verifier context after a real
+  Chromium input contain no plaintext; input/select actions and outcomes still
+  carry only `valueRef` and stable codes.
+- Round-1 RED reproduced 3 provider failures and 2 Chromium redaction failures.
+  GREEN passed the affected provider file at 17 tests and Chromium action file
+  at 9 tests. The exact row-18 focused Gate passed 8 files / 61 passed with 1
+  existing Task 21 skip; POSIX permission and nonregular/FIFO enforcement run
+  through exported pure validators on Windows, while real POSIX integration is
+  registered only on POSIX. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No separate Chromium E2E was run before the fresh
+  exact-base review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
