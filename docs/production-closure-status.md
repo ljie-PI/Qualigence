@@ -18,7 +18,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 02 component is implemented but pending its dedicated PR merge; tickets 03-06 still own the Target/Test Plan/Mission dispatch loop |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
@@ -29,12 +29,133 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
 | Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
 
-Current relational schema is version 7. Migrations 001-007 are immutable;
-remaining allocations are 008 (Target/Test Plan), 009 (Mission/Run/outbox and
+Current relational schema is version 8. Migrations 001-008 are immutable;
+remaining allocations are 009 (Mission/Run/outbox and
 its atomic dispatch wakeup),
 010 (Intelligence leases/Result inbox), 011 (Intelligence wakeups/dispositions), 012
 (Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
-reserved without a reviewed plan amendment.
+ reserved without a reviewed plan amendment.
+
+### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/76`
+remediation_ticket: `38`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/77`
+remediation_status: verification passed at the tested product head; pending fresh exact-base review
+remediation_tested_product_head: `cb072a45da87982fca2f5dcd5a62e3b420f21ade`
+remediation_later_commits: status-only; no product or test changes after the tested product head
+implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
+
+remediation_review_status: pending fresh exact-base review; no clean-review claim
+
+- PostgreSQL Target create/update and Test Plan create/approve now reserve the
+  tenant-scoped idempotency key before authoritative replay comparison and head
+  CAS. Overlapping identical commands return the same persisted winner;
+  different commands return stable `TargetIdempotencyConflict` or
+  `IdempotencyConflict` without a mixed revision/head; stale different keys
+  return `TargetVersionConflict` or `PlanVersionConflict` with the current
+  version. Migration 008 required no amendment and SQLite behavior is unchanged.
+- TDD RED: the new shared contract passed SQLite but PostgreSQL failed 9 of 16
+  tests with wrong version conflicts or raw `23505` unique errors. GREEN:
+  `corepack pnpm vitest run tests/contract/sqlite/product-intake-store.test.ts tests/contract/postgres/product-intake-store.test.ts`
+  passed 2 files / 32 tests against real Docker PostgreSQL.
+- At remediation tested product head
+  `cb072a45da87982fca2f5dcd5a62e3b420f21ade`, the focused Gate
+  `corepack pnpm vitest run tests/unit/core-modules/project-target tests/unit/core-modules/mission/test-plan-approval.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`
+  passed 4 files / 52 tests; rendered acceptance
+  `corepack pnpm vitest run tests/e2e/web-console/target-test-plan.test.ts`
+  passed 1 file / 1 test; backup acceptance
+  `corepack pnpm vitest run tests/e2e/self-hosted/backup-restore.test.ts`
+  passed 1 file / 3 tests; `corepack pnpm typecheck` passed; and
+  `git diff --check` passed. Git OpenSSL was explicitly resolved for the
+  focused Gate. Every later commit in the remediation PR is status-only and
+  does not change the tested product or tests.
+- Final PR review found the product E2E was API-client-only rather than rendered
+  Console and was not rerun after the final idempotency fix. Remediation Ticket
+  38 blocks merge.
+- Remediation 38 replaces that acceptance with the real React DOM Console router
+  and visible Target, Test Plan, and Mission controls backed by the real Public
+  API Server. Fresh exact-base review of the final status-bound evidence is
+  pending; this entry does not claim a clean review.
+- Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
+  `tests/conformance/storage/relational-schema.test.ts`,
+  `tests/e2e/self-hosted/backup-restore.test.ts`, and
+  `tests/unit/admin-cli/{backup,migrate}.test.ts` for dynamic/current schema 8
+  expectations only. No Ticket 02 migration, backup, restore, or forward-upgrade
+  behavior changes are authorized.
+- Web Target construction and Mission intake require the canonical `startUrl`
+  origin in `allowedOrigins`. Desktop Console revisions retain the complete
+  existing `AppTarget` snapshot while changing edited fields.
+- Mission create persistence atomically selects one complete idempotency-command
+  winner; concurrent different commands return the winner's version and cannot
+  mix Mission/Job snapshots. Shared SQLite/PostgreSQL provider coverage proves
+  the race, and the real Console client/Server path proves stable replay plus the
+  public `actualVersion` conflict/reload contract.
+- PRD project revision allocation is serialized in provider authority, so
+  concurrent distinct PRDs receive unique monotonic revisions.
+- Round-3 focused non-E2E Gate passed 12 files / 102 tests with Docker
+  PostgreSQL runtime, shared provider, real Public API/Console, storage
+  conformance, and affected Admin compatibility coverage. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run before
+  clean review.
+- PRD identity, project revision assignment, immutable document construction,
+  idempotent replay, and persistence now live in `TestPlanService`; the Fastify
+  route is limited to authentication, request validation, DTO mapping, and safe
+  error mapping.
+- PostgreSQL schema/runtime/sequential-upgrade expectations are current through
+  immutable migration 008. The shared SQLite/PostgreSQL provider contract now
+  proves both Target create and update races return `TargetVersionConflict`
+  carrying the current version from an authoritative head reread.
+- Mission intake issues policy snapshots from the injected Clock and bounds
+  expiry to the 60-second execution budget. A focused application test submits
+  the resulting Job shape to `DeterministicRunnerPolicyGate` and proves Runner
+  admission immediately after issuance.
+- Desktop launch/reset argv now use a closed approved flag/value contract or
+  opaque `ref:` values. Arbitrary plaintext values and environment fields are
+  rejected while accepted `AppTarget` fields remain lossless.
+- Console Target revisions use the loaded current version for updates. Target,
+  Test Plan, and Mission conflict paths render safe `actualVersion` details and
+  invalidate the exact queries needed to reload current state; rendered jsdom
+  component tests exercise all three mutation conflicts.
+- Round-2 focused non-E2E Gate passed 12 files / 96 tests with Docker PostgreSQL,
+  including runtime migration and provider contracts, storage conformance,
+  Public API, Admin migration/backup, and rendered Console tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run before
+  clean review.
+
+- Removed request-to-domain casting and direct Mission-table writes from Public
+  API routes. Target, grounded Test Plan create/approve, and Mission creation now
+  invoke application services; Mission creation calls `MissionCompiler` and the
+  existing `PrdMissionRepository` seam and persists revision/jobs/dispatch data.
+- Test Plan create/approve reloads the selected PRD content and validates its
+  source hash, offsets, selector/script rejection, opaque value references, and
+  claim references before deterministic server IDs or persistence.
+- One provider-neutral product-intake contract runs unchanged against SQLite and
+  Docker PostgreSQL. It proves immutable revisions, project consistency, PRD
+  loading, and one-success/one-stable-conflict concurrent approval semantics.
+- Desktop intake rejects secret-bearing launch/reset argv and environment-like
+  fields while preserving every accepted `AppTarget` field. Console component
+  coverage renders Web/Desktop Target, Test Plan, and Mission revision bindings.
+- Round-1 focused Gate passed 8 files / 62 tests with PostgreSQL Docker and
+  storage schema conformance; offline frozen install, `corepack pnpm typecheck`,
+  and `git diff --check` passed. Rendered browser E2E remains intentionally
+  unrun until clean review.
+
+- Migration 008 exclusively adds immutable Target and Test Plan revision heads,
+  append-only snapshots, expected-version CAS, and idempotency bindings. Historical
+  migrations 001-007 remain unchanged.
+- Shared domain/application ports are implemented by SQLite and PostgreSQL
+  repositories. PostgreSQL uses the request-scoped transaction and forced RLS;
+  the focused Docker contract proves cross-tenant invisibility.
+- Public API and typed Console workflows create Web/Desktop Target revisions,
+  approve Test Plan revisions with stable conflict envelopes, and create an
+  approved Mission intake bound to exact Target version/hash, Test Plan version,
+  project, and Runner. Ticket 04 still owns Run/attempt/outbox scheduling.
+- Focused non-E2E Gate, root typecheck, and diff check passed on 2026-08-21.
+  Rendered E2E was not run and remains gated on clean dedicated review.
 
 Current execution host evidence: Windows 11; Node `v24.13.0`; Corepack pnpm
 `11.7.0`; Docker client/server `29.6.2`; Cargo/rustc `1.96.1`. Cargo is no

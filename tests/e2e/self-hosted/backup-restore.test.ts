@@ -34,7 +34,7 @@ import pg from "pg";
 const { Client, Pool } = pg;
 const BUCKET = "qualigence-artifacts";
 const OLD_SCHEMA_VERSION = 1;
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 const MIGRATION_INVOCATION_ID = "ticket-36-forward-upgrade";
 const SERVER_ROLE = "qualigence_server";
 const SERVER_PASSWORD = "server_pw";
@@ -466,9 +466,9 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
         runBackup(backupConfig, { pgTool, s3Client, migration: binding }),
     });
     expect(migration.action).toBe("migrated");
-    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7, 8]);
     expect(migration.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(CURRENT_SCHEMA_VERSION);
     const afterMigration = await persistenceSnapshot();
     expect(afterMigration).toEqual(expectedSnapshot);

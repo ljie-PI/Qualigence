@@ -1214,6 +1214,33 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "local_run_intakes_attempt_check", predicate: "dispatch_attempt >= 0 AND completion_attempt >= 0" },
     ],
   },
+  // ---- Migration 008: Target and Test Plan revisions -----------------
+  {
+    name: "project_targets", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("target_id"), t("project_id"), i("current_version"), t("created_at"), t("updated_at")],
+    primaryKey: ["target_id"], uniques: [], foreignKeys: [], checks: [],
+  },
+  {
+    name: "target_revisions", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("target_id"), i("version"), t("project_id"), t("display_name"), t("runner_id"), t("kind"), t("snapshot_hash"), t("configuration_json"), t("idempotency_key"), t("created_at")],
+    primaryKey: ["target_id", "version"],
+    uniques: [{ name: "target_revisions_idempotency_key_unique", columns: ["idempotency_key"] }],
+    foreignKeys: [{ columns: ["target_id"], references: { table: "project_targets", columns: ["target_id"] } }],
+    checks: [{ name: "target_revisions_kind_check", predicate: "kind IN ('web', 'desktop')" }],
+  },
+  {
+    name: "test_plan_heads", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("plan_id"), t("project_id"), i("current_version"), t("created_at"), t("updated_at")],
+    primaryKey: ["plan_id"], uniques: [], foreignKeys: [], checks: [],
+  },
+  {
+    name: "test_plan_version_revisions", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("plan_id"), i("version"), t("project_id"), t("prd_id"), i("prd_revision"), t("status"), t("reviewer_id", false), t("approved_at", false), t("idempotency_key"), t("plan_json"), t("created_at")],
+    primaryKey: ["plan_id", "version"],
+    uniques: [{ name: "test_plan_version_revisions_idempotency_key_unique", columns: ["idempotency_key"] }],
+    foreignKeys: [{ columns: ["plan_id"], references: { table: "test_plan_heads", columns: ["plan_id"] } }],
+    checks: [{ name: "test_plan_version_revisions_status_check", predicate: "status IN ('draft', 'approved')" }],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1223,7 +1250,8 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 4, name: "exploration-benchmark", tables: tablesFromTo("benchmark_runs", "benchmark_reports") },
   { version: 5, name: "investigation-review", tables: tablesFromTo("investigation_cases", "evidence_audit_events") },
   { version: 6, name: "runner-control", tables: tablesFromTo("runner_sessions", "execution_completions") },
-  { version: 7, name: "local-run-intake", tables: tablesFrom("local_run_intakes") },
+  { version: 7, name: "local-run-intake", tables: tablesFromTo("local_run_intakes", "local_run_intakes") },
+  { version: 8, name: "target-test-plan-revisions", tables: tablesFrom("project_targets") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

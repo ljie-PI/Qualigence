@@ -529,6 +529,49 @@ export interface LocalRunIntakesTable {
   updated_at: string;
 }
 
+export interface ProjectTargetsTable {
+  target_id: string;
+  project_id: string;
+  current_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TargetRevisionsTable {
+  target_id: string;
+  version: number;
+  project_id: string;
+  display_name: string;
+  runner_id: string;
+  kind: string;
+  snapshot_hash: string;
+  configuration_json: string;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface TestPlanHeadsTable {
+  plan_id: string;
+  project_id: string;
+  current_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestPlanVersionRevisionsTable {
+  plan_id: string;
+  version: number;
+  project_id: string;
+  prd_id: string;
+  prd_revision: number;
+  status: string;
+  reviewer_id: string | null;
+  approved_at: string | null;
+  idempotency_key: string;
+  plan_json: string;
+  created_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -584,5 +627,9 @@ export interface Database {
   execution_leases: ExecutionLeasesTable;
   execution_completions: ExecutionCompletionsTable;
   local_run_intakes: LocalRunIntakesTable;
+  project_targets: ProjectTargetsTable;
+  target_revisions: TargetRevisionsTable;
+  test_plan_heads: TestPlanHeadsTable;
+  test_plan_version_revisions: TestPlanVersionRevisionsTable;
   sqlite_master: SqliteMasterTable;
 }

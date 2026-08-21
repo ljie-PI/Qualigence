@@ -126,7 +126,7 @@ export async function runMigrate(
       migration = {
         fromVersion,
         toVersion: SUPPORTED_SCHEMA_VERSION,
-        appliedVersions: [1, 2, 3, 4, 5, 6, 7],
+        appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8],
       };
     } else {
       migration = await migrate({

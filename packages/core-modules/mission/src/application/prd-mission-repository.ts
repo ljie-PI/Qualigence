@@ -5,6 +5,7 @@ import type {
   MissionStatus,
 } from "../domain/test-mission.js";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
+import type { TargetConfiguration } from "@qualigence/project-target";
 import type {
   TestCase,
   TestPlanRevision,
@@ -23,6 +24,14 @@ export interface MissionDispatchDescriptor {
   readonly headed: boolean;
   readonly navigationTimeoutMs: number;
   readonly actionTimeoutMs: number;
+  readonly binding?: {
+    readonly targetId: string;
+    readonly targetVersion: number;
+    readonly targetSnapshotHash: string;
+    readonly runnerId: string;
+    readonly planVersion: number;
+    readonly configuration: TargetConfiguration;
+  };
 }
 
 /** Everything needed to persist an approved, compiled Mission with provenance. */
@@ -109,10 +118,11 @@ export interface MissionExecutionRecord {
 export interface PrdMissionRepository {
   savePrdDocument(document: PrdDocument): Promise<void>;
   saveTestPlanRevision(plan: TestPlanRevision): Promise<void>;
-  saveCompiledMission(input: SaveCompiledMissionInput): Promise<void>;
+  saveCompiledMission(input: SaveCompiledMissionInput): Promise<DispatchableMission | void>;
   loadMissionForDispatch(
     missionId: string,
   ): Promise<DispatchableMission | undefined>;
+  listMissionIds?(): Promise<readonly string[]>;
   recordJobAttempt(attempt: JobAttemptRecord): Promise<void>;
   setJobStatus(jobId: string, status: ExecutionJobStatus): Promise<void>;
   setMissionStatus(

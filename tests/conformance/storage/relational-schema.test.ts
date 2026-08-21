@@ -44,12 +44,12 @@ describe("shared relational schema catalog", () => {
   });
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(7);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(8);
   });
 
   it("assigns every relational table to one sequential released schema version", () => {
     expect(RELATIONAL_SCHEMA_VERSIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
     expect(RELATIONAL_SCHEMA_VERSIONS.flatMap((migration) => migration.tables)).toEqual(
       relationalTableNames(),
@@ -59,7 +59,7 @@ describe("shared relational schema catalog", () => {
   it("adds the migration-007 Local intake authority", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {
-      expect(await runtime.schemaVersion()).toBe(7);
+      expect(await runtime.schemaVersion()).toBe(8);
       expect(await tableColumns(runtime, "local_run_intakes")).toEqual([
         "run_id", "job_id", "job_json", "job_sha256", "dispatch_state", "dispatch_attempt",
         "dispatch_last_attempt_at", "dispatch_error_code", "completion_state", "completion_attempt",
@@ -72,7 +72,7 @@ describe("shared relational schema catalog", () => {
   it("freezes migration-006 runner-control tables, hashed-only tokens, and active indexes", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {
-      expect(await runtime.schemaVersion()).toBe(7);
+      expect(await runtime.schemaVersion()).toBe(8);
       expect(await tableColumns(runtime, "runner_sessions")).toEqual([
         "session_id",
         "runner_id",

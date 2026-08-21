@@ -66,3 +66,15 @@ export type {
   PrdMissionRepository,
   SaveCompiledMissionInput,
 } from "./application/prd-mission-repository.js";
+
+export type {
+  AllocatePrdRevisionInput,
+  ApproveStoredTestPlanInput,
+  SaveDraftTestPlanInput,
+  TestPlanRepository,
+} from "./application/test-plan-repository.js";
+
+export { TestPlanService, TestPlanServiceError } from "./application/test-plan-service.js";
+export type { ApproveTestPlanInput, CreateTestPlanCommand, IngestPrdCommand, TestPlanServiceErrorCode } from "./application/test-plan-service.js";
+export { MissionIntakeError, MissionIntakeService } from "./application/mission-intake-service.js";
+export type { CreateMissionCommand, MissionIntakeResult } from "./application/mission-intake-service.js";
