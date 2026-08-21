@@ -72,20 +72,6 @@ export interface StoredObservation {
   readonly artifacts: readonly CapturedArtifact[];
 }
 
-export function browserSensitiveValueForms(value: string): readonly string[] {
-  const forms = new Set<string>();
-  const add = (form: string): void => {
-    if (form !== "") forms.add(form);
-  };
-  add(value);
-  // Text controls normalize line endings to LF; single-line inputs then remove them.
-  const lfNormalized = value.replace(/\r\n?|\n/gu, "\n");
-  add(lfNormalized);
-  add(lfNormalized.replace(/\n+$/u, ""));
-  add(lfNormalized.replaceAll("\n", ""));
-  return [...forms];
-}
-
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
@@ -146,10 +132,6 @@ export class PlaywrightBrowserSession {
 
   registerSensitiveValue(value: string): void {
     if (value !== "") this.sensitiveValues.add(value);
-  }
-
-  registerSensitiveValues(values: readonly string[]): void {
-    for (const value of values) this.registerSensitiveValue(value);
   }
 
   redactSensitiveText(value: string): string {

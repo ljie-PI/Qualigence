@@ -14,14 +14,22 @@ import type {
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import {
+  PlaywrightWebTargetAdapter,
+  type CapturedArtifact,
+  type PlaywrightWebTargetOptions,
+} from "@qualigence/web-playwright";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "../../component/web-execution/fixtures.js";
 
 const LF_INPUT_VALUE = "e2e-lf-first-line\ne2e-lf-second-line\n";
-const CRLF_INPUT_VALUE = "e2e-crlf-first-line\r\ne2e-crlf-second-line\r\n";
+const CRLF_INPUT_VALUE = "a\r\nb\r\n";
+const CRLF_BROWSER_VALUE = "a\nb\n";
 const SELECT_VALUE = "e2e-private-country-code";
+const SELECT_LABEL_SOURCE = "e2e-private-country\r\n    normalized-label";
+const SELECT_LABEL_BROWSER_VALUE = "e2e-private-country normalized-label";
 const roots: string[] = [];
 let fixture: FixtureServer | undefined;
 let modelServer: Server | undefined;
@@ -46,24 +54,24 @@ describe("production valueRef browser execution", () => {
   it("runs immutable input/select Plan jobs through RunnerOfferRuntime without plaintext leakage", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
-        <label>LF secret <input aria-label="LF secret" /></label>
-        <label>CRLF secret <input aria-label="CRLF secret" /></label>
+        <label>LF secret <textarea aria-label="LF secret"></textarea></label>
+        <label>CRLF secret <textarea aria-label="CRLF secret"></textarea></label>
         <label>Country
           <select aria-label="Country">
             <option value="">Choose a country</option>
-            <option value="${SELECT_VALUE}">Canada</option>
+            <option value="${SELECT_VALUE}">${SELECT_LABEL_SOURCE}</option>
           </select>
         </label>
         <p data-qualigence-observe id="status">Waiting</p>
         <p data-qualigence-observe>e2e-lf-first-line remains unrelated</p>
-        <p data-qualigence-observe>e2e-crlf-second-line remains unrelated</p>
+        <p data-qualigence-observe>ab</p>
         <script>
-          const inputs = document.querySelectorAll('input');
+          const inputs = document.querySelectorAll('textarea');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
           inputs[0].addEventListener('input', () => { status.textContent = 'LF ready'; });
           inputs[1].addEventListener('input', () => { status.textContent = 'CRLF ready'; });
-          country.addEventListener('change', () => { status.textContent = 'Country ready'; });
+          country.addEventListener('change', () => { status.textContent = country.selectedOptions[0].text; });
         </script>
       `, "ValueRef acceptance"),
     });
@@ -97,7 +105,7 @@ describe("production valueRef browser execution", () => {
       modelRequests.push(body);
       const operation = body.response_format.json_schema.name;
       const output = operation === "execution_verification"
-        ? { status: "passed", summary: "visible state captured", claims: [] }
+        ? verificationFrom(body.messages.at(-1)?.content ?? "")
         : decisionFrom(body.messages.at(-1)?.content ?? "");
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({
@@ -113,6 +121,7 @@ describe("production valueRef browser execution", () => {
     if (modelAddress === null || typeof modelAddress === "string") throw new Error("Expected model listener.");
 
     const logs: string[] = [];
+    const artifacts: { readonly runId: string; readonly artifact: CapturedArtifact }[] = [];
     const batches: ExecutionEventBatch[] = [];
     const spooledEvents: ExecutionEventBatch["events"][number][] = [];
     const completions: ExecutionCompletion[] = [];
@@ -182,6 +191,18 @@ describe("production valueRef browser execution", () => {
       session,
       spool,
       valueProvider,
+      createTarget: (options: PlaywrightWebTargetOptions) => {
+        const adapter = new PlaywrightWebTargetAdapter(options);
+        const capture = adapter.capture.bind(adapter);
+        adapter.capture = async (job) => {
+          const graph = await capture(job);
+          for (const artifact of await adapter.captureArtifacts(graph.graphId)) {
+            artifacts.push({ runId: job.runId, artifact });
+          }
+          return graph;
+        };
+        return adapter;
+      },
     });
 
     try {
@@ -198,11 +219,16 @@ describe("production valueRef browser execution", () => {
       stderr.mockRestore();
     }
 
-    expect(completions).toEqual([
+    expect(completions.slice(0, 2)).toEqual([
       { jobId: "job-input-lf", runId: "run-input-lf", status: "passed" },
       { jobId: "job-input-crlf", runId: "run-input-crlf", status: "passed" },
-      { jobId: "job-select", runId: "run-select", status: "passed" },
     ]);
+    expect(completions[2]).toMatchObject({
+      jobId: "job-select",
+      runId: "run-select",
+      status: "finding",
+      finding: { summary: "selected state requires review" },
+    });
     const trace = batches.flatMap((batch) => batch.events);
     expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(3);
     expect(trace.find((event) => event.runId === "run-input-lf" && event.stage === "decision")?.payload)
@@ -213,18 +239,33 @@ describe("production valueRef browser execution", () => {
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) => node.text === "LF ready")).toBe(true);
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "CRLF ready")).toBe(true);
-    expect(finalObservation(trace, "run-select").nodes.some((node) => node.text === "Country ready")).toBe(true);
+    expect(finalObservation(trace, "run-select").nodes.some((node) => node.text === "[redacted]")).toBe(true);
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) =>
       node.text === "e2e-lf-first-line remains unrelated")).toBe(true);
-    expect(finalObservation(trace, "run-input-crlf").nodes.some((node) =>
-      node.text === "e2e-crlf-second-line remains unrelated")).toBe(true);
+    expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "ab")).toBe(true);
+    expect(trace.some((event) => event.runId === "run-select" && event.stage === "finding")).toBe(true);
+
+    const observationArtifacts = artifacts
+      .filter(({ artifact }) => artifact.mediaType === "application/json")
+      .map(({ artifact }) => new TextDecoder().decode(artifact.bytes));
+    const screenshotMetadata = artifacts
+      .filter(({ artifact }) => artifact.mediaType === "image/png")
+      .map(({ runId, artifact }) => ({ runId, name: artifact.name, mediaType: artifact.mediaType }));
+    expect(observationArtifacts).toHaveLength(6);
+    expect(screenshotMetadata).toHaveLength(6);
+    expect(observationArtifacts.some((artifact) => artifact.includes('"text":"ab"'))).toBe(true);
 
     await spool.close();
     spool = undefined;
     const spoolBytes = await readFile(spoolFile);
     const securitySurfaces = {
       trace: JSON.stringify(trace),
-      observations: JSON.stringify(trace.filter((event) => event.stage === "observation")),
+      findings: JSON.stringify({
+        events: trace.filter((event) => event.stage === "finding"),
+        completions: completions.filter((completion) => completion.status === "finding"),
+      }),
+      observationArtifacts: observationArtifacts.join("\n"),
+      screenshotMetadata: JSON.stringify(screenshotMetadata),
       logs: logs.join(""),
       dtos: JSON.stringify({ batches, completions, modelRequests }),
       spooledEvents: JSON.stringify(spooledEvents),
@@ -232,13 +273,11 @@ describe("production valueRef browser execution", () => {
     };
     const sensitiveForms = [
       LF_INPUT_VALUE,
-      LF_INPUT_VALUE.replace(/\n+$/u, ""),
-      LF_INPUT_VALUE.replaceAll("\n", ""),
       CRLF_INPUT_VALUE,
-      CRLF_INPUT_VALUE.replaceAll("\r\n", "\n"),
-      CRLF_INPUT_VALUE.replaceAll("\r\n", "\n").replace(/\n+$/u, ""),
-      CRLF_INPUT_VALUE.replaceAll("\r\n", ""),
+      CRLF_BROWSER_VALUE,
       SELECT_VALUE,
+      SELECT_LABEL_SOURCE,
+      SELECT_LABEL_BROWSER_VALUE,
     ];
     for (const surface of Object.values(securitySurfaces)) {
       for (const form of sensitiveForms) {
@@ -304,6 +343,30 @@ function decisionFrom(content: string): { readonly nodeId: string; readonly reas
     candidate.role === prompt.step.target.role && candidate.name === prompt.step.target.name);
   if (node === undefined) throw new Error("Expected model-visible Plan target.");
   return { nodeId: node.id, reason: `ground ${prompt.step.kind}` };
+}
+
+function verificationFrom(content: string) {
+  const prompt = JSON.parse(content) as {
+    readonly before: ObservationGraph;
+    readonly after: ObservationGraph;
+  };
+  if (!prompt.after.graphId.startsWith("run-select:")) {
+    return { status: "passed", summary: "visible state captured", claims: [] } as const;
+  }
+  const expected = prompt.before.nodes.find((node) => node.text !== undefined);
+  const observed = prompt.after.nodes.find((node) => node.text !== undefined);
+  if (expected?.text === undefined || observed?.text === undefined) {
+    throw new Error("Expected model-visible verification evidence.");
+  }
+  return {
+    status: "failed",
+    summary: "selected state requires review",
+    severitySuggestion: "low",
+    claims: [{
+      expected: { graphId: prompt.before.graphId, nodeId: expected.id, text: expected.text },
+      observed: { graphId: prompt.after.graphId, nodeId: observed.id, text: observed.text },
+    }],
+  } as const;
 }
 
 function finalObservation(

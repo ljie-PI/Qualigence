@@ -70,12 +70,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
-          <label>Multiline secret <input aria-label="Multiline secret" /></label>
+          <label>Multiline secret <textarea aria-label="Multiline secret"></textarea></label>
           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
           <p data-qualigence-observe id="values"></p>
-          <p data-qualigence-observe>component-first-line remains unrelated</p>
+          <p data-qualigence-observe>ab</p>
           <script>
             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('textarea').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
           </script>
         `,
@@ -275,11 +276,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
 
-  it("redacts CRLF, LF-normalized, and text-input canonical forms from Chromium observations", async () => {
-    const source = "component-first-line\r\ncomponent-second-line\r\n";
-    const lfNormalized = "component-first-line\ncomponent-second-line\n";
-    const trailingNormalized = "component-first-line\ncomponent-second-line";
-    const inputCanonical = "component-first-linecomponent-second-line";
+  it("redacts the source and actual Chromium input forms without guessing other forms", async () => {
+    const source = "a\r\nb\r\n";
+    const browserValue = "a\nb\n";
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
@@ -296,9 +295,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const serialized = JSON.stringify(after);
 
     expect(serialized).not.toContain(source);
-    expect(serialized).not.toContain(lfNormalized);
-    expect(serialized).not.toContain(trailingNormalized);
-    expect(serialized).not.toContain(inputCanonical);
-    expect(after.nodes.some((node) => node.text === "component-first-line remains unrelated")).toBe(true);
+    expect(serialized).not.toContain(browserValue);
+    expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
   });
 });

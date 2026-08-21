@@ -8,7 +8,6 @@ import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
   WebTargetError,
-  browserSensitiveValueForms,
   isOriginAllowed,
 } from "./browser-session.js";
 import { locatorFor } from "./action-locator.js";
@@ -124,17 +123,29 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           } catch {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
-          this.session.registerSensitiveValues(browserSensitiveValueForms(value));
+          // Register the source before Playwright can echo it in an error. Any
+          // browser normalization is learned from the control after success.
+          this.session.registerSensitiveValue(value);
           if (action.kind === "input") {
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
             this.session.registerSensitiveValue(await locator.inputValue({
               timeout: this.session.actionTimeoutMs,
             }));
           } else {
-            const [selectedValue] = await locator.selectOption(value, {
+            const selectedValues = await locator.selectOption(value, {
               timeout: this.session.actionTimeoutMs,
             });
-            if (selectedValue !== undefined) this.session.registerSensitiveValue(selectedValue);
+            for (const selectedValue of selectedValues) {
+              this.session.registerSensitiveValue(selectedValue);
+            }
+            const browserValues = await locator.evaluate((element) => {
+              if (!(element instanceof HTMLSelectElement)) return [];
+              const option = element.selectedOptions.item(0);
+              return option === null ? [] : [option.value, option.label, option.text];
+            });
+            for (const browserValue of browserValues) {
+              this.session.registerSensitiveValue(browserValue);
+            }
           }
         } else if (action.kind === "click") {
           await locator.click({ timeout: this.session.actionTimeoutMs });

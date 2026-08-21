@@ -10,7 +10,6 @@ export {
   PlaywrightBrowserSession,
   WebTargetError,
   chromiumLauncher,
-  browserSensitiveValueForms,
   isOriginAllowed,
   normalizeOrigin,
   type BrowserLauncher,

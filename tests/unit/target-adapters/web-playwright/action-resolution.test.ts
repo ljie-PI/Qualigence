@@ -115,6 +115,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
         calls.push(`selectOption:${value}`);
         return [value];
       },
+      evaluate: async () => ["plaintext-secret", "Private label", "Private text"],
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -137,21 +138,22 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
   });
 
-  it("redacts complete browser input newline forms without redacting their unrelated fragments", async () => {
+  it("registers only the source and exact browser-observable input forms", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerObservation(graphId, {
       descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Notes" }]]),
       artifacts: [],
     });
-    const source = "first-secret-line\r\nsecond-secret-line\r\n";
+    const source = "a\r\nb\r\n";
+    const browserValue = "a\nb\n";
     const locator = {
       count: async () => 1,
       isVisible: async () => true,
       isEnabled: async () => true,
       getAttribute: async () => null,
       fill: async () => undefined,
-      inputValue: async () => "first-secret-linesecond-secret-line",
+      inputValue: async () => browserValue,
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -168,15 +170,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
     }, permit)).resolves.toEqual({ status: "ok" });
 
     expect(session.redactSensitiveText(source)).toBe("[redacted]");
-    expect(session.redactSensitiveText("first-secret-line\nsecond-secret-line\n")).toBe("[redacted]");
-    expect(session.redactSensitiveText("first-secret-line\nsecond-secret-line")).toBe("[redacted]");
-    expect(session.redactSensitiveText("first-secret-linesecond-secret-line")).toBe("[redacted]");
-    expect(session.redactSensitiveText("first-secret-line remains unrelated")).toBe(
-      "first-secret-line remains unrelated",
-    );
+    expect(session.redactSensitiveText(browserValue)).toBe("[redacted]");
+    expect(session.redactSensitiveText("ab")).toBe("ab");
   });
 
-  it("registers the exact value selected by the browser", async () => {
+  it("registers the exact selected values and labels observed from the browser", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerObservation(graphId, {
@@ -189,6 +187,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
       isEnabled: async () => true,
       getAttribute: async () => null,
       selectOption: async () => ["browser-selected-option"],
+      evaluate: async () => [
+        "browser-normalized-option",
+        "Browser normalized label",
+        "Browser normalized text",
+      ],
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -207,6 +210,9 @@ describe("PlaywrightActionExecutor value resolution", () => {
     }, permit)).resolves.toEqual({ status: "ok" });
 
     expect(session.redactSensitiveText("browser-selected-option")).toBe("[redacted]");
+    expect(session.redactSensitiveText("browser-normalized-option")).toBe("[redacted]");
+    expect(session.redactSensitiveText("Browser normalized label")).toBe("[redacted]");
+    expect(session.redactSensitiveText("Browser normalized text")).toBe("[redacted]");
     expect(session.redactSensitiveText("browser-selected remains unrelated")).toBe(
       "browser-selected remains unrelated",
     );
