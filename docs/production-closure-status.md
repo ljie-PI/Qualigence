@@ -342,7 +342,8 @@ verification: pending remediation PR
 parent_ticket: `18`
 parent_commit: `004446c`
 reviewed_head: `9bc55c4`
-implementation_head: `a50cd4a`
+implementation_head: `b150d67`
+remaining_important_fix_commits: `de2fc1c`, `b150d67`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
