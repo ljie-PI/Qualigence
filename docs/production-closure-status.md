@@ -464,7 +464,7 @@ parent_head: `7f265c1`
   scheduled reflection after 350 ms, input/select property-only reflection,
   unrelated equal normalized text remaining visible, same-form ambiguity
   failing without persistence, and hostile candidate/text bounds failing closed.
-- Implementation head: `IMPLEMENTATION_HEAD_PENDING_COMMIT`. Exact focused
+- Implementation head: `26222cf`. Exact focused
   command: `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
   It passed 10 files / 127 tests: 126 passed and 1 existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
