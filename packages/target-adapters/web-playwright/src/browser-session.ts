@@ -836,10 +836,10 @@ export class PlaywrightBrowserSession {
           timeout?: number,
           ...args: unknown[]
         ): number => {
+          const generation = registerGeneration();
           if (typeof handler !== "function") {
             return originalSetTimeout(handler, timeout, ...args);
           }
-          const generation = registerGeneration();
           if (generation === undefined) {
             return originalSetTimeout(handler, timeout, ...args);
           }
@@ -860,10 +860,10 @@ export class PlaywrightBrowserSession {
           timeout?: number,
           ...args: unknown[]
         ): number => {
+          const generation = registerGeneration();
           if (typeof handler !== "function") {
             return originalSetInterval(handler, timeout, ...args);
           }
-          const generation = registerGeneration();
           if (generation === undefined) {
             return originalSetInterval(handler, timeout, ...args);
           }

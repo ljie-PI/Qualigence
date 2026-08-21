@@ -72,7 +72,6 @@ const RUNNER_SAFE_LOG_CODES: readonly string[] = Object.freeze([
   "UnsupportedAction",
   "WallClockBudgetExceeded",
 ]);
-const runnerSafeLogCodes = new Set(RUNNER_SAFE_LOG_CODES);
 
 export function runnerErrorForLog(error: unknown): { readonly errorCode: string } {
   try {
@@ -84,7 +83,7 @@ export function runnerErrorForLog(error: unknown): { readonly errorCode: string 
         error instanceof ExecutionBudgetError ||
         error instanceof WebTargetError) &&
       typeof error.code === "string" &&
-      runnerSafeLogCodes.has(error.code)
+      RUNNER_SAFE_LOG_CODES.some((code) => code === error.code)
     ) {
       return { errorCode: error.code };
     }
