@@ -50,6 +50,7 @@ production_wiring: present
 verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/71`
 remediation_ticket: `36`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/74`
 implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
@@ -141,6 +142,9 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
   passed 10 files / 49 tests with zero failures or skips, and
   `corepack pnpm typecheck` plus `git diff --check` passed. The E2E was not
   rerun after the code change; a fresh coordinator review is required first.
+- The fresh remediation review reported no blocking findings. The final real
+  schema-1 forward-upgrade/backup/restore E2E then passed 1 file / 3 tests with
+  PostgreSQL and all expected source rows, manifests, and object bytes.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
