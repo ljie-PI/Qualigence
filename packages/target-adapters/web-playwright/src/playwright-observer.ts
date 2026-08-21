@@ -4,6 +4,9 @@ import type {
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
 import {
+  MAXIMUM_OBSERVATION_CANDIDATES,
+  MAXIMUM_OBSERVATION_NODE_BYTES,
+  MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
   type PlaywrightBrowserSession,
@@ -89,11 +92,52 @@ async function captureScreenshot(
  */
 function collectCandidates(identity: {
   readonly sensitiveElements: readonly Element[];
+  readonly maximumCandidates: number;
+  readonly maximumNodeBytes: number;
+  readonly maximumSnapshotBytes: number;
 }): {
   readonly candidates: ObservationCandidate[];
   readonly sensitiveIndexes: readonly number[];
   readonly sensitiveConnected: readonly boolean[];
+  readonly failure: string | undefined;
 } {
+  const utf8Bytes = (text: string): number => {
+    let bytes = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      if (code <= 0x7f) bytes += 1;
+      else if (code <= 0x7ff) bytes += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length &&
+          text.charCodeAt(index + 1) >= 0xdc00 &&
+          text.charCodeAt(index + 1) <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+      if (bytes > identity.maximumNodeBytes) return bytes;
+    }
+    return bytes;
+  };
+  const boundedText = (element: Element): string => {
+    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const chunks: string[] = [];
+    let bytes = 0;
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const value = node.nodeValue ?? "";
+      bytes += utf8Bytes(value);
+      if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
+      chunks.push(value);
+    }
+    return chunks.join("");
+  };
+  const addBytes = (current: number, value: string | undefined): number => {
+    if (value === undefined) return current;
+    const bytes = utf8Bytes(value);
+    if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
+    const total = current + bytes;
+    if (total > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
+    return total;
+  };
+
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
       return true;
@@ -153,7 +197,7 @@ function collectCandidates(identity: {
         .split(/\s+/)
         .map((id) => document.getElementById(id))
         .filter((node): node is HTMLElement => node !== null)
-        .map((node) => node.textContent ?? "")
+        .map((node) => boundedText(node))
         .join(" ")
         .trim();
       if (joined !== "") {
@@ -166,18 +210,21 @@ function collectCandidates(identity: {
           ? CSS.escape(element.id)
           : element.id;
       const label = document.querySelector(`label[for="${escaped}"]`);
-      if (label && label.textContent && label.textContent.trim() !== "") {
-        return label.textContent;
+      if (label) {
+        const text = boundedText(label);
+        if (text.trim() !== "") return text;
       }
     }
     const wrapping = element.closest("label");
-    if (wrapping && wrapping.textContent && wrapping.textContent.trim() !== "") {
-      return wrapping.textContent;
+    if (wrapping) {
+      const text = boundedText(wrapping);
+      if (text.trim() !== "") return text;
     }
     const tag = element.tagName.toLowerCase();
     if (tag === "button" || tag === "a" || element.getAttribute("role") === "button") {
-      if (element.textContent && element.textContent.trim() !== "") {
-        return element.textContent;
+      const text = boundedText(element);
+      if (text.trim() !== "") {
+        return text;
       }
     }
     if (element instanceof HTMLInputElement) {
@@ -197,16 +244,44 @@ function collectCandidates(identity: {
 
   const selector =
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
-  const elements = Array.from(document.querySelectorAll(selector));
+  const elements: Element[] = [];
+  const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node) {
+      return node instanceof Element && node.matches(selector)
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_SKIP;
+    },
+  });
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (!(node instanceof Element)) {
+      return {
+        candidates: [],
+        sensitiveIndexes: [],
+        sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+        failure: "candidate-unprovable",
+      };
+    }
+    elements.push(node);
+    if (elements.length > identity.maximumCandidates) {
+      return {
+        candidates: [],
+        sensitiveIndexes: [],
+        sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+        failure: "candidate-overflow",
+      };
+    }
+  }
   const candidates: ObservationCandidate[] = [];
   const sensitiveIndexes = identity.sensitiveElements.map(() => -1);
+  let snapshotBytes = 0;
 
-  for (const element of elements) {
-    if (!isVisible(element)) {
-      continue;
-    }
-    const role = roleOf(element);
-    const name = accessibleName(element).trim();
+  try {
+    for (const element of elements) {
+      if (!isVisible(element)) {
+        continue;
+      }
+      const role = roleOf(element);
+      const name = accessibleName(element).trim();
 
     const isFormField =
       element instanceof HTMLInputElement ||
@@ -228,7 +303,7 @@ function collectCandidates(identity: {
       role === "combobox";
     let text: string | undefined;
     if (!interactive || element.hasAttribute("data-qualigence-observe")) {
-      const content = element.textContent ?? "";
+      const content = boundedText(element);
       if (content.trim() !== "") {
         text = content;
       }
@@ -238,6 +313,15 @@ function collectCandidates(identity: {
       (element as HTMLButtonElement).disabled === true ||
       element.getAttribute("aria-disabled") === "true";
 
+    let candidateBytes = 0;
+    candidateBytes = addBytes(candidateBytes, role);
+    candidateBytes = addBytes(candidateBytes, name === "" ? undefined : name);
+    candidateBytes = addBytes(candidateBytes, text);
+    candidateBytes = addBytes(candidateBytes, value);
+    snapshotBytes += candidateBytes;
+    if (snapshotBytes > identity.maximumSnapshotBytes) {
+      throw new Error("snapshot-byte-overflow");
+    }
     const candidate: ObservationCandidate = {
       role,
       ...(name !== "" ? { name } : {}),
@@ -249,13 +333,22 @@ function collectCandidates(identity: {
     if (sensitiveIndex >= 0) {
       sensitiveIndexes[sensitiveIndex] = candidates.length;
     }
-    candidates.push(candidate);
+      candidates.push(candidate);
+    }
+  } catch (error) {
+    return {
+      candidates: [],
+      sensitiveIndexes: [],
+      sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+      failure: error instanceof Error ? error.message : "snapshot-unprovable",
+    };
   }
 
   return {
     candidates,
     sensitiveIndexes,
     sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+    failure: undefined,
   };
 }
 
@@ -286,10 +379,19 @@ export class PlaywrightObserver implements Observer {
     try {
       return await this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
+      await this.session.prepareSensitiveEvidenceCapture();
       const sensitiveTargets = this.session.sensitiveTargets();
       const captured = await page.evaluate(collectCandidates, {
         sensitiveElements: sensitiveTargets.map((target) => target.handle),
+        maximumCandidates: MAXIMUM_OBSERVATION_CANDIDATES,
+        maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
+        maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
       });
+      if (captured.failure !== undefined) {
+        throw this.session.sensitiveEvidenceFailure(
+          "The bounded observation snapshot could not be proven.",
+        );
+      }
       if (captured.sensitiveConnected.some((connected) => !connected) ||
           captured.sensitiveIndexes.some((index) => index < 0)) {
         throw new WebTargetError(
@@ -335,6 +437,7 @@ export class PlaywrightObserver implements Observer {
       };
 
       const screenshot = await captureScreenshot(page, sensitiveTargets);
+      await this.session.completeSensitiveEvidenceCapture();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.advanceSensitiveTargets(graph.graphId, sensitiveNodeIds);
       this.session.registerObservation(graphWithRefs.graphId, {

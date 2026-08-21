@@ -120,8 +120,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           // Retain the exact target before Playwright can partially apply a
           // value. Capacity failure therefore happens before the side effect.
           await this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
-          const trackingStartedAt = Date.now();
-          const tracker = await this.session.beginSensitiveActionTracking(target);
+          // A detached matching control computes the browser-normalized form,
+          // and the bounded tracker is authoritative through the next capture.
+          await this.session.beginSensitiveActionTracking(target, action.kind, value);
           let actionError: unknown;
           try {
             if (action.kind === "input") {
@@ -135,41 +136,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             actionError = error;
           }
 
-          let browserForms: readonly string[];
-          try {
-            browserForms = await target.evaluate((element, kind) => {
-              if (kind === "select") {
-                if (!(element instanceof HTMLSelectElement)) {
-                  throw new Error("select-target-unprovable");
-                }
-                return [...element.selectedOptions].flatMap((option) => [
-                  option.value,
-                  option.label,
-                  option.textContent ?? "",
-                ]);
-              }
-              if (element instanceof HTMLInputElement ||
-                  element instanceof HTMLTextAreaElement) {
-                return [element.value];
-              }
-              if (element instanceof HTMLElement && element.isContentEditable) {
-                return [element.innerText, element.textContent ?? ""];
-              }
-              throw new Error("input-target-unprovable");
-            }, action.kind);
-          } catch {
-            await this.session.finishSensitiveActionTracking(tracker, target, [], 0)
-              .catch(() => undefined);
-            throw this.session.sensitiveEvidenceFailure(
-              "The browser-observable sensitive value could not be proven.",
-            );
-          }
-          await this.session.finishSensitiveActionTracking(
-            tracker,
-            target,
-            browserForms,
-            this.session.actionTimeoutMs - (Date.now() - trackingStartedAt),
-          );
+          await this.session.failIfSensitiveTrackingOverflowed();
           if (actionError !== undefined) throw actionError;
         } else if (action.kind === "click") {
           await target.click({ timeout: this.session.actionTimeoutMs });

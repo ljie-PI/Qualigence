@@ -95,10 +95,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
                document.querySelector('input[aria-label="Input property reflection"]').value = event.target.value;
              });
              document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', event => {
-               document.getElementById('normalized-reflection').textContent = event.target.value;
+               const normalized = event.target.value;
+               document.getElementById('normalized-reflection').textContent = normalized;
+               event.target.value = '';
                setTimeout(() => {
-                 document.getElementById('normalized-reflection-second').textContent = 'reflected:' + event.target.value;
-               }, 50);
+                 document.getElementById('normalized-reflection-second').textContent = 'reflected:' + normalized;
+               }, 350);
              });
              document.querySelector('input[aria-label="Mutable secret"]').addEventListener('input', event => {
                event.target.setAttribute('aria-label', event.target.value);
@@ -453,7 +455,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
 
   it("redacts only causally changed nodes after Chromium normalizes a single-line input", async () => {
     const source = "a\r\nb\r\n";
-    const browserValue = "ab";
+    const browserValue = "a b";
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
@@ -466,6 +468,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
     );
 
     expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(await session.withPage(async (page) => page.locator("#normalized-reflection").allTextContents()))
+      .toEqual([browserValue]);
+    expect(await session.withPage(async (page) =>
+      page.locator("#normalized-reflection-second").allTextContents()))
+      .toEqual([`reflected:${browserValue}`]);
     const after = await observer.capture(job);
     const serialized = JSON.stringify(after);
     const redacted = after.nodes.filter((node) => node.name === "[REDACTED]");
@@ -486,7 +494,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }
 
     expect(serialized).not.toContain(source);
-    expect(serialized).not.toContain("reflected:ab");
+    expect(serialized).not.toContain(`reflected:${browserValue}`);
     expect(redacted).toHaveLength(3);
     expect(redacted).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: "[REDACTED]", text: "[REDACTED]" }),
@@ -497,7 +505,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(session.sensitiveTargets().map((sensitive) => sensitive.nodeId).sort())
       .toEqual(redacted.map((node) => node.id).sort());
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
-    expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
+    expect(artifactGraph.nodes.some((node) => node.text === "ab")).toBe(true);
     const image = decodePng(screenshot.bytes);
     expectSolidCrop(image, boxes.target!, [0, 0, 0, 255]);
     expectSolidCrop(image, boxes.firstReflection!, [0, 0, 0, 255]);
@@ -782,13 +790,84 @@ describe("Playwright resolve + execute against real Chromium", () => {
       });
     }));
 
-    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-      code: "SensitiveEvidenceUnproven",
-    });
-    await expect(observer.capture(job)).rejects.toMatchObject({
-      code: "SensitiveEvidenceUnproven",
-    });
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture(job)).resolves.toMatchObject({ graphId: expect.any(String) });
   });
+
+  it.each([
+    ["input", "Email", "ambiguous-input-secret"],
+    ["select", "Country", "private-country-code"],
+  ] as const)(
+    "fails evidence closed when an unrelated node concurrently changes to the same %s value",
+    async (kind, targetName, secret) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued(kind, nodeNamed(before, targetName).id, `customer.ambiguous-${kind}`),
+        before,
+      );
+
+      expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+      await session.withPage(async (page) => page.evaluate((value) => {
+        const state = globalThis as unknown as {
+          document: { querySelector(selector: string): { textContent: string | null } | null };
+        };
+        const unrelated = state.document.querySelector("[data-unrelated-region]");
+        if (unrelated !== null) unrelated.textContent = value;
+      }, secret));
+
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+      expect(() => session.artifactsFor(before.graphId)).toThrowError(
+        expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+      );
+    },
+  );
+
+  it.each(["input", "select"] as const)(
+    "fails bounded observation before materializing hostile oversized %s text",
+    async (kind) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const secret = kind === "input" ? "oversized-input-secret" : "private-country-code";
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued(kind, nodeNamed(before, kind === "input" ? "Email" : "Country").id, `customer.large-${kind}`),
+        before,
+      );
+      expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+      await session.withPage(async (page) => page.evaluate(() => {
+        interface TestElement {
+          setAttribute(name: string, value: string): void;
+          textContent: string | null;
+        }
+        const state = globalThis as unknown as {
+          document: {
+            body: { append(element: TestElement): void };
+            createElement(tag: string): TestElement;
+          };
+        };
+        const hostile = state.document.createElement("p");
+        hostile.setAttribute("data-qualigence-observe", "");
+        hostile.textContent = "x".repeat(64 * 1024 + 1);
+        state.document.body.append(hostile);
+      }));
+
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
 
   it("keeps the exact acted element redacted when its accessible identity changes", async () => {
     const source = "a\r\nb\r\n";

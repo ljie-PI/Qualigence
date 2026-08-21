@@ -32,8 +32,7 @@ async function bindPrivateTarget(
   target: object,
   nodeId = "n-0-abcd1234",
 ): Promise<void> {
-  session.beginSensitiveActionTracking = vi.fn(async () => ({} as never));
-  session.finishSensitiveActionTracking = vi.fn(async () => undefined);
+  session.beginSensitiveActionTracking = vi.fn(async () => undefined);
   const handle = {
     ...target,
     evaluate: async () => true,

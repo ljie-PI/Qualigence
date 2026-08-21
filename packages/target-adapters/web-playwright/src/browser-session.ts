@@ -97,7 +97,9 @@ export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
 export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
 const MAXIMUM_SENSITIVE_ACTION_MUTATIONS = 128;
 const MAXIMUM_SENSITIVE_ACTION_CANDIDATES = 512;
-const MAXIMUM_SENSITIVE_ACTION_SETTLE_MS = 250;
+export const MAXIMUM_OBSERVATION_CANDIDATES = 512;
+export const MAXIMUM_OBSERVATION_NODE_BYTES = 64 * 1024;
+export const MAXIMUM_OBSERVATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const SENSITIVE_ACTION_CANDIDATE_SELECTOR =
   "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
 const SENSITIVE_ACTION_ATTRIBUTES = [
@@ -122,11 +124,20 @@ interface SensitiveActionCandidateSnapshot {
   readonly properties: SensitiveActionPropertySnapshot;
 }
 
+interface SensitiveActionMutationRecord {
+  readonly record: MutationRecord;
+  readonly causal: boolean;
+}
+
 interface SensitiveActionMutationTracker {
   readonly target: Element;
+  readonly forms: readonly string[];
   readonly candidates: readonly SensitiveActionCandidateSnapshot[];
-  readonly records: MutationRecord[];
+  readonly records: SensitiveActionMutationRecord[];
+  readonly causalElements: Element[];
   readonly observer: MutationObserver;
+  readonly restore: () => boolean;
+  preparedElements: readonly Element[] | undefined;
   overflow: boolean;
   observerError: boolean;
 }
@@ -145,6 +156,7 @@ export class PlaywrightBrowserSession {
   private readonly privateActionTargets = new Map<string, PrivateActionTarget>();
   private privateTargetOrdinal = 0;
   private sensitiveEvidenceUnproven = false;
+  private sensitiveActionTracker: JSHandle<SensitiveActionMutationTracker> | undefined;
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -312,23 +324,30 @@ export class PlaywrightBrowserSession {
 
   async beginSensitiveActionTracking(
     target: ElementHandle<Element>,
-  ): Promise<JSHandle<SensitiveActionMutationTracker>> {
+    kind: "input" | "select",
+    value: string,
+  ): Promise<void> {
+    if (this.sensitiveActionTracker !== undefined) {
+      throw this.sensitiveEvidenceFailure(
+        "The previous sensitive action has not reached evidence capture.",
+      );
+    }
     try {
-      return await target.evaluateHandle((element, limits) => {
+      const forms = await this.normalizeSensitiveValue(target, kind, value);
+      this.sensitiveActionTracker = await target.evaluateHandle((element, input) => {
+        const limits = input.limits;
         if (!element.isConnected) {
           throw new Error("target-disconnected");
         }
-        const elements = Array.from(
-          element.ownerDocument.querySelectorAll(limits.candidateSelector),
-        );
-        if (elements.length > limits.maximumCandidates) {
-          throw new Error("candidate-overflow");
-        }
-        const snapshot = (candidate: Element): SensitiveActionPropertySnapshot => {
+        const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
+        const snapshot = (candidate: Element): {
+          readonly properties: SensitiveActionPropertySnapshot;
+          readonly bytes: number;
+        } => {
           const selectedOption = candidate instanceof HTMLSelectElement
             ? candidate.selectedOptions.item(0)
             : null;
-          return {
+          const properties: SensitiveActionPropertySnapshot = {
             inputValue: candidate instanceof HTMLInputElement ||
                 candidate instanceof HTMLTextAreaElement
               ? candidate.value
@@ -338,30 +357,85 @@ export class PlaywrightBrowserSession {
             textContent: candidate.textContent,
             attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
           };
+          let bytes = 0;
+          for (const property of [
+            properties.inputValue,
+            properties.selectValue,
+            properties.selectedOptionText,
+            properties.textContent,
+            ...properties.attributes,
+          ]) {
+            if (property === null) continue;
+            const propertyBytes = byteLength(property);
+            if (propertyBytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+            bytes += propertyBytes;
+            if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+          }
+          return { properties, bytes };
         };
-        const records: MutationRecord[] = [];
+
+        const forms = input.forms;
+
+        const boundedCandidates = (): readonly Element[] => {
+          const found: Element[] = [];
+          const walker = element.ownerDocument.createTreeWalker(
+            element.ownerDocument,
+            NodeFilter.SHOW_ELEMENT,
+            {
+              acceptNode(node) {
+                return node instanceof Element && node.matches(limits.candidateSelector)
+                  ? NodeFilter.FILTER_ACCEPT
+                  : NodeFilter.FILTER_SKIP;
+              },
+            },
+          );
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if (!(node instanceof Element)) throw new Error("candidate-unprovable");
+            found.push(node);
+            if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
+          }
+          return found;
+        };
+        const candidateNodes = boundedCandidates();
+        const candidates: SensitiveActionCandidateSnapshot[] = [];
+        let snapshotBytes = 0;
+        for (let index = 0; index < candidateNodes.length; index += 1) {
+          const candidate = candidateNodes[index];
+          if (candidate === undefined) throw new Error("candidate-unprovable");
+          const captured = snapshot(candidate);
+          snapshotBytes += captured.bytes;
+          if (snapshotBytes > limits.maximumSnapshotBytes) throw new Error("snapshot-byte-overflow");
+          candidates.push({ element: candidate, properties: captured.properties });
+        }
+
+        const records: SensitiveActionMutationRecord[] = [];
+        const causalElements: Element[] = [];
         const tracker = {
           target: element,
-          candidates: elements.map((candidate) => ({
-            element: candidate,
-            properties: snapshot(candidate),
-          })),
+          forms,
+          candidates,
           records,
+          causalElements,
           overflow: false,
           observerError: false,
-        } as Omit<SensitiveActionMutationTracker, "observer"> & {
+          preparedElements: undefined,
+        } as Omit<SensitiveActionMutationTracker, "observer" | "restore"> & {
           observer?: MutationObserver;
+          restore?: () => boolean;
         };
-        const observer = new MutationObserver((mutations) => {
+        const appendRecords = (mutations: readonly MutationRecord[], causal: boolean): void => {
           try {
             if (records.length + mutations.length > limits.maximumMutations) {
               tracker.overflow = true;
               return;
             }
-            records.push(...mutations);
+            for (const record of mutations) records.push({ record, causal });
           } catch {
             tracker.observerError = true;
           }
+        };
+        const observer = new MutationObserver((mutations) => {
+          appendRecords(mutations, false);
         });
         tracker.observer = observer;
         observer.observe(element.ownerDocument, {
@@ -370,206 +444,525 @@ export class PlaywrightBrowserSession {
           childList: true,
           subtree: true,
         });
+
+        const values = (properties: SensitiveActionPropertySnapshot): readonly (string | null)[] => [
+          properties.inputValue,
+          properties.selectValue,
+          properties.selectedOptionText,
+          properties.textContent,
+          ...properties.attributes,
+        ];
+        const containsForm = (property: string | null): boolean =>
+          property !== null && forms.some((form) => property.includes(form));
+        const capture = (): readonly SensitiveActionCandidateSnapshot[] => {
+          const nodes = boundedCandidates();
+          const captured: SensitiveActionCandidateSnapshot[] = [];
+          let bytes = 0;
+          for (let index = 0; index < nodes.length; index += 1) {
+            const candidate = nodes[index];
+            if (candidate === undefined) throw new Error("candidate-unprovable");
+            const item = snapshot(candidate);
+            bytes += item.bytes;
+            if (bytes > limits.maximumSnapshotBytes) throw new Error("snapshot-byte-overflow");
+            captured.push({ element: candidate, properties: item.properties });
+          }
+          return captured;
+        };
+        const finishCausalScope = (before: readonly SensitiveActionCandidateSnapshot[]): void => {
+          try {
+            appendRecords(observer.takeRecords(), true);
+            const after = capture();
+            const totalCandidates = before.length + after.filter((candidate) =>
+              !before.some((prior) => prior.element === candidate.element)).length;
+            if (totalCandidates > limits.maximumCandidates) {
+              tracker.overflow = true;
+              return;
+            }
+            for (const candidate of after) {
+              const prior = before.find((item) => item.element === candidate.element);
+              const priorValues = prior === undefined ? [] : values(prior.properties);
+              if (values(candidate.properties).some((property, index) =>
+                property !== priorValues[index] && containsForm(property)) &&
+                  !causalElements.includes(candidate.element)) {
+                if (causalElements.length >= limits.maximumTargets) {
+                  tracker.overflow = true;
+                  return;
+                }
+                causalElements.push(candidate.element);
+              }
+            }
+          } catch {
+            tracker.observerError = true;
+          }
+        };
+
+        const eventType = input.kind === "select" ? "change" : "input";
+        let dispatchSnapshot: readonly SensitiveActionCandidateSnapshot[] | undefined;
+        let inCausalScope = false;
+        const originalSetTimeout = window.setTimeout;
+        const originalQueueMicrotask = window.queueMicrotask;
+        const beginDispatch = (): void => {
+          try {
+            dispatchSnapshot = capture();
+            inCausalScope = true;
+          } catch {
+            tracker.observerError = true;
+          }
+        };
+        const endDispatch = (): void => {
+          if (dispatchSnapshot === undefined) return;
+          const before = dispatchSnapshot;
+          dispatchSnapshot = undefined;
+          inCausalScope = false;
+          finishCausalScope(before);
+        };
+        window.addEventListener(eventType, beginDispatch, true);
+        window.addEventListener(eventType, endDispatch, false);
+
+        let callbackDepth = 0;
+        const runCausal = (callback: () => void): void => {
+          let before: readonly SensitiveActionCandidateSnapshot[];
+          try {
+            before = capture();
+          } catch {
+            tracker.observerError = true;
+            callback();
+            return;
+          }
+          callbackDepth += 1;
+          try {
+            callback();
+          } finally {
+            callbackDepth -= 1;
+            finishCausalScope(before);
+          }
+        };
+        const wrappedSetTimeout = ((
+          handler: TimerHandler,
+          timeout?: number,
+          ...args: unknown[]
+        ): number => {
+          if (typeof handler !== "function") {
+            tracker.observerError = true;
+            return Number(originalSetTimeout.call(window, () => undefined, timeout));
+          }
+          if (!inCausalScope && callbackDepth === 0) {
+            return Number(originalSetTimeout.call(window, () => handler(...args), timeout));
+          }
+          return Number(originalSetTimeout.call(window, () => {
+            runCausal(() => handler(...args));
+          }, timeout));
+        }) as typeof window.setTimeout;
+        const wrappedQueueMicrotask = (callback: VoidFunction): void => {
+          if (!inCausalScope && callbackDepth === 0) {
+            originalQueueMicrotask.call(window, callback);
+          } else {
+            originalQueueMicrotask.call(window, () => runCausal(callback));
+          }
+        };
+        window.setTimeout = wrappedSetTimeout;
+        window.queueMicrotask = wrappedQueueMicrotask;
+        tracker.restore = (): boolean => {
+          window.removeEventListener(eventType, beginDispatch, true);
+          window.removeEventListener(eventType, endDispatch, false);
+          const intact = window.setTimeout === wrappedSetTimeout &&
+            window.queueMicrotask === wrappedQueueMicrotask;
+          if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
+          if (window.queueMicrotask === wrappedQueueMicrotask) {
+            window.queueMicrotask = originalQueueMicrotask;
+          }
+          observer.disconnect();
+          return intact;
+        };
         return tracker as SensitiveActionMutationTracker;
       }, {
-        maximumCandidates: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
-        candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
-        attributes: SENSITIVE_ACTION_ATTRIBUTES,
-        maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
+        kind,
+        forms,
+        limits: {
+          maximumCandidates: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
+          maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
+          maximumTargets: MAXIMUM_SENSITIVE_ACTION_TARGETS,
+          maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
+          maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+          candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
+          attributes: SENSITIVE_ACTION_ATTRIBUTES,
+        },
       });
     } catch {
+      this.sensitiveActionTracker = undefined;
       throw this.sensitiveEvidenceFailure(
-        "Sensitive action provenance tracking could not be installed.",
+        "The browser-normalized sensitive value and bounded tracker could not be proven.",
       );
     }
   }
 
-  async finishSensitiveActionTracking(
-    tracker: JSHandle<SensitiveActionMutationTracker>,
+  private async normalizeSensitiveValue(
     target: ElementHandle<Element>,
-    browserForms: readonly string[],
-    remainingActionTimeoutMs: number,
-  ): Promise<void> {
-    const settleMs = Math.min(
-      MAXIMUM_SENSITIVE_ACTION_SETTLE_MS,
-      Math.max(0, remainingActionTimeoutMs),
-    );
-    let cleanupFailed = false;
-    try {
-      if (settleMs > 0) {
-        await this.page?.waitForTimeout(settleMs);
+    kind: "input" | "select",
+    value: string,
+  ): Promise<readonly string[]> {
+    if (this.context === undefined) throw new Error("browser-context-unavailable");
+    const control = await target.evaluate((element, actionKind) => {
+      if (actionKind === "select" && element instanceof HTMLSelectElement) {
+        return {
+          tag: "select" as const,
+          options: [...element.options].map((option) => ({
+            value: option.value,
+            label: option.label,
+            text: option.textContent ?? "",
+          })),
+        };
       }
-      const result = await tracker.evaluateHandle((state, evidence) => {
+      if (actionKind === "input" && element instanceof HTMLInputElement) {
+        return { tag: "input" as const, type: element.type };
+      }
+      if (actionKind === "input" && element instanceof HTMLTextAreaElement) {
+        return { tag: "textarea" as const };
+      }
+      throw new Error("normalization-target-unprovable");
+    }, kind);
+    if (control.tag === "select" && control.options.length > MAXIMUM_SENSITIVE_ACTION_CANDIDATES) {
+      throw new Error("normalization-option-overflow");
+    }
+
+    const normalizationPage = await this.context.newPage();
+    try {
+      await normalizationPage.setContent("<!doctype html><html><body></body></html>");
+      const handle = await normalizationPage.evaluateHandle((descriptor) => {
+        let element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+        if (descriptor.tag === "select") {
+          element = document.createElement("select");
+          for (const source of descriptor.options) {
+            const option = document.createElement("option");
+            option.value = source.value;
+            option.label = source.label;
+            option.textContent = source.text;
+            element.append(option);
+          }
+        } else if (descriptor.tag === "textarea") {
+          element = document.createElement("textarea");
+        } else {
+          element = document.createElement("input");
+          element.type = descriptor.type;
+        }
+        document.body.append(element);
+        return element;
+      }, control);
+      const element = handle.asElement();
+      if (element === null) throw new Error("normalization-control-unprovable");
+      try {
+        if (kind === "select") await element.selectOption(value);
+        else await element.fill(value);
+        const normalized = await normalizationPage.evaluate((input): string[] => {
+          const candidate = input.candidate;
+          const actionKind = input.actionKind;
+          if (actionKind === "select" && candidate instanceof HTMLSelectElement) {
+            const selected = candidate.selectedOptions.item(0);
+            if (selected === null) throw new Error("normalized-selection-unprovable");
+            return [selected.value, selected.label, selected.textContent ?? ""];
+          }
+          if (actionKind === "input" &&
+              (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement)) {
+            return [candidate.value];
+          }
+          throw new Error("normalized-value-unprovable");
+        }, { candidate: element, actionKind: kind });
+        const forms = [...new Set(normalized.filter((form) => form !== ""))];
+        let bytes = 0;
+        for (const form of forms) {
+          const formBytes = new TextEncoder().encode(form).byteLength;
+          if (formBytes > MAXIMUM_OBSERVATION_NODE_BYTES) {
+            throw new Error("normalized-form-overflow");
+          }
+          bytes += formBytes;
+        }
+        if (bytes > MAXIMUM_OBSERVATION_SNAPSHOT_BYTES) {
+          throw new Error("normalized-form-overflow");
+        }
+        return forms;
+      } finally {
+        await element.dispose();
+      }
+    } finally {
+      await normalizationPage.close();
+    }
+  }
+
+  async prepareSensitiveEvidenceCapture(): Promise<void> {
+    const tracker = this.sensitiveActionTracker;
+    if (tracker === undefined) return;
+    const handles = await this.reconcileSensitiveActionTracking(tracker, false);
+    try {
+      await this.retainSensitiveElements(handles);
+    } catch {
+      throw this.sensitiveEvidenceFailure("Sensitive reflected targets could not be retained.");
+    }
+  }
+
+  async completeSensitiveEvidenceCapture(): Promise<void> {
+    const tracker = this.sensitiveActionTracker;
+    if (tracker === undefined) return;
+    await this.reconcileSensitiveActionTracking(tracker, true);
+    await this.disposeSensitiveActionTracker(tracker);
+  }
+
+  async failIfSensitiveTrackingOverflowed(): Promise<void> {
+    const tracker = this.sensitiveActionTracker;
+    if (tracker === undefined) return;
+    const invalid = await tracker.evaluate((state) => state.overflow || state.observerError)
+      .catch(() => true);
+    if (invalid) {
+      throw this.sensitiveEvidenceFailure(
+        "Sensitive action provenance tracking exceeded its bounds.",
+      );
+    }
+  }
+
+  async abandonSensitiveActionTracking(): Promise<void> {
+    const tracker = this.sensitiveActionTracker;
+    if (tracker !== undefined) await this.disposeSensitiveActionTracker(tracker, true);
+  }
+
+  private async reconcileSensitiveActionTracking(
+    tracker: JSHandle<SensitiveActionMutationTracker>,
+    final: boolean,
+  ): Promise<readonly ElementHandle<Element>[]> {
+    let result: JSHandle<{ readonly reason: string | undefined; readonly elements: readonly Element[] }> |
+      undefined;
+    try {
+      result = await tracker.evaluateHandle((state, limits) => {
         const fail = (reason: string) => ({ reason, elements: [] as Element[] });
         try {
+          const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
           const pending = state.observer.takeRecords();
-          state.observer.disconnect();
-          if (state.records.length + pending.length > evidence.maximumMutations) {
+          if (state.records.length + pending.length > limits.maximumMutations) {
             state.overflow = true;
           } else {
-            state.records.push(...pending);
+            for (const record of pending) state.records.push({ record, causal: false });
           }
           if (state.observerError) return fail("observer-error");
-          if (state.overflow) return fail("mutation-overflow");
-          if (state.target !== evidence.target || !state.target.isConnected) {
-            return fail("target-replaced");
-          }
+          if (state.overflow) return fail("tracker-overflow");
+          if (!state.target.isConnected) return fail("target-replaced");
 
-          const currentCandidates = Array.from(
-            state.target.ownerDocument.querySelectorAll(evidence.candidateSelector),
-          );
-          if (currentCandidates.length > evidence.maximumCandidates) {
-            return fail("candidate-overflow");
-          }
-          if (currentCandidates.length !== state.candidates.length ||
-              currentCandidates.some((candidate) =>
-                !state.candidates.some((before) => before.element === candidate))) {
-            return fail("candidate-ambiguity");
-          }
-
-          const forms = [...new Set(evidence.forms.filter((form) => form !== ""))];
-          const containsSensitiveForm = (value: string | null): boolean =>
-            value !== null && forms.some((form) => value.includes(form));
-          const elements: Element[] = [];
-          const add = (element: Element | null): boolean => {
-            if (element === null || !element.isConnected ||
-                element.ownerDocument !== state.target.ownerDocument) {
-              return false;
-            }
-            if (!elements.includes(element)) elements.push(element);
-            return true;
-          };
-          const snapshot = (candidate: Element): SensitiveActionPropertySnapshot => {
+          const snapshot = (candidate: Element): {
+            readonly properties: SensitiveActionPropertySnapshot;
+            readonly bytes: number;
+          } => {
             const selectedOption = candidate instanceof HTMLSelectElement
               ? candidate.selectedOptions.item(0)
               : null;
-            return {
+            const properties: SensitiveActionPropertySnapshot = {
               inputValue: candidate instanceof HTMLInputElement ||
-                  candidate instanceof HTMLTextAreaElement
-                ? candidate.value
-                : null,
+                  candidate instanceof HTMLTextAreaElement ? candidate.value : null,
               selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
               selectedOptionText: selectedOption?.text ?? null,
               textContent: candidate.textContent,
-              attributes: evidence.attributes.map((name) => candidate.getAttribute(name)),
+              attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
             };
+            let bytes = 0;
+            for (const property of [
+              properties.inputValue,
+              properties.selectValue,
+              properties.selectedOptionText,
+              properties.textContent,
+              ...properties.attributes,
+            ]) {
+              if (property === null) continue;
+              const propertyBytes = byteLength(property);
+              if (propertyBytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+              bytes += propertyBytes;
+              if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
+            }
+            return { properties, bytes };
           };
+          const values = (properties: SensitiveActionPropertySnapshot): readonly (string | null)[] => [
+            properties.inputValue,
+            properties.selectValue,
+            properties.selectedOptionText,
+            properties.textContent,
+            ...properties.attributes,
+          ];
+          const containsForm = (property: string | null): boolean =>
+            property !== null && state.forms.some((form) => property.includes(form));
+          const nodes: Element[] = [];
+          const walker = state.target.ownerDocument.createTreeWalker(
+            state.target.ownerDocument,
+            NodeFilter.SHOW_ELEMENT,
+            {
+              acceptNode(node) {
+                return node instanceof Element && node.matches(limits.candidateSelector)
+                  ? NodeFilter.FILTER_ACCEPT
+                  : NodeFilter.FILTER_SKIP;
+              },
+            },
+          );
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if (!(node instanceof Element)) return fail("candidate-unprovable");
+            nodes.push(node);
+            if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
+          }
+          const current: SensitiveActionCandidateSnapshot[] = [];
+          let snapshotBytes = 0;
+          for (let index = 0; index < nodes.length; index += 1) {
+            const candidate = nodes[index];
+            if (candidate === undefined) return fail("candidate-unprovable");
+            const captured = snapshot(candidate);
+            snapshotBytes += captured.bytes;
+            if (snapshotBytes > limits.maximumSnapshotBytes) return fail("snapshot-byte-overflow");
+            current.push({ element: candidate, properties: captured.properties });
+          }
+          const totalCandidates = state.candidates.length + current.filter((candidate) =>
+            !state.candidates.some((before) => before.element === candidate.element)).length;
+          if (totalCandidates > limits.maximumCandidates) return fail("total-candidate-overflow");
 
-          for (const mutation of state.records) {
+          const elements: Element[] = [];
+          const causallyChanged = (candidate: Element): boolean =>
+            candidate === state.target || state.causalElements.includes(candidate) ||
+            candidate.hasAttribute(limits.privateTargetAttribute);
+          const add = (candidate: Element | null): boolean => {
+            if (candidate === null || !candidate.isConnected ||
+                candidate.ownerDocument !== state.target.ownerDocument) return false;
+            if (!elements.includes(candidate)) elements.push(candidate);
+            return elements.length <= limits.maximumTargets;
+          };
+          for (const candidate of current) {
+            const before = state.candidates.find((item) => item.element === candidate.element);
+            const beforeValues = before === undefined ? [] : values(before.properties);
+            const changedToForm = values(candidate.properties).some((property, index) =>
+              property !== beforeValues[index] && containsForm(property));
+            if (!changedToForm) continue;
+            if (!causallyChanged(candidate.element)) {
+              return fail("same-form-causality-ambiguous");
+            }
+            if (!add(candidate.element)) return fail("sensitive-target-overflow");
+          }
+
+          let inspectedBytes = snapshotBytes;
+          const inspect = (
+            property: string | null,
+            candidate: Element | null,
+            causal: boolean,
+            kind: MutationRecord["type"],
+          ): string | undefined => {
+            if (property === null) return undefined;
+            const bytes = byteLength(property);
+            if (bytes > limits.maximumNodeBytes) return "node-byte-overflow";
+            inspectedBytes += bytes;
+            if (inspectedBytes > limits.maximumSnapshotBytes) return "snapshot-byte-overflow";
+            if (!containsForm(property)) return undefined;
+            if (kind === "childList" && candidate !== null && causallyChanged(candidate)) {
+              return add(candidate) ? undefined : "sensitive-target-overflow";
+            }
+            if (candidate === null || !causallyChanged(candidate) ||
+                (!causal && !candidate.hasAttribute(limits.privateTargetAttribute))) {
+              return "same-form-causality-ambiguous";
+            }
+            return add(candidate) ? undefined : "sensitive-target-overflow";
+          };
+          for (const tracked of state.records) {
+            const mutation = tracked.record;
             if (mutation.type === "attributes") {
               if (!(mutation.target instanceof Element) || mutation.attributeName === null) {
-                return fail("unprovable-attribute-target");
+                return fail("attribute-target-unprovable");
               }
-              if (containsSensitiveForm(mutation.target.getAttribute(mutation.attributeName)) &&
-                  !add(mutation.target)) {
-                return fail("disconnected-attribute-target");
+              const reason = inspect(
+                mutation.target.getAttribute(mutation.attributeName),
+                mutation.target,
+                tracked.causal,
+                mutation.type,
+              );
+              if (reason !== undefined) return fail(reason);
+            } else if (mutation.type === "characterData") {
+              if (!(mutation.target instanceof CharacterData)) return fail("text-target-unprovable");
+              const reason = inspect(
+                mutation.target.data,
+                mutation.target.parentElement,
+                tracked.causal,
+                mutation.type,
+              );
+              if (reason !== undefined) return fail(reason);
+            } else if (mutation.type === "childList") {
+              if (mutation.addedNodes.length > limits.maximumCandidates ||
+                  mutation.removedNodes.length > limits.maximumCandidates) {
+                return fail("mutation-node-overflow");
               }
-              continue;
-            }
-            if (mutation.type === "characterData") {
-              if (!(mutation.target instanceof CharacterData)) {
-                return fail("unprovable-text-target");
+              for (const node of mutation.addedNodes) {
+                const candidate = node instanceof Element ? node : node.parentElement;
+                const reason = inspect(node.textContent, candidate, tracked.causal, mutation.type);
+                if (reason !== undefined) return fail(reason);
               }
-              if (containsSensitiveForm(mutation.target.data) &&
-                  !add(mutation.target.parentElement)) {
-                return fail("disconnected-text-target");
-              }
-              continue;
-            }
-            if (mutation.type !== "childList") {
-              return fail("unknown-mutation-type");
-            }
-
-            for (const node of mutation.addedNodes) {
-              if (node instanceof CharacterData && containsSensitiveForm(node.data)) {
-                if (!add(node.parentElement)) return fail("disconnected-added-text");
-              } else if (node instanceof Element && containsSensitiveForm(node.textContent)) {
-                if (!add(node)) return fail("disconnected-added-element");
-              }
+            } else {
+              return fail("mutation-type-unprovable");
             }
           }
 
-          for (const candidate of state.candidates) {
-            const after = snapshot(candidate.element);
-            const beforeValues = [
-              candidate.properties.inputValue,
-              candidate.properties.selectValue,
-              candidate.properties.selectedOptionText,
-              candidate.properties.textContent,
-              ...candidate.properties.attributes,
-            ];
-            const afterValues = [
-              after.inputValue,
-              after.selectValue,
-              after.selectedOptionText,
-              after.textContent,
-              ...after.attributes,
-            ];
-            if (afterValues.some((value, index) =>
-              value !== beforeValues[index] && containsSensitiveForm(value)) &&
-                !add(candidate.element)) {
-              return fail("disconnected-property-target");
+          if (limits.final) {
+            if (state.preparedElements === undefined ||
+                state.preparedElements.length !== elements.length ||
+                state.preparedElements.some((candidate) => !elements.includes(candidate))) {
+              return fail("capture-changed-during-evidence");
             }
+          } else {
+            state.preparedElements = [...elements];
           }
           return { reason: undefined, elements };
         } catch {
-          try {
-            state.observer.disconnect();
-          } catch {
-            // The stable failure below prevents any evidence capture.
-          }
-          return fail("observer-evaluation-error");
+          return fail("tracker-evaluation-error");
         }
       }, {
-        target,
-        forms: browserForms,
+        final,
         maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
         maximumCandidates: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
+        maximumTargets: MAXIMUM_SENSITIVE_ACTION_TARGETS,
+        maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
+        maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
         candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
         attributes: SENSITIVE_ACTION_ATTRIBUTES,
+        privateTargetAttribute: PRIVATE_TARGET_ATTRIBUTE,
       });
+      const summary = await result.evaluate((value) => ({
+        reason: value.reason,
+        count: value.elements.length,
+      }));
+      if (summary.reason !== undefined) throw new Error(summary.reason);
+      if (final) return [];
+      const elements = await result.getProperty("elements");
       try {
-        const summary = await result.evaluate((value) => ({
-          reason: value.reason,
-          count: value.elements.length,
-        }));
-        if (summary.reason !== undefined) {
-          throw new Error(summary.reason);
+        const properties = await elements.getProperties();
+        const handles: ElementHandle<Element>[] = [];
+        for (let index = 0; index < summary.count; index += 1) {
+          const handle = properties.get(String(index))?.asElement();
+          if (handle === null || handle === undefined) throw new Error("element-unprovable");
+          handles.push(handle);
         }
-        const elements = await result.getProperty("elements");
-        try {
-          const properties = await elements.getProperties();
-          const handles: ElementHandle<Element>[] = [];
-          for (let index = 0; index < summary.count; index += 1) {
-            const property = properties.get(String(index));
-            const element = property?.asElement();
-            if (element === null || element === undefined) {
-              throw new Error("unprovable-reflected-element");
-            }
-            handles.push(element);
-          }
-          await this.retainSensitiveElements(handles);
-        } finally {
-          await elements.dispose();
-        }
+        return handles;
       } finally {
-        await result.dispose();
+        await elements.dispose();
       }
-    } catch {
+    } catch (error) {
       throw this.sensitiveEvidenceFailure(
-        "Sensitive action provenance could not be bounded and proven.",
+        `Sensitive action provenance could not be bounded and proven: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     } finally {
-      await tracker.evaluate((state) => state.observer.disconnect()).catch(() => {
-        this.sensitiveEvidenceUnproven = true;
-        cleanupFailed = true;
-      });
-      await tracker.dispose().catch(() => {
-        this.sensitiveEvidenceUnproven = true;
-        cleanupFailed = true;
-      });
+      await result?.dispose().catch(() => { this.sensitiveEvidenceUnproven = true; });
     }
-    if (cleanupFailed) {
+  }
+
+  private async disposeSensitiveActionTracker(
+    tracker: JSHandle<SensitiveActionMutationTracker>,
+    suppressFailure = false,
+  ): Promise<void> {
+    let failed = false;
+    try {
+      if (!(await tracker.evaluate((state) => state.restore()))) failed = true;
+    } catch {
+      failed = true;
+    }
+    await tracker.dispose().catch(() => { failed = true; });
+    if (this.sensitiveActionTracker === tracker) this.sensitiveActionTracker = undefined;
+    if (failed && !suppressFailure) {
       throw this.sensitiveEvidenceFailure(
         "Sensitive action provenance tracking could not be removed.",
       );
@@ -812,6 +1205,7 @@ export class PlaywrightBrowserSession {
       ...[...this.sensitiveActionTargets.values()].map((target) => [target.token, target] as const),
     ]);
     if (this.page) {
+      await this.abandonSensitiveActionTracking().catch(record);
       for (const target of targets.values()) {
         if (target.markerInstalled) {
           await target.handle.evaluate((element, identity) => {
