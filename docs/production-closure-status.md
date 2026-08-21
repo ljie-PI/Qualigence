@@ -252,6 +252,7 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 component: complete
 production_wiring: present
 verification: passed; pending dedicated PR/merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -293,6 +294,8 @@ verification: passed; pending dedicated PR/merge
 - Round-2 focused non-E2E Gate passed 8 files / 62 tests with the same existing
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed;
   the new Chromium E2E was not run.
+- Post-review real Chromium acceptance passed 1 file / 1 test with production
+  Runner composition and complete persisted Trace/plaintext scanning.
 - Round-3 fixes bind production Model Agent decisions to exactly one immutable
   input/select Plan step. The model returns only `nodeId` and `reason`; Runner
   copies and validates the Plan-owned `valueRef`. Objective-only and one-step
