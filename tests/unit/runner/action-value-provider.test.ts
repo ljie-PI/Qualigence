@@ -60,6 +60,9 @@ describe("FileActionValueProvider", () => {
     ["a Windows device namespace", "\\\\.\\pipe\\qualigence-secret"],
     ["a Windows extended device namespace", "\\\\?\\C:\\secret.txt"],
     ["a reserved Windows device name", "values\\NUL.txt"],
+    ["a POSIX parent segment", "sub/../secret.txt"],
+    ["a Windows parent segment", "sub\\..\\secret.txt"],
+    ["a mixed-separator parent segment", "sub/..\\secret.txt"],
   ])("rejects %s before filesystem access", async (_name, filename) => {
     expect(() => validateActionValueFilename(filename)).toThrow();
     const root = await temporaryRoot();

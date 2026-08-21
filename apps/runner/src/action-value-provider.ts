@@ -27,7 +27,8 @@ export function validateActionValueFilename(filename: string): void {
     posix.isAbsolute(filename) ||
     win32.isAbsolute(filename) ||
     windowsRoot !== "" ||
-    filename.split(/[\\/]/u).some((part) => part.includes(":") || WINDOWS_DEVICE_NAME.test(part.replace(/[ .]+$/u, "")))
+    filename.split(/[\\/]/u).some((part) =>
+      part === ".." || part.includes(":") || WINDOWS_DEVICE_NAME.test(part.replace(/[ .]+$/u, "")))
   ) {
     throw new Error("Action value filenames must be portable relative paths.");
   }

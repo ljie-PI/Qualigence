@@ -59,6 +59,42 @@ describe("DeterministicRunnerPolicyGate", () => {
     await expect(riskGate.authorize(destructive, { job: job(), action: destructive })).resolves.toMatchObject({ status: "denied", reason: "RiskDenied" });
   });
 
+  it.each(["input", "select"] as const)(
+    "classifies Web %s as ExternalSideEffect before value-provider or executor effects",
+    async (kind) => {
+      const now = () => Date.parse("2026-08-18T00:00:30.000Z");
+      const actionBase = {
+        targetKind: "web" as const,
+        target: { nodeId: "field-1", selector: "field" },
+        graphId: "graph-1",
+        valueRef: "customer.value",
+      };
+      const action = kind === "input"
+        ? { ...actionBase, kind: "input" as const }
+        : { ...actionBase, kind: "select" as const };
+      let valueProviderCalls = 0;
+      let executorCalls = 0;
+      const attemptEffects = async (maximumRisk: "Normal" | "ExternalSideEffect") => {
+        const scopedPolicy = { ...policy, allowedActionKinds: [kind], maximumRisk };
+        const gate = new DeterministicRunnerPolicyGate(scopedPolicy, { now });
+        const decision = await gate.authorize(action as never, { job: job({ policy: scopedPolicy }), action: action as never });
+        if (decision.status === "allowed") {
+          valueProviderCalls += 1;
+          executorCalls += 1;
+        }
+        return decision;
+      };
+
+      await expect(attemptEffects("Normal")).resolves.toMatchObject({ status: "denied", reason: "RiskDenied" });
+      expect(valueProviderCalls).toBe(0);
+      expect(executorCalls).toBe(0);
+
+      await expect(attemptEffects("ExternalSideEffect")).resolves.toMatchObject({ status: "allowed" });
+      expect(valueProviderCalls).toBe(1);
+      expect(executorCalls).toBe(1);
+    },
+  );
+
   it("admits only a non-expired HTTP(S) target in its explicit policy origins", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });

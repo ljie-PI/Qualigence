@@ -9,6 +9,11 @@ one-action Plan step, injects only a healthy `ActionValueProvider`, and advertis
 input/select capability only when that complete path is available. Ticket 19
 retains the indexed multi-step Runtime.
 
+Ticket 18 formal-blocker scope amendment (2026-08-21) additionally includes
+`packages/runner-kernel/src/deterministic-policy-gate.ts` and
+`tests/unit/runner-kernel/deterministic-policy-gate.test.ts` for Web input/select
+risk classification and pre-side-effect policy-denial coverage only.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -312,6 +317,15 @@ verification: passed; pending dedicated PR/merge
   Jobs and plaintext absence from model requests, logs, submitted Trace,
   pre-ACK persisted spool events, and raw spool bytes. The dedicated PR and
   merge remain pending.
+- Formal-blocker fixes reject every literal `..` filename segment before path
+  normalization, including POSIX, Windows, and mixed separator variants. The
+  deterministic policy gate classifies Web input/select as
+  `ExternalSideEffect` before maximum-risk comparison: a `Normal` ceiling
+  denies before value-provider/executor effects, while an
+  `ExternalSideEffect` ceiling allows an otherwise permitted kind and origin.
+  Web click/scroll/navigation and Desktop semantics are unchanged.
+- The amended focused non-E2E Gate passed 10 files / 105 tests with 1 existing
+  Task 21 skip. No E2E was run; fresh exact-base review is required before E2E.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
