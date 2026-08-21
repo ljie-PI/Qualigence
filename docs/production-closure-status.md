@@ -47,7 +47,9 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: pending dedicated PR merge
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/72`
+remediation_ticket: `37`
 
 - Model output limits and provider usage are preserved through the
   provider, Gateway, Model Agent, and Runner Runtime seams. Gateway transient
@@ -106,6 +108,9 @@ verification: pending dedicated PR merge
   `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts tests/unit/runner/job-executor.test.ts tests/component/web-execution/local-run-composition-root.test.ts`.
   Final verification passed 11 files / 122 tests, plus root typecheck and diff
   check. No E2E or full suite was run.
+- Review round 5 left one Important finding: audit observer rejection or delay
+  can still prevent typed usage from reaching the budget or duplicate logical
+  reporting. Remediation Ticket 37 blocks merge.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
