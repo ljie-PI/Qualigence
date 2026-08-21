@@ -116,12 +116,44 @@ export class ModelGateway implements StructuredModelInvoker {
     output: StructuredOutputContract<T>,
   ): Promise<ValidatedModelResult<T>> {
     const startedAtMs = Date.now();
+    let result: ValidatedModelResult<T>;
     try {
-      const result = await this.runStructured(request, output);
+      result = await this.runStructured(request, output);
       request.signal?.throwIfAborted();
-      const resultUsage = result.usageState === undefined
-        ? result.usage
-        : usageFromState(result.usageState);
+    } catch (error) {
+      const invocationError = asInvocationError(error, request.signal);
+      const knownUsage = usageFromState(invocationError.usageState);
+      try {
+        await this.report(request, startedAtMs, {
+          status: "failed",
+          model: request.model,
+          errorCode: invocationError instanceof ModelGatewayAbortError
+            ? "Aborted"
+            : errorCodeOf(
+                invocationError instanceof ModelGatewayInvocationError
+                  ? invocationError.reason
+                  : invocationError,
+              ),
+          usageStatus: invocationError.usageState.status,
+          ...(knownUsage?.inputTokens === undefined ? {} : { inputTokens: knownUsage.inputTokens }),
+          ...(knownUsage?.outputTokens === undefined ? {} : { outputTokens: knownUsage.outputTokens }),
+          ...(knownUsage?.totalTokens === undefined ? {} : { totalTokens: knownUsage.totalTokens }),
+        });
+      } catch (reportError) {
+        if (reportError instanceof ProviderInvocationAborted || isAborted(request.signal)) {
+          throw new ModelGatewayAbortError(
+            request.signal?.reason ?? reportError,
+            invocationError.usageState,
+            invocationError.providerAttempted,
+          );
+        }
+      }
+      throw invocationError;
+    }
+
+    const resultUsageState = result.usageState ?? usageState(result.usage, result.usage === undefined);
+    const resultUsage = usageFromState(resultUsageState);
+    try {
       await this.report(request, startedAtMs, {
         status: "succeeded",
         model: result.model,
@@ -137,31 +169,15 @@ export class ModelGateway implements StructuredModelInvoker {
         ...(resultUsage?.totalTokens === undefined
           ? {}
           : { totalTokens: resultUsage.totalTokens }),
-        ...(result.usageState === undefined
-          ? {}
-          : { usageStatus: result.usageState.status }),
+        usageStatus: resultUsageState.status,
       });
-      return result;
-    } catch (error) {
-      const invocationError = asInvocationError(error, request.signal);
-      const knownUsage = usageFromState(invocationError.usageState);
-      await this.report(request, startedAtMs, {
-        status: "failed",
-        model: request.model,
-        errorCode: invocationError instanceof ModelGatewayAbortError
-          ? "Aborted"
-          : errorCodeOf(
-              invocationError instanceof ModelGatewayInvocationError
-                ? invocationError.reason
-                : invocationError,
-            ),
-        usageStatus: invocationError.usageState.status,
-        ...(knownUsage?.inputTokens === undefined ? {} : { inputTokens: knownUsage.inputTokens }),
-        ...(knownUsage?.outputTokens === undefined ? {} : { outputTokens: knownUsage.outputTokens }),
-        ...(knownUsage?.totalTokens === undefined ? {} : { totalTokens: knownUsage.totalTokens }),
-      });
-      throw invocationError;
+    } catch (reportError) {
+      if (reportError instanceof ProviderInvocationAborted || isAborted(request.signal)) {
+        throw new ModelGatewayAbortError(request.signal?.reason ?? reportError, resultUsageState, true);
+      }
+      throw new ModelGatewayInvocationError(reportError, resultUsageState, true);
     }
+    return result;
   }
 
   private async runStructured<T>(
@@ -393,13 +409,13 @@ export class ModelGateway implements StructuredModelInvoker {
       return;
     }
 
-    await observer.record({
+    await awaitWithAbort(observer.record({
       context: request.invocation,
       operation: request.operation,
       latencyMs: Math.max(0, Date.now() - startedAtMs),
       occurredAt: this.clock.now(),
       ...fields,
-    });
+    }), request.signal);
   }
 
   private assertVisualInputAllowed(

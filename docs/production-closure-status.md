@@ -47,7 +47,7 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: needs_info
+verification: pending dedicated remediation PR
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/72`
 remediation_ticket: `37`
 
@@ -108,9 +108,23 @@ remediation_ticket: `37`
   `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts tests/unit/runner/job-executor.test.ts tests/component/web-execution/local-run-composition-root.test.ts`.
   Final verification passed 11 files / 122 tests, plus root typecheck and diff
   check. No E2E or full suite was run.
-- Review round 5 left one Important finding: audit observer rejection or delay
-  can still prevent typed usage from reaching the budget or duplicate logical
-  reporting. Remediation Ticket 37 blocks merge.
+- Remediation Ticket 37 keeps reporting on the existing Gateway observer seam
+  but separates the typed invocation outcome from report settlement. A success
+  whose report rejects charges known usage once before propagating the report
+  failure; a failed invocation whose report rejects charges known usage once
+  and preserves the original model failure classification.
+- Exactly one logical report is submitted per invocation. Observer settlement
+  is bounded by the Runtime's existing abort signal and wall deadline, and the
+  retained settlement handler prevents a late observer rejection from becoming
+  unhandled after per-run budget state is cleared.
+- Ticket 37 RED reproduced all three round-5 failures in
+  `tests/unit/runner-components/model-agent.test.ts`: success plus observer
+  rejection lost usage, success plus observer hang exceeded the test deadline,
+  and failed invocation plus known usage was replaced by the observer error.
+  GREEN passed the Ticket 17 focused Gate: 11 files / 125 tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No full suite, E2E,
+  or review was run per the remediation request; the dedicated PR remains
+  pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
