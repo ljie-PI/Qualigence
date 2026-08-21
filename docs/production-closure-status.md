@@ -43,6 +43,7 @@ production_wiring: present
 verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/76`
 remediation_ticket: `38`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/77`
 remediation_status: pending dedicated remediation PR and coordinator review
 implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
 
@@ -72,6 +73,8 @@ formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pend
 - Final PR review found the product E2E was API-client-only rather than rendered
   Console and was not rerun after the final idempotency fix. Remediation Ticket
   38 blocks merge.
+- Remediation 38 rendered the real Console against the real API; final
+  post-review acceptance passed 2 files / 4 tests and review had no blockers.
 - Ticket 38 replaces that acceptance with the real React DOM Console router and
   visible Target, Test Plan, and Mission controls backed by the real Public API
   Server. The post-review rendered and schema-8 backup/restore acceptances are
