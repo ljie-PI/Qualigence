@@ -246,7 +246,7 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: pending review/E2E; pending dedicated PR
+verification: passed; pending dedicated PR/merge
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -306,6 +306,12 @@ verification: pending review/E2E; pending dedicated PR
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
   Chromium E2E remains deliberately not run pending a clean exact-base review;
   verification and the dedicated PR remain pending.
+- The fresh exact-base Standards and Spec review reported no Critical or
+  Important findings. The post-review production-path Chromium acceptance then
+  passed 1 file / 1 test with no skips, proving separate immutable input/select
+  Jobs and plaintext absence from model requests, logs, submitted Trace,
+  pre-ACK persisted spool events, and raw spool bytes. The dedicated PR and
+  merge remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
