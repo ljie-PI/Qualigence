@@ -10,6 +10,7 @@ export {
   TENANT_OWNED_TABLES,
   WORKER_ACCESSIBLE_TABLES,
   tenantOwnedTableNames,
+  tenantOwnedTableNamesThroughVersion,
   relationalTableNames,
 } from "./catalog.js";
 

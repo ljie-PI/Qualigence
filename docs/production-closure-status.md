@@ -50,6 +50,7 @@ production_wiring: present
 verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/71`
 remediation_ticket: `36`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/74`
 implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
@@ -108,6 +109,42 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 - No E2E was run. `tests/e2e/self-hosted/backup-restore.test.ts` is prepared but
   remains gated on a clean exact-base review. No pull request exists yet, and
   component completion is not final verification until the dedicated PR merges.
+- Remediation Ticket 36 now prepares that E2E from a real persisted PostgreSQL
+  schema 1 created through the production role and migration primitives. It
+  seeds source rows plus snapshot-visible Artifact manifests/object bytes,
+  invokes production `runMigrate`, asserts exact history `[1,2,3,4,5,6,7]`, and
+  restores the invocation/target-bound schema-1 backup into the wiped target for
+  exact row and object-byte comparison. Restore integrity validation now checks
+  only tenant tables released by the backup's recorded schema version.
+- Remediation GREEN (2026-08-21): the amended Compose render passed and the
+  Ticket 02 focused non-E2E Gate passed 10 files / 48 tests with zero failures
+  or skips. `corepack pnpm typecheck` and `git diff --check` passed. The E2E was
+  not run and evidence remains pending exact-base coordinator review, the
+  post-review E2E, and the dedicated PR.
+- Remediation review fixes (2026-08-21) remove the old-schema option from the
+  shared PostgreSQL fixture completely and keep schema-1 role/migration setup in
+  the authorized acceptance file. Independent literals now snapshot every
+  column of every seeded `execution_runs` and `artifact_manifests` row, plus
+  fixed object bytes, in stable order before migration, after production
+  `runMigrate` reaches sequential history `[1,2,3,4,5,6,7]`, and after clean
+  restore. The Compose render, focused Gate (10 files / 48 tests), typecheck,
+  and diff check pass; no E2E was run before fresh review.
+- The post-review E2E exposed a production migration defect: bounded
+  `migratePostgres({ targetVersion: 1, roles })` reapplied catalog-wide RLS and
+  grants after the step transactions and failed on future `prd_documents`.
+  The PostgreSQL runtime contract now proves a partial target applies policies
+  and grants only to version-1 tables and a subsequent forward upgrade applies
+  them to later tables. `migratePostgres` bounds its final idempotent RLS pass
+  to tables released through the target; `provisionPostgres` retains its
+  compatible duplicate full-schema pass.
+- Post-E2E fix verification (2026-08-21): the affected single Docker contract
+  test passed 1 test, the Compose render passed, the Ticket 02 focused Gate
+  passed 10 files / 49 tests with zero failures or skips, and
+  `corepack pnpm typecheck` plus `git diff --check` passed. The E2E was not
+  rerun after the code change; a fresh coordinator review is required first.
+- The fresh remediation review reported no blocking findings. The final real
+  schema-1 forward-upgrade/backup/restore E2E then passed 1 file / 3 tests with
+  PostgreSQL and all expected source rows, manifests, and object bytes.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

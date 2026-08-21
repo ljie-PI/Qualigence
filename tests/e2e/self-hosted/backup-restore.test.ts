@@ -1,31 +1,211 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
+import { Kysely, PostgresDialect } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   emptyBucket,
   getObjectBytes,
   putObjectBytes,
   runBackup,
+  runMigrate,
   runRestore,
   sha256Hex,
   type SelfHostedAdminConfig,
+  verifyBackupDirectory,
 } from "@qualigence/admin-cli";
 import {
+  createRuntimeRoles,
+  migratePostgres,
+  readSchemaVersion,
+  type PostgresConnectionConfig,
+} from "@qualigence/postgres-runtime";
+import {
   dockerAvailable,
+  startPostgres,
   startMinio,
   type StartedMinio,
 } from "../../helpers/docker-container.js";
-import {
-  executionRunRow,
-  setupPostgresFixture,
-  type PostgresFixture,
-} from "../../helpers/postgres-fixture.js";
+import type { PostgresFixture } from "../../helpers/postgres-fixture.js";
 import { dockerExecPgToolRunner } from "../../helpers/docker-pg-tool-runner.js";
 import pg from "pg";
 
-const { Client } = pg;
+const { Client, Pool } = pg;
 const BUCKET = "qualigence-artifacts";
+const OLD_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 7;
+const MIGRATION_INVOCATION_ID = "ticket-36-forward-upgrade";
+const SERVER_ROLE = "qualigence_server";
+const SERVER_PASSWORD = "server_pw";
+const WORKER_ROLE = "qualigence_worker";
+const WORKER_PASSWORD = "worker_pw";
+
+interface ExecutionRunSnapshot {
+  readonly tenant_id: string;
+  readonly run_id: string;
+  readonly job_id: string;
+  readonly target_kind: string;
+  readonly objective: string;
+  readonly status: string;
+  readonly next_sequence_number: number;
+  readonly created_at: string;
+  readonly completed_at: string | null;
+  readonly error_code: string | null;
+}
+
+interface ArtifactManifestSnapshot {
+  readonly tenant_id: string;
+  readonly artifact_id: string;
+  readonly run_id: string;
+  readonly kind: string;
+  readonly media_type: string;
+  readonly relative_path: string;
+  readonly sha256: string;
+  readonly size_bytes: number;
+  readonly created_at: string;
+}
+
+interface PersistenceSnapshot {
+  readonly executionRuns: readonly ExecutionRunSnapshot[];
+  readonly artifactManifests: readonly ArtifactManifestSnapshot[];
+  readonly objects: readonly { readonly key: string; readonly bytes: readonly number[] }[];
+}
+
+const SEEDED_EXECUTION_RUNS: readonly ExecutionRunSnapshot[] = [
+  {
+    tenant_id: "tenant-a",
+    run_id: "run-a-1",
+    job_id: "job-run-a-1",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+  {
+    tenant_id: "tenant-a",
+    run_id: "run-a-2",
+    job_id: "job-run-a-2",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+  {
+    tenant_id: "tenant-b",
+    run_id: "run-b-1",
+    job_id: "job-run-b-1",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+];
+
+const EXPECTED_EXECUTION_RUNS: readonly ExecutionRunSnapshot[] = [
+  {
+    tenant_id: "tenant-a",
+    run_id: "run-a-1",
+    job_id: "job-run-a-1",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+  {
+    tenant_id: "tenant-a",
+    run_id: "run-a-2",
+    job_id: "job-run-a-2",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+  {
+    tenant_id: "tenant-b",
+    run_id: "run-b-1",
+    job_id: "job-run-b-1",
+    target_kind: "web",
+    objective: "verify tenant isolation",
+    status: "running",
+    next_sequence_number: 0,
+    created_at: "2026-08-01T00:00:00.000Z",
+    completed_at: null,
+    error_code: null,
+  },
+];
+
+const EXPECTED_ARTIFACT_MANIFESTS: readonly ArtifactManifestSnapshot[] = [
+  {
+    tenant_id: "tenant-a",
+    artifact_id: "artifact-a-1",
+    run_id: "run-a-1",
+    kind: "observation",
+    media_type: "application/json",
+    relative_path: "tenant-a/project-a/observation-1.json",
+    sha256: "574b20a33611789b88e673519664d2be7daa2f0dae422552d92595d7cc0e936f",
+    size_bytes: 25,
+    created_at: "2026-08-01T00:00:00.000Z",
+  },
+  {
+    tenant_id: "tenant-a",
+    artifact_id: "artifact-a-2",
+    run_id: "run-a-2",
+    kind: "observation",
+    media_type: "application/json",
+    relative_path: "tenant-a/project-a/observation-2.json",
+    sha256: "41390c3b9392e5157732edad7f5af0016e6c6747da4db9823d8663621d8b38ce",
+    size_bytes: 24,
+    created_at: "2026-08-01T00:00:00.000Z",
+  },
+  {
+    tenant_id: "tenant-b",
+    artifact_id: "artifact-b-1",
+    run_id: "run-b-1",
+    kind: "observation",
+    media_type: "application/octet-stream",
+    relative_path: "tenant-b/project-b/observation-3.bin",
+    sha256: "694c11de6ccf1f4a4598805d2f56a9809554c52071492c2fc07ba17d827c2435",
+    size_bytes: 14,
+    created_at: "2026-08-01T00:00:00.000Z",
+  },
+];
+
+const EXPECTED_OBJECTS = [
+  {
+    key: "tenant-a/project-a/observation-1.json",
+    bytes: [
+      123, 34, 102, 105, 110, 100, 105, 110, 103, 34, 58, 34, 97, 108, 112, 104, 97, 34,
+      44, 34, 110, 34, 58, 49, 125,
+    ],
+  },
+  {
+    key: "tenant-a/project-a/observation-2.json",
+    bytes: [
+      123, 34, 102, 105, 110, 100, 105, 110, 103, 34, 58, 34, 98, 101, 116, 97, 34, 44,
+      34, 110, 34, 58, 50, 125,
+    ],
+  },
+  {
+    key: "tenant-b/project-b/observation-3.bin",
+    bytes: [0, 1, 2, 98, 105, 110, 97, 114, 121, 45, 105, 115, 104, 255],
+  },
+] as const;
 
 interface SeededObject {
   readonly key: string;
@@ -40,11 +220,6 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
   let backupParent: string;
   let goodBackupDir: string;
   const seededObjects: SeededObject[] = [];
-  const seededRuns = [
-    { tenantId: "tenant-a", runId: "run-a-1" },
-    { tenantId: "tenant-a", runId: "run-a-2" },
-    { tenantId: "tenant-b", runId: "run-b-1" },
-  ];
 
   function baseConfig(overrides: Partial<SelfHostedAdminConfig> = {}): SelfHostedAdminConfig {
     return {
@@ -70,30 +245,34 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     };
   }
 
-  async function insertRun(row: Record<string, unknown>): Promise<void> {
+  async function insertRun(row: ExecutionRunSnapshot): Promise<void> {
     const client = new Client(pgFixture.adminConfig);
     await client.connect();
     try {
-      const columns = Object.keys(row);
-      const placeholders = columns.map((_, index) => `$${index + 1}`);
       await client.query(
-        `INSERT INTO execution_runs (${columns.join(", ")}) VALUES (${placeholders.join(", ")})`,
-        columns.map((column) => row[column]),
+        `INSERT INTO execution_runs (
+          tenant_id, run_id, job_id, target_kind, objective, status,
+          next_sequence_number, created_at, completed_at, error_code
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          row.tenant_id,
+          row.run_id,
+          row.job_id,
+          row.target_kind,
+          row.objective,
+          row.status,
+          row.next_sequence_number,
+          row.created_at,
+          row.completed_at,
+          row.error_code,
+        ],
       );
     } finally {
       await client.end().catch(() => undefined);
     }
   }
 
-  async function insertArtifactManifest(input: {
-    readonly artifactId: string;
-    readonly tenantId: string;
-    readonly runId: string;
-    readonly key: string;
-    readonly sha256: string;
-    readonly sizeBytes: number;
-    readonly mediaType: string;
-  }): Promise<void> {
+  async function insertArtifactManifest(input: ArtifactManifestSnapshot): Promise<void> {
     const client = new Client(pgFixture.adminConfig);
     await client.connect();
     try {
@@ -103,15 +282,15 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
           sha256, size_bytes, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
-          input.tenantId,
-          input.artifactId,
-          input.runId,
-          "observation",
-          input.mediaType,
-          input.key,
+          input.tenant_id,
+          input.artifact_id,
+          input.run_id,
+          input.kind,
+          input.media_type,
+          input.relative_path,
           input.sha256,
-          input.sizeBytes,
-          "2026-08-01T00:00:00.000Z",
+          input.size_bytes,
+          input.created_at,
         ],
       );
     } finally {
@@ -119,17 +298,64 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   }
 
-  async function runRows(): Promise<Array<{ tenant_id: string; run_id: string; objective: string }>> {
+  async function persistenceSnapshot(): Promise<PersistenceSnapshot> {
     const client = new Client(pgFixture.adminConfig);
     await client.connect();
     try {
-      const result = await client.query<{ tenant_id: string; run_id: string; objective: string }>(
-        "SELECT tenant_id, run_id, objective FROM execution_runs ORDER BY run_id",
+      const executionRuns = await client.query<ExecutionRunSnapshot>(
+        "SELECT * FROM execution_runs ORDER BY tenant_id, run_id",
       );
-      return result.rows;
+      const artifactManifests = await client.query<ArtifactManifestSnapshot>(
+        "SELECT * FROM artifact_manifests ORDER BY tenant_id, artifact_id",
+      );
+      const objects: Array<{ key: string; bytes: number[] }> = [];
+      for (const expected of EXPECTED_OBJECTS) {
+        const bytes = await getObjectBytes(s3Client, BUCKET, expected.key);
+        objects.push({ key: expected.key, bytes: [...bytes] });
+      }
+      return {
+        executionRuns: executionRuns.rows,
+        artifactManifests: artifactManifests.rows,
+        objects,
+      };
     } finally {
       await client.end().catch(() => undefined);
     }
+  }
+
+  async function setupOldSchemaFixture(): Promise<PostgresFixture> {
+    const container = await startPostgres();
+    const adminConfig: PostgresConnectionConfig = {
+      host: container.host,
+      port: container.port,
+      database: container.database,
+      user: container.superuser,
+      password: container.password,
+    };
+    const db = new Kysely<unknown>({
+      dialect: new PostgresDialect({ pool: new Pool(adminConfig) }),
+    });
+    try {
+      await createRuntimeRoles(db, {
+        database: adminConfig.database,
+        server: { name: SERVER_ROLE, password: SERVER_PASSWORD },
+        worker: { name: WORKER_ROLE, password: WORKER_PASSWORD },
+      });
+    } finally {
+      await db.destroy();
+    }
+    await migratePostgres({
+      admin: adminConfig,
+      targetVersion: OLD_SCHEMA_VERSION,
+      roles: { server: SERVER_ROLE, worker: WORKER_ROLE },
+    });
+    return {
+      container,
+      adminConfig,
+      serverConfig: { ...adminConfig, user: SERVER_ROLE, password: SERVER_PASSWORD },
+      workerConfig: { ...adminConfig, user: WORKER_ROLE, password: WORKER_PASSWORD },
+      stop: () => container.stop(),
+    };
   }
 
   async function wipeDatabase(): Promise<void> {
@@ -144,7 +370,7 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
   }
 
   beforeAll(async () => {
-    pgFixture = await setupPostgresFixture();
+    pgFixture = await setupOldSchemaFixture();
     minio = await startMinio();
     s3Client = new S3Client({
       endpoint: minio.endpoint,
@@ -156,61 +382,60 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     backupParent = await mkdtemp(join(process.cwd(), ".e2e-backups-"));
 
     // Seed real tenant data in PostgreSQL.
-    for (const run of seededRuns) {
-      await insertRun(executionRunRow(run));
+    for (const run of SEEDED_EXECUTION_RUNS) {
+      await insertRun(run);
     }
 
     // Seed real object bytes and their snapshot-visible manifests across two tenants.
-    const specs = [
+    const seededArtifacts = [
       {
-        artifactId: "artifact-a-1",
-        tenantId: "tenant-a",
-        runId: "run-a-1",
-        key: "tenant-a/project-a/observation-1.json",
-        mediaType: "application/json",
-        text: '{"finding":"alpha","n":1}',
+        manifest: {
+          tenant_id: "tenant-a",
+          artifact_id: "artifact-a-1",
+          run_id: "run-a-1",
+          kind: "observation",
+          media_type: "application/json",
+          relative_path: "tenant-a/project-a/observation-1.json",
+          created_at: "2026-08-01T00:00:00.000Z",
+        },
+        bytes: new TextEncoder().encode('{"finding":"alpha","n":1}'),
       },
       {
-        artifactId: "artifact-a-2",
-        tenantId: "tenant-a",
-        runId: "run-a-2",
-        key: "tenant-a/project-a/observation-2.json",
-        mediaType: "application/json",
-        text: '{"finding":"beta","n":2}',
+        manifest: {
+          tenant_id: "tenant-a",
+          artifact_id: "artifact-a-2",
+          run_id: "run-a-2",
+          kind: "observation",
+          media_type: "application/json",
+          relative_path: "tenant-a/project-a/observation-2.json",
+          created_at: "2026-08-01T00:00:00.000Z",
+        },
+        bytes: new TextEncoder().encode('{"finding":"beta","n":2}'),
       },
       {
-        artifactId: "artifact-b-1",
-        tenantId: "tenant-b",
-        runId: "run-b-1",
-        key: "tenant-b/project-b/observation-3.bin",
-        mediaType: "application/octet-stream",
-        text: "\u0000\u0001\u0002binary-ish\u00ff",
+        manifest: {
+          tenant_id: "tenant-b",
+          artifact_id: "artifact-b-1",
+          run_id: "run-b-1",
+          kind: "observation",
+          media_type: "application/octet-stream",
+          relative_path: "tenant-b/project-b/observation-3.bin",
+          created_at: "2026-08-01T00:00:00.000Z",
+        },
+        bytes: Uint8Array.from([0, 1, 2, 98, 105, 110, 97, 114, 121, 45, 105, 115, 104, 255]),
       },
-    ];
-    for (const spec of specs) {
-      const bytes = new TextEncoder().encode(spec.text);
-      const sha256 = sha256Hex(bytes);
-      await putObjectBytes(s3Client, BUCKET, spec.key, bytes);
+    ] as const;
+    for (const seeded of seededArtifacts) {
+      const sha256 = sha256Hex(seeded.bytes);
+      await putObjectBytes(s3Client, BUCKET, seeded.manifest.relative_path, seeded.bytes);
       await insertArtifactManifest({
-        artifactId: spec.artifactId,
-        tenantId: spec.tenantId,
-        runId: spec.runId,
-        key: spec.key,
+        ...seeded.manifest,
         sha256,
-        sizeBytes: bytes.length,
-        mediaType: spec.mediaType,
+        size_bytes: seeded.bytes.length,
       });
-      seededObjects.push({ key: spec.key, bytes, sha256 });
+      seededObjects.push({ key: seeded.manifest.relative_path, bytes: seeded.bytes, sha256 });
     }
 
-    // Capture one canonical good backup used to reset state between tests
-    // (restoring it recreates the schema/tables/data and re-uploads objects
-    // without needing the non-idempotent role provisioning to run again).
-    const good = await runBackup(baseConfig(), {
-      pgTool: dockerExecPgToolRunner(pgFixture.container.id),
-      s3Client,
-    });
-    goodBackupDir = good.directory;
   }, 240_000);
 
   afterAll(async () => {
@@ -222,19 +447,51 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   });
 
-  it("produces a byte-complete backup and restores it byte-for-byte into a wiped environment", async () => {
+  it("upgrades every persisted version and restores its bound pre-migration backup byte-for-byte", async () => {
     const pgTool = dockerExecPgToolRunner(pgFixture.container.id);
     const config = baseConfig();
 
-    const originalRows = await runRows();
-    expect(originalRows).toHaveLength(seededRuns.length);
+    const expectedSnapshot: PersistenceSnapshot = {
+      executionRuns: EXPECTED_EXECUTION_RUNS,
+      artifactManifests: EXPECTED_ARTIFACT_MANIFESTS,
+      objects: EXPECTED_OBJECTS,
+    };
+    const beforeMigration = await persistenceSnapshot();
+    expect(beforeMigration).toEqual(expectedSnapshot);
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(OLD_SCHEMA_VERSION);
 
-    const backup = await runBackup(config, { pgTool, s3Client });
-    expect(backup.index.objectCount).toBe(seededObjects.length);
-    expect(backup.index.tenants).toEqual(["tenant-a", "tenant-b"]);
-    // The backup recorded the real bytes: sizes/hashes match what we uploaded.
+    const migration = await runMigrate(config, {
+      invocationId: MIGRATION_INVOCATION_ID,
+      runBackup: (backupConfig, binding) =>
+        runBackup(backupConfig, { pgTool, s3Client, migration: binding }),
+    });
+    expect(migration.action).toBe("migrated");
+    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(migration.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(CURRENT_SCHEMA_VERSION);
+    const afterMigration = await persistenceSnapshot();
+    expect(afterMigration).toEqual(expectedSnapshot);
+    expect(afterMigration).toEqual(beforeMigration);
+
+    expect(migration.backupDirectory).toBeDefined();
+    goodBackupDir = migration.backupDirectory!;
+    const backupIndex = await verifyBackupDirectory(goodBackupDir);
+    const targetDatabaseSha256 = createHash("sha256")
+      .update(
+        `${config.postgres.admin.host.toLowerCase()}:${config.postgres.admin.port}/${config.postgres.admin.database}`,
+      )
+      .digest("hex");
+    expect(backupIndex.database.schemaVersion).toBe(OLD_SCHEMA_VERSION);
+    expect(backupIndex.migration).toEqual({
+      invocationId: MIGRATION_INVOCATION_ID,
+      targetDatabaseSha256,
+      targetSchemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+    expect(backupIndex.objectCount).toBe(seededObjects.length);
+    expect(backupIndex.tenants).toEqual(["tenant-a", "tenant-b"]);
     for (const seeded of seededObjects) {
-      const record = backup.index.objects.find((object) => object.key === seeded.key);
+      const record = backupIndex.objects.find((object) => object.key === seeded.key);
       expect(record, `missing backup record for ${seeded.key}`).toBeDefined();
       expect(record?.sha256).toBe(seeded.sha256);
       expect(record?.sizeBytes).toBe(seeded.bytes.length);
@@ -245,23 +502,18 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     await emptyBucket(s3Client, BUCKET);
     expect(await runRowsSafe()).toHaveLength(0);
 
-    // Restore from the backup directory produced above.
-    const restoreConfig = baseConfig({ backupDir: backup.directory });
+    // Restore the invocation-bound schema-1 backup, not the upgraded source.
+    const restoreConfig = baseConfig({ backupDir: goodBackupDir });
     const result = await runRestore(restoreConfig, { pgTool, s3Client });
     expect(result.restoredObjects).toBe(seededObjects.length);
+    expect(result.schemaVersion).toBe(OLD_SCHEMA_VERSION);
     expect(result.verification.missing).toEqual([]);
     expect(result.verification.corrupt).toEqual([]);
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(OLD_SCHEMA_VERSION);
 
-    // The database rows are back, identical.
-    const restoredRows = await runRows();
-    expect(restoredRows).toEqual(originalRows);
-
-    // Every object serves byte-identical content to what existed before backup.
-    for (const seeded of seededObjects) {
-      const restored = await getObjectBytes(s3Client, BUCKET, seeded.key);
-      expect(sha256Hex(restored)).toBe(seeded.sha256);
-      expect(Buffer.from(restored).equals(Buffer.from(seeded.bytes))).toBe(true);
-    }
+    const afterCleanRestore = await persistenceSnapshot();
+    expect(afterCleanRestore).toEqual(expectedSnapshot);
+    expect(afterCleanRestore).toEqual(beforeMigration);
   }, 240_000);
 
   it("refuses to restore a backup whose object bytes were corrupted, before mutating the target", async () => {
@@ -325,6 +577,19 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   }
 
+  async function migrationVersions(): Promise<number[]> {
+    const client = new Client(pgFixture.adminConfig);
+    await client.connect();
+    try {
+      const result = await client.query<{ version: number }>(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      );
+      return result.rows.map((row) => row.version);
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
   async function getBucketKeys(): Promise<string[]> {
     const { enumerateObjects } = await import("@qualigence/admin-cli");
     const objects = await enumerateObjects(s3Client, BUCKET);
@@ -332,10 +597,9 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
   }
 
   async function reseed(): Promise<void> {
-    // Reset to the canonical good state by restoring the backup captured in
-    // beforeAll. Restore is read-only on the backup, so it can be replayed to
-    // rebuild the schema, rows and objects between tests. Roles persist across a
-    // schema drop, so no (non-idempotent) re-provisioning is required.
+    // Restore is read-only on the migration-bound backup, so it can be replayed
+    // to rebuild the old schema, rows and objects between tests. Roles persist
+    // across a schema drop, so no role provisioning is required.
     await wipeDatabase();
     await emptyBucket(s3Client, BUCKET);
     const pgTool = dockerExecPgToolRunner(pgFixture.container.id);

@@ -262,6 +262,83 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     }
   }, 120_000);
 
+  it("applies runtime access only to tables released through the migration target", async () => {
+    const partial = await startPostgres();
+    const admin = {
+      host: partial.host,
+      port: partial.port,
+      database: partial.database,
+      user: partial.superuser,
+      password: partial.password,
+    };
+    const roles = { server: "partial_server", worker: "partial_worker" };
+    const client = new Client(admin);
+    await client.connect();
+    try {
+      await client.query("create role partial_server login");
+      await client.query("create role partial_worker login");
+
+      await migratePostgres({ admin, targetVersion: 1, roles });
+      const policies = await client.query<{ tablename: string }>(`
+        select tablename from pg_policies
+         where schemaname = 'public' and policyname = 'tenant_isolation'
+         order by tablename
+      `);
+      expect(policies.rows.map(({ tablename }) => tablename)).toEqual([
+        "artifact_manifests",
+        "execution_runs",
+        "findings",
+        "model_invocations",
+        "trace_events",
+      ]);
+      const serverSelectGrants = await client.query<{ table_name: string }>(`
+        select table_name from information_schema.role_table_grants
+         where grantee = 'partial_server'
+           and table_schema = 'public'
+           and privilege_type = 'SELECT'
+           and table_name not in ('schema_components', 'schema_migrations')
+         order by table_name
+      `);
+      expect(serverSelectGrants.rows.map(({ table_name }) => table_name)).toEqual([
+        "artifact_manifests",
+        "execution_runs",
+        "findings",
+        "model_invocations",
+        "trace_events",
+      ]);
+      const futureTable = await client.query<{ future_table: string | null }>(
+        "select to_regclass('public.prd_documents')::text as future_table",
+      );
+      expect(futureTable.rows).toEqual([{ future_table: null }]);
+
+      await migratePostgres({ admin, roles });
+      const upgradedAccess = await client.query<{
+        prd_rls: boolean;
+        prd_select: boolean;
+        tenant_policy: boolean;
+      }>(`
+        select prd.relrowsecurity as prd_rls,
+               has_table_privilege('partial_server', 'prd_documents', 'select') as prd_select,
+               exists (
+                 select 1 from pg_policies
+                  where schemaname = 'public'
+                    and tablename = 'prd_documents'
+                    and policyname = 'tenant_isolation'
+               ) as tenant_policy
+          from pg_class prd
+         where prd.oid = 'public.prd_documents'::regclass
+      `);
+      expect(upgradedAccess.rows).toEqual([{
+        prd_rls: true,
+        prd_select: true,
+        tenant_policy: true,
+      }]);
+    } finally {
+      await client.end().catch(() => undefined);
+      await partial.stop();
+    }
+  }, 120_000);
+
   it("rolls back a failed step and resumes from the last committed version", async () => {
     const partial = await startPostgres();
     const admin = {
