@@ -25,6 +25,23 @@ function options(): WebSessionOptions {
 const noopLauncher = { launch: vi.fn() } as unknown as BrowserLauncher;
 const permit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
 
+async function bindPrivateTarget(
+  session: PlaywrightBrowserSession,
+  graphId: string,
+  target: object,
+): Promise<void> {
+  const handle = {
+    ...target,
+    evaluate: async () => true,
+    dispose: async () => undefined,
+  };
+  await session.establishPrivateActionTarget(
+    graphId,
+    "n-0-abcd1234",
+    { elementHandle: async () => handle } as never,
+  );
+}
+
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "test" };
 }
@@ -82,7 +99,10 @@ describe("PlaywrightActionResolver negative paths", () => {
     const graphId = "run-1:observation:1";
     const session = sessionWithGraph(graphId);
     session.withPage = async (operation) => operation({
-      getByRole: () => ({ count: async () => 1 }),
+      getByRole: () => ({
+        count: async () => 1,
+        elementHandle: async () => ({ evaluate: async () => true }),
+      }),
     } as never);
     const resolver = new PlaywrightActionResolver(session);
 
@@ -115,6 +135,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
         return [value];
       },
     };
+    await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
       url: () => "https://example.test/",
@@ -152,6 +173,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       getAttribute: async () => null,
       fill: async () => undefined,
     };
+    await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
       url: () => "https://example.test/",
@@ -171,26 +193,13 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(session.redactSensitiveText("ab")).toBe("ab");
   });
 
-  it("maps a sensitive target descriptor to its next observation identity", async () => {
-    const session = new PlaywrightBrowserSession(options(), noopLauncher);
-    const descriptor = { kind: "role", role: "textbox", name: "Notes" } as const;
-    session.registerSensitiveActionTarget("n-old", descriptor);
-
-    expect(session.sensitiveTargetFor(new Map<string, LocatorDescriptor>([
-      ["n-unrelated", { kind: "text", role: "text", text: "ab" } as const],
-      ["n-new", descriptor],
-    ]))).toEqual({ nodeId: "n-new", descriptor });
-  });
-
   it("clears sensitive target and source state when the session closes", async () => {
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
-    const descriptor = { kind: "role", role: "textbox", name: "Notes" } as const;
-    session.registerSensitiveActionTarget("n-old", descriptor);
     session.registerSensitiveValue("source-secret");
 
     await session.close();
 
-    expect(session.sensitiveTargetFor(new Map([["n-new", descriptor]]))).toBeUndefined();
+    expect(session.sensitiveTarget()).toBeUndefined();
     expect(session.redactSensitiveText("source-secret")).toBe("source-secret");
   });
 
@@ -208,6 +217,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       getAttribute: async () => null,
       selectOption: async () => ["browser-selected-option"],
     };
+    await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
       url: () => "https://example.test/",
@@ -238,8 +248,15 @@ describe("PlaywrightActionExecutor value resolution", () => {
       descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
       artifacts: [],
     });
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+    };
+    await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
-      getByRole: () => ({ count: async () => 1, isVisible: async () => true, isEnabled: async () => true, getAttribute: async () => null }),
+      getByRole: () => locator,
       url: () => "https://example.test/",
     } as never);
     const executor = new PlaywrightActionExecutor(session, {
@@ -262,14 +279,16 @@ describe("PlaywrightActionExecutor value resolution", () => {
       descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
       artifacts: [],
     });
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      fill: async () => { throw new Error('Target closed while running fill("plaintext-secret")'); },
+    };
+    await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
-      getByRole: () => ({
-        count: async () => 1,
-        isVisible: async () => true,
-        isEnabled: async () => true,
-        getAttribute: async () => null,
-        fill: async () => { throw new Error('Target closed while running fill("plaintext-secret")'); },
-      }),
+      getByRole: () => locator,
       url: () => "https://example.test/",
     } as never);
     const executor = new PlaywrightActionExecutor(session, {

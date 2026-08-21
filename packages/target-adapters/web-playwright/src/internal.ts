@@ -12,8 +12,10 @@ export {
   chromiumLauncher,
   isOriginAllowed,
   normalizeOrigin,
+  PRIVATE_TARGET_ATTRIBUTE,
   type BrowserLauncher,
   type StoredObservation,
+  type SensitiveActionTarget,
   type WebSessionOptions,
   type WebTargetErrorCode,
 } from "./browser-session.js";

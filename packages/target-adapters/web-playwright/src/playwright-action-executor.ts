@@ -10,7 +10,6 @@ import {
   WebTargetError,
   isOriginAllowed,
 } from "./browser-session.js";
-import { locatorFor } from "./action-locator.js";
 import { isActionToken } from "./action-token.js";
 
 export interface ActionValueProvider {
@@ -71,32 +70,27 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       return { status: "failed", errorCode: "UnknownObservationNode" };
     }
 
-    const descriptor = this.session.descriptorFor(
+    const privateTarget = this.session.privateActionTargetFor(
       action.graphId,
       actionTarget.nodeId,
     );
-    if (!descriptor) {
+    if (privateTarget === undefined) {
       return { status: "failed", errorCode: "StaleObservation" };
     }
 
     return this.session.withPage(async (page): Promise<ActionOutcome> => {
-      const locator = locatorFor(page, descriptor);
-
-      const count = await locator.count();
-      if (count === 0) {
+      const target = privateTarget.handle;
+      if (!(await target.evaluate((element) => element.isConnected))) {
         return { status: "failed", errorCode: "TargetNotFound" };
       }
-      if (count > 1) {
-        return { status: "failed", errorCode: "AmbiguousTarget" };
-      }
-      if (!(await locator.isVisible())) {
+      if (!(await target.isVisible())) {
         return { status: "failed", errorCode: "TargetNotVisible" };
       }
-      if (!(await locator.isEnabled())) {
+      if (!(await target.isEnabled())) {
         return { status: "failed", errorCode: "TargetDisabled" };
       }
 
-      const href = await locator.getAttribute("href");
+      const href = await target.getAttribute("href");
       if (href !== null) {
         let destinationOrigin: string | undefined;
         try {
@@ -127,15 +121,15 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           // browser normalization is redacted only on this target after success.
           this.session.registerSensitiveValue(value);
           if (action.kind === "input") {
-            await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+            await target.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {
-            await locator.selectOption(value, {
+            await target.selectOption(value, {
               timeout: this.session.actionTimeoutMs,
             });
           }
-          this.session.registerSensitiveActionTarget(actionTarget.nodeId, descriptor);
+          this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
         } else if (action.kind === "click") {
-          await locator.click({ timeout: this.session.actionTimeoutMs });
+          await target.click({ timeout: this.session.actionTimeoutMs });
         } else {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }

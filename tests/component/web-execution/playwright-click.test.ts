@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { inflateSync } from "node:zlib";
 import type {
   AcceptedExecutionJob,
   ObservationGraph,
@@ -69,16 +70,22 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <button id="blocked">Blocked action</button>
             <span style="position:absolute;inset:0"></span>
           </span>
-          <label>Email <input aria-label="Email" /></label>
-          <label>Normalized secret <input aria-label="Normalized secret" /></label>
-          <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
-          <p data-qualigence-observe id="values"></p>
-          <p data-qualigence-observe>ab</p>
-          <script>
-            document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
-            document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', () => document.getElementById('values').textContent = 'Normalized ready');
-            document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
-          </script>
+           <label>Email <input aria-label="Email" /></label>
+           <label>Normalized secret <input aria-label="Normalized secret" /></label>
+           <label>Mutable secret <input aria-label="Mutable secret" style="background:rgb(255,0,0);border:0;width:180px;height:40px" /></label>
+           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
+           <p data-qualigence-observe id="values"></p>
+           <p data-qualigence-observe>ab</p>
+           <div data-unrelated-region style="position:fixed;left:400px;top:80px;width:60px;height:60px;background:rgb(0,255,0)"></div>
+           <script>
+             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+             document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', () => document.getElementById('values').textContent = 'Normalized ready');
+             document.querySelector('input[aria-label="Mutable secret"]').addEventListener('input', event => {
+               event.target.setAttribute('aria-label', event.target.value);
+               document.getElementById('values').textContent = 'Mutable ready';
+             });
+             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
+           </script>
         `,
         "Clicks",
       ),
@@ -225,8 +232,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
     const afterSelect = await observer.capture(job);
-    expect(nodeNamed(afterSelect, "Country"))
-      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(afterSelect, "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     const serializedPublicValues = JSON.stringify([
       inputAction,
       inputOutcome,
@@ -296,20 +303,166 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
     const after = await observer.capture(job);
     const serialized = JSON.stringify(after);
-    const target = nodeNamed(after, "Normalized secret");
+    const target = nodeNamed(after, "[REDACTED]");
     const artifact = session.artifactsFor(after.graphId)
       .find((candidate) => candidate.mediaType === "application/json");
     const artifactGraph = JSON.parse(new TextDecoder().decode(artifact?.bytes)) as ObservationGraph;
-    const artifactTarget = nodeNamed(artifactGraph, "Normalized secret");
-    const targetDescriptor = session.descriptorFor(after.graphId, target.id);
+    const artifactTarget = nodeNamed(artifactGraph, "[REDACTED]");
 
     expect(serialized).not.toContain(source);
     expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     expect(artifactTarget).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(targetDescriptor).toBeDefined();
-    expect(session.sensitiveTargetFor(new Map([[target.id, targetDescriptor!]]))?.nodeId)
-      .toBe(target.id);
+    expect(session.sensitiveTarget()?.nodeId).toBe(target.id);
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
     expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
   });
+
+  it("keeps the exact acted element redacted when its accessible identity changes", async () => {
+    const source = "a\r\nb\r\n";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => source });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Mutable secret").id, "customer.mutable"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    const target = nodeNamed(after, "[REDACTED]");
+    const observationArtifact = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "application/json");
+    const screenshotArtifact = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "image/png");
+    const artifactGraph = JSON.parse(
+      new TextDecoder().decode(observationArtifact?.bytes),
+    ) as ObservationGraph;
+    const boxes = await session.withPage(async (page) => ({
+      target: await session.sensitiveTarget()?.handle.boundingBox(),
+      unrelated: await page.locator("[data-unrelated-region]").boundingBox(),
+    }));
+    if (
+      boxes.target === null ||
+      boxes.target === undefined ||
+      boxes.unrelated === null ||
+      screenshotArtifact === undefined
+    ) {
+      throw new Error("Expected screenshot regions and artifact.");
+    }
+
+    expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(artifactGraph, "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
+    expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
+    expect(pngPixel(screenshotArtifact.bytes, boxes.target)).toEqual([0, 0, 0, 255]);
+    expect(pngPixel(screenshotArtifact.bytes, boxes.unrelated)).toEqual([0, 255, 0, 255]);
+  });
+
+  it("fails closed before artifacts when the exact sensitive target is replaced", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "replace-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Mutable secret").id, "customer.replace"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await session.withPage(async (page) => {
+      await page.getByRole("textbox", { name: "replace-secret" }).evaluate((element) => {
+        element.replaceWith(element.cloneNode(true));
+      });
+    });
+
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+    expect(() => session.artifactsFor("run-click:observation:2")).toThrowError(
+      expect.objectContaining({ code: "StaleObservation" }),
+    );
+  });
 });
+
+function pngPixel(
+  bytes: Uint8Array,
+  box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+): readonly number[] {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (!signature.every((byte, index) => bytes[index] === byte)) throw new Error("Invalid PNG signature.");
+  let width = 0;
+  let height = 0;
+  let colorType = -1;
+  const compressed: Buffer[] = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
+    const length = view.getUint32(0);
+    const type = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+    const data = bytes.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      const header = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      width = header.getUint32(0);
+      height = header.getUint32(4);
+      if (data[8] !== 8 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0) {
+        throw new Error("Unsupported PNG encoding.");
+      }
+      colorType = data[9]!;
+    } else if (type === "IDAT") {
+      compressed.push(Buffer.from(data));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset += 12 + length;
+  }
+  const channels = colorType === 2 ? 3 : colorType === 6 ? 4 : 0;
+  const x = Math.floor(box.x + box.width / 2);
+  const y = Math.floor(box.y + box.height / 2);
+  if (channels === 0 || x < 0 || y < 0 || x >= width || y >= height) {
+    throw new Error("Unsupported PNG pixel request.");
+  }
+  const filtered = inflateSync(Buffer.concat(compressed));
+  const stride = width * channels;
+  const pixels = Buffer.alloc(stride * height);
+  let sourceOffset = 0;
+  for (let row = 0; row < height; row += 1) {
+    const filter = filtered[sourceOffset++]!;
+    const rowOffset = row * stride;
+    for (let column = 0; column < stride; column += 1) {
+      const raw = filtered[sourceOffset++]!;
+      const left = column >= channels ? pixels[rowOffset + column - channels]! : 0;
+      const above = row > 0 ? pixels[rowOffset - stride + column]! : 0;
+      const upperLeft = row > 0 && column >= channels
+        ? pixels[rowOffset - stride + column - channels]!
+        : 0;
+      pixels[rowOffset + column] = (raw + pngFilterDelta(filter, left, above, upperLeft)) & 0xff;
+    }
+  }
+  const pixelOffset = y * stride + x * channels;
+  return [
+    pixels[pixelOffset]!,
+    pixels[pixelOffset + 1]!,
+    pixels[pixelOffset + 2]!,
+    channels === 4 ? pixels[pixelOffset + 3]! : 255,
+  ];
+}
+
+function pngFilterDelta(filter: number, left: number, above: number, upperLeft: number): number {
+  if (filter === 0) return 0;
+  if (filter === 1) return left;
+  if (filter === 2) return above;
+  if (filter === 3) return Math.floor((left + above) / 2);
+  if (filter !== 4) throw new Error(`Unsupported PNG filter ${filter}.`);
+  const estimate = left + above - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const aboveDistance = Math.abs(estimate - above);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  return leftDistance <= aboveDistance && leftDistance <= upperLeftDistance
+    ? left
+    : aboveDistance <= upperLeftDistance ? above : upperLeft;
+}

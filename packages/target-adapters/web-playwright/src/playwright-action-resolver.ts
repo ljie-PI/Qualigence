@@ -50,19 +50,29 @@ export class PlaywrightActionResolver implements ActionResolver {
       );
     }
 
-    const count = await this.session.withPage((page) =>
-      locatorFor(page, descriptor).count(),
-    );
-    if (count === 0) {
+    const retainedTarget = this.session.privateActionTargetFor(graph.graphId, actionTarget.nodeId);
+    if (retainedTarget === undefined) {
+      await this.session.withPage(async (page) => {
+        const locator = locatorFor(page, descriptor);
+        const count = await locator.count();
+        if (count === 0) {
+          throw new WebTargetError(
+            "TargetNotFound",
+            `Node ${actionTarget.nodeId} no longer matches any element.`,
+          );
+        }
+        if (count > 1) {
+          throw new WebTargetError(
+            "AmbiguousTarget",
+            `Node ${actionTarget.nodeId} matches ${count} elements.`,
+          );
+        }
+        await this.session.establishPrivateActionTarget(graph.graphId, actionTarget.nodeId, locator);
+      });
+    } else if (!(await retainedTarget.handle.evaluate((element) => element.isConnected))) {
       throw new WebTargetError(
         "TargetNotFound",
         `Node ${actionTarget.nodeId} no longer matches any element.`,
-      );
-    }
-    if (count > 1) {
-      throw new WebTargetError(
-        "AmbiguousTarget",
-        `Node ${actionTarget.nodeId} matches ${count} elements.`,
       );
     }
 

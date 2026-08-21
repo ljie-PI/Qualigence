@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutionJobLease,
@@ -54,10 +55,16 @@ describe("production valueRef browser execution", () => {
   it("runs immutable input/select Plan jobs through RunnerOfferRuntime without plaintext leakage", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
-        <label>LF secret <textarea aria-label="LF secret"></textarea></label>
-        <label>CRLF secret <input aria-label="CRLF secret" /></label>
+        <style>
+          #lf-secret { position:fixed;left:40px;top:40px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
+          #crlf-secret { position:fixed;left:40px;top:100px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
+          #country-secret { position:fixed;left:40px;top:160px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
+          #unrelated-region { position:fixed;left:300px;top:100px;width:80px;height:80px;background:rgb(0,255,0) }
+        </style>
+        <label>LF secret <textarea id="lf-secret" aria-label="LF secret"></textarea></label>
+        <label>CRLF secret <input id="crlf-secret" aria-label="CRLF secret" /></label>
         <label>Country
-          <select aria-label="Country">
+          <select id="country-secret" aria-label="Country">
             <option value="">Choose a country</option>
             <option value="${SELECT_VALUE}">${SELECT_LABEL_SOURCE}</option>
           </select>
@@ -65,14 +72,21 @@ describe("production valueRef browser execution", () => {
         <p data-qualigence-observe id="status">Waiting</p>
         <p data-qualigence-observe>e2e-lf-first-line remains unrelated</p>
         <p data-qualigence-observe>ab</p>
+        <div id="unrelated-region"></div>
         <script>
           const lfInput = document.querySelector('textarea');
           const crlfInput = document.querySelector('input');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
           lfInput.addEventListener('input', () => { status.textContent = 'LF ready'; });
-          crlfInput.addEventListener('input', () => { status.textContent = 'CRLF ready'; });
-          country.addEventListener('change', () => { status.textContent = 'Country ready'; });
+          crlfInput.addEventListener('input', () => {
+            crlfInput.setAttribute('aria-label', crlfInput.value);
+            status.textContent = 'CRLF ready';
+          });
+          country.addEventListener('change', () => {
+            country.setAttribute('aria-label', country.selectedOptions[0].textContent);
+            status.textContent = 'Country ready';
+          });
         </script>
       `, "ValueRef acceptance"),
     });
@@ -240,10 +254,10 @@ describe("production valueRef browser execution", () => {
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) => node.text === "LF ready")).toBe(true);
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "CRLF ready")).toBe(true);
-    expect(nodeNamed(finalObservation(trace, "run-input-crlf"), "CRLF secret"))
-      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(nodeNamed(finalObservation(trace, "run-select"), "Country"))
-      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(finalObservation(trace, "run-input-crlf"), "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(finalObservation(trace, "run-select"), "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) =>
       node.text === "e2e-lf-first-line remains unrelated")).toBe(true);
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "ab")).toBe(true);
@@ -265,11 +279,27 @@ describe("production valueRef browser execution", () => {
       graph.graphId === finalObservation(trace, "run-select").graphId);
     expect(crlfArtifact).toBeDefined();
     expect(selectArtifact).toBeDefined();
-    expect(nodeNamed(crlfArtifact!, "CRLF secret"))
-      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(nodeNamed(selectArtifact!, "Country"))
-      .toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(crlfArtifact!, "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
+    expect(nodeNamed(selectArtifact!, "[REDACTED]"))
+      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     expect(crlfArtifact!.nodes.some((node) => node.text === CRLF_BROWSER_VALUE)).toBe(true);
+
+    const finalScreenshots = new Map(screenshotMetadata.map(({ runId, name }) => {
+      const screenshot = artifacts.find(({ runId: candidateRunId, artifact }) =>
+        candidateRunId === runId && artifact.name === name);
+      return [runId, screenshot?.artifact.bytes] as const;
+    }));
+    for (const [runId, target] of [
+      ["run-input-lf", { x: 140, y: 60 }],
+      ["run-input-crlf", { x: 140, y: 120 }],
+      ["run-select", { x: 140, y: 180 }],
+    ] as const) {
+      const screenshot = finalScreenshots.get(runId);
+      if (screenshot === undefined) throw new Error(`Missing final screenshot for ${runId}.`);
+      expect(pngPixel(screenshot, target.x, target.y)).toEqual([0, 0, 0, 255]);
+      expect(pngPixel(screenshot, 340, 140)).toEqual([0, 255, 0, 255]);
+    }
 
     await spool.close();
     spool = undefined;
@@ -403,4 +433,76 @@ async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function pngPixel(bytes: Uint8Array, x: number, y: number): readonly number[] {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (!signature.every((byte, index) => bytes[index] === byte)) throw new Error("Invalid PNG signature.");
+  let width = 0;
+  let height = 0;
+  let colorType = -1;
+  const compressed: Buffer[] = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
+    const length = view.getUint32(0);
+    const type = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+    const data = bytes.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      const header = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      width = header.getUint32(0);
+      height = header.getUint32(4);
+      if (data[8] !== 8 || data[10] !== 0 || data[11] !== 0 || data[12] !== 0) {
+        throw new Error("Unsupported PNG encoding.");
+      }
+      colorType = data[9]!;
+    } else if (type === "IDAT") {
+      compressed.push(Buffer.from(data));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset += 12 + length;
+  }
+  const channels = colorType === 2 ? 3 : colorType === 6 ? 4 : 0;
+  if (channels === 0 || x < 0 || y < 0 || x >= width || y >= height) {
+    throw new Error("Unsupported PNG pixel request.");
+  }
+  const filtered = inflateSync(Buffer.concat(compressed));
+  const stride = width * channels;
+  const pixels = Buffer.alloc(stride * height);
+  let sourceOffset = 0;
+  for (let row = 0; row < height; row += 1) {
+    const filter = filtered[sourceOffset++]!;
+    const rowOffset = row * stride;
+    for (let column = 0; column < stride; column += 1) {
+      const raw = filtered[sourceOffset++]!;
+      const left = column >= channels ? pixels[rowOffset + column - channels]! : 0;
+      const above = row > 0 ? pixels[rowOffset - stride + column]! : 0;
+      const upperLeft = row > 0 && column >= channels
+        ? pixels[rowOffset - stride + column - channels]!
+        : 0;
+      pixels[rowOffset + column] = (raw + pngFilterDelta(filter, left, above, upperLeft)) & 0xff;
+    }
+  }
+  const pixelOffset = y * stride + x * channels;
+  return [
+    pixels[pixelOffset]!,
+    pixels[pixelOffset + 1]!,
+    pixels[pixelOffset + 2]!,
+    channels === 4 ? pixels[pixelOffset + 3]! : 255,
+  ];
+}
+
+function pngFilterDelta(filter: number, left: number, above: number, upperLeft: number): number {
+  if (filter === 0) return 0;
+  if (filter === 1) return left;
+  if (filter === 2) return above;
+  if (filter === 3) return Math.floor((left + above) / 2);
+  if (filter !== 4) throw new Error(`Unsupported PNG filter ${filter}.`);
+  const estimate = left + above - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const aboveDistance = Math.abs(estimate - above);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  return leftDistance <= aboveDistance && leftDistance <= upperLeftDistance
+    ? left
+    : aboveDistance <= upperLeftDistance ? above : upperLeft;
 }

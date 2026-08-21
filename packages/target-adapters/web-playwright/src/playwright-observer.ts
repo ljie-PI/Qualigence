@@ -3,31 +3,72 @@ import type {
   ObservationGraph,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
-import { WebTargetError, type PlaywrightBrowserSession } from "./browser-session.js";
+import {
+  PRIVATE_TARGET_ATTRIBUTE,
+  WebTargetError,
+  type PlaywrightBrowserSession,
+  type SensitiveActionTarget,
+} from "./browser-session.js";
 import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
-import { locatorFor } from "./action-locator.js";
 
 const REDACTED = "[REDACTED]";
 
 async function captureScreenshot(
   page: Page,
-  sensitiveDescriptor?: Parameters<typeof locatorFor>[1],
+  sensitiveTarget?: SensitiveActionTarget,
 ): Promise<Uint8Array> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return new Uint8Array(await page.screenshot({
+      if (sensitiveTarget === undefined) {
+        return new Uint8Array(await page.screenshot({ timeout: 5000 }));
+      }
+      const locator = page.locator(
+        `[${PRIVATE_TARGET_ATTRIBUTE}="${sensitiveTarget.token}"]`,
+      );
+      const count = await locator.count();
+      const locatedHandle = count === 1 ? await locator.elementHandle() : null;
+      const exactTarget = locatedHandle !== null && await page.evaluate(
+        ([located, retained]) => located === retained,
+        [locatedHandle, sensitiveTarget.handle],
+      );
+      const box = count === 1 ? await locator.boundingBox() : null;
+      if (
+        !exactTarget ||
+        box === null ||
+        ![box.x, box.y, box.width, box.height].every(Number.isFinite) ||
+        box.width <= 0 ||
+        box.height <= 0
+      ) {
+        throw new WebTargetError(
+          "SensitiveTargetUnproven",
+          "The sensitive target has no unique bounded screenshot region.",
+        );
+      }
+      const screenshot = new Uint8Array(await page.screenshot({
         timeout: 5000,
-        ...(sensitiveDescriptor === undefined
-          ? {}
-          : { mask: [locatorFor(page, sensitiveDescriptor)] }),
+        mask: [locator],
+        maskColor: "#000000",
       }));
+      const postHandle = await locator.elementHandle();
+      const remainsExact = postHandle !== null && await page.evaluate(
+        ([located, retained]) => located === retained,
+        [postHandle, sensitiveTarget.handle],
+      );
+      if (await locator.count() !== 1 || !remainsExact) {
+        throw new WebTargetError(
+          "SensitiveTargetUnproven",
+          "The sensitive target identity changed during screenshot capture.",
+        );
+      }
+      return screenshot;
     } catch (error) {
+      if (error instanceof WebTargetError) throw error;
       lastError = error;
       await page.waitForTimeout(50);
     }
@@ -39,7 +80,13 @@ async function captureScreenshot(
  * Executed inside the page. Collects semantic candidates in DOM order without
  * exposing any selector to the caller. Password field values are never read.
  */
-function collectCandidates(): ObservationCandidate[] {
+function collectCandidates(identity: {
+  readonly sensitiveElement?: Element;
+}): {
+  readonly candidates: ObservationCandidate[];
+  readonly sensitiveIndex?: number;
+  readonly sensitiveConnected: boolean;
+} {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
       return true;
@@ -145,6 +192,7 @@ function collectCandidates(): ObservationCandidate[] {
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
   const elements = Array.from(document.querySelectorAll(selector));
   const candidates: ObservationCandidate[] = [];
+  let sensitiveIndex: number | undefined;
 
   for (const element of elements) {
     if (!isVisible(element)) {
@@ -190,10 +238,17 @@ function collectCandidates(): ObservationCandidate[] {
       ...(value !== undefined ? { value } : {}),
       ...(disabled ? { disabled: true } : {}),
     };
+    if (element === identity.sensitiveElement) {
+      sensitiveIndex = candidates.length;
+    }
     candidates.push(candidate);
   }
 
-  return candidates;
+  return {
+    candidates,
+    ...(sensitiveIndex === undefined ? {} : { sensitiveIndex }),
+    sensitiveConnected: identity.sensitiveElement?.isConnected === true,
+  };
 }
 
 function buildArtifacts(
@@ -222,58 +277,56 @@ export class PlaywrightObserver implements Observer {
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
-      const captured = (await page.evaluate(collectCandidates)) as ObservationCandidate[];
-      const raw = captured.map((candidate) => ({
+      const sensitiveTarget = this.session.sensitiveTarget();
+      const captured = await page.evaluate(collectCandidates, {
+        ...(sensitiveTarget === undefined ? {} : { sensitiveElement: sensitiveTarget.handle }),
+      });
+      if (
+        sensitiveTarget !== undefined &&
+        (!captured.sensitiveConnected || captured.sensitiveIndex === undefined)
+      ) {
+        throw new WebTargetError(
+          "SensitiveTargetUnproven",
+          "The sensitive action target cannot be proven in the current observation.",
+        );
+      }
+      const raw = captured.candidates.map((candidate, index) => ({
         role: candidate.role,
-        ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
-        ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
-        ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+        ...(index === captured.sensitiveIndex
+          ? { name: REDACTED, text: REDACTED, value: REDACTED }
+          : {
+              ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
+              ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
+              ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+            }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
       const url = this.session.redactSensitiveText(page.url());
       const title = this.session.redactSensitiveText(await page.title());
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
-      const preliminary = buildObservationGraph(
+      const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
         { url, ...(title !== "" ? { title } : {}) },
       );
-      const sensitiveTarget = this.session.sensitiveTargetFor(preliminary.descriptors);
-      const sensitiveTargetIndex = sensitiveTarget === undefined
-        ? -1
-        : preliminary.graph.nodes.findIndex((node) => node.id === sensitiveTarget.nodeId);
-      const serializedCandidates = sensitiveTarget === undefined
-        ? raw
-        : raw.map((candidate, index) =>
-            preliminary.graph.nodes[index]?.id === sensitiveTarget.nodeId
-              ? { ...candidate, text: REDACTED, value: REDACTED }
-              : candidate);
-      const { graph, descriptors } = sensitiveTarget === undefined
-        ? preliminary
-        : buildObservationGraph(
-            job.runId,
-            ordinal,
-            serializedCandidates,
-            { url, ...(title !== "" ? { title } : {}) },
-          );
       if (sensitiveTarget !== undefined) {
-        const serializedNode = graph.nodes[sensitiveTargetIndex];
+        const serializedNode = graph.nodes[captured.sensitiveIndex!];
         if (serializedNode === undefined) {
           throw new WebTargetError(
             "UnknownObservationNode",
             "The sensitive action target is absent from the serialized observation.",
           );
         }
-        this.session.registerSensitiveActionTarget(serializedNode.id, sensitiveTarget.descriptor);
+        this.session.advanceSensitiveTarget(graph.graphId, serializedNode.id);
       }
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
       };
 
-      const screenshot = await captureScreenshot(page, sensitiveTarget?.descriptor);
+      const screenshot = await captureScreenshot(page, sensitiveTarget);
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.registerObservation(graphWithRefs.graphId, {
         descriptors,

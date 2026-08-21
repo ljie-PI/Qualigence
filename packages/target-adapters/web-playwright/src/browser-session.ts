@@ -1,4 +1,11 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type ElementHandle,
+  type Locator,
+  type Page,
+} from "playwright";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 
 export type WebTargetErrorCode =
@@ -12,6 +19,7 @@ export type WebTargetErrorCode =
   | "OriginViolation"
   | "ActionTimedOut"
   | "ActionInfrastructureFailure"
+  | "SensitiveTargetUnproven"
   | "UnsupportedAction"
   | "ConcurrentSessionOperation"
   | "SessionClosed";
@@ -72,17 +80,16 @@ export interface StoredObservation {
   readonly artifacts: readonly CapturedArtifact[];
 }
 
-interface SensitiveActionTarget {
-  readonly nodeId: string;
-  readonly descriptor: LocatorDescriptor;
+export interface PrivateActionTarget {
+  readonly token: string;
+  readonly handle: ElementHandle<Element>;
 }
 
-function descriptorsEqual(left: LocatorDescriptor, right: LocatorDescriptor): boolean {
-  return left.kind === right.kind &&
-    left.role === right.role &&
-    left.name === right.name &&
-    left.text === right.text;
+export interface SensitiveActionTarget extends PrivateActionTarget {
+  readonly nodeId: string;
 }
+
+export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
 
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
@@ -96,6 +103,8 @@ export class PlaywrightBrowserSession {
   private readonly observations = new Map<string, StoredObservation>();
   private readonly sensitiveValues = new Set<string>();
   private sensitiveActionTarget: SensitiveActionTarget | undefined;
+  private readonly privateActionTargets = new Map<string, PrivateActionTarget>();
+  private privateTargetOrdinal = 0;
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -147,32 +156,50 @@ export class PlaywrightBrowserSession {
     if (value !== "") this.sensitiveValues.add(value);
   }
 
-  registerSensitiveActionTarget(nodeId: string, descriptor: LocatorDescriptor): void {
-    this.sensitiveActionTarget = { nodeId, descriptor };
+  async establishPrivateActionTarget(
+    graphId: string,
+    nodeId: string,
+    locator: Locator,
+  ): Promise<void> {
+    const handle = await locator.elementHandle();
+    if (handle === null) {
+      throw new WebTargetError("TargetNotFound", "The resolved target has no stable DOM identity.");
+    }
+    this.privateTargetOrdinal += 1;
+    const token = `target-${this.privateTargetOrdinal}`;
+    await handle.evaluate((element, identity) => {
+      element.setAttribute(identity.attribute, identity.token);
+    }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token });
+    this.privateActionTargets.set(`${graphId}\0${nodeId}`, { token, handle });
   }
 
-  sensitiveTargetFor(
-    descriptors: ReadonlyMap<string, LocatorDescriptor>,
-  ): SensitiveActionTarget | undefined {
-    const target = this.sensitiveActionTarget;
-    if (target === undefined) return undefined;
+  privateActionTargetFor(graphId: string, nodeId: string): PrivateActionTarget | undefined {
+    return this.privateActionTargets.get(`${graphId}\0${nodeId}`);
+  }
 
-    const matches = [...descriptors].filter(([, descriptor]) =>
-      descriptorsEqual(descriptor, target.descriptor));
-    if (matches.length === 0) {
-      this.sensitiveActionTarget = undefined;
-      return undefined;
-    }
-    if (matches.length > 1) {
+  registerSensitiveActionTarget(graphId: string, nodeId: string): void {
+    const target = this.privateActionTargetFor(graphId, nodeId);
+    if (target === undefined) {
       throw new WebTargetError(
-        "AmbiguousTarget",
-        "The sensitive action target no longer resolves uniquely.",
+        "SensitiveTargetUnproven",
+        "The sensitive action target has no resolution-bound identity.",
       );
     }
+    this.sensitiveActionTarget = { ...target, nodeId };
+  }
 
-    const [nodeId, descriptor] = matches[0]!;
-    this.sensitiveActionTarget = { nodeId, descriptor };
+  sensitiveTarget(): SensitiveActionTarget | undefined {
     return this.sensitiveActionTarget;
+  }
+
+  advanceSensitiveTarget(graphId: string, nodeId: string): void {
+    if (this.sensitiveActionTarget !== undefined) {
+      this.sensitiveActionTarget = { ...this.sensitiveActionTarget, nodeId };
+      this.privateActionTargets.set(
+        `${graphId}\0${nodeId}`,
+        this.sensitiveActionTarget,
+      );
+    }
   }
 
   redactSensitiveText(value: string): string {
@@ -341,6 +368,13 @@ export class PlaywrightBrowserSession {
     }
     this.sensitiveValues.clear();
     this.sensitiveActionTarget = undefined;
+    for (const target of this.privateActionTargets.values()) {
+      await target.handle.evaluate((element, attribute) => {
+        element.removeAttribute(attribute);
+      }, PRIVATE_TARGET_ATTRIBUTE).catch(() => undefined);
+      await target.handle.dispose().catch(() => undefined);
+    }
+    this.privateActionTargets.clear();
     return firstError;
   }
 }
