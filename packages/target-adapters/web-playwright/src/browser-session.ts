@@ -82,7 +82,9 @@ export interface StoredObservation {
 
 export interface PrivateActionTarget {
   readonly token: string;
+  readonly locator: Locator;
   readonly handle: ElementHandle<Element>;
+  markerInstalled: boolean;
 }
 
 export interface SensitiveActionTarget extends PrivateActionTarget {
@@ -168,17 +170,19 @@ export class PlaywrightBrowserSession {
     }
     this.privateTargetOrdinal += 1;
     const token = `target-${this.privateTargetOrdinal}`;
-    await handle.evaluate((element, identity) => {
-      element.setAttribute(identity.attribute, identity.token);
-    }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token });
-    this.privateActionTargets.set(`${graphId}\0${nodeId}`, { token, handle });
+    this.privateActionTargets.set(`${graphId}\0${nodeId}`, {
+      token,
+      locator,
+      handle,
+      markerInstalled: false,
+    });
   }
 
   privateActionTargetFor(graphId: string, nodeId: string): PrivateActionTarget | undefined {
     return this.privateActionTargets.get(`${graphId}\0${nodeId}`);
   }
 
-  registerSensitiveActionTarget(graphId: string, nodeId: string): void {
+  async registerSensitiveActionTarget(graphId: string, nodeId: string): Promise<void> {
     const target = this.privateActionTargetFor(graphId, nodeId);
     if (target === undefined) {
       throw new WebTargetError(
@@ -195,7 +199,58 @@ export class PlaywrightBrowserSession {
         "The sensitive action target limit was exceeded.",
       );
     }
-    this.sensitiveActionTargets.set(target.token, { ...target, nodeId });
+    if (!target.markerInstalled) {
+      const locatedHandle = await target.locator.elementHandle();
+      const exactTarget = locatedHandle !== null && await target.handle.evaluate(
+        (element, located) => element === located,
+        locatedHandle,
+      );
+      if (locatedHandle !== null && locatedHandle !== target.handle) {
+        await locatedHandle.dispose();
+      }
+      if (!exactTarget) {
+        throw new WebTargetError(
+          "SensitiveTargetUnproven",
+          "The sensitive action target no longer has its resolution-bound identity.",
+        );
+      }
+      const registered = { ...target, nodeId };
+      this.sensitiveActionTargets.set(target.token, registered);
+      try {
+        target.markerInstalled = true;
+        registered.markerInstalled = true;
+        const markerInstalled = await target.handle.evaluate((element, identity) => {
+          element.setAttribute(identity.attribute, identity.token);
+          return element.getAttribute(identity.attribute) === identity.token;
+        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
+        if (!markerInstalled) {
+          throw new WebTargetError(
+            "SensitiveTargetUnproven",
+            "The sensitive action target could not install its private marker.",
+          );
+        }
+      } catch (error) {
+        this.sensitiveActionTargets.delete(target.token);
+        await target.handle.evaluate((element, identity) => {
+          if (element.getAttribute(identity.attribute) === identity.token) {
+            element.removeAttribute(identity.attribute);
+          }
+        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+        target.markerInstalled = false;
+        registered.markerInstalled = false;
+        throw error;
+      }
+    } else if (!(await target.handle.evaluate((element, identity) =>
+      element.getAttribute(identity.attribute) === identity.token,
+    { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }))) {
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "The sensitive action target lost its private marker.",
+      );
+    }
+    const registered = { ...target, nodeId, markerInstalled: true };
+    this.privateActionTargets.set(`${graphId}\0${nodeId}`, registered);
+    this.sensitiveActionTargets.set(target.token, registered);
   }
 
   sensitiveTargets(): readonly SensitiveActionTarget[] {
@@ -372,9 +427,24 @@ export class PlaywrightBrowserSession {
       }
     };
 
+    const targets = new Map(
+      [...this.privateActionTargets.values()].map((target) => [target.token, target]),
+    );
     if (this.page) {
+      for (const target of targets.values()) {
+        if (target.markerInstalled) {
+          await target.handle.evaluate((element, identity) => {
+            if (element.getAttribute(identity.attribute) === identity.token) {
+              element.removeAttribute(identity.attribute);
+            }
+          }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+        }
+      }
       await this.page.close().catch(record);
       this.page = undefined;
+    }
+    for (const target of targets.values()) {
+      await target.handle.dispose().catch(() => undefined);
     }
     if (this.context) {
       await this.context.close().catch(record);
@@ -386,15 +456,6 @@ export class PlaywrightBrowserSession {
     }
     this.sensitiveValues.clear();
     this.sensitiveActionTargets.clear();
-    const targets = new Map(
-      [...this.privateActionTargets.values()].map((target) => [target.token, target]),
-    );
-    for (const target of targets.values()) {
-      await target.handle.evaluate((element, attribute) => {
-        element.removeAttribute(attribute);
-      }, PRIVATE_TARGET_ATTRIBUTE).catch(() => undefined);
-      await target.handle.dispose().catch(() => undefined);
-    }
     this.privateActionTargets.clear();
     return firstError;
   }

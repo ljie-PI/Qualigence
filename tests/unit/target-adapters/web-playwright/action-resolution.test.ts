@@ -37,10 +37,14 @@ async function bindPrivateTarget(
     evaluate: async () => true,
     dispose: async () => undefined,
   };
+  const locator = {
+    ...target,
+    elementHandle: async () => handle,
+  };
   await session.establishPrivateActionTarget(
     graphId,
     nodeId,
-    { elementHandle: async () => handle } as never,
+    locator as never,
   );
 }
 
@@ -198,11 +202,18 @@ describe("PlaywrightActionExecutor value resolution", () => {
   it("clears sensitive target and source state when the session closes", async () => {
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerSensitiveValue("source-secret");
+    const dispose = vi.fn(async () => undefined);
+    await session.establishPrivateActionTarget(
+      "run-1:observation:1",
+      "n-0-abcd1234",
+      { elementHandle: async () => ({ evaluate: async () => true, dispose }) } as never,
+    );
 
     await session.close();
 
     expect(session.sensitiveTargets()).toEqual([]);
     expect(session.redactSensitiveText("source-secret")).toBe("source-secret");
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it("fails closed before a sensitive action exceeds the target cap", async () => {
@@ -211,7 +222,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       const graphId = `run-1:observation:${index + 1}`;
       const nodeId = `n-${index}-abcd1234`;
       await bindPrivateTarget(session, graphId, {}, nodeId);
-      session.registerSensitiveActionTarget(graphId, nodeId);
+      await session.registerSensitiveActionTarget(graphId, nodeId);
     }
     const graphId = "run-1:observation:overflow";
     const nodeId = "n-overflow-abcd1234";

@@ -347,6 +347,7 @@ remaining_important_fix_commits: `de2fc1c`, `b150d67`
 final_review_blocker_fix: `1b0502f`
 remaining_blocker_fix: `e820872`
 latest_review_attempt_source_head: `a52dd86`
+latest_standards_blocker_fix: pending commit
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
@@ -413,6 +414,19 @@ latest_review_attempt_source_head: `a52dd86`
   before analysis because the OpenCode Windows review runner again could not
   start its `/usr/bin/env` subagent process. E2E remains deliberately unrun;
   clean review and post-review acceptance remain pending.
+- The final Standards blocker fix removes all live-page mutation from action
+  resolution. Resolution retains only an adapter-private stable Locator and
+  exact ElementHandle. After policy authorization, the executor re-proves that
+  identity, registers the target for all later observation/screenshot masking,
+  and only then installs the private marker immediately before input/select.
+  Session close removes installed markers and disposes retained handles.
+- Real Chromium `ExecutionRuntime` coverage installs a page MutationObserver
+  for both input and select: a `Normal` policy denial leaves the mutation count
+  at zero with no private marker, while an authorized `ExternalSideEffect`
+  action registers its exact target and produces an opaque-black masked PNG
+  crop. The focused non-E2E Gate passed 10 files / 114 tests with 1 existing
+  Task 21 skip; root `corepack pnpm typecheck` and `git diff --check` passed.
+  E2E was not run and remains blocked on fresh exact-base review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

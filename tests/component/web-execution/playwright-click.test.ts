@@ -5,15 +5,21 @@ import type {
   ObservationGraph,
   ObservationNode,
 } from "@qualigence/runner-protocol";
-import { ExecutionPermit, ExecutionRuntime, type ProposedAction } from "@qualigence/runner-kernel";
+import {
+  DeterministicRunnerPolicyGate,
+  ExecutionPermit,
+  ExecutionRuntime,
+  type ProposedAction,
+} from "@qualigence/runner-kernel";
 import { InMemoryTraceStore, TraceIngestor } from "@qualigence/evidence";
 import { InMemoryProtocolTraceRecorder } from "@qualigence/in-memory-runner-protocol";
-import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
+import { AllowAllRunnerPolicyGate, InMemoryTraceRecorder } from "@qualigence/testkit";
 import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
   PlaywrightBrowserSession,
   PlaywrightObserver,
+  PRIVATE_TARGET_ATTRIBUTE,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -263,6 +269,129 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serializedPublicValues).not.toContain("private@example.test");
     expect(serializedPublicValues).not.toContain("private-country-code");
   });
+
+  it.each([
+    ["input", "Email", "customer.email", "private@example.test"],
+    ["select", "Country", "customer.country", "private-country-code"],
+  ] as const)(
+    "does not mutate the page for denied %s and registers its allowed target for masking",
+    async (kind, targetName, valueRef, value) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => value });
+
+      const run = async (maximumRisk: "Normal" | "ExternalSideEffect") => {
+        const policy = {
+          ...job.policy,
+          allowedOrigins: [fixture.origin],
+          allowedActionKinds: [kind],
+          maximumRisk,
+          expiresAt: "2027-08-21T00:00:00.000Z",
+        };
+        const runtimeObserver = {
+          capture: async (acceptedJob: AcceptedExecutionJob) => {
+            const graph = await observer.capture(acceptedJob);
+            if (session.sensitiveTargets().length === 0) {
+              await session.withPage(async (page) => {
+                await page.evaluate(() => {
+                  interface PageMutationObserver {
+                    disconnect(): void;
+                    observe(target: unknown, options: {
+                      attributes: boolean;
+                      characterData: boolean;
+                      childList: boolean;
+                      subtree: boolean;
+                    }): void;
+                  }
+                  const state = globalThis as unknown as {
+                    document: unknown;
+                    MutationObserver: new (
+                      callback: (records: readonly unknown[]) => void,
+                    ) => PageMutationObserver;
+                    qualigenceMutationCount?: number;
+                    qualigenceMutationObserver?: PageMutationObserver;
+                  };
+                  state.qualigenceMutationObserver?.disconnect();
+                  state.qualigenceMutationCount = 0;
+                  state.qualigenceMutationObserver = new state.MutationObserver((records) => {
+                    state.qualigenceMutationCount =
+                      (state.qualigenceMutationCount ?? 0) + records.length;
+                  });
+                  state.qualigenceMutationObserver.observe(state.document, {
+                    attributes: true,
+                    characterData: true,
+                    childList: true,
+                    subtree: true,
+                  });
+                });
+              });
+            }
+            return graph;
+          },
+        };
+        const runtime = new ExecutionRuntime({
+          observer: runtimeObserver,
+          decisionProvider: {
+            decide: async () => valued(kind, "unused", valueRef) as never,
+          },
+          resolver: {
+            resolve: async (_action, graph) => resolver.resolve(
+              valued(kind, nodeNamed(graph, targetName).id, valueRef),
+              graph,
+            ) as never,
+          },
+          policyGate: new DeterministicRunnerPolicyGate(policy, {
+            now: () => Date.parse("2026-08-21T00:00:00.000Z"),
+          }),
+          actionExecutor: executor,
+          verifier: {
+            verify: async () => ({ status: "passed", summary: "masked", claims: [] }),
+          },
+          traceRecorder: new InMemoryTraceRecorder(),
+          objectiveOnlyMaximumWallClockMs: 10_000,
+          objectiveOnlyMaximumModelTokens: 100,
+        });
+        return runtime.run({
+          ...job,
+          jobId: `job-${kind}-${maximumRisk}`,
+          runId: `run-${kind}-${maximumRisk}`,
+          target: { kind: "web", url: fixture.url },
+          policy,
+        });
+      };
+
+      await expect(run("Normal")).resolves.toMatchObject({
+        status: "blocked",
+        errorCode: "PolicyDenied",
+      });
+      expect(await session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as { qualigenceMutationCount?: number }).qualigenceMutationCount ?? -1,
+      ))).toBe(0);
+      expect(await session.withPage(async (page) =>
+        page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}]`).count(),
+      )).toBe(0);
+
+      await expect(run("ExternalSideEffect")).resolves.toMatchObject({ status: "passed" });
+      expect(session.sensitiveTargets()).toHaveLength(1);
+      expect(await session.withPage(async (page) =>
+        page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}]`).count(),
+      )).toBe(1);
+      const graphId = session.latestGraphId;
+      const target = session.sensitiveTargets()[0];
+      if (graphId === undefined || target === undefined) {
+        throw new Error("Expected a registered sensitive target and observation.");
+      }
+      const screenshot = session.artifactsFor(graphId)
+        .find((artifact) => artifact.mediaType === "image/png");
+      const box = await target.handle.boundingBox();
+      if (screenshot === undefined || box === null) {
+        throw new Error("Expected a masked screenshot target.");
+      }
+      expectSolidCrop(decodePng(screenshot.bytes), box, [0, 0, 0, 255]);
+    },
+  );
 
   it("redacts input plaintext from the complete Trace and verifier context", async () => {
     const secret = "trace-secret@example.test";

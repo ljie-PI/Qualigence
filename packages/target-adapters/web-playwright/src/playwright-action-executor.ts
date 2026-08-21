@@ -122,7 +122,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           this.session.registerSensitiveValue(value);
           // Retain the exact target before Playwright can partially apply a
           // value. Capacity failure therefore happens before the side effect.
-          this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
+          await this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
           if (action.kind === "input") {
             await target.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {

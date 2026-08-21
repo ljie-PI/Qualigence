@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   PlaywrightBrowserSession,
+  PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
   isOriginAllowed,
   normalizeOrigin,
@@ -61,6 +62,48 @@ describe("PlaywrightBrowserSession", () => {
     await session.close();
     await session.close();
     expect(closed()).toBe(true);
+  });
+
+  it("removes an installed private target marker before closing the page", async () => {
+    const { launcher } = fakeLauncher();
+    const session = new PlaywrightBrowserSession(baseOptions(), launcher);
+    await session.start();
+    const attributes = new Map<string, string>();
+    const dispose = vi.fn(async () => undefined);
+    interface FakeHandle {
+      setAttribute(name: string, value: string): void;
+      getAttribute(name: string): string | null;
+      removeAttribute(name: string): void;
+      evaluate(
+        callback: (element: FakeHandle, argument: never) => unknown,
+        argument: never,
+      ): Promise<unknown>;
+      dispose(): Promise<void>;
+    }
+    const handle: FakeHandle = {
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      getAttribute: (name: string) => attributes.get(name) ?? null,
+      removeAttribute: (name: string) => attributes.delete(name),
+      evaluate: async (callback, argument) =>
+        callback(handle, argument),
+      dispose,
+    };
+    const locator = { elementHandle: async () => handle };
+    await session.establishPrivateActionTarget(
+      "run-1:observation:1",
+      "n-0-abcd1234",
+      locator as never,
+    );
+    await session.registerSensitiveActionTarget(
+      "run-1:observation:1",
+      "n-0-abcd1234",
+    );
+    expect(attributes.has(PRIVATE_TARGET_ATTRIBUTE)).toBe(true);
+
+    await session.close();
+
+    expect(attributes.has(PRIVATE_TARGET_ATTRIBUTE)).toBe(false);
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it("rejects a non-http(s) scheme before launching a browser", async () => {
