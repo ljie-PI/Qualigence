@@ -346,7 +346,7 @@ implementation_head: `b150d67`
 remaining_important_fix_commits: `de2fc1c`, `b150d67`
 final_review_blocker_fix: `1b0502f`
 remaining_blocker_fix: `e820872`
-latest_reviewed_source_head: `dade360`
+latest_review_attempt_source_head: `dade360`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a

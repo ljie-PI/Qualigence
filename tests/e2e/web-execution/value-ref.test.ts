@@ -56,9 +56,9 @@ describe("production valueRef browser execution", () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
         <style>
-          #lf-secret { position:fixed;left:-20px;top:40px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
-          #crlf-secret { position:fixed;left:40px;top:100px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
-          #country-secret { position:fixed;left:40px;top:160px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
+          #lf-secret { position:fixed;left:-20px;top:40px;width:200px;height:40px;padding:0;border:0;border-radius:0;appearance:none;background:rgb(255,0,0) }
+          #crlf-secret { position:fixed;left:40px;top:100px;width:200px;height:40px;padding:0;border:0;border-radius:0;appearance:none;background:rgb(255,0,0) }
+          #country-secret { position:fixed;left:40px;top:160px;width:200px;height:40px;padding:0;border:0;border-radius:0;appearance:none;background:rgb(255,0,0) }
           #unrelated-region { position:fixed;left:300px;top:100px;width:80px;height:80px;background:rgb(0,255,0) }
         </style>
         <label>LF secret <textarea id="lf-secret" aria-label="LF secret"></textarea></label>
