@@ -47,7 +47,7 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: needs_info
+verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/71`
 remediation_ticket: `36`
 remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/74`
@@ -145,6 +145,10 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 - The fresh remediation review reported no blocking findings. The final real
   schema-1 forward-upgrade/backup/restore E2E then passed 1 file / 3 tests with
   PostgreSQL and all expected source rows, manifests, and object bytes.
+- Parent PR final verification after merging current `main` passed the focused
+  Gate at 10 files / 49 tests and the separate backup/restore E2E at 1 file / 3
+  tests. Compose rendering, root typecheck, and diff check passed. Final
+  exact-head review reported no code/spec blocker; merge remains pending.
 
 ### Ticket 17 - Execution budget and model usage (2026-08-20)
 
