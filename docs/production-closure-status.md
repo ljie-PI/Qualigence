@@ -344,6 +344,7 @@ parent_commit: `004446c`
 reviewed_head: `9bc55c4`
 implementation_head: `b150d67`
 remaining_important_fix_commits: `de2fc1c`, `b150d67`
+final_review_blocker_fix: `1b0502f`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
@@ -376,6 +377,22 @@ remaining_important_fix_commits: `de2fc1c`, `b150d67`
   are fixed-redacted. It was not run pending fresh review. The amended focused
   non-E2E Gate passed 8 files / 104 tests with 1 existing Task 21 skip; root
   `corepack pnpm typecheck` and `git diff --check` passed.
+- The final review-blocker fix replaces descriptor equality with an
+  adapter-private `ElementHandle` established during unique action resolution.
+  Post-action capture compares the exact retained DOM node, redacts all of that
+  node's textual fields even when its accessible name changes to normalized
+  secret content, and fails `SensitiveTargetUnproven` before registering an
+  Observation or Artifact if the node was replaced or cannot be proven.
+- Sensitive screenshots use Playwright's bounded mask only after a unique,
+  finite target box and exact handle relation are proven before capture, then
+  re-prove identity before bytes can enter the Artifact record. Real Chromium
+  component evidence decodes the persisted PNG and proves the target center is
+  opaque black while an unrelated green region remains unchanged. The prepared
+  production-path E2E performs the same decoded-pixel checks for input/select
+  and remains deliberately unrun until fresh review.
+- Final amended non-E2E Gate passed 10 files / 111 tests with 1 existing Task 21
+  skip; root `corepack pnpm typecheck` and `git diff --check` passed. Fresh
+  exact-base review and post-review E2E remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
