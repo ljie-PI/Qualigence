@@ -132,14 +132,44 @@ interface SensitiveActionMutationRecord {
 interface SensitiveActionMutationTracker {
   readonly target: Element;
   readonly forms: readonly string[];
-  readonly candidates: readonly SensitiveActionCandidateSnapshot[];
+  candidates: readonly SensitiveActionCandidateSnapshot[];
   readonly records: SensitiveActionMutationRecord[];
   readonly causalElements: Element[];
   readonly observer: MutationObserver;
   readonly restore: () => boolean;
+  readonly metadata: SensitivePageMetadataAuthority;
+  ambiguousEvent: boolean;
   preparedElements: readonly Element[] | undefined;
   overflow: boolean;
   observerError: boolean;
+}
+
+interface SensitivePageMetadataSnapshot {
+  readonly href: string;
+  readonly pathname: string;
+  readonly decodedPathname: string;
+  readonly query: readonly { readonly key: string; readonly value: string }[];
+  readonly hash: string;
+  readonly decodedHash: string;
+  readonly title: string;
+}
+
+interface SensitivePageMetadataAuthority {
+  readonly hrefs: string[];
+  readonly pathnames: string[];
+  readonly queryKeys: string[];
+  readonly queryValues: string[];
+  readonly hashes: string[];
+  readonly titles: string[];
+  unprovenUrl: boolean;
+}
+
+interface SensitivePageRedaction {
+  pathname: boolean;
+  readonly queryKeys: number[];
+  readonly queryValues: number[];
+  hash: boolean;
+  title: boolean;
 }
 
 export class PlaywrightBrowserSession {
@@ -156,7 +186,7 @@ export class PlaywrightBrowserSession {
   private readonly privateActionTargets = new Map<string, PrivateActionTarget>();
   private privateTargetOrdinal = 0;
   private sensitiveEvidenceUnproven = false;
-  private sensitiveActionTracker: JSHandle<SensitiveActionMutationTracker> | undefined;
+  private readonly sensitiveActionTrackers: JSHandle<SensitiveActionMutationTracker>[] = [];
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -327,19 +357,29 @@ export class PlaywrightBrowserSession {
     kind: "input" | "select",
     value: string,
   ): Promise<void> {
-    if (this.sensitiveActionTracker !== undefined) {
+    if (this.sensitiveActionTrackers.length >= MAXIMUM_SENSITIVE_ACTION_TARGETS) {
       throw this.sensitiveEvidenceFailure(
-        "The previous sensitive action has not reached evidence capture.",
+        "The sensitive action tracker limit was exceeded.",
       );
     }
     try {
-      const forms = await this.normalizeSensitiveValue(target, kind, value);
-      this.sensitiveActionTracker = await target.evaluateHandle((element, input) => {
+      if (value.length > MAXIMUM_OBSERVATION_NODE_BYTES) {
+        throw new Error("source-form-length-overflow");
+      }
+      if (new TextEncoder().encode(value).byteLength > MAXIMUM_OBSERVATION_NODE_BYTES) {
+        throw new Error("source-form-byte-overflow");
+      }
+      const normalizedForms = await this.normalizeSensitiveValue(target, kind, value);
+      const forms = [...new Set([value, ...normalizedForms].filter((form) => form !== ""))];
+      const tracker = await target.evaluateHandle((element, input) => {
         const limits = input.limits;
         if (!element.isConnected) {
           throw new Error("target-disconnected");
         }
-        const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
+        const byteLength = (text: string): number => {
+          if (text.length > limits.maximumNodeBytes) throw new Error("node-length-overflow");
+          return new TextEncoder().encode(text).byteLength;
+        };
         const boundedText = (candidate: Element): string => {
           const walker = candidate.ownerDocument.createTreeWalker(
             candidate,
@@ -431,6 +471,16 @@ export class PlaywrightBrowserSession {
           candidates,
           records,
           causalElements,
+          metadata: {
+            hrefs: [],
+            pathnames: [],
+            queryKeys: [],
+            queryValues: [],
+            hashes: [],
+            titles: [],
+            unprovenUrl: false,
+          },
+          ambiguousEvent: false,
           overflow: false,
           observerError: false,
           preparedElements: undefined,
@@ -523,10 +573,62 @@ export class PlaywrightBrowserSession {
         let inCausalScope = false;
         const originalSetTimeout = window.setTimeout;
         const originalQueueMicrotask = window.queueMicrotask;
-        const beginDispatch = (): void => {
+        const metadataSnapshot = (): SensitivePageMetadataSnapshot => ({
+          href: location.href,
+          pathname: location.pathname,
+          decodedPathname: (() => {
+            try { return decodeURIComponent(location.pathname); } catch { return location.pathname; }
+          })(),
+          query: [...new URLSearchParams(location.search).entries()].map(([key, value]) => ({ key, value })),
+          hash: location.hash,
+          decodedHash: (() => {
+            try { return decodeURIComponent(location.hash); } catch { return location.hash; }
+          })(),
+          title: document.title,
+        });
+        const containsSensitiveForm = (text: string): boolean =>
+          forms.some((form) => text.includes(form));
+        const rememberMetadata = (
+          before: SensitivePageMetadataSnapshot,
+          after: SensitivePageMetadataSnapshot,
+        ): void => {
+          const remember = (values: string[], value: string): void => {
+            if (!values.includes(value)) values.push(value);
+          };
+          if (before.href !== after.href && containsSensitiveForm(after.href)) {
+            remember(tracker.metadata.hrefs, after.href);
+          }
+          if (before.pathname !== after.pathname &&
+              (containsSensitiveForm(after.pathname) || containsSensitiveForm(after.decodedPathname))) {
+            remember(tracker.metadata.pathnames, after.pathname);
+          }
+          for (let index = 0; index < after.query.length; index += 1) {
+            const current = after.query[index];
+            const prior = before.query[index];
+            if (current === undefined) continue;
+            if (current.key !== prior?.key && containsSensitiveForm(current.key)) {
+              remember(tracker.metadata.queryKeys, current.key);
+            }
+            if (current.value !== prior?.value && containsSensitiveForm(current.value)) {
+              remember(tracker.metadata.queryValues, current.value);
+            }
+          }
+          if (before.hash !== after.hash &&
+              (containsSensitiveForm(after.hash) || containsSensitiveForm(after.decodedHash))) {
+            remember(tracker.metadata.hashes, after.hash);
+          }
+          if (before.title !== after.title && containsSensitiveForm(after.title)) {
+            remember(tracker.metadata.titles, after.title);
+          }
+        };
+        let dispatchMetadata: SensitivePageMetadataSnapshot | undefined;
+        let dispatchTarget: EventTarget | null = null;
+        const beginDispatch = (event: Event): void => {
           try {
             dispatchSnapshot = capture();
-            inCausalScope = true;
+            dispatchMetadata = metadataSnapshot();
+            dispatchTarget = event.target;
+            inCausalScope = event.target === element;
           } catch {
             tracker.observerError = true;
           }
@@ -534,9 +636,36 @@ export class PlaywrightBrowserSession {
         const endDispatch = (): void => {
           if (dispatchSnapshot === undefined) return;
           const before = dispatchSnapshot;
+          const beforeMetadata = dispatchMetadata;
+          const authorized = dispatchTarget === element;
+          const completedTarget = dispatchTarget;
           dispatchSnapshot = undefined;
+          dispatchMetadata = undefined;
+          dispatchTarget = null;
           inCausalScope = false;
-          finishCausalScope(before);
+          if (authorized) {
+            finishCausalScope(before);
+            if (beforeMetadata !== undefined) rememberMetadata(beforeMetadata, metadataSnapshot());
+          } else {
+            try {
+              const after = capture();
+              const eventCandidate = completedTarget instanceof Element
+                ? after.find((candidate) => candidate.element === completedTarget)
+                : undefined;
+              const changedToForm = after.some((candidate) => {
+                const prior = before.find((item) => item.element === candidate.element);
+                const priorValues = prior === undefined ? [] : values(prior.properties);
+                return values(candidate.properties).some((property, index) =>
+                  property !== priorValues[index] && containsForm(property));
+              });
+              if (changedToForm || (eventCandidate !== undefined &&
+                  values(eventCandidate.properties).some(containsForm))) {
+                tracker.ambiguousEvent = true;
+              }
+            } catch {
+              tracker.observerError = true;
+            }
+          }
         };
         window.addEventListener(eventType, beginDispatch, true);
         window.addEventListener(eventType, endDispatch, false);
@@ -552,11 +681,13 @@ export class PlaywrightBrowserSession {
             return;
           }
           callbackDepth += 1;
+          const beforeMetadata = metadataSnapshot();
           try {
             callback();
           } finally {
             callbackDepth -= 1;
             finishCausalScope(before);
+            rememberMetadata(beforeMetadata, metadataSnapshot());
           }
         };
         const wrappedSetTimeout = ((
@@ -584,15 +715,34 @@ export class PlaywrightBrowserSession {
         };
         window.setTimeout = wrappedSetTimeout;
         window.queueMicrotask = wrappedQueueMicrotask;
+        const originalReplaceState = history.replaceState;
+        const originalPushState = history.pushState;
+        const wrapHistory = (original: History["replaceState"]): History["replaceState"] =>
+          function (data: unknown, unused: string, url?: string | URL | null): void {
+            const causal = inCausalScope || callbackDepth > 0;
+            const before = metadataSnapshot();
+            original.call(history, data, unused, url);
+            const after = metadataSnapshot();
+            if (causal) rememberMetadata(before, after);
+            else if (containsSensitiveForm(after.href)) tracker.metadata.unprovenUrl = true;
+          };
+        const wrappedReplaceState = wrapHistory(originalReplaceState);
+        const wrappedPushState = wrapHistory(originalPushState);
+        history.replaceState = wrappedReplaceState;
+        history.pushState = wrappedPushState;
         tracker.restore = (): boolean => {
           window.removeEventListener(eventType, beginDispatch, true);
           window.removeEventListener(eventType, endDispatch, false);
           const intact = window.setTimeout === wrappedSetTimeout &&
-            window.queueMicrotask === wrappedQueueMicrotask;
+            window.queueMicrotask === wrappedQueueMicrotask &&
+            history.replaceState === wrappedReplaceState &&
+            history.pushState === wrappedPushState;
           if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
           if (window.queueMicrotask === wrappedQueueMicrotask) {
             window.queueMicrotask = originalQueueMicrotask;
           }
+          if (history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
+          if (history.pushState === wrappedPushState) history.pushState = originalPushState;
           observer.disconnect();
           return intact;
         };
@@ -610,8 +760,8 @@ export class PlaywrightBrowserSession {
           attributes: SENSITIVE_ACTION_ATTRIBUTES,
         },
       });
+      this.sensitiveActionTrackers.push(tracker);
     } catch (error) {
-      this.sensitiveActionTracker = undefined;
       throw this.sensitiveEvidenceFailure(
         `The browser-normalized sensitive value and bounded tracker could not be proven: ${
           error instanceof Error ? error.message : String(error)
@@ -631,14 +781,30 @@ export class PlaywrightBrowserSession {
         if (element.options.length > input.maximumOptions) {
           throw new Error("normalization-option-overflow");
         }
-        return {
-          tag: "select" as const,
-          options: [...element.options].map((option) => ({
-            value: option.value,
-            label: option.label,
-            text: option.textContent ?? "",
-          })),
-        };
+        const options: { readonly value: string; readonly label: string; readonly text: string }[] = [];
+        let totalChars = 0;
+        for (let index = 0; index < element.options.length; index += 1) {
+          const option = element.options.item(index);
+          if (option === null) throw new Error("normalization-option-unprovable");
+          const valueLength = option.value.length;
+          const labelLength = option.label.length;
+          const textLength = (option.textContent ?? "").length;
+          for (const length of [valueLength, labelLength, textLength]) {
+            if (length > input.maximumCharsPerValue) {
+              throw new Error("normalization-option-length-overflow");
+            }
+            totalChars += length;
+            if (totalChars > input.maximumTotalChars) {
+              throw new Error("normalization-option-total-overflow");
+            }
+          }
+          options.push({
+            value: option.value.slice(0, input.maximumCharsPerValue),
+            label: option.label.slice(0, input.maximumCharsPerValue),
+            text: (option.textContent ?? "").slice(0, input.maximumCharsPerValue),
+          });
+        }
+        return { tag: "select" as const, options };
       }
       if (input.actionKind === "input" && element instanceof HTMLInputElement) {
         return { tag: "input" as const, type: element.type };
@@ -647,7 +813,12 @@ export class PlaywrightBrowserSession {
         return { tag: "textarea" as const };
       }
       throw new Error("normalization-target-unprovable");
-    }, { actionKind: kind, maximumOptions: MAXIMUM_SENSITIVE_ACTION_CANDIDATES });
+    }, {
+      actionKind: kind,
+      maximumOptions: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
+      maximumCharsPerValue: MAXIMUM_OBSERVATION_NODE_BYTES,
+      maximumTotalChars: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+    });
     const normalizationPage = await this.context.newPage();
     try {
       await normalizationPage.setContent("<!doctype html><html><body></body></html>");
@@ -682,17 +853,39 @@ export class PlaywrightBrowserSession {
           if (actionKind === "select" && candidate instanceof HTMLSelectElement) {
             const selected = candidate.selectedOptions.item(0);
             if (selected === null) throw new Error("normalized-selection-unprovable");
-            return [selected.value, selected.label, selected.textContent ?? ""];
+            const forms = [selected.value, selected.label, selected.textContent ?? ""];
+            let totalChars = 0;
+            for (const form of forms) {
+              if (form.length > input.maximumCharsPerValue) {
+                throw new Error("normalized-form-length-overflow");
+              }
+              totalChars += form.length;
+              if (totalChars > input.maximumTotalChars) {
+                throw new Error("normalized-form-total-overflow");
+              }
+            }
+            return forms.map((form) => form.slice(0, input.maximumCharsPerValue));
           }
           if (actionKind === "input" &&
               (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement)) {
-            return [candidate.value];
+            if (candidate.value.length > input.maximumCharsPerValue) {
+              throw new Error("normalized-form-length-overflow");
+            }
+            return [candidate.value.slice(0, input.maximumCharsPerValue)];
           }
           throw new Error("normalized-value-unprovable");
-        }, { candidate: element, actionKind: kind });
+        }, {
+          candidate: element,
+          actionKind: kind,
+          maximumCharsPerValue: MAXIMUM_OBSERVATION_NODE_BYTES,
+          maximumTotalChars: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+        });
         const forms = [...new Set(normalized.filter((form) => form !== ""))];
         let bytes = 0;
         for (const form of forms) {
+          if (form.length > MAXIMUM_OBSERVATION_NODE_BYTES) {
+            throw new Error("normalized-form-length-overflow");
+          }
           const formBytes = new TextEncoder().encode(form).byteLength;
           if (formBytes > MAXIMUM_OBSERVATION_NODE_BYTES) {
             throw new Error("normalized-form-overflow");
@@ -712,38 +905,144 @@ export class PlaywrightBrowserSession {
   }
 
   async prepareSensitiveEvidenceCapture(): Promise<void> {
-    const tracker = this.sensitiveActionTracker;
-    if (tracker === undefined) return;
-    const handles = await this.reconcileSensitiveActionTracking(tracker, false);
-    try {
-      await this.retainSensitiveElements(handles);
-    } catch {
-      throw this.sensitiveEvidenceFailure("Sensitive reflected targets could not be retained.");
+    for (const tracker of this.sensitiveActionTrackers) {
+      const handles = await this.reconcileSensitiveActionTracking(tracker, false);
+      try {
+        await this.retainSensitiveElements(handles);
+      } catch {
+        throw this.sensitiveEvidenceFailure("Sensitive reflected targets could not be retained.");
+      }
     }
   }
 
   async completeSensitiveEvidenceCapture(): Promise<void> {
-    const tracker = this.sensitiveActionTracker;
-    if (tracker === undefined) return;
-    await this.reconcileSensitiveActionTracking(tracker, true);
-    await this.disposeSensitiveActionTracker(tracker);
+    for (const tracker of this.sensitiveActionTrackers) {
+      await this.reconcileSensitiveActionTracking(tracker, true);
+    }
   }
 
   async failIfSensitiveTrackingOverflowed(): Promise<void> {
-    const tracker = this.sensitiveActionTracker;
-    if (tracker === undefined) return;
-    const invalid = await tracker.evaluate((state) => state.overflow || state.observerError)
-      .catch(() => true);
-    if (invalid) {
-      throw this.sensitiveEvidenceFailure(
-        "Sensitive action provenance tracking exceeded its bounds.",
-      );
+    for (const tracker of this.sensitiveActionTrackers) {
+      const invalid = await tracker.evaluate((state) =>
+        state.overflow || state.observerError || state.ambiguousEvent).catch(() => true);
+      if (invalid) {
+        throw this.sensitiveEvidenceFailure(
+          "Sensitive action provenance tracking exceeded its bounds.",
+        );
+      }
     }
   }
 
   async abandonSensitiveActionTracking(): Promise<void> {
-    const tracker = this.sensitiveActionTracker;
-    if (tracker !== undefined) await this.disposeSensitiveActionTracker(tracker, true);
+    for (const tracker of this.sensitiveActionTrackers.splice(0)) {
+      await this.disposeSensitiveActionTracker(tracker, true);
+    }
+  }
+
+  async redactSensitivePageMetadata(
+    href: string,
+    title: string,
+  ): Promise<{ readonly url: string; readonly title: string }> {
+    if (this.sensitiveActionTrackers.length === 0) return { url: href, title };
+    const parsed = new URL(href);
+    const query = [...parsed.searchParams.entries()];
+    let decodedPathname = parsed.pathname;
+    let decodedHash = parsed.hash;
+    try { decodedPathname = decodeURIComponent(parsed.pathname); } catch { /* fail below if sensitive */ }
+    try { decodedHash = decodeURIComponent(parsed.hash); } catch { /* fail below if sensitive */ }
+    const redaction: SensitivePageRedaction = {
+      pathname: false,
+      queryKeys: [],
+      queryValues: [],
+      hash: false,
+      title: false,
+    };
+    let sensitiveOccurrence = false;
+    for (const tracker of this.sensitiveActionTrackers) {
+      const result = await tracker.evaluate((state, current) => {
+        const contains = (value: string): boolean =>
+          state.forms.some((form) => value.includes(form));
+        const authorized = (values: readonly string[], value: string): boolean => values.includes(value);
+        const pathnameSensitive = contains(current.pathname) || contains(current.decodedPathname);
+        const hashSensitive = contains(current.hash) || contains(current.decodedHash);
+        const titleSensitive = contains(current.title);
+        const queryKeyIndexes: number[] = [];
+        const queryValueIndexes: number[] = [];
+        let occurrence = pathnameSensitive || hashSensitive || titleSensitive || contains(current.href);
+        let unproven = state.metadata.unprovenUrl;
+        if (pathnameSensitive) unproven ||= !authorized(state.metadata.pathnames, current.pathname);
+        if (hashSensitive) unproven ||= !authorized(state.metadata.hashes, current.hash);
+        if (titleSensitive) unproven ||= !authorized(state.metadata.titles, current.title);
+        for (let index = 0; index < current.query.length; index += 1) {
+          const item = current.query[index];
+          if (item === undefined) continue;
+          if (contains(item.key)) {
+            occurrence = true;
+            queryKeyIndexes.push(index);
+            unproven ||= !authorized(state.metadata.queryKeys, item.key);
+          }
+          if (contains(item.value)) {
+            occurrence = true;
+            queryValueIndexes.push(index);
+            unproven ||= !authorized(state.metadata.queryValues, item.value);
+          }
+        }
+        const knownField = pathnameSensitive || hashSensitive || titleSensitive ||
+          queryKeyIndexes.length > 0 || queryValueIndexes.length > 0;
+        if (contains(current.href) && !knownField) unproven = true;
+        return {
+          occurrence,
+          unproven,
+          pathname: pathnameSensitive,
+          hash: hashSensitive,
+          title: titleSensitive,
+          queryKeyIndexes,
+          queryValueIndexes,
+        };
+      }, {
+        href,
+        pathname: parsed.pathname,
+        decodedPathname,
+        query: query.map(([key, value]) => ({ key, value })),
+        hash: parsed.hash,
+        decodedHash,
+        title,
+      }).catch(() => ({
+        occurrence: true,
+        unproven: true,
+        pathname: false,
+        hash: false,
+        title: false,
+        queryKeyIndexes: [] as number[],
+        queryValueIndexes: [] as number[],
+      }));
+      sensitiveOccurrence ||= result.occurrence;
+      if (result.unproven) {
+        throw this.sensitiveEvidenceFailure("Sensitive page URL or title provenance is unproven.");
+      }
+      redaction.pathname ||= result.pathname;
+      redaction.hash ||= result.hash;
+      redaction.title ||= result.title;
+      for (const index of result.queryKeyIndexes) {
+        if (!redaction.queryKeys.includes(index)) redaction.queryKeys.push(index);
+      }
+      for (const index of result.queryValueIndexes) {
+        if (!redaction.queryValues.includes(index)) redaction.queryValues.push(index);
+      }
+    }
+    if (!sensitiveOccurrence) return { url: href, title };
+    if (redaction.pathname) parsed.pathname = "/[REDACTED]";
+    if (redaction.hash) parsed.hash = "[REDACTED]";
+    if (redaction.queryKeys.length > 0 || redaction.queryValues.length > 0) {
+      parsed.search = "";
+      for (const [index, [key, value]] of query.entries()) {
+        parsed.searchParams.append(
+          redaction.queryKeys.includes(index) ? "[REDACTED]" : key,
+          redaction.queryValues.includes(index) ? "[REDACTED]" : value,
+        );
+      }
+    }
+    return { url: parsed.href, title: redaction.title ? "[REDACTED]" : title };
   }
 
   private async reconcileSensitiveActionTracking(
@@ -756,7 +1055,10 @@ export class PlaywrightBrowserSession {
       result = await tracker.evaluateHandle((state, limits) => {
         const fail = (reason: string) => ({ reason, elements: [] as Element[] });
         try {
-          const byteLength = (text: string): number => new TextEncoder().encode(text).byteLength;
+          const byteLength = (text: string): number => {
+            if (text.length > limits.maximumNodeBytes) throw new Error("node-length-overflow");
+            return new TextEncoder().encode(text).byteLength;
+          };
           const boundedText = (candidate: Element): string => {
             const walker = candidate.ownerDocument.createTreeWalker(
               candidate,
@@ -780,6 +1082,7 @@ export class PlaywrightBrowserSession {
           }
           if (state.observerError) return fail("observer-error");
           if (state.overflow) return fail("tracker-overflow");
+          if (state.ambiguousEvent) return fail("event-target-causality-ambiguous");
           if (!state.target.isConnected) return fail("target-replaced");
 
           const snapshot = (candidate: Element): {
@@ -888,6 +1191,7 @@ export class PlaywrightBrowserSession {
             inspectedBytes += bytes;
             if (inspectedBytes > limits.maximumSnapshotBytes) return "snapshot-byte-overflow";
             if (!containsForm(property)) return undefined;
+            if (candidate instanceof HTMLTitleElement) return undefined;
             if (kind === "childList" && candidate !== null && causallyChanged(candidate)) {
               return add(candidate) ? undefined : "sensitive-target-overflow";
             }
@@ -943,6 +1247,9 @@ export class PlaywrightBrowserSession {
                 state.preparedElements.some((candidate) => !elements.includes(candidate))) {
               return fail("capture-changed-during-evidence");
             }
+            state.candidates = current;
+            state.records.length = 0;
+            state.preparedElements = undefined;
           } else {
             state.preparedElements = [...elements];
           }
@@ -1002,7 +1309,6 @@ export class PlaywrightBrowserSession {
       failed = true;
     }
     await tracker.dispose().catch(() => { failed = true; });
-    if (this.sensitiveActionTracker === tracker) this.sensitiveActionTracker = undefined;
     if (failed && !suppressFailure) {
       throw this.sensitiveEvidenceFailure(
         "Sensitive action provenance tracking could not be removed.",

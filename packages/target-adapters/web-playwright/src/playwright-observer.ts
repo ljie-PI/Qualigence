@@ -418,15 +418,20 @@ export class PlaywrightObserver implements Observer {
             }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
-      const url = page.url();
-      const title = await page.title();
+      const pageMetadata = await this.session.redactSensitivePageMetadata(
+        page.url(),
+        await page.title(),
+      );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
-        { url, ...(title !== "" ? { title } : {}) },
+        {
+          url: pageMetadata.url,
+          ...(pageMetadata.title !== "" ? { title: pageMetadata.title } : {}),
+        },
       );
       const sensitiveNodeIds = captured.sensitiveIndexes.map((index) => {
         const serializedNode = graph.nodes[index];
