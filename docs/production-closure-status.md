@@ -254,6 +254,7 @@ production_wiring: present
 verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
 remediation_ticket: `39`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/78`
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -1572,3 +1573,6 @@ files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
+ - Fresh coordinator review reported no blocking findings at product head
+   `0632fdb`. The post-review real Chromium acceptance then passed 1 file / 1
+   test. This PR-binding status change is documentation-only.
