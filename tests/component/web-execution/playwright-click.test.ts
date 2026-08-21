@@ -67,6 +67,7 @@ type PromiseScenario =
   | "subclass-default-species"
   | "subclass-overridden-species"
   | "instance-custom-then"
+  | "current-prototype-custom-then"
   | "prototype-custom-then"
   | "returned-promise-custom-then"
   | "hostile-thenable"
@@ -91,8 +92,19 @@ async function promiseScenarioPage(
 ): Promise<PromiseScenarioObservation | { readonly installed: true }> {
   const nativeCatch = Promise.prototype.catch;
   const nativeFinally = Promise.prototype.finally;
+  let currentEvents: string[] | undefined;
+  let currentPrototypeThenCalls = 0;
+  if (input.scenario === "current-prototype-custom-then") {
+    const inheritedThen = Promise.prototype.then;
+    Promise.prototype.then = function (...args) {
+      currentPrototypeThenCalls += 1;
+      currentEvents?.push("current-prototype-then");
+      return Reflect.apply(inheritedThen, this, args);
+    };
+  }
   const run = async (): Promise<PromiseScenarioObservation> => {
     const events: string[] = [];
+    currentEvents = events;
     const sourceValue = { identity: "source-value" };
     const sourceReason = { identity: "source-reason" };
     const callbackValue = { identity: "callback-value" };
@@ -184,6 +196,9 @@ async function promiseScenarioPage(
         result = receiver.finally(onfinally(callbackValue));
         break;
       }
+      case "current-prototype-custom-then":
+        result = Promise.resolve(sourceValue).finally(onfinally(callbackValue));
+        break;
       case "prototype-custom-then": {
         class PrototypeThenPromise<T> extends Promise<T> {
           constructor(executor: (
@@ -259,7 +274,7 @@ async function promiseScenarioPage(
       events.push("settled-fulfilled");
       return {
         events,
-        customThenCalls,
+        customThenCalls: customThenCalls + currentPrototypeThenCalls,
         speciesConstructorCalls,
         callbackCalls,
         settlement: "fulfilled",
@@ -274,7 +289,7 @@ async function promiseScenarioPage(
       events.push("settled-rejected");
       return {
         events,
-        customThenCalls,
+        customThenCalls: customThenCalls + currentPrototypeThenCalls,
         speciesConstructorCalls,
         callbackCalls,
         settlement: "rejected",
@@ -2013,6 +2028,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     "subclass-default-species",
     "subclass-overridden-species",
     "instance-custom-then",
+    "current-prototype-custom-then",
     "prototype-custom-then",
     "returned-promise-custom-then",
     "hostile-thenable",
@@ -2024,10 +2040,17 @@ describe("Playwright resolve + execute against real Chromium", () => {
     let native: PromiseScenarioObservation;
     try {
       await nativePage.goto(fixture.url);
-      native = await nativePage.evaluate(promiseScenarioPage, {
+      await nativePage.evaluate(promiseScenarioPage, {
         scenario,
-        installOnInput: false,
-      }) as PromiseScenarioObservation;
+        installOnInput: true,
+      });
+      await nativePage.locator('input[aria-label="Email"]').fill(`matrix-${scenario}`);
+      await nativePage.waitForFunction(() =>
+        (globalThis as typeof globalThis & { promiseScenarioObservation?: unknown })
+          .promiseScenarioObservation !== undefined);
+      native = await nativePage.evaluate(() =>
+        (globalThis as typeof globalThis & { promiseScenarioObservation: PromiseScenarioObservation })
+          .promiseScenarioObservation);
     } finally {
       await context.close();
       await browser.close();
@@ -2072,6 +2095,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
       "subclass-default-species": [4, 4],
       "subclass-overridden-species": [4, 4],
       "instance-custom-then": [3, 3],
+      "current-prototype-custom-then": [3, 3],
       "prototype-custom-then": [4, 4],
       "returned-promise-custom-then": [3, 3],
       "hostile-thenable": [3, 3],

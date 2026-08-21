@@ -653,8 +653,8 @@ implementation_head: pending
   registration/execution counts and native `catch`/`finally` identity/source.
 - The existing 64 registration and execution bounds remain fail-closed for
   evidence attribution only; overflow still poisons without suppressing native
-  callbacks. The full Ticket 41 focused command passed 12 files / 208 tests:
-  207 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  callbacks. The full Ticket 41 focused command passed 12 files / 209 tests:
+  208 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. Exact-base review remains pending; the Ticket 18
   Chromium E2E is prepared and, per closure protocol, was not run before review.
 
