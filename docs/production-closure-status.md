@@ -2,6 +2,10 @@
 
 ## Current authority view (2026-08-20)
 
+Ticket 18 scope amendment (2026-08-21): `apps/runner/src/offer-runtime.ts`
+and its existing unit test are included so production composition injects only
+a healthy `ActionValueProvider` and advertises matching input/select capability.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
