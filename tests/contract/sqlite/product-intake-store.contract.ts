@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { PrdDocument } from "@qualigence/context-intake";
-import { createDraftTestPlan, MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
+import { createDraftTestPlan, MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
 import { createTargetRevision, type ProjectTargetRepository } from "@qualigence/project-target";
 import { sequentialIds, validatedProposal } from "../../unit/core-modules/mission/fixtures.js";
 
@@ -16,9 +16,42 @@ export interface ProductIntakeProvider {
 
 export interface ProductIntakeProviderFactory {
   open(): Promise<ProductIntakeProvider>;
-  concurrent?(
-    operation: (provider: ProductIntakeProvider, index: number) => Promise<unknown>,
-  ): Promise<readonly PromiseSettledResult<unknown>[]>;
+  concurrent?<T>(
+    operation: (provider: ProductIntakeProvider, index: number) => Promise<T>,
+  ): Promise<readonly PromiseSettledResult<T>[]>;
+}
+
+async function runConcurrent<T>(
+  factory: ProductIntakeProviderFactory,
+  operation: (provider: ProductIntakeProvider, index: number) => Promise<T>,
+): Promise<readonly PromiseSettledResult<T>[]> {
+  if (factory.concurrent !== undefined) {
+    return factory.concurrent(operation);
+  }
+  return Promise.allSettled([0, 1].map(async (index) => {
+    const provider = await factory.open();
+    try {
+      return await operation(provider, index);
+    } finally {
+      await provider.close();
+    }
+  }));
+}
+
+function targetRevision(targetId: string, expectedVersion: number, displayName: string) {
+  return createTargetRevision({
+    targetId,
+    projectId: "project-1",
+    displayName,
+    runnerId: "runner-1",
+    expectedVersion,
+    configuration: {
+      kind: "web",
+      startUrl: "https://example.test/",
+      allowedOrigins: ["https://example.test"],
+      browser: "chromium",
+    },
+  });
 }
 
 export function productIntakeProviderContract(factory: ProductIntakeProviderFactory): void {
@@ -88,6 +121,154 @@ export function productIntakeProviderContract(factory: ProductIntakeProviderFact
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "TargetVersionConflict", currentVersion: expectedVersion + 1 });
+  });
+
+  it.each([
+    ["create", 0],
+    ["update", 1],
+  ] as const)("returns the identical Target %s winner to overlapping same-key same-command callers", async (operationName, expectedVersion) => {
+    const targetId = `target-idempotent-${operationName}`;
+    if (expectedVersion === 1) {
+      const setup = await factory.open();
+      try {
+        await setup.targets.saveRevision({ revision: targetRevision(targetId, 0, "Initial"), expectedVersion: 0, idempotencyKey: `${targetId}-initial`, createdAt: clock.now() });
+      } finally { await setup.close(); }
+    }
+    const revision = targetRevision(targetId, expectedVersion, "Winner");
+    const outcomes = await runConcurrent(factory, (provider) => provider.targets.saveRevision({ revision, expectedVersion, idempotencyKey: `${targetId}-shared`, createdAt: clock.now() }));
+
+    expect(outcomes).toEqual([
+      { status: "fulfilled", value: revision },
+      { status: "fulfilled", value: revision },
+    ]);
+  });
+
+  it.each([
+    ["create", 0],
+    ["update", 1],
+  ] as const)("atomically binds a concurrent Target %s idempotency key to one complete command", async (operationName, expectedVersion) => {
+    const targetId = `target-idempotency-conflict-${operationName}`;
+    if (expectedVersion === 1) {
+      const setup = await factory.open();
+      try {
+        await setup.targets.saveRevision({ revision: targetRevision(targetId, 0, "Initial"), expectedVersion: 0, idempotencyKey: `${targetId}-initial`, createdAt: clock.now() });
+      } finally { await setup.close(); }
+    }
+    const commands = [targetRevision(targetId, expectedVersion, "Command A"), targetRevision(targetId, expectedVersion, "Command B")] as const;
+    const outcomes = await runConcurrent(factory, (provider, index) => provider.targets.saveRevision({ revision: commands[index]!, expectedVersion, idempotencyKey: `${targetId}-shared`, createdAt: clock.now() }));
+    const fulfilled = outcomes.find((outcome): outcome is PromiseFulfilledResult<(typeof commands)[number]> => outcome.status === "fulfilled");
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+
+    expect(fulfilled).toBeDefined();
+    expect(rejected?.reason).toMatchObject({ code: "TargetIdempotencyConflict", currentVersion: expectedVersion + 1 });
+    const verify = await factory.open();
+    try {
+      expect(await verify.targets.getRevision(targetId)).toEqual(fulfilled!.value);
+      expect(await verify.targets.getRevision(targetId, expectedVersion + 2)).toBeUndefined();
+    } finally { await verify.close(); }
+  });
+
+  it("returns one Test Plan create winner and one authoritative conflict for stale different keys", async () => {
+    const setup = await factory.open();
+    let plan: TestPlanRevision;
+    try {
+      const document = PrdDocument.create({ prdId: "plan-create-race-prd", projectId: "p", revision: 1, title: "Plan", content: "Plan requirement" }, clock);
+      await setup.seedPrd(document);
+      const created = createDraftTestPlan({ projectId: "p", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds("plan-create-race"));
+      if (!created.ok) throw new Error(created.error.code);
+      plan = created.value;
+    } finally { await setup.close(); }
+    const outcomes = await runConcurrent(factory, (provider, index) => provider.plans.saveDraft({ plan, idempotencyKey: `plan-create-race-${index}`, createdAt: clock.now() }));
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    expect(rejected?.reason).toMatchObject({ code: "PlanVersionConflict", currentVersion: 1 });
+  });
+
+  it("returns the identical Test Plan create winner to overlapping same-key same-command callers", async () => {
+    const setup = await factory.open();
+    let plan: TestPlanRevision;
+    try {
+      const document = PrdDocument.create({ prdId: "plan-create-idempotent-prd", projectId: "p", revision: 1, title: "Plan", content: "Plan requirement" }, clock);
+      await setup.seedPrd(document);
+      const created = createDraftTestPlan({ projectId: "p", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds("plan-create-idempotent"));
+      if (!created.ok) throw new Error(created.error.code);
+      plan = created.value;
+    } finally { await setup.close(); }
+    const outcomes = await runConcurrent(factory, (provider) => provider.plans.saveDraft({ plan, idempotencyKey: "plan-create-idempotent-shared", createdAt: clock.now() }));
+
+    expect(outcomes).toEqual([
+      { status: "fulfilled", value: plan },
+      { status: "fulfilled", value: plan },
+    ]);
+  });
+
+  it("atomically binds a concurrent Test Plan create idempotency key to one complete command", async () => {
+    const setup = await factory.open();
+    const plans: TestPlanRevision[] = [];
+    try {
+      const document = PrdDocument.create({ prdId: "plan-create-conflict-prd", projectId: "p", revision: 1, title: "Plan", content: "Plan requirement" }, clock);
+      await setup.seedPrd(document);
+      for (const suffix of ["a", "b"]) {
+        const created = createDraftTestPlan({ projectId: "p", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds(`plan-create-conflict-${suffix}`));
+        if (!created.ok) throw new Error(created.error.code);
+        plans.push(created.value);
+      }
+    } finally { await setup.close(); }
+    const outcomes = await runConcurrent(factory, (provider, index) => provider.plans.saveDraft({ plan: plans[index]!, idempotencyKey: "plan-create-conflict-shared", createdAt: clock.now() }));
+    const fulfilled = outcomes.find((outcome): outcome is PromiseFulfilledResult<(typeof plans)[number]> => outcome.status === "fulfilled");
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+
+    expect(fulfilled).toBeDefined();
+    expect(rejected?.reason).toMatchObject({ code: "IdempotencyConflict", currentVersion: 1 });
+    const loser = plans.find((plan) => plan.planId !== fulfilled!.value.planId);
+    const verify = await factory.open();
+    try {
+      expect(await verify.plans.get(fulfilled!.value.planId)).toEqual(fulfilled!.value);
+      expect(await verify.plans.get(loser!.planId)).toBeUndefined();
+    } finally { await verify.close(); }
+  });
+
+  it("returns the identical Test Plan approval winner to overlapping same-key same-command callers", async () => {
+    const setup = await factory.open();
+    let planId: string;
+    try {
+      const document = PrdDocument.create({ prdId: "approve-idempotent-prd", projectId: "p", revision: 1, title: "Plan", content: "Plan requirement" }, clock);
+      await setup.seedPrd(document);
+      const created = createDraftTestPlan({ projectId: "p", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds("approve-idempotent"));
+      if (!created.ok) throw new Error(created.error.code);
+      planId = created.value.planId;
+      await setup.plans.saveDraft({ plan: created.value, idempotencyKey: "approve-idempotent-create", createdAt: clock.now() });
+    } finally { await setup.close(); }
+    const outcomes = await runConcurrent(factory, (provider) => provider.plans.approve({ planId, expectedVersion: 1, reviewerId: "tester", idempotencyKey: "approve-idempotent-shared", clock }));
+    const fulfilled = outcomes.filter((outcome): outcome is PromiseFulfilledResult<TestPlanRevision> => outcome.status === "fulfilled");
+
+    expect(fulfilled).toHaveLength(2);
+    expect(fulfilled[0]?.value).toEqual(fulfilled[1]?.value);
+  });
+
+  it("atomically binds a concurrent Test Plan approval idempotency key to one complete command", async () => {
+    const setup = await factory.open();
+    let planId: string;
+    try {
+      const document = PrdDocument.create({ prdId: "approve-conflict-prd", projectId: "p", revision: 1, title: "Plan", content: "Plan requirement" }, clock);
+      await setup.seedPrd(document);
+      const created = createDraftTestPlan({ projectId: "p", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds("approve-conflict"));
+      if (!created.ok) throw new Error(created.error.code);
+      planId = created.value.planId;
+      await setup.plans.saveDraft({ plan: created.value, idempotencyKey: "approve-conflict-create", createdAt: clock.now() });
+    } finally { await setup.close(); }
+    const outcomes = await runConcurrent(factory, (provider, index) => provider.plans.approve({ planId, expectedVersion: 1, reviewerId: `reviewer-${index}`, idempotencyKey: "approve-conflict-shared", clock }));
+    const fulfilled = outcomes.find((outcome): outcome is PromiseFulfilledResult<Awaited<ReturnType<ProductIntakeProvider["plans"]["approve"]>>> => outcome.status === "fulfilled");
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+
+    expect(fulfilled).toBeDefined();
+    expect(rejected?.reason).toMatchObject({ code: "IdempotencyConflict", currentVersion: 2 });
+    const verify = await factory.open();
+    try {
+      expect(await verify.plans.get(planId)).toEqual(fulfilled!.value);
+      expect(await verify.plans.get(planId, 1)).toMatchObject({ status: "draft", version: 1 });
+    } finally { await verify.close(); }
   });
 
   it("atomically binds a concurrent Mission idempotency key to one complete command", async () => {

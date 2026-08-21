@@ -47,7 +47,24 @@ implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
 review_round_1_remediation: passed on 2026-08-21
 review_round_2_remediation: passed on 2026-08-21
 review_round_3_remediation: passed on 2026-08-21
+formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pending fresh exact-base review
 
+- PostgreSQL Target create/update and Test Plan create/approve now reserve the
+  tenant-scoped idempotency key before authoritative replay comparison and head
+  CAS. Overlapping identical commands return the same persisted winner;
+  different commands return stable `TargetIdempotencyConflict` or
+  `IdempotencyConflict` without a mixed revision/head; stale different keys
+  return `TargetVersionConflict` or `PlanVersionConflict` with the current
+  version. Migration 008 required no amendment and SQLite behavior is unchanged.
+- TDD RED: the new shared contract passed SQLite but PostgreSQL failed 9 of 16
+  tests with wrong version conflicts or raw `23505` unique errors. GREEN:
+  `corepack pnpm vitest run tests/contract/sqlite/product-intake-store.test.ts tests/contract/postgres/product-intake-store.test.ts`
+  passed 2 files / 32 tests against real Docker PostgreSQL.
+- Ticket 03 focused Gate
+  `corepack pnpm vitest run tests/unit/core-modules/project-target tests/unit/core-modules/mission/test-plan-approval.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`
+  passed 4 files / 52 tests with Git OpenSSL explicitly resolved. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was rerun;
+  post-review acceptance remains gated on a fresh clean exact-base review.
 - Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
   `tests/conformance/storage/relational-schema.test.ts`,
   `tests/e2e/self-hosted/backup-restore.test.ts`, and
