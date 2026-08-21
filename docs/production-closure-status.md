@@ -47,7 +47,9 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: round-4 blockers fixed; fresh exact-base review and PR pending
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/71`
+remediation_ticket: `36`
 implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
@@ -96,6 +98,9 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 - Round-4 GREEN passed the amended Compose config Gate and the focused Docker
   Gate at 10 files / 47 tests with zero skips. No Compose or backup/restore E2E
   was run; fresh exact-base review remains required before E2E.
+- Review round 5 left one Important acceptance finding: the prepared E2E starts
+  from schema 7 and does not prove a persisted older schema upgrades through
+  the production migrate command. Remediation Ticket 36 blocks merge.
 - On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
   focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
   Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup
