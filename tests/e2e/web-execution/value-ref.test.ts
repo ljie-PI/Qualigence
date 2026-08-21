@@ -60,6 +60,8 @@ describe("production valueRef browser execution", () => {
           #crlf-secret { position:fixed;left:40px;top:100px;width:200px;height:40px;padding:0;border:0;border-radius:0;appearance:none;background:rgb(255,0,0) }
           #country-secret { position:fixed;left:40px;top:160px;width:200px;height:40px;padding:0;border:0;border-radius:0;appearance:none;background:rgb(255,0,0) }
           #unrelated-region { position:fixed;left:300px;top:100px;width:80px;height:80px;background:rgb(0,255,0) }
+          #crlf-reflection { position:fixed;left:300px;top:200px;width:120px;height:40px;margin:0;background:rgb(255,0,0) }
+          #crlf-reflection-second { position:fixed;left:300px;top:250px;width:120px;height:40px;margin:0;background:rgb(255,0,0) }
         </style>
         <label>LF secret <textarea id="lf-secret" aria-label="LF secret"></textarea></label>
         <label>CRLF secret <input id="crlf-secret" aria-label="CRLF secret" /></label>
@@ -70,6 +72,8 @@ describe("production valueRef browser execution", () => {
           </select>
         </label>
         <p data-qualigence-observe id="status">Waiting</p>
+        <p data-qualigence-observe id="crlf-reflection"></p>
+        <p data-qualigence-observe id="crlf-reflection-second"></p>
         <p data-qualigence-observe>e2e-lf-first-line remains unrelated</p>
         <p data-qualigence-observe>ab</p>
         <div id="unrelated-region"></div>
@@ -81,7 +85,10 @@ describe("production valueRef browser execution", () => {
           lfInput.addEventListener('input', () => { status.textContent = 'LF ready'; });
           crlfInput.addEventListener('input', () => {
             crlfInput.setAttribute('aria-label', crlfInput.value);
-            status.textContent = 'CRLF ready';
+            document.getElementById('crlf-reflection').textContent = crlfInput.value;
+            setTimeout(() => {
+              document.getElementById('crlf-reflection-second').textContent = 'reflected:' + crlfInput.value;
+            }, 50);
           });
           country.addEventListener('change', () => {
             country.setAttribute('aria-label', country.selectedOptions[0].textContent);
@@ -253,7 +260,8 @@ describe("production valueRef browser execution", () => {
     expect(trace.find((event) => event.runId === "run-select" && event.stage === "decision")?.payload)
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
     expect(finalObservation(trace, "run-input-lf").nodes.some((node) => node.text === "LF ready")).toBe(true);
-    expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "CRLF ready")).toBe(true);
+    expect(finalObservation(trace, "run-input-crlf").nodes.filter((node) => node.name === "[REDACTED]"))
+      .toHaveLength(3);
     expect(nodeNamed(finalObservation(trace, "run-input-crlf"), "[REDACTED]"))
       .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     expect(nodeNamed(finalObservation(trace, "run-select"), "[REDACTED]"))
@@ -284,6 +292,7 @@ describe("production valueRef browser execution", () => {
     expect(nodeNamed(selectArtifact!, "[REDACTED]"))
       .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     expect(crlfArtifact!.nodes.some((node) => node.text === CRLF_BROWSER_VALUE)).toBe(true);
+    expect(crlfArtifact!.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(3);
 
     const finalScreenshots = new Map(screenshotMetadata.map(({ runId, name }) => {
       const screenshot = artifacts.find(({ runId: candidateRunId, artifact }) =>
@@ -300,6 +309,10 @@ describe("production valueRef browser execution", () => {
       const image = decodePng(screenshot);
       expectSolidCrop(image, target, [0, 0, 0, 255]);
       expectSolidCrop(image, { x: 300, y: 100, width: 80, height: 80 }, [0, 255, 0, 255]);
+      if (runId === "run-input-crlf") {
+        expectSolidCrop(image, { x: 300, y: 200, width: 120, height: 40 }, [0, 0, 0, 255]);
+        expectSolidCrop(image, { x: 300, y: 250, width: 120, height: 40 }, [0, 0, 0, 255]);
+      }
     }
 
     await spool.close();

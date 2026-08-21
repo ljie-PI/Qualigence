@@ -429,6 +429,37 @@ latest_standards_blocker_fix: `fbce773`
   Task 21 skip; root `corepack pnpm typecheck` and `git diff --check` passed.
   E2E was not run and remains blocked on fresh exact-base review.
 
+### Ticket 40 - Reflected secret evidence remediation (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: pending remediation PR
+parent_ticket: `39`
+parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/78`
+parent_head: `7f265c1`
+
+- After an authorized input/select target is retained, the private Playwright
+  adapter installs one action-scoped `MutationObserver` before the browser side
+  effect. It reads only the exact browser-observable value/selected option forms,
+  settles for at most 250 ms within the existing action timeout, and retains only
+  exact changed DOM elements whose resulting attribute or text contains a form.
+- The observer is capped at 128 mutation records and removed after each action.
+  Observer installation/evaluation/removal errors, overflow, target replacement,
+  disconnected reflected nodes, unprovable handles, or the existing 32-element
+  sensitive collection cap fail `SensitiveTargetUnproven` before later evidence.
+- Subsequent Graph, Trace/model context, Observation JSON, and screenshots use
+  the existing exact-handle redaction/masking path for the action target and all
+  proven reflected elements. Session-wide string replacement was removed, so a
+  pre-existing unrelated node containing the equal normalized text remains.
+- Real Chromium component coverage proves input-event and select-change
+  reflection, multiple reflected nodes, a delayed reflection within the bounded
+  settle window, complete black screenshot crops, unrelated equal `ab`, observer
+  failure, mutation overflow, and a reflected node removed before proof.
+- The Ticket 18 focused non-E2E Gate passed 10 files / 117 tests with 1 existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
+  production valueRef E2E fixture is prepared but deliberately unrun pending
+  coordinator review; remediation PR and post-review E2E remain pending.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

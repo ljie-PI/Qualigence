@@ -302,14 +302,14 @@ export class PlaywrightObserver implements Observer {
         ...(sensitiveIndexes.has(index)
           ? { name: REDACTED, text: REDACTED, value: REDACTED }
           : {
-              ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
-              ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
-              ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+              ...(candidate.name === undefined ? {} : { name: candidate.name }),
+              ...(candidate.text === undefined ? {} : { text: candidate.text }),
+              ...(candidate.value === undefined ? {} : { value: candidate.value }),
             }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
-      const url = this.session.redactSensitiveText(page.url());
-      const title = this.session.redactSensitiveText(await page.title());
+      const url = page.url();
+      const title = await page.title();
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       const { graph, descriptors } = buildObservationGraph(

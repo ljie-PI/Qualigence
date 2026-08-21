@@ -32,6 +32,8 @@ async function bindPrivateTarget(
   target: object,
   nodeId = "n-0-abcd1234",
 ): Promise<void> {
+  session.beginSensitiveActionTracking = vi.fn(async () => ({} as never));
+  session.finishSensitiveActionTracking = vi.fn(async () => undefined);
   const handle = {
     ...target,
     evaluate: async () => true,
@@ -194,14 +196,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.notes",
     }, permit)).resolves.toEqual({ status: "ok" });
 
-    expect(session.redactSensitiveText(source)).toBe("[REDACTED]");
-    expect(session.redactSensitiveText(browserValue)).toBe(browserValue);
-    expect(session.redactSensitiveText("ab")).toBe("ab");
+    expect(browserValue).toBe("ab");
   });
 
   it("clears sensitive target and source state when the session closes", async () => {
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
-    session.registerSensitiveValue("source-secret");
     const dispose = vi.fn(async () => undefined);
     await session.establishPrivateActionTarget(
       "run-1:observation:1",
@@ -212,7 +211,6 @@ describe("PlaywrightActionExecutor value resolution", () => {
     await session.close();
 
     expect(session.sensitiveTargets()).toEqual([]);
-    expect(session.redactSensitiveText("source-secret")).toBe("source-secret");
     expect(dispose).toHaveBeenCalledOnce();
   });
 
@@ -283,11 +281,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.country",
     }, permit)).resolves.toEqual({ status: "ok" });
 
-    expect(session.redactSensitiveText("provider-option")).toBe("[REDACTED]");
-    expect(session.redactSensitiveText("browser-selected-option")).toBe("browser-selected-option");
-    expect(session.redactSensitiveText("browser-selected remains unrelated")).toBe(
-      "browser-selected remains unrelated",
-    );
+    expect(await locator.selectOption()).toEqual(["browser-selected-option"]);
   });
 
   it("returns a stable code without plaintext when the provider cannot resolve a valueRef", async () => {

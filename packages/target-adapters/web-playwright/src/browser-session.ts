@@ -3,6 +3,7 @@ import {
   type Browser,
   type BrowserContext,
   type ElementHandle,
+  type JSHandle,
   type Locator,
   type Page,
 } from "playwright";
@@ -88,11 +89,21 @@ export interface PrivateActionTarget {
 }
 
 export interface SensitiveActionTarget extends PrivateActionTarget {
-  readonly nodeId: string;
+  readonly nodeId: string | undefined;
 }
 
 export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
 export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
+const MAXIMUM_SENSITIVE_ACTION_MUTATIONS = 128;
+const MAXIMUM_SENSITIVE_ACTION_SETTLE_MS = 250;
+
+interface SensitiveActionMutationTracker {
+  readonly target: Element;
+  readonly records: MutationRecord[];
+  readonly observer: MutationObserver;
+  overflow: boolean;
+  observerError: boolean;
+}
 
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
@@ -104,10 +115,10 @@ export class PlaywrightBrowserSession {
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
-  private readonly sensitiveValues = new Set<string>();
   private readonly sensitiveActionTargets = new Map<string, SensitiveActionTarget>();
   private readonly privateActionTargets = new Map<string, PrivateActionTarget>();
   private privateTargetOrdinal = 0;
+  private sensitiveTrackingFailure = false;
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -153,10 +164,6 @@ export class PlaywrightBrowserSession {
       );
     }
     return observation.artifacts;
-  }
-
-  registerSensitiveValue(value: string): void {
-    if (value !== "") this.sensitiveValues.add(value);
   }
 
   async establishPrivateActionTarget(
@@ -254,7 +261,259 @@ export class PlaywrightBrowserSession {
   }
 
   sensitiveTargets(): readonly SensitiveActionTarget[] {
+    if (this.sensitiveTrackingFailure) {
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "Sensitive action provenance cannot be proven for this session.",
+      );
+    }
     return [...this.sensitiveActionTargets.values()];
+  }
+
+  async beginSensitiveActionTracking(
+    target: ElementHandle<Element>,
+  ): Promise<JSHandle<SensitiveActionMutationTracker>> {
+    try {
+      return await target.evaluateHandle((element, maximumMutations) => {
+        if (!element.isConnected) {
+          throw new Error("target-disconnected");
+        }
+        const records: MutationRecord[] = [];
+        const tracker = {
+          target: element,
+          records,
+          overflow: false,
+          observerError: false,
+        } as Omit<SensitiveActionMutationTracker, "observer"> & {
+          observer?: MutationObserver;
+        };
+        const observer = new MutationObserver((mutations) => {
+          try {
+            if (records.length + mutations.length > maximumMutations) {
+              tracker.overflow = true;
+              return;
+            }
+            records.push(...mutations);
+          } catch {
+            tracker.observerError = true;
+          }
+        });
+        tracker.observer = observer;
+        observer.observe(element.ownerDocument, {
+          attributes: true,
+          characterData: true,
+          childList: true,
+          subtree: true,
+        });
+        return tracker as SensitiveActionMutationTracker;
+      }, MAXIMUM_SENSITIVE_ACTION_MUTATIONS);
+    } catch {
+      this.sensitiveTrackingFailure = true;
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "Sensitive action provenance tracking could not be installed.",
+      );
+    }
+  }
+
+  async finishSensitiveActionTracking(
+    tracker: JSHandle<SensitiveActionMutationTracker>,
+    target: ElementHandle<Element>,
+    browserForms: readonly string[],
+    remainingActionTimeoutMs: number,
+  ): Promise<void> {
+    const settleMs = Math.min(
+      MAXIMUM_SENSITIVE_ACTION_SETTLE_MS,
+      Math.max(0, remainingActionTimeoutMs),
+    );
+    let cleanupFailed = false;
+    try {
+      if (settleMs > 0) {
+        await this.page?.waitForTimeout(settleMs);
+      }
+      const result = await tracker.evaluateHandle((state, evidence) => {
+        const fail = (reason: string) => ({ reason, elements: [] as Element[] });
+        try {
+          const pending = state.observer.takeRecords();
+          state.observer.disconnect();
+          if (state.records.length + pending.length > evidence.maximumMutations) {
+            state.overflow = true;
+          } else {
+            state.records.push(...pending);
+          }
+          if (state.observerError) return fail("observer-error");
+          if (state.overflow) return fail("mutation-overflow");
+          if (state.target !== evidence.target || !state.target.isConnected) {
+            return fail("target-replaced");
+          }
+
+          const forms = [...new Set(evidence.forms.filter((form) => form !== ""))];
+          const containsSensitiveForm = (value: string | null): boolean =>
+            value !== null && forms.some((form) => value.includes(form));
+          const elements: Element[] = [];
+          const add = (element: Element | null): boolean => {
+            if (element === null || !element.isConnected ||
+                element.ownerDocument !== state.target.ownerDocument) {
+              return false;
+            }
+            if (!elements.includes(element)) elements.push(element);
+            return true;
+          };
+
+          for (const mutation of state.records) {
+            if (mutation.type === "attributes") {
+              if (!(mutation.target instanceof Element) || mutation.attributeName === null) {
+                return fail("unprovable-attribute-target");
+              }
+              if (containsSensitiveForm(mutation.target.getAttribute(mutation.attributeName)) &&
+                  !add(mutation.target)) {
+                return fail("disconnected-attribute-target");
+              }
+              continue;
+            }
+            if (mutation.type === "characterData") {
+              if (!(mutation.target instanceof CharacterData)) {
+                return fail("unprovable-text-target");
+              }
+              if (containsSensitiveForm(mutation.target.data) &&
+                  !add(mutation.target.parentElement)) {
+                return fail("disconnected-text-target");
+              }
+              continue;
+            }
+            if (mutation.type !== "childList") {
+              return fail("unknown-mutation-type");
+            }
+
+            for (const node of mutation.addedNodes) {
+              if (node instanceof CharacterData && containsSensitiveForm(node.data)) {
+                if (!add(node.parentElement)) return fail("disconnected-added-text");
+              } else if (node instanceof Element && containsSensitiveForm(node.textContent)) {
+                if (!add(node)) return fail("disconnected-added-element");
+              }
+            }
+          }
+          return { reason: undefined, elements };
+        } catch {
+          try {
+            state.observer.disconnect();
+          } catch {
+            // The stable failure below prevents any evidence capture.
+          }
+          return fail("observer-evaluation-error");
+        }
+      }, {
+        target,
+        forms: browserForms,
+        maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
+      });
+      try {
+        const summary = await result.evaluate((value) => ({
+          reason: value.reason,
+          count: value.elements.length,
+        }));
+        if (summary.reason !== undefined) {
+          throw new Error(summary.reason);
+        }
+        const elements = await result.getProperty("elements");
+        try {
+          const properties = await elements.getProperties();
+          const handles: ElementHandle<Element>[] = [];
+          for (let index = 0; index < summary.count; index += 1) {
+            const property = properties.get(String(index));
+            const element = property?.asElement();
+            if (element === null || element === undefined) {
+              throw new Error("unprovable-reflected-element");
+            }
+            handles.push(element);
+          }
+          await this.retainSensitiveElements(handles);
+        } finally {
+          await elements.dispose();
+        }
+      } finally {
+        await result.dispose();
+      }
+    } catch {
+      this.sensitiveTrackingFailure = true;
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "Sensitive action provenance could not be bounded and proven.",
+      );
+    } finally {
+      await tracker.evaluate((state) => state.observer.disconnect()).catch(() => {
+        this.sensitiveTrackingFailure = true;
+        cleanupFailed = true;
+      });
+      await tracker.dispose().catch(() => {
+        this.sensitiveTrackingFailure = true;
+        cleanupFailed = true;
+      });
+    }
+    if (cleanupFailed) {
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "Sensitive action provenance tracking could not be removed.",
+      );
+    }
+  }
+
+  private async retainSensitiveElements(handles: readonly ElementHandle<Element>[]): Promise<void> {
+    if (this.page === undefined) {
+      throw new Error("page-unavailable");
+    }
+    const unique: ElementHandle<Element>[] = [];
+    for (const handle of handles) {
+      let retained = false;
+      for (const target of this.sensitiveActionTargets.values()) {
+        if (await handle.evaluate((element, existing) => element === existing, target.handle)) {
+          retained = true;
+          break;
+        }
+      }
+      if (retained) {
+        await handle.dispose();
+      } else if (!unique.some((candidate) => candidate === handle)) {
+        unique.push(handle);
+      }
+    }
+    if (this.sensitiveActionTargets.size + unique.length > MAXIMUM_SENSITIVE_ACTION_TARGETS) {
+      await Promise.all(unique.map((handle) => handle.dispose().catch(() => undefined)));
+      throw new Error("sensitive-target-overflow");
+    }
+
+    const registered: SensitiveActionTarget[] = [];
+    try {
+      for (const handle of unique) {
+        this.privateTargetOrdinal += 1;
+        const token = `target-${this.privateTargetOrdinal}`;
+        const markerInstalled = await handle.evaluate((element, identity) => {
+          element.setAttribute(identity.attribute, identity.token);
+          return element.isConnected && element.getAttribute(identity.attribute) === identity.token;
+        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token });
+        if (!markerInstalled) throw new Error("reflected-marker-unproven");
+        const target: SensitiveActionTarget = {
+          token,
+          locator: this.page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}="${token}"]`),
+          handle,
+          markerInstalled: true,
+          nodeId: undefined,
+        };
+        this.sensitiveActionTargets.set(token, target);
+        registered.push(target);
+      }
+    } catch (error) {
+      for (const target of registered) {
+        this.sensitiveActionTargets.delete(target.token);
+        await target.handle.evaluate((element, identity) => {
+          if (element.getAttribute(identity.attribute) === identity.token) {
+            element.removeAttribute(identity.attribute);
+          }
+        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+      }
+      await Promise.all(unique.map((handle) => handle.dispose().catch(() => undefined)));
+      throw error;
+    }
   }
 
   advanceSensitiveTargets(graphId: string, nodeIds: readonly string[]): void {
@@ -273,14 +532,6 @@ export class PlaywrightBrowserSession {
         advanced,
       );
     }
-  }
-
-  redactSensitiveText(value: string): string {
-    let redacted = value;
-    for (const sensitive of [...this.sensitiveValues].sort((left, right) => right.length - left.length)) {
-      redacted = redacted.replaceAll(sensitive, "[REDACTED]");
-    }
-    return redacted;
   }
 
   async start(): Promise<void> {
@@ -427,9 +678,10 @@ export class PlaywrightBrowserSession {
       }
     };
 
-    const targets = new Map(
-      [...this.privateActionTargets.values()].map((target) => [target.token, target]),
-    );
+    const targets = new Map([
+      ...[...this.privateActionTargets.values()].map((target) => [target.token, target] as const),
+      ...[...this.sensitiveActionTargets.values()].map((target) => [target.token, target] as const),
+    ]);
     if (this.page) {
       for (const target of targets.values()) {
         if (target.markerInstalled) {
@@ -454,9 +706,9 @@ export class PlaywrightBrowserSession {
       await this.browser.close().catch(record);
       this.browser = undefined;
     }
-    this.sensitiveValues.clear();
     this.sensitiveActionTargets.clear();
     this.privateActionTargets.clear();
+    this.sensitiveTrackingFailure = false;
     return firstError;
   }
 }

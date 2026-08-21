@@ -117,19 +117,60 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           } catch {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
-          // Register the source before Playwright can echo it in an error. Any
-          // browser normalization is redacted only on this target after success.
-          this.session.registerSensitiveValue(value);
           // Retain the exact target before Playwright can partially apply a
           // value. Capacity failure therefore happens before the side effect.
           await this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
-          if (action.kind === "input") {
-            await target.fill(value, { timeout: this.session.actionTimeoutMs });
-          } else {
-            await target.selectOption(value, {
-              timeout: this.session.actionTimeoutMs,
-            });
+          const trackingStartedAt = Date.now();
+          const tracker = await this.session.beginSensitiveActionTracking(target);
+          let actionError: unknown;
+          try {
+            if (action.kind === "input") {
+              await target.fill(value, { timeout: this.session.actionTimeoutMs });
+            } else {
+              await target.selectOption(value, {
+                timeout: this.session.actionTimeoutMs,
+              });
+            }
+          } catch (error) {
+            actionError = error;
           }
+
+          let browserForms: readonly string[];
+          try {
+            browserForms = await target.evaluate((element, kind) => {
+              if (kind === "select") {
+                if (!(element instanceof HTMLSelectElement)) {
+                  throw new Error("select-target-unprovable");
+                }
+                return [...element.selectedOptions].flatMap((option) => [
+                  option.value,
+                  option.label,
+                  option.textContent ?? "",
+                ]);
+              }
+              if (element instanceof HTMLInputElement ||
+                  element instanceof HTMLTextAreaElement) {
+                return [element.value];
+              }
+              if (element instanceof HTMLElement && element.isContentEditable) {
+                return [element.innerText, element.textContent ?? ""];
+              }
+              throw new Error("input-target-unprovable");
+            }, action.kind);
+          } catch {
+            await this.session.finishSensitiveActionTracking(tracker, target, [], 0);
+            throw new WebTargetError(
+              "SensitiveTargetUnproven",
+              "The browser-observable sensitive value could not be proven.",
+            );
+          }
+          await this.session.finishSensitiveActionTracking(
+            tracker,
+            target,
+            browserForms,
+            this.session.actionTimeoutMs - (Date.now() - trackingStartedAt),
+          );
+          if (actionError !== undefined) throw actionError;
         } else if (action.kind === "click") {
           await target.click({ timeout: this.session.actionTimeoutMs });
         } else {

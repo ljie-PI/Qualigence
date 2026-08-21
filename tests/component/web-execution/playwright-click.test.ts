@@ -77,15 +77,22 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
            <label>Email <input aria-label="Email" style="position:fixed;left:40px;top:200px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
-           <label>Normalized secret <input aria-label="Normalized secret" /></label>
+           <label>Normalized secret <input aria-label="Normalized secret" style="position:fixed;left:40px;top:80px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
            <label>Mutable secret <input aria-label="Mutable secret" style="position:fixed;left:40px;top:140px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
            <label>Country <select aria-label="Country" style="position:fixed;left:40px;top:260px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
-           <p data-qualigence-observe id="values"></p>
+           <p data-qualigence-observe id="values" style="position:fixed;left:280px;top:20px;width:100px;height:40px;margin:0"></p>
+           <p data-qualigence-observe id="normalized-reflection" style="position:fixed;left:280px;top:200px;background:rgb(255,0,0);width:100px;height:40px;margin:0"></p>
+           <p data-qualigence-observe id="normalized-reflection-second" style="position:fixed;left:280px;top:250px;background:rgb(255,0,0);width:100px;height:40px;margin:0"></p>
            <p data-qualigence-observe>ab</p>
            <div data-unrelated-region style="position:fixed;left:400px;top:80px;width:60px;height:60px;background:rgb(0,255,0)"></div>
            <script>
              document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
-             document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', () => document.getElementById('values').textContent = 'Normalized ready');
+             document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', event => {
+               document.getElementById('normalized-reflection').textContent = event.target.value;
+               setTimeout(() => {
+                 document.getElementById('normalized-reflection-second').textContent = 'reflected:' + event.target.value;
+               }, 50);
+             });
              document.querySelector('input[aria-label="Mutable secret"]').addEventListener('input', event => {
                event.target.setAttribute('aria-label', event.target.value);
                document.getElementById('values').textContent = 'Mutable ready';
@@ -243,7 +250,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
         expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
         expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
       ]));
-    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(2);
+    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(3);
     const screenshot = session.artifactsFor(afterSelect.graphId)
       .find((artifact) => artifact.mediaType === "image/png");
     const boxes = await session.withPage(async (page) => ({
@@ -374,10 +381,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       )).toBe(0);
 
       await expect(run("ExternalSideEffect")).resolves.toMatchObject({ status: "passed" });
-      expect(session.sensitiveTargets()).toHaveLength(1);
+      expect(session.sensitiveTargets()).toHaveLength(2);
       expect(await session.withPage(async (page) =>
         page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}]`).count(),
-      )).toBe(1);
+      )).toBe(2);
       const graphId = session.latestGraphId;
       const target = session.sensitiveTargets()[0];
       if (graphId === undefined || target === undefined) {
@@ -433,7 +440,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
 
-  it("redacts only the acted node after Chromium normalizes a single-line input", async () => {
+  it("redacts only causally changed nodes after Chromium normalizes a single-line input", async () => {
     const source = "a\r\nb\r\n";
     const browserValue = "ab";
     session = new PlaywrightBrowserSession(options());
@@ -450,18 +457,147 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
     const after = await observer.capture(job);
     const serialized = JSON.stringify(after);
-    const target = nodeNamed(after, "[REDACTED]");
+    const redacted = after.nodes.filter((node) => node.name === "[REDACTED]");
     const artifact = session.artifactsFor(after.graphId)
       .find((candidate) => candidate.mediaType === "application/json");
     const artifactGraph = JSON.parse(new TextDecoder().decode(artifact?.bytes)) as ObservationGraph;
-    const artifactTarget = nodeNamed(artifactGraph, "[REDACTED]");
+    const artifactRedacted = artifactGraph.nodes.filter((node) => node.name === "[REDACTED]");
+    const screenshot = session.artifactsFor(after.graphId)
+      .find((candidate) => candidate.mediaType === "image/png");
+    const boxes = await session.withPage(async (page) => ({
+      target: await page.locator('input[aria-label="Normalized secret"]').boundingBox(),
+      firstReflection: await page.locator("#normalized-reflection").boundingBox(),
+      secondReflection: await page.locator("#normalized-reflection-second").boundingBox(),
+      unrelated: await page.locator("[data-unrelated-region]").boundingBox(),
+    }));
+    if (screenshot === undefined || Object.values(boxes).some((box) => box === null)) {
+      throw new Error("Expected screenshot and bounded reflected regions.");
+    }
 
     expect(serialized).not.toContain(source);
-    expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(artifactTarget).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(session.sensitiveTargets()[0]?.nodeId).toBe(target.id);
+    expect(serialized).not.toContain("reflected:ab");
+    expect(redacted).toHaveLength(3);
+    expect(redacted).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: "[REDACTED]", text: "[REDACTED]" }),
+      expect.objectContaining({ text: "[REDACTED]" }),
+      expect.objectContaining({ text: "[REDACTED]" }),
+    ]));
+    expect(artifactRedacted).toHaveLength(3);
+    expect(session.sensitiveTargets().map((sensitive) => sensitive.nodeId).sort())
+      .toEqual(redacted.map((node) => node.id).sort());
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
     expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
+    const image = decodePng(screenshot.bytes);
+    expectSolidCrop(image, boxes.target!, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.firstReflection!, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.secondReflection!, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.unrelated!, [0, 255, 0, 255]);
+  });
+
+  it("fails closed when sensitive provenance tracking cannot be installed", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "observer-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Normalized secret").id, "customer.observer"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      Object.defineProperty(globalThis, "MutationObserver", {
+        configurable: true,
+        value: class {
+          constructor() {
+            throw new Error("observer unavailable");
+          }
+        },
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
+  it("fails closed when sensitive action mutations exceed the bounded tracker", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "overflow-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Normalized secret").id, "customer.overflow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const state = globalThis as unknown as {
+        document: {
+          querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null;
+          getElementById(id: string): { setAttribute(name: string, value: string): void } | null;
+        };
+      };
+      state.document.querySelector('input[aria-label="Normalized secret"]')?.addEventListener("input", () => {
+        const reflection = state.document.getElementById("normalized-reflection");
+        for (let index = 0; index < 129; index += 1) {
+          reflection?.setAttribute(`data-overflow-${index}`, "overflow-secret");
+        }
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+  });
+
+  it("fails closed when a reflected secret node is removed before evidence", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "removed-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Normalized secret").id, "customer.removed"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestNode {
+        textContent: string | null;
+        remove(): void;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(node: TestNode): void };
+          createElement(tag: string): TestNode;
+          querySelector(selector: string): {
+            addEventListener(type: string, listener: (event: { target: { value: string } }) => void): void;
+          } | null;
+        };
+      };
+      state.document.querySelector('input[aria-label="Normalized secret"]')?.addEventListener("input", (event) => {
+        const reflected = state.document.createElement("p");
+        reflected.textContent = event.target.value;
+        state.document.body.append(reflected);
+        reflected.remove();
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveTargetUnproven",
+    });
   });
 
   it("keeps the exact acted element redacted when its accessible identity changes", async () => {
