@@ -345,6 +345,7 @@ reviewed_head: `9bc55c4`
 implementation_head: `b150d67`
 remaining_important_fix_commits: `de2fc1c`, `b150d67`
 final_review_blocker_fix: `1b0502f`
+remaining_blocker_fix: `e820872`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
@@ -392,6 +393,20 @@ final_review_blocker_fix: `1b0502f`
   and remains deliberately unrun until fresh review.
 - Final amended non-E2E Gate passed 10 files / 111 tests with 1 existing Task 21
   skip; root `corepack pnpm typecheck` and `git diff --check` passed. Fresh
+  exact-base review and post-review E2E remain pending.
+- The remaining blocker fix keeps every input/select target in one
+  adapter-private collection until close instead of replacing the prior target.
+  The collection is capped at 32 targets and capacity failure occurs before the
+  browser side effect. Every later observation and screenshot independently
+  re-proves and redacts/masks every retained DOM handle; replacement or loss of
+  any earlier target fails `SensitiveTargetUnproven` before evidence registers.
+- Sequential input then select component coverage proves both prior target nodes
+  remain fixed-redacted and both complete decoded PNG crops are opaque black,
+  while every pixel in an unrelated green crop remains original. The prepared
+  E2E uses the same complete-crop check and explicitly clips an off-viewport
+  target crop to the PNG bounds; it was not run pending fresh review.
+- The final focused non-E2E Gate passed 10 files / 112 tests with 1 existing Task
+  21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. Fresh
   exact-base review and post-review E2E remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
