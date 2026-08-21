@@ -302,7 +302,7 @@ verification: pending review/E2E; pending dedicated PR
   OpenAI-compatible provider chain, production `FileActionValueProvider`, and a
   real SQLite Runner Spool. It scans submitted Trace, completions, model requests,
   logs, and spool bytes for both plaintext values.
-- Round-3 amended focused non-E2E Gate passed 9 files / 87 tests with 1 existing
+- Round-3 amended focused non-E2E Gate passed 9 files / 88 tests with 1 existing
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
   Chromium E2E remains deliberately not run pending a clean exact-base review;
   verification and the dedicated PR remain pending.
