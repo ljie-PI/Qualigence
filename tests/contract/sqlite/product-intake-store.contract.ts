@@ -64,4 +64,28 @@ export function productIntakeProviderContract(factory: ProductIntakeProviderFact
     const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "PlanVersionConflict", currentVersion: 2 });
   });
+
+  it.each([
+    ["create", 0],
+    ["update", 1],
+  ] as const)("maps concurrent Target %s races to the authoritative current version", async (operationName, expectedVersion) => {
+    const targetId = `target-race-${operationName}`;
+    if (expectedVersion === 1) {
+      const setup = await factory.open();
+      try {
+        const initial = createTargetRevision({ targetId, projectId: "project-1", displayName: "Initial", runnerId: "runner-1", expectedVersion: 0, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } });
+        await setup.targets.saveRevision({ revision: initial, expectedVersion: 0, idempotencyKey: "target-race-initial", createdAt: clock.now() });
+      } finally { await setup.close(); }
+    }
+    const operation = (provider: ProductIntakeProvider) => {
+      const revision = createTargetRevision({ targetId, projectId: "project-1", displayName: crypto.randomUUID(), runnerId: "runner-1", expectedVersion, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } });
+      return provider.targets.saveRevision({ revision, expectedVersion, idempotencyKey: crypto.randomUUID(), createdAt: clock.now() });
+    };
+    const outcomes = factory.concurrent === undefined
+      ? await Promise.allSettled([factory.open().then(async (provider) => { try { return await operation(provider); } finally { await provider.close(); } }), factory.open().then(async (provider) => { try { return await operation(provider); } finally { await provider.close(); } })])
+      : await factory.concurrent(operation);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    expect(rejected?.reason).toMatchObject({ code: "TargetVersionConflict", currentVersion: expectedVersion + 1 });
+  });
 }

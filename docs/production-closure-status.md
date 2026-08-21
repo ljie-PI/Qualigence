@@ -44,6 +44,32 @@ verification: passed; pending dedicated PR
 pull_request: pending
 
 review_round_1_remediation: passed on 2026-08-21
+review_round_2_remediation: passed on 2026-08-21
+
+- PRD identity, project revision assignment, immutable document construction,
+  idempotent replay, and persistence now live in `TestPlanService`; the Fastify
+  route is limited to authentication, request validation, DTO mapping, and safe
+  error mapping.
+- PostgreSQL schema/runtime/sequential-upgrade expectations are current through
+  immutable migration 008. The shared SQLite/PostgreSQL provider contract now
+  proves both Target create and update races return `TargetVersionConflict`
+  carrying the current version from an authoritative head reread.
+- Mission intake issues policy snapshots from the injected Clock and bounds
+  expiry to the 60-second execution budget. A focused application test submits
+  the resulting Job shape to `DeterministicRunnerPolicyGate` and proves Runner
+  admission immediately after issuance.
+- Desktop launch/reset argv now use a closed approved flag/value contract or
+  opaque `ref:` values. Arbitrary plaintext values and environment fields are
+  rejected while accepted `AppTarget` fields remain lossless.
+- Console Target revisions use the loaded current version for updates. Target,
+  Test Plan, and Mission conflict paths render safe `actualVersion` details and
+  invalidate the exact queries needed to reload current state; rendered jsdom
+  component tests exercise all three mutation conflicts.
+- Round-2 focused non-E2E Gate passed 12 files / 96 tests with Docker PostgreSQL,
+  including runtime migration and provider contracts, storage conformance,
+  Public API, Admin migration/backup, and rendered Console tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run before
+  clean review.
 
 - Removed request-to-domain casting and direct Mission-table writes from Public
   API routes. Target, grounded Test Plan create/approve, and Mission creation now

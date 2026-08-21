@@ -131,6 +131,9 @@ describe("immutable Target revisions", () => {
   it.each([
     ["launch argv", { ...validTarget, launch: { ...validTarget.launch, args: ["--password=hunter2"] } }],
     ["reset argv", { ...validTarget, reset: { ...validTarget.reset, args: ["API_TOKEN=abc123"] } }],
+    ["arbitrary launch value", { ...validTarget, launch: { ...validTarget.launch, args: ["--account", "hunter2"] } }],
+    ["unapproved value for an approved flag", { ...validTarget, launch: { ...validTarget.launch, args: ["--fixture", "hunter2"] } }],
+    ["arbitrary reset value", { ...validTarget, reset: { ...validTarget.reset, args: ["hunter2"] } }],
     ["launch environment", { ...validTarget, launch: { ...validTarget.launch, env: { CLIENT_SECRET: "abc123" } } }],
     ["target environment", { ...validTarget, environment: { PASSWORD: "hunter2" } }],
   ])("rejects secret-bearing %s values", (_name, app) => {
@@ -144,6 +147,18 @@ describe("immutable Target revisions", () => {
         configuration: { kind: "desktop", app },
       }),
     ).toThrowError(/TargetSecretRejected/);
+  });
+
+  it("accepts the closed launch/reset argument contract and opaque references", () => {
+    const revision = createTargetRevision({
+      targetId: "wpf-reference",
+      projectId: "project-1",
+      displayName: "WPF reference",
+      runnerId: "runner-windows",
+      expectedVersion: 0,
+      configuration: { kind: "desktop", app: { ...validTarget, launch: { ...validTarget.launch, args: ["--fixture", "default", "ref:credentials/test-user"] }, reset: { ...validTarget.reset, args: ["--clean"] } } },
+    });
+    expect(revision.configuration).toMatchObject({ kind: "desktop", app: { launch: { args: ["--fixture", "default", "ref:credentials/test-user"] }, reset: { args: ["--clean"] } } });
   });
 
   it("rejects secret-bearing or mismatched revisions before hashing", () => {

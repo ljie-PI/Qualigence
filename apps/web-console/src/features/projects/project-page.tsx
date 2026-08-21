@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { CreateProjectBody, TargetDto } from "@qualigence/public-api";
+import { ApiClientError } from "../../api/errors.js";
 import { useServices, useSession } from "../../auth/session-context.js";
 import { queryKeys } from "../../routes/query-keys.js";
 import { DataState, DefinitionList } from "../../ui/components.js";
@@ -87,6 +88,8 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
   const [kind, setKind] = useState<"web" | "desktop">("web");
   const [startUrl, setStartUrl] = useState("https://example.test/");
   const [executable, setExecutable] = useState("C:\\Apps\\Reference\\Reference.exe");
+  const [selectedTargetId, setSelectedTargetId] = useState<string | undefined>();
+  const [conflict, setConflict] = useState<string | undefined>();
 
   const targets = useQuery({
     queryKey: queryKeys.targets(tenantId, projectId),
@@ -99,13 +102,24 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
     enabled: session !== undefined,
   });
   const createTarget = useMutation({
-    mutationFn: () => api.createTarget(projectId, {
+    mutationFn: () => {
+      const current = targets.data?.items.find((target) => target.targetId === (selectedTargetId ?? targetId.trim()));
+      return api.createTarget(projectId, {
       targetId: targetId.trim(), displayName: targetName.trim(), runnerId: runnerId.trim(), expectedVersion: 0,
+      ...(current === undefined ? {} : { targetId: current.targetId, expectedVersion: current.version }),
       configuration: kind === "web"
         ? { kind: "web", startUrl, allowedOrigins: [new URL(startUrl).origin], browser: "chromium" }
         : { kind: "desktop", app: { targetId: targetId.trim(), platform: "windows", launch: { executable, args: [] }, process: { expectedImageName: executable.split(/[\\/]/).at(-1) ?? "app.exe", allowedChildImageNames: [] }, window: {}, reset: { command: executable, args: ["--reset"], timeoutMs: 30_000 }, shutdown: { gracefulTimeoutMs: 10_000, forceAfterTimeout: true } } },
-    }, { idempotencyKey: crypto.randomUUID() }),
-    onSuccess: () => { setTargetId(""); setTargetName(""); setRunnerId(""); void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, projectId) }); },
+      }, { idempotencyKey: crypto.randomUUID() });
+    },
+    onSuccess: () => { setConflict(undefined); setSelectedTargetId(undefined); setTargetId(""); setTargetName(""); setRunnerId(""); void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, projectId) }); },
+    onError: (error: unknown) => {
+      if (error instanceof ApiClientError && error.code === "VersionConflict") {
+        const actual = error.details?.actualVersion;
+        setConflict(`Target changed concurrently${typeof actual === "number" ? ` (current version ${actual})` : ""}. Reloaded current state.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, projectId) });
+      } else setConflict(error instanceof Error ? error.message : "Target mutation failed");
+    },
   });
   const canCreate = session?.roles.some((role) => role === "admin" || role === "tester") ?? false;
 
@@ -125,8 +139,9 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
         {kind === "web"
           ? <input aria-label="Start URL" value={startUrl} onChange={(event) => setStartUrl(event.target.value)} />
           : <input aria-label="Desktop executable" value={executable} onChange={(event) => setExecutable(event.target.value)} />}
-        <button type="submit" disabled={createTarget.isPending}>Create Target revision</button>
+        <button type="submit" disabled={createTarget.isPending}>{selectedTargetId === undefined ? "Create Target revision" : "Update Target revision"}</button>
       </form> : null}
+      {conflict === undefined ? null : <p className="state state--error" role="alert">{conflict}</p>}
       <DataState
         isLoading={targets.isLoading}
         error={targets.error}
@@ -137,6 +152,7 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
           {targets.data?.items.map((target) => (
             <li key={target.targetId}>
               <TargetRevisionSummary target={target} />
+              {canCreate ? <button type="button" onClick={() => { setSelectedTargetId(target.targetId); setTargetId(target.targetId); setTargetName(target.displayName); setRunnerId(target.runnerId); setKind(target.kind); if (target.configuration.kind === "web") setStartUrl(target.configuration.startUrl); else setExecutable(target.configuration.app.launch.executable); }}>Revise v{target.version}</button> : null}
             </li>
           ))}
         </ul>

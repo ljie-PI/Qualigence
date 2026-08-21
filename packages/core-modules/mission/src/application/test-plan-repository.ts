@@ -18,6 +18,8 @@ export interface ApproveStoredTestPlanInput {
 
 export interface TestPlanRepository {
   savePrdDocument(document: PrdDocument): Promise<void>;
+  getPrdDocumentById(prdId: string): Promise<PrdDocument | undefined>;
+  listPrdDocuments(projectId: string): Promise<readonly PrdDocument[]>;
   saveDraft(input: SaveDraftTestPlanInput): Promise<TestPlanRevision>;
   approve(input: ApproveStoredTestPlanInput): Promise<TestPlanRevision>;
   get(planId: string, version?: number): Promise<TestPlanRevision | undefined>;

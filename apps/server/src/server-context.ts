@@ -66,12 +66,12 @@ export function testPlans(deps: ServerDeps, stores: TenantStores, tenantId: stri
 }
 
 export function testPlanService(deps: ServerDeps, stores: TenantStores, tenantId: string): TestPlanService {
-  return new TestPlanService(testPlans(deps, stores, tenantId), deps.clock);
+  return new TestPlanService(testPlans(deps, stores, tenantId), deps.clock, async (projectId) => (await stores.aux.selectFrom("projects").select("project_id").where("project_id", "=", projectId).executeTakeFirst()) !== undefined);
 }
 
 export function missionIntakeService(deps: ServerDeps, stores: TenantStores, tenantId: string): MissionIntakeService {
   const repository = deps.prdMissionRepository?.(stores, tenantId) ?? new PostgresPrdMissionRepository(stores.db, tenantId);
-  return new MissionIntakeService(projectTargets(deps, stores, tenantId), testPlans(deps, stores, tenantId), repository);
+  return new MissionIntakeService(projectTargets(deps, stores, tenantId), testPlans(deps, stores, tenantId), repository, deps.clock);
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */

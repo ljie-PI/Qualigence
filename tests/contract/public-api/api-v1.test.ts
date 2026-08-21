@@ -191,6 +191,9 @@ describe("Public API v1 contract", () => {
       const prdContent = "Total is shown";
       const prdResponse = await fetch(url("/v1/projects/product-project/prd-revisions"), { method: "POST", headers: headers("prd-1"), body: JSON.stringify({ title: "Checkout", content: prdContent }) });
       const prd = (await prdResponse.json()) as { resource: { prdId: string; revision: number; contentSha256: string } };
+      const prdConflict = await fetch(url("/v1/projects/product-project/prd-revisions"), { method: "POST", headers: headers("prd-1"), body: JSON.stringify({ title: "Changed", content: prdContent }) });
+      expect(prdConflict.status).toBe(409);
+      expect(await prdConflict.json()).toMatchObject({ code: "VersionConflict" });
 
       const targetResponse = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-create-command"), body: JSON.stringify({ targetId: "checkout", displayName: "Checkout", runnerId: "runner-1", expectedVersion: 0, configuration: { kind: "web", startUrl: "https://shop.example.test/checkout", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
       expect(targetResponse.status).toBe(201);

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   approveTestPlan,
   createDraftTestPlan,
+  TestPlanService,
+  type TestPlanRepository,
 } from "@qualigence/mission";
+import type { PrdDocument } from "@qualigence/context-intake";
 import type { Clock } from "@qualigence/shared-kernel";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
@@ -119,5 +122,26 @@ describe("approveTestPlan optimistic concurrency", () => {
       ok: false,
       error: { code: "PlanAlreadyApproved" },
     });
+  });
+});
+
+describe("TestPlanService PRD intake", () => {
+  it("constructs and persists identity and the next project revision with idempotent replay", async () => {
+    const documents: PrdDocument[] = [{ prdId: "prd-existing", projectId: "p", revision: 1, title: "Existing", content: "old", contentSha256: "hash", ingestedAt: fixedClock.now() }];
+    const repository = {
+      savePrdDocument: async (document: PrdDocument) => { documents.push(document); },
+      getPrdDocumentById: async (prdId: string) => documents.find((document) => document.prdId === prdId),
+      listPrdDocuments: async (projectId: string) => documents.filter((document) => document.projectId === projectId),
+    } as unknown as TestPlanRepository;
+    const service = new TestPlanService(repository, fixedClock, async () => true);
+    const command = { idempotencyKey: "prd-created", projectId: "p", title: "Created", content: "new" };
+
+    const created = await service.ingestPrd(command);
+    const replay = await service.ingestPrd(command);
+
+    expect(created).toMatchObject({ prdId: "prd-created", revision: 2, ingestedAt: fixedClock.now() });
+    expect(replay).toBe(created);
+    expect(documents.filter((document) => document.prdId === "prd-created")).toHaveLength(1);
+    await expect(service.ingestPrd({ ...command, title: "Changed" })).rejects.toMatchObject({ code: "PrdIdempotencyConflict" });
   });
 });

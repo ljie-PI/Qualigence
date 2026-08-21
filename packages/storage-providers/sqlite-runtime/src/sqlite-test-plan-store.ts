@@ -12,6 +12,14 @@ export class SqliteTestPlanStore implements TestPlanRepository {
   async savePrdDocument(document: PrdDocument): Promise<void> {
     await this.runtime.db.insertInto("prd_documents").values({ prd_id: document.prdId, revision: document.revision, project_id: document.projectId, title: document.title, content: document.content, content_sha256: document.contentSha256, ingested_at: document.ingestedAt }).onConflict((oc) => oc.columns(["prd_id", "revision"]).doNothing()).execute();
   }
+  async getPrdDocumentById(prdId: string): Promise<PrdDocument | undefined> {
+    const row = await this.runtime.db.selectFrom("prd_documents").selectAll().where("prd_id", "=", prdId).orderBy("revision", "desc").executeTakeFirst();
+    return row === undefined ? undefined : prdFromRow(row);
+  }
+  async listPrdDocuments(projectId: string): Promise<readonly PrdDocument[]> {
+    const rows = await this.runtime.db.selectFrom("prd_documents").selectAll().where("project_id", "=", projectId).orderBy("revision").execute();
+    return rows.map(prdFromRow);
+  }
   async saveDraft(input: SaveDraftTestPlanInput): Promise<TestPlanRevision> {
     return runInImmediateTransaction(this.runtime, async () => {
       const document = await this.getPrdDocument(input.plan.prdId, input.plan.prdRevision);
@@ -48,8 +56,9 @@ export class SqliteTestPlanStore implements TestPlanRepository {
   }
   async getPrdDocument(prdId: string, revision: number): Promise<PrdDocument | undefined> {
     const row = await this.runtime.db.selectFrom("prd_documents").selectAll().where("prd_id", "=", prdId).where("revision", "=", revision).executeTakeFirst();
-    return row === undefined ? undefined : Object.freeze({ prdId: row.prd_id, projectId: row.project_id, revision: row.revision, title: row.title, content: row.content, contentSha256: row.content_sha256, ingestedAt: row.ingested_at });
+    return row === undefined ? undefined : prdFromRow(row);
   }
 }
 function planRow(plan: TestPlanRevision, key: string, createdAt: string) { return { plan_id: plan.planId, version: plan.version, project_id: plan.projectId, prd_id: plan.prdId, prd_revision: plan.prdRevision, status: plan.status, reviewer_id: plan.approval?.reviewerId ?? null, approved_at: plan.approval?.approvedAt ?? null, idempotency_key: key, plan_json: JSON.stringify(plan), created_at: createdAt }; }
 function parsePlan(json: string): TestPlanRevision { return Object.freeze(JSON.parse(json) as TestPlanRevision); }
+function prdFromRow(row: { prd_id: string; project_id: string; revision: number; title: string; content: string; content_sha256: string; ingested_at: string }): PrdDocument { return Object.freeze({ prdId: row.prd_id, projectId: row.project_id, revision: row.revision, title: row.title, content: row.content, contentSha256: row.content_sha256, ingestedAt: row.ingested_at }); }

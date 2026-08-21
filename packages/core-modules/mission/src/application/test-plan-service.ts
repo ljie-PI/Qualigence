@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { TestPlanProposalValidator, type TestPlanProposal } from "@qualigence/application-model";
-import type { PrdDocument } from "@qualigence/context-intake";
+import { PrdDocument, type PrdDocument as PrdDocumentValue } from "@qualigence/context-intake";
 import type { Clock } from "@qualigence/shared-kernel";
 import { createDraftTestPlan, type IntentStep, type TestPlanRevision } from "../domain/test-plan-revision.js";
 import type { TestPlanRepository } from "./test-plan-repository.js";
@@ -9,6 +9,7 @@ export type TestPlanServiceErrorCode =
   | "InvalidPlanningProposal"
   | "PrdSourceMismatch"
   | "SelectorLeakRejected"
+  | "PrdIdempotencyConflict"
   | "PlanNotFound"
   | "PlanProjectMismatch";
 
@@ -33,6 +34,13 @@ export interface ApproveTestPlanInput {
   readonly expectedVersion: number;
   readonly reviewerId: string;
   readonly idempotencyKey: string;
+}
+
+export interface IngestPrdCommand {
+  readonly idempotencyKey: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly content: string;
 }
 
 function deterministicIds(key: string): () => string {
@@ -135,9 +143,41 @@ function toProposedStep(step: IntentStep, keyById: ReadonlyMap<string, string>):
 }
 
 export class TestPlanService {
-  constructor(private readonly repository: TestPlanRepository, private readonly clock: Clock, private readonly validator = new TestPlanProposalValidator()) {}
+  constructor(
+    private readonly repository: TestPlanRepository,
+    private readonly clock: Clock,
+    private readonly projectExists: (projectId: string) => Promise<boolean>,
+    private readonly validator = new TestPlanProposalValidator(),
+  ) {}
 
-  async recordPrd(document: PrdDocument): Promise<void> {
+  async ingestPrd(command: IngestPrdCommand): Promise<PrdDocumentValue> {
+    const prdId = command.idempotencyKey;
+    const existing = await this.repository.getPrdDocumentById(prdId);
+    if (existing !== undefined) {
+      this.assertPrdReplay(existing, command);
+      return existing;
+    }
+    if (!await this.projectExists(command.projectId)) throw new TestPlanServiceError("PlanProjectMismatch", "project was not found");
+    const revisions = await this.repository.listPrdDocuments(command.projectId);
+    const revision = revisions.reduce((highest, document) => Math.max(highest, document.revision), 0) + 1;
+    const document = PrdDocument.create({ prdId, projectId: command.projectId, title: command.title, content: command.content, revision }, this.clock);
+    await this.repository.savePrdDocument(document);
+    const persisted = await this.repository.getPrdDocumentById(prdId) ?? document;
+    this.assertPrdReplay(persisted, command);
+    return persisted;
+  }
+
+  listPrds(projectId: string): Promise<readonly PrdDocumentValue[]> {
+    return this.repository.listPrdDocuments(projectId);
+  }
+
+  private assertPrdReplay(document: PrdDocumentValue, command: IngestPrdCommand): void {
+    if (document.projectId !== command.projectId || document.title !== command.title || document.content !== command.content) {
+      throw new TestPlanServiceError("PrdIdempotencyConflict", "idempotency key is bound to another PRD revision");
+    }
+  }
+
+  async recordPrd(document: PrdDocumentValue): Promise<void> {
     await this.repository.savePrdDocument(document);
   }
 

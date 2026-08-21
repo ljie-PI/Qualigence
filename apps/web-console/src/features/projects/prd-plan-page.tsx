@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { CreateTestPlanBody, TestPlanDto } from "@qualigence/public-api";
+import { ApiClientError } from "../../api/errors.js";
 import { useServices, useSession } from "../../auth/session-context.js";
 import { queryKeys } from "../../routes/query-keys.js";
 import { DataState, DefinitionList, StatusBadge } from "../../ui/components.js";
@@ -91,7 +92,13 @@ export function TestPlanPage(props: { readonly planId: string }): ReactNode {
       setError(undefined);
       queryClient.setQueryData(queryKeys.testPlan(tenantId, planId), result.resource);
     },
-    onError: (err: unknown) => setError(err instanceof Error ? err.message : "approval failed"),
+    onError: (err: unknown) => {
+      if (err instanceof ApiClientError && err.code === "VersionConflict") {
+        const actual = err.details?.actualVersion;
+        setError(`Test Plan changed concurrently${typeof actual === "number" ? ` (current version ${actual})` : ""}. Reloaded current state.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.testPlan(tenantId, planId) });
+      } else setError(err instanceof Error ? err.message : "approval failed");
+    },
   });
   const targets = useQuery({
     queryKey: queryKeys.targets(tenantId, plan.data?.projectId ?? ""),
@@ -103,6 +110,14 @@ export function TestPlanPage(props: { readonly planId: string }): ReactNode {
       const selected = targets.data?.items.find((target) => target.targetId === targetId);
       if (plan.data === undefined || selected === undefined) throw new Error("Select an approved Target revision");
       return api.createMission({ projectId: plan.data.projectId, targetId: selected.targetId, targetVersion: selected.version, targetSnapshotHash: selected.snapshotHash, planId: plan.data.planId, planVersion: plan.data.version }, { idempotencyKey: crypto.randomUUID() });
+    },
+    onError: (err: unknown) => {
+      if (err instanceof ApiClientError && err.code === "VersionConflict") {
+        const actual = err.details?.actualVersion;
+        setError(`Mission creation conflicted${typeof actual === "number" ? ` at current version ${actual}` : ""}. Reloaded current state.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.testPlan(tenantId, planId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, plan.data?.projectId ?? "") });
+      } else setError(err instanceof Error ? err.message : "Mission creation failed");
     },
   });
 

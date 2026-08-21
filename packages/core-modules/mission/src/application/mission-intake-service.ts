@@ -5,6 +5,7 @@ import type { DispatchableMission, PrdMissionRepository } from "./prd-mission-re
 import type { TestPlanRepository } from "./test-plan-repository.js";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 import type { TestMission } from "../domain/test-mission.js";
+import type { Clock } from "@qualigence/shared-kernel";
 
 export class MissionIntakeError extends Error {
   constructor(readonly code: "MissionInputNotFound" | "MissionInputMismatch" | "MissionIdempotencyConflict" | "MissionCompilationFailed", message: string) {
@@ -52,7 +53,7 @@ function supportedKinds(target: TargetRevision) {
     : (["click", "input", "verify"] as const);
 }
 
-function approvedPolicy(target: TargetRevision): ApprovedExecutionPolicy {
+function approvedPolicy(target: TargetRevision, issuedAt: string, maximumWallClockMs: number): ApprovedExecutionPolicy {
   const allowedOrigins = target.configuration.kind === "web"
     ? target.configuration.allowedOrigins
     : ["https://desktop.invalid"];
@@ -63,8 +64,8 @@ function approvedPolicy(target: TargetRevision): ApprovedExecutionPolicy {
     allowedActionKinds: target.configuration.kind === "web" ? ["navigate", "click", "input"] : ["click", "input"],
     maximumRisk: "Normal",
     explorationAllowed: false,
-    issuedAt: "2026-01-01T00:00:00.000Z",
-    expiresAt: "2026-01-01T00:01:00.000Z",
+    issuedAt,
+    expiresAt: new Date(Date.parse(issuedAt) + maximumWallClockMs).toISOString(),
   };
 }
 
@@ -73,6 +74,7 @@ export class MissionIntakeService {
     private readonly targets: ProjectTargetRepository,
     private readonly plans: TestPlanRepository,
     private readonly missions: PrdMissionRepository,
+    private readonly clock: Clock,
     private readonly compiler = new MissionCompiler(),
   ) {}
 
@@ -95,14 +97,15 @@ export class MissionIntakeService {
     const testCaseIds = plan.testCases.map((testCase) => testCase.id);
     const [firstTestCaseId, ...restTestCaseIds] = testCaseIds;
     if (firstTestCaseId === undefined) throw new MissionIntakeError("MissionCompilationFailed", "approved Test Plan has no test cases");
+    const maximumWallClockMs = 60_000;
     const mission: TestMission = {
       missionId: id,
       projectId: command.projectId,
       revision: 1,
       targetId: target.targetId,
       testCaseIds: [firstTestCaseId, ...restTestCaseIds],
-      executionBudget: { maximumJobs: plan.testCases.length, maximumStepsPerJob: 100, maximumWallClockMs: 60_000, maximumModelTokens: 100_000, stopOnBlockedTestCase: true },
-      executionPolicy: approvedPolicy(target),
+      executionBudget: { maximumJobs: plan.testCases.length, maximumStepsPerJob: 100, maximumWallClockMs, maximumModelTokens: 100_000, stopOnBlockedTestCase: true },
+      executionPolicy: approvedPolicy(target, this.clock.now(), maximumWallClockMs),
       status: "approved",
     };
     const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, supportedStepKinds: supportedKinds(target), capabilities: [] });

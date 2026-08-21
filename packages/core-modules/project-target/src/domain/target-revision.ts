@@ -65,14 +65,33 @@ function deepFreeze(value: unknown): void {
   Object.freeze(value);
 }
 
-const SECRET_ARG_NAME = /(?:^|[-_])(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|client[-_]?secret)$/i;
+const APPROVED_LAUNCH_FLAGS = new Set(["--kiosk"]);
+const APPROVED_LAUNCH_VALUES = new Map<string, ReadonlySet<string>>([
+  ["--fixture", new Set(["default"])],
+  ["--profile", new Set(["approved"])],
+]);
+const APPROVED_RESET_FLAGS = new Set(["--clean", "--full", "--reset"]);
+const APPROVED_REFERENCE = /^ref:[A-Za-z0-9][A-Za-z0-9._/-]+$/;
 
-function rejectSecretArgs(args: readonly string[]): void {
-  if (args.some((arg) => SECRET_ARG_NAME.test((arg.split(/[=:]/, 1)[0] ?? "").replace(/^[-/]+/, "")))) {
-    throw new ProjectTargetError(
-      "TargetSecretRejected",
-      "Desktop launch/reset arguments must reference configured secrets, not contain secret-bearing values",
-    );
+function validateLaunchArgs(args: readonly string[]): void {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index] as string;
+    if (APPROVED_LAUNCH_FLAGS.has(argument) || APPROVED_REFERENCE.test(argument)) continue;
+    const approvedValues = APPROVED_LAUNCH_VALUES.get(argument);
+    if (approvedValues !== undefined) {
+      const value = args[index + 1];
+      if (value !== undefined && (approvedValues.has(value) || APPROVED_REFERENCE.test(value))) {
+        index += 1;
+        continue;
+      }
+    }
+    throw new ProjectTargetError("TargetSecretRejected", "Desktop launch arguments must use the approved flags or opaque ref: references");
+  }
+}
+
+function validateResetArgs(args: readonly string[]): void {
+  if (args.some((argument) => !APPROVED_RESET_FLAGS.has(argument) && !APPROVED_REFERENCE.test(argument))) {
+    throw new ProjectTargetError("TargetSecretRejected", "Desktop reset arguments must use the approved flags or opaque ref: references");
   }
 }
 
@@ -151,8 +170,8 @@ export function createTargetRevision(input: CreateTargetRevisionInput): TargetRe
       if (app.targetId !== targetId) {
         throw new ProjectTargetError("InvalidTargetConfiguration", "Desktop app targetId must match the Target revision");
       }
-      rejectSecretArgs(app.launch.args);
-      rejectSecretArgs(app.reset.args);
+      validateLaunchArgs(app.launch.args);
+      validateResetArgs(app.reset.args);
       deepFreeze(app);
       configuration = Object.freeze({ kind: "desktop", app });
     } catch (error) {
