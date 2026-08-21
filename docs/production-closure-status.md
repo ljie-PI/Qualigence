@@ -41,7 +41,7 @@ its atomic dispatch wakeup),
 component: complete
 production_wiring: present
 verification: passed; pending dedicated PR
-pull_request: pending
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/76`
 implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
 
 review_round_1_remediation: passed on 2026-08-21
@@ -65,6 +65,8 @@ formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pend
   passed 4 files / 52 tests with Git OpenSSL explicitly resolved. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E was rerun;
   post-review acceptance remains gated on a fresh clean exact-base review.
+- Post-review acceptance passed 2 files / 4 tests, covering the real rendered/API
+  Target/Test Plan/Mission path and schema-8 backup/restore compatibility.
 - Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
   `tests/conformance/storage/relational-schema.test.ts`,
   `tests/e2e/self-hosted/backup-restore.test.ts`, and
