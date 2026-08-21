@@ -1,7 +1,9 @@
 export {
   PlaywrightWebTargetAdapter,
+  type PlaywrightWebTargetOptions,
   type WebTargetSession,
 } from "./playwright-web-target-adapter.js";
+export type { ActionValueProvider } from "./playwright-action-executor.js";
 export {
   WebTargetError,
   type WebTargetErrorCode,

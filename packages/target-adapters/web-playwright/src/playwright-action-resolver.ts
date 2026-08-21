@@ -1,6 +1,8 @@
 import type { ObservationGraph } from "@qualigence/runner-protocol";
 import type {
   ActionResolver,
+  AnyProposedAction,
+  AnyResolvedWebAction,
   ProposedAction,
   ResolvedWebAction,
 } from "@qualigence/runner-kernel";
@@ -11,10 +13,25 @@ import { actionToken } from "./action-token.js";
 export class PlaywrightActionResolver implements ActionResolver {
   constructor(private readonly session: PlaywrightBrowserSession) {}
 
-  async resolve(
+  resolve(
     action: ProposedAction,
     graph: ObservationGraph,
-  ): Promise<ResolvedWebAction> {
+  ): Promise<ResolvedWebAction>;
+  resolve(
+    action: AnyProposedAction,
+    graph: ObservationGraph,
+  ): Promise<AnyResolvedWebAction>;
+  async resolve(
+    action: AnyProposedAction,
+    graph: ObservationGraph,
+  ): Promise<AnyResolvedWebAction> {
+    if (action.kind === "navigate" || action.kind === "window" || (action.kind === "scroll" && action.target === undefined)) {
+      throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
+    }
+    const actionTarget = action.target;
+    if (actionTarget === undefined) {
+      throw new WebTargetError("UnsupportedAction", "This action requires a semantic target.");
+    }
     if (!this.session.hasGraph(graph.graphId)) {
       throw new WebTargetError(
         "StaleObservation",
@@ -24,12 +41,12 @@ export class PlaywrightActionResolver implements ActionResolver {
 
     const descriptor = this.session.descriptorFor(
       graph.graphId,
-      action.target.nodeId,
+      actionTarget.nodeId,
     );
     if (!descriptor) {
       throw new WebTargetError(
         "UnknownObservationNode",
-        `Node ${action.target.nodeId} is not present in graph ${graph.graphId}.`,
+        `Node ${actionTarget.nodeId} is not present in graph ${graph.graphId}.`,
       );
     }
 
@@ -39,23 +56,36 @@ export class PlaywrightActionResolver implements ActionResolver {
     if (count === 0) {
       throw new WebTargetError(
         "TargetNotFound",
-        `Node ${action.target.nodeId} no longer matches any element.`,
+        `Node ${actionTarget.nodeId} no longer matches any element.`,
       );
     }
     if (count > 1) {
       throw new WebTargetError(
         "AmbiguousTarget",
-        `Node ${action.target.nodeId} matches ${count} elements.`,
+        `Node ${actionTarget.nodeId} matches ${count} elements.`,
       );
     }
 
+    const target = {
+      nodeId: actionTarget.nodeId,
+      selector: actionToken(graph.graphId, actionTarget.nodeId),
+    };
+    if (action.kind === "input" || action.kind === "select") {
+      return {
+        targetKind: "web",
+        kind: action.kind,
+        target,
+        graphId: graph.graphId,
+        valueRef: action.valueRef,
+      };
+    }
+    if (action.kind !== "click") {
+      throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
+    }
     return {
       targetKind: "web",
       kind: "click",
-      target: {
-        nodeId: action.target.nodeId,
-        selector: actionToken(graph.graphId, action.target.nodeId),
-      },
+      target,
       graphId: graph.graphId,
     };
   }

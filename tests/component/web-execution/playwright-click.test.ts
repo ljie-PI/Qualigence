@@ -25,6 +25,10 @@ function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "component test" };
 }
 
+function valued(kind: "input" | "select", nodeId: string, valueRef: string) {
+  return { kind, target: { nodeId }, valueRef, reason: "component test" } as const;
+}
+
 function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (!node) {
@@ -62,6 +66,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <button id="blocked">Blocked action</button>
             <span style="position:absolute;inset:0"></span>
           </span>
+          <label>Email <input aria-label="Email" /></label>
+          <label>Country <select aria-label="Country"><option value="ca">Canada</option><option value="us">United States</option></select></label>
+          <p data-qualigence-observe id="values"></p>
+          <script>
+            document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('select').addEventListener('change', event => document.getElementById('values').dataset.country = event.target.value);
+          </script>
         `,
         "Clicks",
       ),
@@ -179,5 +190,34 @@ describe("Playwright resolve + execute against real Chromium", () => {
       status: "failed",
       errorCode: "ActionTimedOut",
     });
+  });
+
+  it("executes input and select through valueRefs without returning plaintext", async () => {
+    const values = new Map([
+      ["customer.email", "private@example.test"],
+      ["customer.country", "ca"],
+    ]);
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async (valueRef) => {
+        const value = values.get(valueRef);
+        if (value === undefined) throw new Error("missing");
+        return value;
+      },
+    });
+    const before = await observer.capture(job);
+
+    const inputAction = await resolver.resolve(valued("input", nodeNamed(before, "Email").id, "customer.email"), before);
+    const inputOutcome = await executor.execute(inputAction, allowedPermit());
+    const afterInput = await observer.capture(job);
+    const selectAction = await resolver.resolve(valued("select", nodeNamed(afterInput, "Country").id, "customer.country"), afterInput);
+    const selectOutcome = await executor.execute(selectAction, allowedPermit());
+
+    expect(inputOutcome).toEqual({ status: "ok" });
+    expect(selectOutcome).toEqual({ status: "ok" });
+    expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome])).not.toContain("private@example.test");
   });
 });

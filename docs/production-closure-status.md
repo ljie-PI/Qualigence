@@ -25,7 +25,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 02 component is implemented but pending its dedicated PR merge; tickets 03-06 still own the Target/Test Plan/Mission dispatch loop |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
+| Task 16 bounded Web execution | partial | present | blocked | Tickets 16-18 complete contract expansion, budgets, and production valueRef resolution; ticket 19 still owns the bounded indexed Runtime |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -238,6 +238,25 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
   or full-suite review was run per the remediation request. The scoped
   remediation Standards/Spec review reported no blocking findings; PR #73
   remains pending merge into the parent Ticket 17 branch.
+
+### Ticket 18 - Safe valueRef input (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR
+
+- `FileActionValueProvider` validates duplicate refs, canonical-root containment,
+  regular files, the 64 KiB limit, and POSIX secret-file modes without loading
+  all plaintext at startup. Missing or unhealthy configuration fails closed.
+- Playwright preserves Plan-owned `valueRef` through resolution and resolves it
+  only immediately before `fill` or `selectOption`; outcomes expose only stable
+  codes and never resolved bytes.
+- Standalone Runner composition initializes one provider before connecting and
+  advertises `input`/`select` only when that provider is healthy. The same
+  provider and capabilities are injected into each offered Job Runtime.
+- The focused Gate passed 8 files / 54 tests with 1 existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E, full suite, or
+  implementation review was run; the dedicated PR remains pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

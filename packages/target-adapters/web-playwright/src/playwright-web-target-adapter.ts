@@ -6,6 +6,9 @@ import type {
   ActionExecutor,
   ActionOutcome,
   ActionResolver,
+  AnyProposedAction,
+  AnyResolvedAction,
+  AnyResolvedWebAction,
   ExecutionPermit,
   Observer,
   ProposedAction,
@@ -20,13 +23,17 @@ import {
 } from "./browser-session.js";
 import { PlaywrightObserver } from "./playwright-observer.js";
 import { PlaywrightActionResolver } from "./playwright-action-resolver.js";
-import { PlaywrightActionExecutor } from "./playwright-action-executor.js";
+import { PlaywrightActionExecutor, type ActionValueProvider } from "./playwright-action-executor.js";
 import type { CapturedArtifact } from "./types.js";
 
 export interface WebTargetSession {
   start(): Promise<void>;
   captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]>;
   close(): Promise<void>;
+}
+
+export interface PlaywrightWebTargetOptions extends WebSessionOptions {
+  readonly valueProvider?: ActionValueProvider;
 }
 
 /**
@@ -45,11 +52,11 @@ export class PlaywrightWebTargetAdapter
   private busy = false;
   private closed = false;
 
-  constructor(options: WebSessionOptions, launcher?: BrowserLauncher) {
+  constructor(options: PlaywrightWebTargetOptions, launcher?: BrowserLauncher) {
     this.session = new PlaywrightBrowserSession(options, launcher);
     this.observer = new PlaywrightObserver(this.session);
     this.resolver = new PlaywrightActionResolver(this.session);
-    this.executor = new PlaywrightActionExecutor(this.session);
+    this.executor = new PlaywrightActionExecutor(this.session, options.valueProvider);
   }
 
   async start(): Promise<void> {
@@ -60,15 +67,31 @@ export class PlaywrightWebTargetAdapter
     return this.guard(() => this.observer.capture(job));
   }
 
-  async resolve(
+  resolve(
     action: ProposedAction,
     graph: ObservationGraph,
-  ): Promise<ResolvedWebAction> {
+  ): Promise<ResolvedWebAction>;
+  resolve(
+    action: AnyProposedAction,
+    graph: ObservationGraph,
+  ): Promise<AnyResolvedWebAction>;
+  async resolve(
+    action: AnyProposedAction,
+    graph: ObservationGraph,
+  ): Promise<AnyResolvedWebAction> {
     return this.guard(() => this.resolver.resolve(action, graph));
   }
 
-  async execute(
+  execute(
     action: ResolvedAction,
+    permit: ExecutionPermit,
+  ): Promise<ActionOutcome>;
+  execute(
+    action: AnyResolvedAction,
+    permit: ExecutionPermit,
+  ): Promise<ActionOutcome>;
+  async execute(
+    action: AnyResolvedAction,
     permit: ExecutionPermit,
   ): Promise<ActionOutcome> {
     return this.guard(() => this.executor.execute(action, permit));

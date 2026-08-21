@@ -4,6 +4,7 @@ import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import { DeterministicRunnerPolicyGate } from "@qualigence/runner-kernel";
 import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
+import type { ActionValueProvider } from "./action-value-provider.js";
 import { LeasedJobExecutor } from "./job-executor.js";
 import type { RunnerConfig } from "./config.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
@@ -12,6 +13,7 @@ export interface RunnerOfferRuntimeOptions {
   readonly session: Pick<RunnerSession, "accept" | "complete" | "submit" | "welcome">;
   readonly spool: RunnerSpool;
   readonly config: RunnerConfig;
+  readonly valueProvider?: ActionValueProvider;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
 }
 
@@ -43,6 +45,7 @@ export class RunnerOfferRuntime {
       navigationTimeoutMs: this.options.config.navigationTimeoutMs,
       actionTimeoutMs: this.options.config.actionTimeoutMs,
       allowedOrigins: offer.job.policy.allowedOrigins,
+      ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
     });
     await adapter.start();
     try {
@@ -62,7 +65,7 @@ export class RunnerOfferRuntime {
         actionExecutor: adapter,
         verifier: new ModelBackedVerifier(gateway, this.options.config.model.modelName),
         spool: this.options.spool,
-        capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+        capabilities: runnerCapabilities(this.options.valueProvider),
         objectiveOnlyMaximumWallClockMs: this.options.config.actionTimeoutMs,
         objectiveOnlyMaximumModelTokens: this.options.config.model.maximumTokensPerCall,
       });
@@ -76,4 +79,11 @@ export class RunnerOfferRuntime {
       await adapter.close();
     }
   }
+}
+
+export function runnerCapabilities(valueProvider?: ActionValueProvider) {
+  return capabilities({
+    targetAdapters: ["web-playwright"],
+    actionKinds: valueProvider === undefined ? ["click"] : ["click", "input", "select"],
+  });
 }

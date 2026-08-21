@@ -1,6 +1,7 @@
 import type {
   ActionExecutor,
   ActionOutcome,
+  AnyResolvedAction,
   ResolvedAction,
 } from "@qualigence/runner-kernel";
 import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
@@ -12,6 +13,10 @@ import {
 import { locatorFor } from "./action-locator.js";
 import { isActionToken } from "./action-token.js";
 
+export interface ActionValueProvider {
+  resolve(valueRef: string): Promise<string>;
+}
+
 function isInfrastructureFailure(message: string): boolean {
   return (
     /Target closed/i.test(message) ||
@@ -22,10 +27,21 @@ function isInfrastructureFailure(message: string): boolean {
 }
 
 export class PlaywrightActionExecutor implements ActionExecutor {
-  constructor(private readonly session: PlaywrightBrowserSession) {}
+  constructor(
+    private readonly session: PlaywrightBrowserSession,
+    private readonly valueProvider?: ActionValueProvider,
+  ) {}
 
-  async execute(
+  execute(
     action: ResolvedAction,
+    permit: ExecutionPermit,
+  ): Promise<ActionOutcome>;
+  execute(
+    action: AnyResolvedAction,
+    permit: ExecutionPermit,
+  ): Promise<ActionOutcome>;
+  async execute(
+    action: AnyResolvedAction,
     permit: ExecutionPermit,
   ): Promise<ActionOutcome> {
     if (!(permit instanceof ExecutionPermit)) {
@@ -41,15 +57,23 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       return { status: "failed", errorCode: "UnsupportedTargetKind" };
     }
 
+    if (action.kind === "navigate" || (action.kind === "scroll" && action.target === undefined)) {
+      return { status: "failed", errorCode: "UnsupportedAction" };
+    }
+    const actionTarget = action.target;
+    if (actionTarget === undefined) {
+      return { status: "failed", errorCode: "UnsupportedAction" };
+    }
+
     if (
-      !isActionToken(action.target.selector, action.graphId, action.target.nodeId)
+      !isActionToken(actionTarget.selector, action.graphId, actionTarget.nodeId)
     ) {
       return { status: "failed", errorCode: "UnknownObservationNode" };
     }
 
     const descriptor = this.session.descriptorFor(
       action.graphId,
-      action.target.nodeId,
+      actionTarget.nodeId,
     );
     if (!descriptor) {
       return { status: "failed", errorCode: "StaleObservation" };
@@ -89,7 +113,26 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       }
 
       try {
-        await locator.click({ timeout: this.session.actionTimeoutMs });
+        if (action.kind === "input" || action.kind === "select") {
+          if (this.valueProvider === undefined) {
+            return { status: "failed", errorCode: "ActionValueUnavailable" };
+          }
+          let value: string;
+          try {
+            value = await this.valueProvider.resolve(action.valueRef);
+          } catch {
+            return { status: "failed", errorCode: "ActionValueUnavailable" };
+          }
+          if (action.kind === "input") {
+            await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+          } else {
+            await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+          }
+        } else if (action.kind === "click") {
+          await locator.click({ timeout: this.session.actionTimeoutMs });
+        } else {
+          return { status: "failed", errorCode: "UnsupportedAction" };
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (isInfrastructureFailure(message)) {

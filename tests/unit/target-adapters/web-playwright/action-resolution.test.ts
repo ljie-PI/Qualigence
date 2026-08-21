@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationGraph } from "@qualigence/runner-protocol";
-import type { ProposedAction } from "@qualigence/runner-kernel";
+import { ExecutionPermit, type ProposedAction } from "@qualigence/runner-kernel";
 import {
+  PlaywrightActionExecutor,
   PlaywrightActionResolver,
   PlaywrightBrowserSession,
   actionToken,
@@ -22,9 +23,14 @@ function options(): WebSessionOptions {
 }
 
 const noopLauncher = { launch: vi.fn() } as unknown as BrowserLauncher;
+const permit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
 
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "test" };
+}
+
+function input(nodeId: string, valueRef: string): ProposedAction<"input"> {
+  return { kind: "input", target: { nodeId }, valueRef, reason: "test" };
 }
 
 function graphWith(graphId: string, nodeId: string): ObservationGraph {
@@ -70,5 +76,84 @@ describe("PlaywrightActionResolver negative paths", () => {
         graphWith("run-1:observation:0", "n-0-abcd1234"),
       ),
     ).rejects.toMatchObject({ code: "StaleObservation" });
+  });
+
+  it("preserves an input valueRef without resolving plaintext", async () => {
+    const graphId = "run-1:observation:1";
+    const session = sessionWithGraph(graphId);
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({ count: async () => 1 }),
+    } as never);
+    const resolver = new PlaywrightActionResolver(session);
+
+    await expect(
+      resolver.resolve(input("n-0-abcd1234", "customer.email"), graphWith(graphId, "n-0-abcd1234")),
+    ).resolves.toMatchObject({ kind: "input", valueRef: "customer.email" });
+  });
+});
+
+describe("PlaywrightActionExecutor value resolution", () => {
+  it.each([
+    ["input", "fill"],
+    ["select", "selectOption"],
+  ] as const)("resolves a %s valueRef only immediately before the target action", async (kind, method) => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
+      artifacts: [],
+    });
+    const calls: string[] = [];
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      fill: async (value: string) => { calls.push(`fill:${value}`); },
+      selectOption: async (value: string) => { calls.push(`selectOption:${value}`); },
+    };
+    session.withPage = async (operation) => operation({
+      getByRole: () => locator,
+      url: () => "https://example.test/",
+    } as never);
+    const provider = { resolve: vi.fn(async (valueRef: string) => {
+      calls.push(`resolve:${valueRef}`);
+      return "plaintext-secret";
+    }) };
+    const executor = new PlaywrightActionExecutor(session, provider);
+    const action = {
+      targetKind: "web",
+      kind,
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.email",
+    } as const;
+
+    await expect(executor.execute(action, permit)).resolves.toEqual({ status: "ok" });
+    expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
+  });
+
+  it("returns a stable code without plaintext when the provider cannot resolve a valueRef", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({ count: async () => 1, isVisible: async () => true, isEnabled: async () => true, getAttribute: async () => null }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => { throw new Error("plaintext-secret"); },
+    });
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "input",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.email",
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
   });
 });

@@ -235,6 +235,8 @@ function createHarness(options: HarnessOptions): Harness {
         },
         verifier: options.verifier,
         traceRecorder,
+        objectiveOnlyMaximumWallClockMs: 5_000,
+        objectiveOnlyMaximumModelTokens: 100,
       });
       return { execute: (job) => runtime.run(job), artifacts, manifests, runs, traces, close };
     },

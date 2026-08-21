@@ -23,3 +23,5 @@ export type {
   RunnerClientDependencies,
   ServedOffer,
 } from "./runner-client.js";
+export { FileActionValueProvider, openActionValueProvider } from "./action-value-provider.js";
+export type { ActionValueProvider, FileActionValueProviderOptions } from "./action-value-provider.js";
