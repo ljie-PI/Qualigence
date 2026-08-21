@@ -43,12 +43,13 @@ production_wiring: present
 verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/76`
 remediation_ticket: `38`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/77`
+remediation_status: verification passed at the tested product head; pending fresh exact-base review
+remediation_tested_product_head: `cb072a45da87982fca2f5dcd5a62e3b420f21ade`
+remediation_later_commits: status-only; no product or test changes after the tested product head
 implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
 
-review_round_1_remediation: passed on 2026-08-21
-review_round_2_remediation: passed on 2026-08-21
-review_round_3_remediation: passed on 2026-08-21
-formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pending fresh exact-base review
+remediation_review_status: pending fresh exact-base review; no clean-review claim
 
 - PostgreSQL Target create/update and Test Plan create/approve now reserve the
   tenant-scoped idempotency key before authoritative replay comparison and head
@@ -61,16 +62,24 @@ formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pend
   tests with wrong version conflicts or raw `23505` unique errors. GREEN:
   `corepack pnpm vitest run tests/contract/sqlite/product-intake-store.test.ts tests/contract/postgres/product-intake-store.test.ts`
   passed 2 files / 32 tests against real Docker PostgreSQL.
-- Ticket 03 focused Gate
+- At remediation tested product head
+  `cb072a45da87982fca2f5dcd5a62e3b420f21ade`, the focused Gate
   `corepack pnpm vitest run tests/unit/core-modules/project-target tests/unit/core-modules/mission/test-plan-approval.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`
-  passed 4 files / 52 tests with Git OpenSSL explicitly resolved. Root
-  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was rerun;
-  post-review acceptance remains gated on a fresh clean exact-base review.
-- Post-review acceptance passed 2 files / 4 tests, covering the real rendered/API
-  Target/Test Plan/Mission path and schema-8 backup/restore compatibility.
+  passed 4 files / 52 tests; rendered acceptance
+  `corepack pnpm vitest run tests/e2e/web-console/target-test-plan.test.ts`
+  passed 1 file / 1 test; backup acceptance
+  `corepack pnpm vitest run tests/e2e/self-hosted/backup-restore.test.ts`
+  passed 1 file / 3 tests; `corepack pnpm typecheck` passed; and
+  `git diff --check` passed. Git OpenSSL was explicitly resolved for the
+  focused Gate. Every later commit in the remediation PR is status-only and
+  does not change the tested product or tests.
 - Final PR review found the product E2E was API-client-only rather than rendered
   Console and was not rerun after the final idempotency fix. Remediation Ticket
   38 blocks merge.
+- Remediation 38 replaces that acceptance with the real React DOM Console router
+  and visible Target, Test Plan, and Mission controls backed by the real Public
+  API Server. Fresh exact-base review of the final status-bound evidence is
+  pending; this entry does not claim a clean review.
 - Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
   `tests/conformance/storage/relational-schema.test.ts`,
   `tests/e2e/self-hosted/backup-restore.test.ts`, and
@@ -92,17 +101,6 @@ formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pend
   conformance, and affected Admin compatibility coverage. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run before
   clean review.
-- Exact-base Standards and Spec review of merge-base `17d9e87` through
-  acceptance head `6180d8c` reported no Critical or Important findings.
-  Post-review acceptance
-  `corepack pnpm vitest run tests/e2e/web-console/target-test-plan.test.ts`
-  passed 1 file / 1 test against the real Console client, Fastify Server, OIDC,
-  and Docker PostgreSQL workflow.
-- The separately approved schema-8 compatibility acceptance
-  `corepack pnpm vitest run tests/e2e/self-hosted/backup-restore.test.ts` passed
-  1 file / 3 tests with Docker PostgreSQL and MinIO; only current schema-version
-  expectations changed, with no Ticket 02 behavior change.
-
 - PRD identity, project revision assignment, immutable document construction,
   idempotent replay, and persistence now live in `TestPlanService`; the Fastify
   route is limited to authentication, request validation, DTO mapping, and safe
