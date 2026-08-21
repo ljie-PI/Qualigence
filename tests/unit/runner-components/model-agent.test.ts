@@ -1,16 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ModelBackedDecisionProvider,
   ModelBackedVerifier,
 } from "@qualigence/model-agent";
 import { ModelGateway } from "@qualigence/model-gateway";
-import { ExecutionRuntime } from "@qualigence/runner-kernel";
+import {
+  DeterministicExecutionBudget,
+  ExecutionBudgetError,
+  ExecutionRuntime,
+} from "@qualigence/runner-kernel";
+import type { ExecutionBudget, ModelUsage } from "@qualigence/runner-kernel";
 import {
   AllowAllRunnerPolicyGate,
   InMemoryTraceRecorder,
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
 import type {
+  ModelInvocationReport,
   ModelProvider,
   StructuredModelInvoker,
   StructuredModelRequest,
@@ -18,6 +24,41 @@ import type {
 import type { ModelProviderRequest } from "@qualigence/model-provider";
 
 describe("model-backed runner components", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("passes the remaining output ceiling and accounts decision usage", async () => {
+    const gateway = new UsageGateway({ inputTokens: 4, outputTokens: 3, totalTokens: 7 });
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model");
+
+    await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    });
+
+    expect(gateway.requests[0]?.maximumOutputTokens).toBe(100);
+    expect(budget.maximumOutputTokens("run-1")).toBe(93);
+  });
+
+  it("passes the remaining output ceiling and accounts verification usage", async () => {
+    const gateway = new UsageGateway(
+      { inputTokens: 6, outputTokens: 4, totalTokens: 10 },
+      { status: "passed", summary: "verified", claims: [] },
+    );
+    const budget = activeBudget();
+    const verifier = new ModelBackedVerifier(gateway, "test-model");
+
+    await verifier.verify({ ...verificationContext(), budget });
+
+    expect(gateway.requests[0]?.maximumOutputTokens).toBe(100);
+    expect(budget.maximumOutputTokens("run-1")).toBe(90);
+  });
+
   it("maps a model decision to a node-only click action", async () => {
     const gateway = new ScriptedGateway([
       { action: { kind: "click", nodeId: "node-add" }, reason: "add the item" },
@@ -110,6 +151,8 @@ describe("model-backed runner components", () => {
         },
       },
       traceRecorder,
+      objectiveOnlyMaximumWallClockMs: 1_000,
+      objectiveOnlyMaximumModelTokens: 100,
     });
 
     const completion = await runtime.run(job());
@@ -128,6 +171,280 @@ describe("model-backed runner components", () => {
       "observation",
       "run_completed",
     ]);
+  });
+
+  it("accounts both invalid structured responses before blocking", async () => {
+    const modelProvider = new ScriptedModelProvider([
+      { action: { kind: "click", nodeId: "unknown-1" }, reason: "missing" },
+      { action: { kind: "click", nodeId: "unknown-2" }, reason: "missing" },
+    ]);
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", []),
+      budget,
+    })).rejects.toMatchObject({ errorCode: "InvalidStructuredOutput" });
+
+    expect(budget.maximumOutputTokens("run-1")).toBe(96);
+  });
+
+  it("classifies absent usage from exhausted correction as unavailable", async () => {
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: new NoUsageModelProvider([
+        { action: { kind: "click", nodeId: "unknown-1" }, reason: "missing" },
+        { action: { kind: "click", nodeId: "unknown-2" }, reason: "missing" },
+      ]) }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", []),
+      budget: activeBudget(),
+    })).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
+  });
+
+  it("classifies missing usage from a failed retry attempt as unavailable after success", async () => {
+    const modelProvider = new RetryModelProvider();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider, delay: async () => {} }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget: activeBudget(),
+    })).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
+    expect(modelProvider.requests).toHaveLength(2);
+  });
+
+  it("charges failed retry and correction attempts exactly once", async () => {
+    const modelProvider = new UsageRetryCorrectionProvider();
+    const budget = activeBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider, delay: async () => {} }),
+      "test-model",
+    );
+
+    await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    });
+
+    expect(modelProvider.requests).toHaveLength(3);
+    expect(budget.maximumOutputTokens("run-1")).toBe(91);
+  });
+
+  it("charges successful usage once when invocation reporting rejects", async () => {
+    const auditError = new Error("audit unavailable");
+    const budget = new RecordingBudget();
+    const reports: ModelInvocationReport[] = [];
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({
+        provider: new ScriptedModelProvider([
+          { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+        ]),
+        invocationObserver: {
+          record: async (report) => {
+            reports.push(report);
+            throw auditError;
+          },
+        },
+      }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    })).rejects.toBe(auditError);
+
+    expect(budget.usages).toEqual([{ inputTokens: 1, outputTokens: 1, totalTokens: 2 }]);
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+  });
+
+  it("bounds hanging invocation reporting by the run deadline without late duplicate reporting", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const reports: ModelInvocationReport[] = [];
+    let rejectLate: ((error: Error) => void) | undefined;
+    let markReportStarted: (() => void) | undefined;
+    const reportStarted = new Promise<void>((resolve) => { markReportStarted = resolve; });
+    const budget = new RecordingBudget(() => now);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]) },
+      decisionProvider: new ModelBackedDecisionProvider(
+        new ModelGateway({
+          provider: new ScriptedModelProvider([
+            { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+          ]),
+          invocationObserver: {
+            record: async (report) => {
+              reports.push(report);
+              markReportStarted?.();
+              return new Promise<never>((_resolve, reject) => { rejectLate = reject; });
+            },
+          },
+        }),
+        "test-model",
+      ),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+    const completionPromise = runtime.run(job());
+    await reportStarted;
+
+    now = 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.runOnlyPendingTimersAsync();
+    const completion = await completionPromise;
+
+    expect(completion).toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(budget.usages).toEqual([{ inputTokens: 1, outputTokens: 1, totalTokens: 2 }]);
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+
+    rejectLate?.(new Error("late audit rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(reports.map((report) => report.status)).toEqual(["succeeded"]);
+  });
+
+  it("charges known failed usage once and preserves the model failure when reporting rejects", async () => {
+    const budget = new RecordingBudget();
+    const reports: ModelInvocationReport[] = [];
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({
+        provider: new FailedUsageModelProvider(),
+        invocationObserver: {
+          record: async (report) => {
+            reports.push(report);
+            throw new Error("audit unavailable");
+          },
+        },
+      }),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+    })).rejects.toMatchObject({ code: "AuthenticationFailed" });
+
+    expect(budget.usages).toEqual([{ totalTokens: 3 }]);
+    expect(reports.map((report) => report.status)).toEqual(["failed"]);
+  });
+
+  it("charges accumulated abort usage exactly once before propagating the abort reason", async () => {
+    const controller = new AbortController();
+    const modelProvider = new AbortCorrectionModelProvider({ totalTokens: 3 });
+    const budget = new RecordingBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+    const decision = provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+      signal: controller.signal,
+    });
+    await modelProvider.correctionStarted;
+
+    const reason = new ExecutionBudgetError("WallClockBudgetExceeded");
+    controller.abort(reason);
+
+    await expect(decision).rejects.toBe(reason);
+
+    expect(budget.usages).toEqual([{ totalTokens: 7 }]);
+  });
+
+  it("preserves unavailable-usage classification after charging prior abort usage once", async () => {
+    const controller = new AbortController();
+    const modelProvider = new AbortCorrectionModelProvider();
+    const budget = new RecordingBudget();
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+    );
+    const decision = provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]),
+      budget,
+      signal: controller.signal,
+    });
+    await modelProvider.correctionStarted;
+
+    controller.abort(new ExecutionBudgetError("WallClockBudgetExceeded"));
+
+    await expect(decision).rejects.toMatchObject({ code: "ModelUsageUnavailable" });
+
+    expect(budget.usages).toEqual([{ totalTokens: 4 }]);
+  });
+
+  it("charges abort usage before Runtime propagates wall timeout classification", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const modelProvider = new AbortCorrectionModelProvider({ totalTokens: 3 });
+    const budget = new RecordingBudget(() => now);
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => observation("before", [
+        { id: "node-add", role: "button", name: "Add", confidence: 1 },
+      ]) },
+      decisionProvider: new ModelBackedDecisionProvider(
+        new ModelGateway({ provider: modelProvider }),
+        "test-model",
+      ),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+    const completionPromise = runtime.run(job());
+    await modelProvider.correctionStarted;
+
+    now = 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const completion = await completionPromise;
+
+    expect(completion).toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(budget.usages).toEqual([{ totalTokens: 7 }]);
   });
 
   it("preserves only validated graph/node evidence references in failed verification", async () => {
@@ -251,6 +568,8 @@ describe("model-backed runner components", () => {
         "test-model",
       ),
       traceRecorder,
+      objectiveOnlyMaximumWallClockMs: 1_000,
+      objectiveOnlyMaximumModelTokens: 100,
     });
 
     const completion = await runtime.run(job());
@@ -345,6 +664,22 @@ function verificationContext() {
   };
 }
 
+function activeBudget() {
+  const budget = new DeterministicExecutionBudget();
+  budget.begin({
+    ...job(),
+    plan: {
+      missionId: "mission-1",
+      missionRevision: 1,
+      testCaseId: "case-1",
+      steps: [{ stepIndex: 0, kind: "click" as const, target: { purpose: "test" } }],
+      expectedClaimIds: ["claim-1"],
+      budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 },
+    },
+  });
+  return budget;
+}
+
 function failedVerification(claim: {
   readonly expected: { readonly graphId: string; readonly nodeId: string; readonly text: string };
   readonly observed: { readonly graphId: string; readonly nodeId: string; readonly text: string };
@@ -376,6 +711,30 @@ class ScriptedGateway implements StructuredModelInvoker {
   }
 }
 
+class UsageGateway implements StructuredModelInvoker {
+  readonly requests: StructuredModelRequest[] = [];
+
+  constructor(
+    private readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly totalTokens: number },
+    private readonly value: unknown = { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+  ) {}
+
+  async invokeStructured<T>(request: StructuredModelRequest): Promise<{
+    readonly value: T;
+    readonly model: string;
+    readonly finishReason: string;
+    readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly totalTokens: number };
+  }> {
+    this.requests.push(request);
+    return {
+      value: this.value as T,
+      model: "test-model",
+      finishReason: "stop",
+      usage: this.usage,
+    };
+  }
+}
+
 class ScriptedModelProvider implements ModelProvider {
   readonly capabilities = {
     structuredOutput: true,
@@ -393,6 +752,153 @@ class ScriptedModelProvider implements ModelProvider {
       output: this.outputs.shift(),
       model: request.model,
       finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     };
   }
+}
+
+class NoUsageModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+
+  constructor(private readonly outputs: unknown[]) {}
+
+  async invoke(request: ModelProviderRequest) {
+    return {
+      output: this.outputs.shift(),
+      model: request.model,
+      finishReason: "stop",
+    };
+  }
+}
+
+class RetryModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly requests: ModelProviderRequest[] = [];
+
+  async invoke(request: ModelProviderRequest) {
+    this.requests.push(request);
+    if (this.requests.length === 1) {
+      throw { code: "TimedOut", message: "timed out" };
+    }
+    return {
+      output: { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+      model: request.model,
+      finishReason: "stop",
+      usage: { totalTokens: 2 },
+    };
+  }
+}
+
+class UsageRetryCorrectionProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly requests: ModelProviderRequest[] = [];
+
+  async invoke(request: ModelProviderRequest) {
+    this.requests.push(request);
+    if (this.requests.length === 1) {
+      throw { code: "TimedOut", message: "timed out", usage: { totalTokens: 2 } };
+    }
+    return {
+      output: this.requests.length === 2
+        ? { malformed: true }
+        : { action: { kind: "click", nodeId: "node-add" }, reason: "add" },
+      model: request.model,
+      finishReason: "stop",
+      usage: { totalTokens: this.requests.length === 2 ? 3 : 4 },
+    };
+  }
+}
+
+class FailedUsageModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+
+  async invoke(): Promise<never> {
+    throw {
+      code: "AuthenticationFailed",
+      message: "authentication failed",
+      usage: { totalTokens: 3 },
+    };
+  }
+}
+
+class AbortCorrectionModelProvider implements ModelProvider {
+  readonly capabilities = {
+    structuredOutput: true,
+    visionInput: false,
+    toolCalling: false,
+    streaming: false,
+  } as const;
+  readonly correctionStarted: Promise<void>;
+  private attempts = 0;
+  private markCorrectionStarted: (() => void) | undefined;
+
+  constructor(private readonly abortUsage?: ModelUsage) {
+    this.correctionStarted = new Promise((resolve) => {
+      this.markCorrectionStarted = resolve;
+    });
+  }
+
+  async invoke(request: ModelProviderRequest) {
+    this.attempts += 1;
+    if (this.attempts === 1) {
+      return {
+        output: { malformed: true },
+        model: request.model,
+        finishReason: "stop",
+        usage: { totalTokens: 4 },
+      };
+    }
+
+    this.markCorrectionStarted?.();
+    return new Promise<never>((_resolve, reject) => {
+      if (this.abortUsage === undefined) return;
+      request.signal?.addEventListener("abort", () => {
+        reject({
+          code: "TimedOut",
+          message: "aborted",
+          usage: this.abortUsage,
+        });
+      }, { once: true });
+    });
+  }
+}
+
+class RecordingBudget implements ExecutionBudget {
+  readonly usages: ModelUsage[] = [];
+
+  constructor(private readonly now: () => number = () => 0) {}
+
+  begin(): void {}
+  beforeStep(): void {}
+  remainingWallClockMs(): number {
+    const remaining = 1_000 - this.now();
+    if (remaining <= 0) throw new ExecutionBudgetError("WallClockBudgetExceeded");
+    return remaining;
+  }
+  maximumOutputTokens(): number { return 100; }
+  consumeModelUsage(_runId: string, usage: ModelUsage | undefined): void {
+    if (usage === undefined) throw new ExecutionBudgetError("ModelUsageUnavailable");
+    this.usages.push(usage);
+  }
+  finish(): void {}
 }

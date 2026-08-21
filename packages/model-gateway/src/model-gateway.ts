@@ -3,6 +3,8 @@ import type {
   ModelInvocationContext,
   ModelProvider,
   ModelProviderErrorCode,
+  ModelUsage,
+  ModelUsageState,
   StructuredModelRequest,
   StructuredOutputContract,
   StructuredOutputValidationError,
@@ -20,12 +22,45 @@ export type ModelGatewayErrorCode =
   | VisualInputErrorCode;
 
 export class ModelGatewayError extends Error {
+  readonly usageState: ModelUsageState;
+
   constructor(
     readonly code: ModelGatewayErrorCode,
     message: string,
+    readonly usage?: ModelUsage,
+    readonly providerAttempted = false,
+    readonly usageUnavailable = providerAttempted && usage === undefined,
   ) {
     super(message);
     this.name = "ModelGatewayError";
+    this.usageState = usageState(usage, usageUnavailable);
+  }
+}
+
+export class ModelGatewayInvocationError extends Error {
+  readonly usage: ModelUsage | undefined;
+  readonly usageUnavailable: boolean;
+
+  constructor(
+    readonly reason: unknown,
+    readonly usageState: ModelUsageState,
+    readonly providerAttempted = false,
+  ) {
+    super(reason instanceof Error ? reason.message : "The model invocation failed.");
+    this.name = "ModelGatewayInvocationError";
+    this.usage = usageFromState(usageState);
+    this.usageUnavailable = usageState.status === "unavailable";
+  }
+}
+
+export class ModelGatewayAbortError extends ModelGatewayInvocationError {
+  constructor(
+    reason: unknown,
+    usageState: ModelUsageState,
+    providerAttempted = false,
+  ) {
+    super(reason, usageState, providerAttempted);
+    this.name = "ModelGatewayAbortError";
   }
 }
 
@@ -42,8 +77,10 @@ export interface ModelInvocationReport {
   readonly latencyMs: number;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
+  readonly totalTokens?: number;
   readonly providerRequestId?: string;
   readonly errorCode?: string;
+  readonly usageStatus?: ModelUsageState["status"];
   readonly occurredAt: string;
 }
 
@@ -79,30 +116,68 @@ export class ModelGateway implements StructuredModelInvoker {
     output: StructuredOutputContract<T>,
   ): Promise<ValidatedModelResult<T>> {
     const startedAtMs = Date.now();
+    let result: ValidatedModelResult<T>;
     try {
-      const result = await this.runStructured(request, output);
+      result = await this.runStructured(request, output);
+      request.signal?.throwIfAborted();
+    } catch (error) {
+      const invocationError = asInvocationError(error, request.signal);
+      const knownUsage = usageFromState(invocationError.usageState);
+      try {
+        await this.report(request, startedAtMs, {
+          status: "failed",
+          model: request.model,
+          errorCode: invocationError instanceof ModelGatewayAbortError
+            ? "Aborted"
+            : errorCodeOf(
+                invocationError instanceof ModelGatewayInvocationError
+                  ? invocationError.reason
+                  : invocationError,
+              ),
+          usageStatus: invocationError.usageState.status,
+          ...(knownUsage?.inputTokens === undefined ? {} : { inputTokens: knownUsage.inputTokens }),
+          ...(knownUsage?.outputTokens === undefined ? {} : { outputTokens: knownUsage.outputTokens }),
+          ...(knownUsage?.totalTokens === undefined ? {} : { totalTokens: knownUsage.totalTokens }),
+        });
+      } catch (reportError) {
+        if (reportError instanceof ProviderInvocationAborted || isAborted(request.signal)) {
+          throw new ModelGatewayAbortError(
+            request.signal?.reason ?? reportError,
+            invocationError.usageState,
+            invocationError.providerAttempted,
+          );
+        }
+      }
+      throw invocationError;
+    }
+
+    const resultUsageState = result.usageState ?? usageState(result.usage, result.usage === undefined);
+    const resultUsage = usageFromState(resultUsageState);
+    try {
       await this.report(request, startedAtMs, {
         status: "succeeded",
         model: result.model,
         ...(result.providerRequestId === undefined
           ? {}
           : { providerRequestId: result.providerRequestId }),
-        ...(result.usage?.inputTokens === undefined
+        ...(resultUsage?.inputTokens === undefined
           ? {}
-          : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage?.outputTokens === undefined
+          : { inputTokens: resultUsage.inputTokens }),
+        ...(resultUsage?.outputTokens === undefined
           ? {}
-          : { outputTokens: result.usage.outputTokens }),
+          : { outputTokens: resultUsage.outputTokens }),
+        ...(resultUsage?.totalTokens === undefined
+          ? {}
+          : { totalTokens: resultUsage.totalTokens }),
+        usageStatus: resultUsageState.status,
       });
-      return result;
-    } catch (error) {
-      await this.report(request, startedAtMs, {
-        status: "failed",
-        model: request.model,
-        errorCode: errorCodeOf(error),
-      });
-      throw error;
+    } catch (reportError) {
+      if (reportError instanceof ProviderInvocationAborted || isAborted(request.signal)) {
+        throw new ModelGatewayAbortError(request.signal?.reason ?? reportError, resultUsageState, true);
+      }
+      throw new ModelGatewayInvocationError(reportError, resultUsageState, true);
     }
+    return result;
   }
 
   private async runStructured<T>(
@@ -116,50 +191,186 @@ export class ModelGateway implements StructuredModelInvoker {
       );
     }
 
+    if (
+      request.maximumOutputTokens !== undefined &&
+      (!Number.isSafeInteger(request.maximumOutputTokens) || request.maximumOutputTokens <= 0)
+    ) {
+      throw new ModelGatewayError(
+        "InvalidRequest",
+        "maximumOutputTokens must be a positive safe integer.",
+      );
+    }
+
     this.assertVisualInputAllowed(request, this.dependencies.provider.capabilities);
 
     let schemaAttempts = 0;
     let transientAttempts = 0;
     let providerRequest = request;
+    let accumulatedUsage: ModelUsage | undefined;
+    let accumulatedTotalTokens = 0;
+    let usageAvailable = true;
+    let knownUsageAvailable = false;
+    let providerAttempts = 0;
 
     while (true) {
+      if (request.signal?.aborted === true) {
+        if (providerAttempts === 0) {
+          throw request.signal.reason;
+        }
+        throw abortError(
+          request.signal,
+          accumulatedUsage,
+          accumulatedTotalTokens,
+          knownUsageAvailable,
+          !usageAvailable,
+        );
+      }
       const providerRequestWithSchema = {
         ...providerRequest,
         responseSchema: output.jsonSchema,
       };
       let response: Awaited<ReturnType<ModelProvider["invoke"]>>;
       try {
-        response = await this.dependencies.provider.invoke(providerRequestWithSchema);
+        providerAttempts += 1;
+        response = await awaitWithAbort(
+          this.dependencies.provider.invoke(providerRequestWithSchema),
+          request.signal,
+        );
       } catch (error) {
+        if (error instanceof ProviderInvocationAborted) {
+          throw abortError(
+            request.signal,
+            accumulatedUsage,
+            accumulatedTotalTokens,
+            knownUsageAvailable,
+            true,
+          );
+        }
         const normalized = normalizeProviderError(error);
-        if (!isTransient(normalized.code) || transientAttempts >= 2) {
-          throw normalized;
+        const attemptUsage = accumulateUsage(
+          accumulatedUsage,
+          accumulatedTotalTokens,
+          usageAvailable,
+          knownUsageAvailable,
+          normalized.usage,
+        );
+        accumulatedUsage = attemptUsage.usage;
+        accumulatedTotalTokens = attemptUsage.totalTokens;
+        usageAvailable = attemptUsage.available;
+        knownUsageAvailable = attemptUsage.known;
+        if (isAborted(request.signal)) {
+          throw abortError(
+            request.signal,
+            accumulatedUsage,
+            accumulatedTotalTokens,
+            knownUsageAvailable,
+            !usageAvailable,
+          );
+        }
+        if (!isTransient(normalized.code) || transientAttempts >= 1) {
+          throw new ModelGatewayError(
+            normalized.code,
+            normalized.message,
+            knownUsage(accumulatedUsage, accumulatedTotalTokens, knownUsageAvailable),
+            true,
+            !usageAvailable,
+          );
         }
 
         transientAttempts += 1;
-        await this.delay(100 * 2 ** (transientAttempts - 1));
+        try {
+          await awaitWithAbort(
+            this.delay(100 * 2 ** (transientAttempts - 1)),
+            request.signal,
+          );
+        } catch (delayError) {
+          if (delayError instanceof ProviderInvocationAborted) {
+            throw abortError(
+              request.signal,
+              accumulatedUsage,
+              accumulatedTotalTokens,
+              knownUsageAvailable,
+              !usageAvailable,
+            );
+          }
+          throw delayError;
+        }
         continue;
       }
 
+      const attemptUsage = accumulateUsage(
+        accumulatedUsage,
+        accumulatedTotalTokens,
+        usageAvailable,
+        knownUsageAvailable,
+        response.usage,
+      );
+      accumulatedUsage = attemptUsage.usage;
+      accumulatedTotalTokens = attemptUsage.totalTokens;
+      usageAvailable = attemptUsage.available;
+      knownUsageAvailable = attemptUsage.known;
+      if (isAborted(request.signal)) {
+        throw abortError(
+          request.signal,
+          accumulatedUsage,
+          accumulatedTotalTokens,
+          knownUsageAvailable,
+          !usageAvailable,
+        );
+      }
+
       try {
-        return {
+        const usage = completeUsage(accumulatedUsage, accumulatedTotalTokens, usageAvailable);
+        const state = accumulatedUsageState(
+          accumulatedUsage,
+          accumulatedTotalTokens,
+          knownUsageAvailable,
+          usageAvailable,
+        );
+        const result = {
           value: output.parse(response.output),
           model: response.model,
           finishReason: response.finishReason,
           ...(response.providerRequestId === undefined
             ? {}
             : { providerRequestId: response.providerRequestId }),
-          ...(response.usage === undefined ? {} : { usage: response.usage }),
+          ...(usage === undefined ? {} : { usage }),
+          usageState: state,
         };
+        if (isAborted(request.signal)) {
+          throw abortError(
+            request.signal,
+            accumulatedUsage,
+            accumulatedTotalTokens,
+            knownUsageAvailable,
+            !usageAvailable,
+          );
+        }
+        return result;
       } catch (error) {
-        if (!isStructuredOutputValidationError(error)) {
+        if (error instanceof ModelGatewayAbortError) {
           throw error;
+        }
+        if (!isStructuredOutputValidationError(error)) {
+          throw new ModelGatewayInvocationError(
+            error,
+            accumulatedUsageState(
+              accumulatedUsage,
+              accumulatedTotalTokens,
+              knownUsageAvailable,
+              usageAvailable,
+            ),
+            true,
+          );
         }
 
         if (schemaAttempts >= 1) {
           throw new ModelGatewayError(
             "InvalidStructuredOutput",
             `The provider returned output that does not match ${output.name}.`,
+            knownUsage(accumulatedUsage, accumulatedTotalTokens, knownUsageAvailable),
+            true,
+            !usageAvailable,
           );
         }
 
@@ -187,8 +398,10 @@ export class ModelGateway implements StructuredModelInvoker {
       readonly model: string;
       readonly inputTokens?: number;
       readonly outputTokens?: number;
+      readonly totalTokens?: number;
       readonly providerRequestId?: string;
       readonly errorCode?: string;
+      readonly usageStatus?: ModelUsageState["status"];
     },
   ): Promise<void> {
     const observer = this.dependencies.invocationObserver;
@@ -196,13 +409,13 @@ export class ModelGateway implements StructuredModelInvoker {
       return;
     }
 
-    await observer.record({
+    await awaitWithAbort(observer.record({
       context: request.invocation,
       operation: request.operation,
       latencyMs: Math.max(0, Date.now() - startedAtMs),
       occurredAt: this.clock.now(),
       ...fields,
-    });
+    }), request.signal);
   }
 
   private assertVisualInputAllowed(
@@ -220,6 +433,175 @@ export class ModelGateway implements StructuredModelInvoker {
   }
 }
 
+function normalizedUsage(usage: ModelUsage, totalTokens: number): ModelUsage {
+  return { ...usage, totalTokens };
+}
+
+function completeUsage(
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  available: boolean,
+): ModelUsage | undefined {
+  return available && usage !== undefined ? normalizedUsage(usage, totalTokens) : undefined;
+}
+
+function knownUsage(
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  known: boolean,
+): ModelUsage | undefined {
+  return known && usage !== undefined ? normalizedUsage(usage, totalTokens) : usage;
+}
+
+function accumulatedUsageState(
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  known: boolean,
+  available: boolean,
+): ModelUsageState {
+  const accumulated = knownUsage(usage, totalTokens, known);
+  return available && accumulated !== undefined
+    ? { status: "available", usage: accumulated }
+    : { status: "unavailable", ...(accumulated === undefined ? {} : { knownUsage: accumulated }) };
+}
+
+function accumulateUsage(
+  current: ModelUsage | undefined,
+  currentTotalTokens: number,
+  currentlyAvailable: boolean,
+  currentlyKnown: boolean,
+  next: ModelUsage | undefined,
+): {
+  readonly usage: ModelUsage | undefined;
+  readonly totalTokens: number;
+  readonly available: boolean;
+  readonly known: boolean;
+} {
+  if (next === undefined) {
+    return {
+      usage: current,
+      totalTokens: currentTotalTokens,
+      available: false,
+      known: currentlyKnown,
+    };
+  }
+  const nextTotal = usageTotal(next);
+  return {
+    usage: addUsage(current, next),
+    totalTokens: nextTotal === undefined ? currentTotalTokens : currentTotalTokens + nextTotal,
+    available: currentlyAvailable && nextTotal !== undefined,
+    known: currentlyKnown || nextTotal !== undefined,
+  };
+}
+
+function abortError(
+  signal: AbortSignal | undefined,
+  usage: ModelUsage | undefined,
+  totalTokens: number,
+  knownUsageAvailable: boolean,
+  usageUnavailable: boolean,
+): ModelGatewayAbortError {
+  return new ModelGatewayAbortError(
+    signal?.reason,
+    accumulatedUsageState(
+      usage,
+      totalTokens,
+      knownUsageAvailable,
+      !usageUnavailable,
+    ),
+    true,
+  );
+}
+
+function usageState(usage: ModelUsage | undefined, unavailable: boolean): ModelUsageState {
+  if (!unavailable && usage !== undefined) return { status: "available", usage };
+  return { status: "unavailable", ...(usage === undefined ? {} : { knownUsage: usage }) };
+}
+
+function usageFromState(state: ModelUsageState): ModelUsage | undefined {
+  return state.status === "available" ? state.usage : state.knownUsage;
+}
+
+function asInvocationError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): ModelGatewayInvocationError | ModelGatewayError {
+  if (error instanceof ModelGatewayInvocationError) return error;
+  if (error instanceof ModelGatewayError) return error;
+  if (signal?.aborted === true) {
+    return new ModelGatewayAbortError(signal.reason, { status: "unavailable" });
+  }
+  return new ModelGatewayInvocationError(error, { status: "unavailable" });
+}
+
+class ProviderInvocationAborted extends Error {}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let abortTimeout: ReturnType<typeof setTimeout> | undefined;
+    const settle = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (abortTimeout !== undefined) clearTimeout(abortTimeout);
+      signal.removeEventListener("abort", onAbort);
+      action();
+    };
+    const onAbort = () => {
+      abortTimeout = setTimeout(() => settle(() => reject(new ProviderInvocationAborted())), 0);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function usageTotal(usage: ModelUsage): number | undefined {
+  if (isNonNegativeSafeInteger(usage.totalTokens)) return usage.totalTokens;
+  if (
+    isNonNegativeSafeInteger(usage.inputTokens) &&
+    isNonNegativeSafeInteger(usage.outputTokens)
+  ) {
+    const total = usage.inputTokens + usage.outputTokens;
+    return Number.isSafeInteger(total) ? total : undefined;
+  }
+  return undefined;
+}
+
+function isNonNegativeSafeInteger(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0;
+}
+
+function addUsage(current: ModelUsage | undefined, next: ModelUsage): ModelUsage {
+  return {
+    ...addUsageField("inputTokens", current, next),
+    ...addUsageField("outputTokens", current, next),
+    ...addUsageField("totalTokens", current, next),
+  };
+}
+
+function addUsageField(
+  field: keyof ModelUsage,
+  current: ModelUsage | undefined,
+  next: ModelUsage,
+): Partial<ModelUsage> {
+  const nextValue = next[field];
+  if (nextValue === undefined) {
+    const currentValue = current?.[field];
+    return currentValue === undefined ? {} : { [field]: currentValue };
+  }
+  return { [field]: (current?.[field] ?? 0) + nextValue };
+}
+
 function errorCodeOf(error: unknown): string {
   if (error instanceof ModelGatewayError) {
     return error.code;
@@ -229,15 +611,24 @@ function errorCodeOf(error: unknown): string {
 
 function normalizeProviderError(error: unknown): ModelGatewayError {
   if (isProviderError(error)) {
-    return new ModelGatewayError(error.code, error.message);
+    return new ModelGatewayError(error.code, error.message, error.usage, true);
   }
 
-  return new ModelGatewayError("ProviderUnavailable", "The model provider is unavailable.");
+  return new ModelGatewayError(
+    "ProviderUnavailable",
+    "The model provider is unavailable.",
+    undefined,
+    true,
+  );
 }
 
 function isProviderError(
   error: unknown,
-): error is { readonly code: ModelProviderErrorCode; readonly message: string } {
+): error is {
+  readonly code: ModelProviderErrorCode;
+  readonly message: string;
+  readonly usage?: ModelUsage;
+} {
   if (typeof error !== "object" || error === null) {
     return false;
   }

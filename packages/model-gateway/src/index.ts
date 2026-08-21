@@ -1,4 +1,9 @@
-export { ModelGateway, ModelGatewayError } from "./model-gateway.js";
+export {
+  ModelGateway,
+  ModelGatewayAbortError,
+  ModelGatewayError,
+  ModelGatewayInvocationError,
+} from "./model-gateway.js";
 
 export { VisualInputPolicyError, assertVisualInputAllowed } from "./data-policy.js";
 
@@ -20,6 +25,7 @@ export type {
   ModelProvider,
   ModelProviderError,
   ModelProviderErrorCode,
+  ModelUsageState,
   SafeImageMetadata,
   StructuredModelRequest,
   StructuredOutputContract,

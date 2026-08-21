@@ -126,6 +126,8 @@ export class LocalRunResourceFactory implements RunResourceFactory {
         actionExecutor: adapter,
         verifier,
         traceRecorder,
+        objectiveOnlyMaximumWallClockMs: request.executionProfile.actionTimeoutMs,
+        objectiveOnlyMaximumModelTokens: requiredModelTokenCeiling(this.config),
       });
 
       await adapter.start();
@@ -179,6 +181,14 @@ export async function createLocalRunUseCase(
     execute: (request: RunExecutionRequest): Promise<RunExecutionResult> =>
       useCase.execute(request),
   };
+}
+
+function requiredModelTokenCeiling(config: CliConfig): number {
+  const value = config.model.maximumTokensPerCall;
+  if (!Number.isSafeInteger(value) || value === undefined || value <= 0) {
+    throw new Error("Local model maximumTokensPerCall must be configured");
+  }
+  return value;
 }
 
 /**

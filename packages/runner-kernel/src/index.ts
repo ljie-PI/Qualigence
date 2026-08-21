@@ -39,5 +39,14 @@ export type {
   Verifier,
 } from "./execution-runtime.js";
 
+export { DeterministicExecutionBudget, ExecutionBudgetError } from "./execution-budget.js";
+export type {
+  DeterministicExecutionBudgetOptions,
+  ExecutionBudget,
+  ExecutionBudgetErrorCode,
+  ModelUsage,
+  MonotonicClock,
+} from "./execution-budget.js";
+
 export { DeterministicRunnerPolicyGate } from "./deterministic-policy-gate.js";
 export type { DeterministicRunnerPolicyGateOptions, TargetAdmission } from "./deterministic-policy-gate.js";

@@ -41,6 +41,8 @@ export interface LeasedJobExecutorDependencies {
   readonly clocks?: LeaseWindowClocks;
   readonly actionDeadlineSafetyMarginMs?: number;
   readonly renewalDelay?: RenewalDelay;
+  readonly objectiveOnlyMaximumWallClockMs?: number;
+  readonly objectiveOnlyMaximumModelTokens?: number;
 }
 
 export interface LeasedJobResult {
@@ -143,6 +145,12 @@ export class LeasedJobExecutor {
       actionExecutor: guardedExecutor,
       verifier: this.deps.verifier,
       traceRecorder: new SpoolingTraceRecorder(this.deps.spool),
+      ...(this.deps.objectiveOnlyMaximumWallClockMs === undefined
+        ? {}
+        : { objectiveOnlyMaximumWallClockMs: this.deps.objectiveOnlyMaximumWallClockMs }),
+      ...(this.deps.objectiveOnlyMaximumModelTokens === undefined
+        ? {}
+        : { objectiveOnlyMaximumModelTokens: this.deps.objectiveOnlyMaximumModelTokens }),
     });
 
     const runtimeResult = await runtime.run(offer.job).then(

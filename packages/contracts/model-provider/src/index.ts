@@ -51,12 +51,18 @@ export interface ModelUsage {
   readonly totalTokens?: number;
 }
 
+export type ModelUsageState =
+  | { readonly status: "available"; readonly usage: ModelUsage }
+  | { readonly status: "unavailable"; readonly knownUsage?: ModelUsage };
+
 export interface ModelProviderRequest {
   readonly operation: ModelOperation;
   readonly model: string;
   readonly messages: readonly ModelMessage[];
   readonly responseSchema: JsonSchema;
   readonly timeoutMs: number;
+  readonly maximumOutputTokens?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface ModelProviderResponse {
@@ -77,6 +83,7 @@ export type ModelProviderErrorCode =
 export interface ModelProviderError {
   readonly code: ModelProviderErrorCode;
   readonly message: string;
+  readonly usage?: ModelUsage;
 }
 
 export interface ModelProvider {
@@ -89,6 +96,8 @@ export interface StructuredModelRequest {
   readonly model: string;
   readonly messages: readonly ModelMessage[];
   readonly timeoutMs: number;
+  readonly maximumOutputTokens?: number;
+  readonly signal?: AbortSignal;
   readonly invocation?: ModelInvocationContext;
   readonly dataPolicy?: ModelDataPolicy;
 }
@@ -115,4 +124,5 @@ export interface ValidatedModelResult<T> {
   readonly providerRequestId?: string;
   readonly finishReason: string;
   readonly usage?: ModelUsage;
+  readonly usageState?: ModelUsageState;
 }
