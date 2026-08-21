@@ -128,6 +128,19 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
   `runMigrate` reaches sequential history `[1,2,3,4,5,6,7]`, and after clean
   restore. The Compose render, focused Gate (10 files / 48 tests), typecheck,
   and diff check pass; no E2E was run before fresh review.
+- The post-review E2E exposed a production migration defect: bounded
+  `migratePostgres({ targetVersion: 1, roles })` reapplied catalog-wide RLS and
+  grants after the step transactions and failed on future `prd_documents`.
+  The PostgreSQL runtime contract now proves a partial target applies policies
+  and grants only to version-1 tables and a subsequent forward upgrade applies
+  them to later tables. `migratePostgres` bounds its final idempotent RLS pass
+  to tables released through the target; `provisionPostgres` retains its
+  compatible duplicate full-schema pass.
+- Post-E2E fix verification (2026-08-21): the affected single Docker contract
+  test passed 1 test, the Compose render passed, the Ticket 02 focused Gate
+  passed 10 files / 49 tests with zero failures or skips, and
+  `corepack pnpm typecheck` plus `git diff --check` passed. The E2E was not
+  rerun after the code change; a fresh coordinator review is required first.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

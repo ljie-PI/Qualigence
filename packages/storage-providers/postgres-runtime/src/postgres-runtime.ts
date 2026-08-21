@@ -170,7 +170,10 @@ export async function migratePostgres(
       appliedVersions.push(step.version);
     }
     if (input.roles !== undefined) {
-      await applyRowLevelSecurity(db, input.roles);
+      const targetTables = RELATIONAL_SCHEMA_VERSIONS
+        .filter((step) => step.version <= targetVersion)
+        .flatMap((step) => step.tables);
+      await applyRowLevelSecurity(db, input.roles, targetTables);
     }
     return { fromVersion, toVersion: targetVersion, appliedVersions };
   } finally {
