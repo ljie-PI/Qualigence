@@ -108,6 +108,18 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 - No E2E was run. `tests/e2e/self-hosted/backup-restore.test.ts` is prepared but
   remains gated on a clean exact-base review. No pull request exists yet, and
   component completion is not final verification until the dedicated PR merges.
+- Remediation Ticket 36 now prepares that E2E from a real persisted PostgreSQL
+  schema 1 created through the production role and migration primitives. It
+  seeds source rows plus snapshot-visible Artifact manifests/object bytes,
+  invokes production `runMigrate`, asserts exact history `[1,2,3,4,5,6,7]`, and
+  restores the invocation/target-bound schema-1 backup into the wiped target for
+  exact row and object-byte comparison. Restore integrity validation now checks
+  only tenant tables released by the backup's recorded schema version.
+- Remediation GREEN (2026-08-21): the amended Compose render passed and the
+  Ticket 02 focused non-E2E Gate passed 10 files / 48 tests with zero failures
+  or skips. `corepack pnpm typecheck` and `git diff --check` passed. The E2E was
+  not run and evidence remains pending exact-base coordinator review, the
+  post-review E2E, and the dedicated PR.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

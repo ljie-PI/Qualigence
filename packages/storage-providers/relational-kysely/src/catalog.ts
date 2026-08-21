@@ -1257,3 +1257,14 @@ export function relationalTableNames(): readonly string[] {
 export function tenantOwnedTableNames(): readonly string[] {
   return TENANT_OWNED_TABLES.map((table) => table.name);
 }
+
+export function tenantOwnedTableNamesThroughVersion(version: number): readonly string[] {
+  const present = new Set(
+    RELATIONAL_SCHEMA_VERSIONS
+      .filter((schemaVersion) => schemaVersion.version <= version)
+      .flatMap((schemaVersion) => schemaVersion.tables),
+  );
+  return TENANT_OWNED_TABLES
+    .filter((table) => present.has(table.name))
+    .map((table) => table.name);
+}

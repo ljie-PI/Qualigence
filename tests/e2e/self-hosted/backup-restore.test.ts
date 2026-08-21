@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
@@ -7,10 +8,13 @@ import {
   getObjectBytes,
   putObjectBytes,
   runBackup,
+  runMigrate,
   runRestore,
   sha256Hex,
   type SelfHostedAdminConfig,
+  verifyBackupDirectory,
 } from "@qualigence/admin-cli";
+import { readSchemaVersion } from "@qualigence/postgres-runtime";
 import {
   dockerAvailable,
   startMinio,
@@ -26,6 +30,9 @@ import pg from "pg";
 
 const { Client } = pg;
 const BUCKET = "qualigence-artifacts";
+const OLD_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 7;
+const MIGRATION_INVOCATION_ID = "ticket-36-forward-upgrade";
 
 interface SeededObject {
   readonly key: string;
@@ -144,7 +151,7 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
   }
 
   beforeAll(async () => {
-    pgFixture = await setupPostgresFixture();
+    pgFixture = await setupPostgresFixture({ targetVersion: OLD_SCHEMA_VERSION });
     minio = await startMinio();
     s3Client = new S3Client({
       endpoint: minio.endpoint,
@@ -203,14 +210,6 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
       seededObjects.push({ key: spec.key, bytes, sha256 });
     }
 
-    // Capture one canonical good backup used to reset state between tests
-    // (restoring it recreates the schema/tables/data and re-uploads objects
-    // without needing the non-idempotent role provisioning to run again).
-    const good = await runBackup(baseConfig(), {
-      pgTool: dockerExecPgToolRunner(pgFixture.container.id),
-      s3Client,
-    });
-    goodBackupDir = good.directory;
   }, 240_000);
 
   afterAll(async () => {
@@ -222,19 +221,48 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   });
 
-  it("produces a byte-complete backup and restores it byte-for-byte into a wiped environment", async () => {
+  it("upgrades every persisted version and restores its bound pre-migration backup byte-for-byte", async () => {
     const pgTool = dockerExecPgToolRunner(pgFixture.container.id);
     const config = baseConfig();
 
     const originalRows = await runRows();
     expect(originalRows).toHaveLength(seededRuns.length);
-
-    const backup = await runBackup(config, { pgTool, s3Client });
-    expect(backup.index.objectCount).toBe(seededObjects.length);
-    expect(backup.index.tenants).toEqual(["tenant-a", "tenant-b"]);
-    // The backup recorded the real bytes: sizes/hashes match what we uploaded.
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(OLD_SCHEMA_VERSION);
     for (const seeded of seededObjects) {
-      const record = backup.index.objects.find((object) => object.key === seeded.key);
+      const source = await getObjectBytes(s3Client, BUCKET, seeded.key);
+      expect(Buffer.from(source).equals(Buffer.from(seeded.bytes))).toBe(true);
+    }
+
+    const migration = await runMigrate(config, {
+      invocationId: MIGRATION_INVOCATION_ID,
+      runBackup: (backupConfig, binding) =>
+        runBackup(backupConfig, { pgTool, s3Client, migration: binding }),
+    });
+    expect(migration.action).toBe("migrated");
+    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(migration.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(CURRENT_SCHEMA_VERSION);
+    expect(await runRows()).toEqual(originalRows);
+
+    expect(migration.backupDirectory).toBeDefined();
+    goodBackupDir = migration.backupDirectory!;
+    const backupIndex = await verifyBackupDirectory(goodBackupDir);
+    const targetDatabaseSha256 = createHash("sha256")
+      .update(
+        `${config.postgres.admin.host.toLowerCase()}:${config.postgres.admin.port}/${config.postgres.admin.database}`,
+      )
+      .digest("hex");
+    expect(backupIndex.database.schemaVersion).toBe(OLD_SCHEMA_VERSION);
+    expect(backupIndex.migration).toEqual({
+      invocationId: MIGRATION_INVOCATION_ID,
+      targetDatabaseSha256,
+      targetSchemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+    expect(backupIndex.objectCount).toBe(seededObjects.length);
+    expect(backupIndex.tenants).toEqual(["tenant-a", "tenant-b"]);
+    for (const seeded of seededObjects) {
+      const record = backupIndex.objects.find((object) => object.key === seeded.key);
       expect(record, `missing backup record for ${seeded.key}`).toBeDefined();
       expect(record?.sha256).toBe(seeded.sha256);
       expect(record?.sizeBytes).toBe(seeded.bytes.length);
@@ -245,12 +273,14 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     await emptyBucket(s3Client, BUCKET);
     expect(await runRowsSafe()).toHaveLength(0);
 
-    // Restore from the backup directory produced above.
-    const restoreConfig = baseConfig({ backupDir: backup.directory });
+    // Restore the invocation-bound schema-1 backup, not the upgraded source.
+    const restoreConfig = baseConfig({ backupDir: goodBackupDir });
     const result = await runRestore(restoreConfig, { pgTool, s3Client });
     expect(result.restoredObjects).toBe(seededObjects.length);
+    expect(result.schemaVersion).toBe(OLD_SCHEMA_VERSION);
     expect(result.verification.missing).toEqual([]);
     expect(result.verification.corrupt).toEqual([]);
+    expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(OLD_SCHEMA_VERSION);
 
     // The database rows are back, identical.
     const restoredRows = await runRows();
@@ -325,6 +355,19 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     }
   }
 
+  async function migrationVersions(): Promise<number[]> {
+    const client = new Client(pgFixture.adminConfig);
+    await client.connect();
+    try {
+      const result = await client.query<{ version: number }>(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      );
+      return result.rows.map((row) => row.version);
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
   async function getBucketKeys(): Promise<string[]> {
     const { enumerateObjects } = await import("@qualigence/admin-cli");
     const objects = await enumerateObjects(s3Client, BUCKET);
@@ -332,10 +375,9 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
   }
 
   async function reseed(): Promise<void> {
-    // Reset to the canonical good state by restoring the backup captured in
-    // beforeAll. Restore is read-only on the backup, so it can be replayed to
-    // rebuild the schema, rows and objects between tests. Roles persist across a
-    // schema drop, so no (non-idempotent) re-provisioning is required.
+    // Restore is read-only on the migration-bound backup, so it can be replayed
+    // to rebuild the old schema, rows and objects between tests. Roles persist
+    // across a schema drop, so no role provisioning is required.
     await wipeDatabase();
     await emptyBucket(s3Client, BUCKET);
     const pgTool = dockerExecPgToolRunner(pgFixture.container.id);

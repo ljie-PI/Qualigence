@@ -3,7 +3,10 @@ import { join } from "node:path";
 import pg from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { MetricsRegistry, StructuredLogger } from "@qualigence/observability";
-import { tenantOwnedTableNames } from "@qualigence/relational-kysely";
+import {
+  tenantOwnedTableNames,
+  tenantOwnedTableNamesThroughVersion,
+} from "@qualigence/relational-kysely";
 import type { SelfHostedAdminConfig } from "./../config.js";
 import { AdminCliError } from "./../errors.js";
 import type { PgToolRunner } from "./../pg-tools.js";
@@ -97,7 +100,7 @@ export async function runRestore(
     }
 
     // 6. Integrity: forced RLS + composite-key tables survived the restore.
-    await assertTenantIntegrity(config);
+    await assertTenantIntegrity(config, index.database.schemaVersion);
 
     logger.info("restore complete", {
       restoredObjects: index.objectCount,
@@ -170,11 +173,14 @@ async function assertEmptyTarget(
   }
 }
 
-async function assertTenantIntegrity(config: SelfHostedAdminConfig): Promise<void> {
+async function assertTenantIntegrity(
+  config: SelfHostedAdminConfig,
+  schemaVersion: number,
+): Promise<void> {
   const client = new Client(config.postgres.admin);
   try {
     await client.connect();
-    for (const table of tenantOwnedTableNames()) {
+    for (const table of tenantOwnedTableNamesThroughVersion(schemaVersion)) {
       const row = await client.query<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>(
         "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = to_regclass($1)",
         [`public.${table}`],
