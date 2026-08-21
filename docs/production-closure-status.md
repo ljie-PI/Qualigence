@@ -44,7 +44,7 @@ verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/76`
 remediation_ticket: `38`
 remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/77`
-remediation_status: pending dedicated remediation PR and coordinator review
+remediation_status: final verification passed; pending fresh exact-base review
 implementation_commits: `a725475`, `5d9ae3a`, `804971d`, `75c2d06`, `6180d8c`
 
 review_round_1_remediation: passed on 2026-08-21
@@ -66,19 +66,15 @@ formal_final_review_remediation: passed non-E2E verification on 2026-08-21; pend
 - Ticket 03 focused Gate
   `corepack pnpm vitest run tests/unit/core-modules/project-target tests/unit/core-modules/mission/test-plan-approval.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`
   passed 4 files / 52 tests with Git OpenSSL explicitly resolved. Root
-  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was rerun;
-  post-review acceptance remains gated on a fresh clean exact-base review.
-- Post-review acceptance passed 2 files / 4 tests, covering the real rendered/API
-  Target/Test Plan/Mission path and schema-8 backup/restore compatibility.
+  `corepack pnpm typecheck` and `git diff --check` passed.
 - Final PR review found the product E2E was API-client-only rather than rendered
   Console and was not rerun after the final idempotency fix. Remediation Ticket
   38 blocks merge.
-- Remediation 38 rendered the real Console against the real API; final
-  post-review acceptance passed 2 files / 4 tests and review had no blockers.
-- Ticket 38 replaces that acceptance with the real React DOM Console router and
-  visible Target, Test Plan, and Mission controls backed by the real Public API
-  Server. The post-review rendered and schema-8 backup/restore acceptances are
-  pending coordinator review and have not been run on the remediation branch.
+- Remediation 38 replaces that acceptance with the real React DOM Console router
+  and visible Target, Test Plan, and Mission controls backed by the real Public
+  API Server. The rendered acceptance passed 1 file / 1 test, and the schema-8
+  backup/restore acceptance passed 1 file / 3 tests. Fresh exact-base review of
+  this final evidence is pending.
 - Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
   `tests/conformance/storage/relational-schema.test.ts`,
   `tests/e2e/self-hosted/backup-restore.test.ts`, and
