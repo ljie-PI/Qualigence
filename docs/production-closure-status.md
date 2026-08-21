@@ -346,6 +346,7 @@ implementation_head: `b150d67`
 remaining_important_fix_commits: `de2fc1c`, `b150d67`
 final_review_blocker_fix: `1b0502f`
 remaining_blocker_fix: `e820872`
+latest_reviewed_source_head: `dade360`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
@@ -408,6 +409,10 @@ remaining_blocker_fix: `e820872`
 - The final focused non-E2E Gate passed 10 files / 112 tests with 1 existing Task
   21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. Fresh
   exact-base review and post-review E2E remain pending.
+- Fresh exact-base Standards and Spec review attempts against `dade360` failed
+  before analysis because the OpenCode Windows review runner again could not
+  start its `/usr/bin/env` subagent process. E2E remains deliberately unrun;
+  clean review and post-review acceptance remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
