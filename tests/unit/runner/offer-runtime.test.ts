@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerCapabilities } from "@qualigence/runner-protocol";
 import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
+import { WebTargetError } from "@qualigence/web-playwright";
+import { runnerErrorForLog } from "../../../apps/runner/src/main.js";
 
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
@@ -36,6 +38,21 @@ describe("RunnerOfferRuntime", () => {
 
   it("advertises no value-backed actions without a healthy provider", () => {
     expect(runnerCapabilities().actionKinds).toEqual(["click"]);
+  });
+
+  it("formats target failures for Runner logs without browser plaintext", () => {
+    const source = "runner-source-secret";
+    const normalized = "runner-normalized-secret";
+    const error = new WebTargetError(
+      "ActionInfrastructureFailure",
+      `Target closed while running fill(\"${source}:${normalized}\")`,
+    );
+
+    const captured = JSON.stringify({ event: "runner.reconnecting", ...runnerErrorForLog(error) });
+
+    expect(captured).toContain("ActionInfrastructureFailure");
+    expect(captured).not.toContain(source);
+    expect(captured).not.toContain(normalized);
   });
 
   it("blocks a policyless offer before target construction or browser navigation", async () => {

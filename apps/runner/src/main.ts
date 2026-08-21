@@ -16,6 +16,13 @@ import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
 import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
 
+export function runnerErrorForLog(error: unknown): { readonly errorCode: string } {
+  if (error instanceof Error && "code" in error && typeof error.code === "string") {
+    return { errorCode: error.code };
+  }
+  return { errorCode: "UnexpectedRunnerError" };
+}
+
 async function openSpool(config: RunnerConfig): Promise<SqliteRunnerSpool> {
   await mkdir(config.dataDir, { recursive: true });
   const key = await loadOrCreateSpoolKey(join(config.dataDir, "spool.key"));
@@ -97,7 +104,7 @@ async function main(): Promise<void> {
       // A transport failure loses no spooled Trace: reconnect with the rotating
       // resume token and continue; the Spool replays on the next drain.
       process.stderr.write(
-        `${JSON.stringify({ event: "runner.reconnecting", error: String(error) })}\n`,
+        `${JSON.stringify({ event: "runner.reconnecting", ...runnerErrorForLog(error) })}\n`,
       );
       session = await clientPort.connect(makeHello(resumeToken));
       resumeToken = session.welcome.resumeToken;
@@ -114,7 +121,7 @@ const invokedDirectly =
 
 if (invokedDirectly) {
   main().catch((error: unknown) => {
-    process.stderr.write(`${JSON.stringify({ event: "runner.fatal", error: String(error) })}\n`);
+    process.stderr.write(`${JSON.stringify({ event: "runner.fatal", ...runnerErrorForLog(error) })}\n`);
     process.exit(1);
   });
 }

@@ -554,6 +554,76 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serialized).not.toContain(secret);
   });
 
+  it("preserves unchanged pre-action URL and title text equal to a sensitive form", async () => {
+    const secret = "a";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement { cloneNode(deep: boolean): TestElement; replaceWith(node: TestElement): void }
+      const state = globalThis as unknown as {
+        document: { title: string; querySelector(selector: string): TestElement | null };
+        history: { replaceState(data: object, unused: string, url: string): void };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      if (source !== null) source.replaceWith(source.cloneNode(true));
+      state.history.replaceState({}, "", "/Page-a?existing=a#existing-a");
+      state.document.title = "Page a";
+    }));
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.short"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+
+    expect(after.url).toContain("/Page-a?existing=a#existing-a");
+    expect(after.title).toBe("Page a");
+  });
+
+  it("redacts metadata changed from an equal pre-action baseline during the action", async () => {
+    const secret = "a";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        addEventListener(type: string, listener: () => void): void;
+        cloneNode(deep: boolean): TestElement;
+        replaceWith(node: TestElement): void;
+      }
+      const state = globalThis as unknown as {
+        document: { title: string; querySelector(selector: string): TestElement | null };
+        history: { replaceState(data: object, unused: string, url: string): void };
+      };
+      const original = state.document.querySelector('input[aria-label="Email"]');
+      if (original !== null) original.replaceWith(original.cloneNode(true));
+      state.history.replaceState({}, "", "/Page-a");
+      state.document.title = "Page a";
+      state.document.querySelector('input[aria-label="Email"]')?.addEventListener("input", () => {
+        state.history.replaceState({}, "", "/Changed-a");
+        state.document.title = "Changed a";
+      });
+    }));
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.short-change"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+
+    expect(after.url).not.toContain("Changed-a");
+    expect(after.title).toBe("[REDACTED]");
+  });
+
   it("fails closed when URL or title contains an unproven sensitive form", async () => {
     const secret = "unproven-route-secret";
     session = new PlaywrightBrowserSession(options());
@@ -697,6 +767,186 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(() => session.artifactsFor(before.graphId)).toThrowError(
       expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
     );
+  });
+
+  it("does not extend exact-target causality past a handler that stops propagation", async () => {
+    const secret = "scope-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.scope"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        value: string;
+        addEventListener(type: string, listener: (event: { stopPropagation(): void }) => void): void;
+        dispatchEvent(event: unknown): void;
+      }
+      interface TestRegion { textContent: string | null }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): TestElement | TestRegion | null };
+        Event: new (type: string, options: { bubbles: boolean }) => unknown;
+        setInterval(callback: () => void, timeout: number): number;
+        clearInterval(id: number): void;
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]') as TestElement | null;
+      const unrelated = state.document.querySelector(
+        'input[aria-label="Input property reflection"]',
+      ) as TestElement | null;
+      const unrelatedRegion = state.document.querySelector("[data-unrelated-region]") as TestRegion | null;
+      let fired = false;
+      const timer = state.setInterval(() => {
+        if (!fired || unrelated === null) return;
+        state.clearInterval(timer);
+        if (unrelatedRegion !== null) unrelatedRegion.textContent = source?.value ?? "";
+        unrelated.dispatchEvent(new state.Event("change", { bubbles: true }));
+      }, 500);
+      source?.addEventListener("input", (event) => {
+        event.stopPropagation();
+        fired = true;
+      });
+    }));
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it.each([
+    ["setTimeout", "setTimeout(reflect, 0)"],
+    ["setInterval", "const id = setInterval(() => { clearInterval(id); reflect(); }, 0)"],
+    ["requestAnimationFrame", "requestAnimationFrame(() => reflect())"],
+    ["queueMicrotask", "queueMicrotask(reflect)"],
+    ["Promise.then", "Promise.resolve().then(reflect)"],
+    ["Promise.catch", "Promise.reject(new Error('expected')).catch(reflect)"],
+    ["Promise.finally", "Promise.resolve().finally(reflect)"],
+  ] as const)("masks a causal reflection scheduled with %s", async (_mechanism, source) => {
+    const secret = `scheduled-${_mechanism}-secret`;
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, `customer.${_mechanism}`),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate((scheduledSource) => {
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          querySelector(selector: string): TestElement | null;
+          getElementById(id: string): TestElement | null;
+        };
+        Function: FunctionConstructor;
+      };
+      const target = state.document.querySelector('input[aria-label="Email"]');
+      const reflected = state.document.getElementById("normalized-reflection-second");
+      target?.addEventListener("input", (event) => {
+        const value = event.target.value;
+        const reflect = () => { if (reflected !== null) reflected.textContent = value; };
+        state.Function("reflect", scheduledSource)(reflect);
+      });
+    }, source));
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const after = await observer.capture(job);
+    const serialized = JSON.stringify(after);
+
+    expect(serialized).not.toContain(secret);
+    expect(after.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(4);
+  });
+
+  it("does not grant causality to scheduled work created before the sensitive action", async () => {
+    const secret = "preexisting-task-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.preexisting-task"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        setAttribute(name: string, value: string): void;
+      }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): TestElement | null };
+        setTimeout(callback: () => void, timeout: number): void;
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const unrelated = state.document.querySelector("[data-unrelated-region]");
+      unrelated?.setAttribute("data-qualigence-observe", "");
+      state.setTimeout(() => {
+        if (unrelated !== null) unrelated.textContent = source?.value ?? "";
+      }, 500);
+    }));
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it("poisons evidence when a causal scheduled callback executes after its deadline", async () => {
+    const secret = "expired-generation-secret";
+    session = new PlaywrightBrowserSession(options({ actionTimeoutMs: 100 }));
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.expired-generation"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          querySelector(selector: string): TestElement | null;
+          getElementById(id: string): TestElement | null;
+        };
+        setTimeout(callback: () => void, timeout: number): void;
+      };
+      const target = state.document.querySelector('input[aria-label="Email"]');
+      const reflected = state.document.getElementById("normalized-reflection-second");
+      target?.addEventListener("input", (event) => {
+        const value = event.target.value;
+        state.setTimeout(() => {
+          if (reflected !== null) reflected.textContent = value;
+        }, 150);
+      });
+    }));
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
   });
 
   it.each([
@@ -941,6 +1191,52 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(await session.withPage(async (page) =>
       page.locator('input[aria-label="Email"]').inputValue(),
     )).toBe("");
+  });
+
+  it("retains unbounded legacy observation before sensitivity and fails hostile expansion afterward", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "bounded-secret" });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestNode { append(node: TestNode): void }
+      interface TestElement extends TestNode { textContent: string | null }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(node: TestNode): void };
+          createDocumentFragment(): TestNode;
+          createElement(tag: string): TestElement;
+        };
+      };
+      const fragment = state.document.createDocumentFragment();
+      for (let index = 0; index < 600; index += 1) {
+        const node = state.document.createElement("button");
+        node.textContent = `ordinary-${index}`;
+        fragment.append(node);
+      }
+      state.document.body.append(fragment);
+    }));
+
+    const before = await observer.capture(job);
+    expect(before.nodes.length).toBeGreaterThan(512);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.bounds"),
+      before,
+    );
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement { textContent: string | null }
+      const state = globalThis as unknown as {
+        document: { body: { append(node: TestElement): void }; createElement(tag: string): TestElement };
+      };
+      const hostile = state.document.createElement("button");
+      hostile.textContent = "hostile-expansion";
+      state.document.body.append(hostile);
+    }));
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
   });
 
   it("fails closed when sensitive provenance tracking cannot be installed", async () => {

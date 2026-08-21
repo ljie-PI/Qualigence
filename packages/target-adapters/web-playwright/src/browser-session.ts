@@ -26,12 +26,30 @@ export type WebTargetErrorCode =
   | "ConcurrentSessionOperation"
   | "SessionClosed";
 
+const WEB_TARGET_ERROR_MESSAGES: Readonly<Record<WebTargetErrorCode, string>> = {
+  BrowserLaunchFailed: "The browser could not be started.",
+  NavigationFailed: "The browser could not navigate to the target.",
+  NavigationTimedOut: "Navigation timed out.",
+  StaleObservation: "The observation is no longer current.",
+  UnknownObservationNode: "The observation node is unknown.",
+  TargetNotFound: "The target could not be found.",
+  AmbiguousTarget: "The target is ambiguous.",
+  OriginViolation: "The target origin is not allowed.",
+  ActionTimedOut: "The browser action timed out.",
+  ActionInfrastructureFailure: "The browser action infrastructure failed.",
+  SensitiveTargetUnproven: "The sensitive target could not be proven.",
+  SensitiveEvidenceUnproven: "Sensitive evidence could not be proven.",
+  UnsupportedAction: "The browser action is unsupported.",
+  ConcurrentSessionOperation: "A browser session operation is already active.",
+  SessionClosed: "The browser session is closed.",
+};
+
 export class WebTargetError extends Error {
   constructor(
     readonly code: WebTargetErrorCode,
-    message?: string,
+    _message?: string,
   ) {
-    super(message ?? code);
+    super(WEB_TARGET_ERROR_MESSAGES[code]);
     this.name = "WebTargetError";
   }
 }
@@ -97,6 +115,7 @@ export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
 export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
 const MAXIMUM_SENSITIVE_ACTION_MUTATIONS = 128;
 const MAXIMUM_SENSITIVE_ACTION_CANDIDATES = 512;
+const MAXIMUM_SENSITIVE_SCHEDULED_CALLBACKS = 64;
 export const MAXIMUM_OBSERVATION_CANDIDATES = 512;
 export const MAXIMUM_OBSERVATION_NODE_BYTES = 64 * 1024;
 export const MAXIMUM_OBSERVATION_SNAPSHOT_BYTES = 2 * 1024 * 1024;
@@ -137,11 +156,14 @@ interface SensitiveActionMutationTracker {
   readonly causalElements: Element[];
   readonly observer: MutationObserver;
   readonly restore: () => boolean;
+  readonly beginCausalAction: (target: Element) => boolean;
+  readonly endCausalAction: (target: Element) => boolean;
   readonly metadata: SensitivePageMetadataAuthority;
   ambiguousEvent: boolean;
   preparedElements: readonly Element[] | undefined;
   overflow: boolean;
   observerError: boolean;
+  scheduledPoison: boolean;
 }
 
 interface SensitivePageMetadataSnapshot {
@@ -155,6 +177,7 @@ interface SensitivePageMetadataSnapshot {
 }
 
 interface SensitivePageMetadataAuthority {
+  baseline: SensitivePageMetadataSnapshot | undefined;
   readonly hrefs: string[];
   readonly pathnames: string[];
   readonly queryKeys: string[];
@@ -187,6 +210,7 @@ export class PlaywrightBrowserSession {
   private privateTargetOrdinal = 0;
   private sensitiveEvidenceUnproven = false;
   private readonly sensitiveActionTrackers: JSHandle<SensitiveActionMutationTracker>[] = [];
+  private preSensitiveObservationCandidateCount = 0;
 
   constructor(
     private readonly options: WebSessionOptions,
@@ -334,13 +358,30 @@ export class PlaywrightBrowserSession {
     return [...this.sensitiveActionTargets.values()];
   }
 
-  sensitiveEvidenceFailure(message: string): WebTargetError {
+  sensitiveEvidenceFailure(_message?: string): WebTargetError {
     this.sensitiveEvidenceUnproven = true;
-    return new WebTargetError("SensitiveEvidenceUnproven", message);
+    return new WebTargetError("SensitiveEvidenceUnproven");
   }
 
   hasSensitiveAction(): boolean {
     return this.sensitiveActionTargets.size > 0;
+  }
+
+  hasSensitiveActionTracker(): boolean {
+    return this.sensitiveActionTrackers.length > 0;
+  }
+
+  observationCandidateLimit(): number {
+    return Math.max(MAXIMUM_OBSERVATION_CANDIDATES, this.preSensitiveObservationCandidateCount);
+  }
+
+  recordPreSensitiveObservationCandidateCount(count: number): void {
+    if (this.sensitiveActionTrackers.length === 0) {
+      this.preSensitiveObservationCandidateCount = Math.max(
+        this.preSensitiveObservationCandidateCount,
+        count,
+      );
+    }
   }
 
   private assertSensitiveEvidenceProven(): void {
@@ -472,6 +513,7 @@ export class PlaywrightBrowserSession {
           records,
           causalElements,
           metadata: {
+            baseline: undefined,
             hrefs: [],
             pathnames: [],
             queryKeys: [],
@@ -483,10 +525,16 @@ export class PlaywrightBrowserSession {
           ambiguousEvent: false,
           overflow: false,
           observerError: false,
+          scheduledPoison: false,
           preparedElements: undefined,
-        } as Omit<SensitiveActionMutationTracker, "observer" | "restore"> & {
+        } as Omit<
+          SensitiveActionMutationTracker,
+          "observer" | "restore" | "beginCausalAction" | "endCausalAction"
+        > & {
           observer?: MutationObserver;
           restore?: () => boolean;
+          beginCausalAction?: (target: Element) => boolean;
+          endCausalAction?: (target: Element) => boolean;
         };
         const appendRecords = (mutations: readonly MutationRecord[], causal: boolean): void => {
           try {
@@ -569,10 +617,15 @@ export class PlaywrightBrowserSession {
         };
 
         const eventType = input.kind === "select" ? "change" : "input";
-        let dispatchSnapshot: readonly SensitiveActionCandidateSnapshot[] | undefined;
-        let inCausalScope = false;
         const originalSetTimeout = window.setTimeout;
+        const originalSetInterval = window.setInterval;
+        const originalClearInterval = window.clearInterval;
+        const originalRequestAnimationFrame = window.requestAnimationFrame;
+        const originalCancelAnimationFrame = window.cancelAnimationFrame;
         const originalQueueMicrotask = window.queueMicrotask;
+        const originalThen = Promise.prototype.then;
+        const originalCatch = Promise.prototype.catch;
+        const originalFinally = Promise.prototype.finally;
         const metadataSnapshot = (): SensitivePageMetadataSnapshot => ({
           href: location.href,
           pathname: location.pathname,
@@ -621,75 +674,76 @@ export class PlaywrightBrowserSession {
             remember(tracker.metadata.titles, after.title);
           }
         };
-        let dispatchMetadata: SensitivePageMetadataSnapshot | undefined;
-        let dispatchTarget: EventTarget | null = null;
-        const beginDispatch = (event: Event): void => {
-          try {
-            dispatchSnapshot = capture();
-            dispatchMetadata = metadataSnapshot();
-            dispatchTarget = event.target;
-            inCausalScope = event.target === element;
-          } catch {
-            tracker.observerError = true;
-          }
+        interface GenerationToken {
+          readonly id: number;
+          readonly deadline: number;
+          remainingCallbacks: number;
+        }
+        let nextGeneration = 0;
+        let activeGeneration: GenerationToken | undefined;
+        let callbackGeneration: GenerationToken | undefined;
+        let eventSnapshot: readonly SensitiveActionCandidateSnapshot[] | undefined;
+        let eventMetadata: SensitivePageMetadataSnapshot | undefined;
+        const finishExactTargetEvent = (): void => {
+          if (eventSnapshot === undefined) return;
+          const before = eventSnapshot;
+          const beforeMetadata = eventMetadata;
+          eventSnapshot = undefined;
+          eventMetadata = undefined;
+          finishCausalScope(before);
+          if (beforeMetadata !== undefined) rememberMetadata(beforeMetadata, metadataSnapshot());
         };
-        const endDispatch = (): void => {
-          if (dispatchSnapshot === undefined) return;
-          const before = dispatchSnapshot;
-          const beforeMetadata = dispatchMetadata;
-          const authorized = dispatchTarget === element;
-          const completedTarget = dispatchTarget;
-          dispatchSnapshot = undefined;
-          dispatchMetadata = undefined;
-          dispatchTarget = null;
-          inCausalScope = false;
-          if (authorized) {
-            finishCausalScope(before);
-            if (beforeMetadata !== undefined) rememberMetadata(beforeMetadata, metadataSnapshot());
-          } else {
+        const exactTargetEvent = (event: Event): void => {
+          if (event.target !== element) {
             try {
-              const after = capture();
-              const eventCandidate = completedTarget instanceof Element
-                ? after.find((candidate) => candidate.element === completedTarget)
-                : undefined;
-              const changedToForm = after.some((candidate) => {
-                const prior = before.find((item) => item.element === candidate.element);
-                const priorValues = prior === undefined ? [] : values(prior.properties);
-                return values(candidate.properties).some((property, index) =>
-                  property !== priorValues[index] && containsForm(property));
-              });
-              if (changedToForm || (eventCandidate !== undefined &&
-                  values(eventCandidate.properties).some(containsForm))) {
-                tracker.ambiguousEvent = true;
+              const target = event.target;
+              if (target instanceof Element) {
+                const candidate = snapshot(target);
+                if (values(candidate.properties).some(containsForm)) tracker.ambiguousEvent = true;
               }
             } catch {
               tracker.observerError = true;
             }
+            return;
+          }
+          try {
+            eventSnapshot = capture();
+            eventMetadata = metadataSnapshot();
+          } catch {
+            tracker.observerError = true;
+          }
+          if (activeGeneration === undefined && callbackGeneration === undefined) {
+            tracker.observerError = true;
           }
         };
-        window.addEventListener(eventType, beginDispatch, true);
-        window.addEventListener(eventType, endDispatch, false);
+        window.addEventListener(eventType, exactTargetEvent, true);
 
-        let callbackDepth = 0;
-        const runCausal = (callback: () => void): void => {
+        const runCausal = <T>(token: GenerationToken, callback: () => T): T => {
+          if (Date.now() > token.deadline || token.remainingCallbacks <= 0) {
+            tracker.scheduledPoison = true;
+            return callback();
+          }
           let before: readonly SensitiveActionCandidateSnapshot[];
           try {
             before = capture();
           } catch {
             tracker.observerError = true;
-            callback();
-            return;
+            return callback();
           }
-          callbackDepth += 1;
+          token.remainingCallbacks -= 1;
+          const priorGeneration = callbackGeneration;
+          callbackGeneration = token;
           const beforeMetadata = metadataSnapshot();
           try {
-            callback();
+            return callback();
           } finally {
-            callbackDepth -= 1;
+            callbackGeneration = priorGeneration;
             finishCausalScope(before);
             rememberMetadata(beforeMetadata, metadataSnapshot());
           }
         };
+        const generationForSchedule = (): GenerationToken | undefined =>
+          callbackGeneration ?? activeGeneration;
         const wrappedSetTimeout = ((
           handler: TimerHandler,
           timeout?: number,
@@ -699,48 +753,176 @@ export class PlaywrightBrowserSession {
             tracker.observerError = true;
             return Number(originalSetTimeout.call(window, () => undefined, timeout));
           }
-          if (!inCausalScope && callbackDepth === 0) {
+          const generation = generationForSchedule();
+          if (generation === undefined) {
             return Number(originalSetTimeout.call(window, () => handler(...args), timeout));
           }
           return Number(originalSetTimeout.call(window, () => {
-            runCausal(() => handler(...args));
+            runCausal(generation, () => handler(...args));
           }, timeout));
         }) as typeof window.setTimeout;
         const wrappedQueueMicrotask = (callback: VoidFunction): void => {
-          if (!inCausalScope && callbackDepth === 0) {
+          const generation = generationForSchedule();
+          if (generation === undefined) {
             originalQueueMicrotask.call(window, callback);
           } else {
-            originalQueueMicrotask.call(window, () => runCausal(callback));
+            originalQueueMicrotask.call(window, () => runCausal(generation, callback));
           }
         };
+        const wrappedSetInterval = ((
+          handler: TimerHandler,
+          timeout?: number,
+          ...args: unknown[]
+        ): number => {
+          if (typeof handler !== "function") {
+            tracker.observerError = true;
+            return Number(originalSetInterval.call(window, () => undefined, timeout));
+          }
+          const generation = generationForSchedule();
+          if (generation === undefined) {
+            return Number(originalSetInterval.call(window, () => handler(...args), timeout));
+          }
+          let intervalId = 0;
+          intervalId = Number(originalSetInterval.call(window, () => {
+            if (Date.now() > generation.deadline || generation.remainingCallbacks <= 0) {
+              tracker.scheduledPoison = true;
+              originalClearInterval.call(window, intervalId);
+              return;
+            }
+            runCausal(generation, () => handler(...args));
+          }, timeout));
+          return intervalId;
+        }) as typeof window.setInterval;
+        const wrappedClearInterval = ((id?: number): void => {
+          originalClearInterval.call(window, id);
+        }) as typeof window.clearInterval;
+        const wrappedRequestAnimationFrame = ((callback: FrameRequestCallback): number => {
+          const generation = generationForSchedule();
+          if (generation === undefined) {
+            return originalRequestAnimationFrame.call(window, callback);
+          }
+          return originalRequestAnimationFrame.call(window, (time) =>
+            runCausal(generation, () => callback(time)));
+        }) as typeof window.requestAnimationFrame;
+        const wrappedCancelAnimationFrame = ((id: number): void => {
+          originalCancelAnimationFrame.call(window, id);
+        }) as typeof window.cancelAnimationFrame;
+        const wrapContinuation = <T, TResult>(
+          generation: GenerationToken | undefined,
+          callback: ((value: T) => TResult | PromiseLike<TResult>) | null | undefined,
+        ): typeof callback => generation === undefined || callback == null
+          ? callback
+          : ((value: T) => runCausal(generation, () => callback(value)));
+        const wrappedThen = function <T, TResult1 = T, TResult2 = never>(
+          this: Promise<T>,
+          onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ): Promise<TResult1 | TResult2> {
+          const generation = generationForSchedule();
+          return originalThen.call(
+            this,
+            wrapContinuation(generation, onfulfilled),
+            wrapContinuation(generation, onrejected),
+          ) as Promise<TResult1 | TResult2>;
+        };
+        const wrappedCatch = function <T, TResult = never>(
+          this: Promise<T>,
+          onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+        ): Promise<T | TResult> {
+          const generation = generationForSchedule();
+          return originalCatch.call(this, wrapContinuation(generation, onrejected));
+        };
+        const wrappedFinally = function <T>(
+          this: Promise<T>,
+          onfinally?: (() => void) | null,
+        ): Promise<T> {
+          const generation = generationForSchedule();
+          return originalFinally.call(
+            this,
+            generation === undefined || onfinally == null
+              ? onfinally
+              : () => runCausal(generation, onfinally),
+          );
+        };
         window.setTimeout = wrappedSetTimeout;
+        window.setInterval = wrappedSetInterval;
+        window.clearInterval = wrappedClearInterval;
+        window.requestAnimationFrame = wrappedRequestAnimationFrame;
+        window.cancelAnimationFrame = wrappedCancelAnimationFrame;
         window.queueMicrotask = wrappedQueueMicrotask;
+        Promise.prototype.then = wrappedThen;
+        Promise.prototype.catch = wrappedCatch;
+        Promise.prototype.finally = wrappedFinally;
         const originalReplaceState = history.replaceState;
         const originalPushState = history.pushState;
         const wrapHistory = (original: History["replaceState"]): History["replaceState"] =>
           function (data: unknown, unused: string, url?: string | URL | null): void {
-            const causal = inCausalScope || callbackDepth > 0;
-            const before = metadataSnapshot();
+            const causal = activeGeneration !== undefined || callbackGeneration !== undefined;
             original.call(history, data, unused, url);
             const after = metadataSnapshot();
-            if (causal) rememberMetadata(before, after);
+            if (causal) rememberMetadata(tracker.metadata.baseline ?? after, after);
             else if (containsSensitiveForm(after.href)) tracker.metadata.unprovenUrl = true;
           };
         const wrappedReplaceState = wrapHistory(originalReplaceState);
         const wrappedPushState = wrapHistory(originalPushState);
         history.replaceState = wrappedReplaceState;
         history.pushState = wrappedPushState;
+        tracker.beginCausalAction = (target): boolean => {
+          if (target !== element || activeGeneration !== undefined) return false;
+          try {
+            tracker.metadata.baseline = metadataSnapshot();
+            activeGeneration = {
+              id: nextGeneration += 1,
+              deadline: Date.now() + limits.maximumScheduledMs,
+              remainingCallbacks: limits.maximumScheduledCallbacks,
+            };
+            return true;
+          } catch {
+            tracker.observerError = true;
+            return false;
+          }
+        };
+        tracker.endCausalAction = (target): boolean => {
+          if (target !== element || activeGeneration === undefined) {
+            tracker.observerError = true;
+            return false;
+          }
+          activeGeneration = undefined;
+          try {
+            finishExactTargetEvent();
+          } catch {
+            tracker.observerError = true;
+          }
+          return !tracker.observerError && !tracker.overflow;
+        };
         tracker.restore = (): boolean => {
-          window.removeEventListener(eventType, beginDispatch, true);
-          window.removeEventListener(eventType, endDispatch, false);
+          window.removeEventListener(eventType, exactTargetEvent, true);
           const intact = window.setTimeout === wrappedSetTimeout &&
+            window.setInterval === wrappedSetInterval &&
+            window.clearInterval === wrappedClearInterval &&
+            window.requestAnimationFrame === wrappedRequestAnimationFrame &&
+            window.cancelAnimationFrame === wrappedCancelAnimationFrame &&
             window.queueMicrotask === wrappedQueueMicrotask &&
+            Promise.prototype.then === wrappedThen &&
+            Promise.prototype.catch === wrappedCatch &&
+            Promise.prototype.finally === wrappedFinally &&
             history.replaceState === wrappedReplaceState &&
             history.pushState === wrappedPushState;
           if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
+          if (window.setInterval === wrappedSetInterval) window.setInterval = originalSetInterval;
+          if (window.clearInterval === wrappedClearInterval) window.clearInterval = originalClearInterval;
+          if (window.requestAnimationFrame === wrappedRequestAnimationFrame) {
+            window.requestAnimationFrame = originalRequestAnimationFrame;
+          }
+          if (window.cancelAnimationFrame === wrappedCancelAnimationFrame) {
+            window.cancelAnimationFrame = originalCancelAnimationFrame;
+          }
           if (window.queueMicrotask === wrappedQueueMicrotask) {
             window.queueMicrotask = originalQueueMicrotask;
           }
+          if (Promise.prototype.then === wrappedThen) Promise.prototype.then = originalThen;
+          if (Promise.prototype.catch === wrappedCatch) Promise.prototype.catch = originalCatch;
+          if (Promise.prototype.finally === wrappedFinally) Promise.prototype.finally = originalFinally;
           if (history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
           if (history.pushState === wrappedPushState) history.pushState = originalPushState;
           observer.disconnect();
@@ -751,23 +933,41 @@ export class PlaywrightBrowserSession {
         kind,
         forms,
         limits: {
-          maximumCandidates: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
+          maximumCandidates: this.observationCandidateLimit(),
           maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
           maximumTargets: MAXIMUM_SENSITIVE_ACTION_TARGETS,
           maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
           maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+          maximumScheduledCallbacks: MAXIMUM_SENSITIVE_SCHEDULED_CALLBACKS,
+          maximumScheduledMs: this.options.actionTimeoutMs,
           candidateSelector: SENSITIVE_ACTION_CANDIDATE_SELECTOR,
           attributes: SENSITIVE_ACTION_ATTRIBUTES,
         },
       });
       this.sensitiveActionTrackers.push(tracker);
-    } catch (error) {
-      throw this.sensitiveEvidenceFailure(
-        `The browser-normalized sensitive value and bounded tracker could not be proven: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    } catch {
+      throw this.sensitiveEvidenceFailure();
     }
+  }
+
+  async beginCausalAction(target: ElementHandle<Element>): Promise<void> {
+    const tracker = this.sensitiveActionTrackers.at(-1);
+    if (tracker === undefined) throw this.sensitiveEvidenceFailure();
+    const started = await tracker.evaluate(
+      (state, exactTarget) => state.beginCausalAction(exactTarget),
+      target,
+    ).catch(() => false);
+    if (!started) throw this.sensitiveEvidenceFailure();
+  }
+
+  async endCausalAction(target: ElementHandle<Element>): Promise<void> {
+    const tracker = this.sensitiveActionTrackers.at(-1);
+    if (tracker === undefined) throw this.sensitiveEvidenceFailure();
+    const ended = await tracker.evaluate(
+      (state, exactTarget) => state.endCausalAction(exactTarget),
+      target,
+    ).catch(() => false);
+    if (!ended) throw this.sensitiveEvidenceFailure();
   }
 
   private async normalizeSensitiveValue(
@@ -924,7 +1124,8 @@ export class PlaywrightBrowserSession {
   async failIfSensitiveTrackingOverflowed(): Promise<void> {
     for (const tracker of this.sensitiveActionTrackers) {
       const invalid = await tracker.evaluate((state) =>
-        state.overflow || state.observerError || state.ambiguousEvent).catch(() => true);
+        state.overflow || state.observerError || state.scheduledPoison ||
+          state.ambiguousEvent).catch(() => true);
       if (invalid) {
         throw this.sensitiveEvidenceFailure(
           "Sensitive action provenance tracking exceeded its bounds.",
@@ -934,7 +1135,7 @@ export class PlaywrightBrowserSession {
   }
 
   async abandonSensitiveActionTracking(): Promise<void> {
-    for (const tracker of this.sensitiveActionTrackers.splice(0)) {
+    for (const tracker of this.sensitiveActionTrackers.splice(0).reverse()) {
       await this.disposeSensitiveActionTracker(tracker, true);
     }
   }
@@ -963,25 +1164,40 @@ export class PlaywrightBrowserSession {
         const contains = (value: string): boolean =>
           state.forms.some((form) => value.includes(form));
         const authorized = (values: readonly string[], value: string): boolean => values.includes(value);
-        const pathnameSensitive = contains(current.pathname) || contains(current.decodedPathname);
-        const hashSensitive = contains(current.hash) || contains(current.decodedHash);
-        const titleSensitive = contains(current.title);
+        const baseline = state.metadata.baseline;
+        if (baseline === undefined) {
+          return {
+            occurrence: true,
+            unproven: true,
+            pathname: false,
+            hash: false,
+            title: false,
+            queryKeyIndexes: [] as number[],
+            queryValueIndexes: [] as number[],
+          };
+        }
+        const pathnameSensitive = current.pathname !== baseline.pathname &&
+          (contains(current.pathname) || contains(current.decodedPathname));
+        const hashSensitive = current.hash !== baseline.hash &&
+          (contains(current.hash) || contains(current.decodedHash));
+        const titleSensitive = current.title !== baseline.title && contains(current.title);
         const queryKeyIndexes: number[] = [];
         const queryValueIndexes: number[] = [];
-        let occurrence = pathnameSensitive || hashSensitive || titleSensitive || contains(current.href);
+        let occurrence = pathnameSensitive || hashSensitive || titleSensitive;
         let unproven = state.metadata.unprovenUrl;
         if (pathnameSensitive) unproven ||= !authorized(state.metadata.pathnames, current.pathname);
         if (hashSensitive) unproven ||= !authorized(state.metadata.hashes, current.hash);
         if (titleSensitive) unproven ||= !authorized(state.metadata.titles, current.title);
         for (let index = 0; index < current.query.length; index += 1) {
           const item = current.query[index];
+          const baselineItem = baseline.query[index];
           if (item === undefined) continue;
-          if (contains(item.key)) {
+          if (item.key !== baselineItem?.key && contains(item.key)) {
             occurrence = true;
             queryKeyIndexes.push(index);
             unproven ||= !authorized(state.metadata.queryKeys, item.key);
           }
-          if (contains(item.value)) {
+          if (item.value !== baselineItem?.value && contains(item.value)) {
             occurrence = true;
             queryValueIndexes.push(index);
             unproven ||= !authorized(state.metadata.queryValues, item.value);
@@ -989,7 +1205,7 @@ export class PlaywrightBrowserSession {
         }
         const knownField = pathnameSensitive || hashSensitive || titleSensitive ||
           queryKeyIndexes.length > 0 || queryValueIndexes.length > 0;
-        if (contains(current.href) && !knownField) unproven = true;
+        if (current.href !== baseline.href && contains(current.href) && !knownField) unproven = true;
         return {
           occurrence,
           unproven,
@@ -1082,6 +1298,7 @@ export class PlaywrightBrowserSession {
           }
           if (state.observerError) return fail("observer-error");
           if (state.overflow) return fail("tracker-overflow");
+          if (state.scheduledPoison) return fail("scheduled-causality-bounds-exceeded");
           if (state.ambiguousEvent) return fail("event-target-causality-ambiguous");
           if (!state.target.isConnected) return fail("target-replaced");
 
@@ -1157,9 +1374,14 @@ export class PlaywrightBrowserSession {
           if (totalCandidates > limits.maximumCandidates) return fail("total-candidate-overflow");
 
           const elements: Element[] = [];
+          const hasCausalRecord = (candidate: Element): boolean =>
+            state.records.some((tracked) => tracked.causal && (
+              tracked.record.target === candidate ||
+              (tracked.record.target instanceof Node && candidate.contains(tracked.record.target))
+            ));
           const causallyChanged = (candidate: Element): boolean =>
             candidate === state.target || state.causalElements.includes(candidate) ||
-            candidate.hasAttribute(limits.privateTargetAttribute);
+            candidate.hasAttribute(limits.privateTargetAttribute) || hasCausalRecord(candidate);
           const add = (candidate: Element | null): boolean => {
             if (candidate === null || !candidate.isConnected ||
                 candidate.ownerDocument !== state.target.ownerDocument) return false;
@@ -1172,6 +1394,13 @@ export class PlaywrightBrowserSession {
             const changedToForm = values(candidate.properties).some((property, index) =>
               property !== beforeValues[index] && containsForm(property));
             if (!changedToForm) continue;
+            if (candidate.element instanceof HTMLTitleElement) continue;
+            if (before !== undefined && beforeValues.some(containsForm) &&
+                (candidate.element === state.target || hasCausalRecord(candidate.element))) continue;
+            if (candidate.element === state.target) {
+              if (!add(candidate.element)) return fail("sensitive-target-overflow");
+              continue;
+            }
             if (!causallyChanged(candidate.element)) {
               return fail("same-form-causality-ambiguous");
             }
@@ -1207,6 +1436,7 @@ export class PlaywrightBrowserSession {
               if (!(mutation.target instanceof Element) || mutation.attributeName === null) {
                 return fail("attribute-target-unprovable");
               }
+              if (current.some((candidate) => candidate.element === mutation.target)) continue;
               const reason = inspect(
                 mutation.target.getAttribute(mutation.attributeName),
                 mutation.target,
@@ -1216,13 +1446,27 @@ export class PlaywrightBrowserSession {
               if (reason !== undefined) return fail(reason);
             } else if (mutation.type === "characterData") {
               if (!(mutation.target instanceof CharacterData)) return fail("text-target-unprovable");
+              const currentCandidate = current.find(
+                (candidate) => candidate.element === mutation.target.parentElement,
+              );
+              if (currentCandidate !== undefined) {
+                const beforeCandidate = state.candidates.find(
+                  (candidate) => candidate.element === currentCandidate.element,
+                );
+                if (beforeCandidate !== undefined &&
+                    values(beforeCandidate.properties).some(containsForm) &&
+                    !hasCausalRecord(currentCandidate.element)) {
+                  return fail("same-form-causality-ambiguous");
+                }
+                continue;
+              }
               const reason = inspect(
                 mutation.target.data,
                 mutation.target.parentElement,
                 tracked.causal,
                 mutation.type,
               );
-              if (reason !== undefined) return fail(reason);
+              if (reason !== undefined) return fail(`character:${reason}`);
             } else if (mutation.type === "childList") {
               if (mutation.addedNodes.length > limits.maximumCandidates ||
                   mutation.removedNodes.length > limits.maximumCandidates) {
@@ -1230,11 +1474,25 @@ export class PlaywrightBrowserSession {
               }
               for (const node of mutation.addedNodes) {
                 const candidate = node instanceof Element ? node : node.parentElement;
+                if (candidate !== null && !candidate.isConnected) continue;
+                if (candidate instanceof HTMLTitleElement) continue;
+                if (candidate !== null &&
+                    current.some((currentCandidate) => currentCandidate.element === candidate)) {
+                  const beforeCandidate = state.candidates.find(
+                    (before) => before.element === candidate,
+                  );
+                  if (beforeCandidate !== undefined &&
+                      values(beforeCandidate.properties).some(containsForm) &&
+                      !hasCausalRecord(candidate) && !causallyChanged(candidate)) {
+                    return fail("same-form-causality-ambiguous");
+                  }
+                  continue;
+                }
                 const text = node instanceof Element
                   ? boundedText(node)
                   : node.nodeValue;
                 const reason = inspect(text, candidate, tracked.causal, mutation.type);
-                if (reason !== undefined) return fail(reason);
+                if (reason !== undefined) return fail(`child:${reason}`);
               }
             } else {
               return fail("mutation-type-unprovable");
@@ -1287,12 +1545,8 @@ export class PlaywrightBrowserSession {
       } finally {
         await elements.dispose();
       }
-    } catch (error) {
-      throw this.sensitiveEvidenceFailure(
-        `Sensitive action provenance could not be bounded and proven: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    } catch {
+      throw this.sensitiveEvidenceFailure();
     } finally {
       await result?.dispose().catch(() => { this.sensitiveEvidenceUnproven = true; });
     }
@@ -1425,12 +1679,9 @@ export class PlaywrightBrowserSession {
     let browser: Browser;
     try {
       browser = await this.launcher.launch({ headless: !this.options.headed });
-    } catch (error) {
+    } catch {
       this.state = "closed";
-      throw new WebTargetError(
-        "BrowserLaunchFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      throw new WebTargetError("BrowserLaunchFailed");
     }
 
     this.browser = browser;
@@ -1493,11 +1744,11 @@ export class PlaywrightBrowserSession {
     if (error instanceof WebTargetError) {
       return error;
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : "";
     if (/timeout/i.test(message)) {
-      return new WebTargetError("NavigationTimedOut", message);
+      return new WebTargetError("NavigationTimedOut");
     }
-    return new WebTargetError("NavigationFailed", message);
+    return new WebTargetError("NavigationFailed");
   }
 
   /**

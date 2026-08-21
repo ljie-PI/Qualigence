@@ -124,6 +124,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           // and the bounded tracker is authoritative through the next capture.
           await this.session.beginSensitiveActionTracking(target, action.kind, value);
           let actionError: unknown;
+          await this.session.beginCausalAction(target);
           try {
             if (action.kind === "input") {
               await target.fill(value, { timeout: this.session.actionTimeoutMs });
@@ -134,6 +135,8 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             }
           } catch (error) {
             actionError = error;
+          } finally {
+            await this.session.endCausalAction(target);
           }
 
           await this.session.failIfSensitiveTrackingOverflowed();

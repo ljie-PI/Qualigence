@@ -146,17 +146,24 @@ describe("PlaywrightBrowserSession", () => {
   });
 
   it("wraps a browser launch failure as BrowserLaunchFailed", async () => {
+    const source = "source-plaintext-secret";
+    const normalized = "normalized-plaintext-secret";
     const launch = vi.fn(async () => {
-      throw new Error("no sandbox");
+      throw new Error(`no sandbox ${source} ${normalized}`);
     });
     const session = new PlaywrightBrowserSession(
       baseOptions(),
       { launch } as unknown as BrowserLauncher,
     );
 
-    await expect(session.start()).rejects.toMatchObject({
-      code: "BrowserLaunchFailed",
-    });
+    const failure = await session.start().catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "BrowserLaunchFailed" });
+    expect(String(failure)).not.toContain(source);
+    expect(String(failure)).not.toContain(normalized);
+    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain(source);
+    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain(normalized);
+    expect(failure).not.toHaveProperty("cause");
   });
 
   it("rejects page operations after the session is closed", async () => {

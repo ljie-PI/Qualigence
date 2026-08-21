@@ -493,6 +493,22 @@ parent_head: `7f265c1`
   It passed 10 files / 135 tests: 134 passed and 1 existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
   not run and remains blocked on coordinator clean review.
+- Latest blocker fixes make every `WebTargetError` message stable by code and
+  omit raw browser/provider causes; Runner reconnect/fatal logging emits only a
+  structured safe error code. Exact-target action scope is now opened and
+  closed by the executor in `finally`, independent of event bubbling.
+- The tracker snapshots canonical URL/title immediately before the action,
+  preserves unchanged pre-existing equal text, and redacts or rejects only
+  changed sensitive metadata. Bounded generation tokens cover timeout,
+  interval, animation frame, microtask, and Promise then/catch/finally work;
+  expired generations poison evidence and originals are restored on close.
+- Candidate/text limits activate only after sensitive tracking. A 600-node
+  pre-sensitive observation retains legacy behavior, while later expansion
+  fails closed. Exact focused command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
+  It passed 10 files / 149 tests: 148 passed and 1 existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
+  not run pending fresh coordinator review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

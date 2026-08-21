@@ -33,6 +33,8 @@ async function bindPrivateTarget(
   nodeId = "n-0-abcd1234",
 ): Promise<void> {
   session.beginSensitiveActionTracking = vi.fn(async () => undefined);
+  session.beginCausalAction = vi.fn(async () => undefined);
+  session.endCausalAction = vi.fn(async () => undefined);
   const handle = {
     ...target,
     evaluate: async () => true,
@@ -301,17 +303,23 @@ describe("PlaywrightActionExecutor value resolution", () => {
       getByRole: () => locator,
       url: () => "https://example.test/",
     } as never);
+    const source = "provider-source-secret";
+    const normalized = "provider-normalized-secret";
     const executor = new PlaywrightActionExecutor(session, {
-      resolve: async () => { throw new Error("plaintext-secret"); },
+      resolve: async () => { throw new Error(`${source}:${normalized}`); },
     });
 
-    await expect(executor.execute({
+    const outcome = await executor.execute({
       targetKind: "web",
       kind: "input",
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
       valueRef: "customer.email",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
+    }, permit);
+
+    expect(outcome).toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
+    expect(JSON.stringify(outcome)).not.toContain(source);
+    expect(JSON.stringify(outcome)).not.toContain(normalized);
   });
 
   it("rethrows an infrastructure failure without Playwright plaintext", async () => {
@@ -321,12 +329,14 @@ describe("PlaywrightActionExecutor value resolution", () => {
       descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
       artifacts: [],
     });
+    const source = "plaintext-secret";
+    const normalized = "normalized-secret";
     const locator = {
       count: async () => 1,
       isVisible: async () => true,
       isEnabled: async () => true,
       getAttribute: async () => null,
-      fill: async () => { throw new Error('Target closed while running fill("plaintext-secret")'); },
+      fill: async () => { throw new Error(`Target closed while running fill("${source}:${normalized}")`); },
     };
     await bindPrivateTarget(session, graphId, locator);
     session.withPage = async (operation) => operation({
@@ -334,7 +344,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       url: () => "https://example.test/",
     } as never);
     const executor = new PlaywrightActionExecutor(session, {
-      resolve: async () => "plaintext-secret",
+      resolve: async () => source,
     });
 
     const failure = await executor.execute({
@@ -345,6 +355,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.email",
     }, permit).catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: "ActionInfrastructureFailure" });
-    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
+    expect(String(failure)).not.toContain(source);
+    expect(String(failure)).not.toContain(normalized);
+    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain(source);
+    expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain(normalized);
+    expect(failure).not.toHaveProperty("cause");
+    expect(session.endCausalAction).toHaveBeenCalledOnce();
   });
 });

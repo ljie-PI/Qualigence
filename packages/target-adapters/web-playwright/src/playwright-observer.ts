@@ -388,11 +388,18 @@ export class PlaywrightObserver implements Observer {
       const ordinal = this.session.nextObservationOrdinal();
       await this.session.prepareSensitiveEvidenceCapture();
       const sensitiveTargets = this.session.sensitiveTargets();
+      const bounded = this.session.hasSensitiveActionTracker();
       const captured = await page.evaluate(collectCandidates, {
         sensitiveElements: sensitiveTargets.map((target) => target.handle),
-        maximumCandidates: MAXIMUM_OBSERVATION_CANDIDATES,
-        maximumNodeBytes: MAXIMUM_OBSERVATION_NODE_BYTES,
-        maximumSnapshotBytes: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
+        maximumCandidates: bounded
+          ? this.session.observationCandidateLimit()
+          : Number.MAX_SAFE_INTEGER,
+        maximumNodeBytes: bounded
+          ? MAXIMUM_OBSERVATION_NODE_BYTES
+          : Number.MAX_SAFE_INTEGER,
+        maximumSnapshotBytes: bounded
+          ? MAXIMUM_OBSERVATION_SNAPSHOT_BYTES
+          : Number.MAX_SAFE_INTEGER,
       });
       if (captured.failure !== undefined) {
         throw this.session.sensitiveEvidenceFailure(
@@ -406,6 +413,7 @@ export class PlaywrightObserver implements Observer {
           "A sensitive action target cannot be proven in the current observation.",
         );
       }
+      this.session.recordPreSensitiveObservationCandidateCount(captured.candidates.length);
       const sensitiveIndexes = new Set(captured.sensitiveIndexes);
       const raw = captured.candidates.map((candidate, index) => ({
         role: candidate.role,
