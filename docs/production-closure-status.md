@@ -367,7 +367,8 @@ implementation_head: `a50cd4a`
   private target node/descriptor; the next observation re-identifies that exact
   descriptor and forces only its value/text representation to `[REDACTED]`
   before Graph and Observation JSON serialization. Screenshot capture masks the
-  same descriptor, and close clears both source and target state.
+  same descriptor, the private record advances to the redacted observation's
+  node identity, and close clears both source and target state.
 - The prepared E2E now uses a real single-line input for source `a\r\nb\r\n`,
   which Chromium normalizes to `ab`, and proves unrelated visible `ab` remains
   in Trace and Observation artifacts while the input and real select targets

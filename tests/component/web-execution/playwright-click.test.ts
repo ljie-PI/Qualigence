@@ -301,10 +301,14 @@ describe("Playwright resolve + execute against real Chromium", () => {
       .find((candidate) => candidate.mediaType === "application/json");
     const artifactGraph = JSON.parse(new TextDecoder().decode(artifact?.bytes)) as ObservationGraph;
     const artifactTarget = nodeNamed(artifactGraph, "Normalized secret");
+    const targetDescriptor = session.descriptorFor(after.graphId, target.id);
 
     expect(serialized).not.toContain(source);
     expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     expect(artifactTarget).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
+    expect(targetDescriptor).toBeDefined();
+    expect(session.sensitiveTargetFor(new Map([[target.id, targetDescriptor!]]))?.nodeId)
+      .toBe(target.id);
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
     expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
   });

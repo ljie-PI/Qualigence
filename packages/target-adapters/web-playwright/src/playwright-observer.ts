@@ -3,7 +3,7 @@ import type {
   ObservationGraph,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
-import type { PlaywrightBrowserSession } from "./browser-session.js";
+import { WebTargetError, type PlaywrightBrowserSession } from "./browser-session.js";
 import {
   buildObservationGraph,
   type ObservationCandidate,
@@ -241,6 +241,9 @@ export class PlaywrightObserver implements Observer {
         { url, ...(title !== "" ? { title } : {}) },
       );
       const sensitiveTarget = this.session.sensitiveTargetFor(preliminary.descriptors);
+      const sensitiveTargetIndex = sensitiveTarget === undefined
+        ? -1
+        : preliminary.graph.nodes.findIndex((node) => node.id === sensitiveTarget.nodeId);
       const serializedCandidates = sensitiveTarget === undefined
         ? raw
         : raw.map((candidate, index) =>
@@ -255,6 +258,16 @@ export class PlaywrightObserver implements Observer {
             serializedCandidates,
             { url, ...(title !== "" ? { title } : {}) },
           );
+      if (sensitiveTarget !== undefined) {
+        const serializedNode = graph.nodes[sensitiveTargetIndex];
+        if (serializedNode === undefined) {
+          throw new WebTargetError(
+            "UnknownObservationNode",
+            "The sensitive action target is absent from the serialized observation.",
+          );
+        }
+        this.session.registerSensitiveActionTarget(serializedNode.id, sensitiveTarget.descriptor);
+      }
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
