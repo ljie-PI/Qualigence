@@ -469,6 +469,30 @@ parent_head: `7f265c1`
   It passed 10 files / 127 tests: 126 passed and 1 existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
   not run and remains blocked on fresh coordinator review.
+- Latest review-blocker implementation retains every bounded pre-action
+  tracker, baseline, event/timer authority, and sensitive/reflected handle
+  until session close. A clean first capture therefore does not end authority:
+  delayed callbacks beyond 250 ms remain causal for later Graph/Artifact/
+  screenshot captures, and page timers are never cancelled.
+- Before Graph or Artifact serialization, the observer compares canonical page
+  URL fields and title against exact source/browser-normalized forms. Proven
+  causal pathname, query key/value, fragment, URL, and title occurrences redact
+  only the affected field; any unproven occurrence poisons all evidence as
+  `SensitiveEvidenceUnproven`.
+- Input/change authority is bound to the exact retained action target. A
+  different dispatch target carrying or producing a sensitive form is
+  ambiguous, poisons capture, and registers no evidence; the authorized target
+  plus synchronous reflected mutations remains causal.
+- Select normalization rejects option count before enumeration, then bounds
+  each value/label/text and aggregate characters before transfer. Source and
+  normalized forms are code-unit bounded before `TextEncoder` allocation and
+  byte checked afterward; hostile 5,000-option, oversized option, source, and
+  observation inputs fail stably without persistence.
+- Product head before this status update: `ff4259f`. Exact focused
+  command: `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
+  It passed 10 files / 135 tests: 134 passed and 1 existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. E2E was deliberately
+  not run and remains blocked on coordinator clean review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
