@@ -243,7 +243,7 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR
+verification: pending review/E2E; pending dedicated PR
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -273,11 +273,18 @@ verification: passed; pending dedicated PR
 - Round-1 RED reproduced 3 provider failures and 2 Chromium redaction failures.
   GREEN passed the affected provider file at 17 tests and Chromium action file
   at 9 tests. The exact row-18 focused Gate passed 8 files / 62 passed with 1
-  existing Task 21 skip; POSIX permission and nonregular/FIFO enforcement run
-  through exported pure validators on Windows, while real POSIX integration is
-  registered only on POSIX. Root `corepack pnpm typecheck` and
+  existing Task 21 skip; POSIX permission enforcement has one ordinary test
+  that always exercises the injected platform seam and additionally exercises
+  a real permissive file on POSIX. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No separate Chromium E2E was run before the fresh
   exact-base review.
+- The exact post-review acceptance file
+  `tests/e2e/web-execution/value-ref.test.ts` is prepared without skips. It
+  remains deliberately not run until the round-2 exact-base review is clean;
+  ticket verification is pending review/E2E, not passed.
+- Round-2 focused non-E2E Gate passed 8 files / 62 tests with the same existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed;
+  the new Chromium E2E was not run.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

@@ -103,11 +103,23 @@ describe("FileActionValueProvider", () => {
     await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
   });
 
-  it("enforces POSIX secret-file permissions on every test platform", () => {
+  it("enforces POSIX secret-file permissions on every test platform", async () => {
     expect(() => validateActionValueFilePermissions(0o100600, "linux")).not.toThrow();
     expect(() => validateActionValueFilePermissions(0o100640, "linux")).toThrow();
     expect(() => validateActionValueFilePermissions(0o100604, "darwin")).toThrow();
     expect(() => validateActionValueFilePermissions(0o100666, "win32")).not.toThrow();
+
+    if (process.platform !== "win32") {
+      const root = await temporaryRoot();
+      await writeFile(join(root, "value"), "secret", { mode: 0o644 });
+      await chmod(join(root, "value"), 0o644);
+      const configFile = join(root, "values.json");
+      await writeFile(configFile, JSON.stringify({ value: "value" }));
+
+      await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow(
+        "Action value file permissions are too broad.",
+      );
+    }
   });
 
   it("rejects FIFO and other nonregular metadata without opening the path", () => {
@@ -116,18 +128,6 @@ describe("FileActionValueProvider", () => {
       "Action value must be stored in a regular file.",
     );
   });
-
-  if (process.platform !== "win32") {
-    it("rejects a real permissive POSIX file during initialization", async () => {
-      const root = await temporaryRoot();
-      await writeFile(join(root, "value"), "secret", { mode: 0o644 });
-      await chmod(join(root, "value"), 0o644);
-      const configFile = join(root, "values.json");
-      await writeFile(configFile, JSON.stringify({ value: "value" }));
-
-      await expect(FileActionValueProvider.open({ root, configFile })).rejects.toThrow();
-    });
-  }
 
   it("fails closed when a configured value disappears and for an unknown ref", async () => {
     const root = await temporaryRoot();
