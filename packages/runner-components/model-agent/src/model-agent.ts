@@ -19,6 +19,7 @@ import type {
 } from "@qualigence/model-provider";
 import type {
   AgentContext,
+  AnyProposedAction,
   ExecutionDecisionProvider,
   ProposedAction,
   VerificationContext,
@@ -26,14 +27,22 @@ import type {
   Verifier,
 } from "@qualigence/runner-kernel";
 import type {
+  ExecutionPlanStep,
   ObservationGraph,
   ObservationNode,
   VerificationClaim,
 } from "@qualigence/runner-protocol";
 
-const decisionSchema = z
+const clickDecisionSchema = z
   .object({
     action: z.object({ kind: z.literal("click"), nodeId: z.string().min(1) }).strict(),
+    reason: z.string().min(1),
+  })
+  .strict();
+
+const plannedDecisionSchema = z
+  .object({
+    nodeId: z.string().min(1),
     reason: z.string().min(1),
   })
   .strict();
@@ -70,13 +79,11 @@ const verificationSchema = z.discriminatedUnion("status", [
     .strict(),
 ]);
 
-interface DecisionProposal {
-  readonly action: {
-    readonly kind: "click";
-    readonly nodeId: string;
-  };
-  readonly reason: string;
-}
+type DecisionProposal =
+  | { readonly action: { readonly kind: "click"; readonly nodeId: string }; readonly reason: string }
+  | { readonly nodeId: string; readonly reason: string };
+
+type CurrentPlanActionStep = Extract<ExecutionPlanStep, { readonly kind: "input" | "select" }>;
 
 export class InvalidModelEvidenceError extends Error implements StructuredOutputValidationError {
   readonly name = "StructuredOutputValidationError" as const;
@@ -92,9 +99,11 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
   constructor(
     private readonly gateway: StructuredModelInvoker,
     private readonly model: string,
+    private readonly currentStep?: CurrentPlanActionStep,
   ) {}
 
-  async decide(context: AgentContext): Promise<ProposedAction> {
+  decide(context: AgentContext): Promise<ProposedAction>;
+  async decide(context: AgentContext): Promise<AnyProposedAction> {
     try {
       const maximumOutputTokens = context.budget?.maximumOutputTokens(context.job.runId);
       const result = await this.gateway.invokeStructured(
@@ -104,13 +113,15 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           messages: [
             {
               role: "system",
-              content:
-                "Choose one visible node for the requested web action. Return only a click nodeId and a concise reason.",
+              content: this.currentStep === undefined
+                ? "Choose one visible node for the requested web action. Return only a click nodeId and a concise reason."
+                : `Choose one visible node for the immutable ${this.currentStep.kind} Plan step. Return only nodeId and a concise reason.`,
             },
             {
               role: "user",
               content: JSON.stringify({
                 objective: context.job.objective,
+                ...(this.currentStep === undefined ? {} : { step: this.currentStep }),
                 observation: context.observation,
               }),
             },
@@ -120,11 +131,11 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           ...(context.signal === undefined ? {} : { signal: context.signal }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
-        decisionContract(context),
+        decisionContract(context, this.currentStep),
       );
       consumeUsageState(context, result.usageState, result.usage);
 
-      return toProposedAction(result.value);
+      return toProposedAction(result.value, this.currentStep);
     } catch (error) {
       consumeErrorUsage(context, error);
       throwModelExecutionError(error);
@@ -272,15 +283,24 @@ function uuidv7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function decisionContract(context: AgentContext): StructuredOutputContract<DecisionProposal> {
+function decisionContract(
+  context: AgentContext,
+  currentStep: CurrentPlanActionStep | undefined,
+): StructuredOutputContract<DecisionProposal> {
+  validateCurrentStep(context, currentStep);
   return {
     name: "execution-decision",
-    jsonSchema: z.toJSONSchema(decisionSchema) as JsonSchema,
+    jsonSchema: z.toJSONSchema(
+      currentStep === undefined ? clickDecisionSchema : plannedDecisionSchema,
+    ) as JsonSchema,
     parse(value: unknown): DecisionProposal {
-      const proposal = parseSchema(decisionSchema, value);
-      if (!context.observation.nodes.some((node) => node.id === proposal.action.nodeId)) {
+      const proposal: DecisionProposal = currentStep === undefined
+        ? parseSchema(clickDecisionSchema, value)
+        : parseSchema(plannedDecisionSchema, value);
+      const nodeId = "action" in proposal ? proposal.action.nodeId : proposal.nodeId;
+      if (!context.observation.nodes.some((node) => node.id === nodeId)) {
         throw structuredOutputValidationError([
-          { path: "action.nodeId", reason: "unknown_node_reference" },
+          { path: currentStep === undefined ? "action.nodeId" : "nodeId", reason: "unknown_node_reference" },
         ]);
       }
 
@@ -313,12 +333,63 @@ function verificationContract(
   };
 }
 
-function toProposedAction(proposal: DecisionProposal): ProposedAction {
+function toProposedAction(
+  proposal: DecisionProposal,
+  currentStep: CurrentPlanActionStep | undefined,
+): AnyProposedAction {
+  const nodeId = "action" in proposal ? proposal.action.nodeId : proposal.nodeId;
+  if (currentStep?.kind === "input") {
+    return {
+      kind: "input",
+      target: { nodeId },
+      valueRef: currentStep.valueRef,
+      reason: proposal.reason,
+    };
+  }
+  if (currentStep?.kind === "select") {
+    return {
+      kind: "select",
+      target: { nodeId },
+      valueRef: currentStep.valueRef,
+      reason: proposal.reason,
+    };
+  }
+  if (!("action" in proposal)) throw new ExecutionBlockedError("PlanExecutionUnsupported");
   return {
-    kind: proposal.action.kind,
+    kind: "click",
     target: { nodeId: proposal.action.nodeId },
     reason: proposal.reason,
   };
+}
+
+function validateCurrentStep(
+  context: AgentContext,
+  currentStep: CurrentPlanActionStep | undefined,
+): void {
+  if (currentStep === undefined) {
+    const steps = context.job.plan?.steps;
+    if (steps !== undefined && (steps.length !== 1 || steps[0]?.kind !== "click")) {
+      throw new ExecutionBlockedError("PlanExecutionUnsupported");
+    }
+    return;
+  }
+  const planSteps = context.job.plan?.steps;
+  if (planSteps?.length !== 1 || !samePlanStep(planSteps[0], currentStep)) {
+    throw new ExecutionBlockedError("PlanExecutionUnsupported");
+  }
+}
+
+function samePlanStep(left: ExecutionPlanStep, right: CurrentPlanActionStep): boolean {
+  if (left.kind !== right.kind || left.stepIndex !== right.stepIndex) return false;
+  if (left.kind !== "input" && left.kind !== "select") return false;
+  if (
+    left.target.purpose !== right.target.purpose ||
+    left.target.role !== right.target.role ||
+    left.target.name !== right.target.name
+  ) return false;
+  if (left.kind === "input" && right.kind === "input") return left.valueRef === right.valueRef;
+  if (left.kind === "select" && right.kind === "select") return left.valueRef === right.valueRef;
+  return false;
 }
 
 function validateClaims(

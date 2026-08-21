@@ -2,9 +2,12 @@
 
 ## Current authority view (2026-08-20)
 
-Ticket 18 scope amendment (2026-08-21): `apps/runner/src/offer-runtime.ts`
-and its existing unit test are included so production composition injects only
-a healthy `ActionValueProvider` and advertises matching input/select capability.
+Ticket 18 scope amendment (2026-08-21): `apps/runner/src/offer-runtime.ts`,
+`packages/runner-components/model-agent/src/model-agent.ts`, and their existing
+unit tests are included so production composition supplies the immutable current
+one-action Plan step, injects only a healthy `ActionValueProvider`, and advertises
+input/select capability only when that complete path is available. Ticket 19
+retains the indexed multi-step Runtime.
 
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
@@ -285,6 +288,24 @@ verification: pending review/E2E; pending dedicated PR
 - Round-2 focused non-E2E Gate passed 8 files / 62 tests with the same existing
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed;
   the new Chromium E2E was not run.
+- Round-3 fixes bind production Model Agent decisions to exactly one immutable
+  input/select Plan step. The model returns only `nodeId` and `reason`; Runner
+  copies and validates the Plan-owned `valueRef`. Objective-only and one-step
+  Plan click retain the legacy click proposal, while multi-step or unsupported
+  Plan execution fails closed for Ticket 19.
+- `RunnerOfferRuntime` supplies that current one-action context to the existing
+  `LeasedJobExecutor` path and rejects value-backed actions without the provider.
+  Input/select remain advertised only when startup produced the healthy provider
+  and this complete production path is available.
+- The acceptance now drives separate immutable input/select jobs through
+  production `RunnerOfferRuntime`/`LeasedJobExecutor`, real Chromium, the real
+  OpenAI-compatible provider chain, production `FileActionValueProvider`, and a
+  real SQLite Runner Spool. It scans submitted Trace, completions, model requests,
+  logs, and spool bytes for both plaintext values.
+- Round-3 amended focused non-E2E Gate passed 9 files / 87 tests with 1 existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
+  Chromium E2E remains deliberately not run pending a clean exact-base review;
+  verification and the dedicated PR remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

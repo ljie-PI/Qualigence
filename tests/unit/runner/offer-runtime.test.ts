@@ -4,6 +4,15 @@ import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
 
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
+const decisionSteps: unknown[] = [];
+vi.mock("@qualigence/model-agent", () => ({
+  ModelBackedDecisionProvider: class {
+    constructor(_gateway: unknown, _model: string, step: unknown) {
+      decisionSteps.push(step);
+    }
+  },
+  ModelBackedVerifier: class {},
+}));
 vi.mock("../../../apps/runner/src/job-executor.js", () => ({
   LeasedJobExecutor: class {
     constructor(dependencies: { readonly policyGate: RunnerPolicyGate; readonly capabilities: RunnerCapabilities }) {
@@ -138,6 +147,7 @@ describe("RunnerOfferRuntime", () => {
 
   it("injects one healthy value provider and advertises input/select capability", async () => {
     executorCapabilities.length = 0;
+    decisionSteps.length = 0;
     const valueProvider = { resolve: vi.fn(async () => "plaintext-secret") };
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target);
@@ -153,12 +163,37 @@ describe("RunnerOfferRuntime", () => {
 
     await runtime.run({
       offerId: "offer-input",
-      job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "input", policy: { policyId: "policy-input", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"], maximumRisk: "ExternalSideEffect", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
+      job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "input", policy: { policyId: "policy-input", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"], maximumRisk: "ExternalSideEffect", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" }, plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-input", steps: [{ stepIndex: 0, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "profile.email" }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } } },
       requiredCapabilities: [], leaseDurationMs: 30_000,
     } as never);
 
     expect(createTarget).toHaveBeenCalledWith(expect.objectContaining({ valueProvider }));
     expect(executorCapabilities[0]?.actionKinds).toEqual(["click", "input", "select"]);
+    expect(decisionSteps).toEqual([
+      { stepIndex: 0, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "profile.email" },
+    ]);
+  });
+
+  it("fails closed before target construction for a multi-step plan", async () => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" })),
+      complete: vi.fn(async () => undefined),
+    };
+    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: {} as never, config: config(), valueProvider: { resolve: vi.fn() } });
+
+    await runtime.run({
+      offerId: "offer-1",
+      job: { jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "must not run ticket 19", policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"], maximumRisk: "ExternalSideEffect", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" }, plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ stepIndex: 0, kind: "input", target: { purpose: "email" }, valueRef: "profile.email" }, { stepIndex: 1, kind: "select", target: { purpose: "country" }, valueRef: "profile.country" }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } } },
+      requiredCapabilities: ["action:input", "action:select"],
+      leaseDurationMs: 30_000,
+    });
+
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      status: "blocked",
+      errorCode: "PlanExecutionUnsupported",
+    }));
   });
 
   it.each([
