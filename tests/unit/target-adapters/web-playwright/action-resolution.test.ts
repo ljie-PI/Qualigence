@@ -110,7 +110,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
       isEnabled: async () => true,
       getAttribute: async () => null,
       fill: async (value: string) => { calls.push(`fill:${value}`); },
-      selectOption: async (value: string) => { calls.push(`selectOption:${value}`); },
+      inputValue: async () => "plaintext-secret",
+      selectOption: async (value: string) => {
+        calls.push(`selectOption:${value}`);
+        return [value];
+      },
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -131,6 +135,81 @@ describe("PlaywrightActionExecutor value resolution", () => {
 
     await expect(executor.execute(action, permit)).resolves.toEqual({ status: "ok" });
     expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
+  });
+
+  it("redacts complete browser input newline forms without redacting their unrelated fragments", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Notes" }]]),
+      artifacts: [],
+    });
+    const source = "first-secret-line\r\nsecond-secret-line\r\n";
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      fill: async () => undefined,
+      inputValue: async () => "first-secret-linesecond-secret-line",
+    };
+    session.withPage = async (operation) => operation({
+      getByRole: () => locator,
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => source });
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "input",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.notes",
+    }, permit)).resolves.toEqual({ status: "ok" });
+
+    expect(session.redactSensitiveText(source)).toBe("[redacted]");
+    expect(session.redactSensitiveText("first-secret-line\nsecond-secret-line\n")).toBe("[redacted]");
+    expect(session.redactSensitiveText("first-secret-line\nsecond-secret-line")).toBe("[redacted]");
+    expect(session.redactSensitiveText("first-secret-linesecond-secret-line")).toBe("[redacted]");
+    expect(session.redactSensitiveText("first-secret-line remains unrelated")).toBe(
+      "first-secret-line remains unrelated",
+    );
+  });
+
+  it("registers the exact value selected by the browser", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "combobox", name: "Country" }]]),
+      artifacts: [],
+    });
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      selectOption: async () => ["browser-selected-option"],
+    };
+    session.withPage = async (operation) => operation({
+      getByRole: () => locator,
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => "provider-option",
+    });
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "select",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.country",
+    }, permit)).resolves.toEqual({ status: "ok" });
+
+    expect(session.redactSensitiveText("browser-selected-option")).toBe("[redacted]");
+    expect(session.redactSensitiveText("browser-selected remains unrelated")).toBe(
+      "browser-selected remains unrelated",
+    );
   });
 
   it("returns a stable code without plaintext when the provider cannot resolve a valueRef", async () => {

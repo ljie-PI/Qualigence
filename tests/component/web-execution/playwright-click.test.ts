@@ -70,8 +70,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
+          <label>Multiline secret <input aria-label="Multiline secret" /></label>
           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
           <p data-qualigence-observe id="values"></p>
+          <p data-qualigence-observe>component-first-line remains unrelated</p>
           <script>
             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
@@ -271,5 +273,32 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serializedTrace).not.toContain(secret);
     expect(serializedVerifierContext).not.toContain(secret);
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
+  });
+
+  it("redacts CRLF, LF-normalized, and text-input canonical forms from Chromium observations", async () => {
+    const source = "component-first-line\r\ncomponent-second-line\r\n";
+    const lfNormalized = "component-first-line\ncomponent-second-line\n";
+    const trailingNormalized = "component-first-line\ncomponent-second-line";
+    const inputCanonical = "component-first-linecomponent-second-line";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => source });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Multiline secret").id, "customer.multiline"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    const serialized = JSON.stringify(after);
+
+    expect(serialized).not.toContain(source);
+    expect(serialized).not.toContain(lfNormalized);
+    expect(serialized).not.toContain(trailingNormalized);
+    expect(serialized).not.toContain(inputCanonical);
+    expect(after.nodes.some((node) => node.text === "component-first-line remains unrelated")).toBe(true);
   });
 });

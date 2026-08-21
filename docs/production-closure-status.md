@@ -334,6 +334,30 @@ remediation_ticket: `39`
 - The amended focused non-E2E Gate passed 10 files / 105 tests with 1 existing
   Task 21 skip. No E2E was run; fresh exact-base review is required before E2E.
 
+### Ticket 39 - Browser-normalized secret redaction remediation (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: pending remediation PR
+parent_ticket: `18`
+parent_commit: `004446c`
+reviewed_head: `9bc55c4`
+
+- The private Playwright adapter boundary derives a bounded, deduplicated set of
+  exact source, LF-normalized, trailing-line-ending-removed, and
+  line-break-stripped input forms and registers the exact value returned by
+  Chromium after input/select. It does not register individual line fragments,
+  so unrelated text remains observable.
+- Resolved plaintext remains session-memory-only and is cleared on disposal; no
+  Trace, Observation, log, DTO, or durable-spool contract gains a plaintext field.
+- Unit and real-Chromium component RED tests cover CRLF/LF/trailing-newline input
+  normalization, selected-option behavior, and unrelated-substring preservation.
+  The production valueRef E2E is expanded for LF and CRLF secret files and full
+  security-surface scans but remains deliberately not run pending clean review.
+- The Ticket 18 focused non-E2E Gate passed 10 files / 108 passed with 1 existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
+  remediation PR and coordinator review remain pending.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

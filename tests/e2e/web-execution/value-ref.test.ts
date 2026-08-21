@@ -19,7 +19,8 @@ import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "../../component/web-execution/fixtures.js";
 
-const INPUT_VALUE = "e2e-private@example.test";
+const LF_INPUT_VALUE = "e2e-lf-first-line\ne2e-lf-second-line\n";
+const CRLF_INPUT_VALUE = "e2e-crlf-first-line\r\ne2e-crlf-second-line\r\n";
 const SELECT_VALUE = "e2e-private-country-code";
 const roots: string[] = [];
 let fixture: FixtureServer | undefined;
@@ -45,7 +46,8 @@ describe("production valueRef browser execution", () => {
   it("runs immutable input/select Plan jobs through RunnerOfferRuntime without plaintext leakage", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
-        <label>Email <input aria-label="Email" /></label>
+        <label>LF secret <input aria-label="LF secret" /></label>
+        <label>CRLF secret <input aria-label="CRLF secret" /></label>
         <label>Country
           <select aria-label="Country">
             <option value="">Choose a country</option>
@@ -53,11 +55,14 @@ describe("production valueRef browser execution", () => {
           </select>
         </label>
         <p data-qualigence-observe id="status">Waiting</p>
+        <p data-qualigence-observe>e2e-lf-first-line remains unrelated</p>
+        <p data-qualigence-observe>e2e-crlf-second-line remains unrelated</p>
         <script>
-          const email = document.querySelector('input');
+          const inputs = document.querySelectorAll('input');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
-          email.addEventListener('input', () => { status.textContent = 'Email ready'; });
+          inputs[0].addEventListener('input', () => { status.textContent = 'LF ready'; });
+          inputs[1].addEventListener('input', () => { status.textContent = 'CRLF ready'; });
           country.addEventListener('change', () => { status.textContent = 'Country ready'; });
         </script>
       `, "ValueRef acceptance"),
@@ -65,15 +70,18 @@ describe("production valueRef browser execution", () => {
 
     const root = await mkdtemp(join(tmpdir(), "qualigence-value-ref-e2e-"));
     roots.push(root);
-    await writeFile(join(root, "email.txt"), INPUT_VALUE, { mode: 0o600 });
+    await writeFile(join(root, "lf-input.txt"), LF_INPUT_VALUE, { mode: 0o600 });
+    await writeFile(join(root, "crlf-input.txt"), CRLF_INPUT_VALUE, { mode: 0o600 });
     await writeFile(join(root, "country.txt"), SELECT_VALUE, { mode: 0o600 });
     if (process.platform !== "win32") {
-      await chmod(join(root, "email.txt"), 0o600);
+      await chmod(join(root, "lf-input.txt"), 0o600);
+      await chmod(join(root, "crlf-input.txt"), 0o600);
       await chmod(join(root, "country.txt"), 0o600);
     }
     const configFile = join(root, "values.json");
     await writeFile(configFile, JSON.stringify({
-      "profile.email": "email.txt",
+      "profile.lf": "lf-input.txt",
+      "profile.crlf": "crlf-input.txt",
       "profile.country": "country.txt",
     }));
     const valueProvider = await FileActionValueProvider.open({ root, configFile });
@@ -177,8 +185,9 @@ describe("production valueRef browser execution", () => {
     });
 
     try {
-      await runtime.run(offer("input", "profile.email", "Email", "textbox"));
-      await runtime.run(offer("select", "profile.country", "Country", "combobox"));
+      await runtime.run(offer("input-lf", "input", "profile.lf", "LF secret", "textbox"));
+      await runtime.run(offer("input-crlf", "input", "profile.crlf", "CRLF secret", "textbox"));
+      await runtime.run(offer("select", "select", "profile.country", "Country", "combobox"));
     } catch (error) {
       if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
         throw new Error("ChromiumUnavailable", { cause: error });
@@ -190,31 +199,58 @@ describe("production valueRef browser execution", () => {
     }
 
     expect(completions).toEqual([
-      { jobId: "job-input", runId: "run-input", status: "passed" },
+      { jobId: "job-input-lf", runId: "run-input-lf", status: "passed" },
+      { jobId: "job-input-crlf", runId: "run-input-crlf", status: "passed" },
       { jobId: "job-select", runId: "run-select", status: "passed" },
     ]);
     const trace = batches.flatMap((batch) => batch.events);
-    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(2);
-    expect(trace.find((event) => event.runId === "run-input" && event.stage === "decision")?.payload)
-      .toMatchObject({ kind: "input", valueRef: "profile.email" });
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(3);
+    expect(trace.find((event) => event.runId === "run-input-lf" && event.stage === "decision")?.payload)
+      .toMatchObject({ kind: "input", valueRef: "profile.lf" });
+    expect(trace.find((event) => event.runId === "run-input-crlf" && event.stage === "decision")?.payload)
+      .toMatchObject({ kind: "input", valueRef: "profile.crlf" });
     expect(trace.find((event) => event.runId === "run-select" && event.stage === "decision")?.payload)
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
-    expect(finalObservation(trace, "run-input").nodes.some((node) => node.text === "Email ready")).toBe(true);
+    expect(finalObservation(trace, "run-input-lf").nodes.some((node) => node.text === "LF ready")).toBe(true);
+    expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "CRLF ready")).toBe(true);
     expect(finalObservation(trace, "run-select").nodes.some((node) => node.text === "Country ready")).toBe(true);
+    expect(finalObservation(trace, "run-input-lf").nodes.some((node) =>
+      node.text === "e2e-lf-first-line remains unrelated")).toBe(true);
+    expect(finalObservation(trace, "run-input-crlf").nodes.some((node) =>
+      node.text === "e2e-crlf-second-line remains unrelated")).toBe(true);
 
     await spool.close();
     spool = undefined;
     const spoolBytes = await readFile(spoolFile);
-    const serializedSecuritySurface = Buffer.concat([
-      Buffer.from(JSON.stringify({ trace, spool: spooledEvents, completions, logs, modelRequests }), "utf8"),
-      spoolBytes,
-    ]).toString("utf8");
-    expect(serializedSecuritySurface).not.toContain(INPUT_VALUE);
-    expect(serializedSecuritySurface).not.toContain(SELECT_VALUE);
+    const securitySurfaces = {
+      trace: JSON.stringify(trace),
+      observations: JSON.stringify(trace.filter((event) => event.stage === "observation")),
+      logs: logs.join(""),
+      dtos: JSON.stringify({ batches, completions, modelRequests }),
+      spooledEvents: JSON.stringify(spooledEvents),
+      durableSpool: spoolBytes.toString("utf8"),
+    };
+    const sensitiveForms = [
+      LF_INPUT_VALUE,
+      LF_INPUT_VALUE.replace(/\n+$/u, ""),
+      LF_INPUT_VALUE.replaceAll("\n", ""),
+      CRLF_INPUT_VALUE,
+      CRLF_INPUT_VALUE.replaceAll("\r\n", "\n"),
+      CRLF_INPUT_VALUE.replaceAll("\r\n", "\n").replace(/\n+$/u, ""),
+      CRLF_INPUT_VALUE.replaceAll("\r\n", ""),
+      SELECT_VALUE,
+    ];
+    for (const surface of Object.values(securitySurfaces)) {
+      for (const form of sensitiveForms) {
+        expect(surface).not.toContain(form);
+        expect(surface).not.toContain(JSON.stringify(form).slice(1, -1));
+      }
+    }
   }, 60_000);
 });
 
 function offer(
+  id: string,
   kind: "input" | "select",
   valueRef: string,
   name: string,
@@ -227,15 +263,15 @@ function offer(
     valueRef,
   } as const satisfies ExecutionPlanStep;
   return {
-    offerId: `offer-${kind}`,
+    offerId: `offer-${id}`,
     job: {
-      jobId: `job-${kind}`,
-      runId: `run-${kind}`,
+      jobId: `job-${id}`,
+      runId: `run-${id}`,
       projectId: "project-value-ref-e2e",
       target: { kind: "web", url: fixture!.url },
       objective: `Exercise ${kind} through a valueRef`,
       policy: {
-        policyId: `policy-${kind}`,
+        policyId: `policy-${id}`,
         environment: "isolated_test",
         allowedOrigins: [fixture!.origin],
         allowedActionKinds: [kind],
@@ -247,7 +283,7 @@ function offer(
       plan: {
         missionId: "mission-1",
         missionRevision: 1,
-        testCaseId: `case-${kind}`,
+        testCaseId: `case-${id}`,
         steps: [step],
         expectedClaimIds: ["claim-1"],
         budget: { maximumStepsPerJob: 1, maximumWallClockMs: 20_000, maximumModelTokens: 100 },

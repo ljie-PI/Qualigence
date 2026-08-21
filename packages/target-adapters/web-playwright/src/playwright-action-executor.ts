@@ -8,6 +8,7 @@ import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
   WebTargetError,
+  browserSensitiveValueForms,
   isOriginAllowed,
 } from "./browser-session.js";
 import { locatorFor } from "./action-locator.js";
@@ -123,11 +124,17 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           } catch {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
-          this.session.registerSensitiveValue(value);
+          this.session.registerSensitiveValues(browserSensitiveValueForms(value));
           if (action.kind === "input") {
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+            this.session.registerSensitiveValue(await locator.inputValue({
+              timeout: this.session.actionTimeoutMs,
+            }));
           } else {
-            await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+            const [selectedValue] = await locator.selectOption(value, {
+              timeout: this.session.actionTimeoutMs,
+            });
+            if (selectedValue !== undefined) this.session.registerSensitiveValue(selectedValue);
           }
         } else if (action.kind === "click") {
           await locator.click({ timeout: this.session.actionTimeoutMs });
