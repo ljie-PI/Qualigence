@@ -13,6 +13,7 @@
   "dependencies": {
     "@qualigence/application-model": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/project-target": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*"
   }
 }

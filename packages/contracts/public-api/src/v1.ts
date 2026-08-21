@@ -259,14 +259,27 @@ export interface CreateTestPlanBody {
   readonly projectId: string;
   readonly prdId: string;
   readonly prdRevision: number;
+  readonly sourceContentSha256: string;
   readonly expectedClaims: readonly {
-    readonly claimId: string;
     readonly semanticKey: string;
     readonly statement: string;
     readonly sourceRefs: readonly { readonly prdId: string; readonly revision: number; readonly startOffset: number; readonly endOffset: number; readonly quotedTextSha256: string }[];
     readonly confidence: number;
   }[];
-  readonly testCases: readonly TestCaseDto[];
+  readonly testCases: readonly {
+    readonly title: string;
+    readonly objective: string;
+    readonly preconditions: readonly string[];
+    readonly steps: readonly (
+      | { readonly kind: "navigate"; readonly path: string }
+      | { readonly kind: "click"; readonly target: { readonly role?: string; readonly name?: string; readonly purpose: string } }
+      | { readonly kind: "input"; readonly target: { readonly role?: string; readonly name?: string; readonly purpose: string }; readonly valueRef: string }
+      | { readonly kind: "verify"; readonly claimSemanticKeys: readonly string[] }
+    )[];
+    readonly expectedClaimSemanticKeys: readonly string[];
+    readonly sourceRefs: readonly { readonly prdId: string; readonly revision: number; readonly startOffset: number; readonly endOffset: number; readonly quotedTextSha256: string }[];
+    readonly priority: "low" | "medium" | "high";
+  }[];
 }
 
 export interface IngestPrdBody {
@@ -285,7 +298,6 @@ export interface CreateMissionBody {
 
 export interface ApproveTestPlanBody {
   readonly expectedVersion: number;
-  readonly reviewerId: string;
 }
 
 export interface ClaimReviewTaskBody {

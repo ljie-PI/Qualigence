@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -104,13 +104,14 @@ describeMaybe("Web Console critical user flow (login → project → investigati
       expectedVersion: 0,
       configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" },
     }, { idempotencyKey: "flow-target-create" });
-    const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: 5, quotedTextSha256: "a".repeat(64) };
+    const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: 18, quotedTextSha256: createHash("sha256").update("Users can sign in.").digest("hex") };
     const draft = await client.createTestPlan({
       projectId: "flow-project", prdId: prd.resource.prdId, prdRevision: 1,
-      expectedClaims: [{ claimId: "flow-claim", semanticKey: "login", statement: "Users sign in", sourceRefs: [sourceRef], confidence: 1 }],
-      testCases: [{ testCaseId: "flow-case-plan", title: "Login", objective: "Verify login", preconditions: [], steps: [{ kind: "verify", claimIds: ["flow-claim"] }], expectedClaimIds: ["flow-claim"], priority: "high" }],
+      sourceContentSha256: prd.resource.contentSha256,
+      expectedClaims: [{ semanticKey: "login", statement: "Users sign in", sourceRefs: [sourceRef], confidence: 1 }],
+      testCases: [{ title: "Login", objective: "Verify login", preconditions: [], steps: [{ kind: "verify", claimSemanticKeys: ["login"] }], expectedClaimSemanticKeys: ["login"], sourceRefs: [sourceRef], priority: "high" }],
     }, { idempotencyKey: "flow-plan" });
-    const approved = await client.approveTestPlan(draft.resource.planId, { expectedVersion: draft.resource.version, reviewerId: "ignored-http-field" }, { idempotencyKey: "flow-plan-approve" });
+    const approved = await client.approveTestPlan(draft.resource.planId, { expectedVersion: draft.resource.version }, { idempotencyKey: "flow-plan-approve" });
     const mission = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
     expect(mission.resource).toMatchObject({ runnerId: "runner-flow", targetVersion: 1, planVersion: 2, status: "approved" });
 

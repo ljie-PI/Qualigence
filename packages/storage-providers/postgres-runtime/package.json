@@ -11,6 +11,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/context-intake": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/project-target": "workspace:*",

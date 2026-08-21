@@ -125,6 +125,25 @@ describe("immutable Target revisions", () => {
       kind: "desktop",
       app: { platform: "windows", targetId: "wpf-reference" },
     });
+    expect(revision.configuration).toEqual({ kind: "desktop", app: validTarget });
+  });
+
+  it.each([
+    ["launch argv", { ...validTarget, launch: { ...validTarget.launch, args: ["--password=hunter2"] } }],
+    ["reset argv", { ...validTarget, reset: { ...validTarget.reset, args: ["API_TOKEN=abc123"] } }],
+    ["launch environment", { ...validTarget, launch: { ...validTarget.launch, env: { CLIENT_SECRET: "abc123" } } }],
+    ["target environment", { ...validTarget, environment: { PASSWORD: "hunter2" } }],
+  ])("rejects secret-bearing %s values", (_name, app) => {
+    expect(() =>
+      createTargetRevision({
+        targetId: "wpf-reference",
+        projectId: "project-1",
+        displayName: "WPF reference",
+        runnerId: "runner-windows",
+        expectedVersion: 0,
+        configuration: { kind: "desktop", app },
+      }),
+    ).toThrowError(/TargetSecretRejected/);
   });
 
   it("rejects secret-bearing or mismatched revisions before hashing", () => {

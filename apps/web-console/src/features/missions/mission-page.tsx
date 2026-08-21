@@ -1,3 +1,4 @@
+import type { MissionDto } from "@qualigence/public-api";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -55,20 +56,22 @@ export function MissionDetailPage(props: { readonly missionId: string }): ReactN
       <h1>Mission {props.missionId}</h1>
       <DataState isLoading={mission.isLoading} error={mission.error} isEmpty={mission.data === undefined}>
         {mission.data !== undefined ? (
-          <DefinitionList
-            items={[
-              ["Status", <StatusBadge key="s" value={mission.data.status} />],
-              ["Project", mission.data.projectId],
-              ["Target", mission.data.targetId],
-              ["Target revision", `v${mission.data.targetVersion} (${mission.data.targetSnapshotHash})`],
-              ["Runner", mission.data.runnerId],
-              ["Test plan", `${mission.data.planId}@${mission.data.planVersion}`],
-              ["Revision", String(mission.data.revision)],
-              ["Version", String(mission.data.version)],
-            ]}
-          />
+          <MissionRevisionSummary mission={mission.data} />
         ) : null}
       </DataState>
     </section>
   );
+}
+
+export function MissionRevisionSummary(props: { readonly mission: MissionDto }): ReactNode {
+  return <DefinitionList items={[
+    ["Status", <StatusBadge key="s" value={props.mission.status} />],
+    ["Project", props.mission.projectId],
+    ["Target", props.mission.targetId],
+    ["Target revision", `v${props.mission.targetVersion} (${props.mission.targetSnapshotHash})`],
+    ["Runner", props.mission.runnerId],
+    ["Test plan", `${props.mission.planId}@${props.mission.planVersion}`],
+    ["Revision", String(props.mission.revision)],
+    ["Version", String(props.mission.version)],
+  ]} />;
 }

@@ -1,4 +1,5 @@
 import type { Clock } from "@qualigence/shared-kernel";
+import type { PrdDocument } from "@qualigence/context-intake";
 import type { TestPlanRevision } from "../domain/test-plan-revision.js";
 
 export interface SaveDraftTestPlanInput {
@@ -16,7 +17,9 @@ export interface ApproveStoredTestPlanInput {
 }
 
 export interface TestPlanRepository {
+  savePrdDocument(document: PrdDocument): Promise<void>;
   saveDraft(input: SaveDraftTestPlanInput): Promise<TestPlanRevision>;
   approve(input: ApproveStoredTestPlanInput): Promise<TestPlanRevision>;
   get(planId: string, version?: number): Promise<TestPlanRevision | undefined>;
+  getPrdDocument(prdId: string, revision: number): Promise<PrdDocument | undefined>;
 }

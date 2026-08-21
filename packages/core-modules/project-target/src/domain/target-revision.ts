@@ -65,6 +65,28 @@ function deepFreeze(value: unknown): void {
   Object.freeze(value);
 }
 
+const SECRET_ARG_NAME = /(?:^|[-_])(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|client[-_]?secret)$/i;
+
+function rejectSecretArgs(args: readonly string[]): void {
+  if (args.some((arg) => SECRET_ARG_NAME.test((arg.split(/[=:]/, 1)[0] ?? "").replace(/^[-/]+/, "")))) {
+    throw new ProjectTargetError(
+      "TargetSecretRejected",
+      "Desktop launch/reset arguments must reference configured secrets, not contain secret-bearing values",
+    );
+  }
+}
+
+function rejectEnvironment(candidate: unknown): void {
+  if (!isRecord(candidate)) return;
+  const launch = isRecord(candidate.launch) ? candidate.launch : undefined;
+  if (candidate.env !== undefined || candidate.environment !== undefined || launch?.env !== undefined || launch?.environment !== undefined) {
+    throw new ProjectTargetError(
+      "TargetSecretRejected",
+      "Desktop Target environment values are not part of the approved AppTarget contract",
+    );
+  }
+}
+
 function validateWebTarget(value: Record<string, unknown>): WebTargetConfiguration {
   const startUrl = requiredString(value.startUrl, "configuration.startUrl");
   let parsed: URL;
@@ -124,10 +146,13 @@ export function createTargetRevision(input: CreateTargetRevisionInput): TargetRe
     configuration = validateWebTarget(input.configuration);
   } else if (input.configuration.kind === "desktop") {
     try {
+      rejectEnvironment(input.configuration.app);
       const app = validateAppTarget(input.configuration.app);
       if (app.targetId !== targetId) {
         throw new ProjectTargetError("InvalidTargetConfiguration", "Desktop app targetId must match the Target revision");
       }
+      rejectSecretArgs(app.launch.args);
+      rejectSecretArgs(app.reset.args);
       deepFreeze(app);
       configuration = Object.freeze({ kind: "desktop", app });
     } catch (error) {

@@ -43,6 +43,26 @@ production_wiring: present
 verification: passed; pending dedicated PR
 pull_request: pending
 
+review_round_1_remediation: passed on 2026-08-21
+
+- Removed request-to-domain casting and direct Mission-table writes from Public
+  API routes. Target, grounded Test Plan create/approve, and Mission creation now
+  invoke application services; Mission creation calls `MissionCompiler` and the
+  existing `PrdMissionRepository` seam and persists revision/jobs/dispatch data.
+- Test Plan create/approve reloads the selected PRD content and validates its
+  source hash, offsets, selector/script rejection, opaque value references, and
+  claim references before deterministic server IDs or persistence.
+- One provider-neutral product-intake contract runs unchanged against SQLite and
+  Docker PostgreSQL. It proves immutable revisions, project consistency, PRD
+  loading, and one-success/one-stable-conflict concurrent approval semantics.
+- Desktop intake rejects secret-bearing launch/reset argv and environment-like
+  fields while preserving every accepted `AppTarget` field. Console component
+  coverage renders Web/Desktop Target, Test Plan, and Mission revision bindings.
+- Round-1 focused Gate passed 8 files / 62 tests with PostgreSQL Docker and
+  storage schema conformance; offline frozen install, `corepack pnpm typecheck`,
+  and `git diff --check` passed. Rendered browser E2E remains intentionally
+  unrun until clean review.
+
 - Migration 008 exclusively adds immutable Target and Test Plan revision heads,
   append-only snapshots, expected-version CAS, and idempotency bindings. Historical
   migrations 001-007 remain unchanged.

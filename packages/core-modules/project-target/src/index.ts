@@ -21,3 +21,5 @@ export type {
   ProjectTargetRepository,
   SaveTargetRevisionInput,
 } from "./application/project-target-repository.js";
+export { ProjectTargetService } from "./application/project-target-service.js";
+export type { CreateTargetCommand } from "./application/project-target-service.js";

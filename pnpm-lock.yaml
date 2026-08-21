@@ -465,6 +465,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/context-intake
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
@@ -656,6 +659,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../context-intake
+      '@qualigence/project-target':
+        specifier: workspace:*
+        version: link:../project-target
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../shared-kernel
@@ -665,6 +671,9 @@ importers:
       '@qualigence/desktop-contracts':
         specifier: workspace:*
         version: link:../../contracts/desktop
+      '@qualigence/shared-kernel':
+        specifier: workspace:*
+        version: link:../../shared-kernel
 
   packages/core-modules/review: {}
 
@@ -936,6 +945,9 @@ importers:
 
   packages/storage-providers/postgres-runtime:
     dependencies:
+      '@qualigence/context-intake':
+        specifier: workspace:*
+        version: link:../../core-modules/context-intake
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission

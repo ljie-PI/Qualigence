@@ -213,6 +213,11 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
     };
   }
 
+  async listMissionIds(): Promise<readonly string[]> {
+    const rows = await this.runtime.db.selectFrom("missions").select("mission_id").distinct().orderBy("mission_id").execute();
+    return rows.map((row) => row.mission_id);
+  }
+
   async recordJobAttempt(attempt: JobAttemptRecord): Promise<void> {
     await runInImmediateTransaction(this.runtime, async () => {
       await this.runtime.db

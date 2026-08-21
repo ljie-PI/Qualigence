@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { PrdDocument } from "@qualigence/context-intake";
 import type { FastifyInstance } from "fastify";
 import type { IngestPrdBody, PrdRevisionDto } from "@qualigence/public-api";
 import {
   authenticateOidc,
   requireIdempotencyKey,
   requireRole,
+  testPlanService,
   withTenant,
   type ServerDeps,
 } from "../server-context.js";
@@ -60,8 +61,9 @@ export function registerPrdRevisionRoutes(app: FastifyInstance, deps: ServerDeps
       if (typeof body.content !== "string" || body.content.length === 0) {
         throw validationFailed("PRD content is required");
       }
+      const title = body.title;
+      const content = body.content;
       const now = deps.clock.now();
-      const contentSha256 = createHash("sha256").update(body.content).digest("hex");
 
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
         const project = await stores.aux
@@ -88,6 +90,8 @@ export function registerPrdRevisionRoutes(app: FastifyInstance, deps: ServerDeps
           .where("project_id", "=", request.params.projectId)
           .executeTakeFirst();
         const revision = Number(maxRow?.max ?? 0) + 1;
+        const document = PrdDocument.create({ prdId: idempotencyKey, projectId: request.params.projectId, revision, title, content }, deps.clock);
+        await testPlanService(deps, stores, principal.tenantId).recordPrd(document);
         await stores.aux
           .insertInto("prd_revisions")
           .values({
@@ -96,7 +100,7 @@ export function registerPrdRevisionRoutes(app: FastifyInstance, deps: ServerDeps
             project_id: request.params.projectId,
             revision,
             title: body.title as string,
-            content_sha256: contentSha256,
+            content_sha256: document.contentSha256,
             ingested_at: now,
           })
           .onConflict((oc) => oc.columns(["tenant_id", "prd_id"]).doNothing())

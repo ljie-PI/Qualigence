@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import type { CreateTargetBody, TargetDto } from "@qualigence/public-api";
-import { createTargetRevision, ProjectTargetError, type TargetRevision } from "@qualigence/project-target";
+import { ProjectTargetError, type TargetRevision } from "@qualigence/project-target";
 import {
   authenticateOidc,
   requireIdempotencyKey,
   requireRole,
+  projectTargetService,
   projectTargets,
   withTenant,
   type ServerDeps,
@@ -47,9 +48,11 @@ export function registerTargetRoutes(app: FastifyInstance, deps: ServerDeps): vo
         throw validationFailed("target displayName is required");
       }
       if (typeof body.runnerId !== "string" || typeof body.expectedVersion !== "number" || body.configuration === undefined) throw validationFailed("runnerId, expectedVersion and configuration are required");
-      const now = deps.clock.now();
       if (typeof body.targetId !== "string" || body.targetId.trim().length === 0) throw validationFailed("targetId is required");
       const targetId = body.targetId;
+      const displayName = body.displayName;
+      const runnerId = body.runnerId;
+      const expectedVersion = body.expectedVersion;
 
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
         const project = await stores.aux
@@ -61,8 +64,7 @@ export function registerTargetRoutes(app: FastifyInstance, deps: ServerDeps): vo
           throw notFound("project not found");
         }
         try {
-          const revision = createTargetRevision({ targetId, projectId: request.params.projectId, displayName: body.displayName as string, runnerId: body.runnerId as string, expectedVersion: body.expectedVersion as number, configuration: body.configuration });
-          return toDto(await projectTargets(deps, stores, principal.tenantId).saveRevision({ revision, expectedVersion: body.expectedVersion as number, idempotencyKey, createdAt: now }));
+          return toDto(await projectTargetService(deps, stores, principal.tenantId).createRevision({ targetId, projectId: request.params.projectId, displayName, runnerId, expectedVersion, configuration: body.configuration, idempotencyKey }));
         } catch (error) {
           if (error instanceof ProjectTargetError && (error.code === "TargetVersionConflict" || error.code === "TargetIdempotencyConflict")) throw versionConflict({ actualVersion: error.currentVersion });
           if (error instanceof ProjectTargetError) throw validationFailed(error.code);
