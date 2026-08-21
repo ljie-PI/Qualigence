@@ -5,6 +5,7 @@ import type {
   CreateMissionBody,
   CreateProjectBody,
   CreateTargetBody,
+  CreateTestPlanBody,
   ErrorEnvelope,
   IngestPrdBody,
   InvestigationDto,
@@ -99,6 +100,10 @@ export class PublicApiClient {
     );
   }
 
+  async getTarget(targetId: string, projectId: string): Promise<TargetDto | undefined> {
+    return (await this.listTargets(projectId)).items.find((target) => target.targetId === targetId);
+  }
+
   // ---- PRD revisions -------------------------------------------------------
 
   async listPrdRevisions(projectId: string): Promise<ListEnvelope<PrdRevisionDto>> {
@@ -119,6 +124,10 @@ export class PublicApiClient {
   }
 
   // ---- Test plans (Draft Plan approval) ------------------------------------
+
+  async createTestPlan(body: CreateTestPlanBody, options: MutationOptions): Promise<CommandEnvelope<TestPlanDto>> {
+    return this.request<CommandEnvelope<TestPlanDto>>("/v1/test-plans", { method: "POST", body, idempotencyKey: options.idempotencyKey });
+  }
 
   async getTestPlan(planId: string): Promise<TestPlanDto> {
     return this.request<TestPlanDto>(`/v1/test-plans/${encodeURIComponent(planId)}`);

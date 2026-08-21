@@ -18,7 +18,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 02 component is implemented but pending its dedicated PR merge; tickets 03-06 still own the Target/Test Plan/Mission dispatch loop |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
@@ -29,12 +29,32 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
 | Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
 
-Current relational schema is version 7. Migrations 001-007 are immutable;
-remaining allocations are 008 (Target/Test Plan), 009 (Mission/Run/outbox and
+Current relational schema is version 8. Migrations 001-008 are immutable;
+remaining allocations are 009 (Mission/Run/outbox and
 its atomic dispatch wakeup),
 010 (Intelligence leases/Result inbox), 011 (Intelligence wakeups/dispositions), 012
 (Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
-reserved without a reviewed plan amendment.
+ reserved without a reviewed plan amendment.
+
+### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR
+pull_request: pending
+
+- Migration 008 exclusively adds immutable Target and Test Plan revision heads,
+  append-only snapshots, expected-version CAS, and idempotency bindings. Historical
+  migrations 001-007 remain unchanged.
+- Shared domain/application ports are implemented by SQLite and PostgreSQL
+  repositories. PostgreSQL uses the request-scoped transaction and forced RLS;
+  the focused Docker contract proves cross-tenant invisibility.
+- Public API and typed Console workflows create Web/Desktop Target revisions,
+  approve Test Plan revisions with stable conflict envelopes, and create an
+  approved Mission intake bound to exact Target version/hash, Test Plan version,
+  project, and Runner. Ticket 04 still owns Run/attempt/outbox scheduling.
+- Focused non-E2E Gate, root typecheck, and diff check passed on 2026-08-21.
+  Rendered E2E was not run and remains gated on clean dedicated review.
 
 Current execution host evidence: Windows 11; Node `v24.13.0`; Corepack pnpm
 `11.7.0`; Docker client/server `29.6.2`; Cargo/rustc `1.96.1`. Cargo is no

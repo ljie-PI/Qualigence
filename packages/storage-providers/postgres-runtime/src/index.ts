@@ -45,3 +45,4 @@ export {
 } from "./aux-schema.js";
 export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";
+export { PostgresProjectTargetRepository, PostgresTestPlanRepository } from "./postgres-product-intake-store.js";

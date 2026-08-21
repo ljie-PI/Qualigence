@@ -1,0 +1,40 @@
+import type { Kysely } from "kysely";
+import { ProjectTargetError, type ProjectTargetRepository, type SaveTargetRevisionInput, type TargetRevision } from "@qualigence/project-target";
+import { approveTestPlan, type ApproveStoredTestPlanInput, type SaveDraftTestPlanInput, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
+import type { PostgresDatabase } from "./postgres-database.js";
+
+type TargetRow = { target_id: string; version: number; project_id: string; display_name: string; runner_id: string; kind: string; snapshot_hash: string; configuration_json: string };
+export class PostgresProjectTargetRepository implements ProjectTargetRepository {
+  constructor(private readonly db: Kysely<PostgresDatabase>, private readonly tenantId: string) {}
+  async saveRevision(input: SaveTargetRevisionInput): Promise<TargetRevision> {
+    const replay = await this.db.selectFrom("target_revisions").selectAll().where("tenant_id", "=", this.tenantId).where("idempotency_key", "=", input.idempotencyKey).executeTakeFirst();
+    if (replay !== undefined) {
+      if (replay.snapshot_hash !== input.revision.snapshotHash) throw new ProjectTargetError("TargetIdempotencyConflict", "idempotency key is bound to another Target command", { currentVersion: replay.version });
+      return targetFromRow(replay);
+    }
+    const head = await this.db.selectFrom("project_targets").selectAll().where("tenant_id", "=", this.tenantId).where("target_id", "=", input.revision.targetId).executeTakeFirst();
+    const currentVersion = head?.current_version ?? 0;
+    if (currentVersion !== input.expectedVersion) throw new ProjectTargetError("TargetVersionConflict", "Target version conflict", { currentVersion });
+    if (head === undefined) await this.db.insertInto("project_targets").values({ tenant_id: this.tenantId, target_id: input.revision.targetId, project_id: input.revision.projectId, current_version: input.revision.version, created_at: input.createdAt, updated_at: input.createdAt }).execute();
+    else {
+      const result = await this.db.updateTable("project_targets").set({ current_version: input.revision.version, updated_at: input.createdAt }).where("tenant_id", "=", this.tenantId).where("target_id", "=", input.revision.targetId).where("current_version", "=", input.expectedVersion).executeTakeFirst();
+      if (Number(result.numUpdatedRows) !== 1) throw new ProjectTargetError("TargetVersionConflict", "Target version conflict", { currentVersion });
+    }
+    const revision = input.revision;
+    await this.db.insertInto("target_revisions").values({ tenant_id: this.tenantId, target_id: revision.targetId, version: revision.version, project_id: revision.projectId, display_name: revision.displayName, runner_id: revision.runnerId, kind: revision.configuration.kind, snapshot_hash: revision.snapshotHash, configuration_json: JSON.stringify(revision.configuration), idempotency_key: input.idempotencyKey, created_at: input.createdAt }).execute();
+    return revision;
+  }
+  async getRevision(targetId: string, version?: number): Promise<TargetRevision | undefined> { let query = this.db.selectFrom("target_revisions").selectAll().where("tenant_id", "=", this.tenantId).where("target_id", "=", targetId); query = version === undefined ? query.orderBy("version", "desc").limit(1) : query.where("version", "=", version); const row = await query.executeTakeFirst(); return row === undefined ? undefined : targetFromRow(row); }
+  async listProjectTargets(projectId: string): Promise<readonly TargetRevision[]> { const heads = await this.db.selectFrom("project_targets").select(["target_id", "current_version"]).where("tenant_id", "=", this.tenantId).where("project_id", "=", projectId).orderBy("created_at").execute(); return Promise.all(heads.map(async (head) => (await this.getRevision(head.target_id, head.current_version)) as TargetRevision)); }
+}
+function targetFromRow(row: TargetRow): TargetRevision { return Object.freeze({ targetId: row.target_id, version: row.version, projectId: row.project_id, displayName: row.display_name, runnerId: row.runner_id, snapshotHash: row.snapshot_hash, configuration: JSON.parse(row.configuration_json) as TargetRevision["configuration"] }); }
+
+export class PostgresTestPlanRepository implements TestPlanRepository {
+  constructor(private readonly db: Kysely<PostgresDatabase>, private readonly tenantId: string) {}
+  async saveDraft(input: SaveDraftTestPlanInput): Promise<TestPlanRevision> { const replay = await this.db.selectFrom("test_plan_version_revisions").select("plan_json").where("tenant_id", "=", this.tenantId).where("idempotency_key", "=", input.idempotencyKey).executeTakeFirst(); if (replay !== undefined) { const plan = parsePlan(replay.plan_json); if (JSON.stringify(plan) !== JSON.stringify(input.plan)) throw planStoreError("IdempotencyConflict", plan.version); return plan; } await this.db.insertInto("test_plan_heads").values({ tenant_id: this.tenantId, plan_id: input.plan.planId, project_id: input.plan.projectId, current_version: input.plan.version, created_at: input.createdAt, updated_at: input.createdAt }).execute(); await this.db.insertInto("test_plan_version_revisions").values(planRow(this.tenantId, input.plan, input.idempotencyKey, input.createdAt)).execute(); return input.plan; }
+  async approve(input: ApproveStoredTestPlanInput): Promise<TestPlanRevision> { const replay = await this.db.selectFrom("test_plan_version_revisions").select("plan_json").where("tenant_id", "=", this.tenantId).where("idempotency_key", "=", input.idempotencyKey).executeTakeFirst(); if (replay !== undefined) { const plan = parsePlan(replay.plan_json); if (plan.planId !== input.planId || plan.version !== input.expectedVersion + 1 || plan.approval?.reviewerId !== input.reviewerId) throw planStoreError("IdempotencyConflict", plan.version); return plan; } const current = await this.get(input.planId); if (current === undefined) throw new Error("PlanNotFound"); const result = approveTestPlan(current, input, input.clock); if (!result.ok) throw planStoreError(result.error.code, current.version); const approved = result.value; const at = approved.approval?.approvedAt ?? input.clock.now(); await this.db.insertInto("test_plan_version_revisions").values(planRow(this.tenantId, approved, input.idempotencyKey, at)).execute(); const updated = await this.db.updateTable("test_plan_heads").set({ current_version: approved.version, updated_at: at }).where("tenant_id", "=", this.tenantId).where("plan_id", "=", input.planId).where("current_version", "=", input.expectedVersion).executeTakeFirst(); if (Number(updated.numUpdatedRows) !== 1) throw planStoreError("PlanVersionConflict", current.version); return approved; }
+  async get(planId: string, version?: number): Promise<TestPlanRevision | undefined> { let query = this.db.selectFrom("test_plan_version_revisions").select("plan_json").where("tenant_id", "=", this.tenantId).where("plan_id", "=", planId); query = version === undefined ? query.orderBy("version", "desc").limit(1) : query.where("version", "=", version); const row = await query.executeTakeFirst(); return row === undefined ? undefined : parsePlan(row.plan_json); }
+}
+function planRow(tenantId: string, plan: TestPlanRevision, key: string, createdAt: string) { return { tenant_id: tenantId, plan_id: plan.planId, version: plan.version, project_id: plan.projectId, prd_id: plan.prdId, prd_revision: plan.prdRevision, status: plan.status, reviewer_id: plan.approval?.reviewerId ?? null, approved_at: plan.approval?.approvedAt ?? null, idempotency_key: key, plan_json: JSON.stringify(plan), created_at: createdAt }; }
+function parsePlan(json: string): TestPlanRevision { return Object.freeze(JSON.parse(json) as TestPlanRevision); }
+function planStoreError(code: string, currentVersion: number): Error { const error = new Error(code) as Error & { code: string; currentVersion: number }; error.code = code; error.currentVersion = currentVersion; return error; }

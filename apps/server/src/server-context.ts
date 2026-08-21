@@ -17,7 +17,10 @@ import type {
   PostgresDatabase,
   TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
+import { PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
+import type { ProjectTargetRepository } from "@qualigence/project-target";
+import type { TestPlanRepository } from "@qualigence/mission";
 import type { AuxDatabase } from "./aux-schema.js";
 import {
   ApiError,
@@ -45,6 +48,16 @@ export interface ServerDeps {
   readonly principalStore: (stores: TenantStores) => RunnerPrincipalStore;
   /** Factory so review aggregate writes use the request's tenant transaction. */
   readonly reviewRepository: (stores: TenantStores) => ReviewTaskRepository;
+  readonly projectTargetRepository?: (stores: TenantStores, tenantId: string) => ProjectTargetRepository;
+  readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
+}
+
+export function projectTargets(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetRepository {
+  return deps.projectTargetRepository?.(stores, tenantId) ?? new PostgresProjectTargetRepository(stores.db, tenantId);
+}
+
+export function testPlans(deps: ServerDeps, stores: TenantStores, tenantId: string): TestPlanRepository {
+  return deps.testPlanRepository?.(stores, tenantId) ?? new PostgresTestPlanRepository(stores.db, tenantId);
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */

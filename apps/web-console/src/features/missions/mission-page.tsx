@@ -60,6 +60,9 @@ export function MissionDetailPage(props: { readonly missionId: string }): ReactN
               ["Status", <StatusBadge key="s" value={mission.data.status} />],
               ["Project", mission.data.projectId],
               ["Target", mission.data.targetId],
+              ["Target revision", `v${mission.data.targetVersion} (${mission.data.targetSnapshotHash})`],
+              ["Runner", mission.data.runnerId],
+              ["Test plan", `${mission.data.planId}@${mission.data.planVersion}`],
               ["Revision", String(mission.data.revision)],
               ["Version", String(mission.data.version)],
             ]}

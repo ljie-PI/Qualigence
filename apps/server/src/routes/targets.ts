@@ -1,28 +1,27 @@
 import type { FastifyInstance } from "fastify";
 import type { CreateTargetBody, TargetDto } from "@qualigence/public-api";
+import { createTargetRevision, ProjectTargetError, type TargetRevision } from "@qualigence/project-target";
 import {
   authenticateOidc,
   requireIdempotencyKey,
   requireRole,
+  projectTargets,
   withTenant,
   type ServerDeps,
 } from "../server-context.js";
 import { commandEnvelope, listEnvelope } from "../envelopes.js";
-import { newCorrelationId, notFound, validationFailed } from "../errors.js";
+import { newCorrelationId, notFound, validationFailed, versionConflict } from "../errors.js";
 
-function toDto(row: {
-  target_id: string;
-  project_id: string;
-  kind: string;
-  display_name: string;
-  version: number;
-}): TargetDto {
+function toDto(row: TargetRevision): TargetDto {
   return {
-    targetId: row.target_id,
-    projectId: row.project_id,
-    kind: row.kind as TargetDto["kind"],
-    displayName: row.display_name,
+    targetId: row.targetId,
+    projectId: row.projectId,
+    kind: row.configuration.kind,
+    displayName: row.displayName,
+    runnerId: row.runnerId,
     version: row.version,
+    snapshotHash: row.snapshotHash,
+    configuration: row.configuration,
   };
 }
 
@@ -32,14 +31,7 @@ export function registerTargetRoutes(app: FastifyInstance, deps: ServerDeps): vo
     async (request, reply) => {
       const principal = await authenticateOidc(deps, request);
       requireRole(deps, principal, "viewer");
-      const rows = await withTenant(deps, principal.tenantId, (stores) =>
-        stores.aux
-          .selectFrom("targets")
-          .select(["target_id", "project_id", "kind", "display_name", "version"])
-          .where("project_id", "=", request.params.projectId)
-          .orderBy("created_at", "asc")
-          .execute(),
-      );
+      const rows = await withTenant(deps, principal.tenantId, (stores) => projectTargets(deps, stores, principal.tenantId).listProjectTargets(request.params.projectId));
       return reply.send(listEnvelope(rows.map(toDto), deps.clock.now()));
     },
   );
@@ -51,14 +43,13 @@ export function registerTargetRoutes(app: FastifyInstance, deps: ServerDeps): vo
       requireRole(deps, principal, "tester");
       const idempotencyKey = requireIdempotencyKey(request);
       const body = request.body ?? {};
-      if (body.kind !== "web" && body.kind !== "app") {
-        throw validationFailed("target kind must be 'web' or 'app'");
-      }
       if (typeof body.displayName !== "string" || body.displayName.trim().length === 0) {
         throw validationFailed("target displayName is required");
       }
+      if (typeof body.runnerId !== "string" || typeof body.expectedVersion !== "number" || body.configuration === undefined) throw validationFailed("runnerId, expectedVersion and configuration are required");
       const now = deps.clock.now();
-      const targetId = idempotencyKey;
+      if (typeof body.targetId !== "string" || body.targetId.trim().length === 0) throw validationFailed("targetId is required");
+      const targetId = body.targetId;
 
       const dto = await withTenant(deps, principal.tenantId, async (stores) => {
         const project = await stores.aux
@@ -69,28 +60,14 @@ export function registerTargetRoutes(app: FastifyInstance, deps: ServerDeps): vo
         if (project === undefined) {
           throw notFound("project not found");
         }
-        await stores.aux
-          .insertInto("targets")
-          .values({
-            tenant_id: principal.tenantId,
-            target_id: targetId,
-            project_id: request.params.projectId,
-            kind: body.kind as string,
-            display_name: body.displayName as string,
-            version: 1,
-            created_at: now,
-          })
-          .onConflict((oc) => oc.columns(["tenant_id", "target_id"]).doNothing())
-          .execute();
-        const row = await stores.aux
-          .selectFrom("targets")
-          .select(["target_id", "project_id", "kind", "display_name", "version"])
-          .where("target_id", "=", targetId)
-          .executeTakeFirst();
-        if (row === undefined) {
-          throw notFound("target could not be created");
+        try {
+          const revision = createTargetRevision({ targetId, projectId: request.params.projectId, displayName: body.displayName as string, runnerId: body.runnerId as string, expectedVersion: body.expectedVersion as number, configuration: body.configuration });
+          return toDto(await projectTargets(deps, stores, principal.tenantId).saveRevision({ revision, expectedVersion: body.expectedVersion as number, idempotencyKey, createdAt: now }));
+        } catch (error) {
+          if (error instanceof ProjectTargetError && (error.code === "TargetVersionConflict" || error.code === "TargetIdempotencyConflict")) throw versionConflict({ actualVersion: error.currentVersion });
+          if (error instanceof ProjectTargetError) throw validationFailed(error.code);
+          throw error;
         }
-        return toDto(row);
       });
 
       return reply.status(201).send(commandEnvelope(dto, dto.version, newCorrelationId()));

@@ -77,7 +77,7 @@ export function TestPlanPage(props: { readonly planId: string }): ReactNode {
     onError: (err: unknown) => setError(err instanceof Error ? err.message : "approval failed"),
   });
 
-  const canApprove = session?.roles.some((r) => r === "admin" || r === "reviewer") ?? false;
+  const canApprove = session?.roles.some((r) => r === "admin" || r === "tester") ?? false;
 
   return (
     <section>

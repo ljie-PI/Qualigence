@@ -32,9 +32,26 @@ export interface ProjectDto {
 export interface TargetDto {
   readonly targetId: string;
   readonly projectId: string;
-  readonly kind: "web" | "app";
+  readonly kind: "web" | "desktop";
   readonly displayName: string;
+  readonly runnerId: string;
   readonly version: number;
+  readonly snapshotHash: string;
+  readonly configuration: TargetConfigurationDto;
+}
+
+export type TargetConfigurationDto =
+  | { readonly kind: "web"; readonly startUrl: string; readonly allowedOrigins: readonly string[]; readonly browser: "chromium"; readonly authenticationProfileId?: string }
+  | { readonly kind: "desktop"; readonly app: DesktopAppTargetDto };
+
+export interface DesktopAppTargetDto {
+  readonly targetId: string;
+  readonly platform: "windows";
+  readonly launch: { readonly executable: string; readonly args: readonly string[]; readonly workingDirectory?: string };
+  readonly process: { readonly expectedImageName: string; readonly allowedChildImageNames: readonly string[] };
+  readonly window: { readonly titlePattern?: string; readonly automationId?: string };
+  readonly reset: { readonly command: string; readonly args: readonly string[]; readonly timeoutMs: number };
+  readonly shutdown: { readonly gracefulTimeoutMs: number; readonly forceAfterTimeout: boolean };
 }
 
 export interface PrdRevisionDto {
@@ -71,6 +88,7 @@ export interface TestCaseDto {
 
 export interface TestPlanDto {
   readonly planId: string;
+  readonly projectId: string;
   readonly prdId: string;
   readonly prdRevision: number;
   readonly status: "draft" | "approved";
@@ -86,6 +104,11 @@ export interface MissionDto {
   readonly projectId: string;
   readonly revision: number;
   readonly targetId: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
+  readonly runnerId: string;
+  readonly planId: string;
+  readonly planVersion: number;
   readonly status: "draft" | "approved" | "running" | "completed" | "blocked";
   readonly version: number;
 }
@@ -225,8 +248,25 @@ export interface CreateProjectBody {
 }
 
 export interface CreateTargetBody {
-  readonly kind: "web" | "app";
+  readonly targetId: string;
   readonly displayName: string;
+  readonly runnerId: string;
+  readonly expectedVersion: number;
+  readonly configuration: TargetConfigurationDto;
+}
+
+export interface CreateTestPlanBody {
+  readonly projectId: string;
+  readonly prdId: string;
+  readonly prdRevision: number;
+  readonly expectedClaims: readonly {
+    readonly claimId: string;
+    readonly semanticKey: string;
+    readonly statement: string;
+    readonly sourceRefs: readonly { readonly prdId: string; readonly revision: number; readonly startOffset: number; readonly endOffset: number; readonly quotedTextSha256: string }[];
+    readonly confidence: number;
+  }[];
+  readonly testCases: readonly TestCaseDto[];
 }
 
 export interface IngestPrdBody {
@@ -237,7 +277,10 @@ export interface IngestPrdBody {
 export interface CreateMissionBody {
   readonly projectId: string;
   readonly targetId: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
   readonly planId: string;
+  readonly planVersion: number;
 }
 
 export interface ApproveTestPlanBody {

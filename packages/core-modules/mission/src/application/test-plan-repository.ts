@@ -1,0 +1,22 @@
+import type { Clock } from "@qualigence/shared-kernel";
+import type { TestPlanRevision } from "../domain/test-plan-revision.js";
+
+export interface SaveDraftTestPlanInput {
+  readonly plan: TestPlanRevision;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+}
+
+export interface ApproveStoredTestPlanInput {
+  readonly planId: string;
+  readonly expectedVersion: number;
+  readonly reviewerId: string;
+  readonly idempotencyKey: string;
+  readonly clock: Clock;
+}
+
+export interface TestPlanRepository {
+  saveDraft(input: SaveDraftTestPlanInput): Promise<TestPlanRevision>;
+  approve(input: ApproveStoredTestPlanInput): Promise<TestPlanRevision>;
+  get(planId: string, version?: number): Promise<TestPlanRevision | undefined>;
+}

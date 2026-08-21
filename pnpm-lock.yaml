@@ -465,6 +465,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/mission
       '@qualigence/oidc':
         specifier: workspace:*
         version: link:../../packages/auth/oidc
@@ -474,6 +477,9 @@ importers:
       '@qualigence/public-api':
         specifier: workspace:*
         version: link:../../packages/contracts/public-api
+      '@qualigence/project-target':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/project-target
       '@qualigence/relational-kysely':
         specifier: workspace:*
         version: link:../../packages/storage-providers/relational-kysely
@@ -930,6 +936,12 @@ importers:
 
   packages/storage-providers/postgres-runtime:
     dependencies:
+      '@qualigence/mission':
+        specifier: workspace:*
+        version: link:../../core-modules/mission
+      '@qualigence/project-target':
+        specifier: workspace:*
+        version: link:../../core-modules/project-target
       '@qualigence/relational-kysely':
         specifier: workspace:*
         version: link:../relational-kysely
@@ -979,6 +991,9 @@ importers:
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission
+      '@qualigence/project-target':
+        specifier: workspace:*
+        version: link:../../core-modules/project-target
       '@qualigence/recording':
         specifier: workspace:*
         version: link:../../runner-components/recording

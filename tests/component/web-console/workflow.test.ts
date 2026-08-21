@@ -77,7 +77,7 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     await fx?.stop();
   });
 
-  it("runs the full Project → PRD → Investigation → Review journey", async () => {
+  it("runs the full Project → Target → Test Plan → Mission → Investigation → Review journey", async () => {
     // 1. Login as an admin (satisfies tester + reviewer via role hierarchy).
     login("tenant-a", ["admin"]);
     expect(store.isAuthenticated()).toBe(true);
@@ -96,6 +96,23 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     expect(prd.resource.revision).toBe(1);
     const prds = await client.listPrdRevisions("flow-project");
     expect(prds.items.map((r) => r.prdId)).toContain("flow-prd-1");
+
+    const target = await client.createTarget("flow-project", {
+      targetId: "flow-target",
+      displayName: "Flow target",
+      runnerId: "runner-flow",
+      expectedVersion: 0,
+      configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" },
+    }, { idempotencyKey: "flow-target-create" });
+    const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: 5, quotedTextSha256: "a".repeat(64) };
+    const draft = await client.createTestPlan({
+      projectId: "flow-project", prdId: prd.resource.prdId, prdRevision: 1,
+      expectedClaims: [{ claimId: "flow-claim", semanticKey: "login", statement: "Users sign in", sourceRefs: [sourceRef], confidence: 1 }],
+      testCases: [{ testCaseId: "flow-case-plan", title: "Login", objective: "Verify login", preconditions: [], steps: [{ kind: "verify", claimIds: ["flow-claim"] }], expectedClaimIds: ["flow-claim"], priority: "high" }],
+    }, { idempotencyKey: "flow-plan" });
+    const approved = await client.approveTestPlan(draft.resource.planId, { expectedVersion: draft.resource.version, reviewerId: "ignored-http-field" }, { idempotencyKey: "flow-plan-approve" });
+    const mission = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
+    expect(mission.resource).toMatchObject({ runnerId: "runner-flow", targetVersion: 1, planVersion: 2, status: "approved" });
 
     // 4. Inspect a seeded Investigation in the needs_human state.
     await seedInvestigationAndTask(admin, {
@@ -131,13 +148,12 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     expect(isApiErrorCode(error, "Unauthorized")).toBe(true);
   });
 
-  it("documents that Mission/Run/Skill routes are not yet served by PR-21 (NotFound)", async () => {
+  it("documents that Run/Skill routes remain owned by later tickets (NotFound)", async () => {
     // The DTOs exist and the client targets the frozen contract paths, but the
     // PR-21 Server does not yet register these routes. The Console degrades to a
     // typed NotFound rather than a broken page — no fabricated data.
     login("tenant-a", ["viewer"]);
     for (const call of [
-      () => client.listMissions(),
       () => client.listRuns(),
       () => client.listSkills(),
     ]) {

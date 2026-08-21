@@ -8,6 +8,8 @@ import { registerPrdRevisionRoutes } from "./routes/prd-revisions.js";
 import { registerInvestigationRoutes } from "./routes/investigations.js";
 import { registerReviewTaskRoutes } from "./routes/review-tasks.js";
 import { registerRunnerEnrollmentRoutes } from "./routes/runner-enrollments.js";
+import { registerTestPlanRoutes } from "./routes/test-plans.js";
+import { registerMissionRoutes } from "./routes/missions.js";
 
 /**
  * Build the Public API Fastify server. Every human route authenticates via OIDC
@@ -58,6 +60,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerInvestigationRoutes(app, deps);
   registerReviewTaskRoutes(app, deps);
   registerRunnerEnrollmentRoutes(app, deps);
+  registerTestPlanRoutes(app, deps);
+  registerMissionRoutes(app, deps);
 
   return app;
 }

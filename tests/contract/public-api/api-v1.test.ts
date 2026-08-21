@@ -182,6 +182,49 @@ describe("Public API v1 contract", () => {
     });
   });
 
+  describe("versioned Target and Test Plan intake", () => {
+    it("creates approved immutable inputs and a provenance-bound Mission", async () => {
+      const token = fx.token("tenant-a", ["tester"]);
+      const headers = (key: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key });
+      await fetch(url("/v1/projects"), { method: "POST", headers: headers("product-project"), body: JSON.stringify({ name: "Product" }) });
+
+      const targetResponse = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-create-command"), body: JSON.stringify({ targetId: "checkout", displayName: "Checkout", runnerId: "runner-1", expectedVersion: 0, configuration: { kind: "web", startUrl: "https://shop.example.test/checkout", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(targetResponse.status).toBe(201);
+      const target = (await targetResponse.json()) as { resource: { targetId: string; projectId: string; runnerId: string; version: number; snapshotHash: string; configuration: unknown } };
+      expect(target.resource).toMatchObject({ targetId: "checkout", projectId: "product-project", runnerId: "runner-1", version: 1 });
+      expect(JSON.stringify(target.resource)).not.toMatch(/password|secret/i);
+      const targetUpdate = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-update-command"), body: JSON.stringify({ targetId: "checkout", displayName: "Checkout v2", runnerId: "runner-1", expectedVersion: 1, configuration: { kind: "web", startUrl: "https://shop.example.test/checkout-v2", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(targetUpdate.status).toBe(201);
+      const staleTarget = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-stale-command"), body: JSON.stringify({ targetId: "checkout", displayName: "stale", runnerId: "runner-1", expectedVersion: 1, configuration: { kind: "web", startUrl: "https://shop.example.test/stale", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(staleTarget.status).toBe(409);
+      expect(await staleTarget.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 2 } });
+
+      const sourceRef = { prdId: "prd-1", revision: 1, startOffset: 0, endOffset: 5, quotedTextSha256: "a".repeat(64) };
+      const planResponse = await fetch(url("/v1/test-plans"), { method: "POST", headers: headers("plan-1"), body: JSON.stringify({ projectId: "product-project", prdId: "prd-1", prdRevision: 1, expectedClaims: [{ claimId: "claim-1", semanticKey: "cart.total", statement: "Total is shown", sourceRefs: [sourceRef], confidence: 1 }], testCases: [{ testCaseId: "case-1", title: "Checkout", objective: "Verify total", preconditions: [], steps: [{ kind: "verify", claimIds: ["claim-1"] }], expectedClaimIds: ["claim-1"], priority: "high" }] }) });
+      expect(planResponse.status).toBe(201);
+      const draft = (await planResponse.json()) as { resource: { planId: string; version: number } };
+      const approvedResponse = await fetch(url(`/v1/test-plans/${draft.resource.planId}/approve`), { method: "POST", headers: headers("approve-plan-1"), body: JSON.stringify({ expectedVersion: 1 }) });
+      expect(approvedResponse.status).toBe(200);
+      const approved = (await approvedResponse.json()) as { resource: { status: string; version: number } };
+      expect(approved.resource).toMatchObject({ status: "approved", version: 2 });
+
+      const stale = await fetch(url(`/v1/test-plans/${draft.resource.planId}/approve`), { method: "POST", headers: headers("approve-plan-stale"), body: JSON.stringify({ expectedVersion: 1 }) });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 2 } });
+
+      const targetV2 = (await targetUpdate.json()) as typeof target;
+      const missionResponse = await fetch(url("/v1/missions"), { method: "POST", headers: headers("mission-1"), body: JSON.stringify({ projectId: "product-project", targetId: targetV2.resource.targetId, targetVersion: targetV2.resource.version, targetSnapshotHash: targetV2.resource.snapshotHash, planId: draft.resource.planId, planVersion: approved.resource.version }) });
+      expect(missionResponse.status).toBe(201);
+      expect(await missionResponse.json()).toMatchObject({ resource: { targetId: "checkout", targetVersion: 2, runnerId: "runner-1", planVersion: 2, status: "approved" } });
+    });
+
+    it("returns tenant A product IDs as not found to tenant B", async () => {
+      const token = fx.token("tenant-b", ["viewer"]);
+      const response = await fetch(url("/v1/test-plans/plan-1"), { headers: { authorization: `Bearer ${token}` } });
+      expect(response.status).toBe(404);
+    });
+  });
+
   describe("Tenant isolation (RLS through the API)", () => {
     it("never returns tenant B's projects to tenant A", async () => {
       await seedProject(admin, { tenantId: "tenant-b", projectId: "b-secret", name: "B Secret" });

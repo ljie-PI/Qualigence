@@ -66,3 +66,9 @@ export type {
   PrdMissionRepository,
   SaveCompiledMissionInput,
 } from "./application/prd-mission-repository.js";
+
+export type {
+  ApproveStoredTestPlanInput,
+  SaveDraftTestPlanInput,
+  TestPlanRepository,
+} from "./application/test-plan-repository.js";

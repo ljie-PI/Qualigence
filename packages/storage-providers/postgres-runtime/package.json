@@ -12,6 +12,8 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/relational-kysely": "workspace:*",
+    "@qualigence/mission": "workspace:*",
+    "@qualigence/project-target": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/runner-control": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
