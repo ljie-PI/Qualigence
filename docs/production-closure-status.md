@@ -251,8 +251,9 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR/merge
+verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
+remediation_ticket: `39`
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -296,6 +297,9 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
   the new Chromium E2E was not run.
 - Post-review real Chromium acceptance passed 1 file / 1 test with production
   Runner composition and complete persisted Trace/plaintext scanning.
+- Final PR review found browser normalization can remove trailing newline bytes
+  from input values and bypass exact-string redaction. Remediation Ticket 39
+  blocks merge.
 - Round-3 fixes bind production Model Agent decisions to exactly one immutable
   input/select Plan step. The model returns only `nodeId` and `reason`; Runner
   copies and validates the Plan-owned `valueRef`. Objective-only and one-step
