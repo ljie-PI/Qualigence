@@ -342,6 +342,7 @@ verification: pending remediation PR
 parent_ticket: `18`
 parent_commit: `004446c`
 reviewed_head: `9bc55c4`
+implementation_head: `a50cd4a`
 
 - The private Playwright adapter boundary registers the exact provider source
   before action execution only to redact a direct Playwright error echo. After a
@@ -357,8 +358,10 @@ reviewed_head: `9bc55c4`
   It remains deliberately not run pending a fresh clean review.
 - The Ticket 18 focused non-E2E Gate passed 10 files / 108 passed with 1 existing
   Task 21 skip after the review-blocker fix. Root `corepack pnpm typecheck` and
-  `git diff --check` passed. The remediation commit, exact-base review, E2E,
-  status finalization, and coordinator review remain pending.
+  `git diff --check` passed. Fresh exact-base Standards/Spec review attempts
+  failed before analysis because the OpenCode review runner could not start its
+  Windows subagent process (`/usr/bin/env`/server error). E2E was therefore not
+  run; clean review, E2E, remediation PR, and coordinator review remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
