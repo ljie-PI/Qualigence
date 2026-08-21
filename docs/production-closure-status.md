@@ -556,6 +556,23 @@ pull_request: pending
 - Promise `catch` and `finally` register through the saved native `then` once.
   Exact 32/33 boundaries do not poison, every callback runs once, and 65
   registrations poison attribution without suppressing application callbacks.
+- Round-2 remediation inventories bounded pierced Chromium DOM, frame, shadow
+  host, mode, and registry identity before sensitive pre-action tracking and
+  before Graph/screenshot evidence. Declarative or cross-realm roots and any
+  unregistered/inaccessible host fail closed before plaintext action or new
+  evidence registration.
+- Screenshot masking no longer inserts application-DOM overlays or depends on
+  page CSS. The adapter proves exact retained target identity and finite boxes,
+  captures unmasked PNG bytes, strictly decodes bounded RGB/RGBA PNG, overwrites
+  every clipped sensitive pixel with opaque black, re-encodes, and persists only
+  rewritten bytes. Hostile `all:unset!important` and transforms leave unrelated
+  pixels unchanged, including closed-root targets.
+- Promise `catch` and `finally` now invoke captured native methods under a
+  scoped patched-`then` suppression guard, preserving subclass species and
+  callback fulfillment/rejection while remaining independent of mutable
+  `Promise.resolve`. The exact focused Gate passed 10 files / 168 tests: 167
+  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run pending fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

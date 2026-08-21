@@ -160,9 +160,15 @@ interface PrivateShadowRootEntry {
   readonly mode: ShadowRootMode;
 }
 
+interface PrivateShadowHostSummary {
+  readonly host: Element;
+  readonly mode: ShadowRootMode;
+}
+
 export interface PrivateShadowRegistry {
   readonly snapshot: (maximumRoots: number) => {
     readonly roots: readonly PrivateShadowRootEntry[];
+    readonly hosts: readonly PrivateShadowHostSummary[];
     readonly closedMutationCount: number;
     readonly count: number;
     readonly overflow: boolean;
@@ -447,6 +453,7 @@ export class PlaywrightBrowserSession {
     }
     try {
       if (this.shadowRegistry === undefined) throw new Error("shadow-registry-unavailable");
+      await this.verifySensitiveShadowRoots();
       if (value.length > MAXIMUM_OBSERVATION_NODE_BYTES) {
         throw new Error("source-form-length-overflow");
       }
@@ -769,6 +776,7 @@ export class PlaywrightBrowserSession {
         let scheduledRegistrations = 0;
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
+        let delegatedPromiseMethod = 0;
         const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
           observeRoot(root);
         };
@@ -910,6 +918,9 @@ export class PlaywrightBrowserSession {
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
         ): Promise<TResult1 | TResult2> {
+          if (delegatedPromiseMethod > 0) {
+            return originalThen.call(this, onfulfilled, onrejected) as Promise<TResult1 | TResult2>;
+          }
           const generation = registerGeneration();
           return originalThen.call(
             this,
@@ -922,56 +933,35 @@ export class PlaywrightBrowserSession {
           onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
         ): Promise<T | TResult> {
           const generation = registerGeneration();
-          return originalThen.call(
-            this,
-            undefined,
-            wrapContinuation(generation, onrejected),
-          ) as Promise<T | TResult>;
+          delegatedPromiseMethod += 1;
+          try {
+            return originalCatch.call(
+              this,
+              wrapContinuation(generation, onrejected),
+            );
+          } finally {
+            delegatedPromiseMethod -= 1;
+          }
         };
         const wrappedFinally = function <T>(
           this: Promise<T>,
           onfinally?: (() => void) | null,
         ): Promise<T> {
           const generation = registerGeneration();
-          if (typeof onfinally !== "function") {
-            return originalThen.call(this, onfinally, onfinally) as Promise<T>;
+          const callback = typeof onfinally === "function"
+            ? () => {
+              const result = generation === undefined ? onfinally() : runCausal(generation, onfinally);
+              delegatedPromiseMethod += 1;
+              originalQueueMicrotask.call(window, () => { delegatedPromiseMethod -= 1; });
+              return result;
+            }
+            : onfinally;
+          delegatedPromiseMethod += 1;
+          try {
+            return originalFinally.call(this, callback);
+          } finally {
+            delegatedPromiseMethod -= 1;
           }
-          const runFinally = (): unknown => generation === undefined
-            ? onfinally()
-            : runCausal(generation, onfinally);
-          return originalThen.call(
-            this,
-            (value) => {
-              const result = runFinally();
-              return {
-                then<TResult1 = T, TResult2 = never>(
-                  resolve?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-                  reject?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-                ): PromiseLike<TResult1 | TResult2> {
-                  return originalThen.call(
-                    Promise.resolve(result),
-                    () => resolve === undefined || resolve === null ? value : resolve(value),
-                    reject,
-                  ) as Promise<TResult1 | TResult2>;
-                },
-              };
-            },
-            (reason) => {
-              const result = runFinally();
-              return {
-                then<TResult1 = T, TResult2 = never>(
-                  _resolve?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-                  reject?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-                ): PromiseLike<TResult1 | TResult2> {
-                  return originalThen.call(
-                    Promise.resolve(result),
-                    () => reject === undefined || reject === null ? Promise.reject(reason) : reject(reason),
-                    reject,
-                  ) as Promise<TResult1 | TResult2>;
-                },
-              };
-            },
-          ) as Promise<T>;
         };
         window.setTimeout = wrappedSetTimeout;
         window.setInterval = wrappedSetInterval;
@@ -1244,6 +1234,7 @@ export class PlaywrightBrowserSession {
   }
 
   async prepareSensitiveEvidenceCapture(): Promise<void> {
+    if (this.sensitiveActionTrackers.length > 0) await this.verifySensitiveShadowRoots();
     for (const tracker of this.sensitiveActionTrackers) {
       const handles = await this.reconcileSensitiveActionTracking(tracker, false);
       try {
@@ -1251,6 +1242,117 @@ export class PlaywrightBrowserSession {
       } catch {
         throw this.sensitiveEvidenceFailure("Sensitive reflected targets could not be retained.");
       }
+    }
+  }
+
+  async verifySensitiveShadowRoots(): Promise<void> {
+    if (this.page === undefined || this.shadowRegistry === undefined) {
+      throw this.sensitiveEvidenceFailure();
+    }
+    try {
+      const frames = this.page.frames();
+      if (frames.length > MAXIMUM_SENSITIVE_SHADOW_ROOTS + 1) {
+        throw new Error("frame-overflow");
+      }
+      for (const frame of frames) {
+        const boundedElements = await frame.evaluate((maximumElements) => {
+          const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+          let count = 0;
+          while (walker.nextNode() !== null) {
+            count += 1;
+            if (count > maximumElements) return false;
+          }
+          return true;
+        }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
+        if (!boundedElements) throw new Error("dom-element-overflow");
+        if (frame === this.page.mainFrame()) continue;
+        const foreignRoots = await frame.evaluate(({ registryKey, accessToken, maximumRoots }) => {
+          const gateway = (globalThis as typeof globalThis & Record<symbol, unknown>)[
+            Symbol.for(registryKey)
+          ] as { access(candidate: string): PrivateShadowRegistry | undefined } | undefined;
+          const snapshot = gateway?.access(accessToken)?.snapshot(maximumRoots);
+          return snapshot === undefined || !snapshot.intact || snapshot.overflow ||
+            snapshot.count !== snapshot.roots.length ? -1 : snapshot.count;
+        }, {
+          registryKey: this.shadowRegistryKey,
+          accessToken: this.shadowRegistryAccessToken,
+          maximumRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+        });
+        if (foreignRoots !== 0) throw new Error("cross-realm-shadow-root-unproven");
+      }
+      const registeredCount = await this.shadowRegistry.evaluate((registry, maximumRoots) => {
+        const snapshot = registry.snapshot(maximumRoots);
+        return snapshot.intact && !snapshot.overflow && snapshot.count === snapshot.roots.length &&
+          snapshot.count === snapshot.hosts.length
+          ? snapshot.count
+          : -1;
+      }, MAXIMUM_SENSITIVE_SHADOW_ROOTS);
+      if (registeredCount < 0) throw new Error("shadow-registry-unproven");
+      const session = await this.page.context().newCDPSession(this.page);
+      try {
+        const document = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+        let roots = 0;
+        let elements = 0;
+        let frames = 0;
+        const shadowHosts: { readonly backendNodeId: number; readonly mode: string }[] = [];
+        const pending = [document.root];
+        while (pending.length > 0) {
+          const node = pending.pop();
+          if (node === undefined) throw new Error("shadow-node-unproven");
+          if (node.nodeType === 1) {
+            elements += 1;
+            if (elements > MAXIMUM_SENSITIVE_DOM_ELEMENTS) throw new Error("dom-element-overflow");
+          }
+          if (node.shadowRoots !== undefined) {
+            for (const root of node.shadowRoots) {
+              if (root.shadowRootType === "user-agent") continue;
+              roots += 1;
+              shadowHosts.push({ backendNodeId: node.backendNodeId, mode: root.shadowRootType ?? "" });
+            }
+            if (roots > MAXIMUM_SENSITIVE_SHADOW_ROOTS) throw new Error("shadow-root-overflow");
+            pending.push(...node.shadowRoots);
+          }
+          if (node.contentDocument !== undefined) {
+            frames += 1;
+            if (frames > MAXIMUM_SENSITIVE_SHADOW_ROOTS) throw new Error("frame-overflow");
+            pending.push(node.contentDocument);
+          }
+          if (node.children !== undefined) pending.push(...node.children);
+          if (node.templateContent !== undefined) pending.push(node.templateContent);
+        }
+        if (roots !== registeredCount) throw new Error("shadow-root-identity-unproven");
+        for (const host of shadowHosts) {
+          const resolved = await session.send("DOM.resolveNode", {
+            backendNodeId: host.backendNodeId,
+            objectGroup: "qualigence-shadow-proof",
+          });
+          if (resolved.object.objectId === undefined) throw new Error("shadow-host-unproven");
+          const matched = await session.send("Runtime.callFunctionOn", {
+            objectId: resolved.object.objectId,
+            functionDeclaration: `function(registryKey, accessToken, maximumRoots, mode) {
+              const gateway = globalThis[Symbol.for(registryKey)];
+              const snapshot = gateway?.access(accessToken)?.snapshot(maximumRoots);
+              return snapshot?.hosts.some((entry) => entry.host === this && entry.mode === mode) === true;
+            }`,
+            arguments: [
+              { value: this.shadowRegistryKey },
+              { value: this.shadowRegistryAccessToken },
+              { value: MAXIMUM_SENSITIVE_SHADOW_ROOTS },
+              { value: host.mode },
+            ],
+            returnByValue: true,
+          });
+          if (matched.exceptionDetails !== undefined || matched.result.value !== true) {
+            throw new Error("shadow-host-registry-mismatch");
+          }
+        }
+      } finally {
+        await session.send("Runtime.releaseObjectGroup", { objectGroup: "qualigence-shadow-proof" })
+          .catch(() => undefined);
+        await session.detach();
+      }
+    } catch {
+      throw this.sensitiveEvidenceFailure();
     }
   }
 
@@ -1936,6 +2038,7 @@ export class PlaywrightBrowserSession {
             const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
             return {
               roots: roots.slice(0, limit),
+              hosts: roots.slice(0, limit).map(({ host, mode }) => ({ host, mode })),
               count,
               closedMutationCount,
               overflow: overflow || count > limit,

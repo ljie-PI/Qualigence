@@ -19,8 +19,9 @@ import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
-import type { Locator, Page } from "playwright";
+import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
+import { redactPngRectangles, type ScreenshotRectangle } from "./png-redactor.js";
 
 const REDACTED = "[REDACTED]";
 
@@ -34,102 +35,46 @@ async function captureScreenshot(
       if (sensitiveTargets.length === 0) {
         return new Uint8Array(await page.screenshot({ timeout: 5000 }));
       }
-      const locators = [];
-      const overlays: Locator[] = [];
-      const closedBounds = new Map<SensitiveActionTarget, {
-        readonly x: number;
-        readonly y: number;
-        readonly width: number;
-        readonly height: number;
-      }>();
+      const regions: ScreenshotRectangle[] = [];
       for (const sensitiveTarget of sensitiveTargets) {
-        if (sensitiveTarget.closedShadowRoot) {
-          const overlayToken = `${sensitiveTarget.token}-closed-overlay`;
-          const bounds = await sensitiveTarget.handle.evaluate((element, identity) => {
-            const rect = element.getBoundingClientRect();
-            if (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
-                rect.width <= 0 || rect.height <= 0) return undefined;
-            const overlay = document.createElement("div");
-            overlay.setAttribute(identity.attribute, identity.token);
-            overlay.style.cssText = `position:fixed;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;z-index:2147483647;pointer-events:none`;
-            document.documentElement.append(overlay);
-            return overlay.getAttribute(identity.attribute) === identity.token
-              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-              : undefined;
-          }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: overlayToken });
-          if (bounds === undefined) throw new WebTargetError("SensitiveTargetUnproven");
-          const overlay = page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}="${overlayToken}"]`);
-          overlays.push(overlay);
-          closedBounds.set(sensitiveTarget, bounds);
-          locators.push(overlay);
-          continue;
-        }
-        const locator = page.locator(
-          `[${PRIVATE_TARGET_ATTRIBUTE}="${sensitiveTarget.token}"]`,
-        );
-        const count = await locator.count();
-        const locatedHandle = count === 1 ? await locator.elementHandle() : null;
-        const exactTarget = locatedHandle !== null && await page.evaluate(
-          ([located, retained]) => located === retained,
-          [locatedHandle, sensitiveTarget.handle],
-        );
-        const box = count === 1 ? await locator.boundingBox() : null;
-        if (
-          !exactTarget ||
-          box === null ||
-          ![box.x, box.y, box.width, box.height].every(Number.isFinite) ||
-          box.width <= 0 ||
-          box.height <= 0
-        ) {
+        const region = await sensitiveTarget.handle.evaluate((element, identity) => {
+          const rect = element.getBoundingClientRect();
+          return element.isConnected && element.getAttribute(identity.attribute) === identity.token &&
+            [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
+            rect.width > 0 && rect.height > 0
+            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+            : undefined;
+        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: sensitiveTarget.token });
+        if (region === undefined) {
           throw new WebTargetError(
             "SensitiveTargetUnproven",
             "A sensitive target has no unique bounded screenshot region.",
           );
         }
-        locators.push(locator);
+        regions.push(region);
       }
-      try {
-        const screenshot = new Uint8Array(await page.screenshot({
-          timeout: 5000,
-          mask: locators,
-          maskColor: "#000000",
-        }));
-        for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
-          if (sensitiveTarget.closedShadowRoot) {
-            const before = closedBounds.get(sensitiveTarget);
-            const overlay = locators[index]!;
-            const unchanged = before !== undefined && await sensitiveTarget.handle.evaluate(
-              (element, expected) => {
-                const rect = element.getBoundingClientRect();
-                return element.isConnected && rect.x === expected.x && rect.y === expected.y &&
-                  rect.width === expected.width && rect.height === expected.height;
-              },
-              before,
-            );
-            if (!unchanged || await overlay.count() !== 1) {
-              throw new WebTargetError("SensitiveTargetUnproven");
-            }
-            continue;
-          }
-          const locator = locators[index]!;
-          const postHandle = await locator.elementHandle();
-          const remainsExact = postHandle !== null && await page.evaluate(
-            ([located, retained]) => located === retained,
-            [postHandle, sensitiveTarget.handle],
+      const screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
+      for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
+        const remainsExact = await sensitiveTarget.handle.evaluate((element, expected) => {
+          const rect = element.getBoundingClientRect();
+          return element.isConnected && element.getAttribute(expected.attribute) === expected.token &&
+            rect.x === expected.region.x && rect.y === expected.region.y &&
+            rect.width === expected.region.width && rect.height === expected.region.height;
+        }, {
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token: sensitiveTarget.token,
+          region: regions[index]!,
+        });
+        if (!remainsExact) {
+          throw new WebTargetError(
+            "SensitiveTargetUnproven",
+            "A sensitive target identity changed during screenshot capture.",
           );
-          if (await locator.count() !== 1 || !remainsExact) {
-            throw new WebTargetError(
-              "SensitiveTargetUnproven",
-              "A sensitive target identity changed during screenshot capture.",
-            );
-          }
         }
-        return screenshot;
-      } finally {
-        await Promise.all(overlays.map((overlay) => overlay.evaluateAll((elements) => {
-          for (const element of elements) element.remove();
-        }).catch(() => undefined)));
       }
+      const viewport = page.viewportSize();
+      if (viewport === null) throw new Error("screenshot-viewport-unproven");
+      return redactPngRectangles(screenshot, regions, viewport);
     } catch (error) {
       if (error instanceof WebTargetError) throw error;
       lastError = error;
@@ -576,6 +521,7 @@ export class PlaywrightObserver implements Observer {
         artifactRefs: artifactNames,
       };
 
+      await this.session.verifySensitiveShadowRoots();
       const screenshot = await captureScreenshot(page, sensitiveTargets);
       await this.session.completeSensitiveEvidenceCapture();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);

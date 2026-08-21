@@ -31,7 +31,7 @@ function fakeLauncher(): {
 } {
   let browserClosed = false;
   const registry = {
-    snapshot: () => ({ roots: [], count: 0, closedMutationCount: 0, overflow: false, intact: true }),
+    snapshot: () => ({ roots: [], hosts: [], count: 0, closedMutationCount: 0, overflow: false, intact: true }),
   };
   const registryHandle = {
     evaluate: vi.fn(async (callback: (value: typeof registry, maximumRoots: number) => unknown, maximumRoots: number) =>

@@ -751,6 +751,169 @@ describe("Playwright resolve + execute against real Chromium", () => {
     );
   });
 
+  it("fails before action when a closed root bypasses the realm registry", async () => {
+    const secret = "cross-realm-shadow-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.cross-realm-shadow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestElement {
+        contentWindow?: { Element: { prototype: { attachShadow(init: unknown): unknown } } };
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestElement): void };
+          createElement(tag: string): TestElement;
+        };
+      };
+      const iframe = state.document.createElement("iframe");
+      state.document.body.append(iframe);
+      const foreignAttachShadow = iframe.contentWindow?.Element.prototype.attachShadow;
+      if (foreignAttachShadow === undefined) throw new Error("Expected a reachable iframe realm.");
+      const host = state.document.createElement("div");
+      Reflect.apply(foreignAttachShadow, host, [{ mode: "closed" }]);
+      state.document.body.append(host);
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(await session.withPage(async (page) =>
+      page.locator('input[aria-label="Email"]').inputValue())).toBe("");
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
+  it("fails closed for a declarative shadow root before registering evidence", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "declarative-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.declarative-shadow"),
+      before,
+    );
+    const supported = await session.withPage(async (page) => page.evaluate(() => {
+      interface TestHost {
+        getHTML?: (options: { serializableShadowRoots: boolean }) => string;
+        querySelector(selector: string): unknown;
+      }
+      interface TestContainer {
+        setHTMLUnsafe?: (html: string) => void;
+        querySelector(selector: string): TestHost | null;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestContainer): void };
+          createElement(tag: string): TestContainer;
+        };
+      };
+      const container = state.document.createElement("div");
+      if (container.setHTMLUnsafe === undefined) return false;
+      container.setHTMLUnsafe(
+        '<div id="declarative"><template shadowrootmode="closed"><span>private</span></template></div>',
+      );
+      state.document.body.append(container);
+      const host = container.querySelector("#declarative");
+      return host !== null && host.querySelector("template") === null &&
+        host.getHTML?.({ serializableShadowRoots: true }).includes("shadowrootmode") === true;
+    }));
+    if (!supported) return;
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(await session.withPage(async (page) =>
+      page.locator('input[aria-label="Email"]').inputValue())).toBe("");
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
+  it("rewrites sensitive screenshot pixels despite hostile application CSS", async () => {
+    const secret = "hostile-css-mask-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const reflection = await session.withPage(async (page) => page.evaluateHandle(() => {
+      interface TestStyle { setProperty(name: string, value: string, priority: string): void }
+      interface TestElement {
+        value: string;
+        textContent: string | null;
+        style: TestStyle;
+        setAttribute(name: string, value: string): void;
+        addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+        attachShadow(init: { mode: "closed" }): { append(element: TestElement): void };
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(element: TestElement): void };
+          head: { append(element: TestElement): void };
+          createElement(tag: string): TestElement;
+          querySelector(selector: string): TestElement | null;
+        };
+      };
+      const style = state.document.createElement("style");
+      style.textContent = "*{all:unset!important;transform:translate(300px,300px)!important}";
+      state.document.head.append(style);
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const host = state.document.createElement("div");
+      const root = host.attachShadow({ mode: "closed" });
+      const reflected = state.document.createElement("input");
+      reflected.setAttribute("aria-label", "Hostile CSS reflection");
+      for (const [name, value] of Object.entries({
+        position: "fixed", left: "400px", top: "80px", width: "80px", height: "40px",
+        background: "rgb(255, 0, 0)", transform: "none",
+      })) reflected.style.setProperty(name, value, "important");
+      root.append(reflected);
+      state.document.body.append(host);
+      const unrelated = state.document.createElement("div");
+      unrelated.setAttribute("data-hostile-css-unrelated", "");
+      for (const [name, value] of Object.entries({
+        position: "fixed", left: "520px", top: "80px", width: "80px", height: "40px",
+        background: "rgb(0, 255, 0)", transform: "none",
+      })) unrelated.style.setProperty(name, value, "important");
+      state.document.body.append(unrelated);
+      source?.addEventListener("input", (event) => {
+        reflected.value = event.target.value;
+      });
+      return reflected;
+    }));
+    const reflectedElement = reflection.asElement();
+    if (reflectedElement === null) throw new Error("Expected a closed-root reflection.");
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.hostile-css-mask"),
+      before,
+    );
+
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+    const screenshot = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "image/png");
+    const sensitiveBox = await reflectedElement.boundingBox();
+    const unrelatedBox = await session.withPage(async (page) =>
+      page.locator("[data-hostile-css-unrelated]").boundingBox());
+    await reflection.dispose();
+    if (screenshot === undefined || sensitiveBox === null || unrelatedBox === null) {
+      throw new Error("Expected bounded hostile-CSS screenshot regions.");
+    }
+    const image = decodePng(screenshot.bytes);
+    expectSolidCrop(image, sensitiveBox, [0, 0, 0, 255]);
+    expectSolidCrop(image, unrelatedBox, [0, 255, 0, 255]);
+  });
+
   it("redacts causally reflected URL fields and document title before serialization", async () => {
     const secret = "route-secret";
     session = new PlaywrightBrowserSession(options());
@@ -1504,6 +1667,82 @@ describe("Playwright resolve + execute against real Chromium", () => {
       };
       return [state.finallyCallbacks, state.finallyFulfilled, state.finallyRejected];
     }))).toEqual([2, "fulfilled", "rejected"]);
+  });
+
+  it("preserves Promise species and captured resolve semantics", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "promise-species-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.promise-species"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: {
+          querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void): void;
+          } | null;
+        };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        class SpeciesPromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return SpeciesResult; }
+        }
+        class SpeciesResult<T> extends Promise<T> {}
+        const state = globalThis as typeof globalThis & {
+          promiseSemantics?: readonly unknown[];
+        };
+        const caughtReceiver = new SpeciesPromise<string>((_resolve, reject) =>
+          reject(new Error("caught-error")));
+        const finalizedReceiver = new SpeciesPromise<string>((resolve) => resolve("value"));
+        let overriddenThenCalls = 0;
+        let overriddenCatchCalls = 0;
+        let overriddenFinallyCalls = 0;
+        const inheritedThen = caughtReceiver.then;
+        caughtReceiver.then = function (...args) {
+          overriddenThenCalls += 1;
+          return Reflect.apply(inheritedThen, this, args);
+        };
+        const inheritedCatch = caughtReceiver.catch;
+        caughtReceiver.catch = function (...args) {
+          overriddenCatchCalls += 1;
+          return Reflect.apply(inheritedCatch, this, args);
+        };
+        const inheritedFinally = finalizedReceiver.finally;
+        finalizedReceiver.finally = function (...args) {
+          overriddenFinallyCalls += 1;
+          return Reflect.apply(inheritedFinally, this, args);
+        };
+        const resolve = Promise.resolve;
+        Promise.resolve = (() => { throw new Error("mutable resolve used"); }) as PromiseConstructor["resolve"];
+        const caught = caughtReceiver.catch((error: Error) => error.message);
+        const finalized = finalizedReceiver.finally(() => "ignored");
+        Promise.resolve = resolve;
+        const values: unknown[] = [];
+        const finish = (): void => {
+          if (values.length !== 2) return;
+          state.promiseSemantics = [
+            caught instanceof SpeciesResult,
+            finalized instanceof SpeciesResult,
+            overriddenThenCalls,
+            overriddenCatchCalls,
+            overriddenFinallyCalls,
+            ...values,
+          ];
+        };
+        inheritedThen.call(caught, (value) => { values[0] = value; finish(); });
+        inheritedThen.call(finalized, (value) => { values[1] = value; finish(); });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { promiseSemantics?: readonly unknown[] }).promiseSemantics,
+    ))).toEqual([true, true, 1, 1, 1, "caught-error", "value"]);
   });
 
   it.each([
