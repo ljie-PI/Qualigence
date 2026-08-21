@@ -80,13 +80,20 @@ describe("Playwright resolve + execute against real Chromium", () => {
            <label>Normalized secret <input aria-label="Normalized secret" style="position:fixed;left:40px;top:80px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
            <label>Mutable secret <input aria-label="Mutable secret" style="position:fixed;left:40px;top:140px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
            <label>Country <select aria-label="Country" style="position:fixed;left:40px;top:260px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
+           <input aria-label="Input property reflection" style="position:fixed;left:280px;top:310px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" />
+           <textarea aria-label="Select property reflection" style="position:fixed;left:280px;top:360px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none"></textarea>
            <p data-qualigence-observe id="values" style="position:fixed;left:280px;top:20px;width:100px;height:40px;margin:0"></p>
            <p data-qualigence-observe id="normalized-reflection" style="position:fixed;left:280px;top:200px;background:rgb(255,0,0);width:100px;height:40px;margin:0"></p>
            <p data-qualigence-observe id="normalized-reflection-second" style="position:fixed;left:280px;top:250px;background:rgb(255,0,0);width:100px;height:40px;margin:0"></p>
            <p data-qualigence-observe>ab</p>
+           <p data-qualigence-observe>property-input-secret</p>
+           <p data-qualigence-observe>private-country-code</p>
            <div data-unrelated-region style="position:fixed;left:400px;top:80px;width:60px;height:60px;background:rgb(0,255,0)"></div>
            <script>
-             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+             document.querySelector('input').addEventListener('input', event => {
+               document.getElementById('values').textContent = event.target.value;
+               document.querySelector('input[aria-label="Input property reflection"]').value = event.target.value;
+             });
              document.querySelector('input[aria-label="Normalized secret"]').addEventListener('input', event => {
                document.getElementById('normalized-reflection').textContent = event.target.value;
                setTimeout(() => {
@@ -97,7 +104,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
                event.target.setAttribute('aria-label', event.target.value);
                document.getElementById('values').textContent = 'Mutable ready';
              });
-             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
+             document.querySelector('select').addEventListener('change', event => {
+               document.getElementById('values').textContent += ':' + event.target.value;
+               document.querySelector('textarea[aria-label="Select property reflection"]').value = event.target.value;
+             });
            </script>
         `,
         "Clicks",
@@ -250,7 +260,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
         expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
         expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
       ]));
-    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(3);
+    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(5);
     const screenshot = session.artifactsFor(afterSelect.graphId)
       .find((artifact) => artifact.mediaType === "image/png");
     const boxes = await session.withPage(async (page) => ({
@@ -274,7 +284,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
       afterSelect,
     ]);
     expect(serializedPublicValues).not.toContain("private@example.test");
-    expect(serializedPublicValues).not.toContain("private-country-code");
+    expect(afterSelect.nodes.filter((node) => node.text === "private-country-code"))
+      .toHaveLength(1);
   });
 
   it.each([
@@ -381,10 +392,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       )).toBe(0);
 
       await expect(run("ExternalSideEffect")).resolves.toMatchObject({ status: "passed" });
-      expect(session.sensitiveTargets()).toHaveLength(2);
+      expect(session.sensitiveTargets()).toHaveLength(3);
       expect(await session.withPage(async (page) =>
         page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}]`).count(),
-      )).toBe(2);
+      )).toBe(3);
       const graphId = session.latestGraphId;
       const target = session.sensitiveTargets()[0];
       if (graphId === undefined || target === undefined) {
@@ -494,6 +505,185 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expectSolidCrop(image, boxes.unrelated!, [0, 255, 0, 255]);
   });
 
+  it.each([
+    ["input", "Email", "customer.property-input", "property-input-secret", "Input property reflection"],
+    ["select", "Country", "customer.property-select", "private-country-code", "Select property reflection"],
+  ] as const)(
+    "redacts a control changed only through an %s event property assignment",
+    async (kind, targetName, valueRef, secret, reflectedName) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued(kind, nodeNamed(before, targetName).id, valueRef),
+        before,
+      );
+
+      expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+      const reflectedHandle = await session.withPage(async (page) =>
+        page.getByRole("textbox", { name: reflectedName }).elementHandle());
+      const after = await observer.capture(job);
+      const screenshot = session.artifactsFor(after.graphId)
+        .find((artifact) => artifact.mediaType === "image/png");
+      const reflectedEvidence = reflectedHandle === null ? undefined : await session.withPage(async () => {
+        for (const sensitive of session.sensitiveTargets()) {
+          if (await sensitive.handle.evaluate(
+            (element, reflectedElement) => element === reflectedElement,
+            reflectedHandle,
+          )) {
+            return {
+              box: await sensitive.handle.boundingBox(),
+              nodeId: sensitive.nodeId,
+            };
+          }
+        }
+        return undefined;
+      });
+      await reflectedHandle?.dispose();
+      if (reflectedEvidence?.box === null || reflectedEvidence?.box === undefined ||
+          reflectedEvidence.nodeId === undefined || screenshot === undefined) {
+        throw new Error("Expected property-reflected screenshot evidence.");
+      }
+
+      expect(after.nodes.filter((node) => node.text === secret)).toHaveLength(1);
+      expect(after.nodes.find((node) => node.id === reflectedEvidence.nodeId)).toMatchObject({
+        name: "[REDACTED]",
+        value: "[REDACTED]",
+        text: "[REDACTED]",
+      });
+      expectSolidCrop(decodePng(screenshot.bytes), reflectedEvidence.box, [0, 0, 0, 255]);
+    },
+  );
+
+  it("poisons all later evidence capture when actual browser-form extraction fails", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "form-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.form"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface InputElement {
+        addEventListener(type: string, listener: () => void): void;
+      }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): InputElement | null };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        Object.defineProperty(source, "value", {
+          configurable: true,
+          get() {
+            throw new Error("actual form unavailable");
+          },
+        });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(() => session.artifactsFor(before.graphId)).toThrowError(
+      expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+    );
+  });
+
+  it("poisons all later evidence capture when the post-action property snapshot fails", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "snapshot-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.snapshot"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface InputElement {
+        value: string;
+        addEventListener(type: string, listener: () => void): void;
+      }
+      const state = globalThis as unknown as {
+        document: { querySelector(selector: string): InputElement | null };
+      };
+      const source = state.document.querySelector('input[aria-label="Email"]');
+      const reflected = state.document.querySelector(
+        'input[aria-label="Input property reflection"]',
+      );
+      source?.addEventListener("input", () => {
+        if (reflected === null) return;
+        Object.defineProperty(reflected, "value", {
+          configurable: true,
+          get() {
+            throw new Error("post-action snapshot failed");
+          },
+        });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(() => session.artifactsFor(before.graphId)).toThrowError(
+      expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+    );
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
+  it("fails closed before a sensitive action when property snapshot candidates overflow", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "overflow-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.candidate-overflow"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      interface TestNode {
+        append(node: TestNode): void;
+        setAttribute(name: string, value: string): void;
+      }
+      const state = globalThis as unknown as {
+        document: {
+          body: { append(node: TestNode): void };
+          createDocumentFragment(): TestNode;
+          createElement(tag: string): TestNode;
+        };
+      };
+      const fragment = state.document.createDocumentFragment();
+      for (let index = 0; index < 513; index += 1) {
+        const input = state.document.createElement("input");
+        input.setAttribute("aria-label", `candidate-${index}`);
+        fragment.append(input);
+      }
+      state.document.body.append(fragment);
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(await session.withPage(async (page) =>
+      page.locator('input[aria-label="Email"]').inputValue(),
+    )).toBe("");
+  });
+
   it("fails closed when sensitive provenance tracking cannot be installed", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -517,10 +707,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }));
 
     await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
     await expect(observer.capture(job)).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
     expect(session.latestGraphId).toBe(before.graphId);
   });
@@ -552,10 +742,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }));
 
     await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
     await expect(observer.capture(job)).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
   });
 
@@ -593,10 +783,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }));
 
     await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
     await expect(observer.capture(job)).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
   });
 
@@ -675,11 +865,11 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
 
     await expect(observer.capture(job)).rejects.toMatchObject({
-      code: "SensitiveTargetUnproven",
+      code: "SensitiveEvidenceUnproven",
     });
     expect(session.latestGraphId).toBe(afterInput.graphId);
     expect(() => session.artifactsFor("run-click:observation:3")).toThrowError(
-      expect.objectContaining({ code: "StaleObservation" }),
+      expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
     );
   });
 });

@@ -439,26 +439,35 @@ parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/78`
 parent_head: `7f265c1`
 
 - After an authorized input/select target is retained, the private Playwright
-  adapter installs one action-scoped `MutationObserver` before the browser side
-  effect. It reads only the exact browser-observable value/selected option forms,
-  settles for at most 250 ms within the existing action timeout, and retains only
-  exact changed DOM elements whose resulting attribute or text contains a form.
+  adapter installs one action-scoped `MutationObserver` and snapshots at most
+  512 observation-candidate elements before the browser side effect. The bounded
+  snapshot covers input/textarea value, select value and selected option text,
+  text content, and sensitive observable attributes.
+- The post-action pass unions mutation records with exact property diffs. A
+  property-only assignment is retained only when that property changed during
+  the action and its post value equals or contains an exact browser-observable
+  value/selected-option form. Exact DOM identity deduplicates the union before
+  the existing 32-target cap and exact `ElementHandle` retention.
 - The observer is capped at 128 mutation records and removed after each action.
-  Observer installation/evaluation/removal errors, overflow, target replacement,
-  disconnected reflected nodes, unprovable handles, or the existing 32-element
-  sensitive collection cap fail `SensitiveTargetUnproven` before later evidence.
+  Candidate-set ambiguity, candidate/mutation/target overflow, actual-form or
+  snapshot failure, observer failure, target replacement, disconnected reflected
+  nodes, or unprovable handles poison the session as `SensitiveEvidenceUnproven`.
+  Every later observation, screenshot, or artifact request fails with that stable
+  code until close, and no failed observation is registered or serialized.
 - Subsequent Graph, Trace/model context, Observation JSON, and screenshots use
   the existing exact-handle redaction/masking path for the action target and all
   proven reflected elements. Session-wide string replacement was removed, so a
   pre-existing unrelated node containing the equal normalized text remains.
-- Real Chromium component coverage proves input-event and select-change
-  reflection, multiple reflected nodes, a delayed reflection within the bounded
-  settle window, complete black screenshot crops, unrelated equal `ab`, observer
-  failure, mutation overflow, and a reflected node removed before proof.
-- The Ticket 18 focused non-E2E Gate passed 10 files / 117 tests with 1 existing
-  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
-  production valueRef E2E fixture is prepared but deliberately unrun pending
-  coordinator review; remediation PR and post-review E2E remain pending.
+- Real Chromium component coverage proves input and select event handlers can
+  assign another control's `.value` without MutationObserver notification while
+  the exact reflected controls are redacted and screenshot-masked. Unchanged
+  pre-existing equal text remains visible. Coverage also proves actual-form and
+  post-snapshot poisoning, candidate/mutation overflow, observer failure, and a
+  reflected node removed before proof.
+- The final Ticket 18 focused non-E2E Gate passed 7 files / 72 tests: 71 passed
+  and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. E2E was deliberately not run and remains blocked on
+  fresh exact-base review; remediation PR and post-review E2E remain pending.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

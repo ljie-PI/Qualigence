@@ -158,9 +158,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               throw new Error("input-target-unprovable");
             }, action.kind);
           } catch {
-            await this.session.finishSensitiveActionTracking(tracker, target, [], 0);
-            throw new WebTargetError(
-              "SensitiveTargetUnproven",
+            await this.session.finishSensitiveActionTracking(tracker, target, [], 0)
+              .catch(() => undefined);
+            throw this.session.sensitiveEvidenceFailure(
               "The browser-observable sensitive value could not be proven.",
             );
           }

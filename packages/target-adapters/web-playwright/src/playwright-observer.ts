@@ -283,7 +283,8 @@ export class PlaywrightObserver implements Observer {
   constructor(private readonly session: PlaywrightBrowserSession) {}
 
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
-    return this.session.withPage(async (page) => {
+    try {
+      return await this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
       const sensitiveTargets = this.session.sensitiveTargets();
       const captured = await page.evaluate(collectCandidates, {
@@ -340,7 +341,18 @@ export class PlaywrightObserver implements Observer {
         descriptors,
         artifacts,
       });
-      return graphWithRefs;
-    });
+        return graphWithRefs;
+      });
+    } catch (error) {
+      if (error instanceof WebTargetError && error.code === "SensitiveEvidenceUnproven") {
+        throw error;
+      }
+      if (this.session.hasSensitiveAction()) {
+        throw this.session.sensitiveEvidenceFailure(
+          "Sensitive observation evidence could not be proven.",
+        );
+      }
+      throw error;
+    }
   }
 }
