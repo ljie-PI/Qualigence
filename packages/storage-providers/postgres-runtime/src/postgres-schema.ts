@@ -1,4 +1,11 @@
-import { type Kysely, type ColumnDataType, type SqlBool, sql } from "kysely";
+import {
+  type ColumnDataType,
+  type ColumnDefinitionBuilder,
+  type CreateTableBuilder,
+  type SchemaModule,
+  type SqlBool,
+  sql,
+} from "kysely";
 import {
   RELATIONAL_TABLES,
   type ColumnSpec,
@@ -7,6 +14,10 @@ import {
 } from "@qualigence/relational-kysely";
 
 const TENANT_COLUMN = "tenant_id";
+
+interface SchemaConnection {
+  readonly schema: SchemaModule;
+}
 
 function pgType(type: LogicalColumnType): ColumnDataType {
   switch (type) {
@@ -47,12 +58,12 @@ function compositeKey(
  * layer inspects, so the composite tenant primary keys and tenant-inclusive
  * foreign keys always match the RLS policies applied on top.
  */
-export async function createTenantSchema(db: Kysely<any>): Promise<void> {
+export async function createTenantSchema(db: SchemaConnection): Promise<void> {
   await createTenantSchemaTables(db, RELATIONAL_TABLES.map(({ name }) => name));
 }
 
 export async function createTenantSchemaTables(
-  db: Kysely<any>,
+  db: SchemaConnection,
   tableNames: readonly string[],
 ): Promise<void> {
   const selected = new Set(tableNames);
@@ -60,13 +71,15 @@ export async function createTenantSchemaTables(
     if (!selected.has(table.name)) {
       continue;
     }
-    // The builder tracks added columns in its type; because it is reassigned in
-    // a loop we treat it structurally and rely on the catalog for correctness.
-    let builder: any = db.schema.createTable(table.name);
+    // Catalog column names are dynamic, so widen the builder's tracked column
+    // union while retaining its complete Kysely schema-builder contract.
+    let builder: CreateTableBuilder<string, string> = db.schema.createTable(table.name);
 
     for (const column of tenantColumns(table)) {
-      builder = builder.addColumn(column.name, pgType(column.type), (col: any) =>
-        column.notNull ? col.notNull() : col,
+      builder = builder.addColumn(
+        column.name,
+        pgType(column.type),
+        (col: ColumnDefinitionBuilder) => column.notNull ? col.notNull() : col,
       );
     }
 

@@ -47,7 +47,7 @@ blocking. Git OpenSSL must be resolved explicitly from
 
 component: complete
 production_wiring: present
-verification: round-2 blockers fixed; fresh exact-base review and PR pending
+verification: round-4 blockers fixed; fresh exact-base review and PR pending
 implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
 
 - PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
@@ -87,6 +87,15 @@ implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
   tests with zero skips, plus `corepack pnpm typecheck` and
   `git diff --check`. A fresh exact-base review and the dedicated PR remain
   pending.
+- Round-4 scope adds only the existing Self-hosted `compose.yaml`, its
+  non-secret `.env.example`, and a focused static Compose-rendering test. The
+  migration, Server runtime, and Worker schema guard now use the same configured
+  Server PostgreSQL role, including `WORKER_PG_SERVER_ROLE`; no Ticket 12
+  behavior is included. `postgres-schema.ts` now uses the minimal Kysely schema
+  and typed dynamic builder contracts with no `any` or assertion.
+- Round-4 GREEN passed the amended Compose config Gate and the focused Docker
+  Gate at 10 files / 47 tests with zero skips. No Compose or backup/restore E2E
+  was run; fresh exact-base review remains required before E2E.
 - On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
   focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
   Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup
