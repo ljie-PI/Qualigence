@@ -12,6 +12,7 @@ export {
   chromiumLauncher,
   isOriginAllowed,
   normalizeOrigin,
+  MAXIMUM_SENSITIVE_ACTION_TARGETS,
   PRIVATE_TARGET_ATTRIBUTE,
   type BrowserLauncher,
   type StoredObservation,

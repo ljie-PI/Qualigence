@@ -90,6 +90,7 @@ export interface SensitiveActionTarget extends PrivateActionTarget {
 }
 
 export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
+export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
 
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
@@ -102,7 +103,7 @@ export class PlaywrightBrowserSession {
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
   private readonly sensitiveValues = new Set<string>();
-  private sensitiveActionTarget: SensitiveActionTarget | undefined;
+  private readonly sensitiveActionTargets = new Map<string, SensitiveActionTarget>();
   private readonly privateActionTargets = new Map<string, PrivateActionTarget>();
   private privateTargetOrdinal = 0;
 
@@ -185,19 +186,36 @@ export class PlaywrightBrowserSession {
         "The sensitive action target has no resolution-bound identity.",
       );
     }
-    this.sensitiveActionTarget = { ...target, nodeId };
+    if (
+      !this.sensitiveActionTargets.has(target.token) &&
+      this.sensitiveActionTargets.size >= MAXIMUM_SENSITIVE_ACTION_TARGETS
+    ) {
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "The sensitive action target limit was exceeded.",
+      );
+    }
+    this.sensitiveActionTargets.set(target.token, { ...target, nodeId });
   }
 
-  sensitiveTarget(): SensitiveActionTarget | undefined {
-    return this.sensitiveActionTarget;
+  sensitiveTargets(): readonly SensitiveActionTarget[] {
+    return [...this.sensitiveActionTargets.values()];
   }
 
-  advanceSensitiveTarget(graphId: string, nodeId: string): void {
-    if (this.sensitiveActionTarget !== undefined) {
-      this.sensitiveActionTarget = { ...this.sensitiveActionTarget, nodeId };
+  advanceSensitiveTargets(graphId: string, nodeIds: readonly string[]): void {
+    const targets = this.sensitiveTargets();
+    if (targets.length !== nodeIds.length) {
+      throw new WebTargetError(
+        "SensitiveTargetUnproven",
+        "The sensitive target observation mapping is incomplete.",
+      );
+    }
+    for (const [index, target] of targets.entries()) {
+      const advanced = { ...target, nodeId: nodeIds[index]! };
+      this.sensitiveActionTargets.set(target.token, advanced);
       this.privateActionTargets.set(
-        `${graphId}\0${nodeId}`,
-        this.sensitiveActionTarget,
+        `${graphId}\0${advanced.nodeId}`,
+        advanced,
       );
     }
   }
@@ -367,8 +385,11 @@ export class PlaywrightBrowserSession {
       this.browser = undefined;
     }
     this.sensitiveValues.clear();
-    this.sensitiveActionTarget = undefined;
-    for (const target of this.privateActionTargets.values()) {
+    this.sensitiveActionTargets.clear();
+    const targets = new Map(
+      [...this.privateActionTargets.values()].map((target) => [target.token, target]),
+    );
+    for (const target of targets.values()) {
       await target.handle.evaluate((element, attribute) => {
         element.removeAttribute(attribute);
       }, PRIVATE_TARGET_ATTRIBUTE).catch(() => undefined);

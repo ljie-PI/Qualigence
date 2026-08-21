@@ -5,6 +5,7 @@ import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
   PlaywrightBrowserSession,
+  MAXIMUM_SENSITIVE_ACTION_TARGETS,
   actionToken,
   isActionToken,
   type BrowserLauncher,
@@ -29,6 +30,7 @@ async function bindPrivateTarget(
   session: PlaywrightBrowserSession,
   graphId: string,
   target: object,
+  nodeId = "n-0-abcd1234",
 ): Promise<void> {
   const handle = {
     ...target,
@@ -37,7 +39,7 @@ async function bindPrivateTarget(
   };
   await session.establishPrivateActionTarget(
     graphId,
-    "n-0-abcd1234",
+    nodeId,
     { elementHandle: async () => handle } as never,
   );
 }
@@ -199,8 +201,44 @@ describe("PlaywrightActionExecutor value resolution", () => {
 
     await session.close();
 
-    expect(session.sensitiveTarget()).toBeUndefined();
+    expect(session.sensitiveTargets()).toEqual([]);
     expect(session.redactSensitiveText("source-secret")).toBe("source-secret");
+  });
+
+  it("fails closed before a sensitive action exceeds the target cap", async () => {
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    for (let index = 0; index < MAXIMUM_SENSITIVE_ACTION_TARGETS; index += 1) {
+      const graphId = `run-1:observation:${index + 1}`;
+      const nodeId = `n-${index}-abcd1234`;
+      await bindPrivateTarget(session, graphId, {}, nodeId);
+      session.registerSensitiveActionTarget(graphId, nodeId);
+    }
+    const graphId = "run-1:observation:overflow";
+    const nodeId = "n-overflow-abcd1234";
+    const fill = vi.fn(async () => undefined);
+    const target = {
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      fill,
+    };
+    await bindPrivateTarget(session, graphId, target, nodeId);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => "overflow-secret",
+    });
+    session.withPage = async (operation) => operation({
+      url: () => "https://example.test/",
+    } as never);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "input",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+      valueRef: "customer.overflow",
+    }, permit)).rejects.toMatchObject({ code: "SensitiveTargetUnproven" });
+    expect(fill).not.toHaveBeenCalled();
+    expect(session.sensitiveTargets()).toHaveLength(MAXIMUM_SENSITIVE_ACTION_TARGETS);
   });
 
   it("keeps browser-normalized select forms out of global redaction", async () => {

@@ -120,6 +120,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           // Register the source before Playwright can echo it in an error. Any
           // browser normalization is redacted only on this target after success.
           this.session.registerSensitiveValue(value);
+          // Retain the exact target before Playwright can partially apply a
+          // value. Capacity failure therefore happens before the side effect.
+          this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
           if (action.kind === "input") {
             await target.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {
@@ -127,13 +130,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               timeout: this.session.actionTimeoutMs,
             });
           }
-          this.session.registerSensitiveActionTarget(action.graphId, actionTarget.nodeId);
         } else if (action.kind === "click") {
           await target.click({ timeout: this.session.actionTimeoutMs });
         } else {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }
       } catch (error) {
+        if (error instanceof WebTargetError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (isInfrastructureFailure(message)) {
           throw new WebTargetError("ActionInfrastructureFailure");

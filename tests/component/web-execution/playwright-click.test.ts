@@ -70,10 +70,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <button id="blocked">Blocked action</button>
             <span style="position:absolute;inset:0"></span>
           </span>
-           <label>Email <input aria-label="Email" /></label>
+           <label>Email <input aria-label="Email" style="position:fixed;left:40px;top:200px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
            <label>Normalized secret <input aria-label="Normalized secret" /></label>
-           <label>Mutable secret <input aria-label="Mutable secret" style="background:rgb(255,0,0);border:0;width:180px;height:40px" /></label>
-           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
+           <label>Mutable secret <input aria-label="Mutable secret" style="position:fixed;left:40px;top:140px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none" /></label>
+           <label>Country <select aria-label="Country" style="position:fixed;left:40px;top:260px;background:rgb(255,0,0);border:0;border-radius:0;padding:0;width:180px;height:40px;appearance:none"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
            <p data-qualigence-observe id="values"></p>
            <p data-qualigence-observe>ab</p>
            <div data-unrelated-region style="position:fixed;left:400px;top:80px;width:60px;height:60px;background:rgb(0,255,0)"></div>
@@ -232,8 +232,26 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
     const afterSelect = await observer.capture(job);
-    expect(nodeNamed(afterSelect, "[REDACTED]"))
-      .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
+    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]"))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
+        expect.objectContaining({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" }),
+      ]));
+    expect(afterSelect.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(2);
+    const screenshot = session.artifactsFor(afterSelect.graphId)
+      .find((artifact) => artifact.mediaType === "image/png");
+    const boxes = await session.withPage(async (page) => ({
+      input: await page.locator('input[aria-label="Email"]').boundingBox(),
+      select: await page.locator('select[aria-label="Country"]').boundingBox(),
+      unrelated: await page.locator("[data-unrelated-region]").boundingBox(),
+    }));
+    if (screenshot === undefined || boxes.input === null || boxes.select === null || boxes.unrelated === null) {
+      throw new Error("Expected screenshot and bounded regions.");
+    }
+    const image = decodePng(screenshot.bytes);
+    expectSolidCrop(image, boxes.input, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.select, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.unrelated, [0, 255, 0, 255]);
     const serializedPublicValues = JSON.stringify([
       inputAction,
       inputOutcome,
@@ -312,7 +330,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serialized).not.toContain(source);
     expect(target).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
     expect(artifactTarget).toMatchObject({ value: "[REDACTED]", text: "[REDACTED]" });
-    expect(session.sensitiveTarget()?.nodeId).toBe(target.id);
+    expect(session.sensitiveTargets()[0]?.nodeId).toBe(target.id);
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
     expect(artifactGraph.nodes.some((node) => node.text === browserValue)).toBe(true);
   });
@@ -341,7 +359,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
       new TextDecoder().decode(observationArtifact?.bytes),
     ) as ObservationGraph;
     const boxes = await session.withPage(async (page) => ({
-      target: await session.sensitiveTarget()?.handle.boundingBox(),
+      target: await session.sensitiveTargets()[0]?.handle.boundingBox(),
       unrelated: await page.locator("[data-unrelated-region]").boundingBox(),
     }));
     if (
@@ -357,23 +375,34 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(nodeNamed(artifactGraph, "[REDACTED]"))
       .toMatchObject({ name: "[REDACTED]", value: "[REDACTED]", text: "[REDACTED]" });
     expect(after.nodes.some((node) => node.text === "ab")).toBe(true);
-    expect(pngPixel(screenshotArtifact.bytes, boxes.target)).toEqual([0, 0, 0, 255]);
-    expect(pngPixel(screenshotArtifact.bytes, boxes.unrelated)).toEqual([0, 255, 0, 255]);
+    const image = decodePng(screenshotArtifact.bytes);
+    expectSolidCrop(image, boxes.target, [0, 0, 0, 255]);
+    expectSolidCrop(image, boxes.unrelated, [0, 255, 0, 255]);
   });
 
-  it("fails closed before artifacts when the exact sensitive target is replaced", async () => {
+  it("fails closed before artifacts when an earlier sensitive target is replaced", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
     const resolver = new PlaywrightActionResolver(session);
-    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "replace-secret" });
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async (valueRef) => valueRef === "customer.country"
+        ? "private-country-code"
+        : "replace-secret",
+    });
     const before = await observer.capture(job);
-    const action = await resolver.resolve(
+    const inputAction = await resolver.resolve(
       valued("input", nodeNamed(before, "Mutable secret").id, "customer.replace"),
       before,
     );
 
-    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    expect(await executor.execute(inputAction, allowedPermit())).toEqual({ status: "ok" });
+    const afterInput = await observer.capture(job);
+    const selectAction = await resolver.resolve(
+      valued("select", nodeNamed(afterInput, "Country").id, "customer.country"),
+      afterInput,
+    );
+    expect(await executor.execute(selectAction, allowedPermit())).toEqual({ status: "ok" });
     await session.withPage(async (page) => {
       await page.getByRole("textbox", { name: "replace-secret" }).evaluate((element) => {
         element.replaceWith(element.cloneNode(true));
@@ -383,17 +412,21 @@ describe("Playwright resolve + execute against real Chromium", () => {
     await expect(observer.capture(job)).rejects.toMatchObject({
       code: "SensitiveTargetUnproven",
     });
-    expect(session.latestGraphId).toBe(before.graphId);
-    expect(() => session.artifactsFor("run-click:observation:2")).toThrowError(
+    expect(session.latestGraphId).toBe(afterInput.graphId);
+    expect(() => session.artifactsFor("run-click:observation:3")).toThrowError(
       expect.objectContaining({ code: "StaleObservation" }),
     );
   });
 });
 
-function pngPixel(
-  bytes: Uint8Array,
-  box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
-): readonly number[] {
+interface DecodedPng {
+  readonly width: number;
+  readonly height: number;
+  readonly channels: number;
+  readonly pixels: Buffer;
+}
+
+function decodePng(bytes: Uint8Array): DecodedPng {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   if (!signature.every((byte, index) => bytes[index] === byte)) throw new Error("Invalid PNG signature.");
   let width = 0;
@@ -421,11 +454,7 @@ function pngPixel(
     offset += 12 + length;
   }
   const channels = colorType === 2 ? 3 : colorType === 6 ? 4 : 0;
-  const x = Math.floor(box.x + box.width / 2);
-  const y = Math.floor(box.y + box.height / 2);
-  if (channels === 0 || x < 0 || y < 0 || x >= width || y >= height) {
-    throw new Error("Unsupported PNG pixel request.");
-  }
+  if (channels === 0) throw new Error("Unsupported PNG color type.");
   const filtered = inflateSync(Buffer.concat(compressed));
   const stride = width * channels;
   const pixels = Buffer.alloc(stride * height);
@@ -443,13 +472,31 @@ function pngPixel(
       pixels[rowOffset + column] = (raw + pngFilterDelta(filter, left, above, upperLeft)) & 0xff;
     }
   }
-  const pixelOffset = y * stride + x * channels;
-  return [
-    pixels[pixelOffset]!,
-    pixels[pixelOffset + 1]!,
-    pixels[pixelOffset + 2]!,
-    channels === 4 ? pixels[pixelOffset + 3]! : 255,
-  ];
+  return { width, height, channels, pixels };
+}
+
+function expectSolidCrop(
+  image: DecodedPng,
+  box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  expected: readonly [number, number, number, number],
+): void {
+  const left = Math.max(0, Math.floor(box.x));
+  const top = Math.max(0, Math.floor(box.y));
+  const right = Math.min(image.width, Math.ceil(box.x + box.width));
+  const bottom = Math.min(image.height, Math.ceil(box.y + box.height));
+  if (left >= right || top >= bottom) throw new Error("Crop does not intersect the PNG.");
+  const stride = image.width * image.channels;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = y * stride + x * image.channels;
+      expect([
+        image.pixels[offset]!,
+        image.pixels[offset + 1]!,
+        image.pixels[offset + 2]!,
+        image.channels === 4 ? image.pixels[offset + 3]! : 255,
+      ], `pixel (${x}, ${y})`).toEqual(expected);
+    }
+  }
 }
 
 function pngFilterDelta(filter: number, left: number, above: number, upperLeft: number): number {

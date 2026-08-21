@@ -56,7 +56,7 @@ describe("production valueRef browser execution", () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
         <style>
-          #lf-secret { position:fixed;left:40px;top:40px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
+          #lf-secret { position:fixed;left:-20px;top:40px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
           #crlf-secret { position:fixed;left:40px;top:100px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
           #country-secret { position:fixed;left:40px;top:160px;width:200px;height:40px;padding:0;border:0;background:rgb(255,0,0) }
           #unrelated-region { position:fixed;left:300px;top:100px;width:80px;height:80px;background:rgb(0,255,0) }
@@ -291,14 +291,15 @@ describe("production valueRef browser execution", () => {
       return [runId, screenshot?.artifact.bytes] as const;
     }));
     for (const [runId, target] of [
-      ["run-input-lf", { x: 140, y: 60 }],
-      ["run-input-crlf", { x: 140, y: 120 }],
-      ["run-select", { x: 140, y: 180 }],
+      ["run-input-lf", { x: -20, y: 40, width: 200, height: 40 }],
+      ["run-input-crlf", { x: 40, y: 100, width: 200, height: 40 }],
+      ["run-select", { x: 40, y: 160, width: 200, height: 40 }],
     ] as const) {
       const screenshot = finalScreenshots.get(runId);
       if (screenshot === undefined) throw new Error(`Missing final screenshot for ${runId}.`);
-      expect(pngPixel(screenshot, target.x, target.y)).toEqual([0, 0, 0, 255]);
-      expect(pngPixel(screenshot, 340, 140)).toEqual([0, 255, 0, 255]);
+      const image = decodePng(screenshot);
+      expectSolidCrop(image, target, [0, 0, 0, 255]);
+      expectSolidCrop(image, { x: 300, y: 100, width: 80, height: 80 }, [0, 255, 0, 255]);
     }
 
     await spool.close();
@@ -435,7 +436,14 @@ async function readBody(request: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function pngPixel(bytes: Uint8Array, x: number, y: number): readonly number[] {
+interface DecodedPng {
+  readonly width: number;
+  readonly height: number;
+  readonly channels: number;
+  readonly pixels: Buffer;
+}
+
+function decodePng(bytes: Uint8Array): DecodedPng {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   if (!signature.every((byte, index) => bytes[index] === byte)) throw new Error("Invalid PNG signature.");
   let width = 0;
@@ -463,9 +471,7 @@ function pngPixel(bytes: Uint8Array, x: number, y: number): readonly number[] {
     offset += 12 + length;
   }
   const channels = colorType === 2 ? 3 : colorType === 6 ? 4 : 0;
-  if (channels === 0 || x < 0 || y < 0 || x >= width || y >= height) {
-    throw new Error("Unsupported PNG pixel request.");
-  }
+  if (channels === 0) throw new Error("Unsupported PNG color type.");
   const filtered = inflateSync(Buffer.concat(compressed));
   const stride = width * channels;
   const pixels = Buffer.alloc(stride * height);
@@ -483,13 +489,33 @@ function pngPixel(bytes: Uint8Array, x: number, y: number): readonly number[] {
       pixels[rowOffset + column] = (raw + pngFilterDelta(filter, left, above, upperLeft)) & 0xff;
     }
   }
-  const pixelOffset = y * stride + x * channels;
-  return [
-    pixels[pixelOffset]!,
-    pixels[pixelOffset + 1]!,
-    pixels[pixelOffset + 2]!,
-    channels === 4 ? pixels[pixelOffset + 3]! : 255,
-  ];
+  return { width, height, channels, pixels };
+}
+
+function expectSolidCrop(
+  image: DecodedPng,
+  box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  expected: readonly [number, number, number, number],
+): void {
+  // CSS boxes may extend beyond the viewport; only intersecting screenshot
+  // pixels are evidence and every one must match the deterministic mask/color.
+  const left = Math.max(0, Math.floor(box.x));
+  const top = Math.max(0, Math.floor(box.y));
+  const right = Math.min(image.width, Math.ceil(box.x + box.width));
+  const bottom = Math.min(image.height, Math.ceil(box.y + box.height));
+  if (left >= right || top >= bottom) throw new Error("Crop does not intersect the PNG.");
+  const stride = image.width * image.channels;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = y * stride + x * image.channels;
+      expect([
+        image.pixels[offset]!,
+        image.pixels[offset + 1]!,
+        image.pixels[offset + 2]!,
+        image.channels === 4 ? image.pixels[offset + 3]! : 255,
+      ], `pixel (${x}, ${y})`).toEqual(expected);
+    }
+  }
 }
 
 function pngFilterDelta(filter: number, left: number, above: number, upperLeft: number): number {
