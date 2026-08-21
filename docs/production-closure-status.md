@@ -570,9 +570,10 @@ pull_request: pending
 - Promise `catch` and `finally` now invoke captured native methods under a
   scoped patched-`then` suppression guard, preserving subclass species and
   callback fulfillment/rejection while remaining independent of mutable
-  `Promise.resolve`. The exact focused Gate passed 10 files / 168 tests: 167
-  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
-  `git diff --check` passed. No E2E was run pending fresh review.
+  `Promise.resolve`. Round-2 implementation head: `96925b6`. The exact focused
+  Gate passed 10 files / 168 tests: 167 passed and 1 existing Task 21 skip.
+  Root `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run
+  pending fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
