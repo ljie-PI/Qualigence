@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
+  DeterministicExecutionBudget,
   ExecutionRuntime,
   resolvedActionNodeId,
   toDecisionTracePayload,
@@ -16,8 +17,247 @@ import {
 } from "@qualigence/testkit";
 
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
+const objectiveOnlyBudget = {
+  objectiveOnlyMaximumWallClockMs: 1_000,
+  objectiveOnlyMaximumModelTokens: 1_000,
+} as const;
 
 describe("ExecutionRuntime", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("classifies missing finite model usage once before resolution or permit minting", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let resolverCalls = 0;
+    let executorCalls = 0;
+    const budget = new DeterministicExecutionBudget();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async (context) => {
+          context.budget?.consumeModelUsage(context.job.runId, undefined);
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "not reached" };
+        },
+      },
+      resolver: {
+        resolve: async () => {
+          resolverCalls += 1;
+          return { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" };
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toMatchObject({ status: "error", errorCode: "ModelUsageUnavailable" });
+    expect(resolverCalls).toBe(0);
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").map((event) => event.stage)).toEqual([
+      "observation",
+      "run_completed",
+    ]);
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      status: "error",
+      errorCode: "ModelUsageUnavailable",
+    });
+    expect(() => budget.beforeStep("run-indexed", 0)).toThrowError(
+      expect.objectContaining({ code: "ExecutionBudgetNotActive" }),
+    );
+  });
+
+  it("classifies wall-clock exhaustion before permit minting", async () => {
+    let now = 0;
+    let policyCalls = 0;
+    let executorCalls = 0;
+    const traceRecorder = new InMemoryTraceRecorder();
+    const budget = new DeterministicExecutionBudget({ clock: { now: () => now } });
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async () => {
+          now = 1_000;
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "test" };
+        },
+      },
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: { authorize: async () => { policyCalls += 1; return { status: "allowed", reason: "allowed" }; } },
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toMatchObject({ status: "blocked", errorCode: "WallClockBudgetExceeded" });
+    expect(policyCalls).toBe(0);
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      graphId: "graph-1",
+      nodes: [],
+    });
+  });
+
+  it("keeps model-budget exhaustion in the approved blocked classification", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async (context) => {
+          context.budget?.consumeModelUsage(context.job.runId, { totalTokens: 1_001 });
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "not reached" };
+        },
+      },
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+    });
+
+    const completion = await runtime.run(indexedJob());
+
+    expect(completion).toEqual({
+      jobId: "job-indexed",
+      runId: "run-indexed",
+      status: "blocked",
+      errorCode: "ModelBudgetExceeded",
+    });
+    expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
+      status: "blocked",
+      errorCode: "ModelBudgetExceeded",
+    });
+  });
+
+  it.each(["observer", "decision", "resolver", "policy", "action", "verifier"] as const)(
+    "bounds a hanging %s call by the remaining wall-clock budget",
+    async (hangingStage) => {
+      vi.useFakeTimers();
+      let now = 0;
+      let captureCalls = 0;
+      let aborted = false;
+      const never = (signal: AbortSignal | undefined) => new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      });
+      const traceRecorder = new InMemoryTraceRecorder();
+      const runtime = new ExecutionRuntime({
+        observer: {
+          capture: async (_job, signal) => {
+            captureCalls += 1;
+            if (hangingStage === "observer") {
+              return never(signal);
+            }
+            return { graphId: `graph-${captureCalls}`, nodes: [] };
+          },
+        },
+        decisionProvider: {
+          decide: async (context) => hangingStage === "decision"
+            ? never(context.signal)
+            : { kind: "click", target: { nodeId: "node-1" }, reason: "test" },
+        },
+        resolver: {
+          resolve: async (_decision, _observation, signal) => hangingStage === "resolver"
+            ? never(signal)
+            : { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" },
+        },
+        policyGate: {
+          authorize: async (_action, context) => hangingStage === "policy"
+            ? never(context.signal)
+            : { status: "allowed", reason: "allowed" },
+        },
+        actionExecutor: {
+          execute: async (_action, _permit, signal) => hangingStage === "action"
+            ? never(signal)
+            : { status: "ok" },
+        },
+        verifier: {
+          verify: async (context) => hangingStage === "verifier"
+            ? never(context.signal)
+            : { status: "passed", summary: "passed", claims: [] },
+        },
+        traceRecorder,
+        budget: new DeterministicExecutionBudget({ clock: { now: () => now } }),
+      });
+
+      const completionPromise = runtime.run(indexedJob());
+      await vi.advanceTimersByTimeAsync(0);
+      now = 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const completion = await completionPromise;
+
+      expect(completion).toEqual({
+        jobId: "job-indexed",
+        runId: "run-indexed",
+        status: "blocked",
+        errorCode: "WallClockBudgetExceeded",
+      });
+      expect(aborted).toBe(true);
+      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).not.toMatchObject({
+        status: "blocked",
+        errorCode: "WallClockBudgetExceeded",
+      });
+    },
+  );
+
+  it("bounds Trace appends by the run deadline and observes a late rejection", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let rejectLate: ((error: Error) => void) | undefined;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async () => new Promise<never>((_resolve, reject) => { rejectLate = reject; }),
+      },
+      budget: new DeterministicExecutionBudget({
+        clock: { now: () => now },
+        objectiveOnlyMaximumWallClockMs: 100,
+        objectiveOnlyMaximumModelTokens: 10,
+      }),
+    });
+
+    const completionPromise = runtime.run({
+      jobId: "job-objective",
+      runId: "run-objective",
+      projectId: "project-test",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "click",
+      policy,
+    });
+    for (let attempt = 0; attempt < 10 && rejectLate === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(rejectLate).toBeDefined();
+    now = 100;
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.runOnlyPendingTimersAsync();
+
+    await expect(completionPromise).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    rejectLate?.(new Error("late Trace rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
   it.each([
     [
       { kind: "navigate", path: "/checkout", reason: "open checkout" } as AnyProposedAction,
@@ -118,6 +358,7 @@ describe("ExecutionRuntime", () => {
       actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" as const }; } },
       verifier: { verify: async () => ({ status: "passed" as const, summary: "not reached", claims: [] }) },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
     const completion = await runtime.run({ jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "test", policy });
     expect(completion).toMatchObject({ status: "blocked", errorCode: "PolicyDenied" });
@@ -179,6 +420,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -258,6 +500,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -354,6 +597,7 @@ describe("ExecutionRuntime", () => {
         }),
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -442,6 +686,7 @@ describe("ExecutionRuntime", () => {
         },
       },
       traceRecorder,
+      ...objectiveOnlyBudget,
     });
 
     const completion = await runtime.run({
@@ -475,3 +720,22 @@ describe("ExecutionRuntime", () => {
     });
   });
 });
+
+function indexedJob() {
+  return {
+    jobId: "job-indexed",
+    runId: "run-indexed",
+    projectId: "project-test",
+    target: { kind: "web" as const, url: "https://example.test/" },
+    objective: "click",
+    policy,
+    plan: {
+      missionId: "mission-1",
+      missionRevision: 1,
+      testCaseId: "case-1",
+      steps: [{ stepIndex: 0, kind: "click" as const, target: { purpose: "continue" } }] as const,
+      expectedClaimIds: ["claim-1"] as [string],
+      budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+    },
+  };
+}

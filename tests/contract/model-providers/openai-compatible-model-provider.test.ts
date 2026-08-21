@@ -36,6 +36,7 @@ describe("OpenAICompatibleModelProvider", () => {
         messages: [{ role: "user", content: "choose" }],
         responseSchema: { type: "object" },
         timeoutMs: 1_000,
+        maximumOutputTokens: 321,
       });
 
       expect(result).toMatchObject({
@@ -50,6 +51,7 @@ describe("OpenAICompatibleModelProvider", () => {
           model: "compatible-model",
           messages: [{ role: "user", content: "choose" }],
           response_format: expect.objectContaining({ type: "json_schema" }),
+          max_completion_tokens: 321,
         }),
       ]);
     } finally {
@@ -179,6 +181,49 @@ describe("OpenAICompatibleModelProvider", () => {
       }
     },
   );
+
+  it("preserves provider-reported usage on a failed request", async () => {
+    const server = createServer((_request, response) => {
+      response.statusCode = 429;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        error: {
+          message: "provider detail",
+          type: "provider_error",
+          code: "rate_limit_exceeded",
+          usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 },
+        },
+      }));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected TCP listener.");
+    }
+
+    try {
+      const provider = new OpenAICompatibleModelProvider({
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "test-key",
+      });
+
+      await expect(provider.invoke({
+        operation: "execution.decision",
+        model: "compatible-model",
+        messages: [{ role: "user", content: "choose" }],
+        responseSchema: { type: "object" },
+        timeoutMs: 1_000,
+      })).rejects.toMatchObject({
+        code: "RateLimited",
+        usage: { inputTokens: 7, outputTokens: 2, totalTokens: 9 },
+      });
+    } finally {
+      server.closeAllConnections();
+      server.close();
+      await once(server, "close");
+    }
+  });
 
   it("returns malformed structured content for gateway schema correction", async () => {
     const server = createServer((_request, response) => {

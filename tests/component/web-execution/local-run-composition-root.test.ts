@@ -18,6 +18,7 @@ type VerificationMode = "passed" | "finding";
 interface MockModelServer {
   readonly baseUrl: string;
   mode: VerificationMode;
+  readonly maximumOutputTokens: readonly number[];
   close(): Promise<void>;
 }
 
@@ -82,6 +83,7 @@ function completion(model: string, payload: unknown): string {
 
 async function startMockModelServer(): Promise<MockModelServer> {
   const state: { mode: VerificationMode } = { mode: "passed" };
+  const maximumOutputTokens: number[] = [];
 
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -92,7 +94,11 @@ async function startMockModelServer(): Promise<MockModelServer> {
         readonly response_format: {
           readonly json_schema: { readonly name: string };
         };
+        readonly max_completion_tokens?: number;
       };
+      if (body.max_completion_tokens !== undefined) {
+        maximumOutputTokens.push(body.max_completion_tokens);
+      }
       const operation = body.response_format.json_schema.name;
       const userMessage = [...body.messages]
         .reverse()
@@ -164,6 +170,7 @@ async function startMockModelServer(): Promise<MockModelServer> {
     set mode(value: VerificationMode) {
       state.mode = value;
     },
+    maximumOutputTokens,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -173,7 +180,12 @@ async function startMockModelServer(): Promise<MockModelServer> {
 
 function configFor(model: MockModelServer, dataDir: string): CliConfig {
   return {
-    model: { baseUrl: model.baseUrl, apiKey: API_KEY, modelName: MODEL_NAME },
+    model: {
+      baseUrl: model.baseUrl,
+      apiKey: API_KEY,
+      modelName: MODEL_NAME,
+      maximumTokensPerCall: 37,
+    },
     dataDir,
   };
 }
@@ -262,6 +274,7 @@ describe("local-run composition root", () => {
     expect(persisted).toBeDefined();
     expect(persisted?.status).toBe("passed");
     expect(result.evidenceRefs.length).toBeGreaterThan(0);
+    expect(model.maximumOutputTokens).toEqual([37, 35]);
   }, 60_000);
 
   it("produces a Finding with evidence references from a real failure", async () => {

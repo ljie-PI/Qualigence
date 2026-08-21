@@ -15,6 +15,7 @@ export interface RunnerConfig {
     readonly baseUrl: string;
     readonly apiKey: string;
     readonly modelName: string;
+    readonly maximumTokensPerCall: number;
   };
   readonly headed: boolean;
   readonly navigationTimeoutMs: number;
@@ -49,9 +50,21 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
       baseUrl: required("RUNNER_MODEL_BASE_URL", env),
       apiKey: required("RUNNER_MODEL_API_KEY", env),
       modelName: required("RUNNER_MODEL_NAME", env),
+      maximumTokensPerCall: positiveInteger(
+        "RUNNER_MODEL_MAXIMUM_TOKENS_PER_CALL",
+        required("RUNNER_MODEL_MAXIMUM_TOKENS_PER_CALL", env),
+      ),
     },
     headed: env.RUNNER_HEADED === "true",
     navigationTimeoutMs: Number.parseInt(env.RUNNER_NAVIGATION_TIMEOUT_MS ?? "30000", 10),
     actionTimeoutMs: Number.parseInt(env.RUNNER_ACTION_TIMEOUT_MS ?? "15000", 10),
   };
+}
+
+function positiveInteger(name: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return parsed;
 }

@@ -13,6 +13,11 @@ import type {
   TraceEvent,
   VerificationTracePayload,
 } from "@qualigence/runner-protocol";
+import {
+  DeterministicExecutionBudget,
+  ExecutionBudgetError,
+  type ExecutionBudget,
+} from "./execution-budget.js";
 
 export type { ResolvedDesktopAction } from "@qualigence/runner-protocol";
 
@@ -169,7 +174,7 @@ export class ExecutionBlockedError extends Error {
 }
 
 export interface Observer {
-  capture(job: AcceptedExecutionJob): Promise<ObservationGraph>;
+  capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
 }
 
 export interface ExecutionDecisionProvider {
@@ -179,18 +184,22 @@ export interface ExecutionDecisionProvider {
 export interface AgentContext {
   readonly job: AcceptedExecutionJob;
   readonly observation: ObservationGraph;
+  readonly budget?: ExecutionBudget;
+  readonly signal?: AbortSignal;
 }
 
 export interface ActionResolver {
   resolve(
     action: ProposedAction,
     graph: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<ResolvedAction>;
 }
 
 export interface RunnerPolicyContext {
   readonly job: AcceptedExecutionJob;
   readonly action: ResolvedAction;
+  readonly signal?: AbortSignal;
 }
 
 export interface RunnerPolicyGate {
@@ -201,7 +210,7 @@ export interface RunnerPolicyGate {
 }
 
 export interface ActionExecutor {
-  execute(action: ResolvedAction, permit: ExecutionPermit): Promise<ActionOutcome>;
+  execute(action: ResolvedAction, permit: ExecutionPermit, signal?: AbortSignal): Promise<ActionOutcome>;
 }
 
 export interface Verifier {
@@ -214,6 +223,8 @@ export interface VerificationContext {
   readonly after: ObservationGraph;
   readonly action: ResolvedAction;
   readonly outcome: ActionOutcome;
+  readonly budget?: ExecutionBudget;
+  readonly signal?: AbortSignal;
 }
 
 export interface TraceRecorder {
@@ -234,6 +245,9 @@ export interface ExecutionRuntimeDependencies {
   readonly actionExecutor: ActionExecutor;
   readonly verifier: Verifier;
   readonly traceRecorder: TraceRecorder;
+  readonly budget?: ExecutionBudget;
+  readonly objectiveOnlyMaximumWallClockMs?: number;
+  readonly objectiveOnlyMaximumModelTokens?: number;
 }
 
 const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
@@ -256,31 +270,71 @@ export class ExecutionPermit {
 }
 
 export class ExecutionRuntime {
-  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {}
+  private readonly budget: ExecutionBudget;
+
+  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {
+    if (dependencies.budget !== undefined) {
+      this.budget = dependencies.budget;
+      return;
+    }
+    this.budget = new DeterministicExecutionBudget({
+      ...(dependencies.objectiveOnlyMaximumWallClockMs === undefined
+        ? {}
+        : { objectiveOnlyMaximumWallClockMs: dependencies.objectiveOnlyMaximumWallClockMs }),
+      ...(dependencies.objectiveOnlyMaximumModelTokens === undefined
+        ? {}
+        : { objectiveOnlyMaximumModelTokens: dependencies.objectiveOnlyMaximumModelTokens }),
+    });
+  }
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+    let budgetStarted = false;
     try {
+      this.budget.begin(job);
+      budgetStarted = true;
       return await this.runUntilCompletion(job);
     } catch (error) {
-      if (!(error instanceof ExecutionBlockedError)) {
+      const errorCode = error instanceof ExecutionBlockedError
+        ? error.errorCode
+        : error instanceof ExecutionBudgetError
+          ? error.code
+          : undefined;
+      if (errorCode === undefined) {
         throw error;
       }
 
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status: "blocked",
-          errorCode: error.errorCode,
-        },
-      });
+      const status = errorCode === "ModelUsageUnavailable" ? "error" : "blocked";
+      try {
+        if (!budgetStarted) {
+          throw error;
+        }
+        await this.record({
+          runId: job.runId,
+          stage: "run_completed",
+          payload: {
+            status,
+            errorCode,
+          },
+        });
+      } catch (recordError) {
+        if (
+          !(recordError instanceof ExecutionBudgetError) ||
+          recordError.code !== "WallClockBudgetExceeded"
+        ) {
+          throw recordError;
+        }
+      }
 
       return {
         jobId: job.jobId,
         runId: job.runId,
-        status: "blocked",
-        errorCode: error.errorCode,
+        status,
+        errorCode,
       };
+    } finally {
+      if (budgetStarted) {
+        this.budget.finish(job.runId);
+      }
     }
   }
 
@@ -288,7 +342,9 @@ export class ExecutionRuntime {
     // Ticket 19 replaces this compatibility pipeline with the bounded indexed
     // loop. Until then, only the current first action can own recorded stages.
     const stepIndex = job.plan?.steps[0]?.stepIndex;
-    const observation = await this.dependencies.observer.capture(job);
+    this.budget.beforeStep(job.runId, stepIndex ?? 0);
+    const observation = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.observer.capture(job, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -296,10 +352,13 @@ export class ExecutionRuntime {
       payload: observation,
     });
 
-    const decision = await this.dependencies.decisionProvider.decide({
-      job,
-      observation,
-    });
+    const decision = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.decisionProvider.decide({
+        job,
+        observation,
+        budget: this.budget,
+        signal,
+      }));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -307,7 +366,8 @@ export class ExecutionRuntime {
       payload: toDecisionTracePayload(decision),
     });
 
-    const action = await this.dependencies.resolver.resolve(decision, observation);
+    const action = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.resolver.resolve(decision, observation, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -315,10 +375,12 @@ export class ExecutionRuntime {
       payload: toResolvedActionTracePayload(action),
     });
 
-    const policyDecision = await this.dependencies.policyGate.authorize(action, {
-      job,
-      action,
-    });
+    const policyDecision = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.policyGate.authorize(action, {
+        job,
+        action,
+        signal,
+      }));
 
     if (policyDecision.status === "denied") {
       await this.record({
@@ -351,8 +413,10 @@ export class ExecutionRuntime {
       payload: toAuthorizedPolicyTracePayload(policyDecision),
     });
 
+    this.budget.maximumOutputTokens(job.runId);
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
-    const outcome = await this.dependencies.actionExecutor.execute(action, permit);
+    const outcome = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.actionExecutor.execute(action, permit, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -379,7 +443,8 @@ export class ExecutionRuntime {
       };
     }
 
-    const after = await this.dependencies.observer.capture(job);
+    const after = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.observer.capture(job, signal));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -387,13 +452,16 @@ export class ExecutionRuntime {
       payload: after,
     });
 
-    const verification = await this.dependencies.verifier.verify({
-      job,
-      before: observation,
-      after,
-      action,
-      outcome,
-    });
+    const verification = await this.withinWallClock(job.runId, (signal) =>
+      this.dependencies.verifier.verify({
+        job,
+        before: observation,
+        after,
+        action,
+        outcome,
+        budget: this.budget,
+        signal,
+      }));
     await this.record({
       runId: job.runId,
       ...(stepIndex === undefined ? {} : { stepIndex }),
@@ -440,7 +508,34 @@ export class ExecutionRuntime {
   }
 
   private async record(input: TraceEventInput): Promise<void> {
-    await this.dependencies.traceRecorder.append(input);
+    await this.withinWallClock(input.runId, () =>
+      this.dependencies.traceRecorder.append(input));
+  }
+
+  private async withinWallClock<T>(
+    runId: string,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const remainingMs = this.budget.remainingWallClockMs(runId);
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      const checkDeadline = () => {
+        try {
+          const remaining = this.budget.remainingWallClockMs(runId);
+          timeout = setTimeout(checkDeadline, Math.min(remaining, 2_147_483_647));
+        } catch (error) {
+          controller.abort(error);
+          timeout = setTimeout(() => reject(error), 0);
+        }
+      };
+      timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));
+    });
+    try {
+      return await Promise.race([operation(controller.signal), deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
   }
 }
 

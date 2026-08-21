@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   ModelGateway,
+  ModelGatewayAbortError,
   ModelGatewayError,
+  ModelGatewayInvocationError,
   type ModelProvider,
   type StructuredOutputContract,
 } from "@qualigence/model-gateway";
@@ -74,7 +76,73 @@ describe("ModelGateway", () => {
     });
   });
 
-  it("propagates a non-validation parser defect without retrying the provider", async () => {
+  it("forwards the output limit and preserves usage from the single correction", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
+        { output: { action: { kind: "click", nodeId: "add" }, reason: "add item" }, usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11 } },
+      ],
+    );
+    const gateway = new ModelGateway({ provider });
+
+    const result = await gateway.invokeStructured(
+      { ...request(), maximumOutputTokens: 17 },
+      decisionContract,
+    );
+
+    expect(provider.requests.map((providerRequest) => providerRequest.maximumOutputTokens)).toEqual([17, 17]);
+    expect(result.usage).toEqual({ inputTokens: 13, outputTokens: 5, totalTokens: 18 });
+  });
+
+  it("preserves the complete consumed total when correction usage fields differ", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { totalTokens: 7 } },
+        { output: { action: { kind: "click", nodeId: "add" }, reason: "add item" }, usage: { inputTokens: 8, outputTokens: 3 } },
+      ],
+    );
+
+    const result = await new ModelGateway({ provider }).invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toEqual({ inputTokens: 8, outputTokens: 3, totalTokens: 18 });
+  });
+
+  it("returns aggregate usage on exhausted structured-output correction", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { output: { malformed: true }, usage: { totalTokens: 7 } },
+        { output: { stillMalformed: true }, usage: { totalTokens: 11 } },
+      ],
+    );
+
+    await expect(
+      new ModelGateway({ provider }).invokeStructured(request(), decisionContract),
+    ).rejects.toMatchObject({
+      code: "InvalidStructuredOutput",
+      usage: { totalTokens: 18 },
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.POSITIVE_INFINITY])(
+    "rejects invalid output limit %s before invoking the provider",
+    async (maximumOutputTokens) => {
+      const provider = fakeProvider({ structuredOutput: true });
+      const gateway = new ModelGateway({ provider });
+
+      await expect(
+        gateway.invokeStructured(
+          { ...request(), maximumOutputTokens },
+          decisionContract,
+        ),
+      ).rejects.toMatchObject({ code: "InvalidRequest" });
+      expect(provider.requests).toHaveLength(0);
+    },
+  );
+
+  it("returns typed usage with a non-validation parser defect without retrying", async () => {
     const parserDefect = new TypeError("contract bug");
     const provider = fakeProvider(
       { structuredOutput: true },
@@ -89,7 +157,11 @@ describe("ModelGateway", () => {
       },
     };
 
-    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(parserDefect);
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toMatchObject({
+      reason: parserDefect,
+      usageState: { status: "available", usage: { totalTokens: 2 } },
+      providerAttempted: true,
+    } satisfies Partial<ModelGatewayInvocationError>);
     expect(provider.requests).toHaveLength(1);
   });
 
@@ -107,9 +179,11 @@ describe("ModelGateway", () => {
       },
     };
 
-    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toBe(
-      requestConstructionDefect,
-    );
+    await expect(gateway.invokeStructured(request(), defectiveContract)).rejects.toMatchObject({
+      reason: requestConstructionDefect,
+      providerAttempted: false,
+      usageState: { status: "unavailable" },
+    } satisfies Partial<ModelGatewayInvocationError>);
     expect(provider.requests).toHaveLength(0);
   });
 
@@ -141,10 +215,10 @@ describe("ModelGateway", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
-  it("normalizes a timeout after bounded transient retries", async () => {
+  it("normalizes a timeout after exactly one transient retry", async () => {
     const provider = fakeProvider(
       { structuredOutput: true },
-      [new Error("timed out"), new Error("timed out"), new Error("timed out")],
+      [new Error("timed out"), new Error("timed out")],
       "TimedOut",
     );
     const delays: number[] = [];
@@ -158,8 +232,287 @@ describe("ModelGateway", () => {
     await expect(
       gateway.invokeStructured(request(), decisionContract),
     ).rejects.toMatchObject({ code: "TimedOut" } satisfies Partial<ModelGatewayError>);
-    expect(provider.requests).toHaveLength(3);
-    expect(delays).toEqual([100, 200]);
+    expect(provider.requests).toHaveLength(2);
+    expect(delays).toEqual([100]);
+  });
+
+  it("accounts usage from a failed transient attempt and its successful retry", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out"), usage: { totalTokens: 4 } },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+
+    const result = await new ModelGateway({ provider, delay: async () => {} })
+      .invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2, totalTokens: 9 });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("does not hide missing usage from a failed attempt behind a successful retry", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out") },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+
+    const result = await new ModelGateway({ provider, delay: async () => {} })
+      .invokeStructured(request(), decisionContract);
+
+    expect(result.usage).toBeUndefined();
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("reports known retry usage while marking the accumulated usage unavailable", async () => {
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [
+        { error: new Error("timed out") },
+        {
+          output: { action: { kind: "click", nodeId: "add" }, reason: "add item" },
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        },
+      ],
+      "TimedOut",
+    );
+    const reports: import("@qualigence/model-gateway").ModelInvocationReport[] = [];
+    const gateway = new ModelGateway({
+      provider,
+      delay: async () => {},
+      invocationObserver: { record: async (report) => { reports.push(report); } },
+    });
+
+    await gateway.invokeStructured({
+      ...request(),
+      invocation: { runId: "run-1", invocationId: "invocation-1" },
+    }, decisionContract);
+
+    expect(reports).toEqual([
+      expect.objectContaining({
+        status: "succeeded",
+        usageStatus: "unavailable",
+        inputTokens: 3,
+        outputTokens: 2,
+        totalTokens: 5,
+      }),
+    ]);
+  });
+
+  it("does not retry and reports unavailable usage after an invocation is aborted", async () => {
+    const controller = new AbortController();
+    const provider = fakeProvider(
+      { structuredOutput: true },
+      [new Error("timed out"), { action: { kind: "click", nodeId: "add" }, reason: "late" }],
+      "TimedOut",
+    );
+    const reports: unknown[] = [];
+    const gateway = new ModelGateway({
+      provider,
+      delay: async () => {
+        controller.abort(new Error("deadline"));
+      },
+      invocationObserver: { record: async (report) => { reports.push(report); } },
+    });
+
+    await expect(gateway.invokeStructured({
+      ...request(),
+      signal: controller.signal,
+      invocation: { runId: "run-1", invocationId: "invocation-1" },
+    }, decisionContract)).rejects.toThrow("deadline");
+    expect(provider.requests).toHaveLength(1);
+    expect(reports).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        errorCode: "Aborted",
+        usageStatus: "unavailable",
+      }),
+    ]);
+  });
+
+  it("returns accumulated usage when an in-flight correction is aborted without usage", async () => {
+    const controller = new AbortController();
+    let rejectLate: ((error: Error) => void) | undefined;
+    let correctionStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      correctionStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke(providerRequest) {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            output: { malformed: true },
+            model: providerRequest.model,
+            finishReason: "stop",
+            usage: { totalTokens: 4 },
+          };
+        }
+        correctionStarted?.();
+        return new Promise((_resolve, reject) => {
+          rejectLate = reject;
+        });
+      },
+    };
+    const invocation = new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 4 },
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+    rejectLate?.(new Error("late provider rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("returns accumulated usage when an in-flight transient retry is aborted", async () => {
+    const controller = new AbortController();
+    let retryStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      retryStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw { code: "TimedOut", message: "timed out", usage: { totalTokens: 4 } };
+        }
+        retryStarted?.();
+        return new Promise(() => {});
+      },
+    };
+    const invocation = new ModelGateway({ provider, delay: async () => {} }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 4 },
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+  });
+
+  it("handles a late rejection when the provider aborts before returning its promise", async () => {
+    const controller = new AbortController();
+    const reason = new Error("deadline");
+    let rejectLate: ((error: Error) => void) | undefined;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      invoke() {
+        controller.abort(reason);
+        return new Promise((_resolve, reject) => {
+          rejectLate = reject;
+        });
+      },
+    };
+
+    await expect(new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract)).rejects.toMatchObject({
+      reason,
+      usageUnavailable: true,
+    } satisfies Partial<ModelGatewayAbortError>);
+
+    rejectLate?.(new Error("late provider rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it("includes interrupted-attempt usage when the provider reports it on abort", async () => {
+    const controller = new AbortController();
+    let correctionStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      correctionStarted = resolve;
+    });
+    let attempts = 0;
+    const provider: ModelProvider = {
+      capabilities: {
+        structuredOutput: true,
+        visionInput: false,
+        toolCalling: false,
+        streaming: false,
+      },
+      async invoke(providerRequest) {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            output: { malformed: true },
+            model: providerRequest.model,
+            finishReason: "stop",
+            usage: { totalTokens: 4 },
+          };
+        }
+        correctionStarted?.();
+        return new Promise((_resolve, reject) => {
+          providerRequest.signal?.addEventListener("abort", () => {
+            reject({
+              code: "TimedOut",
+              message: "aborted",
+              usage: { totalTokens: 3 },
+            });
+          }, { once: true });
+        });
+      },
+    };
+    const invocation = new ModelGateway({ provider }).invokeStructured({
+      ...request(),
+      signal: controller.signal,
+    }, decisionContract);
+    await started;
+
+    const reason = new Error("deadline");
+    controller.abort(reason);
+
+    await expect(invocation).rejects.toMatchObject({
+      reason,
+      usage: { totalTokens: 7 },
+      usageUnavailable: false,
+    } satisfies Partial<ModelGatewayAbortError>);
   });
 });
 
@@ -196,13 +549,37 @@ function fakeProvider(
         };
       }
 
+      if (isScriptedError(response)) {
+        throw {
+          code: errorCode,
+          message: response.error.message,
+          ...(response.usage === undefined ? {} : { usage: response.usage }),
+        };
+      }
+
+      const scripted = isScriptedResponse(response) ? response : { output: response };
       return {
-        output: response,
+        output: scripted.output,
         model: providerRequest.model,
         finishReason: "stop",
+        usage: scripted.usage ?? { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       };
     },
   };
 
   return provider;
+}
+
+function isScriptedError(value: unknown): value is {
+  readonly error: Error;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number };
+} {
+  return typeof value === "object" && value !== null && "error" in value;
+}
+
+function isScriptedResponse(value: unknown): value is {
+  readonly output: unknown;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number };
+} {
+  return typeof value === "object" && value !== null && "output" in value;
 }

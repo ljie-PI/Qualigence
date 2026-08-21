@@ -43,6 +43,91 @@ scenarios, local-console/RDP execution, and two-person signed evidence remain
 blocking. Git OpenSSL must be resolved explicitly from
 `C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
 
+### Ticket 17 - Execution budget and model usage (2026-08-20)
+
+component: complete
+production_wiring: present
+verification: pending dedicated remediation PR
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/72`
+remediation_ticket: `37`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
+
+- Model output limits and provider usage are preserved through the
+  provider, Gateway, Model Agent, and Runner Runtime seams. Gateway transient
+  retry and structured-output correction are each bounded to exactly one.
+- `DeterministicExecutionBudget` enforces positive finite step, monotonic
+  wall-clock, output-token, and consumed-token limits. Missing finite usage is
+  classified as `ModelUsageUnavailable`; overruns retain consumed usage and
+  classify as `ModelBudgetExceeded` before an action Permit is minted.
+- Round-1 Spec blockers are fixed: `ModelUsageUnavailable` emits one
+  infrastructure `error` Trace/completion while policy, step, wall-clock, and
+  model-budget exhaustion retain the approved `blocked` classification.
+- Gateway retry/correction accounting includes every attempted provider call,
+  including usage attached to provider errors. Any attempted call with missing
+  finite usage makes the logical invocation usage unavailable, so a later
+  successful retry cannot conceal it; each attempt is charged exactly once.
+- Runtime bounds observer, decision, resolver, policy, action, and verifier
+  awaits by the remaining monotonic deadline and passes an abort signal through
+  existing cancellation seams. It emits stable `WallClockBudgetExceeded` and
+  clears per-run budget state in `finally`. Ticket 18 valueRef resolution and
+  Ticket 19 bounded indexed execution remain pending and are not implemented.
+- Round-1 affected single files passed: Runtime 24, Gateway 17, Model Agent 14,
+  OpenAI-compatible provider 12. The exact row-17 focused Gate
+  `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts`
+  passed 9 files / 101 tests. Root `corepack pnpm typecheck` and
+  `git diff --check` also passed. Fresh exact-base review and dedicated PR merge
+  evidence remain pending.
+- Round-2 Important fix: abort during an in-flight retry or structured-output
+  correction now throws a typed Gateway abort error carrying all known prior
+  attempt usage and any usage reported by the interrupted attempt. Model Agent
+  charges that aggregate exactly once before propagating wall timeout/abort;
+  if the interrupted attempted call has no usage under the finite budget, it
+  instead preserves `ModelUsageUnavailable`. Abort racing retains a rejection
+  handler for late provider settlement, preventing unhandled late rejections.
+- Round-2 affected files passed: Gateway 21 tests, Model Agent 17 tests, and
+  Runtime 24 tests. The exact row-17 focused Gate above passed 9 files / 108 tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run per
+  the ticket review-fix protocol; fresh exact-base review remains pending.
+- Round-3 approved scope adds both production composition roots and their exact
+  tests to Ticket 17 authority. Every attempted Gateway invocation now returns
+  typed available/unavailable usage state, including parser defects and aborts;
+  Model Agent charges known aggregate usage once before rethrow or stable budget
+  classification.
+- Aborted and failed invocation reports are emitted once with only de-identified
+  context, status, safe code, and known token fields. Unknown usage stays marked
+  unavailable and prompts, output, provider messages, abort reasons, and secrets
+  are not copied into the report.
+- Runtime bounds every Trace append by the same monotonic Run wall deadline and
+  retains a rejection handler for late settlement. A deadline-exhausted terminal
+  append is not falsely claimed as persisted.
+- Objective-only limits no longer have Runner Kernel defaults. Standalone Runner
+  composition supplies configured action timeout and required one-call token
+  ceiling; Local CLI composition supplies the request action timeout and its
+  required configured one-call token ceiling. The same ceiling bounds provider
+  output and accumulated consumed tokens.
+- Round-3 amended focused Gate:
+  `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts tests/unit/runner/job-executor.test.ts tests/component/web-execution/local-run-composition-root.test.ts`.
+  Final verification passed 11 files / 122 tests, plus root typecheck and diff
+  check. No E2E or full suite was run.
+- Remediation Ticket 37 keeps reporting on the existing Gateway observer seam
+  but separates the typed invocation outcome from report settlement. A success
+  whose report rejects charges known usage once before propagating the report
+  failure; a failed invocation whose report rejects charges known usage once
+  and preserves the original model failure classification.
+- Exactly one logical report is submitted per invocation. Observer settlement
+  is bounded by the Runtime's existing abort signal and wall deadline, and the
+  retained settlement handler prevents a late observer rejection from becoming
+  unhandled after per-run budget state is cleared.
+- Ticket 37 RED reproduced all three round-5 failures in
+  `tests/unit/runner-components/model-agent.test.ts`: success plus observer
+  rejection lost usage, success plus observer hang exceeded the test deadline,
+  and failed invocation plus known usage was replaced by the observer error.
+  GREEN passed the Ticket 17 focused Gate: 11 files / 125 tests. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No full suite, E2E,
+  or full-suite review was run per the remediation request. The scoped
+  remediation Standards/Spec review reported no blocking findings; PR #73
+  remains pending merge into the parent Ticket 17 branch.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete

@@ -155,6 +155,8 @@ function baseDependencies(
       wallNow: (): number => state.wall,
     },
     actionDeadlineSafetyMarginMs: 5_000,
+    objectiveOnlyMaximumWallClockMs: 15_000,
+    objectiveOnlyMaximumModelTokens: 4_096,
     ...overrides,
   };
 }
@@ -190,6 +192,26 @@ describe("LeasedJobExecutor", () => {
     expect(session.accepted).toBe(true);
     expect((await spool.usage()).events).toBeGreaterThan(0);
     expect(executor.mayStartNextAction()).toBe(true);
+  });
+
+  it("passes explicit objective-only limits into the public model budget seam", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    let outputCeiling: number | undefined;
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      objectiveOnlyMaximumWallClockMs: 12_345,
+      objectiveOnlyMaximumModelTokens: 37,
+      decisionProvider: {
+        decide: async (context) => {
+          outputCeiling = context.budget?.maximumOutputTokens(context.job.runId);
+          return { kind: "click", target: { nodeId: "node-a" }, reason: "test" };
+        },
+      },
+    }));
+
+    await executor.execute(offer([]), new FakeSession());
+
+    expect(outputCeiling).toBe(37);
   });
 
   it("renews concurrently with execution and returns the newest lease", async () => {
