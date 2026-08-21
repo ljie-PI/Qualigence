@@ -16,7 +16,17 @@ export interface ApproveStoredTestPlanInput {
   readonly clock: Clock;
 }
 
+export interface AllocatePrdRevisionInput {
+  readonly prdId: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly content: string;
+  readonly contentSha256: string;
+  readonly ingestedAt: string;
+}
+
 export interface TestPlanRepository {
+  allocatePrdRevision(input: AllocatePrdRevisionInput): Promise<PrdDocument>;
   savePrdDocument(document: PrdDocument): Promise<void>;
   getPrdDocumentById(prdId: string): Promise<PrdDocument | undefined>;
   listPrdDocuments(projectId: string): Promise<readonly PrdDocument[]>;

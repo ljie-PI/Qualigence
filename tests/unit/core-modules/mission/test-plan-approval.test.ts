@@ -129,6 +129,11 @@ describe("TestPlanService PRD intake", () => {
   it("constructs and persists identity and the next project revision with idempotent replay", async () => {
     const documents: PrdDocument[] = [{ prdId: "prd-existing", projectId: "p", revision: 1, title: "Existing", content: "old", contentSha256: "hash", ingestedAt: fixedClock.now() }];
     const repository = {
+      allocatePrdRevision: async (input: Omit<PrdDocument, "revision">) => {
+        const document = Object.freeze({ ...input, revision: Math.max(...documents.filter((item) => item.projectId === input.projectId).map((item) => item.revision), 0) + 1 });
+        documents.push(document);
+        return document;
+      },
       savePrdDocument: async (document: PrdDocument) => { documents.push(document); },
       getPrdDocumentById: async (prdId: string) => documents.find((document) => document.prdId === prdId),
       listPrdDocuments: async (projectId: string) => documents.filter((document) => document.projectId === projectId),

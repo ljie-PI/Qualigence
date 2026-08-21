@@ -158,11 +158,8 @@ export class TestPlanService {
       return existing;
     }
     if (!await this.projectExists(command.projectId)) throw new TestPlanServiceError("PlanProjectMismatch", "project was not found");
-    const revisions = await this.repository.listPrdDocuments(command.projectId);
-    const revision = revisions.reduce((highest, document) => Math.max(highest, document.revision), 0) + 1;
-    const document = PrdDocument.create({ prdId, projectId: command.projectId, title: command.title, content: command.content, revision }, this.clock);
-    await this.repository.savePrdDocument(document);
-    const persisted = await this.repository.getPrdDocumentById(prdId) ?? document;
+    const candidate = PrdDocument.create({ prdId, projectId: command.projectId, title: command.title, content: command.content }, this.clock);
+    const persisted = await this.repository.allocatePrdRevision(candidate);
     this.assertPrdReplay(persisted, command);
     return persisted;
   }

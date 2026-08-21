@@ -56,6 +56,23 @@ describe("rendered product intake revisions", () => {
     expect(desktop).toContain("--clean");
   });
 
+  it("preserves every Desktop AppTarget field when creating a revision", async () => {
+    const desktop = { targetId: "desktop", projectId: "project-1", kind: "desktop" as const, displayName: "Desktop", runnerId: "runner-windows", version: 3, snapshotHash: "b".repeat(64), configuration: { kind: "desktop" as const, app: { targetId: "desktop", platform: "windows" as const, launch: { executable: "C:\\Apps\\app.exe", args: ["--profile", "approved"], workingDirectory: "C:\\Apps" }, process: { expectedImageName: "app.exe", allowedChildImageNames: ["helper.exe"] }, window: { titlePattern: "Main.*", automationId: "Main" }, reset: { command: "C:\\Apps\\reset.exe", args: ["--clean"], timeoutMs: 5000 }, shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: true } } } };
+    const createTarget = vi.fn().mockResolvedValue({ resource: { ...desktop, version: 4 } });
+    const api = { listTargets: vi.fn().mockResolvedValue({ items: [desktop] }), listPrdRevisions: vi.fn().mockResolvedValue({ items: [] }), createTarget };
+    await renderConsole("/projects/project-1", api);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Revise v3" }));
+    await user.clear(screen.getByLabelText("Desktop executable"));
+    await user.type(screen.getByLabelText("Desktop executable"), "C:\\Apps\\app-v2.exe");
+    await user.click(screen.getByRole("button", { name: "Update Target revision" }));
+    await waitFor(() => expect(createTarget).toHaveBeenCalledOnce());
+    expect(createTarget.mock.calls[0]?.[1].configuration.app).toEqual({
+      ...desktop.configuration.app,
+      launch: { ...desktop.configuration.app.launch, executable: "C:\\Apps\\app-v2.exe" },
+    });
+  });
+
   it("renders exact Test Plan and Mission revision bindings", () => {
     const plan = renderToStaticMarkup(createElement(TestPlanRevisionSummary, { plan: { planId: "plan-1", projectId: "p", prdId: "prd-1", prdRevision: 4, status: "approved", version: 2, payload: { schemaVersion: "test-plan/v1", testCases: [] } } }));
     const mission = renderToStaticMarkup(createElement(MissionRevisionSummary, { mission: { missionId: "mission-1", projectId: "p", revision: 1, targetId: "desktop", targetVersion: 3, targetSnapshotHash: "b".repeat(64), runnerId: "runner-windows", planId: "plan-1", planVersion: 2, status: "approved", version: 1 } }));
@@ -99,18 +116,4 @@ describe("rendered product intake revisions", () => {
     expect(api.approveTestPlan.mock.calls[0]?.[1]).toEqual({ expectedVersion: 3 });
   });
 
-  it("renders Mission creation conflict details and reloads Plan and Target state", async () => {
-    const getTestPlan = vi.fn().mockResolvedValue(approvedPlan);
-    const listTargets = vi.fn().mockResolvedValue({ items: [target] });
-    const api = { getTestPlan, listTargets, createMission: vi.fn().mockRejectedValue(conflict(2)) };
-    await renderConsole("/test-plans/plan-1", api);
-    const user = userEvent.setup();
-    await screen.findByRole("option", { name: "Web v4 · runner-1" });
-    await user.selectOptions(screen.getByLabelText("Approved Target revision"), "target-1");
-    await user.click(screen.getByRole("button", { name: "Create Mission from snapshots" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("current version 2");
-    await waitFor(() => expect(getTestPlan).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(listTargets).toHaveBeenCalledTimes(2));
-    expect(api.createMission.mock.calls[0]?.[0]).toMatchObject({ targetVersion: 4, planVersion: 3 });
-  });
 });

@@ -26,14 +26,22 @@ export class PostgresPrdMissionRepository implements PrdMissionRepository {
     await this.db.insertInto("test_plan_revisions").values({ tenant_id: this.tenantId, plan_id: plan.planId, project_id: plan.projectId, prd_id: plan.prdId, prd_revision: plan.prdRevision, version: plan.version, status: plan.status, reviewer_id: plan.approval?.reviewerId ?? null, approved_at: plan.approval?.approvedAt ?? null, idempotency_key: plan.approval?.idempotencyKey ?? null, plan_json: JSON.stringify(plan), created_at: plan.approval?.approvedAt ?? new Date(0).toISOString() }).onConflict((oc) => oc.columns(["tenant_id", "plan_id"]).doNothing()).execute();
   }
 
-  async saveCompiledMission(input: SaveCompiledMissionInput): Promise<void> {
+  async saveCompiledMission(input: SaveCompiledMissionInput): Promise<DispatchableMission> {
     const mission = input.mission;
     if (mission.projectId !== input.projectId) throw new Error("Compiled Mission project provenance does not match its persistence scope.");
-    await this.db.insertInto("missions").values({ tenant_id: this.tenantId, mission_id: mission.missionId, revision: mission.missionRevision, project_id: input.projectId, plan_id: input.planId, prd_id: input.prdId, prd_revision: input.prdRevision, target_id: mission.targetId, compiled_hash: mission.compiledHash, status: "approved", dispatch_json: JSON.stringify(input.dispatch), stop_on_blocked: input.stopOnBlockedTestCase ? 1 : 0 }).onConflict((oc) => oc.columns(["tenant_id", "mission_id", "revision"]).doNothing()).execute();
+    const inserted = await this.db.insertInto("missions").values({ tenant_id: this.tenantId, mission_id: mission.missionId, revision: mission.missionRevision, project_id: input.projectId, plan_id: input.planId, prd_id: input.prdId, prd_revision: input.prdRevision, target_id: mission.targetId, compiled_hash: mission.compiledHash, status: "approved", dispatch_json: JSON.stringify(input.dispatch), stop_on_blocked: input.stopOnBlockedTestCase ? 1 : 0 }).onConflict((oc) => oc.columns(["tenant_id", "mission_id", "revision"]).doNothing()).executeTakeFirst();
+    if (Number(inserted.numInsertedOrUpdatedRows) !== 1) {
+      const winner = await this.loadMissionForDispatch(mission.missionId);
+      if (winner === undefined) throw new Error(`Compiled Mission ${mission.missionId} winner was not readable.`);
+      return winner;
+    }
     await this.db.insertInto("mission_revisions").values({ tenant_id: this.tenantId, mission_id: mission.missionId, revision: mission.missionRevision, compiled_json: JSON.stringify(mission), created_at: new Date(0).toISOString() }).onConflict((oc) => oc.columns(["tenant_id", "mission_id", "revision"]).doNothing()).execute();
     for (const job of mission.jobs) {
       await this.db.insertInto("execution_jobs").values({ tenant_id: this.tenantId, job_id: job.jobId, mission_id: job.missionId, mission_revision: job.missionRevision, test_case_id: job.testCaseId, objective: job.testCaseSnapshot.objective, required_capabilities_json: JSON.stringify(job.requiredCapabilities), source_refs_json: JSON.stringify(job.testCaseSnapshot.sourceRefs), snapshot_hash: job.snapshotHash, snapshot_json: JSON.stringify(job.testCaseSnapshot), idempotency_key: job.idempotencyKey, status: job.status }).onConflict((oc) => oc.columns(["tenant_id", "job_id"]).doNothing()).execute();
     }
+    const persisted = await this.loadMissionForDispatch(mission.missionId);
+    if (persisted === undefined) throw new Error(`Compiled Mission ${mission.missionId} was not persisted.`);
+    return persisted;
   }
 
   async loadMissionForDispatch(missionId: string): Promise<DispatchableMission | undefined> {

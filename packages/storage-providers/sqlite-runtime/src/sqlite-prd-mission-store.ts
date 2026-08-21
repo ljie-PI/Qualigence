@@ -98,14 +98,14 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
     });
   }
 
-  async saveCompiledMission(input: SaveCompiledMissionInput): Promise<void> {
+  async saveCompiledMission(input: SaveCompiledMissionInput): Promise<DispatchableMission> {
     const { mission } = input;
     if (mission.projectId !== input.projectId) {
       throw new Error("Compiled Mission project provenance does not match its persistence scope.");
     }
     await runInImmediateTransaction(this.runtime, async () => {
       const db = this.runtime.db;
-      await db
+      const inserted = await db
         .insertInto("missions")
         .values({
           mission_id: mission.missionId,
@@ -121,7 +121,8 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
           stop_on_blocked: input.stopOnBlockedTestCase ? 1 : 0,
         })
         .onConflict((oc) => oc.columns(["mission_id", "revision"]).doNothing())
-        .execute();
+        .executeTakeFirst();
+      if (Number(inserted.numInsertedOrUpdatedRows) !== 1) return;
 
       await db
         .insertInto("mission_revisions")
@@ -154,6 +155,9 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
           .execute();
       }
     });
+    const persisted = await this.loadMissionForDispatch(mission.missionId);
+    if (persisted === undefined) throw new Error(`Compiled Mission ${mission.missionId} was not persisted.`);
+    return persisted;
   }
 
   async loadMissionForDispatch(

@@ -1,7 +1,7 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { PrdDocument } from "@qualigence/context-intake";
 import { ProjectTargetError, type ProjectTargetRepository, type SaveTargetRevisionInput, type TargetRevision } from "@qualigence/project-target";
-import { approveTestPlan, type ApproveStoredTestPlanInput, type SaveDraftTestPlanInput, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
+import { approveTestPlan, type AllocatePrdRevisionInput, type ApproveStoredTestPlanInput, type SaveDraftTestPlanInput, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
 import type { PostgresDatabase } from "./postgres-database.js";
 
 type TargetRow = { target_id: string; version: number; project_id: string; display_name: string; runner_id: string; kind: string; snapshot_hash: string; configuration_json: string };
@@ -37,6 +37,17 @@ function targetFromRow(row: TargetRow): TargetRevision { return Object.freeze({ 
 
 export class PostgresTestPlanRepository implements TestPlanRepository {
   constructor(private readonly db: Kysely<PostgresDatabase>, private readonly tenantId: string) {}
+  async allocatePrdRevision(input: AllocatePrdRevisionInput): Promise<PrdDocument> {
+    const replay = await this.getPrdDocumentById(input.prdId);
+    if (replay !== undefined) return replay;
+    await sql`select pg_advisory_xact_lock(hashtextextended(${`${this.tenantId}:${input.projectId}`}, 0))`.execute(this.db);
+    const concurrentReplay = await this.getPrdDocumentById(input.prdId);
+    if (concurrentReplay !== undefined) return concurrentReplay;
+    const head = await this.db.selectFrom("prd_documents").select("revision").where("tenant_id", "=", this.tenantId).where("project_id", "=", input.projectId).orderBy("revision", "desc").executeTakeFirst();
+    const document = Object.freeze({ ...input, revision: (head?.revision ?? 0) + 1 });
+    await this.savePrdDocument(document);
+    return document;
+  }
   async savePrdDocument(document: PrdDocument): Promise<void> { await this.db.insertInto("prd_documents").values({ tenant_id: this.tenantId, prd_id: document.prdId, revision: document.revision, project_id: document.projectId, title: document.title, content: document.content, content_sha256: document.contentSha256, ingested_at: document.ingestedAt }).onConflict((oc) => oc.columns(["tenant_id", "prd_id", "revision"]).doNothing()).execute(); }
   async getPrdDocumentById(prdId: string): Promise<PrdDocument | undefined> { const row = await this.db.selectFrom("prd_documents").selectAll().where("tenant_id", "=", this.tenantId).where("prd_id", "=", prdId).orderBy("revision", "desc").executeTakeFirst(); return row === undefined ? undefined : prdFromRow(row); }
   async listPrdDocuments(projectId: string): Promise<readonly PrdDocument[]> { const rows = await this.db.selectFrom("prd_documents").selectAll().where("tenant_id", "=", this.tenantId).where("project_id", "=", projectId).orderBy("revision").execute(); return rows.map(prdFromRow); }

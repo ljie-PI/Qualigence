@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { PrdDocument } from "@qualigence/context-intake";
-import { createDraftTestPlan, type TestPlanRepository } from "@qualigence/mission";
+import { createDraftTestPlan, MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { createTargetRevision, type ProjectTargetRepository } from "@qualigence/project-target";
 import { sequentialIds, validatedProposal } from "../../unit/core-modules/mission/fixtures.js";
 
@@ -9,6 +9,7 @@ const clock = { now: () => "2026-08-21T00:00:00.000Z" };
 export interface ProductIntakeProvider {
   readonly targets: ProjectTargetRepository;
   readonly plans: TestPlanRepository;
+  readonly missions: PrdMissionRepository;
   seedPrd(document: ReturnType<typeof PrdDocument.create>): Promise<void>;
   close(): Promise<void>;
 }
@@ -16,7 +17,7 @@ export interface ProductIntakeProvider {
 export interface ProductIntakeProviderFactory {
   open(): Promise<ProductIntakeProvider>;
   concurrent?(
-    operation: (provider: ProductIntakeProvider) => Promise<unknown>,
+    operation: (provider: ProductIntakeProvider, index: number) => Promise<unknown>,
   ): Promise<readonly PromiseSettledResult<unknown>[]>;
 }
 
@@ -87,5 +88,56 @@ export function productIntakeProviderContract(factory: ProductIntakeProviderFact
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "TargetVersionConflict", currentVersion: expectedVersion + 1 });
+  });
+
+  it("atomically binds a concurrent Mission idempotency key to one complete command", async () => {
+    const setup = await factory.open();
+    const commands: Array<{ projectId: string; targetId: string; targetVersion: number; targetSnapshotHash: string; planId: string; planVersion: number; idempotencyKey: string }> = [];
+    try {
+      const document = PrdDocument.create({ prdId: "mission-prd", projectId: "mission-project", revision: 1, title: "Mission", content: "Mission requirement" }, clock);
+      await setup.seedPrd(document);
+      for (const index of [0, 1]) {
+        const target = createTargetRevision({ targetId: `mission-target-${index}`, projectId: "mission-project", displayName: `Target ${index}`, runnerId: `runner-${index}`, expectedVersion: 0, configuration: { kind: "web", startUrl: `https://target-${index}.example.test/`, allowedOrigins: [`https://target-${index}.example.test`], browser: "chromium" } });
+        await setup.targets.saveRevision({ revision: target, expectedVersion: 0, idempotencyKey: `mission-target-command-${index}`, createdAt: clock.now() });
+        const created = createDraftTestPlan({ projectId: "mission-project", prdId: document.prdId, prdRevision: 1, proposal: validatedProposal() }, sequentialIds(`mission-plan-${index}`));
+        if (!created.ok) throw new Error(created.error.code);
+        await setup.plans.saveDraft({ plan: created.value, idempotencyKey: `mission-plan-command-${index}`, createdAt: clock.now() });
+        const approved = await setup.plans.approve({ planId: created.value.planId, expectedVersion: 1, reviewerId: "tester", idempotencyKey: `mission-plan-approve-${index}`, clock });
+        commands.push({ projectId: "mission-project", targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, planId: approved.planId, planVersion: approved.version, idempotencyKey: "shared-mission-command" });
+      }
+    } finally { await setup.close(); }
+
+    const operation = (provider: ProductIntakeProvider, index: number) => new MissionIntakeService(provider.targets, provider.plans, provider.missions, clock).create(commands[index]!);
+    const outcomes = factory.concurrent === undefined
+      ? await Promise.allSettled([factory.open().then(async (provider) => { try { return await operation(provider, 0); } finally { await provider.close(); } }), factory.open().then(async (provider) => { try { return await operation(provider, 1); } finally { await provider.close(); } })])
+      : await factory.concurrent(operation);
+    const fulfilled = outcomes.find((outcome): outcome is PromiseFulfilledResult<Awaited<ReturnType<typeof operation>>> => outcome.status === "fulfilled");
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    expect(fulfilled).toBeDefined();
+    expect(rejected?.reason).toMatchObject({ code: "MissionIdempotencyConflict", currentVersion: 1 });
+
+    const verify = await factory.open();
+    try {
+      const persisted = await verify.missions.loadMissionForDispatch(fulfilled!.value.missionId);
+      expect(persisted?.jobs).toHaveLength(1);
+      expect(persisted?.dispatch.binding).toMatchObject({ targetId: fulfilled!.value.targetId, runnerId: fulfilled!.value.runnerId, planVersion: fulfilled!.value.planVersion });
+      expect(persisted?.planId).toBe(fulfilled!.value.planId);
+    } finally { await verify.close(); }
+  });
+
+  it("allocates unique monotonic project revisions for concurrent different PRDs", async () => {
+    const operation = (provider: ProductIntakeProvider, index: number) => new TestPlanService(provider.plans, clock, async () => true).ingestPrd({
+      idempotencyKey: `concurrent-prd-${index}`,
+      projectId: "concurrent-prd-project",
+      title: `PRD ${index}`,
+      content: `Requirement ${index}`,
+    });
+    const outcomes = factory.concurrent === undefined
+      ? await Promise.allSettled([factory.open().then(async (provider) => { try { return await operation(provider, 0); } finally { await provider.close(); } }), factory.open().then(async (provider) => { try { return await operation(provider, 1); } finally { await provider.close(); } })])
+      : await factory.concurrent(operation);
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (rejected !== undefined) throw rejected.reason;
+    const revisions = outcomes.flatMap((outcome) => outcome.status === "fulfilled" ? [(outcome.value as Awaited<ReturnType<typeof operation>>).revision] : []).sort();
+    expect(revisions).toEqual([1, 2]);
   });
 }

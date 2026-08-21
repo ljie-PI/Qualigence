@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe } from "vitest";
-import { createPostgresRuntime, PostgresProjectTargetRepository, PostgresTestPlanRepository, provisionPostgres, type TenantTransactionProvider } from "@qualigence/postgres-runtime";
+import { createPostgresRuntime, PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository, provisionPostgres, type TenantTransactionProvider } from "@qualigence/postgres-runtime";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 import { productIntakeProviderContract, type ProductIntakeProvider } from "../sqlite/product-intake-store.contract.js";
 
@@ -24,14 +24,14 @@ describe("PostgreSQL product intake provider contract", () => {
       const held = new Promise<void>((done) => { release = done; });
       const transaction = provider.withTenant("tenant-a", async ({ db }) => {
         const plans = new PostgresTestPlanRepository(db, "tenant-a");
-        resolve({ targets: new PostgresProjectTargetRepository(db, "tenant-a"), plans, seedPrd: (document) => plans.savePrdDocument(document), close: async () => release() });
+        resolve({ targets: new PostgresProjectTargetRepository(db, "tenant-a"), plans, missions: new PostgresPrdMissionRepository(db, "tenant-a"), seedPrd: (document) => plans.savePrdDocument(document), close: async () => release() });
         await held;
       });
       const opened = await ready;
       return { ...opened, close: async () => { await opened.close(); await transaction; } };
     },
     async concurrent(operation) {
-      return Promise.allSettled([0, 1].map(() => provider.withTenant("tenant-a", async ({ db }) => { const plans = new PostgresTestPlanRepository(db, "tenant-a"); return operation({ targets: new PostgresProjectTargetRepository(db, "tenant-a"), plans, seedPrd: (document) => plans.savePrdDocument(document), close: async () => {} }); })));
+      return Promise.allSettled([0, 1].map((index) => provider.withTenant("tenant-a", async ({ db }) => { const plans = new PostgresTestPlanRepository(db, "tenant-a"); return operation({ targets: new PostgresProjectTargetRepository(db, "tenant-a"), plans, missions: new PostgresPrdMissionRepository(db, "tenant-a"), seedPrd: (document) => plans.savePrdDocument(document), close: async () => {} }, index); })));
     },
   });
 });

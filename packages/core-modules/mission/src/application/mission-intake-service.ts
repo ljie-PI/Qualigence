@@ -8,7 +8,11 @@ import type { TestMission } from "../domain/test-mission.js";
 import type { Clock } from "@qualigence/shared-kernel";
 
 export class MissionIntakeError extends Error {
-  constructor(readonly code: "MissionInputNotFound" | "MissionInputMismatch" | "MissionIdempotencyConflict" | "MissionCompilationFailed", message: string) {
+  constructor(
+    readonly code: "MissionInputNotFound" | "MissionInputMismatch" | "MissionIdempotencyConflict" | "MissionCompilationFailed",
+    message: string,
+    readonly currentVersion?: number,
+  ) {
     super(`${code}: ${message}`);
     this.name = "MissionIntakeError";
   }
@@ -47,6 +51,40 @@ function bindingOf(mission: Pick<DispatchableMission, "dispatch">) {
   return binding;
 }
 
+function assertCommandBinding(mission: DispatchableMission, command: CreateMissionCommand): void {
+  const binding = bindingOf(mission);
+  if (
+    mission.projectId !== command.projectId ||
+    mission.planId !== command.planId ||
+    binding.targetId !== command.targetId ||
+    binding.targetVersion !== command.targetVersion ||
+    binding.targetSnapshotHash !== command.targetSnapshotHash ||
+    binding.planVersion !== command.planVersion
+  ) {
+    throw new MissionIntakeError(
+      "MissionIdempotencyConflict",
+      "idempotency key is bound to another Mission command",
+      mission.missionRevision,
+    );
+  }
+}
+
+function resultOf(mission: DispatchableMission): MissionIntakeResult {
+  const binding = bindingOf(mission);
+  return {
+    missionId: mission.missionId,
+    projectId: mission.projectId,
+    revision: mission.missionRevision,
+    targetId: binding.targetId,
+    targetVersion: binding.targetVersion,
+    targetSnapshotHash: binding.targetSnapshotHash,
+    runnerId: binding.runnerId,
+    planId: mission.planId,
+    planVersion: binding.planVersion,
+    status: "approved",
+  };
+}
+
 function supportedKinds(target: TargetRevision) {
   return target.configuration.kind === "web"
     ? (["navigate", "click", "input", "verify"] as const)
@@ -82,17 +120,17 @@ export class MissionIntakeService {
     const id = missionId(command.idempotencyKey);
     const existing = await this.missions.loadMissionForDispatch(id);
     if (existing !== undefined) {
-      const binding = bindingOf(existing);
-      if (existing.projectId !== command.projectId || existing.planId !== command.planId || binding.targetVersion !== command.targetVersion || binding.targetSnapshotHash !== command.targetSnapshotHash || binding.planVersion !== command.planVersion) {
-        throw new MissionIntakeError("MissionIdempotencyConflict", "idempotency key is bound to another Mission command");
-      }
-      return { missionId: id, projectId: existing.projectId, revision: existing.missionRevision, targetId: binding.targetId, targetVersion: binding.targetVersion, targetSnapshotHash: binding.targetSnapshotHash, runnerId: binding.runnerId, planId: existing.planId, planVersion: binding.planVersion, status: "approved" };
+      assertCommandBinding(existing, command);
+      return resultOf(existing);
     }
 
     const target = await this.targets.getRevision(command.targetId, command.targetVersion);
     const plan = await this.plans.get(command.planId, command.planVersion);
     if (target === undefined || plan === undefined || plan.status !== "approved") throw new MissionIntakeError("MissionInputNotFound", "approved Target and Test Plan revisions are required");
     if (target.projectId !== command.projectId || plan.projectId !== command.projectId || target.snapshotHash !== command.targetSnapshotHash) throw new MissionIntakeError("MissionInputMismatch", "Mission input provenance does not match");
+    if (target.configuration.kind === "web" && !target.configuration.allowedOrigins.includes(new URL(target.configuration.startUrl).origin)) {
+      throw new MissionIntakeError("MissionInputMismatch", "Web Target startUrl origin is not allowed");
+    }
 
     const testCaseIds = plan.testCases.map((testCase) => testCase.id);
     const [firstTestCaseId, ...restTestCaseIds] = testCaseIds;
@@ -111,7 +149,7 @@ export class MissionIntakeService {
     const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, supportedStepKinds: supportedKinds(target), capabilities: [] });
     if (!compiled.ok) throw new MissionIntakeError("MissionCompilationFailed", compiled.error.message);
     const targetUrl = target.configuration.kind === "web" ? target.configuration.startUrl : "https://desktop.invalid/";
-    await this.missions.saveCompiledMission({
+    const saved = await this.missions.saveCompiledMission({
       mission: compiled.value,
       projectId: command.projectId,
       planId: plan.planId,
@@ -127,14 +165,16 @@ export class MissionIntakeService {
       },
       stopOnBlockedTestCase: true,
     });
-    return { missionId: id, projectId: command.projectId, revision: 1, targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, runnerId: target.runnerId, planId: plan.planId, planVersion: plan.version, status: "approved" };
+    const persisted = saved ?? await this.missions.loadMissionForDispatch(id);
+    if (persisted === undefined) throw new MissionIntakeError("MissionCompilationFailed", "persisted Mission winner is unavailable");
+    assertCommandBinding(persisted, command);
+    return resultOf(persisted);
   }
 
   async get(missionId: string): Promise<MissionIntakeResult | undefined> {
     const mission = await this.missions.loadMissionForDispatch(missionId);
     if (mission === undefined) return undefined;
-    const binding = bindingOf(mission);
-    return { missionId, projectId: mission.projectId, revision: mission.missionRevision, targetId: binding.targetId, targetVersion: binding.targetVersion, targetSnapshotHash: binding.targetSnapshotHash, runnerId: binding.runnerId, planId: mission.planId, planVersion: binding.planVersion, status: "approved" };
+    return resultOf(mission);
   }
 
   async list(): Promise<readonly MissionIntakeResult[]> {

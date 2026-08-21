@@ -21,6 +21,12 @@ const validTarget = {
   shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: true },
 };
 
+describe("Web Target revisions", () => {
+  it("requires the startUrl origin in allowedOrigins", () => {
+    expect(() => createTargetRevision({ targetId: "web-origin", projectId: "project-1", displayName: "Web", runnerId: "runner-1", expectedVersion: 0, configuration: { kind: "web", startUrl: "https://app.example.test/start", allowedOrigins: ["https://other.example.test"], browser: "chromium" } })).toThrow(/allowedOrigins must include the startUrl origin/);
+  });
+});
+
 describe("AppTargetAggregate", () => {
   it("starts at version 0 with no target", () => {
     const aggregate = AppTargetAggregate.create();

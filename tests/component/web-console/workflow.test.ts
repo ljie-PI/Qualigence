@@ -3,7 +3,7 @@ import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
-import { isApiErrorCode } from "../../../apps/web-console/src/api/errors.js";
+import { ApiClientError, isApiErrorCode } from "../../../apps/web-console/src/api/errors.js";
 import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-token-store.js";
 import type { ConsoleSession } from "../../../apps/web-console/src/auth/memory-token-store.js";
 import { dockerAvailable } from "../../helpers/docker-container.js";
@@ -114,6 +114,16 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     const approved = await client.approveTestPlan(draft.resource.planId, { expectedVersion: draft.resource.version }, { idempotencyKey: "flow-plan-approve" });
     const mission = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
     expect(mission.resource).toMatchObject({ runnerId: "runner-flow", targetVersion: 1, planVersion: 2, status: "approved" });
+    const replay = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
+    expect(replay.resource).toEqual(mission.resource);
+    const conflictingTarget = await client.createTarget("flow-project", {
+      targetId: "flow-target-2", displayName: "Other target", runnerId: "runner-other", expectedVersion: 0,
+      configuration: { kind: "web", startUrl: "https://other.example.test/", allowedOrigins: ["https://other.example.test"], browser: "chromium" },
+    }, { idempotencyKey: "flow-target-2-create" });
+    const conflict = await client.createMission({ projectId: "flow-project", targetId: conflictingTarget.resource.targetId, targetVersion: conflictingTarget.resource.version, targetSnapshotHash: conflictingTarget.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" }).catch((error: unknown) => error);
+    expect(conflict).toBeInstanceOf(ApiClientError);
+    expect(conflict).toMatchObject({ code: "VersionConflict", details: { actualVersion: 1 } });
+    expect(await client.getMission(mission.resource.missionId)).toEqual(mission.resource);
 
     // 4. Inspect a seeded Investigation in the needs_human state.
     await seedInvestigationAndTask(admin, {

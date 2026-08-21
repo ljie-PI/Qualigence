@@ -109,7 +109,9 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
       ...(current === undefined ? {} : { targetId: current.targetId, expectedVersion: current.version }),
       configuration: kind === "web"
         ? { kind: "web", startUrl, allowedOrigins: [new URL(startUrl).origin], browser: "chromium" }
-        : { kind: "desktop", app: { targetId: targetId.trim(), platform: "windows", launch: { executable, args: [] }, process: { expectedImageName: executable.split(/[\\/]/).at(-1) ?? "app.exe", allowedChildImageNames: [] }, window: {}, reset: { command: executable, args: ["--reset"], timeoutMs: 30_000 }, shutdown: { gracefulTimeoutMs: 10_000, forceAfterTimeout: true } } },
+        : { kind: "desktop", app: current?.configuration.kind === "desktop"
+          ? { ...current.configuration.app, launch: { ...current.configuration.app.launch, executable } }
+          : { targetId: targetId.trim(), platform: "windows", launch: { executable, args: [] }, process: { expectedImageName: executable.split(/[\\/]/).at(-1) ?? "app.exe", allowedChildImageNames: [] }, window: {}, reset: { command: executable, args: ["--reset"], timeoutMs: 30_000 }, shutdown: { gracefulTimeoutMs: 10_000, forceAfterTimeout: true } } },
       }, { idempotencyKey: crypto.randomUUID() });
     },
     onSuccess: () => { setConflict(undefined); setSelectedTargetId(undefined); setTargetId(""); setTargetName(""); setRunnerId(""); void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, projectId) }); },

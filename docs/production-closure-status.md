@@ -45,6 +45,29 @@ pull_request: pending
 
 review_round_1_remediation: passed on 2026-08-21
 review_round_2_remediation: passed on 2026-08-21
+review_round_3_remediation: focused verification passed; exact-base review pending on 2026-08-21
+
+- Round-3 authority adds exactly `apps/admin-cli/src/commands/migrate.ts`,
+  `tests/conformance/storage/relational-schema.test.ts`,
+  `tests/e2e/self-hosted/backup-restore.test.ts`, and
+  `tests/unit/admin-cli/{backup,migrate}.test.ts` for dynamic/current schema 8
+  expectations only. No Ticket 02 migration, backup, restore, or forward-upgrade
+  behavior changes are authorized.
+- Web Target construction and Mission intake require the canonical `startUrl`
+  origin in `allowedOrigins`. Desktop Console revisions retain the complete
+  existing `AppTarget` snapshot while changing edited fields.
+- Mission create persistence atomically selects one complete idempotency-command
+  winner; concurrent different commands return the winner's version and cannot
+  mix Mission/Job snapshots. Shared SQLite/PostgreSQL provider coverage proves
+  the race, and the real Console client/Server path proves stable replay plus the
+  public `actualVersion` conflict/reload contract.
+- PRD project revision allocation is serialized in provider authority, so
+  concurrent distinct PRDs receive unique monotonic revisions.
+- Round-3 focused non-E2E Gate passed 12 files / 102 tests with Docker
+  PostgreSQL runtime, shared provider, real Public API/Console, storage
+  conformance, and affected Admin compatibility coverage. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run before
+  clean review.
 
 - PRD identity, project revision assignment, immutable document construction,
   idempotent replay, and persistence now live in `TestPlanService`; the Fastify

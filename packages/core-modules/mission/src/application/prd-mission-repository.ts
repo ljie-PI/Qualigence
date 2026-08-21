@@ -118,7 +118,7 @@ export interface MissionExecutionRecord {
 export interface PrdMissionRepository {
   savePrdDocument(document: PrdDocument): Promise<void>;
   saveTestPlanRevision(plan: TestPlanRevision): Promise<void>;
-  saveCompiledMission(input: SaveCompiledMissionInput): Promise<void>;
+  saveCompiledMission(input: SaveCompiledMissionInput): Promise<DispatchableMission | void>;
   loadMissionForDispatch(
     missionId: string,
   ): Promise<DispatchableMission | undefined>;

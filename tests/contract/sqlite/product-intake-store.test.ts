@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe } from "vitest";
-import { SqliteProjectTargetStore, SqliteRuntime, SqliteTestPlanStore } from "@qualigence/sqlite-runtime";
+import { SqlitePrdMissionStore, SqliteProjectTargetStore, SqliteRuntime, SqliteTestPlanStore } from "@qualigence/sqlite-runtime";
 import { productIntakeProviderContract, type ProductIntakeProvider } from "./product-intake-store.contract.js";
 
 describe("SQLite product intake provider contract", () => {
@@ -16,7 +16,7 @@ describe("SQLite product intake provider contract", () => {
   async function open(): Promise<ProductIntakeProvider> {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     const plans = new SqliteTestPlanStore(runtime);
-    return { targets: new SqliteProjectTargetStore(runtime), plans, seedPrd: (document) => plans.savePrdDocument(document), close: () => runtime.close() };
+    return { targets: new SqliteProjectTargetStore(runtime), plans, missions: new SqlitePrdMissionStore(runtime), seedPrd: (document) => plans.savePrdDocument(document), close: () => runtime.close() };
   }
 
   productIntakeProviderContract({
@@ -26,7 +26,7 @@ describe("SQLite product intake provider contract", () => {
       const outcomes = await Promise.allSettled(providers.map(async (provider, index) => {
         try {
           if (index === 1) await new Promise((resolve) => setTimeout(resolve, 25));
-          return await operation(provider);
+          return await operation(provider, index);
         } finally { await provider.close(); }
       }));
       return outcomes;

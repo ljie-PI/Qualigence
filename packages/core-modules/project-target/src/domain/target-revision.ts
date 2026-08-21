@@ -133,6 +133,12 @@ function validateWebTarget(value: Record<string, unknown>): WebTargetConfigurati
     }
     return origin;
   });
+  if (!allowedOrigins.includes(parsed.origin)) {
+    throw new ProjectTargetError(
+      "InvalidTargetConfiguration",
+      "allowedOrigins must include the startUrl origin",
+    );
+  }
   if (value.browser !== "chromium") {
     throw new ProjectTargetError("InvalidTargetConfiguration", "browser must be chromium");
   }

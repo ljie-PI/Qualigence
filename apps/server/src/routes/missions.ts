@@ -20,7 +20,12 @@ export function registerMissionRoutes(app: FastifyInstance, deps: ServerDeps): v
       return reply.status(201).send(commandEnvelope(toDto(mission), mission.revision, newCorrelationId()));
     } catch (error) {
       if (error instanceof MissionIntakeError && error.code === "MissionInputNotFound") throw notFound("approved Mission inputs not found");
-      if (error instanceof MissionIntakeError && error.code === "MissionIdempotencyConflict") throw versionConflict({}, "idempotency key is bound to another Mission command");
+      if (error instanceof MissionIntakeError && error.code === "MissionIdempotencyConflict") {
+        throw versionConflict(
+          error.currentVersion === undefined ? {} : { actualVersion: error.currentVersion },
+          "idempotency key is bound to another Mission command",
+        );
+      }
       if (error instanceof MissionIntakeError) throw validationFailed(error.code);
       throw error;
     }

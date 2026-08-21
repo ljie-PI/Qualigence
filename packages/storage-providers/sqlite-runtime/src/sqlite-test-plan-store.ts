@@ -1,4 +1,4 @@
-import { approveTestPlan, type ApproveStoredTestPlanInput, type SaveDraftTestPlanInput, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
+import { approveTestPlan, type AllocatePrdRevisionInput, type ApproveStoredTestPlanInput, type SaveDraftTestPlanInput, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
 import type { PrdDocument } from "@qualigence/context-intake";
 import type { SqliteRuntime } from "./database.js";
 import { runInImmediateTransaction } from "./transaction.js";
@@ -9,6 +9,16 @@ export class TestPlanStoreError extends Error {
 
 export class SqliteTestPlanStore implements TestPlanRepository {
   constructor(private readonly runtime: SqliteRuntime) {}
+  async allocatePrdRevision(input: AllocatePrdRevisionInput): Promise<PrdDocument> {
+    return runInImmediateTransaction(this.runtime, async () => {
+      const replay = await this.getPrdDocumentById(input.prdId);
+      if (replay !== undefined) return replay;
+      const head = await this.runtime.db.selectFrom("prd_documents").select("revision").where("project_id", "=", input.projectId).orderBy("revision", "desc").executeTakeFirst();
+      const document = Object.freeze({ ...input, revision: (head?.revision ?? 0) + 1 });
+      await this.runtime.db.insertInto("prd_documents").values({ prd_id: document.prdId, revision: document.revision, project_id: document.projectId, title: document.title, content: document.content, content_sha256: document.contentSha256, ingested_at: document.ingestedAt }).execute();
+      return document;
+    });
+  }
   async savePrdDocument(document: PrdDocument): Promise<void> {
     await this.runtime.db.insertInto("prd_documents").values({ prd_id: document.prdId, revision: document.revision, project_id: document.projectId, title: document.title, content: document.content, content_sha256: document.contentSha256, ingested_at: document.ingestedAt }).onConflict((oc) => oc.columns(["prd_id", "revision"]).doNothing()).execute();
   }

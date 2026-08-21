@@ -68,6 +68,7 @@ export type {
 } from "./application/prd-mission-repository.js";
 
 export type {
+  AllocatePrdRevisionInput,
   ApproveStoredTestPlanInput,
   SaveDraftTestPlanInput,
   TestPlanRepository,
