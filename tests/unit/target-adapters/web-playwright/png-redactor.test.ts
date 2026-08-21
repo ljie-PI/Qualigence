@@ -119,6 +119,47 @@ describe("PNG screenshot redaction", () => {
     )).toThrow();
   });
 
+  it("rejects a CRC-valid IDAT whose zlib stream has trailing compressed bytes", () => {
+    const source = png([]);
+    const parsed = chunks(source);
+    const idat = parsed.find(({ type }) => type === "IDAT");
+    expect(idat).toBeDefined();
+    const trailing = Buffer.concat([idat!.data, Buffer.from([0xde, 0xad, 0xbe, 0xef])]);
+    const malformed = Buffer.concat([
+      SIGNATURE,
+      parsed[0]!.bytes,
+      chunk("IDAT", trailing),
+      parsed.at(-1)!.bytes,
+    ]);
+
+    expect(() => redactPngRectangles(
+      malformed,
+      [{ x: 0, y: 0, width: 1, height: 1 }],
+      { width: 2, height: 1 },
+    )).toThrow("png-zlib-boundary-unproven");
+  });
+
+  it("accepts one zlib stream split across consecutive IDAT chunks", () => {
+    const source = png([]);
+    const parsed = chunks(source);
+    const idat = parsed.find(({ type }) => type === "IDAT");
+    expect(idat).toBeDefined();
+    const split = Math.floor(idat!.data.byteLength / 2);
+    const multiIdat = Buffer.concat([
+      SIGNATURE,
+      parsed[0]!.bytes,
+      chunk("IDAT", idat!.data.subarray(0, split)),
+      chunk("IDAT", idat!.data.subarray(split)),
+      parsed.at(-1)!.bytes,
+    ]);
+
+    expect(() => redactPngRectangles(
+      multiIdat,
+      [{ x: 0, y: 0, width: 1, height: 1 }],
+      { width: 2, height: 1 },
+    )).not.toThrow();
+  });
+
   it.each([
     ["CRC", () => {
       const source = png([]);

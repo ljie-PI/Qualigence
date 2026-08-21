@@ -3,10 +3,12 @@ import {
   PlaywrightBrowserSession,
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
+  createBoundedCdpSession,
   inventoryPiercedDom,
   isOriginAllowed,
   normalizeOrigin,
   type BrowserLauncher,
+  type RawCdpSession,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 
@@ -75,17 +77,16 @@ function fakeLauncher(): {
 describe("PlaywrightBrowserSession", () => {
   it("stops bounded pierced CDP inventory before a hostile shadow tree exceeds its cap", async () => {
     const requests: { readonly method: string; readonly depth: number | undefined }[] = [];
-    const session = {
-      send: vi.fn(async (method: string, params: { readonly nodeId?: number; readonly depth?: number }) => {
-        requests.push({ method, depth: params.depth });
-        if (method === "DOM.getDocument") {
-          return {
-            root: { nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", childNodeCount: 1 },
-          };
-        }
-        if (method !== "DOM.describeNode" || params.nodeId === undefined) {
-          throw new Error(`Unexpected CDP method ${method}`);
-        }
+    const raw: RawCdpSession = {
+      getDocument: async () => {
+        requests.push({ method: "DOM.getDocument", depth: 0 });
+        return {
+          root: { nodeId: 1, backendNodeId: 1, nodeType: 9, nodeName: "#document", childNodeCount: 1 },
+        };
+      },
+      describeNode: async (params) => {
+        requests.push({ method: "DOM.describeNode", depth: 1 });
+        if (!("nodeId" in params)) throw new Error("Unexpected backend node reference");
         const nodeId = params.nodeId;
         if (nodeId === 1 || nodeId >= 3) {
           return {
@@ -122,10 +123,14 @@ describe("PlaywrightBrowserSession", () => {
             }],
           },
         };
-      }),
+      },
+      resolveNode: async () => ({}),
+      callFunctionOn: async () => ({}),
+      releaseObjectGroup: async () => ({}),
     };
+    const session = createBoundedCdpSession(raw, 4_096);
 
-    await expect(inventoryPiercedDom(session as never, {
+    await expect(inventoryPiercedDom(session, {
       maximumNodes: 4_096,
       maximumShadowRoots: 64,
       maximumFrames: 64,
@@ -134,6 +139,91 @@ describe("PlaywrightBrowserSession", () => {
     expect(requests.every(({ depth }) => depth === 0 || depth === 1)).toBe(true);
     expect(requests.some(({ method }) => method === "DOMSnapshot.captureSnapshot")).toBe(false);
     expect(requests.length).toBeLessThanOrEqual(4_096);
+  });
+
+  it("rejects oversized raw CDP children before reading an array entry", async () => {
+    let firstChildRead = false;
+    const children = new Array(4_097);
+    Object.defineProperty(children, 0, {
+      get: () => {
+        firstChildRead = true;
+        throw new Error("raw child was materialized");
+      },
+    });
+    const session = createBoundedCdpSession({
+      getDocument: async () => ({
+        root: { nodeId: 1, backendNodeId: 1, nodeType: 9, childNodeCount: 0 },
+      }),
+      describeNode: async () => ({
+        node: {
+          nodeId: 1,
+          backendNodeId: 1,
+          nodeType: 9,
+          childNodeCount: children.length,
+          children,
+        },
+      }),
+      resolveNode: async () => ({}),
+      callFunctionOn: async () => ({}),
+      releaseObjectGroup: async () => ({}),
+    }, 4_096);
+
+    await expect(inventoryPiercedDom(session, {
+      maximumNodes: 4_096,
+      maximumShadowRoots: 64,
+      maximumFrames: 64,
+    })).rejects.toThrow("cdp-response-unproven");
+    expect(firstChildRead).toBe(false);
+  });
+
+  it("rejects raw CDP accessors and descendants deeper than the requested response", async () => {
+    const hostileRoot = { nodeId: 1, backendNodeId: 1, nodeType: 9, childNodeCount: 0 };
+    Object.defineProperty(hostileRoot, "children", {
+      get: () => { throw new Error("hostile children getter"); },
+    });
+    const accessorSession = createBoundedCdpSession({
+      getDocument: async () => ({ root: hostileRoot }),
+      describeNode: async () => ({}),
+      resolveNode: async () => ({}),
+      callFunctionOn: async () => ({}),
+      releaseObjectGroup: async () => ({}),
+    }, 4_096);
+
+    await expect(inventoryPiercedDom(accessorSession, {
+      maximumNodes: 4_096,
+      maximumShadowRoots: 64,
+      maximumFrames: 64,
+    })).rejects.toThrow("cdp-response-unproven");
+
+    const nestedSession = createBoundedCdpSession({
+      getDocument: async () => ({
+        root: { nodeId: 1, backendNodeId: 1, nodeType: 9, childNodeCount: 0 },
+      }),
+      describeNode: async () => ({
+        node: {
+          nodeId: 1,
+          backendNodeId: 1,
+          nodeType: 9,
+          childNodeCount: 1,
+          children: [{
+            nodeId: 2,
+            backendNodeId: 2,
+            nodeType: 1,
+            childNodeCount: 1,
+            children: [{ nodeId: 3, backendNodeId: 3, nodeType: 1, childNodeCount: 0 }],
+          }],
+        },
+      }),
+      resolveNode: async () => ({}),
+      callFunctionOn: async () => ({}),
+      releaseObjectGroup: async () => ({}),
+    }, 4_096);
+
+    await expect(inventoryPiercedDom(nestedSession, {
+      maximumNodes: 4_096,
+      maximumShadowRoots: 64,
+      maximumFrames: 64,
+    })).rejects.toThrow("cdp-response-unproven");
   });
 
   it("starts once and closes idempotently", async () => {

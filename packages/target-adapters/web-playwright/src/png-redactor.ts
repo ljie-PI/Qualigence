@@ -46,9 +46,10 @@ export function redactPngRectangles(
   if (!Number.isSafeInteger(expectedFilteredBytes) || expectedFilteredBytes > MAXIMUM_PNG_BYTES) {
     throw new Error("png-pixel-bounds-unproven");
   }
-  const filtered = inflateSync(Buffer.concat(compressed.map((data) => Buffer.from(data))), {
-    maxOutputLength: expectedFilteredBytes,
-  });
+  const filtered = strictInflateZlib(
+    Buffer.concat(compressed.map((data) => Buffer.from(data))),
+    expectedFilteredBytes,
+  );
   if (filtered.byteLength !== expectedFilteredBytes) throw new Error("png-pixels-unproven");
   const pixels = Buffer.allocUnsafe(stride * height);
   const filters = Buffer.allocUnsafe(height);
@@ -277,9 +278,7 @@ function validateTextChunk(chunk: PngChunk): void {
     if (chunk.data[separator + 1] !== 0 || separator + 2 >= chunk.data.byteLength) {
       throw new Error("png-text-unproven");
     }
-    inflateSync(Buffer.from(chunk.data.subarray(separator + 2)), {
-      maxOutputLength: MAXIMUM_PNG_BYTES,
-    });
+    strictInflateZlib(Buffer.from(chunk.data.subarray(separator + 2)), MAXIMUM_PNG_BYTES);
     return;
   }
   const compressionFlag = chunk.data[separator + 1];
@@ -292,9 +291,25 @@ function validateTextChunk(chunk: PngChunk): void {
   if (languageEnd < 0 || translatedEnd < 0) throw new Error("png-text-unproven");
   const text = chunk.data.subarray(translatedEnd + 1);
   const decoded = compressionFlag === 1
-    ? inflateSync(Buffer.from(text), { maxOutputLength: MAXIMUM_PNG_BYTES })
+    ? strictInflateZlib(Buffer.from(text), MAXIMUM_PNG_BYTES)
     : text;
   new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+}
+
+function strictInflateZlib(compressed: Buffer, maxOutputLength: number): Buffer {
+  const result: unknown = inflateSync(compressed, { info: true, maxOutputLength });
+  if (typeof result !== "object" || result === null) throw new Error("png-zlib-boundary-unproven");
+  const buffer = Object.getOwnPropertyDescriptor(result, "buffer")?.value;
+  const engine = Object.getOwnPropertyDescriptor(result, "engine")?.value;
+  if (!Buffer.isBuffer(buffer) || typeof engine !== "object" || engine === null) {
+    throw new Error("png-zlib-boundary-unproven");
+  }
+  const bytesWritten = Object.getOwnPropertyDescriptor(engine, "bytesWritten")?.value;
+  if (typeof bytesWritten !== "number" || !Number.isSafeInteger(bytesWritten) ||
+      bytesWritten !== compressed.byteLength) {
+    throw new Error("png-zlib-boundary-unproven");
+  }
+  return buffer;
 }
 
 function pngChunk(type: string, data: Uint8Array): Buffer {

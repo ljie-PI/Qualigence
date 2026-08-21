@@ -1829,6 +1829,58 @@ describe("Playwright resolve + execute against real Chromium", () => {
     ))).toEqual([true, true, 1, 1, 1, "caught-error", "value"]);
   });
 
+  it.each([[32, false], [33, true]] as const)(
+    "counts returned species custom then registrations at the %i finally boundary",
+    async (registrations, poisoned) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "species-then-secret" });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, "customer.species-then"),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate((count) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & { speciesThenCalls?: number };
+          state.speciesThenCalls = 0;
+          class SpeciesResult<T> extends Promise<T> {
+            then<TResult1 = T, TResult2 = never>(
+              onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+              onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+            ): Promise<TResult1 | TResult2> {
+              state.speciesThenCalls = (state.speciesThenCalls ?? 0) + 1;
+              return super.then(onfulfilled, onrejected);
+            }
+          }
+          class SpeciesPromise<T> extends Promise<T> {
+            static get [Symbol.species](): PromiseConstructor { return SpeciesResult; }
+          }
+          for (let index = 0; index < count; index += 1) {
+            new SpeciesPromise<number>((resolve) => resolve(index)).finally(() => ({
+              then: (resolve: (value: string) => void) => resolve("ignored"),
+            }));
+          }
+        });
+      }, registrations));
+
+      const execution = executor.execute(action, allowedPermit());
+      if (poisoned) {
+        await expect(execution).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      } else {
+        await expect(execution).resolves.toEqual({ status: "ok" });
+      }
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { speciesThenCalls?: number }).speciesThenCalls,
+      ))).toBe(registrations);
+    },
+  );
+
   it.each([
     ["option-count", 5_000, 1],
     ["option-value", 1, 64 * 1024 + 1],

@@ -137,7 +137,27 @@ const SENSITIVE_ACTION_ATTRIBUTES = [
 const PRIVATE_SHADOW_REGISTRY_DESCRIPTION = "qualigence.private.shadow-registry";
 
 export interface BoundedCdpSession {
-  send(method: string, params?: Readonly<Record<string, unknown>>): Promise<unknown>;
+  getDocument(): Promise<CdpDomNode>;
+  describeNode(reference: { readonly nodeId: number } | { readonly backendNodeId: number }): Promise<CdpDomNode>;
+  resolveNode(backendNodeId: number): Promise<string>;
+  callFunctionOnBoolean(
+    objectId: string,
+    functionDeclaration: string,
+    args: readonly unknown[],
+  ): Promise<boolean>;
+  releaseObjectGroup(): Promise<void>;
+}
+
+export interface RawCdpSession {
+  getDocument(): Promise<unknown>;
+  describeNode(reference: { readonly nodeId: number } | { readonly backendNodeId: number }): Promise<unknown>;
+  resolveNode(backendNodeId: number): Promise<unknown>;
+  callFunctionOn(
+    objectId: string,
+    functionDeclaration: string,
+    args: readonly unknown[],
+  ): Promise<unknown>;
+  releaseObjectGroup(): Promise<unknown>;
 }
 
 interface CdpDomNode {
@@ -152,49 +172,303 @@ interface CdpDomNode {
   readonly templateContent: CdpDomNode | undefined;
 }
 
-function asRecord(value: unknown): Readonly<Record<string, unknown>> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("cdp-node-unproven");
-  }
-  return value as Readonly<Record<string, unknown>>;
+interface CdpResponseBudget {
+  nodes: number;
+  bytes: number;
 }
 
-function asCdpNode(value: unknown): CdpDomNode {
-  const source = asRecord(value);
-  const number = (name: string, fallback?: number): number => {
-    const candidate = source[name] ?? fallback;
-    if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0) {
-      throw new Error("cdp-node-unproven");
-    }
-    return candidate;
-  };
-  const nodes = (name: string): readonly CdpDomNode[] => {
-    const candidate = source[name];
-    if (candidate === undefined) return [];
-    if (!Array.isArray(candidate)) throw new Error("cdp-node-unproven");
-    return candidate.map(asCdpNode);
-  };
-  const optionalNode = (name: string): CdpDomNode | undefined =>
-    source[name] === undefined ? undefined : asCdpNode(source[name]);
-  const shadowRootType = source.shadowRootType;
-  if (shadowRootType !== undefined && typeof shadowRootType !== "string") {
-    throw new Error("cdp-node-unproven");
+const MAXIMUM_CDP_RESPONSE_BYTES = MAXIMUM_OBSERVATION_SNAPSHOT_BYTES;
+const CDP_NODE_ARRAY_FIELDS = ["children", "shadowRoots"] as const;
+const CDP_NODE_FIELDS = ["contentDocument", "templateContent", "assignedSlot"] as const;
+
+function asCdpObject(value: unknown): object {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("cdp-response-unproven");
   }
+  return value;
+}
+
+function cdpOwnValue(source: object, name: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(source, name);
+  if (descriptor === undefined) return undefined;
+  if (!("value" in descriptor)) throw new Error("cdp-response-unproven");
+  return descriptor.value;
+}
+
+function addCdpBytes(budget: CdpResponseBudget, amount: number): void {
+  if (!Number.isSafeInteger(amount) || amount < 0 ||
+      budget.bytes > MAXIMUM_CDP_RESPONSE_BYTES - amount) {
+    throw new Error("cdp-response-unproven");
+  }
+  budget.bytes += amount;
+}
+
+function validateCdpPrimitiveFields(source: object, budget: CdpResponseBudget): void {
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key !== "string") throw new Error("cdp-response-unproven");
+    addCdpBytes(budget, key.length * 2 + 8);
+    const value = cdpOwnValue(source, key);
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string") addCdpBytes(budget, value.length * 2);
+    else if (typeof value === "number" || typeof value === "boolean") addCdpBytes(budget, 8);
+    else if (!CDP_NODE_ARRAY_FIELDS.includes(key as typeof CDP_NODE_ARRAY_FIELDS[number]) &&
+        !CDP_NODE_FIELDS.includes(key as typeof CDP_NODE_FIELDS[number])) {
+      if (key === "attributes" && Array.isArray(value)) {
+        if (value.length > MAXIMUM_CDP_RESPONSE_BYTES / 2) throw new Error("cdp-response-unproven");
+        for (let index = 0; index < value.length; index += 1) {
+          const item = cdpOwnValue(value, String(index));
+          if (typeof item !== "string") throw new Error("cdp-response-unproven");
+          addCdpBytes(budget, item.length * 2 + 8);
+        }
+      } else {
+        throw new Error("cdp-response-unproven");
+      }
+    }
+  }
+}
+
+function cdpNodeArray(
+  source: object,
+  name: typeof CDP_NODE_ARRAY_FIELDS[number],
+  maximumNodes: number,
+  budget: CdpResponseBudget,
+): readonly unknown[] {
+  const value = cdpOwnValue(source, name);
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maximumNodes ||
+      budget.nodes > maximumNodes - value.length) {
+    throw new Error("cdp-response-unproven");
+  }
+  return value;
+}
+
+interface ValidatedCdpNode {
+  readonly source: object;
+  readonly children: readonly unknown[];
+  readonly shadowRoots: readonly unknown[];
+  readonly contentDocument: unknown;
+  readonly templateContent: unknown;
+}
+
+function validateCdpNode(
+  value: unknown,
+  maximumNodes: number,
+  budget: CdpResponseBudget,
+): ValidatedCdpNode {
+  const source = asCdpObject(value);
+  budget.nodes += 1;
+  if (budget.nodes > maximumNodes) throw new Error("cdp-response-unproven");
+  validateCdpPrimitiveFields(source, budget);
+  for (const name of ["nodeId", "backendNodeId", "nodeType"] as const) {
+    const candidate = cdpOwnValue(source, name);
+    if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0) {
+      throw new Error("cdp-response-unproven");
+    }
+  }
+  const childNodeCount = cdpOwnValue(source, "childNodeCount");
+  if (childNodeCount !== undefined &&
+      (typeof childNodeCount !== "number" || !Number.isSafeInteger(childNodeCount) ||
+        childNodeCount < 0)) {
+    throw new Error("cdp-response-unproven");
+  }
+  const children = cdpNodeArray(source, "children", maximumNodes, budget);
+  const shadowRoots = cdpNodeArray(source, "shadowRoots", maximumNodes, budget);
+  const contentDocument = cdpOwnValue(source, "contentDocument");
+  const templateContent = cdpOwnValue(source, "templateContent");
+  const assignedSlot = cdpOwnValue(source, "assignedSlot");
+  if (assignedSlot !== undefined) {
+    const slot = asCdpObject(assignedSlot);
+    validateCdpPrimitiveFields(slot, budget);
+    for (const name of ["nodeType", "backendNodeId"] as const) {
+      const candidate = cdpOwnValue(slot, name);
+      if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0) {
+        throw new Error("cdp-response-unproven");
+      }
+    }
+    if (typeof cdpOwnValue(slot, "nodeName") !== "string") {
+      throw new Error("cdp-response-unproven");
+    }
+  }
+  const singularCount = Number(contentDocument !== undefined) + Number(templateContent !== undefined);
+  const rawNodeCount = children.length + shadowRoots.length + singularCount;
+  if (budget.nodes > maximumNodes - rawNodeCount) throw new Error("cdp-response-unproven");
+  const shadowRootType = cdpOwnValue(source, "shadowRootType");
+  if (shadowRootType !== undefined && typeof shadowRootType !== "string") {
+    throw new Error("cdp-response-unproven");
+  }
+  return { source, children, shadowRoots, contentDocument, templateContent };
+}
+
+function normalizedCdpLeaf(validated: ValidatedCdpNode): CdpDomNode {
+  const number = (name: string, fallback?: number): number => {
+    const value = cdpOwnValue(validated.source, name) ?? fallback;
+    if (typeof value !== "number") throw new Error("cdp-response-unproven");
+    return value;
+  };
+  const shadowRootType = cdpOwnValue(validated.source, "shadowRootType");
   return {
     nodeId: number("nodeId"),
     backendNodeId: number("backendNodeId"),
     nodeType: number("nodeType"),
     childNodeCount: number("childNodeCount", 0),
-    shadowRootType,
-    children: nodes("children"),
-    shadowRoots: nodes("shadowRoots"),
-    contentDocument: optionalNode("contentDocument"),
-    templateContent: optionalNode("templateContent"),
+    shadowRootType: typeof shadowRootType === "string" ? shadowRootType : undefined,
+    children: [],
+    shadowRoots: [],
+    contentDocument: undefined,
+    templateContent: undefined,
   };
 }
 
-function cdpResponseNode(response: unknown, name: "root" | "node"): CdpDomNode {
-  return asCdpNode(asRecord(response)[name]);
+function normalizedCdpDirect(validated: ValidatedCdpNode): CdpDomNode {
+  return {
+    ...normalizedCdpLeaf(validated),
+    shadowRoots: Array.from(
+      { length: validated.shadowRoots.length },
+      (_, index) => normalizedCdpLeaf({
+        source: asCdpObject(cdpOwnValue(validated.shadowRoots, String(index))),
+        children: [],
+        shadowRoots: [],
+        contentDocument: undefined,
+        templateContent: undefined,
+      }),
+    ),
+  };
+}
+
+function cdpResponseNode(
+  response: unknown,
+  name: "root" | "node",
+  maximumDepth: 0 | 1,
+  maximumNodes: number,
+): CdpDomNode {
+  const source = asCdpObject(response);
+  const budget: CdpResponseBudget = { nodes: 0, bytes: 0 };
+  const keys = Reflect.ownKeys(source);
+  if (keys.length !== 1 || keys[0] !== name) throw new Error("cdp-response-unproven");
+  const root = validateCdpNode(cdpOwnValue(source, name), maximumNodes, budget);
+  const directCount = root.children.length + root.shadowRoots.length +
+    Number(root.contentDocument !== undefined) + Number(root.templateContent !== undefined);
+  if (maximumDepth === 0 && directCount !== 0) throw new Error("cdp-response-unproven");
+
+  const children: ValidatedCdpNode[] = [];
+  const shadowRoots: ValidatedCdpNode[] = [];
+  let contentDocument: ValidatedCdpNode | undefined;
+  let templateContent: ValidatedCdpNode | undefined;
+  const validateDirect = (value: unknown): ValidatedCdpNode => {
+    const direct = validateCdpNode(value, maximumNodes, budget);
+    if (direct.children.length !== 0 || direct.contentDocument !== undefined ||
+        direct.templateContent !== undefined) {
+      throw new Error("cdp-response-unproven");
+    }
+    for (let index = 0; index < direct.shadowRoots.length; index += 1) {
+      const metadata = validateCdpNode(
+        cdpOwnValue(direct.shadowRoots, String(index)), maximumNodes, budget,
+      );
+      if (metadata.children.length !== 0 || metadata.shadowRoots.length !== 0 ||
+          metadata.contentDocument !== undefined || metadata.templateContent !== undefined) {
+        throw new Error("cdp-response-unproven");
+      }
+    }
+    return direct;
+  };
+  for (let index = 0; index < root.children.length; index += 1) {
+    children.push(validateDirect(cdpOwnValue(root.children, String(index))));
+  }
+  for (let index = 0; index < root.shadowRoots.length; index += 1) {
+    shadowRoots.push(validateDirect(cdpOwnValue(root.shadowRoots, String(index))));
+  }
+  if (root.contentDocument !== undefined) contentDocument = validateDirect(root.contentDocument);
+  if (root.templateContent !== undefined) templateContent = validateDirect(root.templateContent);
+
+  const normalizedRoot = normalizedCdpLeaf(root);
+  return {
+    ...normalizedRoot,
+    children: children.map(normalizedCdpDirect),
+    shadowRoots: shadowRoots.map(normalizedCdpDirect),
+    contentDocument: contentDocument === undefined ? undefined : normalizedCdpDirect(contentDocument),
+    templateContent: templateContent === undefined ? undefined : normalizedCdpDirect(templateContent),
+  };
+}
+
+function cdpPrimitiveRecord(value: unknown, budget: CdpResponseBudget): object {
+  const source = asCdpObject(value);
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key !== "string") throw new Error("cdp-response-unproven");
+    addCdpBytes(budget, key.length * 2 + 8);
+    const candidate = cdpOwnValue(source, key);
+    if (candidate === undefined || candidate === null) continue;
+    if (typeof candidate === "string") addCdpBytes(budget, candidate.length * 2);
+    else if (typeof candidate !== "number" && typeof candidate !== "boolean") {
+      throw new Error("cdp-response-unproven");
+    }
+  }
+  return source;
+}
+
+function stableCdpResponse<T>(validate: () => T): T {
+  try {
+    return validate();
+  } catch {
+    throw new Error("cdp-response-unproven");
+  }
+}
+
+export function createBoundedCdpSession(
+  raw: RawCdpSession,
+  maximumNodes: number,
+): BoundedCdpSession {
+  return {
+    getDocument: async () => {
+      const response = await raw.getDocument()
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => cdpResponseNode(response, "root", 0, maximumNodes));
+    },
+    describeNode: async (reference) => {
+      const response = await raw.describeNode(reference)
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => cdpResponseNode(response, "node", 1, maximumNodes));
+    },
+    resolveNode: async (backendNodeId) => {
+      const response = await raw.resolveNode(backendNodeId)
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => {
+        const source = asCdpObject(response);
+        const keys = Reflect.ownKeys(source);
+        if (keys.length !== 1 || keys[0] !== "object") throw new Error("cdp-response-unproven");
+        const object = cdpPrimitiveRecord(cdpOwnValue(source, "object"), { nodes: 0, bytes: 0 });
+        const objectId = cdpOwnValue(object, "objectId");
+        if (typeof objectId !== "string" || objectId.length === 0 ||
+            objectId.length * 2 > MAXIMUM_CDP_RESPONSE_BYTES) {
+          throw new Error("cdp-response-unproven");
+        }
+        return objectId;
+      });
+    },
+    callFunctionOnBoolean: async (objectId, functionDeclaration, args) => {
+      const response = await raw.callFunctionOn(objectId, functionDeclaration, args)
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => {
+        const source = asCdpObject(response);
+        if (cdpOwnValue(source, "exceptionDetails") !== undefined) {
+          throw new Error("cdp-response-unproven");
+        }
+        const keys = Reflect.ownKeys(source);
+        if (keys.length !== 1 || keys[0] !== "result") throw new Error("cdp-response-unproven");
+        const result = cdpPrimitiveRecord(cdpOwnValue(source, "result"), { nodes: 0, bytes: 0 });
+        const value = cdpOwnValue(result, "value");
+        if (typeof value !== "boolean") throw new Error("cdp-response-unproven");
+        return value;
+      });
+    },
+    releaseObjectGroup: async () => {
+      const response = await raw.releaseObjectGroup()
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      stableCdpResponse(() => {
+        const source = asCdpObject(response);
+        if (Reflect.ownKeys(source).length !== 0) throw new Error("cdp-response-unproven");
+      });
+    },
+  };
 }
 
 export async function inventoryPiercedDom(
@@ -213,10 +487,7 @@ export async function inventoryPiercedDom(
   if (limits.maximumNodes < 1 || limits.maximumShadowRoots < 0 || limits.maximumFrames < 0) {
     throw new Error("cdp-limits-unproven");
   }
-  const root = cdpResponseNode(await session.send("DOM.getDocument", {
-    depth: 0,
-    pierce: true,
-  }), "root");
+  const root = await session.getDocument();
   const queue: CdpDomNode[] = [];
   const seen = new Set<number>();
   const shadowHosts: { readonly backendNodeId: number; readonly mode: string }[] = [];
@@ -248,10 +519,10 @@ export async function inventoryPiercedDom(
     }
     if (requestCount >= limits.maximumNodes) throw new Error("dom-request-overflow");
     requestCount += 1;
-    const params = shallow.nodeId > 0
-      ? { nodeId: shallow.nodeId, depth: 1, pierce: true }
-      : { backendNodeId: shallow.backendNodeId, depth: 1, pierce: true };
-    const described = cdpResponseNode(await session.send("DOM.describeNode", params), "node");
+    const reference = shallow.nodeId > 0
+      ? { nodeId: shallow.nodeId }
+      : { backendNodeId: shallow.backendNodeId };
+    const described = await session.describeNode(reference);
     if (described.backendNodeId !== shallow.backendNodeId ||
         described.children.length !== described.childNodeCount) {
       throw new Error("shadow-node-identity-unproven");
@@ -1127,12 +1398,14 @@ export class PlaywrightBrowserSession {
           const runFinally = (): unknown => generation === undefined
             ? onfinally()
             : runCausal(generation, onfinally);
-          const continueFinally = <TResult>(result: TResult): PromiseLike<TResult> => {
+          const continueFinally = <TResult>(preserve: () => TResult): PromiseLike<TResult> => {
             const resolved = originalPromiseResolve.call(
               resultConstructor as PromiseConstructor,
               runFinally(),
             );
-            const continuation = originalThen.call(resolved, () => result) as Promise<TResult>;
+            const continuation = resolved.then === wrappedThen
+              ? delegatedThen(resolved, preserve)
+              : resolved.then(preserve);
             return {
               then: <TResult1 = TResult, TResult2 = never>(
                 onfulfilled?: ((value: TResult) => TResult1 | PromiseLike<TResult1>) | null,
@@ -1146,8 +1419,8 @@ export class PlaywrightBrowserSession {
           };
           return delegatedThen(
             this,
-            (value) => continueFinally(value),
-            (reason) => continueFinally(reason).then(() => { throw reason; }),
+            (value) => continueFinally(() => value),
+            (reason) => continueFinally(() => { throw reason; }),
           ) as Promise<T>;
         };
         window.setTimeout = wrappedSetTimeout;
@@ -1471,9 +1744,31 @@ export class PlaywrightBrowserSession {
         registeredCount += realmRoots;
       }
       const session = await this.page.context().newCDPSession(this.page);
+      const cdp = createBoundedCdpSession({
+        getDocument: () => session.send("DOM.getDocument", { depth: 0, pierce: true }),
+        describeNode: (reference) => session.send("DOM.describeNode", {
+          ...reference,
+          depth: 1,
+          pierce: false,
+        }),
+        resolveNode: (backendNodeId) => session.send("DOM.resolveNode", {
+          backendNodeId,
+          objectGroup: "qualigence-shadow-proof",
+        }),
+        callFunctionOn: (objectId, functionDeclaration, args) =>
+          session.send("Runtime.callFunctionOn", {
+            objectId,
+            functionDeclaration,
+            arguments: args.map((value) => ({ value })),
+            returnByValue: true,
+          }),
+        releaseObjectGroup: () => session.send("Runtime.releaseObjectGroup", {
+          objectGroup: "qualigence-shadow-proof",
+        }),
+      }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
       try {
         const inventory = await inventoryPiercedDom(
-          session as unknown as BoundedCdpSession,
+          cdp,
           {
             maximumNodes: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
             maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
@@ -1484,33 +1779,27 @@ export class PlaywrightBrowserSession {
           throw new Error("shadow-root-identity-unproven");
         }
         for (const host of inventory.shadowHosts) {
-          const resolved = await session.send("DOM.resolveNode", {
-            backendNodeId: host.backendNodeId,
-            objectGroup: "qualigence-shadow-proof",
-          });
-          if (resolved.object.objectId === undefined) throw new Error("shadow-host-unproven");
-          const matched = await session.send("Runtime.callFunctionOn", {
-            objectId: resolved.object.objectId,
-            functionDeclaration: `function(registryKey, accessToken, maximumRoots, mode) {
+          const objectId = await cdp.resolveNode(host.backendNodeId);
+          const matched = await cdp.callFunctionOnBoolean(
+            objectId,
+            `function(registryKey, accessToken, maximumRoots, mode) {
               const gateway = globalThis[Symbol.for(registryKey)];
               const snapshot = gateway?.access(accessToken)?.snapshot(maximumRoots);
               return snapshot?.hosts.some((entry) => entry.host === this && entry.mode === mode) === true;
             }`,
-            arguments: [
-              { value: this.shadowRegistryKey },
-              { value: this.shadowRegistryAccessToken },
-              { value: MAXIMUM_SENSITIVE_SHADOW_ROOTS },
-              { value: host.mode },
+            [
+              this.shadowRegistryKey,
+              this.shadowRegistryAccessToken,
+              MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+              host.mode,
             ],
-            returnByValue: true,
-          });
-          if (matched.exceptionDetails !== undefined || matched.result.value !== true) {
+          );
+          if (!matched) {
             throw new Error("shadow-host-registry-mismatch");
           }
         }
       } finally {
-        await session.send("Runtime.releaseObjectGroup", { objectGroup: "qualigence-shadow-proof" })
-          .catch(() => undefined);
+        await cdp.releaseObjectGroup().catch(() => undefined);
         await session.detach();
       }
     } catch {

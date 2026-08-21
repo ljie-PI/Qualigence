@@ -601,6 +601,30 @@ pull_request: pending
   selected: 1,300 passed, 5 skipped, and 6 pre-existing unrelated baseline
   tests failed (stale execution-budget/config fixtures and entrypoint-message
   expectations). No changed web-adapter test failed; no E2E was run.
+- Round-5 product head before this status update: `6b41e8f`. The local typed
+  CDP adapter now validates method-specific response envelopes, own data
+  properties, primitive fields, exact depth, per-response arrays, and raw
+  byte/node estimates before normalized nodes are constructed. Oversized
+  children, hostile getters, and nested children fail with the stable
+  `cdp-response-unproven` code; the Playwright double assertion is removed.
+- `Promise.prototype.finally` now resolves the callback result with captured
+  PromiseResolve/species semantics and invokes the resolved promise's current
+  `then`, so returned thenables and subclass/custom `then` behavior execute and
+  count without an ordinary-case recursive registration. Fulfillment and
+  rejection preservation remain covered.
+- PNG zlib decoding now requires Node's reported consumed-byte count to equal
+  the complete contiguous IDAT stream. The zlib wrapper/trailer and Adler32 are
+  validated by inflate, CRC-valid compressed trailing bytes are rejected, and
+  one stream split over multiple IDAT chunks passes.
+- Round-5 affected non-E2E command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/unit/target-adapters/web-playwright/png-redactor.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution`.
+  It passed 12 files / 195 tests: 194 passed and 1 existing Task 21 skip.
+- The full Ticket 41 non-E2E command `corepack pnpm vitest run --exclude
+  "tests/e2e/**" --exclude "tests/live/**"` ran 159 files / 1,318 tests with Git
+  OpenSSL explicitly selected: 1,306 passed, 5 skipped, and 7 failed. Six are
+  the documented unrelated baseline failures; the changed delayed-reflection
+  case passed in the complete focused Gate and failed only under full-suite
+  concurrency. No E2E was run per final-round instruction.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
