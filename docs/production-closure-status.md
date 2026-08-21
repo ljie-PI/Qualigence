@@ -18,7 +18,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | missing | blocked | Remaining tickets 02-06; no complete versioned Target/Test Plan/Mission dispatch loop |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 02 component is implemented but pending its dedicated PR merge; tickets 03-06 still own the Target/Test Plan/Mission dispatch loop |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
@@ -42,6 +42,113 @@ longer unavailable, but a pinned toolchain, native Windows tests, real WPF/WinUI
 scenarios, local-console/RDP execution, and two-person signed evidence remain
 blocking. Git OpenSSL must be resolved explicitly from
 `C:\Program Files\Git\usr\bin\openssl.exe` when it is not on `PATH`.
+
+### Ticket 02 - PostgreSQL forward upgrades and backup guard (2026-08-20)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/71`
+remediation_ticket: `36`
+remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/74`
+implementation_commits: `2c53cc2`, `b8860b5`, `1b887bc`, `338dbcf`
+
+- PostgreSQL schema releases 001-007 now upgrade sequentially under an exclusive
+  offline advisory lock, with each step transactional and failed steps resumable.
+  Server, Worker, tenant transactions, and Worker queue operations take the
+  shared runtime lock and refuse malformed, ahead, behind, or incomplete
+  auxiliary schema state.
+- Runtime roles retain forced RLS and cannot create schema objects. Worker Job
+  locking uses its constrained security-definer function without granting direct
+  mutation of Intelligence Job authority columns.
+- Migration requires a newly verified, invocation- and target-bound durable
+  backup. Backup and restore share canonical byte verification, and backup copies
+  only Artifact bytes named by manifests visible in the exported PostgreSQL
+  snapshot.
+- Core Application no longer imports or references PostgreSQL Runtime. The
+  Worker injects the storage-owned transaction guard, and the intelligence
+  consumer retains a provider-neutral transaction interface.
+- Round-1 blockers are fixed: Core has no advisory-lock key or fallback and
+  every queue caller injects the provider-neutral transaction guard; PostgreSQL
+  revokes database `TEMPORARY` from `PUBLIC` and both runtime roles while the
+  owner retains it; startup and migration validate exact auxiliary tables,
+  columns, primary keys, forced RLS, tenant policy, and runtime grants before a
+  marker can be accepted or completed.
+- Round-1 fix verification passed the amended focused Docker Gate at 6 files /
+  32 tests with zero skips, plus `corepack pnpm typecheck` and
+  `git diff --check`.
+- Round-2 RED passed as evidence: the two Server/Worker startup files failed all
+  7 tests because neither Composition Root supplied the configured Server role
+  and Worker accepted no explicit Server-role configuration. Round-2 fixes make
+  auxiliary policy/grant validation require that role, including a Docker case
+  where both startup paths reject policy/grants reassigned to the Worker role.
+  `aux-schema.ts` now uses a minimal generic Kysely/transaction constraint with
+  no `any` or unsafe assertion. The three exact Worker component callers remain
+  in the amended Ticket 02 scope and Gate; the Ticket 12 `compose.test.ts` diff
+  was removed completely.
+- Round-2 GREEN passed the full amended focused Docker Gate at 9 files / 46
+  tests with zero skips, plus `corepack pnpm typecheck` and
+  `git diff --check`. A fresh exact-base review and the dedicated PR remain
+  pending.
+- Round-4 scope adds only the existing Self-hosted `compose.yaml`, its
+  non-secret `.env.example`, and a focused static Compose-rendering test. The
+  migration, Server runtime, and Worker schema guard now use the same configured
+  Server PostgreSQL role, including `WORKER_PG_SERVER_ROLE`; no Ticket 12
+  behavior is included. `postgres-schema.ts` now uses the minimal Kysely schema
+  and typed dynamic builder contracts with no `any` or assertion.
+- Round-4 GREEN passed the amended Compose config Gate and the focused Docker
+  Gate at 10 files / 47 tests with zero skips. No Compose or backup/restore E2E
+  was run; fresh exact-base review remains required before E2E.
+- Review round 5 left one Important acceptance finding: the prepared E2E starts
+  from schema 7 and does not prove a persisted older schema upgrades through
+  the production migrate command. Remediation Ticket 36 blocks merge.
+- On Windows 11 with Docker 29.6.2, `corepack pnpm build` passed. The amended
+  focused non-E2E Gate passed 6 files / 30 tests with zero skips, including real
+  Docker-backed PostgreSQL upgrade, failure-resume, lock, role, and startup
+  cases. `corepack pnpm typecheck` and `git diff --check` also passed.
+- No E2E was run. `tests/e2e/self-hosted/backup-restore.test.ts` is prepared but
+  remains gated on a clean exact-base review. No pull request exists yet, and
+  component completion is not final verification until the dedicated PR merges.
+- Remediation Ticket 36 now prepares that E2E from a real persisted PostgreSQL
+  schema 1 created through the production role and migration primitives. It
+  seeds source rows plus snapshot-visible Artifact manifests/object bytes,
+  invokes production `runMigrate`, asserts exact history `[1,2,3,4,5,6,7]`, and
+  restores the invocation/target-bound schema-1 backup into the wiped target for
+  exact row and object-byte comparison. Restore integrity validation now checks
+  only tenant tables released by the backup's recorded schema version.
+- Remediation GREEN (2026-08-21): the amended Compose render passed and the
+  Ticket 02 focused non-E2E Gate passed 10 files / 48 tests with zero failures
+  or skips. `corepack pnpm typecheck` and `git diff --check` passed. The E2E was
+  not run and evidence remains pending exact-base coordinator review, the
+  post-review E2E, and the dedicated PR.
+- Remediation review fixes (2026-08-21) remove the old-schema option from the
+  shared PostgreSQL fixture completely and keep schema-1 role/migration setup in
+  the authorized acceptance file. Independent literals now snapshot every
+  column of every seeded `execution_runs` and `artifact_manifests` row, plus
+  fixed object bytes, in stable order before migration, after production
+  `runMigrate` reaches sequential history `[1,2,3,4,5,6,7]`, and after clean
+  restore. The Compose render, focused Gate (10 files / 48 tests), typecheck,
+  and diff check pass; no E2E was run before fresh review.
+- The post-review E2E exposed a production migration defect: bounded
+  `migratePostgres({ targetVersion: 1, roles })` reapplied catalog-wide RLS and
+  grants after the step transactions and failed on future `prd_documents`.
+  The PostgreSQL runtime contract now proves a partial target applies policies
+  and grants only to version-1 tables and a subsequent forward upgrade applies
+  them to later tables. `migratePostgres` bounds its final idempotent RLS pass
+  to tables released through the target; `provisionPostgres` retains its
+  compatible duplicate full-schema pass.
+- Post-E2E fix verification (2026-08-21): the affected single Docker contract
+  test passed 1 test, the Compose render passed, the Ticket 02 focused Gate
+  passed 10 files / 49 tests with zero failures or skips, and
+  `corepack pnpm typecheck` plus `git diff --check` passed. The E2E was not
+  rerun after the code change; a fresh coordinator review is required first.
+- The fresh remediation review reported no blocking findings. The final real
+  schema-1 forward-upgrade/backup/restore E2E then passed 1 file / 3 tests with
+  PostgreSQL and all expected source rows, manifests, and object bytes.
+- Parent PR final verification after merging current `main` passed the focused
+  Gate at 10 files / 49 tests and the separate backup/restore E2E at 1 file / 3
+  tests. Compose rendering, root typecheck, and diff check passed. Final
+  exact-head review reported no code/spec blocker; merge remains pending.
 
 ### Ticket 17 - Execution budget and model usage (2026-08-20)
 

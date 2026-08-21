@@ -6,6 +6,7 @@ import {
   type IntelligenceResultInbox,
 } from "@qualigence/core-application";
 import { WorkerLoop, type Clock } from "@qualigence/intelligence-worker";
+import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
 import type { JobProcessor } from "@qualigence/intelligence-worker";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
 import { dockerAvailable } from "../../helpers/docker-container.js";
@@ -33,13 +34,16 @@ describeMaybe("Intelligence Worker loop", () => {
   });
 
   function queue(): PostgresIntelligenceQueue {
-    return new PostgresIntelligenceQueue({
-      host: fixture.workerConfig.host,
-      port: fixture.workerConfig.port,
-      database: fixture.workerConfig.database,
-      user: fixture.workerConfig.user,
-      password: fixture.workerConfig.password,
-    });
+    return new PostgresIntelligenceQueue(
+      {
+        host: fixture.workerConfig.host,
+        port: fixture.workerConfig.port,
+        database: fixture.workerConfig.database,
+        user: fixture.workerConfig.user,
+        password: fixture.workerConfig.password,
+      },
+      acquirePostgresOperationLock,
+    );
   }
 
   async function resultCount(idempotencyKey: string): Promise<number> {

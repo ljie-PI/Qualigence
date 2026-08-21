@@ -35,6 +35,7 @@ function assertIdentifier(value: string, label: string): void {
 export async function applyRowLevelSecurity(
   db: Kysely<any>,
   roles: PostgresRuntimeRoles,
+  tableNames?: readonly string[],
 ): Promise<void> {
   assertIdentifier(roles.server, "server role");
   assertIdentifier(roles.worker, "worker role");
@@ -44,15 +45,19 @@ export async function applyRowLevelSecurity(
   await sql`grant usage on schema public to ${serverRole}, ${workerRole}`.execute(
     db,
   );
-  await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}`.execute(
+  await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}, ${workerRole}`.execute(
     db,
   );
+  await sql`grant select on table ${sql.table("schema_components")} to ${serverRole}, ${workerRole}`.execute(db);
 
+  const selected = tableNames === undefined ? undefined : new Set(tableNames);
   for (const table of TENANT_OWNED_TABLES) {
+    if (selected !== undefined && !selected.has(table.name)) continue;
     const ref = sql.table(table.name);
     await sql`alter table ${ref} enable row level security`.execute(db);
     await sql`alter table ${ref} force row level security`.execute(db);
 
+    await sql`drop policy if exists tenant_isolation on ${ref}`.execute(db);
     await sql`
       create policy tenant_isolation on ${ref}
         to ${serverRole}
@@ -66,7 +71,9 @@ export async function applyRowLevelSecurity(
   }
 
   for (const table of WORKER_ACCESSIBLE_TABLES) {
+    if (selected !== undefined && !selected.has(table.name)) continue;
     const ref = sql.table(table.name);
+    await sql`drop policy if exists worker_access on ${ref}`.execute(db);
     await sql`
       create policy worker_access on ${ref}
         to ${workerRole}
@@ -75,15 +82,40 @@ export async function applyRowLevelSecurity(
     `.execute(db);
   }
 
-  // The Worker may lease jobs (select/update) and append results (select/insert)
+  // The Worker may lease jobs through the constrained lock function and append
+  // results (select/insert). It receives no direct UPDATE authority over jobs.
   // — and nothing else. Every other tenant table has no grant, so a worker read
   // fails closed with SQLSTATE 42501 before RLS is even consulted.
-  await sql`grant select, update on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(
-    db,
-  );
-  await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(
-    db,
-  );
+  if (selected === undefined || selected.has("intelligence_jobs")) {
+    await sql`revoke update on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
+    await sql`grant select on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
+    await sql`
+      create or replace function public.worker_lock_intelligence_job(accepted_types text[])
+      returns table (job_json text)
+      language sql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+        select j.job_json
+          from public.intelligence_jobs j
+         where j.job_type = any(accepted_types)
+           and not exists (
+             select 1 from public.intelligence_results r where r.job_id = j.job_id
+           )
+         order by j.created_at asc
+         for update of j skip locked
+         limit 1
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_lock_intelligence_job(text[]) from public`.execute(db);
+    await sql`grant execute on function public.worker_lock_intelligence_job(text[]) to ${workerRole}`.execute(db);
+  }
+  if (selected === undefined || selected.has("intelligence_results")) {
+    await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(db);
+  }
+
+  await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);
+  await sql`revoke create on schema public from public`.execute(db);
 }
 
 /** Provision the least-privilege runtime roles. */
@@ -103,11 +135,21 @@ export async function createRuntimeRoles(
     const ref = sql.ref(role.name);
     const password = sql.lit(role.password);
     await sql`
-      create role ${ref} login password ${password}
-        nosuperuser nobypassrls nocreatedb nocreaterole inherit
+      do $role$
+      begin
+        create role ${ref} login password ${password}
+          nosuperuser nobypassrls nocreatedb nocreaterole inherit;
+      exception when duplicate_object then
+        alter role ${ref} login password ${password}
+          nosuperuser nobypassrls nocreatedb nocreaterole inherit;
+      end
+      $role$
     `.execute(db);
   }
   const dbRef = sql.ref(input.database);
+  await sql`revoke temporary on database ${dbRef} from public, ${sql.ref(input.server.name)}, ${sql.ref(input.worker.name)}`.execute(
+    db,
+  );
   await sql`grant connect on database ${dbRef} to ${sql.ref(input.server.name)}, ${sql.ref(input.worker.name)}`.execute(
     db,
   );

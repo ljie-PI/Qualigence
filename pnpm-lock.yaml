@@ -245,6 +245,9 @@ importers:
       commander:
         specifier: 14.0.1
         version: 14.0.1
+      kysely:
+        specifier: 0.28.17
+        version: 0.28.17
       pg:
         specifier: 8.13.1
         version: 8.13.1
@@ -384,6 +387,9 @@ importers:
       '@qualigence/openai-compatible-model-provider':
         specifier: workspace:*
         version: link:../../packages/model-providers/openai-compatible
+      '@qualigence/postgres-runtime':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/postgres-runtime
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../packages/shared-kernel
@@ -585,9 +591,6 @@ importers:
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../core-modules/intelligence
-      '@qualigence/postgres-runtime':
-        specifier: workspace:*
-        version: link:../storage-providers/postgres-runtime
       '@qualigence/runner-control':
         specifier: workspace:*
         version: link:../core-modules/runner-control

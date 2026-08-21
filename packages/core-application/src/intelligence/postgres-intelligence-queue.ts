@@ -49,6 +49,8 @@ interface ActiveLease {
   expiresAt: string;
 }
 
+export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -70,8 +72,16 @@ function hashToken(token: string): string {
 export class PostgresIntelligenceQueue implements IntelligenceJobStore, IntelligenceResultInbox {
   private readonly pool: pg.Pool;
   private readonly leases = new Map<string, ActiveLease>();
+  private readonly transactionGuard: TransactionGuard;
 
-  constructor(config: PostgresIntelligenceQueueConfig) {
+  constructor(
+    config: PostgresIntelligenceQueueConfig,
+    transactionGuard?: TransactionGuard,
+  ) {
+    if (transactionGuard === undefined) {
+      throw new Error("PostgresIntelligenceQueue requires an explicit transaction guard");
+    }
+    this.transactionGuard = transactionGuard;
     this.pool = new Pool({
       host: config.host,
       port: config.port,
@@ -101,16 +111,9 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     let keepClient = false;
     try {
       await client.query("begin");
+      await this.transactionGuard(client);
       const result = await client.query(
-        `select j.job_json
-           from intelligence_jobs j
-          where j.job_type = any($1::text[])
-            and not exists (
-              select 1 from intelligence_results r where r.job_id = j.job_id
-            )
-          order by j.created_at asc
-          for update skip locked
-          limit 1`,
+        "select job_json from worker_lock_intelligence_job($1::text[])",
         [[...input.acceptedTypes]],
       );
       const row = result.rows[0] as { job_json: string } | undefined;
@@ -269,11 +272,17 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
   ): Promise<AppendDisposition | undefined> {
     const client = await this.pool.connect();
     try {
+      await client.query("begin");
+      await this.transactionGuard(client);
       const existing = await client.query(
         `select 1 from intelligence_results where idempotency_key = $1 and job_id = $2 limit 1`,
         [result.idempotencyKey, result.jobId],
       );
+      await client.query("commit");
       return existing.rowCount === 1 ? "duplicate" : undefined;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
     } finally {
       client.release();
     }

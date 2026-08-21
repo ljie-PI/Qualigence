@@ -9,12 +9,14 @@ import {
 } from "@qualigence/oidc";
 import { pathToFileURL } from "node:url";
 import {
+  assertPostgresSchemaCurrent,
   createPostgresRuntime,
   PostgresReviewTaskRepository,
 } from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import type { Clock } from "@qualigence/shared-kernel";
 import { loadServerConfig } from "./config.js";
+import type { ServerConfig } from "./config.js";
 import { buildServer } from "./server.js";
 import {
   PostgresRunnerEnrollmentStore,
@@ -31,8 +33,13 @@ interface JwksEntry {
 const systemClock: Clock = { now: () => new Date().toISOString() };
 
 /** Boot the Public API Server: wire OIDC/RBAC, PostgreSQL runtime, and the Runner CA. */
-export async function main(): Promise<void> {
-  const config = loadServerConfig();
+export async function main(
+  env: NodeJS.ProcessEnv = process.env,
+  assertSchema = assertPostgresSchemaCurrent,
+  loadConfig: (env: NodeJS.ProcessEnv) => ServerConfig = loadServerConfig,
+): Promise<void> {
+  const config = loadConfig(env);
+  await assertSchema(config.postgres, config.postgres.user);
 
   const jwksEntries = JSON.parse(config.oidc.jwksJson) as readonly JwksEntry[];
   const keys: OidcSigningKey[] = jwksEntries.map((entry) =>

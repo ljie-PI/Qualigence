@@ -13,7 +13,6 @@
   "dependencies": {
     "@qualigence/evidence": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
-    "@qualigence/postgres-runtime": "workspace:*",
     "@qualigence/runner-control": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",

@@ -11,6 +11,7 @@
   "references": [
     { "path": "../../packages/storage-providers/artifact-s3" },
     { "path": "../../packages/core-application" },
+    { "path": "../../packages/storage-providers/postgres-runtime" },
     { "path": "../../packages/core-modules/intelligence" },
     { "path": "../../packages/core-modules/investigation" },
     { "path": "../../packages/runner-components/model-agent" },

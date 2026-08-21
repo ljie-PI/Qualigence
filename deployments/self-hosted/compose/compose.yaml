@@ -113,7 +113,7 @@ services:
       ADMIN_PG_DATABASE: qualigence
       ADMIN_PG_USER: qualigence_owner
       ADMIN_PG_PASSWORD_FILE: /run/secrets/pg_admin_password
-      ADMIN_SERVER_PG_USER: qualigence_server
+      ADMIN_SERVER_PG_USER: ${QUALIGENCE_SERVER_PG_ROLE:?set the Server PostgreSQL role}
       ADMIN_SERVER_PG_PASSWORD_FILE: /run/secrets/pg_server_password
       ADMIN_WORKER_PG_USER: qualigence_worker
       ADMIN_WORKER_PG_PASSWORD_FILE: /run/secrets/pg_worker_password
@@ -216,7 +216,7 @@ services:
       SERVER_PG_HOST: postgres
       SERVER_PG_PORT: "5432"
       SERVER_PG_DATABASE: qualigence
-      SERVER_PG_USER: qualigence_server
+      SERVER_PG_USER: ${QUALIGENCE_SERVER_PG_ROLE:?set the Server PostgreSQL role}
       SERVER_PG_PASSWORD_FILE: /run/secrets/pg_server_password
       SERVER_OIDC_ISSUER: ${QUALIGENCE_OIDC_ISSUER:?set the OIDC issuer}
       SERVER_OIDC_AUDIENCE: ${QUALIGENCE_OIDC_AUDIENCE:?set the OIDC audience}
@@ -256,6 +256,7 @@ services:
       WORKER_PG_DATABASE: qualigence
       WORKER_PG_USER: qualigence_worker
       WORKER_PG_PASSWORD_FILE: /run/secrets/pg_worker_password
+      WORKER_PG_SERVER_ROLE: ${QUALIGENCE_SERVER_PG_ROLE:?set the Server PostgreSQL role}
       WORKER_S3_ENDPOINT: http://minio:9000
       WORKER_S3_REGION: us-east-1
       WORKER_S3_BUCKET: qualigence-artifacts

@@ -6,7 +6,9 @@ import { SqliteRuntime, SUPPORTED_SCHEMA_VERSION } from "@qualigence/sqlite-runt
 import {
   relationalTableNames,
   tenantOwnedTableNames,
+  tenantOwnedTableNamesThroughVersion,
   RELATIONAL_TABLES,
+  RELATIONAL_SCHEMA_VERSIONS,
 } from "@qualigence/relational-kysely";
 
 let dir: string;
@@ -43,6 +45,15 @@ describe("shared relational schema catalog", () => {
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
     expect(SUPPORTED_SCHEMA_VERSION).toBe(7);
+  });
+
+  it("assigns every relational table to one sequential released schema version", () => {
+    expect(RELATIONAL_SCHEMA_VERSIONS.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
+    expect(RELATIONAL_SCHEMA_VERSIONS.flatMap((migration) => migration.tables)).toEqual(
+      relationalTableNames(),
+    );
   });
 
   it("adds the migration-007 Local intake authority", async () => {
@@ -122,6 +133,16 @@ describe("shared relational schema catalog", () => {
         expect(tenantOwned.has(table.name)).toBe(true);
       }
     }
+  });
+
+  it("selects the exact tenant tables present at an older persisted version", () => {
+    expect(tenantOwnedTableNamesThroughVersion(1)).toEqual([
+      "execution_runs",
+      "trace_events",
+      "findings",
+      "artifact_manifests",
+      "model_invocations",
+    ]);
   });
 
   it("only references intra-tenant parents by tenant-owned foreign keys", () => {
