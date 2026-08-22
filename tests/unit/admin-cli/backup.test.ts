@@ -25,7 +25,7 @@ describe("Admin CLI snapshot backup", () => {
       },
       withSnapshot: async (_config, use) => use({
         snapshotId: "snapshot-1",
-        schemaVersion: 7,
+        schemaVersion: 8,
         artifactManifests: [{ key: "tenant-a/project-a/object", sha256, sizeBytes: bytes.length }],
       }),
       readObject: async (key) => {
@@ -37,7 +37,7 @@ describe("Admin CLI snapshot backup", () => {
     });
 
     expect(requested).toEqual(["tenant-a/project-a/object"]);
-    expect(result.index.database).toMatchObject({ snapshotId: "snapshot-1", schemaVersion: 7 });
+    expect(result.index.database).toMatchObject({ snapshotId: "snapshot-1", schemaVersion: 8 });
     expect(result.index.objects).toEqual([{
       key: "tenant-a/project-a/object",
       relativePath: `${sha256.slice(0, 2)}/${sha256}`,
@@ -56,7 +56,7 @@ describe("Admin CLI snapshot backup", () => {
       },
       withSnapshot: async (_config, use) => use({
         snapshotId: "snapshot-2",
-        schemaVersion: 7,
+        schemaVersion: 8,
         artifactManifests: [{ key: "tenant-a/project-a/object", sha256: "a".repeat(64), sizeBytes: 5 }],
       }),
       readObject: async () => new TextEncoder().encode("wrong"),

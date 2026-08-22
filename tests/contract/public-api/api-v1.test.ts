@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import pg from "pg";
 import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -179,6 +180,84 @@ describe("Public API v1 contract", () => {
       const first = (await (await send()).json()) as { resource: { projectId: string } };
       const second = (await (await send()).json()) as { resource: { projectId: string } };
       expect(second.resource.projectId).toBe(first.resource.projectId);
+    });
+  });
+
+  describe("versioned Target and Test Plan intake", () => {
+    it("creates approved immutable inputs and a provenance-bound Mission", async () => {
+      const token = fx.token("tenant-a", ["tester"]);
+      const headers = (key: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key });
+      await fetch(url("/v1/projects"), { method: "POST", headers: headers("product-project"), body: JSON.stringify({ name: "Product" }) });
+      const prdContent = "Total is shown";
+      const prdResponse = await fetch(url("/v1/projects/product-project/prd-revisions"), { method: "POST", headers: headers("prd-1"), body: JSON.stringify({ title: "Checkout", content: prdContent }) });
+      const prd = (await prdResponse.json()) as { resource: { prdId: string; revision: number; contentSha256: string } };
+      const prdConflict = await fetch(url("/v1/projects/product-project/prd-revisions"), { method: "POST", headers: headers("prd-1"), body: JSON.stringify({ title: "Changed", content: prdContent }) });
+      expect(prdConflict.status).toBe(409);
+      expect(await prdConflict.json()).toMatchObject({ code: "VersionConflict" });
+
+      const targetResponse = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-create-command"), body: JSON.stringify({ targetId: "checkout", displayName: "Checkout", runnerId: "runner-1", expectedVersion: 0, configuration: { kind: "web", startUrl: "https://shop.example.test/checkout", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(targetResponse.status).toBe(201);
+      const target = (await targetResponse.json()) as { resource: { targetId: string; projectId: string; runnerId: string; version: number; snapshotHash: string; configuration: unknown } };
+      expect(target.resource).toMatchObject({ targetId: "checkout", projectId: "product-project", runnerId: "runner-1", version: 1 });
+      expect(JSON.stringify(target.resource)).not.toMatch(/password|secret/i);
+      const targetUpdate = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-update-command"), body: JSON.stringify({ targetId: "checkout", displayName: "Checkout v2", runnerId: "runner-1", expectedVersion: 1, configuration: { kind: "web", startUrl: "https://shop.example.test/checkout-v2", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(targetUpdate.status).toBe(201);
+      const staleTarget = await fetch(url("/v1/projects/product-project/targets"), { method: "POST", headers: headers("target-stale-command"), body: JSON.stringify({ targetId: "checkout", displayName: "stale", runnerId: "runner-1", expectedVersion: 1, configuration: { kind: "web", startUrl: "https://shop.example.test/stale", allowedOrigins: ["https://shop.example.test"], browser: "chromium" } }) });
+      expect(staleTarget.status).toBe(409);
+      expect(await staleTarget.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 2 } });
+
+      const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: prdContent.length, quotedTextSha256: createHash("sha256").update(prdContent).digest("hex") };
+      const planResponse = await fetch(url("/v1/test-plans"), { method: "POST", headers: headers("plan-1"), body: JSON.stringify({ projectId: "product-project", prdId: prd.resource.prdId, prdRevision: 1, sourceContentSha256: prd.resource.contentSha256, expectedClaims: [{ semanticKey: "cart.total", statement: "Total is shown", sourceRefs: [sourceRef], confidence: 1 }], testCases: [{ title: "Checkout", objective: "Verify total", preconditions: [], steps: [{ kind: "verify", claimSemanticKeys: ["cart.total"] }], expectedClaimSemanticKeys: ["cart.total"], sourceRefs: [sourceRef], priority: "high" }] }) });
+      expect(planResponse.status).toBe(201);
+      const draft = (await planResponse.json()) as { resource: { planId: string; version: number } };
+      const approvedResponse = await fetch(url(`/v1/test-plans/${draft.resource.planId}/approve`), { method: "POST", headers: headers("approve-plan-1"), body: JSON.stringify({ expectedVersion: 1 }) });
+      expect(approvedResponse.status).toBe(200);
+      const approved = (await approvedResponse.json()) as { resource: { status: string; version: number } };
+      expect(approved.resource).toMatchObject({ status: "approved", version: 2 });
+
+      const stale = await fetch(url(`/v1/test-plans/${draft.resource.planId}/approve`), { method: "POST", headers: headers("approve-plan-stale"), body: JSON.stringify({ expectedVersion: 1 }) });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 2 } });
+
+      const targetV2 = (await targetUpdate.json()) as typeof target;
+      const missionResponse = await fetch(url("/v1/missions"), { method: "POST", headers: headers("mission-1"), body: JSON.stringify({ projectId: "product-project", targetId: targetV2.resource.targetId, targetVersion: targetV2.resource.version, targetSnapshotHash: targetV2.resource.snapshotHash, planId: draft.resource.planId, planVersion: approved.resource.version }) });
+      expect(missionResponse.status).toBe(201);
+      expect(await missionResponse.json()).toMatchObject({ resource: { targetId: "checkout", targetVersion: 2, runnerId: "runner-1", planVersion: 2, status: "approved" } });
+
+      await fx.provider.withTenant("tenant-a", async ({ db }) => {
+        const mission = await db.selectFrom("mission_revisions").select("compiled_json").executeTakeFirstOrThrow();
+        const jobs = await db.selectFrom("execution_jobs").select(["job_id", "snapshot_json"]).execute();
+        expect(JSON.parse(mission.compiled_json)).toMatchObject({ missionRevision: 1, jobs: [{ status: "queued" }] });
+        expect(jobs).toHaveLength(1);
+      });
+    });
+
+    it.each(["source hash mismatch", "selector", "script", "plaintext valueRef", "unknown claim"])("rejects %s", async (name) => {
+      const token = fx.token("tenant-a", ["tester"]);
+      const key = `reject-${name.replaceAll(" ", "-")}`;
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key };
+      await fetch(url("/v1/projects"), { method: "POST", headers, body: JSON.stringify({ name: key }) });
+      const content = "A user can sign in.";
+      const prdResponse = await fetch(url(`/v1/projects/${key}/prd-revisions`), { method: "POST", headers: { ...headers, [IDEMPOTENCY_KEY_HEADER]: `${key}-prd` }, body: JSON.stringify({ title: "Login", content }) });
+      const prd = (await prdResponse.json()) as { resource: { prdId: string; revision: number; contentSha256: string } };
+      const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: content.length, quotedTextSha256: createHash("sha256").update(content).digest("hex") };
+      const semanticKey = "known";
+      const step = name === "selector"
+        ? { kind: "click", target: { purpose: "css=#password" } }
+        : name === "script"
+          ? { kind: "navigate", path: "javascript:alert(1)" }
+          : name === "plaintext valueRef"
+            ? { kind: "input", target: { purpose: "password" }, valueRef: "hunter2" }
+            : { kind: "verify", claimSemanticKeys: [name === "unknown claim" ? "missing" : semanticKey] };
+      const body = { projectId: key, prdId: prd.resource.prdId, prdRevision: 1, sourceContentSha256: name === "source hash mismatch" ? "0".repeat(64) : prd.resource.contentSha256, expectedClaims: [{ semanticKey, statement: content, sourceRefs: [sourceRef], confidence: 1 }], testCases: [{ title: "Login", objective: "Verify login", preconditions: [], steps: [step], expectedClaimSemanticKeys: [name === "unknown claim" ? "missing" : semanticKey], sourceRefs: [sourceRef], priority: "high" }] };
+      const response = await fetch(url("/v1/test-plans"), { method: "POST", headers: { ...headers, [IDEMPOTENCY_KEY_HEADER]: `${key}-plan` }, body: JSON.stringify(body) });
+      expect(response.status).toBe(422);
+    });
+
+    it("returns tenant A product IDs as not found to tenant B", async () => {
+      const token = fx.token("tenant-b", ["viewer"]);
+      const response = await fetch(url("/v1/test-plans/plan-1"), { headers: { authorization: `Bearer ${token}` } });
+      expect(response.status).toBe(404);
     });
   });
 

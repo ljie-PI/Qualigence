@@ -11,6 +11,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@qualigence/desktop-contracts": "workspace:*"
+    "@qualigence/desktop-contracts": "workspace:*",
+    "@qualigence/shared-kernel": "workspace:*"
   }
 }

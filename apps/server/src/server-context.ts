@@ -17,7 +17,10 @@ import type {
   PostgresDatabase,
   TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
+import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
+import { ProjectTargetService, type ProjectTargetRepository } from "@qualigence/project-target";
+import { MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import type { AuxDatabase } from "./aux-schema.js";
 import {
   ApiError,
@@ -45,6 +48,30 @@ export interface ServerDeps {
   readonly principalStore: (stores: TenantStores) => RunnerPrincipalStore;
   /** Factory so review aggregate writes use the request's tenant transaction. */
   readonly reviewRepository: (stores: TenantStores) => ReviewTaskRepository;
+  readonly projectTargetRepository?: (stores: TenantStores, tenantId: string) => ProjectTargetRepository;
+  readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
+  readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
+}
+
+export function projectTargetService(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetService {
+  return new ProjectTargetService(projectTargets(deps, stores, tenantId), deps.clock);
+}
+
+export function projectTargets(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetRepository {
+  return deps.projectTargetRepository?.(stores, tenantId) ?? new PostgresProjectTargetRepository(stores.db, tenantId);
+}
+
+export function testPlans(deps: ServerDeps, stores: TenantStores, tenantId: string): TestPlanRepository {
+  return deps.testPlanRepository?.(stores, tenantId) ?? new PostgresTestPlanRepository(stores.db, tenantId);
+}
+
+export function testPlanService(deps: ServerDeps, stores: TenantStores, tenantId: string): TestPlanService {
+  return new TestPlanService(testPlans(deps, stores, tenantId), deps.clock, async (projectId) => (await stores.aux.selectFrom("projects").select("project_id").where("project_id", "=", projectId).executeTakeFirst()) !== undefined);
+}
+
+export function missionIntakeService(deps: ServerDeps, stores: TenantStores, tenantId: string): MissionIntakeService {
+  const repository = deps.prdMissionRepository?.(stores, tenantId) ?? new PostgresPrdMissionRepository(stores.db, tenantId);
+  return new MissionIntakeService(projectTargets(deps, stores, tenantId), testPlans(deps, stores, tenantId), repository, deps.clock);
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */

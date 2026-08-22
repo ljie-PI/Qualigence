@@ -16,7 +16,11 @@ import {
 
 export type ProjectTargetErrorCode =
   | "AppTargetVersionConflict"
-  | "InvalidAppTargetConfiguration";
+  | "InvalidAppTargetConfiguration"
+  | "TargetVersionConflict"
+  | "TargetIdempotencyConflict"
+  | "InvalidTargetConfiguration"
+  | "TargetSecretRejected";
 
 export class ProjectTargetError extends Error {
   readonly code: ProjectTargetErrorCode;

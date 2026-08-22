@@ -14,9 +14,12 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/context-intake": "workspace:*",
     "@qualigence/oidc": "workspace:*",
+    "@qualigence/mission": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",
     "@qualigence/public-api": "workspace:*",
+    "@qualigence/project-target": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/runner-identity": "workspace:*",

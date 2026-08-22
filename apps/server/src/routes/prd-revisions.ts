@@ -1,15 +1,16 @@
-import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { IngestPrdBody, PrdRevisionDto } from "@qualigence/public-api";
+import { TestPlanServiceError } from "@qualigence/mission";
 import {
   authenticateOidc,
   requireIdempotencyKey,
   requireRole,
+  testPlanService,
   withTenant,
   type ServerDeps,
 } from "../server-context.js";
 import { commandEnvelope, listEnvelope } from "../envelopes.js";
-import { newCorrelationId, notFound, validationFailed } from "../errors.js";
+import { newCorrelationId, notFound, validationFailed, versionConflict } from "../errors.js";
 
 function toDto(row: {
   prd_id: string;
@@ -35,15 +36,8 @@ export function registerPrdRevisionRoutes(app: FastifyInstance, deps: ServerDeps
     async (request, reply) => {
       const principal = await authenticateOidc(deps, request);
       requireRole(deps, principal, "viewer");
-      const rows = await withTenant(deps, principal.tenantId, (stores) =>
-        stores.aux
-          .selectFrom("prd_revisions")
-          .select(["prd_id", "project_id", "revision", "title", "content_sha256", "ingested_at"])
-          .where("project_id", "=", request.params.projectId)
-          .orderBy("revision", "asc")
-          .execute(),
-      );
-      return reply.send(listEnvelope(rows.map(toDto), deps.clock.now()));
+      const documents = await withTenant(deps, principal.tenantId, (stores) => testPlanService(deps, stores, principal.tenantId).listPrds(request.params.projectId));
+      return reply.send(listEnvelope(documents.map((document) => toDto({ prd_id: document.prdId, project_id: document.projectId, revision: document.revision, title: document.title, content_sha256: document.contentSha256, ingested_at: document.ingestedAt })), deps.clock.now()));
     },
   );
 
@@ -60,57 +54,15 @@ export function registerPrdRevisionRoutes(app: FastifyInstance, deps: ServerDeps
       if (typeof body.content !== "string" || body.content.length === 0) {
         throw validationFailed("PRD content is required");
       }
-      const now = deps.clock.now();
-      const contentSha256 = createHash("sha256").update(body.content).digest("hex");
-
-      const dto = await withTenant(deps, principal.tenantId, async (stores) => {
-        const project = await stores.aux
-          .selectFrom("projects")
-          .select("project_id")
-          .where("project_id", "=", request.params.projectId)
-          .executeTakeFirst();
-        if (project === undefined) {
-          throw notFound("project not found");
-        }
-        // The revision number is monotonic per project; the Idempotency-Key is
-        // the prd_id so a retried ingest of the same document is a no-op.
-        const existing = await stores.aux
-          .selectFrom("prd_revisions")
-          .select(["prd_id", "project_id", "revision", "title", "content_sha256", "ingested_at"])
-          .where("prd_id", "=", idempotencyKey)
-          .executeTakeFirst();
-        if (existing !== undefined) {
-          return toDto(existing);
-        }
-        const maxRow = await stores.aux
-          .selectFrom("prd_revisions")
-          .select((eb) => eb.fn.max("revision").as("max"))
-          .where("project_id", "=", request.params.projectId)
-          .executeTakeFirst();
-        const revision = Number(maxRow?.max ?? 0) + 1;
-        await stores.aux
-          .insertInto("prd_revisions")
-          .values({
-            tenant_id: principal.tenantId,
-            prd_id: idempotencyKey,
-            project_id: request.params.projectId,
-            revision,
-            title: body.title as string,
-            content_sha256: contentSha256,
-            ingested_at: now,
-          })
-          .onConflict((oc) => oc.columns(["tenant_id", "prd_id"]).doNothing())
-          .execute();
-        const row = await stores.aux
-          .selectFrom("prd_revisions")
-          .select(["prd_id", "project_id", "revision", "title", "content_sha256", "ingested_at"])
-          .where("prd_id", "=", idempotencyKey)
-          .executeTakeFirst();
-        if (row === undefined) {
-          throw notFound("PRD revision could not be created");
-        }
-        return toDto(row);
-      });
+      let document;
+      try {
+        document = await withTenant(deps, principal.tenantId, (stores) => testPlanService(deps, stores, principal.tenantId).ingestPrd({ idempotencyKey, projectId: request.params.projectId, title: body.title as string, content: body.content as string }));
+      } catch (error) {
+        if (error instanceof TestPlanServiceError && error.code === "PlanProjectMismatch") throw notFound("project not found");
+        if (error instanceof TestPlanServiceError && error.code === "PrdIdempotencyConflict") throw versionConflict({}, "idempotency key is bound to another PRD revision");
+        throw error;
+      }
+      const dto = toDto({ prd_id: document.prdId, project_id: document.projectId, revision: document.revision, title: document.title, content_sha256: document.contentSha256, ingested_at: document.ingestedAt });
 
       return reply.status(201).send(commandEnvelope(dto, dto.revision, newCorrelationId()));
     },

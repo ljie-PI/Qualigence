@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
-import { isApiErrorCode } from "../../../apps/web-console/src/api/errors.js";
+import { ApiClientError, isApiErrorCode } from "../../../apps/web-console/src/api/errors.js";
 import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-token-store.js";
 import type { ConsoleSession } from "../../../apps/web-console/src/auth/memory-token-store.js";
 import { dockerAvailable } from "../../helpers/docker-container.js";
@@ -77,7 +77,7 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     await fx?.stop();
   });
 
-  it("runs the full Project → PRD → Investigation → Review journey", async () => {
+  it("runs the full Project → Target → Test Plan → Mission → Investigation → Review journey", async () => {
     // 1. Login as an admin (satisfies tester + reviewer via role hierarchy).
     login("tenant-a", ["admin"]);
     expect(store.isAuthenticated()).toBe(true);
@@ -96,6 +96,34 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     expect(prd.resource.revision).toBe(1);
     const prds = await client.listPrdRevisions("flow-project");
     expect(prds.items.map((r) => r.prdId)).toContain("flow-prd-1");
+
+    const target = await client.createTarget("flow-project", {
+      targetId: "flow-target",
+      displayName: "Flow target",
+      runnerId: "runner-flow",
+      expectedVersion: 0,
+      configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" },
+    }, { idempotencyKey: "flow-target-create" });
+    const sourceRef = { prdId: prd.resource.prdId, revision: 1, startOffset: 0, endOffset: 18, quotedTextSha256: createHash("sha256").update("Users can sign in.").digest("hex") };
+    const draft = await client.createTestPlan({
+      projectId: "flow-project", prdId: prd.resource.prdId, prdRevision: 1,
+      sourceContentSha256: prd.resource.contentSha256,
+      expectedClaims: [{ semanticKey: "login", statement: "Users sign in", sourceRefs: [sourceRef], confidence: 1 }],
+      testCases: [{ title: "Login", objective: "Verify login", preconditions: [], steps: [{ kind: "verify", claimSemanticKeys: ["login"] }], expectedClaimSemanticKeys: ["login"], sourceRefs: [sourceRef], priority: "high" }],
+    }, { idempotencyKey: "flow-plan" });
+    const approved = await client.approveTestPlan(draft.resource.planId, { expectedVersion: draft.resource.version }, { idempotencyKey: "flow-plan-approve" });
+    const mission = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
+    expect(mission.resource).toMatchObject({ runnerId: "runner-flow", targetVersion: 1, planVersion: 2, status: "approved" });
+    const replay = await client.createMission({ projectId: "flow-project", targetId: target.resource.targetId, targetVersion: target.resource.version, targetSnapshotHash: target.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" });
+    expect(replay.resource).toEqual(mission.resource);
+    const conflictingTarget = await client.createTarget("flow-project", {
+      targetId: "flow-target-2", displayName: "Other target", runnerId: "runner-other", expectedVersion: 0,
+      configuration: { kind: "web", startUrl: "https://other.example.test/", allowedOrigins: ["https://other.example.test"], browser: "chromium" },
+    }, { idempotencyKey: "flow-target-2-create" });
+    const conflict = await client.createMission({ projectId: "flow-project", targetId: conflictingTarget.resource.targetId, targetVersion: conflictingTarget.resource.version, targetSnapshotHash: conflictingTarget.resource.snapshotHash, planId: approved.resource.planId, planVersion: approved.resource.version }, { idempotencyKey: "flow-mission" }).catch((error: unknown) => error);
+    expect(conflict).toBeInstanceOf(ApiClientError);
+    expect(conflict).toMatchObject({ code: "VersionConflict", details: { actualVersion: 1 } });
+    expect(await client.getMission(mission.resource.missionId)).toEqual(mission.resource);
 
     // 4. Inspect a seeded Investigation in the needs_human state.
     await seedInvestigationAndTask(admin, {
@@ -131,13 +159,12 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     expect(isApiErrorCode(error, "Unauthorized")).toBe(true);
   });
 
-  it("documents that Mission/Run/Skill routes are not yet served by PR-21 (NotFound)", async () => {
+  it("documents that Run/Skill routes remain owned by later tickets (NotFound)", async () => {
     // The DTOs exist and the client targets the frozen contract paths, but the
     // PR-21 Server does not yet register these routes. The Console degrades to a
     // typed NotFound rather than a broken page — no fabricated data.
     login("tenant-a", ["viewer"]);
     for (const call of [
-      () => client.listMissions(),
       () => client.listRuns(),
       () => client.listSkills(),
     ]) {

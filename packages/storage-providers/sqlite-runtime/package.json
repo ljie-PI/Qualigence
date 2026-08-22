@@ -17,6 +17,7 @@
     "@qualigence/intelligence": "workspace:*",
     "@qualigence/investigation": "workspace:*",
     "@qualigence/mission": "workspace:*",
+    "@qualigence/project-target": "workspace:*",
     "@qualigence/recording": "workspace:*",
     "@qualigence/review": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
