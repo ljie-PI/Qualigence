@@ -661,7 +661,19 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
   wrapped native `then` boundary; nested calls receive separate tokens. A
   nondelegating custom method preserves its application result but poisons
   evidence. Constructor or species identity alone is not a veto.
-- Round-2 exact affected non-E2E command: `corepack pnpm vitest run
+- Round-3 remediation replaces flattened pending-call association with strict
+  LIFO frames `{token, expectedReceiver, delegated}`. Only the top frame can be
+  attested, and only when `wrappedThen` receives its exact receiver. Nested
+  exact-receiver calls are proven and counted independently; an inner or
+  different-receiver call cannot prove its outer frame.
+- Cross-receiver delegation is accepted only when the native boundary's exact
+  returned continuation is also the custom method's result. The outer token is
+  then linked to an explicit child token and is proven only when that returned
+  continuation reaches its own exact settlement boundary. An unrelated return,
+  unsettled continuation, recursive reentry, or later asynchronous continuation
+  cannot inherit or discharge a stale frame. Fresh-page native oracle ordering
+  and results remain unchanged.
+- Round-3 exact affected/full focused non-E2E command: `corepack pnpm vitest run
   tests/unit/runner/action-value-provider.test.ts
   tests/unit/runner/offer-runtime.test.ts
   tests/unit/runner-components/model-agent.test.ts
@@ -669,9 +681,9 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
   tests/unit/target-adapters/web-playwright/browser-session.test.ts
   tests/unit/target-adapters/web-playwright/png-redactor.test.ts
   tests/unit/runner-kernel/deterministic-policy-gate.test.ts
-   tests/component/web-execution`. It passed 12 files / 217 tests: 216 passed and
-   1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
-   passed.
+  tests/component/web-execution`. It passed 12 files / 223 tests: 222 passed and
+  1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
+  passed. No E2E was run.
 - No E2E is run before fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)

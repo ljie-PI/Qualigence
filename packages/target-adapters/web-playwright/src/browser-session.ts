@@ -613,6 +613,9 @@ interface PrivatePromiseDelegationToken {
 
 interface PrivatePromiseBoundaryHook {
   readonly custom: (receiver: unknown) => PrivatePromiseDelegationToken[];
+  readonly child: (
+    parents: readonly PrivatePromiseDelegationToken[],
+  ) => PrivatePromiseDelegationToken[];
   readonly wrap: (
     receiver: unknown,
     onfulfilled: unknown,
@@ -1390,6 +1393,8 @@ export class PlaywrightBrowserSession {
           ? callback
           : ((value: T) => runCausal(generation, () => callback(value)));
         const promiseTokens = new Set<PrivatePromiseDelegationToken>();
+        const promiseTokenParents = new Map<PrivatePromiseDelegationToken, PrivatePromiseDelegationToken>();
+        const deferredPromiseTokens = new Set<PrivatePromiseDelegationToken>();
         const expectedPromiseReceivers = new WeakSet<object>();
         const promiseHook: PrivatePromiseBoundaryHook = {
           custom(receiver) {
@@ -1408,6 +1413,17 @@ export class PlaywrightBrowserSession {
             promiseTokens.add(token);
             tracker.outstandingPromiseDelegations = promiseTokens.size;
             return [token];
+          },
+          child(parents) {
+            const children: PrivatePromiseDelegationToken[] = [];
+            for (const parent of parents) {
+              if (!promiseTokens.has(parent) || parent.delegated || deferredPromiseTokens.has(parent)) continue;
+              const child: PrivatePromiseDelegationToken = { delegated: false, settled: false };
+              promiseTokenParents.set(child, parent);
+              deferredPromiseTokens.add(parent);
+              children.push(child);
+            }
+            return children;
           },
           wrap(_receiver, onfulfilled, onrejected, associated) {
             for (const token of associated) token.delegated = true;
@@ -1428,10 +1444,21 @@ export class PlaywrightBrowserSession {
             ];
           },
           settle(tokens) {
-            for (const token of tokens) {
+            const finish = (token: PrivatePromiseDelegationToken): void => {
               token.settled = true;
+              if (deferredPromiseTokens.has(token)) return;
               if (!token.delegated) tracker.schedulerProvenanceUnproven = true;
               promiseTokens.delete(token);
+              const parent = promiseTokenParents.get(token);
+              if (parent !== undefined) {
+                promiseTokenParents.delete(token);
+                deferredPromiseTokens.delete(parent);
+                parent.delegated = token.delegated;
+                finish(parent);
+              }
+            };
+            for (const token of tokens) {
+              finish(token);
             }
             tracker.outstandingPromiseDelegations = promiseTokens.size;
           },
@@ -1509,6 +1536,8 @@ export class PlaywrightBrowserSession {
             tracker.schedulerProvenanceUnproven = true;
           }
           promiseTokens.clear();
+          promiseTokenParents.clear();
+          deferredPromiseTokens.clear();
           tracker.outstandingPromiseDelegations = 0;
           const intact = window.setTimeout === wrappedSetTimeout &&
             window.setInterval === wrappedSetInterval &&
@@ -1842,7 +1871,8 @@ export class PlaywrightBrowserSession {
       const requireCurrentPromiseIntegrity = index === this.sensitiveActionTrackers.length - 1;
       const invalid = await tracker.evaluate((state, requireIntegrity) =>
         state.overflow || state.observerError || state.scheduledPoison ||
-          state.schedulerProvenanceUnproven || (requireIntegrity && !state.promiseIntegrity()) ||
+          state.schedulerProvenanceUnproven || state.outstandingPromiseDelegations > 0 ||
+          (requireIntegrity && !state.promiseIntegrity()) ||
           state.shadowPoison || state.ambiguousEvent,
       requireCurrentPromiseIntegrity).catch(() => true);
       if (invalid) {
@@ -2595,9 +2625,37 @@ export class PlaywrightBrowserSession {
           current.get === captured.get && current.set === captured.set &&
           current.value === captured.value && current.writable === captured.writable;
         const hooks = new Set<PrivatePromiseBoundaryHook>();
-        const pendingCustomCalls: PrivatePromiseDelegationToken[][] = [];
-        const settle = (tokens: readonly PrivatePromiseDelegationToken[]): void => {
-          for (const hook of hooks) hook.settle(tokens);
+        interface CustomCallFrame {
+          readonly token: readonly PrivatePromiseDelegationToken[];
+          readonly expectedReceiver: unknown;
+          delegated: boolean;
+        }
+        // Only the top frame's exact receiver may attest it. A cross-receiver
+        // native delegation can prove its parent only through its exact result.
+        const pendingCustomCalls: CustomCallFrame[] = [];
+        const pendingContinuationFrames = new WeakMap<object, CustomCallFrame[]>();
+        const delegatedContinuations = new WeakMap<CustomCallFrame, WeakSet<object>>();
+        const settle = (frame: CustomCallFrame): void => {
+          for (const hook of hooks) hook.settle(frame.token);
+        };
+        const takeContinuationFrame = (receiver: unknown): CustomCallFrame | undefined => {
+          if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null) {
+            return undefined;
+          }
+          const frames = pendingContinuationFrames.get(receiver);
+          const frame = frames?.shift();
+          if (frames?.length === 0) pendingContinuationFrames.delete(receiver);
+          return frame;
+        };
+        const deferThroughContinuation = (frame: CustomCallFrame, receiver: object): boolean => {
+          if (!delegatedContinuations.get(frame)?.has(receiver)) return false;
+          const tokens: PrivatePromiseDelegationToken[] = [];
+          for (const hook of hooks) tokens.push(...hook.child(frame.token));
+          if (tokens.length === 0) return false;
+          const frames = pendingContinuationFrames.get(receiver) ?? [];
+          frames.push({ token: tokens, expectedReceiver: receiver, delegated: false });
+          pendingContinuationFrames.set(receiver, frames);
+          return true;
         };
         const wrappedThen = function <T, TResult1 = T, TResult2 = never>(
           this: Promise<T>,
@@ -2606,33 +2664,64 @@ export class PlaywrightBrowserSession {
         ): Promise<TResult1 | TResult2> {
           let fulfilled: unknown = onfulfilled;
           let rejected: unknown = onrejected;
-          const associated = pendingCustomCalls.flat();
-          const tokens: PrivatePromiseDelegationToken[] = [];
+          let frame = pendingCustomCalls.at(-1);
+          let continuationFrame = false;
+          if (frame === undefined) {
+            frame = takeContinuationFrame(this);
+            if (frame !== undefined) {
+              pendingCustomCalls.push(frame);
+              continuationFrame = true;
+            }
+          }
+          const associated = frame?.expectedReceiver === this ? frame.token : [];
+          if (frame?.expectedReceiver === this) frame.delegated = true;
           for (const hook of hooks) {
             [fulfilled, rejected] = hook.wrap(this, fulfilled, rejected, associated);
           }
           try {
-            return Reflect.apply(thenDescriptor?.value, this, [fulfilled, rejected]) as
+            const result = Reflect.apply(thenDescriptor?.value, this, [fulfilled, rejected]) as
               Promise<TResult1 | TResult2>;
+            if (frame !== undefined && frame.expectedReceiver !== this) {
+              const continuations = delegatedContinuations.get(frame) ?? new WeakSet<object>();
+              continuations.add(result);
+              delegatedContinuations.set(frame, continuations);
+            }
+            return result;
           } finally {
-            settle(tokens);
+            if (continuationFrame && frame !== undefined) {
+              pendingCustomCalls.pop();
+              settle(frame);
+            }
           }
         };
         const instrumentCustom = (method: unknown): unknown => {
           if (typeof method !== "function") return method;
           return function (this: unknown, ...args: unknown[]): unknown {
-            const tokens: PrivatePromiseDelegationToken[] = [];
-            for (const hook of hooks) tokens.push(...hook.custom(this));
-            pendingCustomCalls.push(tokens);
+            const parent = pendingCustomCalls.at(-1);
+            let frame = takeContinuationFrame(this);
+            if (frame === undefined) {
+              const tokens: PrivatePromiseDelegationToken[] = [];
+              for (const hook of hooks) tokens.push(...hook.custom(this));
+              frame = { token: tokens, expectedReceiver: this, delegated: false };
+            }
+            pendingCustomCalls.push(frame);
             try {
               const result = Reflect.apply(method, this, args);
               if ((typeof result === "object" || typeof result === "function") && result !== null) {
+                if (parent !== undefined && frame.delegated) {
+                  const continuations = delegatedContinuations.get(parent) ?? new WeakSet<object>();
+                  continuations.add(result);
+                  delegatedContinuations.set(parent, continuations);
+                }
+                if (!frame.delegated && deferThroughContinuation(frame, result)) {
+                  return result;
+                }
                 for (const hook of hooks) hook.returned(result);
               }
               return result;
             } finally {
               pendingCustomCalls.pop();
-              settle(tokens);
+              settle(frame);
             }
           };
         };

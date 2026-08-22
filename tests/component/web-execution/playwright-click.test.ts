@@ -2410,6 +2410,307 @@ describe("Playwright resolve + execute against real Chromium", () => {
     ))).toBe("unchanged");
   });
 
+  it("does not let a delegating inner Promise override attest a nondelegating outer override", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "nested-override-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.nested-override"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { nestedOverrideEvents?: string[] };
+        const events: string[] = [];
+        class InnerPromise<T> extends Promise<T> {
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push("inner-call");
+            return super.then(onfulfilled, onrejected);
+          }
+        }
+        class OuterPromise<T> extends Promise<T> {
+          override then<TResult1 = T, TResult2 = never>(
+            _onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            _onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push("outer-call");
+            void new InnerPromise<string>((resolve) => resolve("inner-source"))
+              .then((value) => { events.push(value); });
+            return Promise.resolve("outer-result") as Promise<TResult1 | TResult2>;
+          }
+        }
+        void new OuterPromise<string>((resolve) => resolve("outer-source"))
+          .then((value) => value).then((value) => {
+          events.push(value);
+          state.nestedOverrideEvents = events;
+        });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { nestedOverrideEvents?: string[] }).nestedOverrideEvents,
+    ))).toEqual(["outer-call", "inner-call", "inner-source", "outer-result"]);
+  });
+
+  it("proves nested Promise overrides only when each delegates on its exact receiver", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "nested-exact-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.nested-exact"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { nestedExactEvents?: string[] };
+        const events: string[] = [];
+        class InnerPromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return Promise; }
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push("inner-call");
+            return super.then(onfulfilled, onrejected);
+          }
+        }
+        class OuterPromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return Promise; }
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push("outer-call");
+            void new InnerPromise<string>((resolve) => resolve("inner-source"))
+              .then((value) => { events.push(value); });
+            return super.then(onfulfilled, onrejected);
+          }
+        }
+        void new OuterPromise<string>((resolve) => resolve("outer-source"))
+          .then((value) => {
+            events.push(value);
+            state.nestedExactEvents = events;
+          });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { nestedExactEvents?: string[] }).nestedExactEvents,
+    ))).toEqual(["outer-call", "inner-call", "inner-source", "outer-source"]);
+    expect(await session.sensitiveSchedulerCounts()).toEqual({ registrations: 2, executions: 2 });
+  });
+
+  it("does not attest a Promise override through a different receiver and unrelated return", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "different-receiver-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.different-receiver"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { differentReceiverValue?: string };
+        class DifferentReceiverPromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return Promise; }
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            void Reflect.apply(Promise.prototype.then, Promise.resolve("different"), [
+              onfulfilled,
+              onrejected,
+            ]);
+            return Promise.resolve("unrelated") as Promise<TResult1 | TResult2>;
+          }
+        }
+        void new DifferentReceiverPromise<string>((resolve) => resolve("source"))
+          .then((value) => { state.differentReceiverValue = String(value); });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { differentReceiverValue?: string }).differentReceiverValue,
+    ))).toBe("different");
+  });
+
+  it("proves an exact returned cross-receiver continuation without leaking its frame asynchronously", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "async-frame-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.async-frame"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { asyncFrameEvents?: string[] };
+        const events: string[] = [];
+        class CrossReceiverPromise<T> extends Promise<T> {
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push("cross-call");
+            return Reflect.apply(Promise.prototype.then, Promise.resolve("delegated"), [
+              onfulfilled,
+              onrejected,
+            ]);
+          }
+        }
+        void new CrossReceiverPromise<string>((resolve) => resolve("source"))
+          .then((value) => value)
+          .then((value) => {
+            events.push(String(value));
+            Promise.resolve().then(() => {
+              events.push("async-clean");
+              state.asyncFrameEvents = events;
+            });
+          });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { asyncFrameEvents?: string[] }).asyncFrameEvents,
+    ))).toEqual(["cross-call", "delegated", "async-clean"]);
+    expect(await session.sensitiveSchedulerCounts()).toEqual({ registrations: 3, executions: 3 });
+  });
+
+  it("does not prove a cross-receiver delegation whose returned continuation never settles", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "unsettled-child-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.unsettled-child"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        class UnsettledChildPromise<T> extends Promise<T> {
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            return Reflect.apply(Promise.prototype.then, Promise.resolve("delegated"), [
+              onfulfilled,
+              onrejected,
+            ]);
+          }
+        }
+        void new UnsettledChildPromise<string>((resolve) => resolve("source")).then((value) => value);
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it("cleans recursive Promise override frames before a later asynchronous continuation", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "recursive-frame-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.recursive-frame"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { recursiveFrameEvents?: string[] };
+        const events: string[] = [];
+        class RecursivePromise<T> extends Promise<T> {
+          static get [Symbol.species](): PromiseConstructor { return Promise; }
+          private entered = false;
+          override then<TResult1 = T, TResult2 = never>(
+            onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ): Promise<TResult1 | TResult2> {
+            events.push(this.entered ? "inner-call" : "outer-call");
+            if (!this.entered) {
+              this.entered = true;
+              return this.then(onfulfilled, onrejected);
+            }
+            return super.then(onfulfilled, onrejected);
+          }
+        }
+        void new RecursivePromise<string>((resolve) => resolve("recursive-value"))
+          .then((value) => value)
+          .then((value) => {
+            events.push(value);
+            Promise.resolve().then(() => {
+              events.push("async-clean");
+              state.recursiveFrameEvents = events;
+            });
+          });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { recursiveFrameEvents?: string[] }).recursiveFrameEvents,
+    ))).toEqual(["outer-call", "inner-call", "recursive-value", "async-clean"]);
+    expect(await session.sensitiveSchedulerCounts()).toEqual({ registrations: 3, executions: 3 });
+  });
+
   it.each([
     ["option-count", 5_000, 1],
     ["option-value", 1, 64 * 1024 + 1],
