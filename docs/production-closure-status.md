@@ -705,12 +705,12 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: review-finding fix Gate passed; dedicated PR head pending
+verification: round-2 review-finding fix Gate passed at exact implementation head
 pull_request: pending
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
-implementation_head: `6801a2e`
+implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
 
 - Sensitive Promise instrumentation retains up to 128 exact observed receivers
   in a session-bounded enumerable registry, with WeakMap indexing and snapshots
@@ -736,6 +736,26 @@ implementation_head: `6801a2e`
 - The final exact Ticket 42/43 non-E2E Gate passed 12 files / 233 tests: 232
   passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run per instruction.
+- Round-2 artifact release performs every awaited tracker, CDP/shadow, and
+  retained-target check before one browser-realm atomic tail. That synchronous
+  tail rechecks sticky poison and every registered Promise owner descriptor and
+  prototype, clones/freezes artifact metadata and bytes, and consumes the cache
+  without an await, yield, Promise, or page call after the final owner check.
+  Guard or copy failure clears the cache and returns no batch. Tests cover the
+  immediately-before-guard hook, an earlier scheduled timer mutation, exact
+  guard/copy event ordering, copy failure, and the unchanged success path.
+- Round-2 implementation head: `f24033ec734e09654c88c01d473093bf353fe1f6`.
+  Date: 2026-08-22. Exact affected/full focused non-E2E command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 12 files / 239 tests: 238 passed and
+  1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
+  passed. No E2E was run or claimed.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
