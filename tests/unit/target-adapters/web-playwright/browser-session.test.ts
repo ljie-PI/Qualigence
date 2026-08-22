@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   PlaywrightBrowserSession,
   PRIVATE_TARGET_ATTRIBUTE,
@@ -87,6 +88,22 @@ function fakeLauncher(promiseAttested = true): {
 }
 
 describe("PlaywrightBrowserSession", () => {
+  it("does not dispatch Promise authority decisions through mutable intrinsic prototypes", () => {
+    const source = readFileSync(new URL(
+      "../../../../packages/target-adapters/web-playwright/src/browser-session.ts",
+      import.meta.url,
+    ), "utf8");
+    const start = source.indexOf("await context.addInitScript(({");
+    const end = source.indexOf("const page = await context.newPage();", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    const authoritySource = source.slice(start, end);
+    const forbiddenDispatch = /\.(?:every|map|flat|flatMap|push|pop|shift|at|slice|splice|includes|indexOf|add|has|delete|clear|call|apply|bind|startsWith)\s*\(/g;
+    expect(authoritySource.match(forbiddenDispatch) ?? []).toEqual([]);
+    expect(authoritySource).not.toMatch(/for\s*\(const\s+[^)]*\sof\s/);
+  });
+
   it("stops bounded pierced CDP inventory before a hostile shadow tree exceeds its cap", async () => {
     const requests: { readonly method: string; readonly depth: number | undefined }[] = [];
     const raw: RawCdpSession = {

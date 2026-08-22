@@ -90,6 +90,47 @@ interface PromiseScenarioObservation {
   readonly finallySource: string;
 }
 
+const AUTHORITY_INTRINSIC_METHODS = [
+  ["Array", "every"],
+  ["Array", "map"],
+  ["Array", "flat"],
+  ["Array", "flatMap"],
+  ["Array", "push"],
+  ["Array", "pop"],
+  ["Array", "shift"],
+  ["Array", "at"],
+  ["Array", "slice"],
+  ["Array", "splice"],
+  ["Array", "includes"],
+  ["Array", "indexOf"],
+  ["Set", "add"],
+  ["Set", "has"],
+  ["Set", "delete"],
+  ["WeakSet", "add"],
+  ["WeakSet", "has"],
+  ["WeakSet", "delete"],
+  ["Map", "get"],
+  ["Map", "set"],
+  ["Map", "has"],
+  ["Map", "delete"],
+  ["Map", "clear"],
+  ["WeakMap", "get"],
+  ["WeakMap", "set"],
+  ["WeakMap", "has"],
+  ["WeakMap", "delete"],
+  ["Function", "call"],
+  ["Reflect", "apply"],
+  ["String", "includes"],
+  ["String", "startsWith"],
+  ["Object", "getPrototypeOf"],
+] as const;
+
+const AUTHORITY_INTRINSIC_TAMPERS = AUTHORITY_INTRINSIC_METHODS.flatMap(
+  ([owner, method]) => (["noop", "true", "false", "throw"] as const).map(
+    (replacement) => [owner, method, replacement] as const,
+  ),
+);
+
 interface PromiseParityObservation {
   readonly intrinsicGlobalIdentity: boolean;
   readonly instanceConstructorIdentity: boolean;
@@ -2553,6 +2594,76 @@ describe("Playwright resolve + execute against real Chromium", () => {
         return { customCalls: state?.customCalls, instrumented: state?.instrumented };
       }))).toEqual({ customCalls: 1, instrumented: true });
       expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
+  it.each(AUTHORITY_INTRINSIC_TAMPERS)(
+    "poisons sensitive evidence after %s.%s is replaced with %s while preserving the input effect",
+    async (ownerName, method, replacement) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const secret = `authority-${ownerName}-${method}-${replacement}`;
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.${ownerName}-${method}`),
+        before,
+      );
+
+      await session.withPage(async (page) => page.evaluate(([ownerKey, property, behavior]) => {
+        if (ownerKey === undefined || property === undefined || behavior === undefined) {
+          throw new Error("intrinsic tamper unavailable");
+        }
+        const owner = ownerKey === "Reflect"
+          ? Reflect
+          : ownerKey === "Object"
+            ? Object
+          : ownerKey === "Function"
+            ? Function.prototype
+            : (globalThis as unknown as Record<string, { prototype: object }>)[ownerKey]?.prototype;
+        if (owner === undefined) throw new Error("intrinsic owner unavailable");
+        const replacementFunction = behavior === "throw"
+          ? function () { throw new Error("tampered intrinsic called"); }
+          : behavior === "true"
+            ? function () { return true; }
+            : behavior === "false"
+              ? function () { return false; }
+              : function () { return undefined; };
+        const input = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: (event: { target: unknown }) => void, options: { once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        input?.addEventListener("beforeinput", () => {
+          const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+          setTimeout(() => {
+            if (descriptor !== undefined) Object.defineProperty(owner, property, descriptor);
+          }, 100);
+          Object.defineProperty(owner, property, {
+            ...descriptor,
+            value: replacementFunction,
+          });
+        }, { once: true });
+        input?.addEventListener("input", (event) => {
+          (globalThis as typeof globalThis & { intrinsicInputValue?: string }).intrinsicInputValue =
+            (event.target as { value: string }).value;
+        }, { once: true });
+      }, [ownerName, method, replacement]));
+
+      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(await session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { intrinsicInputValue?: string }).intrinsicInputValue,
+      ))).toBe(secret);
+      await expect(observer.capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      expect(session.latestGraphId).toBe(before.graphId);
+      expect(() => session.artifactsFor("run-click:observation:2")).toThrowError(
+        expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+      );
     },
   );
 

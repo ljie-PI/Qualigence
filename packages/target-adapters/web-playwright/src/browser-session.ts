@@ -649,6 +649,50 @@ interface PrivatePromiseIntrinsicsSnapshot {
   readonly ownDescriptor: (target: object, key: PropertyKey) => PropertyDescriptor | undefined;
   readonly prototypeOf: (target: object) => object | null;
   readonly descriptorShapeIntact: boolean;
+  readonly operations: PrivateAuthorityOperations;
+}
+
+interface PrivateAuthorityOperations {
+  readonly apply: (target: Function, receiver: unknown, argumentsList: readonly unknown[]) => unknown;
+  readonly arrayPush: <T>(target: T[], value: T) => number;
+  readonly arrayPop: <T>(target: T[]) => T | undefined;
+  readonly arrayShift: <T>(target: T[]) => T | undefined;
+  readonly arrayIncludes: <T>(target: readonly T[], value: T) => boolean;
+  readonly stringIncludes: (target: string, value: string) => boolean;
+  readonly createSet: <T>() => Set<T>;
+  readonly setAdd: <T>(target: Set<T>, value: T) => void;
+  readonly setHas: <T>(target: Set<T>, value: T) => boolean;
+  readonly setDelete: <T>(target: Set<T>, value: T) => boolean;
+  readonly setClear: <T>(target: Set<T>) => void;
+  readonly setSize: <T>(target: Set<T>) => number;
+  readonly setForEach: <T>(target: Set<T>, callback: (value: T) => void) => void;
+  readonly createMap: <K, V>() => Map<K, V>;
+  readonly mapGet: <K, V>(target: Map<K, V>, key: K) => V | undefined;
+  readonly mapSet: <K, V>(target: Map<K, V>, key: K, value: V) => void;
+  readonly mapHas: <K, V>(target: Map<K, V>, key: K) => boolean;
+  readonly mapDelete: <K, V>(target: Map<K, V>, key: K) => boolean;
+  readonly mapClear: <K, V>(target: Map<K, V>) => void;
+  readonly createWeakSet: <T extends WeakKey>() => WeakSet<T>;
+  readonly weakSetAdd: <T extends WeakKey>(target: WeakSet<T>, value: T) => void;
+  readonly weakSetHas: <T extends WeakKey>(target: WeakSet<T>, value: T) => boolean;
+  readonly weakSetDelete: <T extends WeakKey>(target: WeakSet<T>, value: T) => boolean;
+  readonly createWeakMap: <K extends WeakKey, V>() => WeakMap<K, V>;
+  readonly weakMapGet: <K extends WeakKey, V>(target: WeakMap<K, V>, key: K) => V | undefined;
+  readonly weakMapSet: <K extends WeakKey, V>(target: WeakMap<K, V>, key: K, value: V) => void;
+  readonly weakMapHas: <K extends WeakKey, V>(target: WeakMap<K, V>, key: K) => boolean;
+  readonly weakMapDelete: <K extends WeakKey, V>(target: WeakMap<K, V>, key: K) => boolean;
+  readonly observeMutations: (
+    observer: MutationObserver,
+    target: Node,
+    options: MutationObserverInit,
+  ) => void;
+  readonly takeMutationRecords: (observer: MutationObserver) => MutationRecord[];
+  readonly disconnectMutationObserver: (observer: MutationObserver) => void;
+  readonly createUrlSearchParams: (search: string) => URLSearchParams;
+  readonly urlSearchParamsForEach: (
+    parameters: URLSearchParams,
+    callback: (value: string, key: string) => void,
+  ) => void;
 }
 
 interface PrivatePromiseDelegationToken {
@@ -765,6 +809,7 @@ interface SensitiveActionMutationTracker {
   readonly observers: MutationObserver[];
   readonly roots: (Document | ShadowRoot)[];
   readonly shadowRegistry: PrivateShadowRegistry;
+  readonly operations: PrivateAuthorityOperations;
   readonly restore: () => boolean;
   readonly promiseIntegrity: () => boolean;
   readonly beginCausalAction: (target: Element) => boolean;
@@ -1188,6 +1233,8 @@ export class PlaywrightBrowserSession {
       const forms = [...new Set([value, ...normalizedForms].filter((form) => form !== ""))];
       const tracker = await target.evaluateHandle((element, input) => {
         const limits = input.limits;
+        const promiseSnapshot = input.promiseIntrinsics.snapshot();
+        const operations = promiseSnapshot.operations;
         if (!element.isConnected) {
           throw new Error("target-disconnected");
         }
@@ -1199,7 +1246,7 @@ export class PlaywrightBrowserSession {
           const chunks: string[] = [];
           let bytes = 0;
           const roots: Node[] = [candidate];
-          if (candidate.shadowRoot !== null) roots.push(candidate.shadowRoot);
+          if (candidate.shadowRoot !== null) operations.arrayPush(roots, candidate.shadowRoot);
           let elements = 0;
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
@@ -1212,12 +1259,12 @@ export class PlaywrightBrowserSession {
               if (node instanceof CharacterData) {
                 bytes += byteLength(node.data);
                 if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
-                chunks.push(node.data);
+                operations.arrayPush(chunks, node.data);
               } else if (node instanceof Element) {
                 elements += 1;
                 if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
                 if (node.shadowRoot !== null) {
-                  roots.push(node.shadowRoot);
+                  operations.arrayPush(roots, node.shadowRoot);
                   if (roots.length > limits.maximumShadowRoots + 1) {
                     throw new Error("shadow-root-overflow");
                   }
@@ -1242,17 +1289,26 @@ export class PlaywrightBrowserSession {
             selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
             selectedOptionText: selectedOption?.text ?? null,
             textContent: boundedText(candidate),
-            attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
+            attributes: (() => {
+              const attributes: (string | null)[] = [];
+              for (let index = 0; index < limits.attributes.length; index += 1) {
+                const name = limits.attributes[index];
+                if (name !== undefined) operations.arrayPush(attributes, candidate.getAttribute(name));
+              }
+              return attributes;
+            })(),
           };
           let bytes = 0;
-          for (const property of [
+          const propertiesToMeasure = [
             properties.inputValue,
             properties.selectValue,
             properties.selectedOptionText,
             properties.textContent,
             ...properties.attributes,
-          ]) {
-            if (property === null) continue;
+          ];
+          for (let index = 0; index < propertiesToMeasure.length; index += 1) {
+            const property = propertiesToMeasure[index];
+            if (property === null || property === undefined) continue;
             const propertyBytes = byteLength(property);
             if (propertyBytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
             bytes += propertyBytes;
@@ -1272,7 +1328,10 @@ export class PlaywrightBrowserSession {
           const found: Element[] = [];
           let elements = 0;
           const roots: (Document | ShadowRoot)[] = [element.ownerDocument];
-          for (const entry of shadow.roots) roots.push(entry.root);
+          for (let index = 0; index < shadow.roots.length; index += 1) {
+            const entry = shadow.roots[index];
+            if (entry !== undefined) operations.arrayPush(roots, entry.root);
+          }
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
             if (root === undefined) throw new Error("shadow-root-identity-unprovable");
@@ -1282,13 +1341,23 @@ export class PlaywrightBrowserSession {
               elements += 1;
               if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
               if (node.matches(limits.candidateSelector)) {
-                found.push(node);
+                operations.arrayPush(found, node);
                 if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
               }
             }
           }
-          if (new Set(roots).size !== roots.length || roots.length !== shadow.roots.length + 1 ||
-              shadow.roots.some((entry) => !roots.includes(entry.root))) {
+          const distinctRoots = operations.createSet<Document | ShadowRoot>();
+          for (let index = 0; index < roots.length; index += 1) {
+            const root = roots[index];
+            if (root !== undefined) operations.setAdd(distinctRoots, root);
+          }
+          let missingRoot = false;
+          for (let index = 0; index < shadow.roots.length; index += 1) {
+            const entry = shadow.roots[index];
+            if (entry !== undefined && !operations.arrayIncludes(roots, entry.root)) missingRoot = true;
+          }
+          if (operations.setSize(distinctRoots) !== roots.length ||
+              roots.length !== shadow.roots.length + 1 || missingRoot) {
             throw new Error("shadow-root-identity-unprovable");
           }
           return found;
@@ -1302,7 +1371,7 @@ export class PlaywrightBrowserSession {
           const captured = snapshot(candidate);
           snapshotBytes += captured.bytes;
           if (snapshotBytes > limits.maximumSnapshotBytes) throw new Error("snapshot-byte-overflow");
-          candidates.push({ element: candidate, properties: captured.properties });
+          operations.arrayPush(candidates, { element: candidate, properties: captured.properties });
         }
 
         const records: SensitiveActionMutationRecord[] = [];
@@ -1337,6 +1406,7 @@ export class PlaywrightBrowserSession {
           preparedElements: undefined,
           roots: [],
           shadowRegistry: registry,
+          operations,
         } as Omit<
           SensitiveActionMutationTracker,
           "observers" | "restore" | "promiseIntegrity" | "beginCausalAction" | "endCausalAction"
@@ -1353,13 +1423,15 @@ export class PlaywrightBrowserSession {
               tracker.overflow = true;
               return;
             }
-            for (const record of mutations) {
+            for (let index = 0; index < mutations.length; index += 1) {
+              const record = mutations[index];
+              if (record === undefined) continue;
               if (record.addedNodes.length > limits.maximumCandidates ||
                   record.removedNodes.length > limits.maximumCandidates) {
                 tracker.overflow = true;
                 return;
               }
-              records.push({ record, causal });
+              operations.arrayPush(records, { record, causal });
             }
           } catch {
             tracker.observerError = true;
@@ -1368,24 +1440,26 @@ export class PlaywrightBrowserSession {
         const observers: MutationObserver[] = [];
         tracker.observers = observers;
         const observeRoot = (root: Document | ShadowRoot): void => {
-          if (tracker.roots.includes(root)) return;
+          if (operations.arrayIncludes(tracker.roots, root)) return;
           if (tracker.roots.length >= limits.maximumShadowRoots + 1) {
             tracker.shadowPoison = true;
             return;
           }
-          tracker.roots.push(root);
+          operations.arrayPush(tracker.roots, root);
           const observer = new MutationObserver((mutations) => appendRecords(mutations, false));
-          observers.push(observer);
-          observer.observe(root, {
-            attributes: true,
-            characterData: true,
-            childList: true,
-            subtree: true,
+          operations.arrayPush(observers, observer);
+            operations.observeMutations(observer, root, {
+              attributes: true,
+              characterData: true,
+              childList: true,
+              subtree: true,
           });
         };
         observeRoot(element.ownerDocument);
-        for (const entry of registry.snapshot(limits.maximumShadowRoots).roots) {
-          observeRoot(entry.root);
+        const initialShadowRoots = registry.snapshot(limits.maximumShadowRoots).roots;
+        for (let index = 0; index < initialShadowRoots.length; index += 1) {
+          const entry = initialShadowRoots[index];
+          if (entry !== undefined) observeRoot(entry.root);
         }
 
         const values = (properties: SensitiveActionPropertySnapshot): readonly (string | null)[] => [
@@ -1396,7 +1470,13 @@ export class PlaywrightBrowserSession {
           ...properties.attributes,
         ];
         const containsForm = (property: string | null): boolean =>
-          property !== null && forms.some((form) => property.includes(form));
+          property !== null && (() => {
+            for (let index = 0; index < forms.length; index += 1) {
+              const form = forms[index];
+              if (form !== undefined && operations.stringIncludes(property, form)) return true;
+            }
+            return false;
+          })();
         const capture = (): readonly SensitiveActionCandidateSnapshot[] => {
           const nodes = boundedCandidates();
           const captured: SensitiveActionCandidateSnapshot[] = [];
@@ -1407,31 +1487,52 @@ export class PlaywrightBrowserSession {
             const item = snapshot(candidate);
             bytes += item.bytes;
             if (bytes > limits.maximumSnapshotBytes) throw new Error("snapshot-byte-overflow");
-            captured.push({ element: candidate, properties: item.properties });
+            operations.arrayPush(captured, { element: candidate, properties: item.properties });
           }
           return captured;
         };
         const finishCausalScope = (before: readonly SensitiveActionCandidateSnapshot[]): void => {
           try {
-            for (const observer of observers) appendRecords(observer.takeRecords(), true);
+            for (let index = 0; index < observers.length; index += 1) {
+              const observer = observers[index];
+              if (observer !== undefined) appendRecords(operations.takeMutationRecords(observer), true);
+            }
             const after = capture();
-            const totalCandidates = before.length + after.filter((candidate) =>
-              !before.some((prior) => prior.element === candidate.element)).length;
+            let newCandidates = 0;
+            for (let afterIndex = 0; afterIndex < after.length; afterIndex += 1) {
+              const candidate = after[afterIndex];
+              if (candidate === undefined) continue;
+              let found = false;
+              for (let beforeIndex = 0; beforeIndex < before.length; beforeIndex += 1) {
+                if (before[beforeIndex]?.element === candidate.element) found = true;
+              }
+              if (!found) newCandidates += 1;
+            }
+            const totalCandidates = before.length + newCandidates;
             if (totalCandidates > limits.maximumCandidates) {
               tracker.overflow = true;
               return;
             }
-            for (const candidate of after) {
-              const prior = before.find((item) => item.element === candidate.element);
+            for (let afterIndex = 0; afterIndex < after.length; afterIndex += 1) {
+              const candidate = after[afterIndex];
+              if (candidate === undefined) continue;
+              let prior: SensitiveActionCandidateSnapshot | undefined;
+              for (let index = 0; index < before.length; index += 1) {
+                if (before[index]?.element === candidate.element) prior = before[index];
+              }
               const priorValues = prior === undefined ? [] : values(prior.properties);
-              if (values(candidate.properties).some((property, index) =>
-                property !== priorValues[index] && containsForm(property)) &&
-                  !causalElements.includes(candidate.element)) {
+              const currentValues = values(candidate.properties);
+              let changed = false;
+              for (let index = 0; index < currentValues.length; index += 1) {
+                const property = currentValues[index];
+                if (property !== priorValues[index] && containsForm(property ?? null)) changed = true;
+              }
+              if (changed && !operations.arrayIncludes(causalElements, candidate.element)) {
                 if (causalElements.length >= limits.maximumTargets) {
                   tracker.overflow = true;
                   return;
                 }
-                causalElements.push(candidate.element);
+                operations.arrayPush(causalElements, candidate.element);
               }
             }
           } catch {
@@ -1440,7 +1541,6 @@ export class PlaywrightBrowserSession {
         };
 
         const eventType = input.kind === "select" ? "change" : "input";
-        const promiseSnapshot = input.promiseIntrinsics.snapshot();
         if (!promiseSnapshot.intact) {
           tracker.schedulerActivationUnproven = true;
           tracker.schedulerProvenanceUnproven = true;
@@ -1458,7 +1558,14 @@ export class PlaywrightBrowserSession {
           decodedPathname: (() => {
             try { return decodeURIComponent(location.pathname); } catch { return location.pathname; }
           })(),
-          query: [...new URLSearchParams(location.search).entries()].map(([key, value]) => ({ key, value })),
+          query: (() => {
+            const query: { readonly key: string; readonly value: string }[] = [];
+            const parameters = operations.createUrlSearchParams(location.search);
+            operations.urlSearchParamsForEach(parameters, (value, key) => {
+              operations.arrayPush(query, { key, value });
+            });
+            return query;
+          })(),
           hash: location.hash,
           decodedHash: (() => {
             try { return decodeURIComponent(location.hash); } catch { return location.hash; }
@@ -1466,13 +1573,19 @@ export class PlaywrightBrowserSession {
           title: document.title,
         });
         const containsSensitiveForm = (text: string): boolean =>
-          forms.some((form) => text.includes(form));
+          (() => {
+            for (let index = 0; index < forms.length; index += 1) {
+              const form = forms[index];
+              if (form !== undefined && operations.stringIncludes(text, form)) return true;
+            }
+            return false;
+          })();
         const rememberMetadata = (
           before: SensitivePageMetadataSnapshot,
           after: SensitivePageMetadataSnapshot,
         ): void => {
           const remember = (values: string[], value: string): void => {
-            if (!values.includes(value)) values.push(value);
+            if (!operations.arrayIncludes(values, value)) operations.arrayPush(values, value);
           };
           if (before.href !== after.href && containsSensitiveForm(after.href)) {
             remember(tracker.metadata.hrefs, after.href);
@@ -1599,16 +1712,16 @@ export class PlaywrightBrowserSession {
           if (generation === undefined) {
             return originalSetTimeout(handler, timeout, ...args);
           }
-          return Number(originalSetTimeout.call(window, () => {
+          return Number(operations.apply(originalSetTimeout, window, [() => {
             runCausal(generation, () => handler(...args));
-          }, timeout));
+          }, timeout, ...args]));
         }) as typeof window.setTimeout;
         const wrappedQueueMicrotask = (callback: VoidFunction): void => {
           const generation = registerGeneration();
           if (generation === undefined) {
-            originalQueueMicrotask.call(window, callback);
+            operations.apply(originalQueueMicrotask, window, [callback]);
           } else {
-            originalQueueMicrotask.call(window, () => runCausal(generation, callback));
+            operations.apply(originalQueueMicrotask, window, [() => runCausal(generation, callback)]);
           }
         };
         const wrappedSetInterval = ((
@@ -1623,23 +1736,23 @@ export class PlaywrightBrowserSession {
           if (generation === undefined) {
             return originalSetInterval(handler, timeout, ...args);
           }
-          return Number(originalSetInterval.call(window, () => {
+          return Number(operations.apply(originalSetInterval, window, [() => {
             runCausal(generation, () => handler(...args));
-          }, timeout));
+          }, timeout, ...args]));
         }) as typeof window.setInterval;
         const wrappedClearInterval = ((id?: number): void => {
-          originalClearInterval.call(window, id);
+          operations.apply(originalClearInterval, window, [id]);
         }) as typeof window.clearInterval;
         const wrappedRequestAnimationFrame = ((callback: FrameRequestCallback): number => {
           const generation = registerGeneration();
           if (generation === undefined) {
-            return originalRequestAnimationFrame.call(window, callback);
+            return operations.apply(originalRequestAnimationFrame, window, [callback]) as number;
           }
-          return originalRequestAnimationFrame.call(window, (time) =>
-            runCausal(generation, () => callback(time)));
+          return operations.apply(originalRequestAnimationFrame, window, [(time: number) =>
+            runCausal(generation, () => callback(time))]) as number;
         }) as typeof window.requestAnimationFrame;
         const wrappedCancelAnimationFrame = ((id: number): void => {
-          originalCancelAnimationFrame.call(window, id);
+          operations.apply(originalCancelAnimationFrame, window, [id]);
         }) as typeof window.cancelAnimationFrame;
         const wrapContinuation = <T, TResult>(
           generation: GenerationToken | undefined,
@@ -1647,10 +1760,10 @@ export class PlaywrightBrowserSession {
         ): typeof callback => generation === undefined || callback == null
           ? callback
           : ((value: T) => runCausal(generation, () => callback(value)));
-        const promiseTokens = new Set<PrivatePromiseDelegationToken>();
-        const promiseTokenParents = new Map<PrivatePromiseDelegationToken, PrivatePromiseDelegationToken>();
-        const deferredPromiseTokens = new Set<PrivatePromiseDelegationToken>();
-        const expectedPromiseReceivers = new WeakSet<object>();
+        const promiseTokens = operations.createSet<PrivatePromiseDelegationToken>();
+        const promiseTokenParents = operations.createMap<PrivatePromiseDelegationToken, PrivatePromiseDelegationToken>();
+        const deferredPromiseTokens = operations.createSet<PrivatePromiseDelegationToken>();
+        const expectedPromiseReceivers = operations.createWeakSet<object>();
         const promiseHook: PrivatePromiseBoundaryHook = {
           custom(receiver) {
             if ((typeof receiver !== "object" && typeof receiver !== "function") ||
@@ -1658,30 +1771,36 @@ export class PlaywrightBrowserSession {
               tracker.schedulerProvenanceUnproven = true;
               return [];
             }
-            const expected = expectedPromiseReceivers.delete(receiver);
+            const expected = operations.weakSetDelete(expectedPromiseReceivers, receiver);
             if (!expected && generationForSchedule() === undefined) return [];
-            if (promiseTokens.size >= limits.maximumScheduledCallbacks) {
+            if (operations.setSize(promiseTokens) >= limits.maximumScheduledCallbacks) {
               tracker.schedulerProvenanceUnproven = true;
               return [];
             }
             const token: PrivatePromiseDelegationToken = { delegated: false, settled: false };
-            promiseTokens.add(token);
-            tracker.outstandingPromiseDelegations = promiseTokens.size;
+            operations.setAdd(promiseTokens, token);
+            tracker.outstandingPromiseDelegations = operations.setSize(promiseTokens);
             return [token];
           },
           child(parents) {
             const children: PrivatePromiseDelegationToken[] = [];
-            for (const parent of parents) {
-              if (!promiseTokens.has(parent) || parent.delegated || deferredPromiseTokens.has(parent)) continue;
+            for (let index = 0; index < parents.length; index += 1) {
+              const parent = parents[index];
+              if (parent === undefined) continue;
+              if (!operations.setHas(promiseTokens, parent) || parent.delegated ||
+                  operations.setHas(deferredPromiseTokens, parent)) continue;
               const child: PrivatePromiseDelegationToken = { delegated: false, settled: false };
-              promiseTokenParents.set(child, parent);
-              deferredPromiseTokens.add(parent);
-              children.push(child);
+              operations.mapSet(promiseTokenParents, child, parent);
+              operations.setAdd(deferredPromiseTokens, parent);
+              operations.arrayPush(children, child);
             }
             return children;
           },
           wrap(_receiver, onfulfilled, onrejected, associated) {
-            for (const token of associated) token.delegated = true;
+            for (let index = 0; index < associated.length; index += 1) {
+              const token = associated[index];
+              if (token !== undefined) token.delegated = true;
+            }
             const generation = registerGeneration();
             const wrapResult = (callback: unknown): unknown => {
               if (generation === undefined || typeof callback !== "function") return callback;
@@ -1701,21 +1820,22 @@ export class PlaywrightBrowserSession {
           settle(tokens) {
             const finish = (token: PrivatePromiseDelegationToken): void => {
               token.settled = true;
-              if (deferredPromiseTokens.has(token)) return;
+              if (operations.setHas(deferredPromiseTokens, token)) return;
               if (!token.delegated) tracker.schedulerProvenanceUnproven = true;
-              promiseTokens.delete(token);
-              const parent = promiseTokenParents.get(token);
+              operations.setDelete(promiseTokens, token);
+              const parent = operations.mapGet(promiseTokenParents, token);
               if (parent !== undefined) {
-                promiseTokenParents.delete(token);
-                deferredPromiseTokens.delete(parent);
+                operations.mapDelete(promiseTokenParents, token);
+                operations.setDelete(deferredPromiseTokens, parent);
                 parent.delegated = token.delegated;
                 finish(parent);
               }
             };
-            for (const token of tokens) {
-              finish(token);
+            for (let index = 0; index < tokens.length; index += 1) {
+              const token = tokens[index];
+              if (token !== undefined) finish(token);
             }
-            tracker.outstandingPromiseDelegations = promiseTokens.size;
+            tracker.outstandingPromiseDelegations = operations.setSize(promiseTokens);
             if (!input.promiseIntrinsics.revalidateOwners()) {
               tracker.schedulerProvenanceUnproven = true;
             }
@@ -1724,7 +1844,7 @@ export class PlaywrightBrowserSession {
             if (!input.promiseIntrinsics.observe(receiver)) {
               tracker.schedulerProvenanceUnproven = true;
             }
-            expectedPromiseReceivers.add(receiver);
+            operations.weakSetAdd(expectedPromiseReceivers, receiver);
           },
         };
         if (!input.promiseIntrinsics.subscribe(promiseHook)) {
@@ -1742,7 +1862,7 @@ export class PlaywrightBrowserSession {
         const wrapHistory = (original: History["replaceState"]): History["replaceState"] =>
           function (data: unknown, unused: string, url?: string | URL | null): void {
             const causal = activeGeneration !== undefined || callbackGeneration !== undefined;
-            original.call(history, data, unused, url);
+            operations.apply(original, history, [data, unused, url]);
             const after = metadataSnapshot();
             if (causal) rememberMetadata(tracker.metadata.baseline ?? after, after);
             else if (containsSensitiveForm(after.href)) tracker.metadata.unprovenUrl = true;
@@ -1793,12 +1913,16 @@ export class PlaywrightBrowserSession {
           window.removeEventListener(eventType, exactTargetEvent, true);
           const registryIntact = registry.unsubscribe(attachedShadow);
           const promiseIntact = input.promiseIntrinsics.unsubscribe(promiseHook);
-          if ([...promiseTokens].some((token) => !token.delegated)) {
+          let undelegated = false;
+          operations.setForEach(promiseTokens, (token) => {
+            if (!token.delegated) undelegated = true;
+          });
+          if (undelegated) {
             tracker.schedulerProvenanceUnproven = true;
           }
-          promiseTokens.clear();
-          promiseTokenParents.clear();
-          deferredPromiseTokens.clear();
+          operations.setClear(promiseTokens);
+          operations.mapClear(promiseTokenParents);
+          operations.setClear(deferredPromiseTokens);
           tracker.outstandingPromiseDelegations = 0;
           const intact = window.setTimeout === wrappedSetTimeout &&
             window.setInterval === wrappedSetInterval &&
@@ -1823,7 +1947,10 @@ export class PlaywrightBrowserSession {
           }
           if (history.replaceState === wrappedReplaceState) history.replaceState = originalReplaceState;
           if (history.pushState === wrappedPushState) history.pushState = originalPushState;
-          for (const observer of observers) observer.disconnect();
+          for (let index = 0; index < observers.length; index += 1) {
+            const observer = observers[index];
+            if (observer !== undefined) operations.disconnectMutationObserver(observer);
+          }
           return intact;
         };
         return tracker as SensitiveActionMutationTracker;
@@ -2833,6 +2960,17 @@ export class PlaywrightBrowserSession {
       }) => {
         const nativeObject = Object;
         const nativeReflect = Reflect;
+        const nativeArray = Array;
+        const nativeSet = Set;
+        const nativeWeakSet = WeakSet;
+        const nativeMap = Map;
+        const nativeWeakMap = WeakMap;
+        const nativeFunction = Function;
+        const nativeString = String;
+        const nativeSymbol = Symbol;
+        const nativeElement = Element;
+        const nativeMutationObserver = MutationObserver;
+        const nativeUrlSearchParams = URLSearchParams;
         const nativeDefineProperty = Object.defineProperty;
         const nativeDefineProperties = Object.defineProperties;
         const nativeOwnDescriptor = Object.getOwnPropertyDescriptor;
@@ -2840,17 +2978,135 @@ export class PlaywrightBrowserSession {
         const nativeFreeze = Object.freeze;
         const nativeReflectApply = Reflect.apply;
         const nativeReflectOwnKeys = Reflect.ownKeys;
+        const nativeArrayPush = Array.prototype.push;
+        const nativeArrayPop = Array.prototype.pop;
+        const nativeArrayShift = Array.prototype.shift;
+        const nativeArrayIncludes = Array.prototype.includes;
+        const nativeSetAdd = Set.prototype.add;
+        const nativeSetHas = Set.prototype.has;
+        const nativeSetDelete = Set.prototype.delete;
+        const nativeSetClear = Set.prototype.clear;
+        const nativeSetForEach = Set.prototype.forEach;
+        const nativeSetSize = nativeOwnDescriptor(Set.prototype, "size")?.get;
+        const nativeWeakSetAdd = WeakSet.prototype.add;
+        const nativeWeakSetHas = WeakSet.prototype.has;
+        const nativeWeakSetDelete = WeakSet.prototype.delete;
+        const nativeMapGet = Map.prototype.get;
+        const nativeMapSet = Map.prototype.set;
+        const nativeMapHas = Map.prototype.has;
+        const nativeMapDelete = Map.prototype.delete;
+        const nativeMapClear = Map.prototype.clear;
+        const nativeWeakMapGet = WeakMap.prototype.get;
+        const nativeWeakMapSet = WeakMap.prototype.set;
+        const nativeWeakMapHas = WeakMap.prototype.has;
+        const nativeWeakMapDelete = WeakMap.prototype.delete;
+        const nativeStringIncludes = String.prototype.includes;
+        const nativeSymbolFor = Symbol.for;
+        const nativeSymbolSpecies = Symbol.species;
+        const nativeElementPrototype = Element.prototype;
+        const nativeMutationObserverPrototype = MutationObserver.prototype;
+        const nativeMutationObserverObserve = MutationObserver.prototype.observe;
+        const nativeMutationObserverTakeRecords = MutationObserver.prototype.takeRecords;
+        const nativeMutationObserverDisconnect = MutationObserver.prototype.disconnect;
+        const nativeUrlSearchParamsPrototype = URLSearchParams.prototype;
+        const nativeUrlSearchParamsForEach = URLSearchParams.prototype.forEach;
         const nativePromise = Promise;
         const nativePrototype = Promise.prototype;
+        const nativeSetPrototype = Set.prototype;
+        const nativeWeakSetPrototype = WeakSet.prototype;
+        const nativeMapPrototype = Map.prototype;
+        const nativeWeakMapPrototype = WeakMap.prototype;
+        if (nativeSetSize === undefined || nativePrototypeOf(nativeSetPrototype) === null ||
+            nativePrototypeOf(nativeWeakSetPrototype) === null || nativePrototypeOf(nativeMapPrototype) === null ||
+            nativePrototypeOf(nativeWeakMapPrototype) === null) return;
+        const apply = (target: Function, receiver: unknown, argumentsList: readonly unknown[]): unknown =>
+          nativeReflectApply(target, receiver, argumentsList);
+        const arrayPush = <T>(target: T[], value: T): number =>
+          apply(nativeArrayPush, target, [value]) as number;
+        const arrayPop = <T>(target: T[]): T | undefined =>
+          apply(nativeArrayPop, target, []) as T | undefined;
+        const arrayShift = <T>(target: T[]): T | undefined =>
+          apply(nativeArrayShift, target, []) as T | undefined;
+        const arrayIncludes = <T>(target: readonly T[], value: T): boolean =>
+          apply(nativeArrayIncludes, target, [value]) as boolean;
+        const stringIncludes = (target: string, value: string): boolean =>
+          apply(nativeStringIncludes, target, [value]) as boolean;
+        const setAdd = <T>(target: Set<T>, value: T): void => {
+          apply(nativeSetAdd, target, [value]);
+        };
+        const setHas = <T>(target: Set<T>, value: T): boolean =>
+          apply(nativeSetHas, target, [value]) as boolean;
+        const setDelete = <T>(target: Set<T>, value: T): boolean =>
+          apply(nativeSetDelete, target, [value]) as boolean;
+        const setClear = <T>(target: Set<T>): void => {
+          apply(nativeSetClear, target, []);
+        };
+        const setSize = <T>(target: Set<T>): number => apply(nativeSetSize, target, []) as number;
+        const setForEach = <T>(target: Set<T>, callback: (value: T) => void): void => {
+          apply(nativeSetForEach, target, [callback]);
+        };
+        const weakSetAdd = <T extends WeakKey>(target: WeakSet<T>, value: T): void => {
+          apply(nativeWeakSetAdd, target, [value]);
+        };
+        const weakSetHas = <T extends WeakKey>(target: WeakSet<T>, value: T): boolean =>
+          apply(nativeWeakSetHas, target, [value]) as boolean;
+        const weakSetDelete = <T extends WeakKey>(target: WeakSet<T>, value: T): boolean =>
+          apply(nativeWeakSetDelete, target, [value]) as boolean;
+        const mapGet = <K, V>(target: Map<K, V>, key: K): V | undefined =>
+          apply(nativeMapGet, target, [key]) as V | undefined;
+        const mapSet = <K, V>(target: Map<K, V>, key: K, value: V): void => {
+          apply(nativeMapSet, target, [key, value]);
+        };
+        const mapHas = <K, V>(target: Map<K, V>, key: K): boolean =>
+          apply(nativeMapHas, target, [key]) as boolean;
+        const mapDelete = <K, V>(target: Map<K, V>, key: K): boolean =>
+          apply(nativeMapDelete, target, [key]) as boolean;
+        const mapClear = <K, V>(target: Map<K, V>): void => {
+          apply(nativeMapClear, target, []);
+        };
+        const weakMapGet = <K extends WeakKey, V>(target: WeakMap<K, V>, key: K): V | undefined =>
+          apply(nativeWeakMapGet, target, [key]) as V | undefined;
+        const weakMapSet = <K extends WeakKey, V>(target: WeakMap<K, V>, key: K, value: V): void => {
+          apply(nativeWeakMapSet, target, [key, value]);
+        };
+        const weakMapHas = <K extends WeakKey, V>(target: WeakMap<K, V>, key: K): boolean =>
+          apply(nativeWeakMapHas, target, [key]) as boolean;
+        const weakMapDelete = <K extends WeakKey, V>(target: WeakMap<K, V>, key: K): boolean =>
+          apply(nativeWeakMapDelete, target, [key]) as boolean;
+        const takeMutationRecords = (observer: MutationObserver): MutationRecord[] =>
+          apply(nativeMutationObserverTakeRecords, observer, []) as MutationRecord[];
+        const observeMutations = (
+          observer: MutationObserver,
+          target: Node,
+          options: MutationObserverInit,
+        ): void => {
+          apply(nativeMutationObserverObserve, observer, [target, options]);
+        };
+        const disconnectMutationObserver = (observer: MutationObserver): void => {
+          apply(nativeMutationObserverDisconnect, observer, []);
+        };
+        const urlSearchParamsForEach = (
+          parameters: URLSearchParams,
+          callback: (value: string, key: string) => void,
+        ): void => {
+          apply(nativeUrlSearchParamsForEach, parameters, [callback]);
+        };
         const host = globalThis as typeof globalThis & Record<symbol, unknown>;
-        const registrySymbol = Symbol.for(registryKey);
+        const freezeDescriptor = (
+          descriptor: PropertyDescriptor | undefined,
+        ): PropertyDescriptor | undefined => descriptor === undefined
+          ? undefined
+          : nativeFreeze({ ...descriptor });
+        const registrySymbol = apply(nativeSymbolFor, nativeSymbol, [registryKey]) as symbol;
         if (host[registrySymbol] !== undefined) return;
-        const originalAttachShadow = Element.prototype.attachShadow;
-        const originalDescriptor = nativeOwnDescriptor(Element.prototype, "attachShadow");
+        const originalAttachShadow = nativeElementPrototype.attachShadow;
+        const originalDescriptor = freezeDescriptor(
+          nativeOwnDescriptor(nativeElementPrototype, "attachShadow"),
+        );
         if (originalDescriptor?.value !== originalAttachShadow) return;
         const roots: PrivateShadowRootEntry[] = [];
         const closedObservers: MutationObserver[] = [];
-        const listeners = new Set<(element: Element, root: ShadowRoot, mode: ShadowRootMode) => void>();
+        const listeners: ((element: Element, root: ShadowRoot, mode: ShadowRootMode) => void)[] = [];
         let count = 0;
         let overflow = false;
         let closedMutationCount = 0;
@@ -2864,21 +3120,23 @@ export class PlaywrightBrowserSession {
           if (count > maximumRoots) {
             overflow = true;
           } else {
-            roots.push(nativeFreeze({ host: this, root, mode: init.mode }));
+            arrayPush(roots, nativeFreeze({ host: this, root, mode: init.mode }));
             if (init.mode === "closed") {
-              const observer = new MutationObserver((records) => {
+              const observer = new nativeMutationObserver((records) => {
                 closedMutationCount += records.length;
               });
-              observer.observe(root, {
+              observeMutations(observer, root, {
                 attributes: true,
                 characterData: true,
                 childList: true,
                 subtree: true,
               });
-              closedObservers.push(observer);
+              arrayPush(closedObservers, observer);
             }
           }
-          for (const listener of listeners) {
+          for (let index = 0; index < listeners.length; index += 1) {
+            const listener = listeners[index];
+            if (listener === undefined) continue;
             try {
               listener(this, root, init.mode);
             } catch {
@@ -2892,22 +3150,31 @@ export class PlaywrightBrowserSession {
           length: { configurable: true, value: originalAttachShadow.length },
           toString: {
             configurable: true,
-            value: () => originalAttachShadow.toString(),
+            value: () => apply(nativeFunction.prototype.toString, originalAttachShadow, []) as string,
           },
         });
-        nativeDefineProperty(Element.prototype, "attachShadow", {
+        nativeDefineProperty(nativeElementPrototype, "attachShadow", {
           ...originalDescriptor,
           value: wrappedAttachShadow,
         });
         const authority: PrivateShadowRegistry = nativeFreeze({
           snapshot(limit: number) {
-            for (const observer of closedObservers) {
-              closedMutationCount += observer.takeRecords().length;
+            for (let index = 0; index < closedObservers.length; index += 1) {
+              const observer = closedObservers[index];
+              if (observer !== undefined) closedMutationCount += takeMutationRecords(observer).length;
             }
-            const descriptor = nativeOwnDescriptor(Element.prototype, "attachShadow");
+            const descriptor = nativeOwnDescriptor(nativeElementPrototype, "attachShadow");
+            const boundedRoots: PrivateShadowRootEntry[] = [];
+            const hosts: { readonly host: Element; readonly mode: ShadowRootMode }[] = [];
+            for (let index = 0; index < roots.length && index < limit; index += 1) {
+              const entry = roots[index];
+              if (entry === undefined) continue;
+              arrayPush(boundedRoots, entry);
+              arrayPush(hosts, { host: entry.host, mode: entry.mode });
+            }
             return {
-              roots: roots.slice(0, limit),
-              hosts: roots.slice(0, limit).map(({ host, mode }) => ({ host, mode })),
+              roots: boundedRoots,
+              hosts,
               count,
               closedMutationCount,
               overflow: overflow || count > limit,
@@ -2919,11 +3186,20 @@ export class PlaywrightBrowserSession {
             };
           },
           subscribe(listener: (element: Element, root: ShadowRoot, mode: ShadowRootMode) => void) {
-            listeners.add(listener);
-            return Element.prototype.attachShadow === wrappedAttachShadow;
+            if (!arrayIncludes(listeners, listener)) arrayPush(listeners, listener);
+            return nativeElementPrototype.attachShadow === wrappedAttachShadow;
           },
           unsubscribe(listener: (element: Element, root: ShadowRoot, mode: ShadowRootMode) => void) {
-            return listeners.delete(listener) && Element.prototype.attachShadow === wrappedAttachShadow;
+            for (let index = 0; index < listeners.length; index += 1) {
+              if (listeners[index] !== listener) continue;
+              for (let move = index + 1; move < listeners.length; move += 1) {
+                const next = listeners[move];
+                if (next !== undefined) listeners[move - 1] = next;
+              }
+              listeners.length -= 1;
+              return nativeElementPrototype.attachShadow === wrappedAttachShadow;
+            }
+            return false;
           },
         });
         const gateway = nativeFreeze({
@@ -2937,17 +3213,25 @@ export class PlaywrightBrowserSession {
           writable: false,
           value: gateway,
         });
-        const promiseSymbol = Symbol.for(promiseKey);
+        const promiseSymbol = apply(nativeSymbolFor, nativeSymbol, [promiseKey]) as symbol;
         if (host[promiseSymbol] !== undefined) return;
-        const globalDescriptor = nativeOwnDescriptor(globalThis, "Promise");
-        const prototypeDescriptor = nativeOwnDescriptor(nativePromise, "prototype");
-        const staticDescriptors = nativeReflectOwnKeys(nativePromise).map((key) =>
-          [key, nativeOwnDescriptor(nativePromise, key)] as const);
-        const thenDescriptor = nativeOwnDescriptor(nativePrototype, "then");
-        const catchDescriptor = nativeOwnDescriptor(nativePrototype, "catch");
-        const finallyDescriptor = nativeOwnDescriptor(nativePrototype, "finally");
-        const constructorDescriptor = nativeOwnDescriptor(nativePrototype, "constructor");
-        const speciesDescriptor = nativeOwnDescriptor(nativePromise, Symbol.species);
+        const globalDescriptor = freezeDescriptor(nativeOwnDescriptor(globalThis, "Promise"));
+        const prototypeDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePromise, "prototype"));
+        const staticDescriptors: (readonly [PropertyKey, PropertyDescriptor | undefined])[] = [];
+        const promiseKeys = nativeReflectOwnKeys(nativePromise);
+        for (let index = 0; index < promiseKeys.length; index += 1) {
+          const key = promiseKeys[index];
+          if (key !== undefined) arrayPush(staticDescriptors, nativeFreeze([
+            key,
+            freezeDescriptor(nativeOwnDescriptor(nativePromise, key)),
+          ] as const));
+        }
+        const frozenStaticDescriptors = nativeFreeze(staticDescriptors);
+        const thenDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePrototype, "then"));
+        const catchDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePrototype, "catch"));
+        const finallyDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePrototype, "finally"));
+        const constructorDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePrototype, "constructor"));
+        const speciesDescriptor = freezeDescriptor(nativeOwnDescriptor(nativePromise, nativeSymbolSpecies));
         if (thenDescriptor === undefined || !("value" in thenDescriptor) ||
             catchDescriptor === undefined || !("value" in catchDescriptor) ||
             finallyDescriptor === undefined || !("value" in finallyDescriptor)) return;
@@ -2958,7 +3242,7 @@ export class PlaywrightBrowserSession {
           current.configurable === captured.configurable && current.enumerable === captured.enumerable &&
           current.get === captured.get && current.set === captured.set &&
           current.value === captured.value && current.writable === captured.writable;
-        const hooks = new Set<PrivatePromiseBoundaryHook>();
+        const hooks: PrivatePromiseBoundaryHook[] = [];
         type PromiseMethodName = "then" | "catch" | "finally";
         interface PromiseChainOwnerSnapshot {
           readonly owner: object;
@@ -2969,21 +3253,90 @@ export class PlaywrightBrowserSession {
           readonly receiver: object;
           readonly chain: readonly PromiseChainOwnerSnapshot[];
         }
-        let registeredOwnerIndex = new WeakMap<object, RegisteredPromiseOwner>();
+        let registeredOwnerIndex = new nativeWeakMap<object, RegisteredPromiseOwner>();
         const registeredOwners: RegisteredPromiseOwner[] = [];
         let ownerRegistryOverflow = false;
         let ownerIntegrityPoisoned = false;
         let intrinsicIntegrityPoisoned = false;
         let promiseAuthorityClosed = false;
-        const instrumentedMethods = new WeakMap<Function, {
+        const instrumentedMethods = new nativeWeakMap<Function, {
           readonly method: Function;
           readonly name: PromiseMethodName;
         }>();
-        const approvedMethods = new WeakSet<Function>([
-          thenDescriptor.value,
-          catchDescriptor.value,
-          finallyDescriptor.value,
-        ]);
+        const approvedMethods = new nativeWeakSet<Function>();
+        weakSetAdd(approvedMethods, thenDescriptor.value);
+        weakSetAdd(approvedMethods, catchDescriptor.value);
+        weakSetAdd(approvedMethods, finallyDescriptor.value);
+        const intrinsicBaselineEntries: (readonly [object, PropertyKey, PropertyDescriptor | undefined])[] = [];
+        const captureBaseline = (owner: object, key: PropertyKey): void => {
+          const descriptor = freezeDescriptor(nativeOwnDescriptor(owner, key));
+          arrayPush(intrinsicBaselineEntries, nativeFreeze([
+            owner,
+            key,
+            descriptor,
+          ] as const));
+        };
+        const baselineProperties: readonly (readonly [object, readonly PropertyKey[]])[] = [
+          [globalThis, ["Object", "Reflect", "Array", "Set", "WeakSet", "Map", "WeakMap", "Function", "String", "Symbol", "Promise", "Element", "MutationObserver", "URLSearchParams"]],
+          [nativeObject, ["defineProperty", "defineProperties", "getOwnPropertyDescriptor", "getPrototypeOf", "freeze"]],
+          [nativeReflect, ["apply", "ownKeys"]],
+          [nativeArray, ["prototype"]],
+          [nativeSet, ["prototype"]],
+          [nativeWeakSet, ["prototype"]],
+          [nativeMap, ["prototype"]],
+          [nativeWeakMap, ["prototype"]],
+          [nativeFunction, ["prototype"]],
+          [nativeString, ["prototype"]],
+          [nativeArray.prototype, ["every", "map", "flat", "flatMap", "push", "pop", "shift", "at", "slice", "splice", "includes", "indexOf"]],
+          [nativeSetPrototype, ["add", "has", "delete", "clear", "forEach", "size", "constructor"]],
+          [nativeWeakSetPrototype, ["add", "has", "delete", "constructor"]],
+          [nativeMapPrototype, ["get", "set", "has", "delete", "clear", "constructor"]],
+          [nativeWeakMapPrototype, ["get", "set", "has", "delete", "constructor"]],
+          [nativeFunction.prototype, ["call", "toString"]],
+          [nativeString.prototype, ["includes", "startsWith"]],
+          [nativeSymbol, ["for", "species"]],
+          [nativeElementPrototype, ["attachShadow"]],
+          [nativeMutationObserverPrototype, ["observe", "takeRecords", "disconnect"]],
+          [nativeUrlSearchParams, ["prototype"]],
+          [nativeUrlSearchParamsPrototype, ["forEach"]],
+        ];
+        for (let ownerIndex = 0; ownerIndex < baselineProperties.length; ownerIndex += 1) {
+          const entry = baselineProperties[ownerIndex];
+          if (entry === undefined) continue;
+          const owner = entry[0];
+          const keys = entry[1];
+          for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+            const key = keys[keyIndex];
+            if (key !== undefined) captureBaseline(owner, key);
+          }
+        }
+        const intrinsicBaseline = nativeFreeze({
+          object: nativeObject,
+          reflect: nativeReflect,
+          array: nativeArray,
+          set: nativeSet,
+          weakSet: nativeWeakSet,
+          map: nativeMap,
+          weakMap: nativeWeakMap,
+          function: nativeFunction,
+          string: nativeString,
+          symbol: nativeSymbol,
+          promise: nativePromise,
+          element: nativeElement,
+          mutationObserver: nativeMutationObserver,
+          urlSearchParams: nativeUrlSearchParams,
+          arrayPrototype: nativeArray.prototype,
+          setPrototype: nativeSetPrototype,
+          weakSetPrototype: nativeWeakSetPrototype,
+          mapPrototype: nativeMapPrototype,
+          weakMapPrototype: nativeWeakMapPrototype,
+          functionPrototype: nativeFunction.prototype,
+          stringPrototype: nativeString.prototype,
+          elementPrototype: nativeElementPrototype,
+          mutationObserverPrototype: nativeMutationObserverPrototype,
+          urlSearchParamsPrototype: nativeUrlSearchParamsPrototype,
+          entries: nativeFreeze(intrinsicBaselineEntries),
+        });
         const sameDescriptorShape = (
           current: PropertyDescriptor | undefined,
           captured: PropertyDescriptor | undefined,
@@ -2995,13 +3348,32 @@ export class PlaywrightBrowserSession {
         const ambientIntrinsicsIntact = (): boolean => {
           if (intrinsicIntegrityPoisoned) return false;
           try {
-            const intact = Object === nativeObject && Reflect === nativeReflect &&
-              Object.defineProperty === nativeDefineProperty &&
-              Object.defineProperties === nativeDefineProperties &&
-              Object.getOwnPropertyDescriptor === nativeOwnDescriptor &&
-              Object.getPrototypeOf === nativePrototypeOf &&
-              Object.freeze === nativeFreeze && Reflect.apply === nativeReflectApply &&
-              Reflect.ownKeys === nativeReflectOwnKeys;
+            let intact = Object === intrinsicBaseline.object && Reflect === intrinsicBaseline.reflect &&
+              Array === intrinsicBaseline.array && Set === intrinsicBaseline.set &&
+              WeakSet === intrinsicBaseline.weakSet && Map === intrinsicBaseline.map &&
+              WeakMap === intrinsicBaseline.weakMap && Function === intrinsicBaseline.function &&
+              String === intrinsicBaseline.string && Symbol === intrinsicBaseline.symbol &&
+              Promise === intrinsicBaseline.promise && Element === intrinsicBaseline.element &&
+              MutationObserver === intrinsicBaseline.mutationObserver &&
+              URLSearchParams === intrinsicBaseline.urlSearchParams &&
+              nativeArray.prototype === intrinsicBaseline.arrayPrototype &&
+              nativeSet.prototype === intrinsicBaseline.setPrototype &&
+              nativeWeakSet.prototype === intrinsicBaseline.weakSetPrototype &&
+              nativeMap.prototype === intrinsicBaseline.mapPrototype &&
+              nativeWeakMap.prototype === intrinsicBaseline.weakMapPrototype &&
+              nativeFunction.prototype === intrinsicBaseline.functionPrototype &&
+              nativeString.prototype === intrinsicBaseline.stringPrototype &&
+              nativeElement.prototype === intrinsicBaseline.elementPrototype &&
+              nativeMutationObserver.prototype === intrinsicBaseline.mutationObserverPrototype &&
+              nativeUrlSearchParams.prototype === intrinsicBaseline.urlSearchParamsPrototype;
+            for (let index = 0; intact && index < intrinsicBaseline.entries.length; index += 1) {
+              const entry = intrinsicBaseline.entries[index];
+              if (entry === undefined) {
+                intact = false;
+                break;
+              }
+              intact = sameDescriptor(nativeOwnDescriptor(entry[0], entry[1]), entry[2]);
+            }
             if (!intact) intrinsicIntegrityPoisoned = true;
             return intact;
           } catch {
@@ -3017,19 +3389,25 @@ export class PlaywrightBrowserSession {
         // Only the top frame's exact receiver may attest it. A cross-receiver
         // native delegation can prove its parent only through its exact result.
         const pendingCustomCalls: CustomCallFrame[] = [];
-        let pendingContinuationFrames = new WeakMap<object, CustomCallFrame[]>();
-        let delegatedContinuations = new WeakMap<CustomCallFrame, WeakSet<object>>();
+        let pendingContinuationFrames = new nativeWeakMap<object, CustomCallFrame[]>();
+        let delegatedContinuations = new nativeWeakMap<CustomCallFrame, WeakSet<object>>();
         const captureOwnerChain = (receiver: object): readonly PromiseChainOwnerSnapshot[] | undefined => {
           const chain: PromiseChainOwnerSnapshot[] = [];
+          const names = ["then", "catch", "finally"] as const;
           try {
             for (let owner: object | null = receiver; owner !== null; owner = nativePrototypeOf(owner)) {
               if (chain.length >= maximumPromiseOwners) return undefined;
-              const descriptors = (["then", "catch", "finally"] as const).map((name) =>
-                nativeFreeze([name, (() => {
-                  const descriptor = nativeOwnDescriptor(owner, name);
-                  return descriptor === undefined ? undefined : nativeFreeze({ ...descriptor });
-                })()] as const));
-              chain.push(nativeFreeze({
+              const descriptors: (readonly [PromiseMethodName, PropertyDescriptor | undefined])[] = [];
+              for (let index = 0; index < names.length; index += 1) {
+                const name = names[index];
+                if (name === undefined) continue;
+                const descriptor = nativeOwnDescriptor(owner, name);
+                arrayPush(descriptors, nativeFreeze([
+                  name,
+                  descriptor === undefined ? undefined : nativeFreeze({ ...descriptor }),
+                ] as const));
+              }
+              arrayPush(chain, nativeFreeze({
                 owner,
                 prototype: nativePrototypeOf(owner),
                 descriptors: nativeFreeze(descriptors),
@@ -3042,7 +3420,7 @@ export class PlaywrightBrowserSession {
         };
         const registerOwner = (receiver: unknown): void => {
           if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null ||
-              registeredOwnerIndex.has(receiver) || ownerIntegrityPoisoned) return;
+              weakMapHas(registeredOwnerIndex, receiver) || ownerIntegrityPoisoned) return;
           if (registeredOwners.length >= maximumPromiseOwners) {
             ownerRegistryOverflow = true;
             return;
@@ -3053,20 +3431,40 @@ export class PlaywrightBrowserSession {
             return;
           }
           const registered = nativeFreeze({ receiver, chain });
-          registeredOwnerIndex.set(receiver, registered);
-          registeredOwners.push(registered);
+          weakMapSet(registeredOwnerIndex, receiver, registered);
+          arrayPush(registeredOwners, registered);
         };
         const registeredOwnersIntact = (): boolean => {
           if (promiseAuthorityClosed || ownerRegistryOverflow || ownerIntegrityPoisoned) return false;
           try {
-            const intact = registeredOwners.every((registered) =>
-              registeredOwnerIndex.get(registered.receiver) === registered &&
-              registered.chain.every((captured) =>
-                nativePrototypeOf(captured.owner) === captured.prototype &&
-                captured.descriptors.every(([name, descriptor]) =>
-                  descriptor === undefined
-                    ? nativeOwnDescriptor(captured.owner, name) === undefined
-                    : sameDescriptor(nativeOwnDescriptor(captured.owner, name), descriptor))));
+            let intact = true;
+            for (let ownerIndex = 0; intact && ownerIndex < registeredOwners.length; ownerIndex += 1) {
+              const registered = registeredOwners[ownerIndex];
+              if (registered === undefined || weakMapGet(registeredOwnerIndex, registered.receiver) !== registered) {
+                intact = false;
+                break;
+              }
+              for (let chainIndex = 0; intact && chainIndex < registered.chain.length; chainIndex += 1) {
+                const captured = registered.chain[chainIndex];
+                if (captured === undefined || nativePrototypeOf(captured.owner) !== captured.prototype) {
+                  intact = false;
+                  break;
+                }
+                for (let descriptorIndex = 0;
+                  intact && descriptorIndex < captured.descriptors.length;
+                  descriptorIndex += 1) {
+                  const descriptorEntry = captured.descriptors[descriptorIndex];
+                  if (descriptorEntry === undefined) {
+                    intact = false;
+                    break;
+                  }
+                  const current = nativeOwnDescriptor(captured.owner, descriptorEntry[0]);
+                  intact = descriptorEntry[1] === undefined
+                    ? current === undefined
+                    : sameDescriptor(current, descriptorEntry[1]);
+                }
+              }
+            }
             if (!intact) ownerIntegrityPoisoned = true;
             return intact;
           } catch {
@@ -3075,25 +3473,32 @@ export class PlaywrightBrowserSession {
           }
         };
         const settle = (frame: CustomCallFrame): void => {
-          for (const hook of hooks) hook.settle(frame.token);
+          for (let index = 0; index < hooks.length; index += 1) hooks[index]?.settle(frame.token);
         };
         const takeContinuationFrame = (receiver: unknown): CustomCallFrame | undefined => {
           if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null) {
             return undefined;
           }
-          const frames = pendingContinuationFrames.get(receiver);
-          const frame = frames?.shift();
-          if (frames?.length === 0) pendingContinuationFrames.delete(receiver);
+          const frames = weakMapGet(pendingContinuationFrames, receiver);
+          const frame = frames === undefined ? undefined : arrayShift(frames);
+          if (frames?.length === 0) weakMapDelete(pendingContinuationFrames, receiver);
           return frame;
         };
         const deferThroughContinuation = (frame: CustomCallFrame, receiver: object): boolean => {
-          if (!delegatedContinuations.get(frame)?.has(receiver)) return false;
+          const delegated = weakMapGet(delegatedContinuations, frame);
+          if (delegated === undefined || !weakSetHas(delegated, receiver)) return false;
           const tokens: PrivatePromiseDelegationToken[] = [];
-          for (const hook of hooks) tokens.push(...hook.child(frame.token));
+          for (let hookIndex = 0; hookIndex < hooks.length; hookIndex += 1) {
+            const children = hooks[hookIndex]?.child(frame.token) ?? [];
+            for (let index = 0; index < children.length; index += 1) {
+              const child = children[index];
+              if (child !== undefined) arrayPush(tokens, child);
+            }
+          }
           if (tokens.length === 0) return false;
-          const frames = pendingContinuationFrames.get(receiver) ?? [];
-          frames.push({ token: tokens, expectedReceiver: receiver, delegated: false });
-          pendingContinuationFrames.set(receiver, frames);
+          const frames = weakMapGet(pendingContinuationFrames, receiver) ?? [];
+          arrayPush(frames, { token: tokens, expectedReceiver: receiver, delegated: false });
+          weakMapSet(pendingContinuationFrames, receiver, frames);
           return true;
         };
         let observeReceiver: (
@@ -3106,40 +3511,48 @@ export class PlaywrightBrowserSession {
         ): Promise<TResult1 | TResult2> {
           let fulfilled: unknown = onfulfilled;
           let rejected: unknown = onrejected;
-          let frame = pendingCustomCalls.at(-1);
+          let frame = pendingCustomCalls[pendingCustomCalls.length - 1];
           let continuationFrame = false;
-          const customMethods = hooks.size === 0 ? [] : observeReceiver(this);
+          const customMethods = hooks.length === 0 ? [] : observeReceiver(this);
           if (frame === undefined) {
             frame = takeContinuationFrame(this);
             if (frame !== undefined) {
-              pendingCustomCalls.push(frame);
+              arrayPush(pendingCustomCalls, frame);
               continuationFrame = true;
             }
           }
           if (frame === undefined && customMethods.length > 0) {
             const tokens: PrivatePromiseDelegationToken[] = [];
-            for (const hook of hooks) tokens.push(...hook.custom(this));
+            for (let hookIndex = 0; hookIndex < hooks.length; hookIndex += 1) {
+              const hookTokens = hooks[hookIndex]?.custom(this) ?? [];
+              for (let index = 0; index < hookTokens.length; index += 1) {
+                const token = hookTokens[index];
+                if (token !== undefined) arrayPush(tokens, token);
+              }
+            }
             frame = { token: tokens, expectedReceiver: this, delegated: false };
-            pendingCustomCalls.push(frame);
+            arrayPush(pendingCustomCalls, frame);
             continuationFrame = true;
           }
           const associated = frame?.expectedReceiver === this ? frame.token : [];
           if (frame?.expectedReceiver === this) frame.delegated = true;
-          for (const hook of hooks) {
+          for (let index = 0; index < hooks.length; index += 1) {
+            const hook = hooks[index];
+            if (hook === undefined) continue;
             [fulfilled, rejected] = hook.wrap(this, fulfilled, rejected, associated);
           }
           try {
             const result = nativeReflectApply(thenDescriptor.value, this, [fulfilled, rejected]) as
               Promise<TResult1 | TResult2>;
             if (frame !== undefined && frame.expectedReceiver !== this) {
-              const continuations = delegatedContinuations.get(frame) ?? new WeakSet<object>();
-              continuations.add(result);
-              delegatedContinuations.set(frame, continuations);
+              const continuations = weakMapGet(delegatedContinuations, frame) ?? new nativeWeakSet<object>();
+              weakSetAdd(continuations, result);
+              weakMapSet(delegatedContinuations, frame, continuations);
             }
             return result;
           } finally {
             if (continuationFrame && frame !== undefined) {
-              pendingCustomCalls.pop();
+              arrayPop(pendingCustomCalls);
               settle(frame);
             }
           }
@@ -3148,37 +3561,43 @@ export class PlaywrightBrowserSession {
           name: { configurable: true, value: thenDescriptor.value.name },
           length: { configurable: true, value: thenDescriptor.value.length },
         });
-        approvedMethods.add(wrappedThen);
+        weakSetAdd(approvedMethods, wrappedThen);
         const instrumentCustom = (method: Function, name: PromiseMethodName): Function => {
-          const existing = instrumentedMethods.get(method);
+          const existing = weakMapGet(instrumentedMethods, method);
           if (existing?.name === name) return method;
           const instrumented = function (this: unknown, ...args: unknown[]): unknown {
             observeReceiver(this);
             registerOwner(this);
-            const parent = pendingCustomCalls.at(-1);
+            const parent = pendingCustomCalls[pendingCustomCalls.length - 1];
             let frame = takeContinuationFrame(this);
             if (frame === undefined) {
               const tokens: PrivatePromiseDelegationToken[] = [];
-              for (const hook of hooks) tokens.push(...hook.custom(this));
+              for (let hookIndex = 0; hookIndex < hooks.length; hookIndex += 1) {
+                const hookTokens = hooks[hookIndex]?.custom(this) ?? [];
+                for (let index = 0; index < hookTokens.length; index += 1) {
+                  const token = hookTokens[index];
+                  if (token !== undefined) arrayPush(tokens, token);
+                }
+              }
               frame = { token: tokens, expectedReceiver: this, delegated: false };
             }
-            pendingCustomCalls.push(frame);
+            arrayPush(pendingCustomCalls, frame);
             try {
               const result = nativeReflectApply(method, this, args);
               if ((typeof result === "object" || typeof result === "function") && result !== null) {
                 if (parent !== undefined && frame.delegated) {
-                  const continuations = delegatedContinuations.get(parent) ?? new WeakSet<object>();
-                  continuations.add(result);
-                  delegatedContinuations.set(parent, continuations);
+                  const continuations = weakMapGet(delegatedContinuations, parent) ?? new nativeWeakSet<object>();
+                  weakSetAdd(continuations, result);
+                  weakMapSet(delegatedContinuations, parent, continuations);
                 }
                 if (!frame.delegated && deferThroughContinuation(frame, result)) {
                   return result;
                 }
-                for (const hook of hooks) hook.returned(result);
+                for (let index = 0; index < hooks.length; index += 1) hooks[index]?.returned(result);
               }
               return result;
             } finally {
-              pendingCustomCalls.pop();
+              arrayPop(pendingCustomCalls);
               settle(frame);
             }
           };
@@ -3186,8 +3605,8 @@ export class PlaywrightBrowserSession {
             name: { configurable: true, value: method.name },
             length: { configurable: true, value: method.length },
           });
-          instrumentedMethods.set(instrumented, { method, name });
-          approvedMethods.add(instrumented);
+          weakMapSet(instrumentedMethods, instrumented, { method, name });
+          weakSetAdd(approvedMethods, instrumented);
           return instrumented;
         };
         observeReceiver = (receiver) => {
@@ -3200,17 +3619,22 @@ export class PlaywrightBrowserSession {
           const discoveredOwners: object[] = [];
           try {
             for (let owner: object | null = receiver; owner !== null; owner = nativePrototypeOf(owner)) {
-              owners.push(owner);
+              arrayPush(owners, owner);
               if (owner === nativePrototype) break;
             }
-            for (const owner of owners) {
+            for (let ownerIndex = 0; ownerIndex < owners.length; ownerIndex += 1) {
+              const owner = owners[ownerIndex];
+              if (owner === undefined) continue;
               let discoveredCustomMethod = false;
-              for (const name of ["then", "catch", "finally"] as const) {
+              const names = ["then", "catch", "finally"] as const;
+              for (let nameIndex = 0; nameIndex < names.length; nameIndex += 1) {
+                const name = names[nameIndex];
+                if (name === undefined) continue;
                 const descriptor = nativeOwnDescriptor(owner, name);
                 if (descriptor === undefined) continue;
                 if (!("value" in descriptor) || typeof descriptor.value !== "function") {
                   discoveredCustomMethod = true;
-                  customMethods.push(name);
+                  arrayPush(customMethods, name);
                   continue;
                 }
                 const method = descriptor.value;
@@ -3223,8 +3647,8 @@ export class PlaywrightBrowserSession {
                   }
                 } else if (method !== nativeMethod && method !== wrappedThen) {
                   discoveredCustomMethod = true;
-                  customMethods.push(name);
-                  if (!instrumentedMethods.has(method)) {
+                  arrayPush(customMethods, name);
+                  if (!weakMapHas(instrumentedMethods, method)) {
                     nativeDefineProperty(owner, name, {
                       ...descriptor,
                       value: instrumentCustom(method, name),
@@ -3232,9 +3656,12 @@ export class PlaywrightBrowserSession {
                   }
                 }
               }
-              if (discoveredCustomMethod) discoveredOwners.push(owner);
+              if (discoveredCustomMethod) arrayPush(discoveredOwners, owner);
             }
-            for (const owner of discoveredOwners) registerOwner(owner);
+            for (let index = 0; index < discoveredOwners.length; index += 1) {
+              const owner = discoveredOwners[index];
+              if (owner !== undefined) registerOwner(owner);
+            }
           } catch {
             ownerIntegrityPoisoned = true;
           }
@@ -3247,13 +3674,49 @@ export class PlaywrightBrowserSession {
         observeReceiver(nativePrototype);
         const wrappedCatch = catchDescriptor.value as Promise<unknown>["catch"];
         const wrappedFinally = finallyDescriptor.value as Promise<unknown>["finally"];
+        const operations: PrivateAuthorityOperations = nativeFreeze({
+          apply,
+          arrayPush,
+          arrayPop,
+          arrayShift,
+          arrayIncludes,
+          stringIncludes,
+          createSet: <T>(): Set<T> => new nativeSet<T>(),
+          setAdd,
+          setHas,
+          setDelete,
+          setClear,
+          setSize,
+          setForEach,
+          createMap: <K, V>(): Map<K, V> => new nativeMap<K, V>(),
+          mapGet,
+          mapSet,
+          mapHas,
+          mapDelete,
+          mapClear,
+          createWeakSet: <T extends WeakKey>(): WeakSet<T> => new nativeWeakSet<T>(),
+          weakSetAdd,
+          weakSetHas,
+          weakSetDelete,
+          createWeakMap: <K extends WeakKey, V>(): WeakMap<K, V> => new nativeWeakMap<K, V>(),
+          weakMapGet,
+          weakMapSet,
+          weakMapHas,
+          weakMapDelete,
+          observeMutations,
+          takeMutationRecords,
+          disconnectMutationObserver,
+          createUrlSearchParams: (search: string): URLSearchParams => new nativeUrlSearchParams(search),
+          urlSearchParamsForEach,
+        });
         const promiseAuthority: PrivatePromiseIntrinsics = nativeFreeze({
           attest(epoch: string) {
             return epoch === promiseInitEpoch && host[promiseSymbol] === promiseGateway &&
               ambientIntrinsicsIntact();
           },
           snapshot() {
-            const ownersIntact = registeredOwnersIntact();
+            const intrinsicsIntact = ambientIntrinsicsIntact();
+            const ownersIntact = intrinsicsIntact && registeredOwnersIntact();
             observeReceiver(nativePrototype);
             return {
               then: thenDescriptor?.value as Promise<unknown>["then"],
@@ -3266,16 +3729,23 @@ export class PlaywrightBrowserSession {
                 Promise.prototype === nativePrototype &&
                 sameDescriptor(nativeOwnDescriptor(globalThis, "Promise"), globalDescriptor) &&
                 sameDescriptor(nativeOwnDescriptor(nativePromise, "prototype"), prototypeDescriptor) &&
-                staticDescriptors.every(([key, descriptor]) =>
-                  key === "prototype" || sameDescriptor(nativeOwnDescriptor(nativePromise, key), descriptor)) &&
-                approvedMethods.has(Promise.prototype.then) &&
-                approvedMethods.has(Promise.prototype.catch) &&
-                approvedMethods.has(Promise.prototype.finally) &&
+                (() => {
+                  for (let index = 0; index < frozenStaticDescriptors.length; index += 1) {
+                    const entry = frozenStaticDescriptors[index];
+                    if (entry === undefined || (entry[0] !== "prototype" &&
+                        !sameDescriptor(nativeOwnDescriptor(nativePromise, entry[0]), entry[1]))) return false;
+                  }
+                  return true;
+                })() &&
+                weakSetHas(approvedMethods, nativePrototype.then) &&
+                weakSetHas(approvedMethods, nativePrototype.catch) &&
+                weakSetHas(approvedMethods, nativePrototype.finally) &&
                 sameDescriptor(nativeOwnDescriptor(nativePrototype, "constructor"), constructorDescriptor) &&
-                sameDescriptor(nativeOwnDescriptor(nativePromise, Symbol.species), speciesDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePromise, nativeSymbolSpecies), speciesDescriptor) &&
                 host[promiseSymbol] === promiseGateway,
               ownDescriptor: nativeOwnDescriptor,
               prototypeOf: nativePrototypeOf,
+              operations,
               descriptorShapeIntact: (() => {
                 return sameDescriptorShape(nativeOwnDescriptor(nativePrototype, "then"), thenDescriptor) &&
                   sameDescriptorShape(nativeOwnDescriptor(nativePrototype, "catch"), catchDescriptor) &&
@@ -3284,33 +3754,43 @@ export class PlaywrightBrowserSession {
             };
           },
           observe(receiver: unknown) {
+            if (!ambientIntrinsicsIntact()) return false;
             observeReceiver(receiver);
             return registeredOwnersIntact();
           },
           subscribe(hook: PrivatePromiseBoundaryHook) {
             observeReceiver(nativePrototype);
-            hooks.add(hook);
+            if (!arrayIncludes(hooks, hook)) arrayPush(hooks, hook);
             return promiseAuthority.snapshot().intact;
           },
           unsubscribe(hook: PrivatePromiseBoundaryHook) {
-            return hooks.delete(hook) && promiseAuthority.snapshot().intact;
+            for (let index = 0; index < hooks.length; index += 1) {
+              if (hooks[index] !== hook) continue;
+              for (let move = index + 1; move < hooks.length; move += 1) {
+                const next = hooks[move];
+                if (next !== undefined) hooks[move - 1] = next;
+              }
+              hooks.length -= 1;
+              return promiseAuthority.snapshot().intact;
+            }
+            return false;
           },
           isWrappedThen(candidate: unknown) {
             return candidate === wrappedThen;
           },
           revalidateOwners() {
-            return registeredOwnersIntact();
+            return ambientIntrinsicsIntact() && registeredOwnersIntact();
           },
           close() {
             const intact = promiseAuthority.snapshot().intact;
             promiseAuthorityClosed = true;
             ownerRegistryOverflow = false;
-            hooks.clear();
+            hooks.length = 0;
             pendingCustomCalls.length = 0;
             registeredOwners.length = 0;
-            registeredOwnerIndex = new WeakMap();
-            pendingContinuationFrames = new WeakMap();
-            delegatedContinuations = new WeakMap();
+            registeredOwnerIndex = new nativeWeakMap();
+            pendingContinuationFrames = new nativeWeakMap();
+            delegatedContinuations = new nativeWeakMap();
             return intact;
           },
         });

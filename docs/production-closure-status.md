@@ -924,6 +924,35 @@ review_blocker_precommit_count: `522`
   and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run after this code change; fresh
   exact-head review is required first.
+- Remaining intrinsic-bypass remediation captures Array, Set, WeakSet, Map,
+  WeakMap, Function, String, Symbol, Element, MutationObserver, Object, Reflect,
+  and Promise authority operations before application code. All collection,
+  registry, token, hook, owner-snapshot, shadow-root, and sensitive scheduler
+  decisions use captured functions through captured `Reflect.apply` or indexed
+  loops; a source invariant rejects ambient mutable method dispatch in the init
+  authority closure.
+- One frozen baseline manifest retains every constructor/prototype identity and
+  authority method descriptor. Sensitive activation, owner revalidation, and
+  pre-evidence/final artifact guards compare the current ambient descriptors
+  through captured descriptor/prototype primitives; any mismatch is sticky
+  session poison while captured internal operations and the application input
+  effect remain functional.
+- Real-Chromium table tests replace the relevant Array, Set/WeakSet,
+  Map/WeakMap, Function, Reflect, String, and Object methods with no-op,
+  always-true, always-false, or throwing implementations at the application
+  input boundary. Every case preserves the input event, returns stable
+  `SensitiveEvidenceUnproven`, remains poisoned after restoration, leaves the
+  prior graph current, and exposes no new artifact bytes.
+- The final exact affected/full Ticket 43/44 non-E2E Gate passed 13 files / 393
+  tests: 392 passed and 1 existing Task 21 skip, including the expanded
+  128-case Chromium tamper matrix. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run.
+- A supplemental repository-wide non-E2E run reported 144 passed files, 15
+  failed, and 1 skipped; 1296 tests passed, 7 failed, and 117 skipped. Ten suites
+  were blocked because the command did not set the documented Git OpenSSL
+  `OPENSSL_CONF`; the seven failures reproduce unrelated retained baseline
+  issues in stale config/budget/entrypoint expectations. They do not affect the
+  exact Ticket Gate above and are not claimed as passing full-suite evidence.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
