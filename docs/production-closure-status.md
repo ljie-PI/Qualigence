@@ -705,8 +705,9 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR merge
+verification: needs_info
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/82`
+remediation_ticket: `44`
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
