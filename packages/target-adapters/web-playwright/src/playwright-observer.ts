@@ -447,6 +447,7 @@ export class PlaywrightObserver implements Observer {
     try {
       return await this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
       await this.session.prepareSensitiveEvidenceCapture();
       const sensitiveTargets = this.session.sensitiveTargets();
       const bounded = this.session.hasSensitiveActionTracker();
@@ -531,7 +532,11 @@ export class PlaywrightObserver implements Observer {
         sensitiveTargets,
         () => this.session.failIfSensitiveTrackingOverflowed(),
       );
-      await this.session.completeSensitiveEvidenceCapture();
+      const stable = await this.session.completeSensitiveEvidenceCapture();
+      if (!stable) {
+        if (attempt === 0) continue;
+        throw this.session.sensitiveEvidenceChangedDuringCapture();
+      }
       await this.session.failIfSensitiveTrackingOverflowed();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       const artifactCache = await this.session.cacheArtifactBatch(artifacts);
@@ -542,6 +547,8 @@ export class PlaywrightObserver implements Observer {
         ...(artifactCache === undefined ? {} : { artifactCache }),
       });
         return graphWithRefs;
+      }
+      throw this.session.sensitiveEvidenceChangedDuringCapture();
       });
     } catch (error) {
       if (error instanceof WebTargetError && error.code === "SensitiveEvidenceUnproven") {

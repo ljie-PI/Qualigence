@@ -26,6 +26,7 @@ export {
   type RawCdpSession,
   type BrowserLauncher,
   type BrowserSessionTestHooks,
+  type SensitiveEvidenceDiagnosticReason,
   type SerializedArtifact,
   type StoredObservation,
   type SensitiveActionTarget,

@@ -75,7 +75,32 @@ export interface BrowserLauncher {
 /** Internal hook used only to exercise the artifact-integrity event-loop boundary. */
 export interface BrowserSessionTestHooks {
   readonly afterArtifactIntegrityChecks?: () => Promise<void>;
+  readonly onSensitiveEvidenceDiagnostic?: (
+    reason: SensitiveEvidenceDiagnosticReason,
+  ) => void;
 }
+
+/** Safe, test-only classification of the integrity check that failed closed. */
+export type SensitiveEvidenceDiagnosticReason =
+  | "ArtifactCacheUnavailable"
+  | "ArtifactCopyUnproven"
+  | "EvidenceChangedDuringCapture"
+  | "PromiseAuthorityUnavailable"
+  | "PromiseDelegationUnsettled"
+  | "PromiseIntegrityUnproven"
+  | "PromiseOwnerIntegrityUnproven"
+  | "ReflectionCurrentStateUnproven"
+  | "ReflectionCausalityUnproven"
+  | "ReflectionCharacterMutationUnproven"
+  | "ReflectionChildMutationUnproven"
+  | "SchedulerProvenanceUnproven"
+  | "ScheduledCallbackBoundsExceeded"
+  | "SensitiveEventAmbiguous"
+  | "SensitiveTargetIdentityUnproven"
+  | "ShadowIntegrityUnproven"
+  | "TrackerObserverUnproven"
+  | "TrackerOverflow"
+  | "TrackerReconciliationUnproven";
 
 export const chromiumLauncher: BrowserLauncher = {
   launch: (options) => chromium.launch({ headless: options.headless }),
@@ -697,16 +722,23 @@ export function finalizeArtifactBatch(
   if (input.cache.consumed) throw new Error("artifact-cache-consumed");
   try {
     const snapshot = authority.snapshot();
-    const trackerPoisoned = input.trackers.some((tracker, index) =>
-      tracker.overflow || tracker.observerError || tracker.scheduledPoison ||
-        tracker.schedulerProvenanceUnproven || tracker.outstandingPromiseDelegations > 0 ||
-        (index === input.trackers.length - 1 && !tracker.promiseIntegrity()) ||
-        tracker.shadowPoison || tracker.ambiguousEvent);
-    if (!snapshot.intact || !snapshot.descriptorShapeIntact || trackerPoisoned) {
-      throw new Error("sensitive-evidence-integrity-unproven");
+    for (const [index, tracker] of input.trackers.entries()) {
+      if (tracker.overflow) throw new Error("TrackerOverflow");
+      if (tracker.observerError) throw new Error("TrackerObserverUnproven");
+      if (tracker.scheduledPoison) throw new Error("ScheduledCallbackBoundsExceeded");
+      if (tracker.schedulerProvenanceUnproven) throw new Error("SchedulerProvenanceUnproven");
+      if (tracker.outstandingPromiseDelegations > 0) throw new Error("PromiseDelegationUnsettled");
+      if (index === input.trackers.length - 1 && !tracker.promiseIntegrity()) {
+        throw new Error("PromiseIntegrityUnproven");
+      }
+      if (tracker.shadowPoison) throw new Error("ShadowIntegrityUnproven");
+      if (tracker.ambiguousEvent) throw new Error("SensitiveEventAmbiguous");
     }
     if (!authority.revalidateOwners()) {
-      throw new Error("promise-owner-integrity-unproven");
+      throw new Error("PromiseOwnerIntegrityUnproven");
+    }
+    if (!snapshot.intact || !snapshot.descriptorShapeIntact) {
+      throw new Error("PromiseIntegrityUnproven");
     }
     const batch = Object.freeze(input.cache.artifacts.map((artifact) => Object.freeze({
       name: artifact.name,
@@ -888,16 +920,23 @@ export class PlaywrightBrowserSession {
     let enteredAtomicTail = false;
     try {
       if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+        this.reportSensitiveEvidenceDiagnostic("PromiseAuthorityUnavailable");
         throw new Error("promise-authority-unavailable");
       }
-      if (observation.artifactCache === undefined) throw new Error("artifact-cache-unavailable");
+      if (observation.artifactCache === undefined) {
+        this.reportSensitiveEvidenceDiagnostic("ArtifactCacheUnavailable");
+        throw new Error("artifact-cache-unavailable");
+      }
       await this.failIfSensitiveTrackingOverflowed();
       await this.verifySensitiveShadowRoots();
       for (const target of this.sensitiveActionTargets.values()) {
         const intact = await target.handle.evaluate((element, identity) =>
           element.isConnected && element.getAttribute(identity.attribute) === identity.token,
         { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
-        if (!intact) throw new Error("sensitive-target-identity-unproven");
+        if (!intact) {
+          this.reportSensitiveEvidenceDiagnostic("SensitiveTargetIdentityUnproven");
+          throw new Error("sensitive-target-identity-unproven");
+        }
       }
       await this.testHooks.afterArtifactIntegrityChecks?.();
 
@@ -916,7 +955,11 @@ export class PlaywrightBrowserSession {
       const batch = cloneArtifactBatch(serialized);
       this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
       return batch;
-    } catch {
+    } catch (error) {
+      const classified = this.reportKnownSensitiveEvidenceDiagnostic(error);
+      if (enteredAtomicTail && !classified) {
+        this.reportSensitiveEvidenceDiagnostic("ArtifactCopyUnproven");
+      }
       if (!enteredAtomicTail) await this.purgeArtifactCaches();
       for (const [graphId, observation] of this.observations) {
         this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
@@ -1043,6 +1086,39 @@ export class PlaywrightBrowserSession {
   sensitiveEvidenceFailure(_message?: string): WebTargetError {
     this.sensitiveEvidenceUnproven = true;
     return new WebTargetError("SensitiveEvidenceUnproven");
+  }
+
+  private reportSensitiveEvidenceDiagnostic(reason: SensitiveEvidenceDiagnosticReason): void {
+    try {
+      this.testHooks.onSensitiveEvidenceDiagnostic?.(reason);
+    } catch {
+      // Diagnostics are observation-only and cannot affect fail-closed behavior.
+    }
+  }
+
+  private reportKnownSensitiveEvidenceDiagnostic(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const reasons: readonly SensitiveEvidenceDiagnosticReason[] = [
+      "ArtifactCopyUnproven",
+      "EvidenceChangedDuringCapture",
+      "PromiseDelegationUnsettled",
+      "PromiseIntegrityUnproven",
+      "PromiseOwnerIntegrityUnproven",
+      "ReflectionCurrentStateUnproven",
+      "ReflectionCausalityUnproven",
+      "ReflectionCharacterMutationUnproven",
+      "ReflectionChildMutationUnproven",
+      "SchedulerProvenanceUnproven",
+      "ScheduledCallbackBoundsExceeded",
+      "SensitiveEventAmbiguous",
+      "ShadowIntegrityUnproven",
+      "TrackerObserverUnproven",
+      "TrackerOverflow",
+      "TrackerReconciliationUnproven",
+    ];
+    const reason = reasons.find((candidate) => candidate === error.message);
+    if (reason !== undefined) this.reportSensitiveEvidenceDiagnostic(reason);
+    return reason !== undefined;
   }
 
   hasSensitiveAction(): boolean {
@@ -1928,6 +2004,7 @@ export class PlaywrightBrowserSession {
     if (this.sensitiveActionTrackers.length > 0) await this.verifySensitiveShadowRoots();
     for (const tracker of this.sensitiveActionTrackers) {
       const handles = await this.reconcileSensitiveActionTracking(tracker, false);
+      if (handles === undefined) throw new Error("unexpected-preparation-race");
       try {
         await this.retainSensitiveElements(handles);
       } catch {
@@ -2034,26 +2111,65 @@ export class PlaywrightBrowserSession {
         await session.detach();
       }
     } catch {
+      this.reportSensitiveEvidenceDiagnostic("ShadowIntegrityUnproven");
       throw this.sensitiveEvidenceFailure();
     }
   }
 
-  async completeSensitiveEvidenceCapture(): Promise<void> {
+  async completeSensitiveEvidenceCapture(): Promise<boolean> {
     for (const tracker of this.sensitiveActionTrackers) {
-      await this.reconcileSensitiveActionTracking(tracker, true);
+      if (await this.reconcileSensitiveActionTracking(tracker, true) === undefined) return false;
     }
+    return true;
+  }
+
+  sensitiveEvidenceChangedDuringCapture(): WebTargetError {
+    this.reportSensitiveEvidenceDiagnostic("EvidenceChangedDuringCapture");
+    return this.sensitiveEvidenceFailure();
   }
 
   async failIfSensitiveTrackingOverflowed(): Promise<void> {
+    if (this.sensitiveActionTrackers.length === 0) return;
+    if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+      this.reportSensitiveEvidenceDiagnostic("PromiseAuthorityUnavailable");
+      throw this.sensitiveEvidenceFailure();
+    }
+    const promiseReason = await this.promiseIntrinsics.evaluate((authority) => {
+      const snapshot = authority.snapshot();
+      if (!authority.revalidateOwners()) return "PromiseOwnerIntegrityUnproven" as const;
+      if (!snapshot.intact || !snapshot.descriptorShapeIntact) {
+        return "PromiseIntegrityUnproven" as const;
+      }
+      return undefined;
+    }).catch(() => "PromiseAuthorityUnavailable" as const);
+    if (promiseReason === "PromiseAuthorityUnavailable") {
+      this.reportSensitiveEvidenceDiagnostic("PromiseAuthorityUnavailable");
+      throw this.sensitiveEvidenceFailure();
+    }
+    if (promiseReason === "PromiseOwnerIntegrityUnproven") {
+      this.reportSensitiveEvidenceDiagnostic("PromiseOwnerIntegrityUnproven");
+      throw this.sensitiveEvidenceFailure();
+    }
+    if (promiseReason === "PromiseIntegrityUnproven") {
+      this.reportSensitiveEvidenceDiagnostic("PromiseIntegrityUnproven");
+      throw this.sensitiveEvidenceFailure();
+    }
     for (const [index, tracker] of this.sensitiveActionTrackers.entries()) {
       const requireCurrentPromiseIntegrity = index === this.sensitiveActionTrackers.length - 1;
-      const invalid = await tracker.evaluate((state, requireIntegrity) =>
-        state.overflow || state.observerError || state.scheduledPoison ||
-          state.schedulerProvenanceUnproven || state.outstandingPromiseDelegations > 0 ||
-          (requireIntegrity && !state.promiseIntegrity()) ||
-          state.shadowPoison || state.ambiguousEvent,
-      requireCurrentPromiseIntegrity).catch(() => true);
-      if (invalid) {
+      const reason = await tracker.evaluate((state, requireIntegrity) => {
+        if (state.overflow) return "TrackerOverflow" as const;
+        if (state.observerError) return "TrackerObserverUnproven" as const;
+        if (state.scheduledPoison) return "ScheduledCallbackBoundsExceeded" as const;
+        if (state.schedulerProvenanceUnproven) return "SchedulerProvenanceUnproven" as const;
+        if (state.outstandingPromiseDelegations > 0) return "PromiseDelegationUnsettled" as const;
+        if (requireIntegrity && !state.promiseIntegrity()) return "PromiseIntegrityUnproven" as const;
+        if (state.shadowPoison) return "ShadowIntegrityUnproven" as const;
+        if (state.ambiguousEvent) return "SensitiveEventAmbiguous" as const;
+        return undefined;
+      },
+      requireCurrentPromiseIntegrity).catch(() => "TrackerObserverUnproven" as const);
+      if (reason !== undefined) {
+        this.reportSensitiveEvidenceDiagnostic(reason);
         throw this.sensitiveEvidenceFailure(
           "Sensitive action provenance tracking exceeded its bounds.",
         );
@@ -2209,7 +2325,7 @@ export class PlaywrightBrowserSession {
   private async reconcileSensitiveActionTracking(
     tracker: JSHandle<SensitiveActionMutationTracker>,
     final: boolean,
-  ): Promise<readonly ElementHandle<Element>[]> {
+  ): Promise<readonly ElementHandle<Element>[] | undefined> {
     let result: JSHandle<{ readonly reason: string | undefined; readonly elements: readonly Element[] }> |
       undefined;
     try {
@@ -2523,7 +2639,26 @@ export class PlaywrightBrowserSession {
       } finally {
         await elements.dispose();
       }
-    } catch {
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
+      if (final && reason === "capture-changed-during-evidence") return undefined;
+      if (reason === "same-form-causality-ambiguous") {
+        this.reportSensitiveEvidenceDiagnostic("ReflectionCurrentStateUnproven");
+      } else if (reason === "character:same-form-causality-ambiguous") {
+        this.reportSensitiveEvidenceDiagnostic("ReflectionCharacterMutationUnproven");
+      } else if (reason === "child:same-form-causality-ambiguous") {
+        this.reportSensitiveEvidenceDiagnostic("ReflectionChildMutationUnproven");
+      } else if (reason.includes("causality-ambiguous")) {
+        this.reportSensitiveEvidenceDiagnostic("ReflectionCausalityUnproven");
+      } else if (reason.includes("overflow")) {
+        this.reportSensitiveEvidenceDiagnostic("TrackerOverflow");
+      } else if (reason === "observer-error" || reason === "tracker-evaluation-error") {
+        this.reportSensitiveEvidenceDiagnostic("TrackerObserverUnproven");
+      } else if (reason.includes("shadow-root")) {
+        this.reportSensitiveEvidenceDiagnostic("ShadowIntegrityUnproven");
+      } else {
+        this.reportSensitiveEvidenceDiagnostic("TrackerReconciliationUnproven");
+      }
       throw this.sensitiveEvidenceFailure();
     } finally {
       await result?.dispose().catch(() => { this.sensitiveEvidenceUnproven = true; });

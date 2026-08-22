@@ -19,6 +19,7 @@ import {
   finalizeArtifactBatch,
   type BrowserLauncher,
   type BrowserSessionTestHooks,
+  type SensitiveEvidenceDiagnosticReason,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
@@ -266,7 +267,13 @@ describe("PlaywrightWebTargetAdapter facade", () => {
 
   it("returns no cached artifact batch after an observed Promise owner is replaced", async () => {
     const control = observedOwnerControl();
-    const observed = await captureSensitiveObservation(control.launcher);
+    const diagnostics: SensitiveEvidenceDiagnosticReason[] = [];
+    const observed = await captureSensitiveObservation(control.launcher, {
+      onSensitiveEvidenceDiagnostic: (reason) => {
+        diagnostics.push(reason);
+        throw new Error("ignored test sink failure");
+      },
+    });
 
     await control.mutate("immediate");
     const receivedArtifacts: string[] = [];
@@ -281,6 +288,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     })()).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
     expect(receivedArtifacts).toEqual([]);
     expect(receivedBytes).toBe(0);
+    expect(diagnostics).toContain("PromiseOwnerIntegrityUnproven");
     await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
       code: "SensitiveEvidenceUnproven",
     });
