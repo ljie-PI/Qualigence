@@ -636,8 +636,9 @@ verification: pending dedicated PR
 pull_request: pending
 parent_ticket: `41`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
-base_head: `6940f773e94238536cb7c908f5a47c5c308a4fdc`
-implementation_head: `0dd8ce8c7e82a1112901332d0720f300062bd351`
+base_head: `6940f7785789e4278524ee8da20379430dffbe61`
+review_head: `dd4da5e154ea42b62451dca0e524ff855cda87e0`
+product_head: pending exact binding
 
 - Promise instrumentation now wraps only the current `Promise.prototype.then`
   call boundary. Native `catch` and `finally` remain untouched, naturally route
@@ -651,13 +652,36 @@ implementation_head: `0dd8ce8c7e82a1112901332d0720f300062bd351`
   species, instance/prototype/returned-promise custom `then`, hostile multi-call
   thenables, and native `catch` dispatch. The matrix also asserts exact tracker
   registration/execution counts and native `catch`/`finally` identity/source.
-- The existing 64 registration and execution bounds remain fail-closed for
-  evidence attribution only; overflow still poisons without suppressing native
-  callbacks. The full Ticket 41 focused command passed 12 files / 209 tests:
-  208 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
-  `git diff --check` passed. Exact-base Standards and Spec review found no
-  Critical or Important findings. The Ticket 18 Chromium E2E is prepared and,
-  per closure protocol, was not run before review.
+- A native `then` captured before tracker activation cannot be intercepted.
+  Promise intrinsic, descriptor, receiver/prototype, constructor, and species
+  attestation therefore begins only when sensitive tracking starts. Pre-sensitive
+  pages with overrides still observe normally. Any pre-existing/accessor/custom
+  path that cannot be proven to delegate through the tracked wrapper poisons
+  later evidence as `SensitiveEvidenceUnproven` without changing settlement or
+  callbacks; post-activation custom `then` delegation retains native parity and
+  bounded counting. Native `catch` and `finally` remain unmodified.
+- Independent fresh-page oracles prove one, two, and 65 calls through a
+  pre-captured native `then`: application results equal native while sensitive
+  action/capture fails closed and no new Graph persists. Accessor, prototype,
+  subclass, and species paths are covered separately.
+- Exact affected non-E2E command: `corepack pnpm vitest run
+  tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 12 files / 212 tests: 211 passed and
+  1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
+  passed.
+- Full non-E2E command with Git OpenSSL first on `PATH` and
+  `OPENSSL_CONF=C:\Program Files\Git\mingw64\etc\ssl\openssl.cnf`:
+  `corepack pnpm vitest run --exclude "tests/e2e/**" --exclude "tests/live/**"`.
+  It ran 159 files / 1,335 tests: 1,323 passed, 5 skipped, and 7 failed. Six are
+  the documented unrelated baseline failures; the changed delayed-reflection
+  case passed the complete affected Gate and failed only under full-suite
+  concurrency. Per closure protocol, no E2E was run before fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

@@ -593,6 +593,27 @@ export interface PrivateShadowRegistry {
   ) => boolean;
 }
 
+interface PrivatePromiseIntrinsicsSnapshot {
+  readonly promise: PromiseConstructor;
+  readonly prototype: Promise<unknown>;
+  readonly then: Promise<unknown>["then"];
+  readonly catch: Promise<unknown>["catch"];
+  readonly finally: Promise<unknown>["finally"];
+  readonly currentThen: Promise<unknown>["then"] | undefined;
+  readonly intrinsicThenIntact: boolean;
+  readonly baselineIntactExceptThen: boolean;
+  readonly speciesGet: (() => PromiseConstructor) | undefined;
+  readonly speciesSet: ((value: PromiseConstructor) => void) | undefined;
+  readonly speciesConfigurable: boolean | undefined;
+  readonly speciesEnumerable: boolean | undefined;
+  readonly ownDescriptor: (target: object, key: PropertyKey) => PropertyDescriptor | undefined;
+  readonly prototypeOf: (target: object) => object | null;
+}
+
+interface PrivatePromiseIntrinsics {
+  readonly snapshot: () => PrivatePromiseIntrinsicsSnapshot;
+}
+
 interface SensitiveActionMutationTracker {
   readonly target: Element;
   readonly forms: readonly string[];
@@ -603,6 +624,7 @@ interface SensitiveActionMutationTracker {
   readonly roots: (Document | ShadowRoot)[];
   readonly shadowRegistry: PrivateShadowRegistry;
   readonly restore: () => boolean;
+  readonly promiseIntegrity: () => boolean;
   readonly beginCausalAction: (target: Element) => boolean;
   readonly endCausalAction: (target: Element) => boolean;
   readonly metadata: SensitivePageMetadataAuthority;
@@ -610,6 +632,8 @@ interface SensitiveActionMutationTracker {
   preparedElements: readonly Element[] | undefined;
   overflow: boolean;
   observerError: boolean;
+  schedulerActivationUnproven: boolean;
+  schedulerProvenanceUnproven: boolean;
   scheduledPoison: boolean;
   scheduledRegistrations: number;
   scheduledExecutions: number;
@@ -655,6 +679,9 @@ export class PlaywrightBrowserSession {
   private shadowRegistry: JSHandle<PrivateShadowRegistry> | undefined;
   private readonly shadowRegistryKey = `${PRIVATE_SHADOW_REGISTRY_DESCRIPTION}:${crypto.randomUUID()}`;
   private readonly shadowRegistryAccessToken = crypto.randomUUID();
+  private promiseIntrinsics: JSHandle<PrivatePromiseIntrinsics> | undefined;
+  private readonly promiseIntrinsicsKey = `qualigence.private-promise-intrinsics:${crypto.randomUUID()}`;
+  private readonly promiseIntrinsicsAccessToken = crypto.randomUUID();
   private operation: Promise<unknown> = Promise.resolve();
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
@@ -865,7 +892,11 @@ export class PlaywrightBrowserSession {
       );
     }
     try {
+      if (this.sensitiveActionTrackers.length > 0) {
+        await this.failIfSensitiveTrackingOverflowed();
+      }
       if (this.shadowRegistry === undefined) throw new Error("shadow-registry-unavailable");
+      if (this.promiseIntrinsics === undefined) throw new Error("promise-intrinsics-unavailable");
       await this.verifySensitiveShadowRoots();
       if (value.length > MAXIMUM_OBSERVATION_NODE_BYTES) {
         throw new Error("source-form-length-overflow");
@@ -1015,6 +1046,8 @@ export class PlaywrightBrowserSession {
           ambiguousEvent: false,
           overflow: false,
           observerError: false,
+          schedulerActivationUnproven: false,
+          schedulerProvenanceUnproven: false,
           scheduledPoison: false,
           scheduledRegistrations: 0,
           scheduledExecutions: 0,
@@ -1025,10 +1058,11 @@ export class PlaywrightBrowserSession {
           shadowRegistry: registry,
         } as Omit<
           SensitiveActionMutationTracker,
-          "observers" | "restore" | "beginCausalAction" | "endCausalAction"
+          "observers" | "restore" | "promiseIntegrity" | "beginCausalAction" | "endCausalAction"
         > & {
           observers?: MutationObserver[];
           restore?: () => boolean;
+          promiseIntegrity?: () => boolean;
           beginCausalAction?: (target: Element) => boolean;
           endCausalAction?: (target: Element) => boolean;
         };
@@ -1125,15 +1159,19 @@ export class PlaywrightBrowserSession {
         };
 
         const eventType = input.kind === "select" ? "change" : "input";
+        const promiseSnapshot = input.promiseIntrinsics.snapshot();
+        if (!promiseSnapshot.baselineIntactExceptThen || promiseSnapshot.currentThen === undefined ||
+            (!input.hasPriorTracker && !promiseSnapshot.intrinsicThenIntact)) {
+          tracker.schedulerActivationUnproven = true;
+          tracker.schedulerProvenanceUnproven = true;
+        }
         const originalSetTimeout = window.setTimeout;
         const originalSetInterval = window.setInterval;
         const originalClearInterval = window.clearInterval;
         const originalRequestAnimationFrame = window.requestAnimationFrame;
         const originalCancelAnimationFrame = window.cancelAnimationFrame;
         const originalQueueMicrotask = window.queueMicrotask;
-        const originalThen = Promise.prototype.then;
-        const originalCatch = Promise.prototype.catch;
-        const originalFinally = Promise.prototype.finally;
+        const originalThen = promiseSnapshot.currentThen ?? promiseSnapshot.then;
         const metadataSnapshot = (): SensitivePageMetadataSnapshot => ({
           href: location.href,
           pathname: location.pathname,
@@ -1191,6 +1229,7 @@ export class PlaywrightBrowserSession {
         let scheduledRegistrations = 0;
         let activeGeneration: GenerationToken | undefined;
         let callbackGeneration: GenerationToken | undefined;
+        const approvedPromiseOverrides = new WeakSet<Function>();
         const attachedShadow = (_host: Element, root: ShadowRoot, mode: ShadowRootMode): void => {
           observeRoot(root);
         };
@@ -1329,17 +1368,83 @@ export class PlaywrightBrowserSession {
         ): typeof callback => generation === undefined || callback == null
           ? callback
           : ((value: T) => runCausal(generation, () => callback(value)));
+        const nativeDescriptor = promiseSnapshot.ownDescriptor;
+        const nativePrototypeOf = promiseSnapshot.prototypeOf;
+        const hasNativePromiseSpeciesPath = (receiver: unknown): boolean => {
+          if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null) {
+            return false;
+          }
+          try {
+            let candidate: object | null = receiver;
+            let constructor: unknown;
+            while (candidate !== null) {
+              const descriptor = nativeDescriptor(candidate, "constructor");
+              if (descriptor !== undefined) {
+                if (!("value" in descriptor)) return false;
+                constructor = descriptor.value;
+                break;
+              }
+              candidate = nativePrototypeOf(candidate);
+            }
+            if (constructor !== promiseSnapshot.promise) return false;
+            const species = nativeDescriptor(promiseSnapshot.promise, Symbol.species);
+            return species?.get === promiseSnapshot.speciesGet &&
+              species?.set === promiseSnapshot.speciesSet &&
+              species?.configurable === promiseSnapshot.speciesConfigurable &&
+              species?.enumerable === promiseSnapshot.speciesEnumerable;
+          } catch {
+            return false;
+          }
+        };
+        const hasAttestedPromiseChain = (receiver: unknown): boolean => {
+          if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null) {
+            return false;
+          }
+          try {
+            let candidate: object | null = receiver;
+            let depth = 0;
+            let reachedNativePrototype = false;
+            while (candidate !== null && depth <= 32) {
+              for (const method of ["then", "catch", "finally"] as const) {
+                const descriptor = nativeDescriptor(candidate, method);
+                if (descriptor === undefined) continue;
+                if (!("value" in descriptor) || typeof descriptor.value !== "function") return false;
+                const expected = candidate === promiseSnapshot.prototype
+                  ? method === "then" ? wrappedThen :
+                    method === "catch" ? promiseSnapshot.catch : promiseSnapshot.finally
+                  : undefined;
+                if (descriptor.value !== expected && !approvedPromiseOverrides.has(descriptor.value)) {
+                  if (method !== "then") return false;
+                  // A custom then is approved only when its own delegation has
+                  // reached this tracked wrapper on the same receiver chain.
+                  approvedPromiseOverrides.add(descriptor.value);
+                }
+              }
+              if (candidate === promiseSnapshot.prototype) {
+                reachedNativePrototype = true;
+                break;
+              }
+              candidate = nativePrototypeOf(candidate);
+              depth += 1;
+            }
+            return reachedNativePrototype && hasNativePromiseSpeciesPath(receiver);
+          } catch {
+            return false;
+          }
+        };
         const wrappedThen = function <T, TResult1 = T, TResult2 = never>(
           this: Promise<T>,
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
         ): Promise<TResult1 | TResult2> {
+          if (!hasAttestedPromiseChain(this)) {
+            tracker.schedulerProvenanceUnproven = true;
+          }
           const generation = registerGeneration();
-          return originalThen.call(
-            this,
-            wrapContinuation(generation, onfulfilled),
-            wrapContinuation(generation, onrejected),
-          ) as Promise<TResult1 | TResult2>;
+          return Reflect.apply(originalThen, this, [
+            wrapContinuation<T, TResult1>(generation, onfulfilled),
+            wrapContinuation<unknown, TResult2>(generation, onrejected),
+          ]) as Promise<TResult1 | TResult2>;
         };
         window.setTimeout = wrappedSetTimeout;
         window.setInterval = wrappedSetInterval;
@@ -1347,7 +1452,7 @@ export class PlaywrightBrowserSession {
         window.requestAnimationFrame = wrappedRequestAnimationFrame;
         window.cancelAnimationFrame = wrappedCancelAnimationFrame;
         window.queueMicrotask = wrappedQueueMicrotask;
-        Promise.prototype.then = wrappedThen;
+        if (!tracker.schedulerActivationUnproven) Promise.prototype.then = wrappedThen;
         const originalReplaceState = history.replaceState;
         const originalPushState = history.pushState;
         const wrapHistory = (original: History["replaceState"]): History["replaceState"] =>
@@ -1396,6 +1501,32 @@ export class PlaywrightBrowserSession {
           }
           return !tracker.observerError && !tracker.overflow && !tracker.shadowPoison;
         };
+        tracker.promiseIntegrity = (): boolean => {
+          if (!promiseSnapshot.baselineIntactExceptThen) return false;
+          try {
+            if (Promise !== promiseSnapshot.promise || Promise.prototype !== promiseSnapshot.prototype) {
+              return false;
+            }
+            for (const [method, expected] of [
+              ["then", wrappedThen],
+              ["catch", promiseSnapshot.catch],
+              ["finally", promiseSnapshot.finally],
+            ] as const) {
+              const descriptor = nativeDescriptor(Promise.prototype, method);
+              if (descriptor === undefined || !("value" in descriptor) ||
+                  (descriptor.value !== expected &&
+                    (typeof descriptor.value !== "function" ||
+                      !approvedPromiseOverrides.has(descriptor.value)))) return false;
+            }
+            const constructor = nativeDescriptor(Promise.prototype, "constructor");
+            const species = nativeDescriptor(Promise, Symbol.species);
+            return constructor !== undefined && "value" in constructor &&
+              constructor.value === promiseSnapshot.promise && species !== undefined &&
+              !Object.prototype.hasOwnProperty.call(species, "value");
+          } catch {
+            return false;
+          }
+        };
         tracker.restore = (): boolean => {
           window.removeEventListener(eventType, exactTargetEvent, true);
           const registryIntact = registry.unsubscribe(attachedShadow);
@@ -1405,9 +1536,7 @@ export class PlaywrightBrowserSession {
             window.requestAnimationFrame === wrappedRequestAnimationFrame &&
             window.cancelAnimationFrame === wrappedCancelAnimationFrame &&
             window.queueMicrotask === wrappedQueueMicrotask &&
-            Promise.prototype.then === wrappedThen &&
-            Promise.prototype.catch === originalCatch &&
-            Promise.prototype.finally === originalFinally &&
+            tracker.promiseIntegrity?.() === true &&
             history.replaceState === wrappedReplaceState &&
             history.pushState === wrappedPushState && registryIntact;
           if (window.setTimeout === wrappedSetTimeout) window.setTimeout = originalSetTimeout;
@@ -1433,6 +1562,8 @@ export class PlaywrightBrowserSession {
         kind,
         forms,
         shadowRegistry: this.shadowRegistry,
+        promiseIntrinsics: this.promiseIntrinsics,
+        hasPriorTracker: this.sensitiveActionTrackers.length > 0,
         limits: {
           maximumCandidates: this.observationCandidateLimit(),
           maximumMutations: MAXIMUM_SENSITIVE_ACTION_MUTATIONS,
@@ -1728,10 +1859,13 @@ export class PlaywrightBrowserSession {
   }
 
   async failIfSensitiveTrackingOverflowed(): Promise<void> {
-    for (const tracker of this.sensitiveActionTrackers) {
-      const invalid = await tracker.evaluate((state) =>
+    for (const [index, tracker] of this.sensitiveActionTrackers.entries()) {
+      const requireCurrentPromiseIntegrity = index === this.sensitiveActionTrackers.length - 1;
+      const invalid = await tracker.evaluate((state, requireIntegrity) =>
         state.overflow || state.observerError || state.scheduledPoison ||
-          state.shadowPoison || state.ambiguousEvent).catch(() => true);
+          state.schedulerProvenanceUnproven || (requireIntegrity && !state.promiseIntegrity()) ||
+          state.shadowPoison || state.ambiguousEvent,
+      requireCurrentPromiseIntegrity).catch(() => true);
       if (invalid) {
         throw this.sensitiveEvidenceFailure(
           "Sensitive action provenance tracking exceeded its bounds.",
@@ -2355,7 +2489,13 @@ export class PlaywrightBrowserSession {
       if (typeof context.addInitScript !== "function") {
         throw new WebTargetError("BrowserLaunchFailed");
       }
-      await context.addInitScript(({ registryKey, accessToken, maximumRoots }) => {
+      await context.addInitScript(({
+        registryKey,
+        accessToken,
+        maximumRoots,
+        promiseKey,
+        promiseAccessToken,
+      }) => {
         const host = globalThis as typeof globalThis & Record<symbol, unknown>;
         const registrySymbol = Symbol.for(registryKey);
         if (host[registrySymbol] !== undefined) return;
@@ -2451,10 +2591,83 @@ export class PlaywrightBrowserSession {
           writable: false,
           value: gateway,
         });
+        const promiseSymbol = Symbol.for(promiseKey);
+        if (host[promiseSymbol] !== undefined) return;
+        const nativeOwnDescriptor = Object.getOwnPropertyDescriptor.bind(Object);
+        const nativePrototypeOf = Object.getPrototypeOf.bind(Object);
+        const nativeFunctionToString = Function.prototype.toString;
+        const nativePromise = Promise;
+        const nativePrototype = Promise.prototype;
+        const globalDescriptor = nativeOwnDescriptor(globalThis, "Promise");
+        const prototypeDescriptor = nativeOwnDescriptor(nativePromise, "prototype");
+        const thenDescriptor = nativeOwnDescriptor(nativePrototype, "then");
+        const catchDescriptor = nativeOwnDescriptor(nativePrototype, "catch");
+        const finallyDescriptor = nativeOwnDescriptor(nativePrototype, "finally");
+        const constructorDescriptor = nativeOwnDescriptor(nativePrototype, "constructor");
+        const speciesDescriptor = nativeOwnDescriptor(nativePromise, Symbol.species);
+        const sameDescriptor = (
+          current: PropertyDescriptor | undefined,
+          captured: PropertyDescriptor | undefined,
+        ): boolean => current !== undefined && captured !== undefined &&
+          current.configurable === captured.configurable && current.enumerable === captured.enumerable &&
+          current.get === captured.get && current.set === captured.set &&
+          current.value === captured.value && current.writable === captured.writable;
+        const promiseAuthority: PrivatePromiseIntrinsics = Object.freeze({
+          snapshot() {
+            return {
+              promise: nativePromise,
+              prototype: nativePrototype,
+              then: thenDescriptor?.value as Promise<unknown>["then"],
+              catch: catchDescriptor?.value as Promise<unknown>["catch"],
+              finally: finallyDescriptor?.value as Promise<unknown>["finally"],
+              currentThen: (() => {
+                const descriptor = nativeOwnDescriptor(nativePrototype, "then");
+                return descriptor !== undefined && "value" in descriptor &&
+                    typeof descriptor.value === "function"
+                  ? descriptor.value as Promise<unknown>["then"]
+                  : undefined;
+              })(),
+              intrinsicThenIntact: (() => {
+                const descriptor = nativeOwnDescriptor(nativePrototype, "then");
+                return descriptor !== undefined && "value" in descriptor &&
+                  typeof descriptor.value === "function" &&
+                  Reflect.apply(nativeFunctionToString, descriptor.value, []) ===
+                    "function then() { [native code] }";
+              })(),
+              baselineIntactExceptThen: Promise === nativePromise &&
+                Promise.prototype === nativePrototype &&
+                sameDescriptor(nativeOwnDescriptor(globalThis, "Promise"), globalDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePromise, "prototype"), prototypeDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePrototype, "catch"), catchDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePrototype, "finally"), finallyDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePrototype, "constructor"), constructorDescriptor) &&
+                sameDescriptor(nativeOwnDescriptor(nativePromise, Symbol.species), speciesDescriptor),
+              speciesGet: speciesDescriptor?.get as (() => PromiseConstructor) | undefined,
+              speciesSet: speciesDescriptor?.set as ((value: PromiseConstructor) => void) | undefined,
+              speciesConfigurable: speciesDescriptor?.configurable,
+              speciesEnumerable: speciesDescriptor?.enumerable,
+              ownDescriptor: nativeOwnDescriptor,
+              prototypeOf: nativePrototypeOf,
+            };
+          },
+        });
+        const promiseGateway = Object.freeze({
+          access(candidate: string): PrivatePromiseIntrinsics | undefined {
+            return candidate === promiseAccessToken ? promiseAuthority : undefined;
+          },
+        });
+        Object.defineProperty(host, promiseSymbol, {
+          configurable: false,
+          enumerable: false,
+          writable: false,
+          value: promiseGateway,
+        });
       }, {
         registryKey: this.shadowRegistryKey,
         accessToken: this.shadowRegistryAccessToken,
         maximumRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+        promiseKey: this.promiseIntrinsicsKey,
+        promiseAccessToken: this.promiseIntrinsicsAccessToken,
       });
 
       const page = await context.newPage();
@@ -2478,6 +2691,16 @@ export class PlaywrightBrowserSession {
       MAXIMUM_SENSITIVE_SHADOW_ROOTS);
       if (proven) this.shadowRegistry = registry as JSHandle<PrivateShadowRegistry>;
       else await registry.dispose();
+      const promiseIntrinsics = await page.evaluateHandle(({ promiseKey, accessToken }) => {
+        const gateway = (globalThis as typeof globalThis & Record<symbol, unknown>)[
+          Symbol.for(promiseKey)
+        ] as { access(candidate: string): PrivatePromiseIntrinsics | undefined } | undefined;
+        return gateway?.access(accessToken);
+      }, {
+        promiseKey: this.promiseIntrinsicsKey,
+        accessToken: this.promiseIntrinsicsAccessToken,
+      });
+      this.promiseIntrinsics = promiseIntrinsics as JSHandle<PrivatePromiseIntrinsics>;
     } catch (error) {
       await this.disposeResources();
       this.state = "closed";
@@ -2599,6 +2822,10 @@ export class PlaywrightBrowserSession {
     if (this.shadowRegistry) {
       await this.shadowRegistry.dispose().catch(record);
       this.shadowRegistry = undefined;
+    }
+    if (this.promiseIntrinsics) {
+      await this.promiseIntrinsics.dispose().catch(record);
+      this.promiseIntrinsics = undefined;
     }
     for (const target of targets.values()) {
       await target.handle.dispose().catch(() => undefined);
