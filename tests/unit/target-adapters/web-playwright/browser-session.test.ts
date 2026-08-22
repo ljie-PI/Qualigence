@@ -43,12 +43,13 @@ function fakeLauncher(promiseAttested = true): {
   };
   const promiseAuthority = {
     attest: (_epoch: string) => promiseAttested,
+    close: () => true,
   };
   const promiseHandle = {
     evaluate: vi.fn(async (
-      callback: (value: typeof promiseAuthority, epoch: string) => unknown,
-      epoch: string,
-    ) => callback(promiseAuthority, epoch)),
+      callback: (value: typeof promiseAuthority, argument?: string) => unknown,
+      argument?: string,
+    ) => callback(promiseAuthority, argument)),
     dispose: vi.fn(async () => undefined),
   };
   let handleIndex = 0;

@@ -115,6 +115,7 @@ export interface SensitiveActionTarget extends PrivateActionTarget {
 export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
 export const MAXIMUM_SENSITIVE_ACTION_TARGETS = 32;
 const MAXIMUM_SENSITIVE_ACTION_MUTATIONS = 128;
+const MAXIMUM_OBSERVED_PROMISE_OWNERS = 128;
 const MAXIMUM_SENSITIVE_ACTION_CANDIDATES = 512;
 const MAXIMUM_SENSITIVE_SCHEDULED_CALLBACKS = 64;
 const MAXIMUM_SENSITIVE_SHADOW_ROOTS = 64;
@@ -633,6 +634,8 @@ interface PrivatePromiseIntrinsics {
   readonly subscribe: (hook: PrivatePromiseBoundaryHook) => boolean;
   readonly unsubscribe: (hook: PrivatePromiseBoundaryHook) => boolean;
   readonly isWrappedThen: (candidate: unknown) => boolean;
+  readonly revalidateOwners: () => boolean;
+  readonly close: () => boolean;
 }
 
 interface SensitiveActionMutationTracker {
@@ -1462,6 +1465,9 @@ export class PlaywrightBrowserSession {
               finish(token);
             }
             tracker.outstandingPromiseDelegations = promiseTokens.size;
+            if (!input.promiseIntrinsics.revalidateOwners()) {
+              tracker.schedulerProvenanceUnproven = true;
+            }
           },
           returned(receiver) {
             if (!input.promiseIntrinsics.observe(receiver)) {
@@ -1751,6 +1757,7 @@ export class PlaywrightBrowserSession {
   }
 
   async prepareSensitiveEvidenceCapture(): Promise<void> {
+    await this.failIfSensitiveTrackingOverflowed();
     if (this.sensitiveActionTrackers.length > 0) await this.verifySensitiveShadowRoots();
     for (const tracker of this.sensitiveActionTrackers) {
       const handles = await this.reconcileSensitiveActionTracking(tracker, false);
@@ -2509,6 +2516,7 @@ export class PlaywrightBrowserSession {
         promiseKey,
         promiseAccessToken,
         promiseInitEpoch,
+        maximumPromiseOwners,
       }) => {
         const host = globalThis as typeof globalThis & Record<symbol, unknown>;
         const registrySymbol = Symbol.for(registryKey);
@@ -2636,8 +2644,21 @@ export class PlaywrightBrowserSession {
           readonly descriptor: PropertyDescriptor | undefined;
           readonly version: number;
         }
-        const observedDescriptors = new WeakMap<object, Map<PromiseMethodName, ObservedMethod>>();
-        const pendingDescriptorVersions = new WeakMap<object, Map<PromiseMethodName, number>>();
+        interface PromiseChainOwnerSnapshot {
+          readonly owner: object;
+          readonly prototype: object | null;
+          readonly descriptors: readonly (readonly [PromiseMethodName, PropertyDescriptor | undefined])[];
+        }
+        interface RegisteredPromiseOwner {
+          readonly receiver: object;
+          readonly chain: readonly PromiseChainOwnerSnapshot[];
+        }
+        let observedDescriptors = new WeakMap<object, Map<PromiseMethodName, ObservedMethod>>();
+        let pendingDescriptorVersions = new WeakMap<object, Map<PromiseMethodName, number>>();
+        let registeredOwnerIndex = new WeakMap<object, RegisteredPromiseOwner>();
+        const registeredOwners: RegisteredPromiseOwner[] = [];
+        let ownerRegistryOverflow = false;
+        let promiseAuthorityClosed = false;
         const instrumentedMethods = new WeakMap<Function, {
           readonly method: Function;
           readonly name: PromiseMethodName;
@@ -2670,8 +2691,56 @@ export class PlaywrightBrowserSession {
         // Only the top frame's exact receiver may attest it. A cross-receiver
         // native delegation can prove its parent only through its exact result.
         const pendingCustomCalls: CustomCallFrame[] = [];
-        const pendingContinuationFrames = new WeakMap<object, CustomCallFrame[]>();
-        const delegatedContinuations = new WeakMap<CustomCallFrame, WeakSet<object>>();
+        let pendingContinuationFrames = new WeakMap<object, CustomCallFrame[]>();
+        let delegatedContinuations = new WeakMap<CustomCallFrame, WeakSet<object>>();
+        const captureOwnerChain = (receiver: object): readonly PromiseChainOwnerSnapshot[] | undefined => {
+          const chain: PromiseChainOwnerSnapshot[] = [];
+          try {
+            for (let owner: object | null = receiver; owner !== null; owner = nativePrototypeOf(owner)) {
+              if (chain.length >= maximumPromiseOwners) return undefined;
+              chain.push({
+                owner,
+                prototype: nativePrototypeOf(owner),
+                descriptors: (["then", "catch", "finally"] as const).map((name) =>
+                  [name, nativeOwnDescriptor(owner, name)] as const),
+              });
+            }
+            return chain;
+          } catch {
+            return undefined;
+          }
+        };
+        const registerOwner = (receiver: unknown): void => {
+          if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null ||
+              registeredOwnerIndex.has(receiver)) return;
+          if (registeredOwners.length >= maximumPromiseOwners) {
+            ownerRegistryOverflow = true;
+            return;
+          }
+          const chain = captureOwnerChain(receiver);
+          if (chain === undefined) {
+            ownerRegistryOverflow = true;
+            return;
+          }
+          const registered = { receiver, chain };
+          registeredOwnerIndex.set(receiver, registered);
+          registeredOwners.push(registered);
+        };
+        const registeredOwnersIntact = (): boolean => {
+          if (promiseAuthorityClosed || ownerRegistryOverflow) return false;
+          try {
+            return registeredOwners.every((registered) =>
+              registeredOwnerIndex.get(registered.receiver) === registered &&
+              registered.chain.every((captured) =>
+                nativePrototypeOf(captured.owner) === captured.prototype &&
+                captured.descriptors.every(([name, descriptor]) =>
+                  descriptor === undefined
+                    ? nativeOwnDescriptor(captured.owner, name) === undefined
+                    : sameDescriptor(nativeOwnDescriptor(captured.owner, name), descriptor))));
+          } catch {
+            return false;
+          }
+        };
         const settle = (frame: CustomCallFrame): void => {
           for (const hook of hooks) hook.settle(frame.token);
         };
@@ -2754,6 +2823,7 @@ export class PlaywrightBrowserSession {
           if (existing?.name === name) return method;
           const instrumented = function (this: unknown, ...args: unknown[]): unknown {
             observeReceiver(this, true, true);
+            registerOwner(this);
             const parent = pendingCustomCalls.at(-1);
             let frame = takeContinuationFrame(this);
             if (frame === undefined) {
@@ -2870,6 +2940,7 @@ export class PlaywrightBrowserSession {
             return epoch === promiseInitEpoch && host[promiseSymbol] === promiseGateway;
           },
           snapshot() {
+            const ownersIntact = registeredOwnersIntact();
             observeReceiver(nativePrototype, true, hooks.size === 0);
             const pendingPrototypeChanges = [...(pendingDescriptorVersions.get(nativePrototype)?.values() ?? [])];
             return {
@@ -2879,7 +2950,7 @@ export class PlaywrightBrowserSession {
               wrappedThen,
               wrappedCatch,
               wrappedFinally,
-              intact: Promise === nativePromise &&
+              intact: ownersIntact && Promise === nativePromise &&
                 Promise.prototype === nativePrototype &&
                 sameDescriptor(nativeOwnDescriptor(globalThis, "Promise"), globalDescriptor) &&
                 sameDescriptor(nativeOwnDescriptor(nativePromise, "prototype"), prototypeDescriptor) &&
@@ -2916,6 +2987,23 @@ export class PlaywrightBrowserSession {
           isWrappedThen(candidate: unknown) {
             return candidate === wrappedThen;
           },
+          revalidateOwners() {
+            return registeredOwnersIntact();
+          },
+          close() {
+            const intact = promiseAuthority.snapshot().intact;
+            promiseAuthorityClosed = true;
+            ownerRegistryOverflow = false;
+            hooks.clear();
+            pendingCustomCalls.length = 0;
+            registeredOwners.length = 0;
+            observedDescriptors = new WeakMap();
+            pendingDescriptorVersions = new WeakMap();
+            registeredOwnerIndex = new WeakMap();
+            pendingContinuationFrames = new WeakMap();
+            delegatedContinuations = new WeakMap();
+            return intact;
+          },
         });
         const promiseGateway = Object.freeze({
           access(candidate: string): PrivatePromiseIntrinsics | undefined {
@@ -2935,6 +3023,7 @@ export class PlaywrightBrowserSession {
         promiseKey: this.promiseIntrinsicsKey,
         promiseAccessToken: this.promiseIntrinsicsAccessToken,
         promiseInitEpoch: this.promiseInitEpoch,
+        maximumPromiseOwners: MAXIMUM_OBSERVED_PROMISE_OWNERS,
       });
 
       const page = await context.newPage();
@@ -3086,6 +3175,9 @@ export class PlaywrightBrowserSession {
             }
           }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
         }
+      }
+      if (this.promiseIntrinsics) {
+        await this.promiseIntrinsics.evaluate((authority) => authority.close()).catch(record);
       }
       await this.page.close().catch(record);
       this.page = undefined;

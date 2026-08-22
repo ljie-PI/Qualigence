@@ -28,11 +28,13 @@ const REDACTED = "[REDACTED]";
 async function captureScreenshot(
   page: Page,
   sensitiveTargets: readonly SensitiveActionTarget[],
+  validateEvidence: () => Promise<void>,
 ): Promise<Uint8Array> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       if (sensitiveTargets.length === 0) {
+        await validateEvidence();
         return new Uint8Array(await page.screenshot({ timeout: 5000 }));
       }
       const regions: ScreenshotRectangle[] = [];
@@ -53,6 +55,7 @@ async function captureScreenshot(
         }
         regions.push(region);
       }
+      await validateEvidence();
       const screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
       for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
         const remainsExact = await sensitiveTarget.handle.evaluate((element, expected) => {
@@ -497,6 +500,7 @@ export class PlaywrightObserver implements Observer {
       );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
+      await this.session.failIfSensitiveTrackingOverflowed();
       const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
@@ -522,8 +526,13 @@ export class PlaywrightObserver implements Observer {
       };
 
       await this.session.verifySensitiveShadowRoots();
-      const screenshot = await captureScreenshot(page, sensitiveTargets);
+      const screenshot = await captureScreenshot(
+        page,
+        sensitiveTargets,
+        () => this.session.failIfSensitiveTrackingOverflowed(),
+      );
       await this.session.completeSensitiveEvidenceCapture();
+      await this.session.failIfSensitiveTrackingOverflowed();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.advanceSensitiveTargets(graph.graphId, sensitiveNodeIds);
       this.session.registerObservation(graphWithRefs.graphId, {

@@ -2321,6 +2321,213 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
+  it.each(["then", "catch", "finally"] as const)(
+    "rejects evidence when an observed delegating own %s is replaced without another call",
+    async (method) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${method}-owner-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.promise-${method}-owner`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate((name) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & {
+            observedPromiseOwner?: Promise<string> & Record<string, Function>;
+            observedPromiseResult?: string;
+          };
+          const receiver = name === "catch"
+            ? Promise.reject("catch-result")
+            : Promise.resolve(`${name}-result`);
+          const delegate = receiver[name];
+          Object.defineProperty(receiver, name, {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (this: Promise<string>, ...args: unknown[]) {
+              return Reflect.apply(delegate as Function, this, args);
+            },
+          });
+          Reflect.apply(Promise.prototype.then, receiver, [undefined, () => undefined]);
+          const result = name === "then"
+            ? receiver.then((value) => value)
+            : name === "catch"
+              ? receiver.catch((reason) => String(reason))
+              : receiver.finally(() => undefined);
+          Reflect.apply(Promise.prototype.then, result, [
+            (value: string) => { state.observedPromiseResult = value; },
+          ]);
+          state.observedPromiseOwner = receiver as Promise<string> & Record<string, Function>;
+        }, { once: true });
+      }, method));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { observedPromiseResult?: string }).observedPromiseResult,
+      ))).toBe(`${method}-result`);
+      await session.withPage(async (page) => page.evaluate((name) => {
+        const owner = (globalThis as typeof globalThis & {
+          observedPromiseOwner?: Promise<string> & Record<string, Function>;
+        }).observedPromiseOwner;
+        if (owner === undefined) throw new Error("observed owner unavailable");
+        Object.defineProperty(owner, name, {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function () { return Promise.resolve("replacement-result"); },
+        });
+      }, method));
+
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
+  it.each(["delete", "accessor", "prototype"] as const)(
+    "rejects evidence after an observed Promise owner %s mutation",
+    async (mutation) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${mutation}-owner-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.promise-${mutation}-owner`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(() => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & {
+            mutatedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+            mutatedPromiseResult?: string;
+          };
+          const receiver = Promise.resolve("delegated-result");
+          const delegate = receiver.then;
+          Object.defineProperty(receiver, "then", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (this: Promise<string>, ...args: unknown[]) {
+              return Reflect.apply(delegate, this, args);
+            },
+          });
+          Reflect.apply(Promise.prototype.then, receiver, []);
+          receiver.then((value) => { state.mutatedPromiseResult = value; });
+          state.mutatedPromiseOwner = receiver;
+        }, { once: true });
+      }));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { mutatedPromiseResult?: string }).mutatedPromiseResult,
+      ))).toBe("delegated-result");
+      await session.withPage(async (page) => page.evaluate((kind) => {
+        const owner = (globalThis as typeof globalThis & {
+          mutatedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+        }).mutatedPromiseOwner;
+        if (owner === undefined) throw new Error("observed owner unavailable");
+        if (kind === "delete") {
+          delete (owner as { then?: Promise<string>["then"] }).then;
+        } else if (kind === "accessor") {
+          const delegate = Promise.prototype.then;
+          Object.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: false,
+            get: () => delegate,
+          });
+        } else {
+          Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
+        }
+      }, mutation));
+
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
+  it("accepts 128 observed Promise owners, poisons on 129, and isolates a new session", async () => {
+    const exerciseOwners = async (count: number): Promise<{
+      readonly observer: PlaywrightObserver;
+      readonly before: ObservationGraph;
+    }> => {
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `owner-${count}-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.promise-owner-${count}`),
+        before,
+      );
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await session.withPage(async (page) => page.evaluate((maximum) => {
+        const state = globalThis as typeof globalThis & { ownerCallbackResults?: number[] };
+        const results: number[] = [];
+        for (let index = 0; index < maximum; index += 1) {
+          const receiver = Promise.resolve(index);
+          const delegate = receiver.then;
+          Object.defineProperty(receiver, "then", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (this: Promise<number>, ...args: unknown[]) {
+              return Reflect.apply(delegate, this, args);
+            },
+          });
+          Reflect.apply(Promise.prototype.then, receiver, []);
+          receiver.then((value) => { results.push(value); });
+        }
+        state.ownerCallbackResults = results;
+      }, count));
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { ownerCallbackResults?: number[] })
+          .ownerCallbackResults?.length,
+      ))).toBe(count);
+      return { observer, before };
+    };
+
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const accepted = await exerciseOwners(128);
+    await expect(accepted.observer.capture(job)).resolves.toMatchObject({ graphId: expect.any(String) });
+    await session.close();
+
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const overflowed = await exerciseOwners(129);
+    await expect(overflowed.observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(session.latestGraphId).toBe(overflowed.before.graphId);
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { ownerCallbackResults?: number[] }).ownerCallbackResults,
+    ))).toHaveLength(129);
+    await session.close();
+
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const fresh = await exerciseOwners(1);
+    await expect(fresh.observer.capture(job)).resolves.toMatchObject({ graphId: expect.any(String) });
+  });
+
   it("accepts delegated Promise species paths while preserving settlement semantics", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
