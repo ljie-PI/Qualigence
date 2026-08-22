@@ -981,6 +981,47 @@ review_blocker_precommit_count: `522`
   405 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. Pre-commit product head was `40e17b1` with 524
   commits; no E2E was run.
+- Review-blocker implementation head:
+  `4988594daf29fba177c81a5a69021b9e3df1de8b`. Every retained exact sensitive
+  action/reflection handle is now bound to one uniquely inventoried CDP
+  `backendNodeId`; screenshot masking obtains finite axis-aligned border quads
+  from bounded typed `DOM.getBoxModel` calls before and after capture under an
+  explicit 1280x720, deviceScaleFactor 1, visual-viewport scale/zoom 1 contract.
+  Any missing, duplicate, detached, cross-frame, changed, transformed, or
+  malformed geometry fails closed before artifact registration; the only
+  geometry race protocol is one recapture, then failure with zero persisted
+  bytes. PNG masking remains a Node-only pixel rewrite and page geometry/CSS
+  cannot choose the mask.
+- The private init intrinsic manifest now captures and finally revalidates Node,
+  Element/HTMLElement, CharacterData, Document/DocumentFragment, ShadowRoot,
+  TreeWalker, input/textarea/select/title constructors, prototypes, DOM
+  methods/getters, and `getComputedStyle`. Observer/tracker authority callbacks
+  invoke these operations through captured `Reflect.apply`; mutable ambient
+  DOM dispatch and `instanceof` no longer decide sensitive evidence. Root
+  identity uses bounded indexed comparison rather than ambient Set dispatch.
+  The TypeScript AST guard inventories callbacks in `browser-session.ts`,
+  `playwright-observer.ts`, `playwright-action-resolver.ts`, and
+  `playwright-action-executor.ts` and rejects mutable calls, constructors,
+  getters, `instanceof`, and imported/named callback bypasses.
+- Real Chromium proves hostile CSS plus forged `getBoundingClientRect`,
+  `getClientRects`, and HTMLElement geometry cannot move the actual pixel mask;
+  a CDP box race follows the bounded recapture protocol. The expanded tamper
+  matrix covers `matches`, `closest`, `querySelector`, `getComputedStyle`,
+  `getRootNode`, and Set `add`/`size`; tampering either poisons sensitive
+  evidence or is safely bypassed by the captured intrinsic, with no plaintext
+  artifacts. The complete Chromium authority file passed 1 file / 282 tests.
+- Exact focused command: `corepack pnpm vitest run
+  tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 13 files / 416 tests: 415 passed and
+  1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. Exact-head coordinator review and E2E remain
+  pending; no E2E was run after this remediation.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
