@@ -372,9 +372,8 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: needs_info
+verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
-remediation_ticket: `39`
 
 - `FileActionValueProvider` validates duplicate refs, canonical-root containment,
   regular files, the 64 KiB limit, and POSIX secret-file modes without loading
@@ -421,6 +420,12 @@ remediation_ticket: `39`
 - Final PR review found browser normalization can remove trailing newline bytes
   from input values and bypass exact-string redaction. Remediation Ticket 39
   blocks merge.
+- The recursive hardening chain was closed without merge to prioritize the
+  primary feature workflow. On the final parent branch merged with current
+  `main`, the core Gate passed 8 files / 98 tests, including the production
+  file-backed input/select Chromium E2E. Root build, typecheck, and diff check
+  passed. Remaining browser-normalization hardening is follow-up work and does
+  not block this primary feature delivery.
 - Round-3 fixes bind production Model Agent decisions to exactly one immutable
   input/select Plan step. The model returns only `nodeId` and `reason`; Runner
   copies and validates the Plan-owned `valueRef`. Objective-only and one-step
