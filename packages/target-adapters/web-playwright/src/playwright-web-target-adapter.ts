@@ -98,7 +98,10 @@ export class PlaywrightWebTargetAdapter
   }
 
   async captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]> {
-    return this.guard(async () => this.session.artifactsFor(graphId));
+    return this.guard(async () => {
+      await this.session.assertSensitiveEvidenceIntegrity();
+      return this.session.artifactsFor(graphId);
+    });
   }
 
   async close(): Promise<void> {

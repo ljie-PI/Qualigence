@@ -767,6 +767,35 @@ export class PlaywrightBrowserSession {
     return observation.artifacts;
   }
 
+  async assertSensitiveEvidenceIntegrity(): Promise<void> {
+    try {
+      this.assertSensitiveEvidenceProven();
+      if (this.hasSensitiveActionTracker() || this.hasSensitiveAction()) {
+        if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+          throw new Error("promise-authority-unavailable");
+        }
+        const ownersIntact = await this.promiseIntrinsics.evaluate(
+          (authority) => authority.snapshot().intact && authority.revalidateOwners(),
+        );
+        if (!ownersIntact) throw new Error("promise-owner-integrity-unproven");
+        await this.failIfSensitiveTrackingOverflowed();
+        await this.verifySensitiveShadowRoots();
+        for (const target of this.sensitiveActionTargets.values()) {
+          const intact = await target.handle.evaluate((element, identity) =>
+            element.isConnected && element.getAttribute(identity.attribute) === identity.token,
+          { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
+          if (!intact) throw new Error("sensitive-target-identity-unproven");
+        }
+      }
+      this.assertSensitiveEvidenceProven();
+    } catch {
+      for (const [graphId, observation] of this.observations) {
+        this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
+      }
+      throw this.sensitiveEvidenceFailure();
+    }
+  }
+
   async establishPrivateActionTarget(
     graphId: string,
     nodeId: string,

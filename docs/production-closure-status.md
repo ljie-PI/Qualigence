@@ -705,7 +705,7 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: pending dedicated PR exact count and head
+verification: review-finding fix Gate passed; dedicated PR head pending
 pull_request: pending
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
@@ -725,6 +725,17 @@ implementation_head: `6801a2e`
 - Exact Ticket 42/43 focused non-E2E Gate passed 12 files / 232 tests: 231
   passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run before review per instruction.
+- Post-review persistence-boundary remediation adds a public BrowserSession
+  integrity assertion and invokes it from the serialized
+  `PlaywrightWebTargetAdapter.captureArtifacts()` operation immediately before
+  its cached array can leave the adapter. It revalidates poison state, the full
+  Promise authority and enumerable owner registry, shadow inventory, and exact
+  retained target markers. Failure purges every cached artifact batch and
+  raises stable `SensitiveEvidenceUnproven`, so a consumer receives no artifact
+  metadata or bytes. The batch API has no per-artifact interleaving window.
+- The final exact Ticket 42/43 non-E2E Gate passed 12 files / 233 tests: 232
+  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run per instruction.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

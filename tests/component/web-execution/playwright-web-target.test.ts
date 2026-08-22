@@ -5,11 +5,20 @@ import type {
   ObservationGraph,
   ObservationNode,
 } from "@qualigence/runner-protocol";
-import { ExecutionPermit, type ProposedAction } from "@qualigence/runner-kernel";
+import {
+  ExecutionPermit,
+  type AnyProposedAction,
+  type ProposedAction,
+} from "@qualigence/runner-kernel";
 import {
   PlaywrightWebTargetAdapter,
+  type PlaywrightWebTargetOptions,
   type WebSessionOptions,
 } from "@qualigence/web-playwright";
+import {
+  chromiumLauncher,
+  type BrowserLauncher,
+} from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
 function allowedPermit(): ExecutionPermit {
@@ -21,6 +30,15 @@ function allowedPermit(): ExecutionPermit {
 
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "facade test" };
+}
+
+function input(nodeId: string): AnyProposedAction {
+  return {
+    kind: "input",
+    target: { nodeId },
+    valueRef: "facade-sensitive-value",
+    reason: "facade test",
+  };
 }
 
 function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
@@ -87,7 +105,23 @@ describe("PlaywrightWebTargetAdapter facade", () => {
       "/": htmlDocument(
         `
           <button id="add" onclick="document.getElementById('total').textContent='Cart total: $19'">Add to cart</button>
+          <label>Email <input aria-label="Email" /></label>
           <p data-qualigence-observe id="total">Cart total: $0</p>
+          <script>
+            document.querySelector('input').addEventListener('input', () => {
+              const receiver = Promise.resolve('delegated');
+              const delegate = receiver.then;
+              Object.defineProperty(receiver, 'then', {
+                configurable: true,
+                enumerable: false,
+                writable: true,
+                value: function (...args) { return Reflect.apply(delegate, this, args); },
+              });
+              Reflect.apply(Promise.prototype.then, receiver, []);
+              receiver.then(() => undefined);
+              window.observedPromiseOwner = receiver;
+            });
+          </script>
         `,
         "Facade",
       ),
@@ -163,6 +197,64 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     await expect(
       adapter.captureArtifacts("run-facade:observation:404"),
     ).rejects.toMatchObject({ code: "StaleObservation" });
+  });
+
+  it("returns no cached artifact batch after an observed Promise owner is replaced", async () => {
+    let replaceObservedOwner: (() => Promise<void>) | undefined;
+    const launcher: BrowserLauncher = {
+      launch: async (launchOptions) => {
+        const browser = await chromiumLauncher.launch(launchOptions);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...contextOptions) => {
+          const context = await newContext(...contextOptions);
+          const newPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            const page = await newPage();
+            if (replaceObservedOwner !== undefined) return page;
+            replaceObservedOwner = async () => page.evaluate(() => {
+              const owner = (globalThis as typeof globalThis & {
+                observedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+              }).observedPromiseOwner;
+              if (owner === undefined) throw new Error("Observed Promise owner is unavailable");
+              Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
+            });
+            return page;
+          };
+          return context;
+        };
+        return browser;
+      },
+    };
+    const sensitiveOptions: PlaywrightWebTargetOptions = {
+      ...options(),
+      valueProvider: { resolve: async () => "sensitive-value" },
+    };
+    adapter = new PlaywrightWebTargetAdapter(sensitiveOptions, launcher);
+    await adapter.start();
+    const before = await adapter.capture(job);
+    const inputAction = await adapter.resolve(input(nodeNamed(before, "Email").id), before);
+    await expect(adapter.execute(inputAction, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const observed = await adapter.capture(job);
+
+    await expect(adapter.captureArtifacts(observed.graphId)).resolves.toHaveLength(2);
+
+    if (replaceObservedOwner === undefined) throw new Error("Application page was not captured");
+    await replaceObservedOwner();
+    const receivedArtifacts: string[] = [];
+    let receivedBytes = 0;
+
+    await expect((async () => {
+      const artifacts = await adapter.captureArtifacts(observed.graphId);
+      for (const artifact of artifacts) {
+        receivedArtifacts.push(artifact.name);
+        receivedBytes += artifact.bytes.byteLength;
+      }
+    })()).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+    expect(receivedArtifacts).toEqual([]);
+    expect(receivedBytes).toBe(0);
+    await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
   });
 
   it("rejects concurrent reentry with ConcurrentSessionOperation", async () => {
