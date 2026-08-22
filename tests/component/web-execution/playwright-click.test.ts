@@ -2569,6 +2569,184 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
+  it.each([
+    ["then", "own"],
+    ["catch", "own"],
+    ["finally", "own"],
+    ["then", "prototype"],
+  ] as const)(
+    "keeps a second delegating Promise.%s application result but poisons its %s owner",
+    async (method, ownerKind) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "second-delegate-secret" });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.second-${method}-delegate`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(({ name, usePrototype }) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & {
+            reassignedPromiseOwner?: object;
+            reassignedPromiseReceiver?: Promise<string> & Record<string, Function>;
+            reassignedPromiseDelegate?: Function;
+            reassignedPromiseFirstResult?: string;
+          };
+          const receiver = name === "catch"
+            ? Promise.reject("catch-first")
+            : Promise.resolve(`${name}-first`);
+          const owner = usePrototype ? Object.create(Object.getPrototypeOf(receiver)) : receiver;
+          if (usePrototype) Object.setPrototypeOf(receiver, owner);
+          const delegate = receiver[name];
+          Object.defineProperty(owner, name, {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (this: Promise<string>, ...args: unknown[]) {
+              return Reflect.apply(delegate as Function, this, args);
+            },
+          });
+          const result = Reflect.apply(receiver[name], receiver, [
+            (value: string) => value,
+            (reason: unknown) => String(reason),
+          ]) as Promise<string>;
+          Reflect.apply(Promise.prototype.then, result, [
+            (value: string) => { state.reassignedPromiseFirstResult = value; },
+          ]);
+          state.reassignedPromiseOwner = owner;
+          state.reassignedPromiseReceiver = receiver as Promise<string> & Record<string, Function>;
+          state.reassignedPromiseDelegate = delegate as Function;
+        }, { once: true });
+      }, { name: method, usePrototype: ownerKind === "prototype" }));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { reassignedPromiseFirstResult?: string })
+          .reassignedPromiseFirstResult,
+      ))).toBe(method === "catch" ? "catch-first" : `${method}-first`);
+
+      await session.withPage(async (page) => page.evaluate((name) => {
+        const state = globalThis as typeof globalThis & {
+          reassignedPromiseOwner?: object;
+          reassignedPromiseReceiver?: Promise<string> & Record<string, Function>;
+          reassignedPromiseDelegate?: Function;
+          reassignedPromiseSecondResult?: string;
+        };
+        if (state.reassignedPromiseOwner === undefined ||
+            state.reassignedPromiseReceiver === undefined ||
+            state.reassignedPromiseDelegate === undefined) {
+          throw new Error("observed owner unavailable");
+        }
+        Object.defineProperty(state.reassignedPromiseOwner, name, {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (this: Promise<string>, ...args: unknown[]) {
+            return Reflect.apply(state.reassignedPromiseDelegate as Function, this, args);
+          },
+        });
+        const result = Reflect.apply(state.reassignedPromiseReceiver[name], state.reassignedPromiseReceiver, [
+          (value: string) => `${value}-second`,
+          (reason: unknown) => `${String(reason)}-second`,
+        ]) as Promise<string>;
+        Reflect.apply(Promise.prototype.then, result, [
+          (value: string) => { state.reassignedPromiseSecondResult = value; },
+        ]);
+      }, method));
+
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { reassignedPromiseSecondResult?: string })
+          .reassignedPromiseSecondResult,
+      ))).toBe(method === "catch"
+        ? "catch-first-second"
+        : method === "finally" ? "finally-first" : "then-first-second");
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
+  it("keeps the approved snapshot immutable when the page restores its owner descriptor", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "restored-owner-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.restored-promise-owner"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        Object.freeze = ((value: object) => value) as ObjectConstructor["freeze"];
+        const state = globalThis as typeof globalThis & {
+          frozenSnapshotOwner?: Promise<string> & { then: Promise<string>["then"] };
+          frozenSnapshotDescriptor?: PropertyDescriptor;
+          frozenSnapshotResult?: string;
+        };
+        const receiver = Promise.resolve("approved-result");
+        const delegate = receiver.then;
+        Object.defineProperty(receiver, "then", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (this: Promise<string>, ...args: unknown[]) {
+            return Reflect.apply(delegate, this, args);
+          },
+        });
+        const result = receiver.then((value) => value);
+        Reflect.apply(Promise.prototype.then, result, [
+          (value: string) => { state.frozenSnapshotResult = value; },
+        ]);
+        state.frozenSnapshotOwner = receiver;
+        const descriptor = Object.getOwnPropertyDescriptor(receiver, "then");
+        if (descriptor !== undefined) state.frozenSnapshotDescriptor = descriptor;
+      }, { once: true });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { frozenSnapshotResult?: string }).frozenSnapshotResult,
+    ))).toBe("approved-result");
+    await session.withPage(async (page) => page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        frozenSnapshotOwner?: Promise<string> & { then: Promise<string>["then"] };
+        frozenSnapshotDescriptor?: PropertyDescriptor;
+      };
+      if (state.frozenSnapshotOwner === undefined || state.frozenSnapshotDescriptor === undefined) {
+        throw new Error("observed owner unavailable");
+      }
+      Object.defineProperty(state.frozenSnapshotOwner, "then", {
+        ...state.frozenSnapshotDescriptor,
+        value: function () { return Promise.resolve("temporary-result"); },
+      });
+      for (let index = 0; index < 3; index += 1) {
+        Reflect.apply(Promise.prototype.then, state.frozenSnapshotOwner, []);
+      }
+      Object.defineProperty(state.frozenSnapshotOwner, "then", state.frozenSnapshotDescriptor);
+    }));
+
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(session.latestGraphId).toBe(before.graphId);
+  });
+
   it.each(["then", "catch", "finally"] as const)(
     "rejects evidence when an observed delegating own %s is replaced without another call",
     async (method) => {
