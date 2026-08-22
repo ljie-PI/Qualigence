@@ -859,6 +859,47 @@ final_product_head: `7515fde7390bb959326276657d8fbaa73dec898b`
   `git diff --check` passed. Because product and test code changed after the
   failed E2E, it was not rerun and requires fresh exact-head review first.
 
+### Ticket 44 - Promise owner snapshot freeze remediation (2026-08-22)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR and exact-head review
+pull_request: pending
+parent_ticket: `43`
+parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/82`
+base_head: `09365f5fd5e33c1ec374c2dc435803e5e0d381a4`
+implementation_head: `683932fbe1a0ca62ab39356609d5edd3f61da63c`
+implementation_commits: `1`
+
+- Every newly observed Promise method owner is fully instrumented before one
+  post-instrumentation chain snapshot is recorded. Registry entries, chain
+  nodes, descriptor tuples, and copied descriptors are frozen with captured
+  intrinsics, and no registered-owner descriptor snapshot/version update path
+  remains.
+- Every subsequent observe, custom instrumentation, call, settlement, capture,
+  and final artifact guard revalidates the enumerable registry before adapter
+  mutation. Any descriptor or prototype difference sets sticky owner poison,
+  leaves the changed application method untouched, and cannot be cleared by
+  restoring the approved descriptor.
+- Tests cover first delegating instrumentation, second delegating assignments
+  for own `then`/`catch`/`finally` and a prototype owner, nondelegating uninvoked
+  replacement, delete/accessor/prototype mutations, repeated unchanged
+  observation, sticky restoration, application result preservation, and page
+  replacement of `Object.freeze`.
+- Exact affected/full Ticket 43/44 non-E2E command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 13 files / 254 tests: 253 passed and
+  1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run before review per instruction.
+- Dedicated PR number, exact remote head, PR commit count, and exact-head review
+  remain pending.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete
