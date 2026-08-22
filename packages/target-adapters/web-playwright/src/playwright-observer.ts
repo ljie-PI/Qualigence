@@ -12,6 +12,7 @@ import {
   PRIVATE_TARGET_ATTRIBUTE,
   WebTargetError,
   type PlaywrightBrowserSession,
+  type PrivatePromiseIntrinsics,
   type PrivateShadowRegistry,
   type SensitiveActionTarget,
 } from "./browser-session.js";
@@ -19,7 +20,7 @@ import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
-import type { Page } from "playwright";
+import type { JSHandle, Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 import { redactPngRectangles, type ScreenshotRectangle } from "./png-redactor.js";
 
@@ -28,6 +29,7 @@ const REDACTED = "[REDACTED]";
 async function captureScreenshot(
   page: Page,
   sensitiveTargets: readonly SensitiveActionTarget[],
+  authority: JSHandle<PrivatePromiseIntrinsics>,
   validateEvidence: () => Promise<void>,
 ): Promise<Uint8Array> {
   let lastError: unknown;
@@ -38,35 +40,56 @@ async function captureScreenshot(
         return new Uint8Array(await page.screenshot({ timeout: 5000 }));
       }
       const regions: ScreenshotRectangle[] = [];
-      for (const sensitiveTarget of sensitiveTargets) {
-        const region = await sensitiveTarget.handle.evaluate((element, identity) => {
+      for (let targetIndex = 0; targetIndex < sensitiveTargets.length; targetIndex += 1) {
+        const sensitiveTarget = sensitiveTargets[targetIndex];
+        if (sensitiveTarget === undefined) throw new Error("sensitive-target-unproven");
+        const region = await sensitiveTarget.handle.evaluate((element, input) => {
+          const snapshot = input.authority.snapshot();
+          if (!snapshot.intact || !snapshot.descriptorShapeIntact ||
+              !input.authority.revalidateOwners()) return undefined;
           const rect = element.getBoundingClientRect();
-          return element.isConnected && element.getAttribute(identity.attribute) === identity.token &&
-            [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
+          const finite = (value: number): boolean =>
+            value === value && value !== Infinity && value !== -Infinity;
+          return element.isConnected && element.getAttribute(input.identity.attribute) === input.identity.token &&
+            finite(rect.x) && finite(rect.y) && finite(rect.width) && finite(rect.height) &&
             rect.width > 0 && rect.height > 0
             ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
             : undefined;
-        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: sensitiveTarget.token });
+        }, {
+          authority,
+          identity: { attribute: PRIVATE_TARGET_ATTRIBUTE, token: sensitiveTarget.token },
+        });
         if (region === undefined) {
           throw new WebTargetError(
             "SensitiveTargetUnproven",
             "A sensitive target has no unique bounded screenshot region.",
           );
         }
-        regions.push(region);
+        regions[regions.length] = region;
       }
       await validateEvidence();
       const screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
-      for (const [index, sensitiveTarget] of sensitiveTargets.entries()) {
-        const remainsExact = await sensitiveTarget.handle.evaluate((element, expected) => {
+      for (let index = 0; index < sensitiveTargets.length; index += 1) {
+        const sensitiveTarget = sensitiveTargets[index];
+        const expectedRegion = regions[index];
+        if (sensitiveTarget === undefined || expectedRegion === undefined) {
+          throw new Error("sensitive-target-unproven");
+        }
+        const remainsExact = await sensitiveTarget.handle.evaluate((element, input) => {
+          const snapshot = input.authority.snapshot();
+          if (!snapshot.intact || !snapshot.descriptorShapeIntact ||
+              !input.authority.revalidateOwners()) return false;
           const rect = element.getBoundingClientRect();
-          return element.isConnected && element.getAttribute(expected.attribute) === expected.token &&
-            rect.x === expected.region.x && rect.y === expected.region.y &&
-            rect.width === expected.region.width && rect.height === expected.region.height;
+          return element.isConnected && element.getAttribute(input.expected.attribute) === input.expected.token &&
+            rect.x === input.expected.region.x && rect.y === input.expected.region.y &&
+            rect.width === input.expected.region.width && rect.height === input.expected.region.height;
         }, {
-          attribute: PRIVATE_TARGET_ATTRIBUTE,
-          token: sensitiveTarget.token,
-          region: regions[index]!,
+          authority,
+          expected: {
+            attribute: PRIVATE_TARGET_ATTRIBUTE,
+            token: sensitiveTarget.token,
+            region: expectedRegion,
+          },
         });
         if (!remainsExact) {
           throw new WebTargetError(
@@ -99,21 +122,37 @@ function collectCandidates(identity: {
   readonly maximumSnapshotBytes: number;
   readonly maximumShadowRoots: number;
   readonly maximumDomElements: number;
+  readonly authority: PrivatePromiseIntrinsics;
+  readonly bounded: boolean;
 }): {
   readonly candidates: ObservationCandidate[];
   readonly sensitiveIndexes: readonly number[];
   readonly sensitiveConnected: readonly boolean[];
   readonly failure: string | undefined;
 } {
+  const authoritySnapshot = identity.authority.snapshot();
+  if (identity.bounded && (!authoritySnapshot.intact ||
+      !authoritySnapshot.descriptorShapeIntact || !identity.authority.revalidateOwners())) {
+    return { candidates: [], sensitiveIndexes: [], sensitiveConnected: [], failure: "intrinsic-unproven" };
+  }
+  const operations = authoritySnapshot.operations;
+  const connected = (elements: readonly Element[]): readonly boolean[] => {
+    const result: boolean[] = [];
+    for (let index = 0; index < elements.length; index += 1) {
+      const element = elements[index];
+      result[index] = element?.isConnected === true;
+    }
+    return result;
+  };
   const utf8Bytes = (text: string): number => {
     let bytes = 0;
     for (let index = 0; index < text.length; index += 1) {
-      const code = text.charCodeAt(index);
+      const code = operations.stringCharCodeAt(text, index);
       if (code <= 0x7f) bytes += 1;
       else if (code <= 0x7ff) bytes += 2;
       else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length &&
-          text.charCodeAt(index + 1) >= 0xdc00 &&
-          text.charCodeAt(index + 1) <= 0xdfff) {
+          operations.stringCharCodeAt(text, index + 1) >= 0xdc00 &&
+          operations.stringCharCodeAt(text, index + 1) <= 0xdfff) {
         bytes += 4;
         index += 1;
       } else bytes += 3;
@@ -125,7 +164,7 @@ function collectCandidates(identity: {
     const chunks: string[] = [];
     let bytes = 0;
     const roots: Node[] = [element];
-    if (element.shadowRoot !== null) roots.push(element.shadowRoot);
+    if (element.shadowRoot !== null) roots[roots.length] = element.shadowRoot;
     let elements = 0;
     for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
       const root = roots[rootIndex];
@@ -138,12 +177,12 @@ function collectCandidates(identity: {
         if (node instanceof CharacterData) {
           bytes += utf8Bytes(node.data);
           if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
-          chunks.push(node.data);
+          chunks[chunks.length] = node.data;
         } else if (node instanceof Element) {
           elements += 1;
           if (elements > identity.maximumDomElements) throw new Error("dom-element-overflow");
           if (node.shadowRoot !== null) {
-            roots.push(node.shadowRoot);
+            roots[roots.length] = node.shadowRoot;
             if (roots.length > identity.maximumShadowRoots + 1) {
               throw new Error("shadow-root-overflow");
             }
@@ -151,7 +190,9 @@ function collectCandidates(identity: {
         }
       }
     }
-    return chunks.join("");
+    let text = "";
+    for (let index = 0; index < chunks.length; index += 1) text += chunks[index] ?? "";
+    return text;
   };
   const addBytes = (current: number, value: string | undefined): number => {
     if (value === undefined) return current;
@@ -187,7 +228,7 @@ function collectCandidates(identity: {
     if (explicit) {
       return explicit;
     }
-    const tag = element.tagName.toLowerCase();
+    const tag = operations.stringToLowerCase(element.tagName);
     if (tag === "button") {
       return "button";
     }
@@ -201,7 +242,7 @@ function collectCandidates(identity: {
       return "textbox";
     }
     if (tag === "input") {
-      const type = (element.getAttribute("type") ?? "text").toLowerCase();
+      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
       if (type === "button" || type === "submit" || type === "reset") {
         return "button";
       }
@@ -218,23 +259,23 @@ function collectCandidates(identity: {
 
   function accessibleName(element: Element): string {
     const ariaLabel = boundedProperty(element.getAttribute("aria-label"));
-    if (ariaLabel && ariaLabel.trim() !== "") {
+    if (ariaLabel && operations.stringTrim(ariaLabel) !== "") {
       return ariaLabel;
     }
     const labelledBy = boundedProperty(element.getAttribute("aria-labelledby"));
     if (labelledBy) {
-      const joined = labelledBy
-        .split(/\s+/)
-        .map((id) => {
-          const root = element.getRootNode();
-          return root instanceof Document || root instanceof ShadowRoot
-            ? root.getElementById(id)
-            : null;
-        })
-        .filter((node): node is HTMLElement => node !== null)
-        .map((node) => boundedText(node))
-        .join(" ")
-        .trim();
+      const ids = operations.stringSplitWhitespace(labelledBy);
+      let joined = "";
+      for (let index = 0; index < ids.length; index += 1) {
+        const id = ids[index];
+        if (id === undefined) continue;
+        const root = element.getRootNode();
+        const node = root instanceof Document || root instanceof ShadowRoot
+          ? root.getElementById(id)
+          : null;
+        if (node !== null) joined += `${joined === "" ? "" : " "}${boundedText(node)}`;
+      }
+      joined = operations.stringTrim(joined);
       if (joined !== "") {
         return joined;
       }
@@ -250,23 +291,23 @@ function collectCandidates(identity: {
         : null;
       if (label) {
         const text = boundedText(label);
-        if (text.trim() !== "") return text;
+        if (operations.stringTrim(text) !== "") return text;
       }
     }
     const wrapping = element.closest("label");
     if (wrapping) {
       const text = boundedText(wrapping);
-      if (text.trim() !== "") return text;
+      if (operations.stringTrim(text) !== "") return text;
     }
-    const tag = element.tagName.toLowerCase();
+    const tag = operations.stringToLowerCase(element.tagName);
     if (tag === "button" || tag === "a" || element.getAttribute("role") === "button") {
       const text = boundedText(element);
-      if (text.trim() !== "") {
+      if (operations.stringTrim(text) !== "") {
         return text;
       }
     }
     if (element instanceof HTMLInputElement) {
-      const type = (element.getAttribute("type") ?? "text").toLowerCase();
+      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
       if (
         (type === "submit" || type === "button" || type === "reset") &&
         element.value !== ""
@@ -290,21 +331,31 @@ function collectCandidates(identity: {
     return {
       candidates: [],
       sensitiveIndexes: [],
-      sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+      sensitiveConnected: connected(identity.sensitiveElements),
       failure: "shadow-root-identity-unprovable",
     };
   }
   const roots: (Document | ShadowRoot)[] = [document];
-  if (shadow !== undefined) for (const entry of shadow.roots) roots.push(entry.root);
+  if (shadow !== undefined) {
+    for (let index = 0; index < shadow.roots.length; index += 1) {
+      const entry = shadow.roots[index];
+      if (entry !== undefined) roots[roots.length] = entry.root;
+    }
+  }
   let domElements = 0;
   for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
     const root = roots[rootIndex];
-    if (root === undefined || new Set(roots).size !== roots.length ||
+    const distinctRoots = operations.createSet<Document | ShadowRoot>();
+    for (let index = 0; index < roots.length; index += 1) {
+      const candidate = roots[index];
+      if (candidate !== undefined) distinctRoots.add(candidate);
+    }
+    if (root === undefined || distinctRoots.size !== roots.length ||
         rootIndex > identity.maximumShadowRoots) {
       return {
         candidates: [],
         sensitiveIndexes: [],
-        sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+        sensitiveConnected: connected(identity.sensitiveElements),
         failure: "shadow-root-identity-unprovable",
       };
     }
@@ -314,7 +365,7 @@ function collectCandidates(identity: {
         return {
           candidates: [],
           sensitiveIndexes: [],
-          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          sensitiveConnected: connected(identity.sensitiveElements),
           failure: "candidate-unprovable",
         };
       }
@@ -323,40 +374,43 @@ function collectCandidates(identity: {
         return {
           candidates: [],
           sensitiveIndexes: [],
-          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          sensitiveConnected: connected(identity.sensitiveElements),
           failure: "dom-element-overflow",
         };
       }
-      if (node.matches(selector)) elements.push(node);
-      if (shadow === undefined && node.shadowRoot !== null) roots.push(node.shadowRoot);
+      if (node.matches(selector)) elements[elements.length] = node;
+      if (shadow === undefined && node.shadowRoot !== null) roots[roots.length] = node.shadowRoot;
       if (elements.length > identity.maximumCandidates) {
         return {
           candidates: [],
           sensitiveIndexes: [],
-          sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+          sensitiveConnected: connected(identity.sensitiveElements),
           failure: "candidate-overflow",
         };
       }
     }
   }
   const candidates: ObservationCandidate[] = [];
-  const sensitiveIndexes = identity.sensitiveElements.map(() => -1);
+  const sensitiveIndexes: number[] = [];
+  for (let index = 0; index < identity.sensitiveElements.length; index += 1) sensitiveIndexes[index] = -1;
   let snapshotBytes = 0;
 
   try {
-    for (const element of elements) {
+    for (let elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+      const element = elements[elementIndex];
+      if (element === undefined) throw new Error("candidate-unprovable");
       if (!isVisible(element)) {
         continue;
       }
       const role = roleOf(element);
-      const name = accessibleName(element).trim();
+      const name = operations.stringTrim(accessibleName(element));
 
     const isFormField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement;
     let value: string | undefined;
     if (isFormField) {
-      const type = (element.getAttribute("type") ?? "text").toLowerCase();
+      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
       if (type !== "password" && element.value !== "") {
         value = boundedProperty(element.value) ?? undefined;
       }
@@ -372,7 +426,7 @@ function collectCandidates(identity: {
     let text: string | undefined;
     if (!interactive || element.hasAttribute("data-qualigence-observe")) {
       const content = boundedText(element);
-      if (content.trim() !== "") {
+      if (operations.stringTrim(content) !== "") {
         text = content;
       }
     }
@@ -397,17 +451,20 @@ function collectCandidates(identity: {
       ...(value !== undefined ? { value } : {}),
       ...(disabled ? { disabled: true } : {}),
     };
-    const sensitiveIndex = identity.sensitiveElements.indexOf(element);
+    let sensitiveIndex = -1;
+    for (let index = 0; index < identity.sensitiveElements.length; index += 1) {
+      if (identity.sensitiveElements[index] === element) sensitiveIndex = index;
+    }
     if (sensitiveIndex >= 0) {
       sensitiveIndexes[sensitiveIndex] = candidates.length;
     }
-      candidates.push(candidate);
+      candidates[candidates.length] = candidate;
     }
   } catch (error) {
     return {
       candidates: [],
       sensitiveIndexes: [],
-      sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+      sensitiveConnected: connected(identity.sensitiveElements),
       failure: error instanceof Error ? error.message : "snapshot-unprovable",
     };
   }
@@ -415,7 +472,7 @@ function collectCandidates(identity: {
   return {
     candidates,
     sensitiveIndexes,
-    sensitiveConnected: identity.sensitiveElements.map((element) => element.isConnected),
+    sensitiveConnected: connected(identity.sensitiveElements),
     failure: undefined,
   };
 }
@@ -454,6 +511,8 @@ export class PlaywrightObserver implements Observer {
       const captured = await page.evaluate(collectCandidates, {
         sensitiveElements: sensitiveTargets.map((target) => target.handle),
         shadowRegistry: bounded ? this.session.shadowRegistryForEvidence() : undefined,
+        authority: this.session.promiseIntrinsicsForEvidence(),
+        bounded,
         maximumCandidates: bounded
           ? this.session.observationCandidateLimit()
           : Number.MAX_SAFE_INTEGER,
@@ -530,6 +589,7 @@ export class PlaywrightObserver implements Observer {
       const screenshot = await captureScreenshot(
         page,
         sensitiveTargets,
+        this.session.promiseIntrinsicsForEvidence(),
         () => this.session.failIfSensitiveTrackingOverflowed(),
       );
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);

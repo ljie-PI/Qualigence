@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import * as ts from "typescript";
 import {
   PlaywrightBrowserSession,
   PRIVATE_TARGET_ATTRIBUTE,
@@ -88,20 +89,78 @@ function fakeLauncher(promiseAttested = true): {
 }
 
 describe("PlaywrightBrowserSession", () => {
-  it("does not dispatch Promise authority decisions through mutable intrinsic prototypes", () => {
-    const source = readFileSync(new URL(
-      "../../../../packages/target-adapters/web-playwright/src/browser-session.ts",
-      import.meta.url,
-    ), "utf8");
-    const start = source.indexOf("await context.addInitScript(({");
-    const end = source.indexOf("const page = await context.newPage();", start);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
+  it("does not dispatch page authority callbacks through ambient mutable intrinsics", () => {
+    const callbackMethods = new Set(["addInitScript", "evaluate", "evaluateAll", "evaluateHandle"]);
+    const forbiddenMethods = new Set([
+      "at", "entries", "every", "filter", "find", "findIndex", "flat", "flatMap",
+      "forEach", "includes", "indexOf", "join", "lastIndexOf", "map", "pop", "push",
+      "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice",
+      "startsWith", "unshift", "values", "charCodeAt", "trim", "toLowerCase", "split",
+    ]);
+    const callbacks: { readonly label: string; readonly node: ts.Node; readonly source: ts.SourceFile }[] = [];
 
-    const authoritySource = source.slice(start, end);
-    const forbiddenDispatch = /\.(?:every|map|flat|flatMap|push|pop|shift|at|slice|splice|includes|indexOf|add|has|delete|clear|call|apply|bind|startsWith)\s*\(/g;
-    expect(authoritySource.match(forbiddenDispatch) ?? []).toEqual([]);
-    expect(authoritySource).not.toMatch(/for\s*\(const\s+[^)]*\sof\s/);
+    for (const relativePath of ["browser-session.ts", "playwright-observer.ts"]) {
+      const text = readFileSync(new URL(
+        `../../../../packages/target-adapters/web-playwright/src/${relativePath}`,
+        import.meta.url,
+      ), "utf8");
+      const source = ts.createSourceFile(relativePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const declarations = new Map<string, ts.Node>();
+      const collectDeclarations = (node: ts.Node): void => {
+        if (ts.isFunctionDeclaration(node) && node.name !== undefined) declarations.set(node.name.text, node);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+          declarations.set(node.name.text, node.initializer);
+        }
+        ts.forEachChild(node, collectDeclarations);
+      };
+      collectDeclarations(source);
+      const addCallback = (argument: ts.Expression | undefined, label: string): void => {
+        if (argument === undefined) return;
+        const node = ts.isIdentifier(argument) ? declarations.get(argument.text) : argument;
+        if (node !== undefined) callbacks.push({ label: `${relativePath}:${label}`, node, source });
+      };
+      const inventory = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const method = node.expression.name.text;
+          if (callbackMethods.has(method)) addCallback(node.arguments[0], method);
+          if (method === "callFunctionOnBoolean") {
+            const declaration = node.arguments[1];
+            if (declaration !== undefined && (ts.isStringLiteral(declaration) ||
+                ts.isNoSubstitutionTemplateLiteral(declaration))) {
+              const embedded = ts.createSourceFile(
+                `${relativePath}:cdp-function`, `(${declaration.text})`,
+                ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+              );
+              callbacks.push({ label: `${relativePath}:callFunctionOnBoolean`, node: embedded, source: embedded });
+            }
+          }
+        }
+        ts.forEachChild(node, inventory);
+      };
+      inventory(source);
+    }
+
+    expect(callbacks.length).toBeGreaterThan(30);
+    const violations: string[] = [];
+    for (const callback of callbacks) {
+      const inspect = (node: ts.Node): void => {
+        if (ts.isForOfStatement(node)) {
+          violations.push(`${callback.label}:for-of`);
+        }
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const owner = node.expression.expression.getText(callback.source);
+          const method = node.expression.name.text;
+          if (forbiddenMethods.has(method) ||
+              ((owner === "Array" || owner.endsWith("Array")) && method === "from") ||
+              owner === "Object" || owner === "Reflect" || owner === "Number") {
+            violations.push(`${callback.label}:${owner}.${method}`);
+          }
+        }
+        ts.forEachChild(node, inspect);
+      };
+      inspect(callback.node);
+    }
+    expect(violations).toEqual([]);
   });
 
   it("stops bounded pierced CDP inventory before a hostile shadow tree exceeds its cap", async () => {

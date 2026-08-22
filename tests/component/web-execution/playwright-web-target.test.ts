@@ -374,20 +374,22 @@ describe("PlaywrightWebTargetAdapter facade", () => {
 
   it("performs sticky poison, final owner validation, and byte copying synchronously in order", () => {
     const events: string[] = [];
-    const bytes = new Uint8Array([1, 2, 3]);
-    Object.defineProperty(bytes, Symbol.iterator, {
-      value: function* () {
+    const bytes: ArrayLike<number> = { length: 3, 1: 2, 2: 3 };
+    Object.defineProperty(bytes, 0, {
+      get: () => {
         events.push("copy");
-        yield 1;
-        yield 2;
-        yield 3;
+        return 1;
       },
     });
 
     const batch = finalizeArtifactBatch({
       snapshot: () => {
         events.push("snapshot");
-        return { intact: true, descriptorShapeIntact: true };
+        return {
+          intact: true,
+          descriptorShapeIntact: true,
+          operations: { freeze: Object.freeze },
+        };
       },
       revalidateOwners: () => {
         events.push("owners");
@@ -424,9 +426,9 @@ describe("PlaywrightWebTargetAdapter facade", () => {
   });
 
   it("returns no batch when artifact byte copying throws", () => {
-    const bytes = new Uint8Array([1]);
-    Object.defineProperty(bytes, Symbol.iterator, {
-      value: function* () {
+    const bytes: ArrayLike<number> = { length: 1 };
+    Object.defineProperty(bytes, 0, {
+      get: () => {
         throw new Error("copy-failed");
       },
     });
@@ -442,7 +444,11 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     };
     expect(() => {
       batch = finalizeArtifactBatch({
-        snapshot: () => ({ intact: true, descriptorShapeIntact: true }),
+        snapshot: () => ({
+          intact: true,
+          descriptorShapeIntact: true,
+          operations: { freeze: Object.freeze },
+        }),
         revalidateOwners: () => true,
       }, {
         trackers: [],

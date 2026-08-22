@@ -125,6 +125,22 @@ const AUTHORITY_INTRINSIC_METHODS = [
   ["Object", "getPrototypeOf"],
 ] as const;
 
+const NEW_AUTHORITY_INTRINSIC_METHODS = [
+  ["ArrayConstructor", "from"],
+  ["Array", "some"],
+  ["Array", "find"],
+  ["Array", "filter"],
+  ["Array", "entries"],
+  ["String", "trim"],
+  ["String", "toLowerCase"],
+  ["String", "split"],
+  ["Uint8ArrayConstructor", "from"],
+  ["Uint8Array", "set"],
+  ["Uint8Array", "slice"],
+  ["Uint8Array", "values"],
+  ["TextEncoder", "encode"],
+] as const;
+
 const AUTHORITY_INTRINSIC_TAMPERS = AUTHORITY_INTRINSIC_METHODS.flatMap(
   ([owner, method]) => (["noop", "true", "false", "throw"] as const).map(
     (replacement) => [owner, method, replacement] as const,
@@ -2664,6 +2680,47 @@ describe("Playwright resolve + execute against real Chromium", () => {
       expect(() => session.artifactsFor("run-click:observation:2")).toThrowError(
         expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
       );
+    },
+  );
+
+  it.each(NEW_AUTHORITY_INTRINSIC_METHODS)(
+    "fails closed with zero evidence bytes when %s.%s is tampered before a sensitive action",
+    async (ownerName, method) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "new-intrinsic-secret" });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.${ownerName}-${method}`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(([ownerKey, property]) => {
+        if (ownerKey === undefined || property === undefined) throw new Error("intrinsic owner unavailable");
+        const owner = ownerKey === "ArrayConstructor" ? Array
+          : ownerKey === "Uint8ArrayConstructor" ? Uint8Array
+            : ownerKey === "TextEncoder" ? TextEncoder.prototype
+              : (globalThis as unknown as Record<string, { prototype: object }>)[ownerKey]?.prototype;
+        if (owner === undefined) throw new Error("intrinsic owner unavailable");
+        Object.defineProperty(owner, property, {
+          ...Object.getOwnPropertyDescriptor(owner, property),
+          value: function () { throw new Error("tampered intrinsic called"); },
+        });
+      }, [ownerName, method]));
+
+      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      let receivedBytes = 0;
+      await expect((async () => {
+        const artifacts = await session.captureArtifactBatch(before.graphId);
+        for (let index = 0; index < artifacts.length; index += 1) {
+          receivedBytes += artifacts[index]?.bytes.byteLength ?? 0;
+        }
+      })()).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      expect(receivedBytes).toBe(0);
+      expect(session.latestGraphId).toBe(before.graphId);
     },
   );
 

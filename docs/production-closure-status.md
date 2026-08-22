@@ -953,6 +953,34 @@ review_blocker_precommit_count: `522`
   `OPENSSL_CONF`; the seven failures reproduce unrelated retained baseline
   issues in stale config/budget/entrypoint expectations. They do not affect the
   exact Ticket Gate above and are not claimed as passing full-suite evidence.
+- Ambient page-realm authority follow-up replaces every security-decision
+  `some`/`entries` path and both page artifact `Array.from` paths with bounded
+  indexed loops. Graph, screenshot, tracker reconciliation, CDP shadow-host
+  proof, normalization, and final artifact callbacks either use the
+  integrity-checked private bridge or primitive indexed reads/writes.
+- The frozen intrinsic manifest now includes every added bridge dependency and
+  relevant attack surface: `Array.from`, Array `some`/`find`/`filter`/`entries`,
+  String `trim`/`toLowerCase`/`split`/`charCodeAt`, `Uint8Array` constructor and
+  `from`/`set`/`slice`/`values`, and `TextEncoder.prototype.encode`. Callback-
+  local authority checks poison on mismatch before Graph/screenshot decisions.
+- The source invariant is now a TypeScript AST inventory that resolves named
+  callbacks passed to `addInitScript`, `evaluate`, `evaluateHandle`, and
+  `evaluateAll` in both browser-session and Playwright observer, and parses the
+  embedded CDP function. It rejects ambient mutable collection, String,
+  Object, Reflect, Number, typed-array, and for-of dispatch in page callbacks.
+- Node-only CDP normalization is explicitly separated from page callbacks.
+  Adapter artifact return performs a bounded indexed allocation and explicit
+  `Uint8Array` write after Playwright serialization, so page iterators and
+  typed-array prototypes cannot influence the Node clone boundary.
+- Real Chromium adds 13 pre-sensitive-action tamper cases for every newly
+  removed/captured Array, String, typed-array, and TextEncoder method. Each
+  permits application behavior to continue, then proves sensitive evidence
+  fails closed and no artifact bytes are returned. The full Chromium authority
+  file passed 1 file / 272 tests; no E2E was run.
+- Exact affected/full Ticket 43/44 non-E2E Gate passed 13 files / 406 tests:
+  405 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. Pre-commit product head was `40e17b1` with 524
+  commits; no E2E was run.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

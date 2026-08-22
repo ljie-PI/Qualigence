@@ -112,11 +112,30 @@ function cloneArtifactBatch(
     readonly bytes: ArrayLike<number>;
   })[],
 ): readonly CapturedArtifact[] {
-  return Object.freeze(artifacts.map((artifact) => Object.freeze({
-    name: artifact.name,
-    mediaType: artifact.mediaType,
-    bytes: Uint8Array.from(artifact.bytes),
-  })));
+  // Playwright has already crossed into Node here. Copy by indexed reads so the
+  // page cannot supply an iterator or typed-array prototype implementation.
+  const batch: CapturedArtifact[] = [];
+  for (let artifactIndex = 0; artifactIndex < artifacts.length; artifactIndex += 1) {
+    const artifact = artifacts[artifactIndex];
+    if (artifact === undefined || !Number.isSafeInteger(artifact.bytes.length) ||
+        artifact.bytes.length < 0 || artifact.bytes.length > MAXIMUM_ARTIFACT_BYTES) {
+      throw new Error("artifact-copy-unproven");
+    }
+    const bytes = new Uint8Array(artifact.bytes.length);
+    for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
+      const byte = artifact.bytes[byteIndex];
+      if (!Number.isInteger(byte) || byte === undefined || byte < 0 || byte > 255) {
+        throw new Error("artifact-copy-unproven");
+      }
+      bytes[byteIndex] = byte;
+    }
+    batch[batch.length] = Object.freeze({
+      name: artifact.name,
+      mediaType: artifact.mediaType,
+      bytes,
+    });
+  }
+  return Object.freeze(batch);
 }
 
 export function normalizeOrigin(url: string): string {
@@ -223,6 +242,7 @@ interface CdpResponseBudget {
 }
 
 const MAXIMUM_CDP_RESPONSE_BYTES = MAXIMUM_OBSERVATION_SNAPSHOT_BYTES;
+const MAXIMUM_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const CDP_NODE_ARRAY_FIELDS = ["children", "shadowRoots"] as const;
 const CDP_NODE_FIELDS = ["contentDocument", "templateContent", "assignedSlot"] as const;
 
@@ -365,18 +385,20 @@ function normalizedCdpLeaf(validated: ValidatedCdpNode): CdpDomNode {
 }
 
 function normalizedCdpDirect(validated: ValidatedCdpNode): CdpDomNode {
+  // CDP responses are protocol-decoded Node objects, not page-realm objects.
+  const shadowRoots: CdpDomNode[] = [];
+  for (let index = 0; index < validated.shadowRoots.length; index += 1) {
+    shadowRoots[index] = normalizedCdpLeaf({
+      source: asCdpObject(cdpOwnValue(validated.shadowRoots, String(index))),
+      children: [],
+      shadowRoots: [],
+      contentDocument: undefined,
+      templateContent: undefined,
+    });
+  }
   return {
     ...normalizedCdpLeaf(validated),
-    shadowRoots: Array.from(
-      { length: validated.shadowRoots.length },
-      (_, index) => normalizedCdpLeaf({
-        source: asCdpObject(cdpOwnValue(validated.shadowRoots, String(index))),
-        children: [],
-        shadowRoots: [],
-        contentDocument: undefined,
-        templateContent: undefined,
-      }),
-    ),
+    shadowRoots,
   };
 }
 
@@ -638,7 +660,7 @@ export interface PrivateShadowRegistry {
   ) => boolean;
 }
 
-interface PrivatePromiseIntrinsicsSnapshot {
+export interface PrivatePromiseIntrinsicsSnapshot {
   readonly then: Promise<unknown>["then"];
   readonly catch: Promise<unknown>["catch"];
   readonly finally: Promise<unknown>["finally"];
@@ -652,13 +674,19 @@ interface PrivatePromiseIntrinsicsSnapshot {
   readonly operations: PrivateAuthorityOperations;
 }
 
-interface PrivateAuthorityOperations {
+export interface PrivateAuthorityOperations {
   readonly apply: (target: Function, receiver: unknown, argumentsList: readonly unknown[]) => unknown;
   readonly arrayPush: <T>(target: T[], value: T) => number;
   readonly arrayPop: <T>(target: T[]) => T | undefined;
   readonly arrayShift: <T>(target: T[]) => T | undefined;
   readonly arrayIncludes: <T>(target: readonly T[], value: T) => boolean;
   readonly stringIncludes: (target: string, value: string) => boolean;
+  readonly stringTrim: (target: string) => string;
+  readonly stringToLowerCase: (target: string) => string;
+  readonly stringSplitWhitespace: (target: string) => readonly string[];
+  readonly stringCharCodeAt: (target: string, index: number) => number;
+  readonly freeze: <T>(target: T) => Readonly<T>;
+  readonly utf8ByteLength: (target: string, maximumBytes: number) => number;
   readonly createSet: <T>() => Set<T>;
   readonly setAdd: <T>(target: Set<T>, value: T) => void;
   readonly setHas: <T>(target: Set<T>, value: T) => boolean;
@@ -715,7 +743,7 @@ interface PrivatePromiseBoundaryHook {
   readonly returned: (receiver: object) => void;
 }
 
-interface PrivatePromiseIntrinsics {
+export interface PrivatePromiseIntrinsics {
   readonly attest: (epoch: string) => boolean;
   readonly snapshot: () => PrivatePromiseIntrinsicsSnapshot;
   readonly observe: (receiver: unknown) => boolean;
@@ -741,6 +769,7 @@ interface ArtifactIntegrityAuthority {
   readonly snapshot: () => {
     readonly intact: boolean;
     readonly descriptorShapeIntact: boolean;
+    readonly operations: Pick<PrivateAuthorityOperations, "freeze">;
   };
   readonly revalidateOwners: () => boolean;
 }
@@ -764,10 +793,14 @@ export function finalizeArtifactBatch(
     readonly cache: PrivateArtifactCache;
   },
 ): readonly SerializedArtifact[] {
+  const maximumArtifactBytes = 16 * 1024 * 1024;
   if (input.cache.consumed) throw new Error("artifact-cache-consumed");
   try {
     const snapshot = authority.snapshot();
-    for (const [index, tracker] of input.trackers.entries()) {
+    const operations = snapshot.operations;
+    for (let index = 0; index < input.trackers.length; index += 1) {
+      const tracker = input.trackers[index];
+      if (tracker === undefined) throw new Error("TrackerObserverUnproven");
       if (tracker.overflow) throw new Error("TrackerOverflow");
       if (tracker.observerError) throw new Error("TrackerObserverUnproven");
       if (tracker.scheduledPoison) throw new Error("ScheduledCallbackBoundsExceeded");
@@ -785,17 +818,33 @@ export function finalizeArtifactBatch(
     if (!snapshot.intact || !snapshot.descriptorShapeIntact) {
       throw new Error("PromiseIntegrityUnproven");
     }
-    const batch = Object.freeze(input.cache.artifacts.map((artifact) => Object.freeze({
-      name: artifact.name,
-      mediaType: artifact.mediaType,
-      bytes: Object.freeze(Array.from(artifact.bytes)),
-    })));
+    const batch: SerializedArtifact[] = [];
+    for (let artifactIndex = 0; artifactIndex < input.cache.artifacts.length; artifactIndex += 1) {
+      const artifact = input.cache.artifacts[artifactIndex];
+      if (artifact === undefined || artifact.bytes.length % 1 !== 0 ||
+          artifact.bytes.length < 0 || artifact.bytes.length > maximumArtifactBytes) {
+        throw new Error("ArtifactCopyUnproven");
+      }
+      const bytes: number[] = [];
+      for (let byteIndex = 0; byteIndex < artifact.bytes.length; byteIndex += 1) {
+        const byte = artifact.bytes[byteIndex];
+        if (byte === undefined || byte % 1 !== 0 || byte < 0 || byte > 255) {
+          throw new Error("ArtifactCopyUnproven");
+        }
+        bytes[byteIndex] = byte;
+      }
+      batch[artifactIndex] = operations.freeze({
+        name: artifact.name,
+        mediaType: artifact.mediaType,
+        bytes: operations.freeze(bytes),
+      });
+    }
     input.cache.consumed = true;
-    input.cache.artifacts = Object.freeze([]);
-    return batch;
+    input.cache.artifacts = operations.freeze([]);
+    return operations.freeze(batch);
   } catch (error) {
     input.cache.consumed = true;
-    input.cache.artifacts = Object.freeze([]);
+    input.cache.artifacts = [];
     throw error;
   }
 }
@@ -925,14 +974,35 @@ export class PlaywrightBrowserSession {
     if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
       throw this.sensitiveEvidenceFailure();
     }
-    return this.promiseIntrinsics.evaluateHandle((_authority, source) => ({
-      consumed: false,
-      artifacts: Object.freeze(source.map((artifact) => Object.freeze({
-        name: artifact.name,
-        mediaType: artifact.mediaType,
-        bytes: Object.freeze(Array.from(artifact.bytes)),
-      }))),
-    }), artifacts);
+    return this.promiseIntrinsics.evaluateHandle((authority, input) => {
+      const snapshot = authority.snapshot();
+      if (!snapshot.intact || !snapshot.descriptorShapeIntact || !authority.revalidateOwners()) {
+        throw new Error("ArtifactCopyUnproven");
+      }
+      const operations = snapshot.operations;
+      const cached: SerializedArtifact[] = [];
+      for (let artifactIndex = 0; artifactIndex < input.source.length; artifactIndex += 1) {
+        const artifact = input.source[artifactIndex];
+        if (artifact === undefined || artifact.bytes.length % 1 !== 0 ||
+            artifact.bytes.length < 0 || artifact.bytes.length > input.maximumBytes) {
+          throw new Error("ArtifactCopyUnproven");
+        }
+        const bytes: number[] = [];
+        for (let byteIndex = 0; byteIndex < artifact.bytes.length; byteIndex += 1) {
+          const byte = artifact.bytes[byteIndex];
+          if (byte === undefined || byte % 1 !== 0 || byte < 0 || byte > 255) {
+            throw new Error("ArtifactCopyUnproven");
+          }
+          bytes[byteIndex] = byte;
+        }
+        cached[artifactIndex] = operations.freeze({
+          name: artifact.name,
+          mediaType: artifact.mediaType,
+          bytes: operations.freeze(bytes),
+        });
+      }
+      return { consumed: false, artifacts: operations.freeze(cached) };
+    }, { source: artifacts, maximumBytes: MAXIMUM_ARTIFACT_BYTES });
   }
 
   hasGraph(graphId: string): boolean {
@@ -1025,7 +1095,7 @@ export class PlaywrightBrowserSession {
     await Promise.all([...this.observations.values()].map(async (observation) => {
       await observation.artifactCache?.evaluate((cache) => {
         cache.consumed = true;
-        cache.artifacts = Object.freeze([]);
+        cache.artifacts = [];
       }).catch(() => undefined);
     }));
   }
@@ -1136,6 +1206,13 @@ export class PlaywrightBrowserSession {
     return this.shadowRegistry;
   }
 
+  promiseIntrinsicsForEvidence(): JSHandle<PrivatePromiseIntrinsics> {
+    if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+      throw this.sensitiveEvidenceFailure();
+    }
+    return this.promiseIntrinsics;
+  }
+
   sensitiveEvidenceFailure(_message?: string): WebTargetError {
     this.sensitiveEvidenceUnproven = true;
     return new WebTargetError("SensitiveEvidenceUnproven");
@@ -1238,10 +1315,8 @@ export class PlaywrightBrowserSession {
         if (!element.isConnected) {
           throw new Error("target-disconnected");
         }
-        const byteLength = (text: string): number => {
-          if (text.length > limits.maximumNodeBytes) throw new Error("node-length-overflow");
-          return new TextEncoder().encode(text).byteLength;
-        };
+        const byteLength = (text: string): number =>
+          operations.utf8ByteLength(text, limits.maximumNodeBytes);
         const boundedText = (candidate: Element): string => {
           const chunks: string[] = [];
           let bytes = 0;
@@ -1272,7 +1347,9 @@ export class PlaywrightBrowserSession {
               }
             }
           }
-          return chunks.join("");
+          let text = "";
+          for (let index = 0; index < chunks.length; index += 1) text += chunks[index] ?? "";
+          return text;
         };
         const snapshot = (candidate: Element): {
           readonly properties: SensitiveActionPropertySnapshot;
@@ -1638,12 +1715,18 @@ export class PlaywrightBrowserSession {
           if (beforeMetadata !== undefined) rememberMetadata(beforeMetadata, metadataSnapshot());
         };
         const exactTargetEvent = (event: Event): void => {
+          if (!tracker.promiseIntegrity?.()) {
+            tracker.schedulerProvenanceUnproven = true;
+          }
           if (event.target !== element) {
             try {
               const target = event.target;
               if (target instanceof Element) {
                 const candidate = snapshot(target);
-                if (values(candidate.properties).some(containsForm)) tracker.ambiguousEvent = true;
+                const properties = values(candidate.properties);
+                for (let index = 0; index < properties.length; index += 1) {
+                  if (containsForm(properties[index] ?? null)) tracker.ambiguousEvent = true;
+                }
               }
             } catch {
               tracker.observerError = true;
@@ -1712,9 +1795,9 @@ export class PlaywrightBrowserSession {
           if (generation === undefined) {
             return originalSetTimeout(handler, timeout, ...args);
           }
-          return Number(operations.apply(originalSetTimeout, window, [() => {
+          return operations.apply(originalSetTimeout, window, [() => {
             runCausal(generation, () => handler(...args));
-          }, timeout, ...args]));
+          }, timeout, ...args]) as number;
         }) as typeof window.setTimeout;
         const wrappedQueueMicrotask = (callback: VoidFunction): void => {
           const generation = registerGeneration();
@@ -1736,9 +1819,9 @@ export class PlaywrightBrowserSession {
           if (generation === undefined) {
             return originalSetInterval(handler, timeout, ...args);
           }
-          return Number(operations.apply(originalSetInterval, window, [() => {
+          return operations.apply(originalSetInterval, window, [() => {
             runCausal(generation, () => handler(...args));
-          }, timeout, ...args]));
+          }, timeout, ...args]) as number;
         }) as typeof window.setInterval;
         const wrappedClearInterval = ((id?: number): void => {
           operations.apply(originalClearInterval, window, [id]);
@@ -1897,13 +1980,15 @@ export class PlaywrightBrowserSession {
           }
           activeGeneration = undefined;
           try {
+            if (!tracker.promiseIntegrity?.()) tracker.schedulerProvenanceUnproven = true;
             finishExactTargetEvent();
             finishCausalScope(tracker.candidates);
             if (!registry.snapshot(limits.maximumShadowRoots).intact) tracker.shadowPoison = true;
           } catch {
             tracker.observerError = true;
           }
-          return !tracker.observerError && !tracker.overflow && !tracker.shadowPoison;
+          return !tracker.observerError && !tracker.overflow && !tracker.shadowPoison &&
+            !tracker.schedulerProvenanceUnproven;
         };
         tracker.promiseIntegrity = (): boolean => {
           const current = input.promiseIntrinsics.snapshot();
@@ -2019,7 +2104,10 @@ export class PlaywrightBrowserSession {
           const valueLength = option.value.length;
           const labelLength = option.label.length;
           const textLength = (option.textContent ?? "").length;
-          for (const length of [valueLength, labelLength, textLength]) {
+          const lengths = [valueLength, labelLength, textLength];
+          for (let lengthIndex = 0; lengthIndex < lengths.length; lengthIndex += 1) {
+            const length = lengths[lengthIndex];
+            if (length === undefined) throw new Error("normalization-option-unprovable");
             if (length > input.maximumCharsPerValue) {
               throw new Error("normalization-option-length-overflow");
             }
@@ -2028,11 +2116,11 @@ export class PlaywrightBrowserSession {
               throw new Error("normalization-option-total-overflow");
             }
           }
-          options.push({
-            value: option.value.slice(0, input.maximumCharsPerValue),
-            label: option.label.slice(0, input.maximumCharsPerValue),
-            text: (option.textContent ?? "").slice(0, input.maximumCharsPerValue),
-          });
+          options[options.length] = {
+            value: option.value,
+            label: option.label,
+            text: option.textContent ?? "",
+          };
         }
         return { tag: "select" as const, options };
       }
@@ -2056,7 +2144,9 @@ export class PlaywrightBrowserSession {
         let element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
         if (descriptor.tag === "select") {
           element = document.createElement("select");
-          for (const source of descriptor.options) {
+          for (let index = 0; index < descriptor.options.length; index += 1) {
+            const source = descriptor.options[index];
+            if (source === undefined) throw new Error("normalization-option-unprovable");
             const option = document.createElement("option");
             option.value = source.value;
             option.label = source.label;
@@ -2085,7 +2175,9 @@ export class PlaywrightBrowserSession {
             if (selected === null) throw new Error("normalized-selection-unprovable");
             const forms = [selected.value, selected.label, selected.textContent ?? ""];
             let totalChars = 0;
-            for (const form of forms) {
+            for (let index = 0; index < forms.length; index += 1) {
+              const form = forms[index];
+              if (form === undefined) throw new Error("normalized-form-unprovable");
               if (form.length > input.maximumCharsPerValue) {
                 throw new Error("normalized-form-length-overflow");
               }
@@ -2094,14 +2186,14 @@ export class PlaywrightBrowserSession {
                 throw new Error("normalized-form-total-overflow");
               }
             }
-            return forms.map((form) => form.slice(0, input.maximumCharsPerValue));
+            return forms;
           }
           if (actionKind === "input" &&
               (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement)) {
             if (candidate.value.length > input.maximumCharsPerValue) {
               throw new Error("normalized-form-length-overflow");
             }
-            return [candidate.value.slice(0, input.maximumCharsPerValue)];
+            return [candidate.value];
           }
           throw new Error("normalized-value-unprovable");
         }, {
@@ -2228,7 +2320,12 @@ export class PlaywrightBrowserSession {
             `function(registryKey, accessToken, maximumRoots, mode) {
               const gateway = globalThis[Symbol.for(registryKey)];
               const snapshot = gateway?.access(accessToken)?.snapshot(maximumRoots);
-              return snapshot?.hosts.some((entry) => entry.host === this && entry.mode === mode) === true;
+              if (snapshot === undefined) return false;
+              for (let index = 0; index < snapshot.hosts.length; index += 1) {
+                const entry = snapshot.hosts[index];
+                if (entry !== undefined && entry.host === this && entry.mode === mode) return true;
+              }
+              return false;
             }`,
             [
               this.shadowRegistryKey,
@@ -2292,7 +2389,9 @@ export class PlaywrightBrowserSession {
       this.reportSensitiveEvidenceDiagnostic("PromiseIntegrityUnproven");
       throw this.sensitiveEvidenceFailure();
     }
-    for (const [index, tracker] of this.sensitiveActionTrackers.entries()) {
+    for (let index = 0; index < this.sensitiveActionTrackers.length; index += 1) {
+      const tracker = this.sensitiveActionTrackers[index];
+      if (tracker === undefined) throw this.sensitiveEvidenceFailure();
       const requireCurrentPromiseIntegrity = index === this.sensitiveActionTrackers.length - 1;
       const reason = await tracker.evaluate((state, requireIntegrity) => {
         if (state.overflow) return "TrackerOverflow" as const;
@@ -2360,9 +2459,19 @@ export class PlaywrightBrowserSession {
     let sensitiveOccurrence = false;
     for (const tracker of this.sensitiveActionTrackers) {
       const result = await tracker.evaluate((state, current) => {
-        const contains = (value: string): boolean =>
-          state.forms.some((form) => value.includes(form));
-        const authorized = (values: readonly string[], value: string): boolean => values.includes(value);
+        const contains = (value: string): boolean => {
+          for (let index = 0; index < state.forms.length; index += 1) {
+            const form = state.forms[index];
+            if (form !== undefined && state.operations.stringIncludes(value, form)) return true;
+          }
+          return false;
+        };
+        const authorized = (values: readonly string[], value: string): boolean => {
+          for (let index = 0; index < values.length; index += 1) {
+            if (values[index] === value) return true;
+          }
+          return false;
+        };
         const baseline = state.metadata.baseline;
         if (baseline === undefined) {
           return {
@@ -2393,12 +2502,12 @@ export class PlaywrightBrowserSession {
           if (item === undefined) continue;
           if (item.key !== baselineItem?.key && contains(item.key)) {
             occurrence = true;
-            queryKeyIndexes.push(index);
+            queryKeyIndexes[queryKeyIndexes.length] = index;
             unproven ||= !authorized(state.metadata.queryKeys, item.key);
           }
           if (item.value !== baselineItem?.value && contains(item.value)) {
             occurrence = true;
-            queryValueIndexes.push(index);
+            queryValueIndexes[queryValueIndexes.length] = index;
             unproven ||= !authorized(state.metadata.queryValues, item.value);
           }
         }
@@ -2468,17 +2577,16 @@ export class PlaywrightBrowserSession {
       undefined;
     try {
       result = await tracker.evaluateHandle((state, limits) => {
+        const operations = state.operations;
         const fail = (reason: string) => ({ reason, elements: [] as Element[] });
         try {
-          const byteLength = (text: string): number => {
-            if (text.length > limits.maximumNodeBytes) throw new Error("node-length-overflow");
-            return new TextEncoder().encode(text).byteLength;
-          };
+          const byteLength = (text: string): number =>
+            operations.utf8ByteLength(text, limits.maximumNodeBytes);
           const boundedText = (candidate: Element): string => {
             const chunks: string[] = [];
             let bytes = 0;
             const textRoots: Node[] = [candidate];
-            if (candidate.shadowRoot !== null) textRoots.push(candidate.shadowRoot);
+            if (candidate.shadowRoot !== null) operations.arrayPush(textRoots, candidate.shadowRoot);
             let elements = 0;
             for (let rootIndex = 0; rootIndex < textRoots.length; rootIndex += 1) {
               const textRoot = textRoots[rootIndex];
@@ -2491,12 +2599,12 @@ export class PlaywrightBrowserSession {
                 if (node instanceof CharacterData) {
                   bytes += byteLength(node.data);
                   if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
-                  chunks.push(node.data);
+                  operations.arrayPush(chunks, node.data);
                 } else if (node instanceof Element) {
                   elements += 1;
                   if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
                   if (node.shadowRoot !== null) {
-                    textRoots.push(node.shadowRoot);
+                    operations.arrayPush(textRoots, node.shadowRoot);
                     if (textRoots.length > limits.maximumShadowRoots + 1) {
                       throw new Error("shadow-root-overflow");
                     }
@@ -2504,14 +2612,21 @@ export class PlaywrightBrowserSession {
                 }
               }
             }
-            return chunks.join("");
+            let text = "";
+            for (let index = 0; index < chunks.length; index += 1) text += chunks[index] ?? "";
+            return text;
           };
-          for (const observer of state.observers) {
-            const pending = observer.takeRecords();
+          for (let observerIndex = 0; observerIndex < state.observers.length; observerIndex += 1) {
+            const observer = state.observers[observerIndex];
+            if (observer === undefined) return fail("observer-error");
+            const pending = operations.takeMutationRecords(observer);
             if (state.records.length + pending.length > limits.maximumMutations) {
               state.overflow = true;
             } else {
-              for (const record of pending) state.records.push({ record, causal: false });
+              for (let index = 0; index < pending.length; index += 1) {
+                const record = pending[index];
+                if (record !== undefined) operations.arrayPush(state.records, { record, causal: false });
+              }
             }
           }
           if (state.observerError) return fail("observer-error");
@@ -2540,16 +2655,26 @@ export class PlaywrightBrowserSession {
               selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
               selectedOptionText: selectedOption?.text ?? null,
               textContent: boundedText(candidate),
-              attributes: limits.attributes.map((name) => candidate.getAttribute(name)),
+              attributes: (() => {
+                const attributes: (string | null)[] = [];
+                for (let index = 0; index < limits.attributes.length; index += 1) {
+                  const name = limits.attributes[index];
+                  if (name !== undefined) attributes[index] = candidate.getAttribute(name);
+                }
+                return attributes;
+              })(),
             };
             let bytes = 0;
-            for (const property of [
+            const measuredProperties = [
               properties.inputValue,
               properties.selectValue,
               properties.selectedOptionText,
               properties.textContent,
               ...properties.attributes,
-            ]) {
+            ];
+            for (let propertyIndex = 0; propertyIndex < measuredProperties.length; propertyIndex += 1) {
+              const property = measuredProperties[propertyIndex];
+              if (property === undefined) throw new Error("property-unprovable");
               if (property === null) continue;
               const propertyBytes = byteLength(property);
               if (propertyBytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
@@ -2566,10 +2691,19 @@ export class PlaywrightBrowserSession {
             ...properties.attributes,
           ];
           const containsForm = (property: string | null): boolean =>
-            property !== null && state.forms.some((form) => property.includes(form));
+            property !== null && (() => {
+              for (let index = 0; index < state.forms.length; index += 1) {
+                const form = state.forms[index];
+                if (form !== undefined && operations.stringIncludes(property, form)) return true;
+              }
+              return false;
+            })();
           const nodes: Element[] = [];
           const roots: (Document | ShadowRoot)[] = [state.target.ownerDocument];
-          for (const entry of shadow.roots) roots.push(entry.root);
+          for (let index = 0; index < shadow.roots.length; index += 1) {
+            const entry = shadow.roots[index];
+            if (entry !== undefined) operations.arrayPush(roots, entry.root);
+          }
           let domElements = 0;
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
@@ -2580,13 +2714,23 @@ export class PlaywrightBrowserSession {
               domElements += 1;
               if (domElements > limits.maximumDomElements) return fail("dom-element-overflow");
               if (node.matches(limits.candidateSelector)) {
-                nodes.push(node);
+                operations.arrayPush(nodes, node);
                 if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
               }
             }
           }
-          if (new Set(roots).size !== roots.length || roots.length !== shadow.roots.length + 1 ||
-              shadow.roots.some((entry) => !roots.includes(entry.root))) {
+          const distinctRoots = operations.createSet<Document | ShadowRoot>();
+          for (let index = 0; index < roots.length; index += 1) {
+            const root = roots[index];
+            if (root !== undefined) operations.setAdd(distinctRoots, root);
+          }
+          let missingRoot = false;
+          for (let index = 0; index < shadow.roots.length; index += 1) {
+            const entry = shadow.roots[index];
+            if (entry !== undefined && !operations.arrayIncludes(roots, entry.root)) missingRoot = true;
+          }
+          if (operations.setSize(distinctRoots) !== roots.length ||
+              roots.length !== shadow.roots.length + 1 || missingRoot) {
             return fail("shadow-root-identity-unproven");
           }
           const current: SensitiveActionCandidateSnapshot[] = [];
@@ -2597,35 +2741,64 @@ export class PlaywrightBrowserSession {
             const captured = snapshot(candidate);
             snapshotBytes += captured.bytes;
             if (snapshotBytes > limits.maximumSnapshotBytes) return fail("snapshot-byte-overflow");
-            current.push({ element: candidate, properties: captured.properties });
+            operations.arrayPush(current, { element: candidate, properties: captured.properties });
           }
-          const totalCandidates = state.candidates.length + current.filter((candidate) =>
-            !state.candidates.some((before) => before.element === candidate.element)).length;
+          let newCandidateCount = 0;
+          for (let currentIndex = 0; currentIndex < current.length; currentIndex += 1) {
+            const candidate = current[currentIndex];
+            if (candidate === undefined) continue;
+            let found = false;
+            for (let beforeIndex = 0; beforeIndex < state.candidates.length; beforeIndex += 1) {
+              if (state.candidates[beforeIndex]?.element === candidate.element) found = true;
+            }
+            if (!found) newCandidateCount += 1;
+          }
+          const totalCandidates = state.candidates.length + newCandidateCount;
           if (totalCandidates > limits.maximumCandidates) return fail("total-candidate-overflow");
 
           const elements: Element[] = [];
-          const hasCausalRecord = (candidate: Element): boolean =>
-            state.records.some((tracked) => tracked.causal && (
-              tracked.record.target === candidate ||
-              (tracked.record.target instanceof Node && candidate.contains(tracked.record.target))
-            ));
+          const hasCausalRecord = (candidate: Element): boolean => {
+            for (let index = 0; index < state.records.length; index += 1) {
+              const tracked = state.records[index];
+              if (tracked !== undefined && tracked.causal && (
+                tracked.record.target === candidate ||
+                (tracked.record.target instanceof Node && candidate.contains(tracked.record.target))
+              )) return true;
+            }
+            return false;
+          };
           const causallyChanged = (candidate: Element): boolean =>
-            candidate === state.target || state.causalElements.includes(candidate) ||
+            candidate === state.target || operations.arrayIncludes(state.causalElements, candidate) ||
             candidate.hasAttribute(limits.privateTargetAttribute) || hasCausalRecord(candidate);
           const add = (candidate: Element | null): boolean => {
             if (candidate === null || !candidate.isConnected ||
                 candidate.ownerDocument !== state.target.ownerDocument) return false;
-            if (!elements.includes(candidate)) elements.push(candidate);
+            if (!operations.arrayIncludes(elements, candidate)) operations.arrayPush(elements, candidate);
             return elements.length <= limits.maximumTargets;
           };
-          for (const candidate of current) {
-            const before = state.candidates.find((item) => item.element === candidate.element);
+          for (let currentIndex = 0; currentIndex < current.length; currentIndex += 1) {
+            const candidate = current[currentIndex];
+            if (candidate === undefined) return fail("candidate-unprovable");
+            let before: SensitiveActionCandidateSnapshot | undefined;
+            for (let index = 0; index < state.candidates.length; index += 1) {
+              if (state.candidates[index]?.element === candidate.element) before = state.candidates[index];
+            }
             const beforeValues = before === undefined ? [] : values(before.properties);
-            const changedToForm = values(candidate.properties).some((property, index) =>
-              property !== beforeValues[index] && containsForm(property));
+            const currentValues = values(candidate.properties);
+            let changedToForm = false;
+            for (let index = 0; index < currentValues.length; index += 1) {
+              const property = currentValues[index];
+              if (property !== undefined && property !== beforeValues[index] && containsForm(property)) {
+                changedToForm = true;
+              }
+            }
             if (!changedToForm) continue;
             if (candidate.element instanceof HTMLTitleElement) continue;
-            if (before !== undefined && beforeValues.some(containsForm) &&
+            let beforeContainsForm = false;
+            for (let index = 0; index < beforeValues.length; index += 1) {
+              if (containsForm(beforeValues[index] ?? null)) beforeContainsForm = true;
+            }
+            if (before !== undefined && beforeContainsForm &&
                 (candidate.element === state.target || hasCausalRecord(candidate.element))) continue;
             if (candidate.element === state.target) {
               if (!add(candidate.element)) return fail("sensitive-target-overflow");
@@ -2660,13 +2833,19 @@ export class PlaywrightBrowserSession {
             }
             return add(candidate) ? undefined : "sensitive-target-overflow";
           };
-          for (const tracked of state.records) {
+          for (let recordIndex = 0; recordIndex < state.records.length; recordIndex += 1) {
+            const tracked = state.records[recordIndex];
+            if (tracked === undefined) continue;
             const mutation = tracked.record;
             if (mutation.type === "attributes") {
               if (!(mutation.target instanceof Element) || mutation.attributeName === null) {
                 return fail("attribute-target-unprovable");
               }
-              if (current.some((candidate) => candidate.element === mutation.target)) continue;
+              let currentContainsTarget = false;
+              for (let index = 0; index < current.length; index += 1) {
+                if (current[index]?.element === mutation.target) currentContainsTarget = true;
+              }
+              if (currentContainsTarget) continue;
               const reason = inspect(
                 mutation.target.getAttribute(mutation.attributeName),
                 mutation.target,
@@ -2676,15 +2855,25 @@ export class PlaywrightBrowserSession {
               if (reason !== undefined) return fail(reason);
             } else if (mutation.type === "characterData") {
               if (!(mutation.target instanceof CharacterData)) return fail("text-target-unprovable");
-              const currentCandidate = current.find(
-                (candidate) => candidate.element === mutation.target.parentElement,
-              );
+              let currentCandidate: SensitiveActionCandidateSnapshot | undefined;
+              for (let index = 0; index < current.length; index += 1) {
+                if (current[index]?.element === mutation.target.parentElement) currentCandidate = current[index];
+              }
               if (currentCandidate !== undefined) {
-                const beforeCandidate = state.candidates.find(
-                  (candidate) => candidate.element === currentCandidate.element,
-                );
-                if (beforeCandidate !== undefined &&
-                    values(beforeCandidate.properties).some(containsForm) &&
+                let beforeCandidate: SensitiveActionCandidateSnapshot | undefined;
+                for (let index = 0; index < state.candidates.length; index += 1) {
+                  if (state.candidates[index]?.element === currentCandidate.element) {
+                    beforeCandidate = state.candidates[index];
+                  }
+                }
+                let beforeContainsForm = false;
+                if (beforeCandidate !== undefined) {
+                  const beforeValues = values(beforeCandidate.properties);
+                  for (let index = 0; index < beforeValues.length; index += 1) {
+                    if (containsForm(beforeValues[index] ?? null)) beforeContainsForm = true;
+                  }
+                }
+                if (beforeCandidate !== undefined && beforeContainsForm &&
                     !hasCausalRecord(currentCandidate.element)) {
                   return fail("same-form-causality-ambiguous");
                 }
@@ -2702,17 +2891,29 @@ export class PlaywrightBrowserSession {
                   mutation.removedNodes.length > limits.maximumCandidates) {
                 return fail("mutation-node-overflow");
               }
-              for (const node of mutation.addedNodes) {
+              for (let nodeIndex = 0; nodeIndex < mutation.addedNodes.length; nodeIndex += 1) {
+                const node = mutation.addedNodes[nodeIndex];
+                if (node === undefined) continue;
                 const candidate = node instanceof Element ? node : node.parentElement;
                 if (candidate !== null && !candidate.isConnected) continue;
                 if (candidate instanceof HTMLTitleElement) continue;
-                if (candidate !== null &&
-                    current.some((currentCandidate) => currentCandidate.element === candidate)) {
-                  const beforeCandidate = state.candidates.find(
-                    (before) => before.element === candidate,
-                  );
-                  if (beforeCandidate !== undefined &&
-                      values(beforeCandidate.properties).some(containsForm) &&
+                let currentContainsCandidate = false;
+                for (let index = 0; index < current.length; index += 1) {
+                  if (current[index]?.element === candidate) currentContainsCandidate = true;
+                }
+                if (candidate !== null && currentContainsCandidate) {
+                  let beforeCandidate: SensitiveActionCandidateSnapshot | undefined;
+                  for (let index = 0; index < state.candidates.length; index += 1) {
+                    if (state.candidates[index]?.element === candidate) beforeCandidate = state.candidates[index];
+                  }
+                  let beforeContainsForm = false;
+                  if (beforeCandidate !== undefined) {
+                    const beforeValues = values(beforeCandidate.properties);
+                    for (let index = 0; index < beforeValues.length; index += 1) {
+                      if (containsForm(beforeValues[index] ?? null)) beforeContainsForm = true;
+                    }
+                  }
+                  if (beforeCandidate !== undefined && beforeContainsForm &&
                       !hasCausalRecord(candidate) && !causallyChanged(candidate)) {
                     return fail("same-form-causality-ambiguous");
                   }
@@ -2732,14 +2933,25 @@ export class PlaywrightBrowserSession {
           if (limits.final) {
             if (state.preparedElements === undefined ||
                 state.preparedElements.length !== elements.length ||
-                state.preparedElements.some((candidate) => !elements.includes(candidate))) {
+                (() => {
+                  for (let index = 0; index < state.preparedElements.length; index += 1) {
+                    const candidate = state.preparedElements[index];
+                    if (candidate !== undefined && !operations.arrayIncludes(elements, candidate)) return true;
+                  }
+                  return false;
+                })()) {
               return fail("capture-changed-during-evidence");
             }
             state.candidates = current;
             state.records.length = 0;
             state.preparedElements = undefined;
           } else {
-            state.preparedElements = [...elements];
+            const prepared: Element[] = [];
+            for (let index = 0; index < elements.length; index += 1) {
+              const candidate = elements[index];
+              if (candidate !== undefined) prepared[index] = candidate;
+            }
+            state.preparedElements = prepared;
           }
           return { reason: undefined, elements };
         } catch {
@@ -2967,6 +3179,8 @@ export class PlaywrightBrowserSession {
         const nativeWeakMap = WeakMap;
         const nativeFunction = Function;
         const nativeString = String;
+        const nativeUint8Array = Uint8Array;
+        const nativeTextEncoder = TextEncoder;
         const nativeSymbol = Symbol;
         const nativeElement = Element;
         const nativeMutationObserver = MutationObserver;
@@ -3001,6 +3215,11 @@ export class PlaywrightBrowserSession {
         const nativeWeakMapHas = WeakMap.prototype.has;
         const nativeWeakMapDelete = WeakMap.prototype.delete;
         const nativeStringIncludes = String.prototype.includes;
+        const nativeStringTrim = String.prototype.trim;
+        const nativeStringToLowerCase = String.prototype.toLowerCase;
+        const nativeStringSplit = String.prototype.split;
+        const nativeStringCharCodeAt = String.prototype.charCodeAt;
+        const nativeTextEncoderEncode = TextEncoder.prototype.encode;
         const nativeSymbolFor = Symbol.for;
         const nativeSymbolSpecies = Symbol.species;
         const nativeElementPrototype = Element.prototype;
@@ -3009,6 +3228,8 @@ export class PlaywrightBrowserSession {
         const nativeMutationObserverTakeRecords = MutationObserver.prototype.takeRecords;
         const nativeMutationObserverDisconnect = MutationObserver.prototype.disconnect;
         const nativeUrlSearchParamsPrototype = URLSearchParams.prototype;
+        const nativeUint8ArrayPrototype = Uint8Array.prototype;
+        const nativeTextEncoderPrototype = TextEncoder.prototype;
         const nativeUrlSearchParamsForEach = URLSearchParams.prototype.forEach;
         const nativePromise = Promise;
         const nativePrototype = Promise.prototype;
@@ -3031,6 +3252,19 @@ export class PlaywrightBrowserSession {
           apply(nativeArrayIncludes, target, [value]) as boolean;
         const stringIncludes = (target: string, value: string): boolean =>
           apply(nativeStringIncludes, target, [value]) as boolean;
+        const stringTrim = (target: string): string => apply(nativeStringTrim, target, []) as string;
+        const stringToLowerCase = (target: string): string =>
+          apply(nativeStringToLowerCase, target, []) as string;
+        const stringSplitWhitespace = (target: string): readonly string[] =>
+          apply(nativeStringSplit, target, [/\s+/]) as string[];
+        const stringCharCodeAt = (target: string, index: number): number =>
+          apply(nativeStringCharCodeAt, target, [index]) as number;
+        const utf8ByteLength = (target: string, maximumBytes: number): number => {
+          if (target.length > maximumBytes) throw new Error("node-length-overflow");
+          const encoded = apply(nativeTextEncoderEncode, new nativeTextEncoder(), [target]) as Uint8Array;
+          if (encoded.byteLength > maximumBytes) throw new Error("node-byte-overflow");
+          return encoded.byteLength;
+        };
         const setAdd = <T>(target: Set<T>, value: T): void => {
           apply(nativeSetAdd, target, [value]);
         };
@@ -3238,10 +3472,11 @@ export class PlaywrightBrowserSession {
         const sameDescriptor = (
           current: PropertyDescriptor | undefined,
           captured: PropertyDescriptor | undefined,
-        ): boolean => current !== undefined && captured !== undefined &&
-          current.configurable === captured.configurable && current.enumerable === captured.enumerable &&
-          current.get === captured.get && current.set === captured.set &&
-          current.value === captured.value && current.writable === captured.writable;
+        ): boolean => current === undefined || captured === undefined
+          ? current === captured
+          : current.configurable === captured.configurable && current.enumerable === captured.enumerable &&
+            current.get === captured.get && current.set === captured.set &&
+            current.value === captured.value && current.writable === captured.writable;
         const hooks: PrivatePromiseBoundaryHook[] = [];
         type PromiseMethodName = "then" | "catch" | "finally";
         interface PromiseChainOwnerSnapshot {
@@ -3277,28 +3512,32 @@ export class PlaywrightBrowserSession {
           ] as const));
         };
         const baselineProperties: readonly (readonly [object, readonly PropertyKey[]])[] = [
-          [globalThis, ["Object", "Reflect", "Array", "Set", "WeakSet", "Map", "WeakMap", "Function", "String", "Symbol", "Promise", "Element", "MutationObserver", "URLSearchParams"]],
+          [globalThis, ["Object", "Reflect", "Array", "Set", "WeakSet", "Map", "WeakMap", "Function", "String", "Symbol", "Promise", "Element", "MutationObserver", "URLSearchParams", "Uint8Array", "TextEncoder"]],
           [nativeObject, ["defineProperty", "defineProperties", "getOwnPropertyDescriptor", "getPrototypeOf", "freeze"]],
           [nativeReflect, ["apply", "ownKeys"]],
-          [nativeArray, ["prototype"]],
+          [nativeArray, ["prototype", "from"]],
           [nativeSet, ["prototype"]],
           [nativeWeakSet, ["prototype"]],
           [nativeMap, ["prototype"]],
           [nativeWeakMap, ["prototype"]],
           [nativeFunction, ["prototype"]],
           [nativeString, ["prototype"]],
-          [nativeArray.prototype, ["every", "map", "flat", "flatMap", "push", "pop", "shift", "at", "slice", "splice", "includes", "indexOf"]],
+          [nativeArray.prototype, ["every", "map", "flat", "flatMap", "push", "pop", "shift", "at", "slice", "splice", "includes", "indexOf", "some", "find", "filter", "entries"]],
           [nativeSetPrototype, ["add", "has", "delete", "clear", "forEach", "size", "constructor"]],
           [nativeWeakSetPrototype, ["add", "has", "delete", "constructor"]],
           [nativeMapPrototype, ["get", "set", "has", "delete", "clear", "constructor"]],
           [nativeWeakMapPrototype, ["get", "set", "has", "delete", "constructor"]],
           [nativeFunction.prototype, ["call", "toString"]],
-          [nativeString.prototype, ["includes", "startsWith"]],
+          [nativeString.prototype, ["includes", "startsWith", "trim", "toLowerCase", "split", "charCodeAt"]],
           [nativeSymbol, ["for", "species"]],
           [nativeElementPrototype, ["attachShadow"]],
           [nativeMutationObserverPrototype, ["observe", "takeRecords", "disconnect"]],
           [nativeUrlSearchParams, ["prototype"]],
           [nativeUrlSearchParamsPrototype, ["forEach"]],
+          [nativeUint8Array, ["prototype", "from"]],
+          [nativeUint8ArrayPrototype, ["set", "slice", "values", "constructor"]],
+          [nativeTextEncoder, ["prototype"]],
+          [nativeTextEncoderPrototype, ["encode", "constructor"]],
         ];
         for (let ownerIndex = 0; ownerIndex < baselineProperties.length; ownerIndex += 1) {
           const entry = baselineProperties[ownerIndex];
@@ -3320,6 +3559,8 @@ export class PlaywrightBrowserSession {
           weakMap: nativeWeakMap,
           function: nativeFunction,
           string: nativeString,
+          uint8Array: nativeUint8Array,
+          textEncoder: nativeTextEncoder,
           symbol: nativeSymbol,
           promise: nativePromise,
           element: nativeElement,
@@ -3332,6 +3573,8 @@ export class PlaywrightBrowserSession {
           weakMapPrototype: nativeWeakMapPrototype,
           functionPrototype: nativeFunction.prototype,
           stringPrototype: nativeString.prototype,
+          uint8ArrayPrototype: nativeUint8ArrayPrototype,
+          textEncoderPrototype: nativeTextEncoderPrototype,
           elementPrototype: nativeElementPrototype,
           mutationObserverPrototype: nativeMutationObserverPrototype,
           urlSearchParamsPrototype: nativeUrlSearchParamsPrototype,
@@ -3353,6 +3596,7 @@ export class PlaywrightBrowserSession {
               WeakSet === intrinsicBaseline.weakSet && Map === intrinsicBaseline.map &&
               WeakMap === intrinsicBaseline.weakMap && Function === intrinsicBaseline.function &&
               String === intrinsicBaseline.string && Symbol === intrinsicBaseline.symbol &&
+              Uint8Array === intrinsicBaseline.uint8Array && TextEncoder === intrinsicBaseline.textEncoder &&
               Promise === intrinsicBaseline.promise && Element === intrinsicBaseline.element &&
               MutationObserver === intrinsicBaseline.mutationObserver &&
               URLSearchParams === intrinsicBaseline.urlSearchParams &&
@@ -3363,6 +3607,8 @@ export class PlaywrightBrowserSession {
               nativeWeakMap.prototype === intrinsicBaseline.weakMapPrototype &&
               nativeFunction.prototype === intrinsicBaseline.functionPrototype &&
               nativeString.prototype === intrinsicBaseline.stringPrototype &&
+              nativeUint8Array.prototype === intrinsicBaseline.uint8ArrayPrototype &&
+              nativeTextEncoder.prototype === intrinsicBaseline.textEncoderPrototype &&
               nativeElement.prototype === intrinsicBaseline.elementPrototype &&
               nativeMutationObserver.prototype === intrinsicBaseline.mutationObserverPrototype &&
               nativeUrlSearchParams.prototype === intrinsicBaseline.urlSearchParamsPrototype;
@@ -3681,6 +3927,12 @@ export class PlaywrightBrowserSession {
           arrayShift,
           arrayIncludes,
           stringIncludes,
+          stringTrim,
+          stringToLowerCase,
+          stringSplitWhitespace,
+          stringCharCodeAt,
+          freeze: nativeFreeze,
+          utf8ByteLength,
           createSet: <T>(): Set<T> => new nativeSet<T>(),
           setAdd,
           setHas,
