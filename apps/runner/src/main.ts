@@ -1,10 +1,7 @@
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import {
-  capabilities,
-  type ExecutionJobOffer,
-} from "@qualigence/runner-protocol";
+import type { ExecutionJobOffer } from "@qualigence/runner-protocol";
 import {
   GrpcRunnerProtocolClient,
   type RunnerSession,
@@ -16,7 +13,8 @@ import {
   type RunnerSpool,
 } from "@qualigence/runner-spool";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
-import { RunnerOfferRuntime } from "./offer-runtime.js";
+import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
+import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
 
 async function openSpool(config: RunnerConfig): Promise<SqliteRunnerSpool> {
   await mkdir(config.dataDir, { recursive: true });
@@ -37,12 +35,20 @@ async function runOffer(
   session: RunnerSession,
   offer: ExecutionJobOffer,
   spool: RunnerSpool,
+  valueProvider?: ActionValueProvider,
 ): Promise<void> {
-  await new RunnerOfferRuntime({ config, session, spool }).run(offer);
+  await new RunnerOfferRuntime({
+    config,
+    session,
+    spool,
+    ...(valueProvider === undefined ? {} : { valueProvider }),
+  }).run(offer);
 }
 
 async function main(): Promise<void> {
   const config = loadRunnerConfig();
+  const valueProvider = await openActionValueProvider();
+  const advertisedCapabilities = runnerCapabilities(valueProvider);
   const spool = await openSpool(config);
   const clientPort = new GrpcRunnerProtocolClient({
     address: config.coreAddress,
@@ -55,7 +61,7 @@ async function main(): Promise<void> {
       runnerId: config.runnerId,
       runnerVersion: "0.1.0",
       supportedProtocolMajors: [1],
-      capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+      capabilities: advertisedCapabilities,
     };
     return resumeToken === undefined ? base : { ...base, resumeToken };
   };
@@ -83,7 +89,7 @@ async function main(): Promise<void> {
   while (!stopping) {
     try {
       const offer = await session.nextOffer(abort.signal);
-      await runOffer(config, session, offer, spool);
+      await runOffer(config, session, offer, spool, valueProvider);
     } catch (error) {
       if (stopping) {
         break;

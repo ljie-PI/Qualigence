@@ -81,6 +81,110 @@ describe("model-backed runner components", () => {
     expect(gateway.requests[0]?.operation).toBe("execution.decision");
   });
 
+  it("retains the legacy click proposal for a single immutable click Plan step", async () => {
+    const provider = new ModelBackedDecisionProvider(
+      new ScriptedGateway([{ action: { kind: "click", nodeId: "node-add" }, reason: "add" }]),
+      "test-model",
+    );
+
+    await expect(provider.decide({
+      job: {
+        ...job(),
+        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ stepIndex: 0, kind: "click", target: { purpose: "add" } }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
+      },
+      observation: observation("before", [{ id: "node-add", role: "button", confidence: 1 }]),
+    })).resolves.toEqual({ kind: "click", target: { nodeId: "node-add" }, reason: "add" });
+  });
+
+  it.each([
+    ["input", "profile.email"],
+    ["select", "profile.country"],
+  ] as const)("copies the immutable Plan valueRef into a %s proposal", async (kind, valueRef) => {
+    const step = {
+      stepIndex: 0,
+      kind,
+      target: { role: kind === "input" ? "textbox" : "combobox", purpose: `exercise ${kind}` },
+      valueRef,
+    } as const;
+    const plannedJob = {
+      ...job(),
+      policy: { ...job().policy, allowedActionKinds: [kind] },
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: `case-${kind}`,
+        steps: [step],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 },
+      },
+    } as const;
+    const gateway = new ScriptedGateway([
+      { nodeId: `node-${kind}`, reason: `perform ${kind}` },
+    ]);
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model", step);
+
+    const decision = await provider.decide({
+      job: plannedJob,
+      observation: observation("before", [
+        { id: `node-${kind}`, role: step.target.role, name: kind, confidence: 1 },
+      ]),
+    });
+
+    expect(decision).toEqual({
+      kind,
+      target: { nodeId: `node-${kind}` },
+      valueRef,
+      reason: `perform ${kind}`,
+    });
+    expect(gateway.requests[0]?.messages[1]?.content).toContain(valueRef);
+  });
+
+  it("rejects a supplied step that does not match the immutable Job Plan", async () => {
+    const jobStep = { stepIndex: 0, kind: "input" as const, target: { purpose: "email" }, valueRef: "profile.email" };
+    const provider = new ModelBackedDecisionProvider(
+      new ScriptedGateway([{ action: { kind: "input", nodeId: "node-input" }, reason: "input" }]),
+      "test-model",
+      { ...jobStep, valueRef: "model-chosen-value" },
+    );
+
+    await expect(provider.decide({
+      job: {
+        ...job(),
+        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [jobStep], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
+      },
+      observation: observation("before", [{ id: "node-input", role: "textbox", confidence: 1 }]),
+    })).rejects.toMatchObject({ errorCode: "PlanExecutionUnsupported" });
+  });
+
+  it("rejects a model-supplied valueRef and copies the Plan-owned ref after correction", async () => {
+    const step = { stepIndex: 0, kind: "input" as const, target: { purpose: "email" }, valueRef: "profile.email" };
+    const modelProvider = new ScriptedModelProvider([
+      { nodeId: "node-input", reason: "input", valueRef: "model-chosen-value" },
+      { nodeId: "node-input", reason: "input" },
+    ]);
+    const provider = new ModelBackedDecisionProvider(
+      new ModelGateway({ provider: modelProvider }),
+      "test-model",
+      step,
+    );
+
+    await expect(provider.decide({
+      job: {
+        ...job(),
+        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [step], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
+      },
+      observation: observation("before", [{ id: "node-input", role: "textbox", confidence: 1 }]),
+    })).resolves.toEqual({
+      kind: "input",
+      target: { nodeId: "node-input" },
+      valueRef: "profile.email",
+      reason: "input",
+    });
+    expect(modelProvider.requests).toHaveLength(2);
+    expect(modelProvider.requests[1]?.messages.at(-1)?.content).toContain("output:unrecognized_keys");
+    expect(modelProvider.requests[1]?.messages.at(-1)?.content).not.toContain("model-chosen-value");
+  });
+
   it("corrects a decision that references a node outside the current observation", async () => {
     const modelProvider = new ScriptedModelProvider([
       { action: { kind: "click", nodeId: "node-unknown" }, reason: "add the item" },

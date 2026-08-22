@@ -2,6 +2,18 @@
 
 ## Current authority view (2026-08-20)
 
+Ticket 18 scope amendment (2026-08-21): `apps/runner/src/offer-runtime.ts`,
+`packages/runner-components/model-agent/src/model-agent.ts`, and their existing
+unit tests are included so production composition supplies the immutable current
+one-action Plan step, injects only a healthy `ActionValueProvider`, and advertises
+input/select capability only when that complete path is available. Ticket 19
+retains the indexed multi-step Runtime.
+
+Ticket 18 formal-blocker scope amendment (2026-08-21) additionally includes
+`packages/runner-kernel/src/deterministic-policy-gate.ts` and
+`tests/unit/runner-kernel/deterministic-policy-gate.test.ts` for Web input/select
+risk classification and pre-side-effect policy-denial coverage only.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -21,7 +33,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | partial | missing | blocked | Ticket 16 contract expand complete; tickets 17-19 still own budgets, valueRef resolution, and bounded production Runtime |
+| Task 16 bounded Web execution | partial | present | blocked | Tickets 16-18 complete contract expansion, budgets, and production valueRef resolution; ticket 19 still owns the bounded indexed Runtime |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -355,6 +367,98 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
   or full-suite review was run per the remediation request. The scoped
   remediation Standards/Spec review reported no blocking findings; PR #73
   remains pending merge into the parent Ticket 17 branch.
+
+### Ticket 18 - Safe valueRef input (2026-08-21)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/75`
+
+- `FileActionValueProvider` validates duplicate refs, canonical-root containment,
+  regular files, the 64 KiB limit, and POSIX secret-file modes without loading
+  all plaintext at startup. Missing or unhealthy configuration fails closed.
+- Playwright preserves Plan-owned `valueRef` through resolution and resolves it
+  only immediately before `fill` or `selectOption`; outcomes expose only stable
+  codes and never resolved bytes.
+- Standalone Runner composition initializes one provider before connecting and
+  advertises `input`/`select` only when that provider is healthy. The same
+  provider and capabilities are injected into each offered Job Runtime.
+- The focused Gate passed 8 files / 54 tests with 1 existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E, full suite, or
+  implementation review was run; the dedicated PR remains pending.
+- Round-1 remediation rejects POSIX absolute/traversal and Windows
+  drive-relative, drive-absolute, UNC, device-namespace, reserved-device, and
+  cross-volume paths before file access. `lstat`/`realpath` reject symlinks and
+  nonregular files before `open`; nonblocking/no-follow flags are used where the
+  host exposes them, and post-open `fstat` plus path identity/confinement checks
+  detect replacement races before any bytes are read.
+- Observer-boundary redaction tracks only adapter-private resolved values and
+  removes them from post-action Observation nodes/metadata and observation JSON
+  Artifacts. The complete serialized Trace and verifier context after a real
+  Chromium input contain no plaintext; input/select actions and outcomes still
+  carry only `valueRef` and stable codes. Playwright infrastructure failures are
+  rethrown with a stable adapter code rather than raw call logs that could embed
+  the action argument.
+- Round-1 RED reproduced 3 provider failures and 2 Chromium redaction failures.
+  GREEN passed the affected provider file at 17 tests and Chromium action file
+  at 9 tests. The exact row-18 focused Gate passed 8 files / 62 passed with 1
+  existing Task 21 skip; POSIX permission enforcement has one ordinary test
+  that always exercises the injected platform seam and additionally exercises
+  a real permissive file on POSIX. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No separate Chromium E2E was run before the fresh
+  exact-base review.
+- The exact post-review acceptance file
+  `tests/e2e/web-execution/value-ref.test.ts` is prepared without skips. It
+  remains deliberately not run until the round-2 exact-base review is clean;
+  ticket verification is pending review/E2E, not passed.
+- Round-2 focused non-E2E Gate passed 8 files / 62 tests with the same existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed;
+  the new Chromium E2E was not run.
+- Post-review real Chromium acceptance passed 1 file / 1 test with production
+  Runner composition and complete persisted Trace/plaintext scanning.
+- Final PR review found browser normalization can remove trailing newline bytes
+  from input values and bypass exact-string redaction. Remediation Ticket 39
+  blocks merge.
+- The recursive hardening chain was closed without merge to prioritize the
+  primary feature workflow. On the final parent branch merged with current
+  `main`, the core Gate passed 8 files / 98 tests, including the production
+  file-backed input/select Chromium E2E. Root build, typecheck, and diff check
+  passed. Remaining browser-normalization hardening is follow-up work and does
+  not block this primary feature delivery.
+- Round-3 fixes bind production Model Agent decisions to exactly one immutable
+  input/select Plan step. The model returns only `nodeId` and `reason`; Runner
+  copies and validates the Plan-owned `valueRef`. Objective-only and one-step
+  Plan click retain the legacy click proposal, while multi-step or unsupported
+  Plan execution fails closed for Ticket 19.
+- `RunnerOfferRuntime` supplies that current one-action context to the existing
+  `LeasedJobExecutor` path and rejects value-backed actions without the provider.
+  Input/select remain advertised only when startup produced the healthy provider
+  and this complete production path is available.
+- The acceptance now drives separate immutable input/select jobs through
+  production `RunnerOfferRuntime`/`LeasedJobExecutor`, real Chromium, the real
+  OpenAI-compatible provider chain, production `FileActionValueProvider`, and a
+  real SQLite Runner Spool. It scans submitted Trace, completions, model requests,
+  logs, and spool bytes for both plaintext values.
+- Round-3 amended focused non-E2E Gate passed 9 files / 88 tests with 1 existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed. The
+  Chromium E2E remains deliberately not run pending a clean exact-base review;
+  verification and the dedicated PR remain pending.
+- The fresh exact-base Standards and Spec review reported no Critical or
+  Important findings. The post-review production-path Chromium acceptance then
+  passed 1 file / 1 test with no skips, proving separate immutable input/select
+  Jobs and plaintext absence from model requests, logs, submitted Trace,
+  pre-ACK persisted spool events, and raw spool bytes. The dedicated PR and
+  merge remain pending.
+- Formal-blocker fixes reject every literal `..` filename segment before path
+  normalization, including POSIX, Windows, and mixed separator variants. The
+  deterministic policy gate classifies Web input/select as
+  `ExternalSideEffect` before maximum-risk comparison: a `Normal` ceiling
+  denies before value-provider/executor effects, while an
+  `ExternalSideEffect` ceiling allows an otherwise permitted kind and origin.
+  Web click/scroll/navigation and Desktop semantics are unchanged.
+- The amended focused non-E2E Gate passed 10 files / 105 tests with 1 existing
+  Task 21 skip. No E2E was run; fresh exact-base review is required before E2E.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

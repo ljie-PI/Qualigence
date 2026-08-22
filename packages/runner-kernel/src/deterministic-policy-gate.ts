@@ -109,9 +109,9 @@ function originOf(job: AcceptedExecutionJob): string {
 }
 
 function riskFor(action: ResolvedAction): typeof RISK_ORDER[number] {
+  if (action.kind === "input" || action.kind === "select") return "ExternalSideEffect";
   if (action.targetKind === "desktop") {
     if (action.kind === "window" && action.windowOperation === "close") return "Destructive";
-    if (action.kind === "input" || action.kind === "select") return "ExternalSideEffect";
   }
   return "Normal";
 }

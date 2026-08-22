@@ -4,7 +4,10 @@ import type {
   ObservationGraph,
   ObservationNode,
 } from "@qualigence/runner-protocol";
-import { ExecutionPermit, type ProposedAction } from "@qualigence/runner-kernel";
+import { ExecutionPermit, ExecutionRuntime, type ProposedAction } from "@qualigence/runner-kernel";
+import { InMemoryTraceStore, TraceIngestor } from "@qualigence/evidence";
+import { InMemoryProtocolTraceRecorder } from "@qualigence/in-memory-runner-protocol";
+import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
 import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
@@ -23,6 +26,10 @@ function allowedPermit(): ExecutionPermit {
 
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "component test" };
+}
+
+function valued(kind: "input" | "select", nodeId: string, valueRef: string) {
+  return { kind, target: { nodeId }, valueRef, reason: "component test" } as const;
 }
 
 function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
@@ -62,6 +69,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <button id="blocked">Blocked action</button>
             <span style="position:absolute;inset:0"></span>
           </span>
+          <label>Email <input aria-label="Email" /></label>
+          <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
+          <p data-qualigence-observe id="values"></p>
+          <script>
+            document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
+          </script>
         `,
         "Clicks",
       ),
@@ -179,5 +193,83 @@ describe("Playwright resolve + execute against real Chromium", () => {
       status: "failed",
       errorCode: "ActionTimedOut",
     });
+  });
+
+  it("executes input and select through valueRefs without returning plaintext", async () => {
+    const values = new Map([
+      ["customer.email", "private@example.test"],
+      ["customer.country", "private-country-code"],
+    ]);
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async (valueRef) => {
+        const value = values.get(valueRef);
+        if (value === undefined) throw new Error("missing");
+        return value;
+      },
+    });
+    const before = await observer.capture(job);
+
+    const inputAction = await resolver.resolve(valued("input", nodeNamed(before, "Email").id, "customer.email"), before);
+    const inputOutcome = await executor.execute(inputAction, allowedPermit());
+    const afterInput = await observer.capture(job);
+    const selectAction = await resolver.resolve(valued("select", nodeNamed(afterInput, "Country").id, "customer.country"), afterInput);
+    const selectOutcome = await executor.execute(selectAction, allowedPermit());
+
+    expect(inputOutcome).toEqual({ status: "ok" });
+    expect(selectOutcome).toEqual({ status: "ok" });
+    const serializedPublicValues = JSON.stringify([
+      inputAction,
+      inputOutcome,
+      afterInput,
+      selectAction,
+      selectOutcome,
+      await observer.capture(job),
+    ]);
+    expect(serializedPublicValues).not.toContain("private@example.test");
+    expect(serializedPublicValues).not.toContain("private-country-code");
+  });
+
+  it("redacts input plaintext from the complete Trace and verifier context", async () => {
+    const secret = "trace-secret@example.test";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const traces = new InMemoryTraceStore();
+    let serializedVerifierContext = "";
+    const runtime = new ExecutionRuntime({
+      observer,
+      decisionProvider: {
+        decide: async () => valued("input", "unused", "customer.email") as never,
+      },
+      resolver: {
+        resolve: async (action, graph) => resolver.resolve(
+          valued("input", nodeNamed(graph, "Email").id, "customer.email"),
+          graph,
+        ) as never,
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: executor,
+      verifier: {
+        verify: async (context) => {
+          serializedVerifierContext = JSON.stringify(context);
+          return { status: "passed", summary: "ok", claims: [] };
+        },
+      },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 10_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    await expect(runtime.run(job)).resolves.toMatchObject({ status: "passed" });
+    const serializedTrace = JSON.stringify(traces.eventsFor(job.runId));
+    expect(serializedTrace).not.toContain(secret);
+    expect(serializedVerifierContext).not.toContain(secret);
+    expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
 });
