@@ -638,33 +638,30 @@ parent_ticket: `41`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
 base_head: `6940f7785789e4278524ee8da20379430dffbe61`
 review_head: `dd4da5e154ea42b62451dca0e524ff855cda87e0`
-product_head: `dcfa670dc86c1a5b154ef14eacc59cee7ec5836c`
+product_head: recorded by the round-2 fix commit containing this status entry
 
-- Promise instrumentation now wraps only the current `Promise.prototype.then`
-  call boundary. Native `catch` and `finally` remain untouched, naturally route
-  through the current receiver `then`, preserve browser species and thenable
-  assimilation semantics, and propagate causal generations by wrapped `then`
-  callbacks. There is no delegation suppression.
+- Browser-context init installs the Promise boundary before page creation and
+  navigation and binds it to an adapter-private random epoch. Sensitive
+  activation requires that exact init attestation; a page/document that cannot
+  prove pre-application installation is rejected before the action.
+- Init installs one stable wrapped `then` boundary while native `catch` and
+  `finally` behavior remains the oracle. Calls captured after init therefore
+  retain the wrapped boundary; 65 direct captured calls preserve application
+  results and poison bounded evidence.
 - A fresh-page Chromium oracle matrix compares exact serialized ordered events,
   custom `then` calls, species constructor calls, callback calls, settlement and
   value/reason identity against the instrumented session for base fulfillment
-  and rejection, returned values/promises/thenables, default and overridden
-  species, instance/prototype/returned-promise custom `then`, hostile multi-call
-  thenables, and native `catch` dispatch. The matrix also asserts exact tracker
-  registration/execution counts and native `catch`/`finally` identity/source.
-- A native `then` captured before tracker activation cannot be intercepted.
-  Promise intrinsic, descriptor, receiver/prototype, constructor, and species
-  attestation therefore begins only when sensitive tracking starts. Pre-sensitive
-  pages with overrides still observe normally. Any pre-existing/accessor/custom
-  path that cannot be proven to delegate through the tracked wrapper poisons
-  later evidence as `SensitiveEvidenceUnproven` without changing settlement or
-  callbacks; post-activation custom `then` delegation retains native parity and
-  bounded counting. Native `catch` and `finally` remain unmodified.
-- Independent fresh-page oracles prove one, two, and 65 calls through a
-  pre-captured native `then`: application results equal native while sensitive
-  action/capture fails closed and no new Graph persists. Accessor, prototype,
-  subclass, and species paths are covered separately.
-- Exact affected non-E2E command: `corepack pnpm vitest run
+  and rejection, returned values/promises/thenables, subclass default species,
+  custom `Symbol.species`, instance/prototype/returned-promise custom `then`,
+  hostile multi-call thenables, and native `catch` dispatch. The matrix also
+  asserts exact tracker registration/execution counts and native observable
+  `catch`/`finally` source.
+- During sensitive tracking, custom `then`/`catch`/`finally` assignments are
+  invoked normally under bounded per-call tokens. Each call must reach an exact
+  wrapped native `then` boundary; nested calls receive separate tokens. A
+  nondelegating custom method preserves its application result but poisons
+  evidence. Constructor or species identity alone is not a veto.
+- Round-2 exact affected non-E2E command: `corepack pnpm vitest run
   tests/unit/runner/action-value-provider.test.ts
   tests/unit/runner/offer-runtime.test.ts
   tests/unit/runner-components/model-agent.test.ts
@@ -672,15 +669,10 @@ product_head: `dcfa670dc86c1a5b154ef14eacc59cee7ec5836c`
   tests/unit/target-adapters/web-playwright/browser-session.test.ts
   tests/unit/target-adapters/web-playwright/png-redactor.test.ts
   tests/unit/runner-kernel/deterministic-policy-gate.test.ts
-  tests/component/web-execution`. It passed 12 files / 215 tests: 214 passed and
-  1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
-  passed.
-- Full non-E2E command with Git OpenSSL first on `PATH` and
-  `OPENSSL_CONF=C:\Program Files\Git\mingw64\etc\ssl\openssl.cnf`:
-  `corepack pnpm vitest run --exclude "tests/e2e/**" --exclude "tests/live/**"`.
-  It ran 159 files / 1,338 tests: 1,327 passed, 5 skipped, and 6 failed. All six
-  are the documented unrelated baseline failures; every changed Web adapter
-  test passed. Per closure protocol, no E2E was run before fresh review.
+   tests/component/web-execution`. It passed 12 files / 217 tests: 216 passed and
+   1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
+   passed.
+- No E2E is run before fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

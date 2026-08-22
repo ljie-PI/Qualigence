@@ -2025,7 +2025,11 @@ describe("Playwright resolve + execute against real Chromium", () => {
     "base-rejected-promise",
     "base-source-rejection",
     "base-custom-thenable",
+    "subclass-default-species",
+    "subclass-overridden-species",
     "instance-custom-then",
+    "current-prototype-custom-then",
+    "prototype-custom-then",
     "returned-promise-custom-then",
     "hostile-thenable",
     "catch-current-then",
@@ -2088,6 +2092,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
       "base-rejected-promise": [3, 2],
       "base-source-rejection": [3, 3],
       "base-custom-thenable": [3, 3],
+      "subclass-default-species": [4, 4],
       "subclass-overridden-species": [4, 4],
       "instance-custom-then": [3, 3],
       "current-prototype-custom-then": [3, 3],
@@ -2100,7 +2105,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
   });
 
   it.each([1, 2, 65] as const)(
-    "poisons a pre-tracking captured-native then bypass after %i calls without guessing counts",
+    "counts a then captured after init and poisons only after %i calls exceed bounds",
     async (calls) => {
       const browser = await chromiumLauncher.launch({ headless: true });
       const context = await browser.newContext();
@@ -2142,16 +2147,15 @@ describe("Playwright resolve + execute against real Chromium", () => {
       const executor = new PlaywrightActionExecutor(session, { resolve: async () => `bypass-${calls}` });
       await session.withPage(async (page) => page.evaluate((count) => {
         const capturedThen = Promise.prototype.then;
-        Promise.prototype.then = function (...args) {
-          return Reflect.apply(capturedThen, this, args);
-        };
         const source = (globalThis as unknown as {
           document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
         }).document.querySelector('input[aria-label="Email"]');
         source?.addEventListener("input", () => {
           const results: number[] = [];
           for (let index = 0; index < count; index += 1) {
-            Promise.resolve(index).then((value) => { results.push(value); });
+            Reflect.apply(capturedThen, Promise.resolve(index), [
+              (value: number) => { results.push(value); },
+            ]);
           }
           (globalThis as typeof globalThis & { bypassResults?: number[] }).bypassResults = results;
         });
@@ -2163,85 +2167,22 @@ describe("Playwright resolve + execute against real Chromium", () => {
         valued("input", nodeNamed(before, "Email").id, `customer.captured-bypass-${calls}`),
         before,
       );
-      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-        code: "SensitiveEvidenceUnproven",
-      });
+      const execution = executor.execute(action, allowedPermit());
+      if (calls > 64) {
+        await expect(execution).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+      } else {
+        await expect(execution).resolves.toEqual({ status: "ok" });
+      }
       await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
         (globalThis as typeof globalThis & { bypassResults?: number[] }).bypassResults,
       ))).toEqual(nativeResult);
-      expect(session.latestGraphId).toBe(before.graphId);
-      await expect(observer.capture(job)).rejects.toMatchObject({
-        code: "SensitiveEvidenceUnproven",
-      });
-    },
-  );
-
-  it.each(["accessor", "prototype", "species", "subclass"] as const)(
-    "poisons an unprovable Promise %s path while preserving application settlement",
-    async (tamper) => {
-      session = new PlaywrightBrowserSession(options());
-      await session.start();
-      const observer = new PlaywrightObserver(session);
-      const resolver = new PlaywrightActionResolver(session);
-      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${tamper}-secret` });
-      if (tamper !== "subclass") {
-        await session.withPage(async (page) => page.evaluate((kind) => {
-          if (kind === "accessor") {
-            const nativeThen = Promise.prototype.then;
-            Object.defineProperty(Promise.prototype, "then", {
-              configurable: true,
-              get: () => nativeThen,
-            });
-          } else if (kind === "prototype") {
-            const nativeThen = Promise.prototype.then;
-            Promise.prototype.then = function (...args) {
-              return Reflect.apply(nativeThen, this, args);
-            };
-          } else {
-            Object.defineProperty(Promise, Symbol.species, {
-              configurable: true,
-              get: () => Promise,
-            });
-          }
-        }, tamper));
-      }
-      const before = await observer.capture(job);
-      const action = await resolver.resolve(
-        valued("input", nodeNamed(before, "Email").id, `customer.promise-${tamper}`),
-        before,
-      );
-      await session.withPage(async (page) => page.evaluate((kind) => {
-        const source = (globalThis as unknown as {
-          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
-        }).document.querySelector('input[aria-label="Email"]');
-        source?.addEventListener("input", () => {
-          if (kind === "subclass") {
-            class CustomPromise<T> extends Promise<T> {
-              override then<TResult1 = T, TResult2 = never>(
-                onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-                onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-              ): Promise<TResult1 | TResult2> {
-                return super.then(onfulfilled, onrejected);
-              }
-            }
-            new CustomPromise<number>((resolve) => resolve(7)).then((value) => {
-              (globalThis as typeof globalThis & { tamperResult?: number }).tamperResult = value;
-            });
-          } else {
-            Promise.resolve(7).then((value) => {
-              (globalThis as typeof globalThis & { tamperResult?: number }).tamperResult = value;
-            });
-          }
+      if (calls > 64) {
+        expect(session.latestGraphId).toBe(before.graphId);
+        await expect(observer.capture(job)).rejects.toMatchObject({
+          code: "SensitiveEvidenceUnproven",
         });
-      }, tamper));
-
-      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-        code: "SensitiveEvidenceUnproven",
-      });
-      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
-        (globalThis as typeof globalThis & { tamperResult?: number }).tamperResult,
-      ))).toBe(7);
-      expect(session.latestGraphId).toBe(before.graphId);
+      }
+      expect((await session.sensitiveSchedulerCounts()).registrations).toBe(calls);
     },
   );
 
@@ -2298,7 +2239,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
-  it("poisons Promise species paths while preserving settlement semantics", async () => {
+  it("accepts delegated Promise species paths while preserving settlement semantics", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
@@ -2368,15 +2309,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
       });
     }));
 
-    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
-      code: "SensitiveEvidenceUnproven",
-    });
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
     await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
       (globalThis as typeof globalThis & { promiseSemantics?: readonly unknown[] }).promiseSemantics,
     ))).toEqual([true, true, 1, 1, 1, "caught-error", "value"]);
   });
 
-  it.each([[1, true], [2, true]] as const)(
+  it.each([[1, false], [2, false]] as const)(
     "counts returned species custom then registrations at the %i finally boundary",
     async (registrations, poisoned) => {
       session = new PlaywrightBrowserSession(options());
@@ -2427,6 +2366,49 @@ describe("Playwright resolve + execute against real Chromium", () => {
       ))).toBe(registrations * 2);
     },
   );
+
+  it("poisons a nondelegating Promise subclass after preserving its application result", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "nondelegating-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.promise-nondelegating"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      class NondelegatingPromise<T> extends Promise<T> {
+        override then<TResult1 = T, TResult2 = never>(
+          _onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+          _onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ): Promise<TResult1 | TResult2> {
+          return Promise.resolve("unchanged") as Promise<TResult1 | TResult2>;
+        }
+      }
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        void new NondelegatingPromise<string>((resolve) => resolve("source"))
+          .then((value) => value)
+          .then((value) => {
+            (globalThis as typeof globalThis & { nondelegatingResult?: string })
+              .nondelegatingResult = String(value);
+          });
+      });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { nondelegatingResult?: string }).nondelegatingResult,
+    ))).toBe("unchanged");
+  });
 
   it.each([
     ["option-count", 5_000, 1],

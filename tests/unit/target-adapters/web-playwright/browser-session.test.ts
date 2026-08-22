@@ -25,7 +25,7 @@ function baseOptions(
   };
 }
 
-function fakeLauncher(): {
+function fakeLauncher(promiseAttested = true): {
   launcher: BrowserLauncher;
   launch: ReturnType<typeof vi.fn>;
   addInitScript: ReturnType<typeof vi.fn>;
@@ -41,13 +41,24 @@ function fakeLauncher(): {
       callback(registry, maximumRoots)),
     dispose: vi.fn(async () => undefined),
   };
+  const promiseAuthority = {
+    attest: (_epoch: string) => promiseAttested,
+  };
+  const promiseHandle = {
+    evaluate: vi.fn(async (
+      callback: (value: typeof promiseAuthority, epoch: string) => unknown,
+      epoch: string,
+    ) => callback(promiseAuthority, epoch)),
+    dispose: vi.fn(async () => undefined),
+  };
+  let handleIndex = 0;
   const page = {
     goto: vi.fn(async () => null),
     url: () => "https://example.test/",
     close: vi.fn(async () => undefined),
     setDefaultTimeout: vi.fn(),
     setDefaultNavigationTimeout: vi.fn(),
-    evaluateHandle: vi.fn(async () => registryHandle),
+    evaluateHandle: vi.fn(async () => handleIndex++ === 0 ? registryHandle : promiseHandle),
   };
   const newPage = vi.fn(async () => page);
   const addInitScript = vi.fn(async () => undefined);
@@ -238,7 +249,7 @@ describe("PlaywrightBrowserSession", () => {
     expect(closed()).toBe(true);
   });
 
-  it("installs the private shadow hook before creating the application page", async () => {
+  it("installs private shadow and Promise instrumentation before creating or navigating the application page", async () => {
     const { launcher, addInitScript, newPage } = fakeLauncher();
     const session = new PlaywrightBrowserSession(baseOptions(), launcher);
 
@@ -249,6 +260,22 @@ describe("PlaywrightBrowserSession", () => {
     expect(addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
       newPage.mock.invocationCallOrder[0]!,
     );
+    const page = await newPage.mock.results[0]?.value;
+    expect(newPage.mock.invocationCallOrder[0]).toBeLessThan(
+      page.goto.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("rejects sensitive activation for a page adopted after application execution", async () => {
+    const { launcher } = fakeLauncher(false);
+    const session = new PlaywrightBrowserSession(baseOptions(), launcher);
+    await session.start();
+
+    await expect(session.beginSensitiveActionTracking(
+      {} as never,
+      "input",
+      "sensitive-value",
+    )).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
   });
 
   it("removes an installed private target marker before closing the page", async () => {
