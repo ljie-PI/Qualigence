@@ -638,7 +638,7 @@ parent_ticket: `41`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
 base_head: `6940f7785789e4278524ee8da20379430dffbe61`
 review_head: `dd4da5e154ea42b62451dca0e524ff855cda87e0`
-product_head: recorded by the round-2 fix commit containing this status entry
+product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 - Browser-context init installs the Promise boundary before page creation and
   navigation and binds it to an adapter-private random epoch. Sensitive
