@@ -869,7 +869,8 @@ parent_ticket: `43`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/82`
 base_head: `09365f5fd5e33c1ec374c2dc435803e5e0d381a4`
 implementation_head: `683932fbe1a0ca62ab39356609d5edd3f61da63c`
-implementation_commits: `2` pending final test-head SHA
+test_head: `524456a1aaaba8e6f027b7fb940bd02e6a739bef`
+implementation_commits: `2`
 
 - Every newly observed Promise method owner is fully instrumented before one
   post-instrumentation chain snapshot is recorded. Registry entries, chain
