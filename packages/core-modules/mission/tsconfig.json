@@ -11,6 +11,7 @@
   "references": [
     { "path": "../../shared-kernel" },
     { "path": "../context-intake" },
-    { "path": "../application-model" }
+    { "path": "../application-model" },
+    { "path": "../project-target" }
   ]
 }
