@@ -12,12 +12,13 @@ import {
 } from "@qualigence/runner-kernel";
 import {
   PlaywrightWebTargetAdapter,
-  type PlaywrightWebTargetOptions,
   type WebSessionOptions,
 } from "@qualigence/web-playwright";
 import {
   chromiumLauncher,
+  finalizeArtifactBatch,
   type BrowserLauncher,
+  type BrowserSessionTestHooks,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
@@ -143,6 +144,71 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     };
   }
 
+  function observedOwnerControl(): {
+    readonly launcher: BrowserLauncher;
+    readonly mutate: (timing: "immediate" | "timer" | "schedule-timer") => Promise<void>;
+  } {
+    let mutate: ((timing: "immediate" | "timer" | "schedule-timer") => Promise<void>) | undefined;
+    const launcher: BrowserLauncher = {
+      launch: async (launchOptions) => {
+        const browser = await chromiumLauncher.launch(launchOptions);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...contextOptions) => {
+          const context = await newContext(...contextOptions);
+          const newPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            const page = await newPage();
+            if (mutate !== undefined) return page;
+            mutate = async (timing) => page.evaluate(async (mutationTiming) => {
+              const replaceOwner = () => {
+                const owner = (globalThis as typeof globalThis & {
+                  observedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+                }).observedPromiseOwner;
+                if (owner === undefined) throw new Error("Observed Promise owner is unavailable");
+                Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
+              };
+              if (mutationTiming === "schedule-timer") {
+                setTimeout(replaceOwner, 0);
+              } else if (mutationTiming === "timer") {
+                await new Promise<void>((resolve) => setTimeout(() => {
+                  replaceOwner();
+                  resolve();
+                }, 0));
+              } else {
+                replaceOwner();
+              }
+            }, timing);
+            return page;
+          };
+          return context;
+        };
+        return browser;
+      },
+    };
+    return {
+      launcher,
+      mutate: async (timing) => {
+        if (mutate === undefined) throw new Error("Application page was not captured");
+        await mutate(timing);
+      },
+    };
+  }
+
+  async function captureSensitiveObservation(
+    launcher: BrowserLauncher,
+    testHooks?: BrowserSessionTestHooks,
+  ): Promise<ObservationGraph> {
+    adapter = new PlaywrightWebTargetAdapter({
+      ...options(),
+      valueProvider: { resolve: async () => "sensitive-value" },
+    }, launcher, testHooks);
+    await adapter.start();
+    const before = await adapter.capture(job);
+    const inputAction = await adapter.resolve(input(nodeNamed(before, "Email").id), before);
+    await expect(adapter.execute(inputAction, allowedPermit())).resolves.toEqual({ status: "ok" });
+    return adapter.capture(job);
+  }
+
   // TODO(Task 21): remove this Windows quarantine after browser-process leak checks use a cross-platform lifecycle seam instead of /proc.
   it.skipIf(process.platform === "win32")(
     "runs observe -> resolve -> execute -> artifacts -> close and reaps the browser",
@@ -200,46 +266,10 @@ describe("PlaywrightWebTargetAdapter facade", () => {
   });
 
   it("returns no cached artifact batch after an observed Promise owner is replaced", async () => {
-    let replaceObservedOwner: (() => Promise<void>) | undefined;
-    const launcher: BrowserLauncher = {
-      launch: async (launchOptions) => {
-        const browser = await chromiumLauncher.launch(launchOptions);
-        const newContext = browser.newContext.bind(browser);
-        browser.newContext = async (...contextOptions) => {
-          const context = await newContext(...contextOptions);
-          const newPage = context.newPage.bind(context);
-          context.newPage = async () => {
-            const page = await newPage();
-            if (replaceObservedOwner !== undefined) return page;
-            replaceObservedOwner = async () => page.evaluate(() => {
-              const owner = (globalThis as typeof globalThis & {
-                observedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
-              }).observedPromiseOwner;
-              if (owner === undefined) throw new Error("Observed Promise owner is unavailable");
-              Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
-            });
-            return page;
-          };
-          return context;
-        };
-        return browser;
-      },
-    };
-    const sensitiveOptions: PlaywrightWebTargetOptions = {
-      ...options(),
-      valueProvider: { resolve: async () => "sensitive-value" },
-    };
-    adapter = new PlaywrightWebTargetAdapter(sensitiveOptions, launcher);
-    await adapter.start();
-    const before = await adapter.capture(job);
-    const inputAction = await adapter.resolve(input(nodeNamed(before, "Email").id), before);
-    await expect(adapter.execute(inputAction, allowedPermit())).resolves.toEqual({ status: "ok" });
-    const observed = await adapter.capture(job);
+    const control = observedOwnerControl();
+    const observed = await captureSensitiveObservation(control.launcher);
 
-    await expect(adapter.captureArtifacts(observed.graphId)).resolves.toHaveLength(2);
-
-    if (replaceObservedOwner === undefined) throw new Error("Application page was not captured");
-    await replaceObservedOwner();
+    await control.mutate("immediate");
     const receivedArtifacts: string[] = [];
     let receivedBytes = 0;
 
@@ -255,6 +285,148 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
       code: "SensitiveEvidenceUnproven",
     });
+  });
+
+  it("rejects with zero bytes when the final-boundary hook mutates an observed owner", async () => {
+    const control = observedOwnerControl();
+    const events: string[] = [];
+    const observed = await captureSensitiveObservation(control.launcher, {
+      afterArtifactIntegrityChecks: async () => {
+        events.push("hook");
+        await control.mutate("immediate");
+        events.push("mutated");
+      },
+    });
+    let receivedBytes = 0;
+
+    await expect((async () => {
+      events.push("capture");
+      const artifacts = await adapter.captureArtifacts(observed.graphId);
+      events.push("returned");
+      receivedBytes = artifacts.reduce((total, artifact) => total + artifact.bytes.byteLength, 0);
+    })()).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+    expect(events).toEqual(["capture", "hook", "mutated"]);
+    expect(receivedBytes).toBe(0);
+  });
+
+  it("catches a timer owner mutation scheduled while the last test seam is awaited", async () => {
+    const control = observedOwnerControl();
+    const observed = await captureSensitiveObservation(control.launcher, {
+      afterArtifactIntegrityChecks: () => control.mutate("timer"),
+    });
+
+    await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it("catches an owner mutation scheduled before the earlier awaited checks", async () => {
+    const control = observedOwnerControl();
+    const observed = await captureSensitiveObservation(control.launcher);
+    await control.mutate("schedule-timer");
+
+    await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it("returns an unchanged frozen batch once and isolates its bytes from the cache", async () => {
+    const control = observedOwnerControl();
+    const observed = await captureSensitiveObservation(control.launcher);
+
+    const artifacts = await adapter.captureArtifacts(observed.graphId);
+    expect(artifacts).toHaveLength(2);
+    expect(Object.isFrozen(artifacts)).toBe(true);
+    expect(artifacts.every(Object.isFrozen)).toBe(true);
+    const json = artifacts.find((artifact) => artifact.mediaType === "application/json");
+    expect(new TextDecoder().decode(json?.bytes)).toContain(observed.graphId);
+    if (json === undefined) throw new Error("Observation artifact is unavailable");
+    json.bytes.fill(0);
+
+    await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+  });
+
+  it("performs sticky poison, final owner validation, and byte copying synchronously in order", () => {
+    const events: string[] = [];
+    const bytes = new Uint8Array([1, 2, 3]);
+    Object.defineProperty(bytes, Symbol.iterator, {
+      value: function* () {
+        events.push("copy");
+        yield 1;
+        yield 2;
+        yield 3;
+      },
+    });
+
+    const batch = finalizeArtifactBatch({
+      snapshot: () => {
+        events.push("snapshot");
+        return { intact: true, descriptorShapeIntact: true };
+      },
+      revalidateOwners: () => {
+        events.push("owners");
+        return true;
+      },
+    }, {
+      trackers: [{
+        overflow: false,
+        observerError: false,
+        scheduledPoison: false,
+        schedulerProvenanceUnproven: false,
+        outstandingPromiseDelegations: 0,
+        promiseIntegrity: () => {
+          events.push("sticky");
+          return true;
+        },
+        shadowPoison: false,
+        ambiguousEvent: false,
+      }],
+      cache: {
+        consumed: false,
+        artifacts: [{
+          name: "evidence.png",
+          mediaType: "image/png",
+          bytes,
+        }],
+      },
+    });
+
+    expect(events).toEqual(["snapshot", "sticky", "owners", "copy"]);
+    expect(Object.isFrozen(batch)).toBe(true);
+    expect(Object.isFrozen(batch[0])).toBe(true);
+    expect(Object.isFrozen(batch[0]?.bytes)).toBe(true);
+  });
+
+  it("returns no batch when artifact byte copying throws", () => {
+    const bytes = new Uint8Array([1]);
+    Object.defineProperty(bytes, Symbol.iterator, {
+      value: function* () {
+        throw new Error("copy-failed");
+      },
+    });
+    let batch: ReturnType<typeof finalizeArtifactBatch> | undefined;
+
+    const cache = {
+      consumed: false,
+      artifacts: [{
+        name: "evidence.png" as const,
+        mediaType: "image/png" as const,
+        bytes,
+      }],
+    };
+    expect(() => {
+      batch = finalizeArtifactBatch({
+        snapshot: () => ({ intact: true, descriptorShapeIntact: true }),
+        revalidateOwners: () => true,
+      }, {
+        trackers: [],
+        cache,
+      });
+    }).toThrow("copy-failed");
+    expect(batch).toBeUndefined();
+    expect(cache).toEqual({ consumed: true, artifacts: [] });
   });
 
   it("rejects concurrent reentry with ConcurrentSessionOperation", async () => {

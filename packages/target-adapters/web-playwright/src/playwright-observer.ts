@@ -534,10 +534,12 @@ export class PlaywrightObserver implements Observer {
       await this.session.completeSensitiveEvidenceCapture();
       await this.session.failIfSensitiveTrackingOverflowed();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
+      const artifactCache = await this.session.cacheArtifactBatch(artifacts);
       this.session.advanceSensitiveTargets(graph.graphId, sensitiveNodeIds);
       this.session.registerObservation(graphWithRefs.graphId, {
         descriptors,
         artifacts,
+        ...(artifactCache === undefined ? {} : { artifactCache }),
       });
         return graphWithRefs;
       });

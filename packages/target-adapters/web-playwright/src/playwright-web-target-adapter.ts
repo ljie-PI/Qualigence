@@ -19,6 +19,7 @@ import {
   PlaywrightBrowserSession,
   WebTargetError,
   type BrowserLauncher,
+  type BrowserSessionTestHooks,
   type WebSessionOptions,
 } from "./browser-session.js";
 import { PlaywrightObserver } from "./playwright-observer.js";
@@ -52,8 +53,12 @@ export class PlaywrightWebTargetAdapter
   private busy = false;
   private closed = false;
 
-  constructor(options: PlaywrightWebTargetOptions, launcher?: BrowserLauncher) {
-    this.session = new PlaywrightBrowserSession(options, launcher);
+  constructor(
+    options: PlaywrightWebTargetOptions,
+    launcher?: BrowserLauncher,
+    testHooks?: BrowserSessionTestHooks,
+  ) {
+    this.session = new PlaywrightBrowserSession(options, launcher, testHooks);
     this.observer = new PlaywrightObserver(this.session);
     this.resolver = new PlaywrightActionResolver(this.session);
     this.executor = new PlaywrightActionExecutor(this.session, options.valueProvider);
@@ -98,10 +103,7 @@ export class PlaywrightWebTargetAdapter
   }
 
   async captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]> {
-    return this.guard(async () => {
-      await this.session.assertSensitiveEvidenceIntegrity();
-      return this.session.artifactsFor(graphId);
-    });
+    return this.guard(() => this.session.captureArtifactBatch(graphId));
   }
 
   async close(): Promise<void> {

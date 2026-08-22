@@ -72,9 +72,26 @@ export interface BrowserLauncher {
   launch(options: { readonly headless: boolean }): Promise<Browser>;
 }
 
+/** Internal hook used only to exercise the artifact-integrity event-loop boundary. */
+export interface BrowserSessionTestHooks {
+  readonly afterArtifactIntegrityChecks?: () => Promise<void>;
+}
+
 export const chromiumLauncher: BrowserLauncher = {
   launch: (options) => chromium.launch({ headless: options.headless }),
 };
+
+function cloneArtifactBatch(
+  artifacts: readonly (Omit<CapturedArtifact, "bytes"> & {
+    readonly bytes: ArrayLike<number>;
+  })[],
+): readonly CapturedArtifact[] {
+  return Object.freeze(artifacts.map((artifact) => Object.freeze({
+    name: artifact.name,
+    mediaType: artifact.mediaType,
+    bytes: Uint8Array.from(artifact.bytes),
+  })));
+}
 
 export function normalizeOrigin(url: string): string {
   return new URL(url).origin;
@@ -98,6 +115,7 @@ type SessionState = "new" | "starting" | "started" | "closing" | "closed";
 export interface StoredObservation {
   readonly descriptors: ReadonlyMap<string, LocatorDescriptor>;
   readonly artifacts: readonly CapturedArtifact[];
+  readonly artifactCache?: JSHandle<PrivateArtifactCache>;
 }
 
 export interface PrivateActionTarget {
@@ -638,6 +656,73 @@ interface PrivatePromiseIntrinsics {
   readonly close: () => boolean;
 }
 
+export interface SerializedArtifact {
+  readonly name: string;
+  readonly mediaType: CapturedArtifact["mediaType"];
+  readonly bytes: ArrayLike<number>;
+}
+
+interface PrivateArtifactCache {
+  consumed: boolean;
+  artifacts: readonly SerializedArtifact[];
+}
+
+interface ArtifactIntegrityAuthority {
+  readonly snapshot: () => {
+    readonly intact: boolean;
+    readonly descriptorShapeIntact: boolean;
+  };
+  readonly revalidateOwners: () => boolean;
+}
+
+type ArtifactIntegrityTracker = Pick<
+  SensitiveActionMutationTracker,
+  | "overflow"
+  | "observerError"
+  | "scheduledPoison"
+  | "schedulerProvenanceUnproven"
+  | "outstandingPromiseDelegations"
+  | "promiseIntegrity"
+  | "shadowPoison"
+  | "ambiguousEvent"
+>;
+
+export function finalizeArtifactBatch(
+  authority: ArtifactIntegrityAuthority,
+  input: {
+    readonly trackers: readonly ArtifactIntegrityTracker[];
+    readonly cache: PrivateArtifactCache;
+  },
+): readonly SerializedArtifact[] {
+  if (input.cache.consumed) throw new Error("artifact-cache-consumed");
+  try {
+    const snapshot = authority.snapshot();
+    const trackerPoisoned = input.trackers.some((tracker, index) =>
+      tracker.overflow || tracker.observerError || tracker.scheduledPoison ||
+        tracker.schedulerProvenanceUnproven || tracker.outstandingPromiseDelegations > 0 ||
+        (index === input.trackers.length - 1 && !tracker.promiseIntegrity()) ||
+        tracker.shadowPoison || tracker.ambiguousEvent);
+    if (!snapshot.intact || !snapshot.descriptorShapeIntact || trackerPoisoned) {
+      throw new Error("sensitive-evidence-integrity-unproven");
+    }
+    if (!authority.revalidateOwners()) {
+      throw new Error("promise-owner-integrity-unproven");
+    }
+    const batch = Object.freeze(input.cache.artifacts.map((artifact) => Object.freeze({
+      name: artifact.name,
+      mediaType: artifact.mediaType,
+      bytes: Object.freeze(Array.from(artifact.bytes)),
+    })));
+    input.cache.consumed = true;
+    input.cache.artifacts = Object.freeze([]);
+    return batch;
+  } catch (error) {
+    input.cache.consumed = true;
+    input.cache.artifacts = Object.freeze([]);
+    throw error;
+  }
+}
+
 interface SensitiveActionMutationTracker {
   readonly target: Element;
   readonly forms: readonly string[];
@@ -723,6 +808,7 @@ export class PlaywrightBrowserSession {
   constructor(
     private readonly options: WebSessionOptions,
     private readonly launcher: BrowserLauncher = chromiumLauncher,
+    private readonly testHooks: BrowserSessionTestHooks = {},
   ) {}
 
   get allowedOrigins(): readonly string[] {
@@ -747,6 +833,23 @@ export class PlaywrightBrowserSession {
     this.latestGraph = graphId;
   }
 
+  async cacheArtifactBatch(
+    artifacts: readonly CapturedArtifact[],
+  ): Promise<JSHandle<PrivateArtifactCache> | undefined> {
+    if (!this.hasSensitiveActionTracker() && !this.hasSensitiveAction()) return undefined;
+    if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+      throw this.sensitiveEvidenceFailure();
+    }
+    return this.promiseIntrinsics.evaluateHandle((_authority, source) => ({
+      consumed: false,
+      artifacts: Object.freeze(source.map((artifact) => Object.freeze({
+        name: artifact.name,
+        mediaType: artifact.mediaType,
+        bytes: Object.freeze(Array.from(artifact.bytes)),
+      }))),
+    }), artifacts);
+  }
+
   hasGraph(graphId: string): boolean {
     return this.observations.has(graphId);
   }
@@ -767,33 +870,68 @@ export class PlaywrightBrowserSession {
     return observation.artifacts;
   }
 
-  async assertSensitiveEvidenceIntegrity(): Promise<void> {
+  async captureArtifactBatch(graphId: string): Promise<readonly CapturedArtifact[]> {
+    this.assertSensitiveEvidenceProven();
+    const observation = this.observations.get(graphId);
+    if (!observation) {
+      throw new WebTargetError(
+        "StaleObservation",
+        `No observation registered for graph ${graphId}.`,
+      );
+    }
+    if (!this.hasSensitiveActionTracker() && !this.hasSensitiveAction()) {
+      const batch = cloneArtifactBatch(observation.artifacts);
+      this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
+      return batch;
+    }
+
+    let enteredAtomicTail = false;
     try {
-      this.assertSensitiveEvidenceProven();
-      if (this.hasSensitiveActionTracker() || this.hasSensitiveAction()) {
-        if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
-          throw new Error("promise-authority-unavailable");
-        }
-        const ownersIntact = await this.promiseIntrinsics.evaluate(
-          (authority) => authority.snapshot().intact && authority.revalidateOwners(),
-        );
-        if (!ownersIntact) throw new Error("promise-owner-integrity-unproven");
-        await this.failIfSensitiveTrackingOverflowed();
-        await this.verifySensitiveShadowRoots();
-        for (const target of this.sensitiveActionTargets.values()) {
-          const intact = await target.handle.evaluate((element, identity) =>
-            element.isConnected && element.getAttribute(identity.attribute) === identity.token,
-          { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
-          if (!intact) throw new Error("sensitive-target-identity-unproven");
-        }
+      if (this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+        throw new Error("promise-authority-unavailable");
       }
+      if (observation.artifactCache === undefined) throw new Error("artifact-cache-unavailable");
+      await this.failIfSensitiveTrackingOverflowed();
+      await this.verifySensitiveShadowRoots();
+      for (const target of this.sensitiveActionTargets.values()) {
+        const intact = await target.handle.evaluate((element, identity) =>
+          element.isConnected && element.getAttribute(identity.attribute) === identity.token,
+        { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
+        if (!intact) throw new Error("sensitive-target-identity-unproven");
+      }
+      await this.testHooks.afterArtifactIntegrityChecks?.();
+
+      // This browser-realm callback is the event-loop-atomic tail: after its
+      // final owner check it synchronously clones/freezes and consumes the
+      // cache, with no await, yield, Promise, or page call in between.
+      enteredAtomicTail = true;
+      const serialized: readonly SerializedArtifact[] = await this.promiseIntrinsics.evaluate(
+        finalizeArtifactBatch,
+        {
+          trackers: this.sensitiveActionTrackers,
+          cache: observation.artifactCache,
+        },
+      );
       this.assertSensitiveEvidenceProven();
+      const batch = cloneArtifactBatch(serialized);
+      this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
+      return batch;
     } catch {
+      if (!enteredAtomicTail) await this.purgeArtifactCaches();
       for (const [graphId, observation] of this.observations) {
         this.observations.set(graphId, { descriptors: observation.descriptors, artifacts: [] });
       }
       throw this.sensitiveEvidenceFailure();
     }
+  }
+
+  private async purgeArtifactCaches(): Promise<void> {
+    await Promise.all([...this.observations.values()].map(async (observation) => {
+      await observation.artifactCache?.evaluate((cache) => {
+        cache.consumed = true;
+        cache.artifacts = Object.freeze([]);
+      }).catch(() => undefined);
+    }));
   }
 
   async establishPrivateActionTarget(
