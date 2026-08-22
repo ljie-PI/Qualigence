@@ -807,6 +807,21 @@ round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
   closed-shadow, artifact-boundary, and native Promise tests remain green.
   Because code changed after the failed E2E, a fresh coordinator review is
   required before that E2E may be rerun.
+- Deterministic bounded-recapture evidence head:
+  `1a7e3b1e9d8f7b5ec1e6d38655d3b92fad9c4c25`; 14 commits from Ticket 43 base
+  `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`. An internal test-only hook,
+  absent by default and not exported from the product package root, receives
+  only the 1-based capture attempt after redacted Graph and masked screenshot
+  artifact candidates are created and before final tracker reconciliation.
+- Real-Chromium tests deterministically prove: one reflected-node race reports
+  safe `EvidenceChangedDuringCapture`, reruns the full capture exactly once,
+  and returns only redacted Graph/artifacts; races on attempts 1 and 2 terminate
+  as `SensitiveEvidenceUnproven` after exactly two attempts with no new Graph or
+  artifact bytes registered/returned; a different poison reason never retries.
+  The production-shaped component fixture no longer relies on a 50 ms timer.
+- Exact affected/full Ticket 43 non-E2E Gate passed 13 files / 248 tests: 247
+  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run or claimed before review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
