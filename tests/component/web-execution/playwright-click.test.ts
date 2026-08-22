@@ -87,6 +87,57 @@ interface PromiseScenarioObservation {
   readonly finallySource: string;
 }
 
+interface PromiseParityObservation {
+  readonly intrinsicGlobalIdentity: boolean;
+  readonly instanceConstructorIdentity: boolean;
+  readonly resolveIdentity: boolean;
+  readonly staticDescriptors: readonly string[];
+  readonly prototypeDescriptors: readonly string[];
+  readonly subclassConstructorIdentity: boolean;
+  readonly speciesConstructorIdentity: boolean;
+  readonly customThenResult: string;
+}
+
+async function promiseParityPage(): Promise<PromiseParityObservation> {
+  const intrinsicPromise = Object.getPrototypeOf((async () => undefined)()).constructor as PromiseConstructor;
+  const describe = (target: object, key: PropertyKey): string => {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (descriptor === undefined) return `${String(key)}:missing`;
+    return [
+      typeof key === "symbol" ? key.toString() : key,
+      "value" in descriptor ? "data" : "accessor",
+      descriptor.configurable === true ? "c" : "-",
+      descriptor.enumerable === true ? "e" : "-",
+      "value" in descriptor && descriptor.writable === true ? "w" : "-",
+    ].join(":");
+  };
+  const promise = new Promise<string>((resolve) => resolve("base"));
+  class SubclassPromise<T> extends Promise<T> {}
+  class SpeciesPromise<T> extends Promise<T> {
+    static get [Symbol.species](): PromiseConstructor { return Promise; }
+  }
+  const custom = Promise.resolve("custom");
+  const inheritedThen = custom.then;
+  custom.then = function (...args) {
+    return Reflect.apply(inheritedThen, this, args);
+  };
+  const customThenResult = await custom.then((value) => value);
+  return {
+    intrinsicGlobalIdentity: Promise === intrinsicPromise,
+    instanceConstructorIdentity: promise.constructor === Promise,
+    resolveIdentity: Promise.resolve(promise) === promise,
+    staticDescriptors: Reflect.ownKeys(Promise).map((key) => describe(Promise, key)),
+    prototypeDescriptors: Reflect.ownKeys(Promise.prototype).map((key) =>
+      describe(Promise.prototype, key)),
+    subclassConstructorIdentity:
+      new SubclassPromise<string>((resolve) => resolve("subclass")).constructor === SubclassPromise,
+    speciesConstructorIdentity:
+      new SpeciesPromise<string>((resolve) => resolve("species")).then((value) => value)
+        .constructor === Promise,
+    customThenResult,
+  };
+}
+
 async function promiseScenarioPage(
   input: { readonly scenario: PromiseScenario; readonly installOnInput: boolean },
 ): Promise<PromiseScenarioObservation | { readonly installed: true }> {
@@ -2104,6 +2155,37 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect([counts.registrations, counts.executions]).toEqual(expectedCounts[scenario]);
   });
 
+  it("matches native Promise identity and descriptor shapes without replacing the constructor", async () => {
+    const browser = await chromiumLauncher.launch({ headless: true });
+    const context = await browser.newContext();
+    const nativePage = await context.newPage();
+    let native: PromiseParityObservation;
+    try {
+      await nativePage.goto(fixture.url);
+      native = await nativePage.evaluate(promiseParityPage);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const instrumented = await session.withPage(async (page) => page.evaluate(promiseParityPage));
+
+    expect(instrumented).toEqual(native);
+    expect(instrumented).toMatchObject({
+      intrinsicGlobalIdentity: true,
+      instanceConstructorIdentity: true,
+      resolveIdentity: true,
+      subclassConstructorIdentity: true,
+      speciesConstructorIdentity: true,
+      customThenResult: "custom",
+    });
+    expect(instrumented.prototypeDescriptors).toContain("then:data:c:-:w");
+    expect(instrumented.prototypeDescriptors).toContain("catch:data:c:-:w");
+    expect(instrumented.prototypeDescriptors).toContain("finally:data:c:-:w");
+  });
+
   it.each([1, 2, 65] as const)(
     "counts a then captured after init and poisons only after %i calls exceed bounds",
     async (calls) => {
@@ -2387,14 +2469,15 @@ describe("Playwright resolve + execute against real Chromium", () => {
           return Promise.resolve("unchanged") as Promise<TResult1 | TResult2>;
         }
       }
+      const receiver = new NondelegatingPromise<string>((resolve) => resolve("source"));
       const source = (globalThis as unknown as {
         document: { querySelector(selector: string): {
           addEventListener(type: string, listener: () => void): void;
         } | null };
       }).document.querySelector('input[aria-label="Email"]');
       source?.addEventListener("input", () => {
-        void new NondelegatingPromise<string>((resolve) => resolve("source"))
-          .then((value) => value)
+        void Promise.prototype.then.call(receiver);
+        void receiver.then((value) => value)
           .then((value) => {
             (globalThis as typeof globalThis & { nondelegatingResult?: string })
               .nondelegatingResult = String(value);
@@ -2408,6 +2491,52 @@ describe("Playwright resolve + execute against real Chromium", () => {
     await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
       (globalThis as typeof globalThis & { nondelegatingResult?: string }).nondelegatingResult,
     ))).toBe("unchanged");
+  });
+
+  it("poisons a twice-assigned nondelegating then while preserving application behavior", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "twice-assigned-secret" });
+    await session.withPage(async (page) => page.evaluate(() => {
+      const first = function <TResult1 = unknown, TResult2 = never>(
+        this: Promise<unknown>,
+      ): Promise<TResult1 | TResult2> {
+        return Promise.resolve("first") as Promise<TResult1 | TResult2>;
+      };
+      Promise.prototype.then = first;
+      Promise.prototype.then = function <TResult1 = unknown, TResult2 = never>(
+        onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      ) {
+        const value = typeof onfulfilled === "function" ? onfulfilled("preserved") : "preserved";
+        return Promise.resolve(value) as Promise<TResult1 | TResult2>;
+      };
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        void Promise.resolve("source").then((value) => {
+          (globalThis as typeof globalThis & { twiceAssignedResult?: string })
+            .twiceAssignedResult = String(value);
+          return value;
+        });
+      });
+    }));
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.twice-assigned"),
+      before,
+    );
+
+    await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { twiceAssignedResult?: string }).twiceAssignedResult,
+    ))).toBe("preserved");
   });
 
   it("does not let a delegating inner Promise override attest a nondelegating outer override", async () => {
@@ -2445,13 +2574,15 @@ describe("Playwright resolve + execute against real Chromium", () => {
             _onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
           ): Promise<TResult1 | TResult2> {
             events.push("outer-call");
-            void new InnerPromise<string>((resolve) => resolve("inner-source"))
-              .then((value) => { events.push(value); });
+            void inner.then((value) => { events.push(value); });
             return Promise.resolve("outer-result") as Promise<TResult1 | TResult2>;
           }
         }
-        void new OuterPromise<string>((resolve) => resolve("outer-source"))
-          .then((value) => value).then((value) => {
+        const inner = new InnerPromise<string>((resolve) => resolve("inner-source"));
+        const outer = new OuterPromise<string>((resolve) => resolve("outer-source"));
+        void Promise.prototype.then.call(inner);
+        void Promise.prototype.then.call(outer);
+        void outer.then((value) => value).then((value) => {
           events.push(value);
           state.nestedOverrideEvents = events;
         });
@@ -2555,8 +2686,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
             return Promise.resolve("unrelated") as Promise<TResult1 | TResult2>;
           }
         }
-        void new DifferentReceiverPromise<string>((resolve) => resolve("source"))
-          .then((value) => { state.differentReceiverValue = String(value); });
+        const receiver = new DifferentReceiverPromise<string>((resolve) => resolve("source"));
+        void Promise.prototype.then.call(receiver);
+        void receiver.then((value) => { state.differentReceiverValue = String(value); });
       });
     }));
 
@@ -2648,7 +2780,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
             ]);
           }
         }
-        void new UnsettledChildPromise<string>((resolve) => resolve("source")).then((value) => value);
+        const receiver = new UnsettledChildPromise<string>((resolve) => resolve("source"));
+        void Promise.prototype.then.call(receiver);
+        void receiver.then((value) => value);
       });
     }));
 

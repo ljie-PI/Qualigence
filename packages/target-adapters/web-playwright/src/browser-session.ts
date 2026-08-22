@@ -629,6 +629,7 @@ interface PrivatePromiseBoundaryHook {
 interface PrivatePromiseIntrinsics {
   readonly attest: (epoch: string) => boolean;
   readonly snapshot: () => PrivatePromiseIntrinsicsSnapshot;
+  readonly observe: (receiver: unknown) => boolean;
   readonly subscribe: (hook: PrivatePromiseBoundaryHook) => boolean;
   readonly unsubscribe: (hook: PrivatePromiseBoundaryHook) => boolean;
   readonly isWrappedThen: (candidate: unknown) => boolean;
@@ -1463,6 +1464,9 @@ export class PlaywrightBrowserSession {
             tracker.outstandingPromiseDelegations = promiseTokens.size;
           },
           returned(receiver) {
+            if (!input.promiseIntrinsics.observe(receiver)) {
+              tracker.schedulerProvenanceUnproven = true;
+            }
             expectedPromiseReceivers.add(receiver);
           },
         };
@@ -2609,6 +2613,8 @@ export class PlaywrightBrowserSession {
         const nativePrototype = Promise.prototype;
         const globalDescriptor = nativeOwnDescriptor(globalThis, "Promise");
         const prototypeDescriptor = nativeOwnDescriptor(nativePromise, "prototype");
+        const staticDescriptors = Reflect.ownKeys(nativePromise).map((key) =>
+          [key, nativeOwnDescriptor(nativePromise, key)] as const);
         const thenDescriptor = nativeOwnDescriptor(nativePrototype, "then");
         const catchDescriptor = nativeOwnDescriptor(nativePrototype, "catch");
         const finallyDescriptor = nativeOwnDescriptor(nativePrototype, "finally");
@@ -2625,6 +2631,37 @@ export class PlaywrightBrowserSession {
           current.get === captured.get && current.set === captured.set &&
           current.value === captured.value && current.writable === captured.writable;
         const hooks = new Set<PrivatePromiseBoundaryHook>();
+        type PromiseMethodName = "then" | "catch" | "finally";
+        interface ObservedMethod {
+          readonly descriptor: PropertyDescriptor | undefined;
+          readonly version: number;
+        }
+        const observedDescriptors = new WeakMap<object, Map<PromiseMethodName, ObservedMethod>>();
+        const pendingDescriptorVersions = new WeakMap<object, Map<PromiseMethodName, number>>();
+        const instrumentedMethods = new WeakMap<Function, {
+          readonly method: Function;
+          readonly name: PromiseMethodName;
+        }>();
+        const approvedMethods = new WeakSet<Function>([
+          thenDescriptor.value,
+          catchDescriptor.value,
+          finallyDescriptor.value,
+        ]);
+        const sameDescriptorShape = (
+          current: PropertyDescriptor | undefined,
+          captured: PropertyDescriptor | undefined,
+        ): boolean => current !== undefined && captured !== undefined &&
+          "value" in current && "value" in captured &&
+          current.configurable === captured.configurable &&
+          current.enumerable === captured.enumerable &&
+          current.writable === captured.writable;
+        const descriptorChanged = (
+          current: PropertyDescriptor | undefined,
+          observed: PropertyDescriptor | undefined,
+        ): boolean => current?.configurable !== observed?.configurable ||
+          current?.enumerable !== observed?.enumerable || current?.get !== observed?.get ||
+          current?.set !== observed?.set || current?.value !== observed?.value ||
+          current?.writable !== observed?.writable;
         interface CustomCallFrame {
           readonly token: readonly PrivatePromiseDelegationToken[];
           readonly expectedReceiver: unknown;
@@ -2657,6 +2694,11 @@ export class PlaywrightBrowserSession {
           pendingContinuationFrames.set(receiver, frames);
           return true;
         };
+        let observeReceiver: (
+          receiver: unknown,
+          trackChanges: boolean,
+          attestChanges: boolean,
+        ) => readonly PromiseMethodName[];
         const wrappedThen = function <T, TResult1 = T, TResult2 = never>(
           this: Promise<T>,
           onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
@@ -2666,12 +2708,20 @@ export class PlaywrightBrowserSession {
           let rejected: unknown = onrejected;
           let frame = pendingCustomCalls.at(-1);
           let continuationFrame = false;
+          const customMethods = hooks.size === 0 ? [] : observeReceiver(this, true, true);
           if (frame === undefined) {
             frame = takeContinuationFrame(this);
             if (frame !== undefined) {
               pendingCustomCalls.push(frame);
               continuationFrame = true;
             }
+          }
+          if (frame === undefined && customMethods.length > 0) {
+            const tokens: PrivatePromiseDelegationToken[] = [];
+            for (const hook of hooks) tokens.push(...hook.custom(this));
+            frame = { token: tokens, expectedReceiver: this, delegated: false };
+            pendingCustomCalls.push(frame);
+            continuationFrame = true;
           }
           const associated = frame?.expectedReceiver === this ? frame.token : [];
           if (frame?.expectedReceiver === this) frame.delegated = true;
@@ -2694,9 +2744,16 @@ export class PlaywrightBrowserSession {
             }
           }
         };
-        const instrumentCustom = (method: unknown): unknown => {
-          if (typeof method !== "function") return method;
-          return function (this: unknown, ...args: unknown[]): unknown {
+        Object.defineProperties(wrappedThen, {
+          name: { configurable: true, value: thenDescriptor.value.name },
+          length: { configurable: true, value: thenDescriptor.value.length },
+        });
+        approvedMethods.add(wrappedThen);
+        const instrumentCustom = (method: Function, name: PromiseMethodName): Function => {
+          const existing = instrumentedMethods.get(method);
+          if (existing?.name === name) return method;
+          const instrumented = function (this: unknown, ...args: unknown[]): unknown {
+            observeReceiver(this, true, true);
             const parent = pendingCustomCalls.at(-1);
             let frame = takeContinuationFrame(this);
             if (frame === undefined) {
@@ -2724,78 +2781,97 @@ export class PlaywrightBrowserSession {
               settle(frame);
             }
           };
+          Object.defineProperties(instrumented, {
+            name: { configurable: true, value: method.name },
+            length: { configurable: true, value: method.length },
+          });
+          instrumentedMethods.set(instrumented, { method, name });
+          approvedMethods.add(instrumented);
+          return instrumented;
         };
-        const instrumentedMethods = new WeakSet<Function>();
-        const instrumentPrototype = (constructor: object): void => {
-          const prototype = nativeOwnDescriptor(constructor, "prototype")?.value;
-          if (typeof prototype !== "object" || prototype === null || prototype === nativePrototype) return;
-          for (const name of ["then", "catch", "finally"] as const) {
-            const descriptor = nativeOwnDescriptor(prototype, name);
-            if (descriptor === undefined || !("value" in descriptor) ||
-                typeof descriptor.value !== "function" || instrumentedMethods.has(descriptor.value)) continue;
-            const instrumented = instrumentCustom(descriptor.value);
-            if (typeof instrumented !== "function") continue;
-            instrumentedMethods.add(instrumented);
-            Object.defineProperty(prototype, name, { ...descriptor, value: instrumented });
+        observeReceiver = (receiver, trackChanges, attestChanges) => {
+          if ((typeof receiver !== "object" && typeof receiver !== "function") || receiver === null) {
+            return [];
           }
-        };
-        const instrumentedPromise = new Proxy(nativePromise, {
-          construct(target, args, newTarget) {
-            instrumentPrototype(newTarget);
-            return Reflect.construct(target, args, newTarget);
-          },
-        });
-        Object.defineProperty(globalThis, "Promise", {
-          ...globalDescriptor,
-          value: instrumentedPromise,
-        });
-        let currentThen: unknown = wrappedThen;
-        let currentCatch: unknown = catchDescriptor.value;
-        let currentFinally: unknown = finallyDescriptor.value;
-        const installMethod = (
-          name: "then" | "catch" | "finally",
-          descriptor: PropertyDescriptor,
-          nativeMethod: unknown,
-          read: () => unknown,
-          write: (value: unknown) => void,
-        ): void => {
-          Object.defineProperty(nativePrototype, name, {
-            configurable: descriptor.configurable === true,
-            enumerable: descriptor.enumerable === true,
-            get: read,
-            set: function (this: object, value: unknown): void {
-              const installed = value === nativeMethod || value === wrappedThen
-                ? value
-                : instrumentCustom(value);
-              if (this === nativePrototype) {
-                write(installed);
-              } else {
-                Object.defineProperty(this, name, {
-                  configurable: true,
-                  enumerable: true,
-                  writable: true,
-                  value: installed,
+          const customMethods: PromiseMethodName[] = [];
+          for (let owner: object | null = receiver; owner !== null; owner = nativePrototypeOf(owner)) {
+            let observed = observedDescriptors.get(owner);
+            if (observed === undefined) {
+              observed = new Map();
+              observedDescriptors.set(owner, observed);
+            }
+            for (const name of ["then", "catch", "finally"] as const) {
+              const descriptor = nativeOwnDescriptor(owner, name);
+              if (descriptor === undefined) continue;
+              let customMethod = false;
+              const previous = observed.get(name);
+              const changed = previous !== undefined && descriptorChanged(descriptor, previous.descriptor);
+              const version = previous === undefined || changed
+                ? (previous?.version ?? 0) + 1
+                : previous.version;
+              if (trackChanges && changed) {
+                const pending = pendingDescriptorVersions.get(owner) ?? new Map();
+                pending.set(name, version);
+                pendingDescriptorVersions.set(owner, pending);
+              }
+              if (!("value" in descriptor) || typeof descriptor.value !== "function") {
+                observed.set(name, { descriptor, version });
+                customMethods.push(name);
+                continue;
+              }
+              const method = descriptor.value;
+              const nativeMethod = name === "then" ? thenDescriptor.value
+                : name === "catch" ? catchDescriptor.value : finallyDescriptor.value;
+              if (owner === nativePrototype && name === "then" &&
+                  (method === nativeMethod || method === wrappedThen)) {
+                if (method !== wrappedThen) {
+                  Object.defineProperty(owner, name, { ...descriptor, value: wrappedThen });
+                }
+              } else if (method !== nativeMethod && method !== wrappedThen &&
+                  !instrumentedMethods.has(method)) {
+                customMethod = true;
+                customMethods.push(name);
+                Object.defineProperty(owner, name, {
+                  ...descriptor,
+                  value: instrumentCustom(method, name),
+                });
+              } else if (instrumentedMethods.has(method)) {
+                customMethod = true;
+                customMethods.push(name);
+              }
+              if (attestChanges && customMethod) {
+                pendingDescriptorVersions.get(owner)?.delete(name);
+              }
+              const installedDescriptor = nativeOwnDescriptor(owner, name);
+              observed.set(name, {
+                descriptor: installedDescriptor,
+                version,
+              });
+              if (installedDescriptor?.value !== descriptor.value) {
+                observed.set(name, {
+                  descriptor: installedDescriptor,
+                  version: version + 1,
                 });
               }
-            },
-          });
+            }
+            if (owner === nativePrototype) break;
+          }
+          return customMethods;
         };
-        installMethod("then", thenDescriptor, wrappedThen, () => currentThen, (value) => {
-          currentThen = value;
+        Object.defineProperty(nativePrototype, "then", {
+          ...thenDescriptor,
+          value: wrappedThen,
         });
-        installMethod("catch", catchDescriptor, catchDescriptor.value, () => currentCatch, (value) => {
-          currentCatch = value;
-        });
-        installMethod("finally", finallyDescriptor, finallyDescriptor.value, () => currentFinally, (value) => {
-          currentFinally = value;
-        });
-        const wrappedCatch = currentCatch as Promise<unknown>["catch"];
-        const wrappedFinally = currentFinally as Promise<unknown>["finally"];
+        observeReceiver(nativePrototype, false, false);
+        const wrappedCatch = catchDescriptor.value as Promise<unknown>["catch"];
+        const wrappedFinally = finallyDescriptor.value as Promise<unknown>["finally"];
         const promiseAuthority: PrivatePromiseIntrinsics = Object.freeze({
           attest(epoch: string) {
             return epoch === promiseInitEpoch && host[promiseSymbol] === promiseGateway;
           },
           snapshot() {
+            observeReceiver(nativePrototype, true, hooks.size === 0);
+            const pendingPrototypeChanges = [...(pendingDescriptorVersions.get(nativePrototype)?.values() ?? [])];
             return {
               then: thenDescriptor?.value as Promise<unknown>["then"],
               catch: catchDescriptor?.value as Promise<unknown>["catch"],
@@ -2803,31 +2879,34 @@ export class PlaywrightBrowserSession {
               wrappedThen,
               wrappedCatch,
               wrappedFinally,
-              intact: Promise === instrumentedPromise &&
+              intact: Promise === nativePromise &&
                 Promise.prototype === nativePrototype &&
-                nativeOwnDescriptor(globalThis, "Promise")?.value === instrumentedPromise &&
+                sameDescriptor(nativeOwnDescriptor(globalThis, "Promise"), globalDescriptor) &&
                 sameDescriptor(nativeOwnDescriptor(nativePromise, "prototype"), prototypeDescriptor) &&
-                Promise.prototype.then === currentThen &&
-                Promise.prototype.catch === currentCatch &&
-                Promise.prototype.finally === currentFinally &&
+                staticDescriptors.every(([key, descriptor]) =>
+                  key === "prototype" || sameDescriptor(nativeOwnDescriptor(nativePromise, key), descriptor)) &&
+                approvedMethods.has(Promise.prototype.then) &&
+                approvedMethods.has(Promise.prototype.catch) &&
+                approvedMethods.has(Promise.prototype.finally) &&
                 sameDescriptor(nativeOwnDescriptor(nativePrototype, "constructor"), constructorDescriptor) &&
                 sameDescriptor(nativeOwnDescriptor(nativePromise, Symbol.species), speciesDescriptor) &&
+                pendingPrototypeChanges.length === 0 &&
                 host[promiseSymbol] === promiseGateway,
               ownDescriptor: nativeOwnDescriptor,
               prototypeOf: nativePrototypeOf,
               descriptorShapeIntact: (() => {
-                for (const method of ["then", "catch", "finally"] as const) {
-                  const descriptor = nativeOwnDescriptor(nativePrototype, method);
-                  if (descriptor === undefined || "value" in descriptor ||
-                      typeof descriptor.get !== "function" || typeof descriptor.set !== "function") {
-                    return false;
-                  }
-                }
-                return true;
+                return sameDescriptorShape(nativeOwnDescriptor(nativePrototype, "then"), thenDescriptor) &&
+                  sameDescriptorShape(nativeOwnDescriptor(nativePrototype, "catch"), catchDescriptor) &&
+                  sameDescriptorShape(nativeOwnDescriptor(nativePrototype, "finally"), finallyDescriptor);
               })(),
             };
           },
+          observe(receiver: unknown) {
+            observeReceiver(receiver, hooks.size > 0, false);
+            return true;
+          },
           subscribe(hook: PrivatePromiseBoundaryHook) {
+            observeReceiver(nativePrototype, false, false);
             hooks.add(hook);
             return promiseAuthority.snapshot().intact;
           },

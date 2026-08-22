@@ -685,6 +685,19 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
   1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
   passed. No E2E was run.
 - No E2E is run before fresh review.
+- Round-5 final fix removes the global Promise Proxy and all Promise method
+  accessors. `globalThis.Promise` remains the intrinsic constructor; only
+  `Promise.prototype.then` is installed as a data-descriptor wrapper using the
+  native flags, while native `catch` and `finally` remain unchanged. WeakMap
+  descriptor snapshots/versioning reconcile own and prototype overrides at
+  sensitive activation and call boundaries without assignment interception.
+- The Chromium native-parity matrix now compares intrinsic/global constructor
+  identity, instance constructor identity, `Promise.resolve` identity, all
+  static and prototype descriptor shapes/flags, subclass/species behavior, a
+  custom own `then`, and twice-assigned nondelegating `then` poisoning.
+- Round-5 exact Ticket 42 non-E2E Gate passed 12 files / 225 tests: 224
+  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run per instruction.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
