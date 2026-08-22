@@ -678,10 +678,9 @@ product_head: `dcfa670dc86c1a5b154ef14eacc59cee7ec5836c`
 - Full non-E2E command with Git OpenSSL first on `PATH` and
   `OPENSSL_CONF=C:\Program Files\Git\mingw64\etc\ssl\openssl.cnf`:
   `corepack pnpm vitest run --exclude "tests/e2e/**" --exclude "tests/live/**"`.
-  It ran 159 files / 1,335 tests: 1,323 passed, 5 skipped, and 7 failed. Six are
-  the documented unrelated baseline failures; the changed delayed-reflection
-  case passed the complete affected Gate and failed only under full-suite
-  concurrency. Per closure protocol, no E2E was run before fresh review.
+  It ran 159 files / 1,338 tests: 1,327 passed, 5 skipped, and 6 failed. All six
+  are the documented unrelated baseline failures; every changed Web adapter
+  test passed. Per closure protocol, no E2E was run before fresh review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
