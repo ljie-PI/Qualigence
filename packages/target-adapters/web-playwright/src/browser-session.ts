@@ -2818,7 +2818,7 @@ export class PlaywrightBrowserSession {
         }
         interface RegisteredPromiseOwner {
           readonly receiver: object;
-          readonly chain: readonly PromiseChainOwnerSnapshot[];
+          chain: readonly PromiseChainOwnerSnapshot[];
         }
         let observedDescriptors = new WeakMap<object, Map<PromiseMethodName, ObservedMethod>>();
         let pendingDescriptorVersions = new WeakMap<object, Map<PromiseMethodName, number>>();
@@ -2892,6 +2892,23 @@ export class PlaywrightBrowserSession {
           const registered = { receiver, chain };
           registeredOwnerIndex.set(receiver, registered);
           registeredOwners.push(registered);
+        };
+        const approveInstrumentedDescriptor = (
+          owner: object,
+          name: PromiseMethodName,
+          descriptor: PropertyDescriptor | undefined,
+        ): void => {
+          const registered = registeredOwnerIndex.get(owner);
+          if (registered === undefined) return;
+          registered.chain = registered.chain.map((captured) => captured.owner === owner
+            ? {
+                ...captured,
+                descriptors: captured.descriptors.map(([capturedName, capturedDescriptor]) =>
+                  capturedName === name
+                    ? [capturedName, descriptor] as const
+                    : [capturedName, capturedDescriptor] as const),
+              }
+            : captured);
         };
         const registeredOwnersIntact = (): boolean => {
           if (promiseAuthorityClosed || ownerRegistryOverflow) return false;
@@ -2990,7 +3007,6 @@ export class PlaywrightBrowserSession {
           if (existing?.name === name) return method;
           const instrumented = function (this: unknown, ...args: unknown[]): unknown {
             observeReceiver(this, true, true);
-            registerOwner(this);
             const parent = pendingCustomCalls.at(-1);
             let frame = takeContinuationFrame(this);
             if (frame === undefined) {
@@ -3052,6 +3068,7 @@ export class PlaywrightBrowserSession {
                 pendingDescriptorVersions.set(owner, pending);
               }
               if (!("value" in descriptor) || typeof descriptor.value !== "function") {
+                registerOwner(owner);
                 observed.set(name, { descriptor, version });
                 customMethods.push(name);
                 continue;
@@ -3066,13 +3083,16 @@ export class PlaywrightBrowserSession {
                 }
               } else if (method !== nativeMethod && method !== wrappedThen &&
                   !instrumentedMethods.has(method)) {
+                registerOwner(owner);
                 customMethod = true;
                 customMethods.push(name);
                 Object.defineProperty(owner, name, {
                   ...descriptor,
                   value: instrumentCustom(method, name),
                 });
+                approveInstrumentedDescriptor(owner, name, nativeOwnDescriptor(owner, name));
               } else if (instrumentedMethods.has(method)) {
+                registerOwner(owner);
                 customMethod = true;
                 customMethods.push(name);
               }

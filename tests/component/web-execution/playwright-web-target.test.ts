@@ -119,7 +119,6 @@ describe("PlaywrightWebTargetAdapter facade", () => {
                 value: function (...args) { return Reflect.apply(delegate, this, args); },
               });
               Reflect.apply(Promise.prototype.then, receiver, []);
-              receiver.then(() => undefined);
               window.observedPromiseOwner = receiver;
             });
           </script>
@@ -287,7 +286,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     });
   });
 
-  it("rejects with zero bytes when the final-boundary hook mutates an observed owner", async () => {
+  it("rejects with zero bytes when the final-boundary hook mutates an observed uninvoked owner", async () => {
     const control = observedOwnerControl();
     const events: string[] = [];
     const observed = await captureSensitiveObservation(control.launcher, {
@@ -330,7 +329,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     });
   });
 
-  it("returns an unchanged frozen batch once and isolates its bytes from the cache", async () => {
+  it("returns an unchanged frozen batch for an observed uninvoked owner", async () => {
     const control = observedOwnerControl();
     const observed = await captureSensitiveObservation(control.launcher);
 

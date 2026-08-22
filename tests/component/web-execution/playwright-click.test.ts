@@ -2464,7 +2464,126 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
-  it("accepts 128 observed Promise owners, poisons on 129, and isolates a new session", async () => {
+  it.each(["replace", "delete", "accessor", "prototype"] as const)(
+    "rejects evidence after an observed but uninvoked Promise owner %s mutation",
+    async (mutation) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${mutation}-uninvoked-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.promise-uninvoked-${mutation}`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(() => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & {
+            uninvokedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+            uninvokedPromiseResult?: string;
+            uninvokedCustomCalls?: number;
+          };
+          const receiver = Promise.resolve("native-result");
+          const delegate = receiver.then;
+          Object.defineProperty(receiver, "then", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function (this: Promise<string>, ...args: unknown[]) {
+              state.uninvokedCustomCalls = (state.uninvokedCustomCalls ?? 0) + 1;
+              return Reflect.apply(delegate, this, args);
+            },
+          });
+          Reflect.apply(Promise.prototype.then, receiver, [
+            (value: string) => { state.uninvokedPromiseResult = value; },
+          ]);
+          state.uninvokedPromiseOwner = receiver;
+        }, { once: true });
+      }));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { uninvokedPromiseResult?: string }).uninvokedPromiseResult,
+      ))).toBe("native-result");
+      expect(await session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { uninvokedCustomCalls?: number }).uninvokedCustomCalls ?? 0,
+      ))).toBe(0);
+      await session.withPage(async (page) => page.evaluate((kind) => {
+        const owner = (globalThis as typeof globalThis & {
+          uninvokedPromiseOwner?: Promise<string> & { then: Promise<string>["then"] };
+        }).uninvokedPromiseOwner;
+        if (owner === undefined) throw new Error("observed uninvoked owner unavailable");
+        if (kind === "replace") {
+          Object.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: function () { return Promise.resolve("replacement-result"); },
+          });
+        } else if (kind === "delete") {
+          delete (owner as { then?: Promise<string>["then"] }).then;
+        } else if (kind === "accessor") {
+          const current = Promise.prototype.then;
+          Object.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: false,
+            get: () => current,
+          });
+        } else {
+          Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
+        }
+      }, mutation));
+
+      await expect(observer.capture(job)).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
+  it("accepts an unchanged observed but uninvoked Promise owner", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "unchanged-uninvoked-secret" });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.promise-uninvoked-unchanged"),
+      before,
+    );
+    await session.withPage(async (page) => page.evaluate(() => {
+      const source = (globalThis as unknown as {
+        document: { querySelector(selector: string): {
+          addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+        } | null };
+      }).document.querySelector('input[aria-label="Email"]');
+      source?.addEventListener("input", () => {
+        const receiver = Promise.resolve("unchanged");
+        const delegate = receiver.then;
+        Object.defineProperty(receiver, "then", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (this: Promise<string>, ...args: unknown[]) {
+            return Reflect.apply(delegate, this, args);
+          },
+        });
+        Reflect.apply(Promise.prototype.then, receiver, []);
+      }, { once: true });
+    }));
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture(job)).resolves.toMatchObject({ graphId: expect.any(String) });
+  });
+
+  it("counts 128 observed but uninvoked Promise owners, poisons on 129, and preserves callbacks", async () => {
     const exerciseOwners = async (count: number): Promise<{
       readonly observer: PlaywrightObserver;
       readonly before: ObservationGraph;
@@ -2479,8 +2598,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
       );
       await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
       await session.withPage(async (page) => page.evaluate((maximum) => {
-        const state = globalThis as typeof globalThis & { ownerCallbackResults?: number[] };
+        const state = globalThis as typeof globalThis & {
+          ownerCallbackResults?: number[];
+          ownerCustomCalls?: number;
+        };
         const results: number[] = [];
+        state.ownerCustomCalls = 0;
         for (let index = 0; index < maximum; index += 1) {
           const receiver = Promise.resolve(index);
           const delegate = receiver.then;
@@ -2489,11 +2612,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             enumerable: false,
             writable: true,
             value: function (this: Promise<number>, ...args: unknown[]) {
+              state.ownerCustomCalls = (state.ownerCustomCalls ?? 0) + 1;
               return Reflect.apply(delegate, this, args);
             },
           });
-          Reflect.apply(Promise.prototype.then, receiver, []);
-          receiver.then((value) => { results.push(value); });
+          Reflect.apply(Promise.prototype.then, receiver, [
+            (value: number) => { results.push(value); },
+          ]);
         }
         state.ownerCallbackResults = results;
       }, count));
@@ -2501,6 +2626,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
         (globalThis as typeof globalThis & { ownerCallbackResults?: number[] })
           .ownerCallbackResults?.length,
       ))).toBe(count);
+      expect(await session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { ownerCustomCalls?: number }).ownerCustomCalls,
+      ))).toBe(0);
       return { observer, before };
     };
 
