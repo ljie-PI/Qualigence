@@ -43,7 +43,7 @@ export interface PlaywrightWebTargetOptions extends WebSessionOptions {
  * dedicated collaborators. No Playwright object is exposed here.
  */
 export class PlaywrightWebTargetAdapter
-  implements Observer, ActionResolver, ActionExecutor, WebTargetSession
+  implements Observer, ActionResolver<import("@qualigence/runner-kernel").ProposedActionKind>, ActionExecutor, WebTargetSession
 {
   private readonly session: PlaywrightBrowserSession;
   private readonly observer: PlaywrightObserver;

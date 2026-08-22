@@ -33,6 +33,20 @@ function input(nodeId: string, valueRef: string): ProposedAction<"input"> {
   return { kind: "input", target: { nodeId }, valueRef, reason: "test" };
 }
 
+function navigate(path: string): ProposedAction<"navigate"> {
+  return { kind: "navigate", path, reason: "test" };
+}
+
+function scroll(nodeId?: string): ProposedAction<"scroll"> {
+  return {
+    kind: "scroll",
+    ...(nodeId === undefined ? {} : { target: { nodeId } }),
+    direction: "down",
+    amount: "page",
+    reason: "test",
+  };
+}
+
 function graphWith(graphId: string, nodeId: string): ObservationGraph {
   return {
     graphId,
@@ -90,9 +104,134 @@ describe("PlaywrightActionResolver negative paths", () => {
       resolver.resolve(input("n-0-abcd1234", "customer.email"), graphWith(graphId, "n-0-abcd1234")),
     ).resolves.toMatchObject({ kind: "input", valueRef: "customer.email" });
   });
+
+  it("canonicalizes an immutable navigation path against the Job target origin", async () => {
+    const resolver = new PlaywrightActionResolver(sessionWithGraph("run-1:observation:1"));
+
+    await expect(
+      resolver.resolve(navigate("/checkout?source=plan"), graphWith("run-1:observation:1", "n-0-abcd1234")),
+    ).resolves.toEqual({
+      targetKind: "web",
+      kind: "navigate",
+      url: "https://example.test/checkout?source=plan",
+    });
+    await expect(
+      resolver.resolve(navigate("https://other.test/checkout"), graphWith("run-1:observation:1", "n-0-abcd1234")),
+    ).rejects.toMatchObject({ code: "OriginViolation" });
+  });
+
+  it("preserves only fixed scroll parameters and optional current-graph grounding", async () => {
+    const graphId = "run-1:observation:1";
+    const session = sessionWithGraph(graphId);
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({ count: async () => 1 }),
+    } as never);
+    const resolver = new PlaywrightActionResolver(session);
+
+    await expect(resolver.resolve(scroll(), graphWith(graphId, "n-0-abcd1234"))).resolves.toEqual({
+      targetKind: "web",
+      kind: "scroll",
+      graphId,
+      direction: "down",
+      amount: "page",
+    });
+    await expect(resolver.resolve(scroll("n-0-abcd1234"), graphWith(graphId, "n-0-abcd1234"))).resolves.toMatchObject({
+      targetKind: "web",
+      kind: "scroll",
+      target: { nodeId: "n-0-abcd1234" },
+      graphId,
+      direction: "down",
+      amount: "page",
+    });
+  });
+
+  it("rejects a prior descriptor after a fresh observation is registered", async () => {
+    const session = sessionWithGraph("run-1:observation:1");
+    session.registerObservation("run-1:observation:2", {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    const resolver = new PlaywrightActionResolver(session);
+
+    await expect(
+      resolver.resolve(click("n-0-abcd1234"), graphWith("run-1:observation:1", "n-0-abcd1234")),
+    ).rejects.toMatchObject({ code: "StaleObservation" });
+  });
 });
 
 describe("PlaywrightActionExecutor value resolution", () => {
+  it("executes approved navigation and page scroll then invalidates old descriptors", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    const calls: string[] = [];
+    session.withPage = async (operation) => operation({
+      goto: async (url: string) => { calls.push(`goto:${url}`); },
+      evaluate: async (_callback: unknown, value: unknown) => { calls.push(`scroll:${JSON.stringify(value)}`); },
+      url: () => "https://example.test/checkout",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "navigate",
+      url: "https://example.test/checkout",
+    }, permit)).resolves.toEqual({ status: "ok" });
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "scroll",
+      graphId,
+      direction: "down",
+      amount: "page",
+    }, permit)).resolves.toEqual({ status: "ok" });
+
+    expect(calls[0]).toBe("goto:https://example.test/checkout");
+    expect(calls[1]).toContain("scroll:");
+    expect(session.hasGraph(graphId)).toBe(false);
+  });
+
+  it.each([
+    ["small", 0.25],
+    ["page", 1],
+  ] as const)("executes targeted %s scroll with its bounded viewport amount", async (amount, distance) => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    const evaluate = vi.fn(async () => undefined);
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        evaluate,
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "scroll",
+      graphId,
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      direction: "down",
+      amount,
+    }, permit)).resolves.toEqual({ status: "ok" });
+
+    expect(evaluate).toHaveBeenCalledWith(expect.any(Function), { direction: "down", distance });
+  });
+
   it.each([
     ["input", "fill"],
     ["select", "selectOption"],

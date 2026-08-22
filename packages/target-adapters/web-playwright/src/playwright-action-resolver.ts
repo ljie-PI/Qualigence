@@ -25,20 +25,40 @@ export class PlaywrightActionResolver implements ActionResolver {
     action: AnyProposedAction,
     graph: ObservationGraph,
   ): Promise<AnyResolvedWebAction> {
-    if (action.kind === "navigate" || action.kind === "window" || (action.kind === "scroll" && action.target === undefined)) {
+    if (action.kind === "window") {
       throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
+    }
+    if (action.kind === "navigate") {
+      let url: URL;
+      try {
+        url = new URL(action.path, this.session.targetUrl);
+      } catch {
+        throw new WebTargetError("NavigationFailed", "The planned navigation path is invalid.");
+      }
+      if (!this.session.allowedOrigins.includes(url.origin)) {
+        throw new WebTargetError("OriginViolation", "The planned navigation leaves the approved origin.");
+      }
+      return { targetKind: "web", kind: "navigate", url: url.href };
+    }
+    if (!this.session.hasGraph(graph.graphId)) {
+      throw new WebTargetError(
+        "StaleObservation",
+        `Graph ${graph.graphId} is not the session's current observation.`,
+      );
+    }
+    if (action.kind === "scroll" && action.target === undefined) {
+      return {
+        targetKind: "web",
+        kind: "scroll",
+        graphId: graph.graphId,
+        direction: action.direction,
+        amount: action.amount,
+      };
     }
     const actionTarget = action.target;
     if (actionTarget === undefined) {
       throw new WebTargetError("UnsupportedAction", "This action requires a semantic target.");
     }
-    if (!this.session.hasGraph(graph.graphId)) {
-      throw new WebTargetError(
-        "StaleObservation",
-        `Graph ${graph.graphId} is not the session's registered observation.`,
-      );
-    }
-
     const descriptor = this.session.descriptorFor(
       graph.graphId,
       actionTarget.nodeId,
@@ -79,8 +99,15 @@ export class PlaywrightActionResolver implements ActionResolver {
         valueRef: action.valueRef,
       };
     }
-    if (action.kind !== "click") {
-      throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
+    if (action.kind === "scroll") {
+      return {
+        targetKind: "web",
+        kind: "scroll",
+        target,
+        graphId: graph.graphId,
+        direction: action.direction,
+        amount: action.amount,
+      };
     }
     return {
       targetKind: "web",

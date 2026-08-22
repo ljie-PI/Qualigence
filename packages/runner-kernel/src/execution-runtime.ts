@@ -5,6 +5,7 @@ import type {
   DecisionTracePayload,
   DeniedPolicyTracePayload,
   ExecutionCompletion,
+  ExecutionPlanStep,
   FindingEnvelope,
   ObservationGraph,
   ResolvedActionTracePayload,
@@ -75,7 +76,7 @@ interface LegacyResolvedWebClick {
  * owned by `@qualigence/desktop-contracts` and re-exported through Runner
  * Protocol.
  */
-export type ResolvedAction = ResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
+export type ResolvedAction = AnyResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
 export type AnyResolvedAction = AnyResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
 
 /** True when a resolved action targets a Windows Desktop app via UIA. */
@@ -173,24 +174,35 @@ export class ExecutionBlockedError extends Error {
   }
 }
 
+export class ActionOutcomeUnknownError extends Error {
+  readonly errorCode = "ActionOutcomeUnknown";
+
+  constructor() {
+    super("The action outcome could not be determined.");
+    this.name = "ActionOutcomeUnknownError";
+  }
+}
+
 export interface Observer {
   capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
 }
 
-export interface ExecutionDecisionProvider {
-  decide(context: AgentContext): Promise<ProposedAction>;
+export interface ExecutionDecisionProvider<TKind extends ProposedActionKind = "click"> {
+  decide(context: AgentContext): Promise<ProposedAction<TKind>>;
 }
 
 export interface AgentContext {
   readonly job: AcceptedExecutionJob;
   readonly observation: ObservationGraph;
+  readonly step?: ExecutionPlanStep;
+  readonly stepIndex?: number;
   readonly budget?: ExecutionBudget;
   readonly signal?: AbortSignal;
 }
 
-export interface ActionResolver {
+export interface ActionResolver<TKind extends ProposedActionKind = "click"> {
   resolve(
-    action: ProposedAction,
+    action: ProposedAction<TKind>,
     graph: ObservationGraph,
     signal?: AbortSignal,
   ): Promise<ResolvedAction>;
@@ -221,8 +233,10 @@ export interface VerificationContext {
   readonly job: AcceptedExecutionJob;
   readonly before: ObservationGraph;
   readonly after: ObservationGraph;
-  readonly action: ResolvedAction;
-  readonly outcome: ActionOutcome;
+  readonly claimIds?: readonly string[];
+  readonly stepIndex?: number;
+  readonly action?: ResolvedAction;
+  readonly outcome?: ActionOutcome;
   readonly budget?: ExecutionBudget;
   readonly signal?: AbortSignal;
 }
@@ -237,10 +251,10 @@ export type TraceEventInput = TraceEvent extends infer TEvent
     : never
   : never;
 
-export interface ExecutionRuntimeDependencies {
+export interface ExecutionRuntimeDependencies<TKind extends ProposedActionKind = "click"> {
   readonly observer: Observer;
-  readonly decisionProvider: ExecutionDecisionProvider;
-  readonly resolver: ActionResolver;
+  readonly decisionProvider: ExecutionDecisionProvider<TKind>;
+  readonly resolver: ActionResolver<TKind>;
   readonly policyGate: RunnerPolicyGate;
   readonly actionExecutor: ActionExecutor;
   readonly verifier: Verifier;
@@ -269,10 +283,10 @@ export class ExecutionPermit {
   }
 }
 
-export class ExecutionRuntime {
+export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
   private readonly budget: ExecutionBudget;
 
-  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {
+  constructor(private readonly dependencies: ExecutionRuntimeDependencies<TKind>) {
     if (dependencies.budget !== undefined) {
       this.budget = dependencies.budget;
       return;
@@ -289,27 +303,38 @@ export class ExecutionRuntime {
 
   async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
     let budgetStarted = false;
+    let currentStepIndex: number | undefined;
     try {
       this.budget.begin(job);
       budgetStarted = true;
-      return await this.runUntilCompletion(job);
+      return await this.runUntilCompletion(job, (stepIndex) => {
+        currentStepIndex = stepIndex;
+      });
     } catch (error) {
-      const errorCode = error instanceof ExecutionBlockedError
-        ? error.errorCode
-        : error instanceof ExecutionBudgetError
-          ? error.code
-          : undefined;
+      const errorCode =
+        error instanceof ExecutionBlockedError
+          ? error.errorCode
+          : error instanceof ExecutionBudgetError
+            ? error.code
+            : error instanceof ActionOutcomeUnknownError
+              ? error.errorCode
+              : undefined;
       if (errorCode === undefined) {
         throw error;
       }
 
-      const status = errorCode === "ModelUsageUnavailable" ? "error" : "blocked";
+      const status = errorCode === "ModelUsageUnavailable" || errorCode === "ActionOutcomeUnknown"
+        ? "error"
+        : "blocked";
       try {
         if (!budgetStarted) {
           throw error;
         }
         await this.record({
           runId: job.runId,
+          ...(job.plan === undefined || currentStepIndex === undefined
+            ? {}
+            : { stepIndex: currentStepIndex }),
           stage: "run_completed",
           payload: {
             status,
@@ -338,173 +363,206 @@ export class ExecutionRuntime {
     }
   }
 
-  private async runUntilCompletion(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
-    // Ticket 19 replaces this compatibility pipeline with the bounded indexed
-    // loop. Until then, only the current first action can own recorded stages.
-    const stepIndex = job.plan?.steps[0]?.stepIndex;
-    this.budget.beforeStep(job.runId, stepIndex ?? 0);
-    const observation = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.observer.capture(job, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "observation",
-      payload: observation,
-    });
+  private async runUntilCompletion(
+    job: AcceptedExecutionJob,
+    setCurrentStep: (stepIndex: number) => void,
+  ): Promise<ExecutionCompletion> {
+    if (job.plan === undefined) {
+      return this.runObjectiveOnly(job, setCurrentStep);
+    }
 
+    let firstObservation: ObservationGraph | undefined;
+    let lastAction: ResolvedAction | undefined;
+    let lastOutcome: ActionOutcome | undefined;
+    let lastStepIndex = 0;
+    let hasExplicitVerification = false;
+
+    for (const [ordinal, step] of job.plan.steps.entries()) {
+      const stepIndex = step.stepIndex ?? ordinal;
+      lastStepIndex = stepIndex;
+      setCurrentStep(stepIndex);
+      this.budget.beforeStep(job.runId, stepIndex);
+      const observation = await this.capture(job, stepIndex);
+      firstObservation ??= observation;
+
+      if (step.kind === "verify") {
+        hasExplicitVerification = true;
+        const completion = await this.verify({
+          job,
+          before: firstObservation,
+          after: observation,
+          claimIds: step.claimIds,
+          stepIndex,
+          ...(lastAction === undefined ? {} : { action: lastAction }),
+          ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
+        });
+        if (completion !== undefined) return completion;
+        continue;
+      }
+
+      const result = await this.executeStep(job, step, stepIndex, observation);
+      if ("completion" in result) return result.completion;
+      lastAction = result.action;
+      lastOutcome = result.outcome;
+    }
+
+    if (!hasExplicitVerification) {
+      const after = await this.capture(job, lastStepIndex);
+      const completion = await this.verify({
+        job,
+        before: firstObservation ?? after,
+        after,
+        claimIds: job.plan.expectedClaimIds,
+        stepIndex: lastStepIndex,
+        ...(lastAction === undefined ? {} : { action: lastAction }),
+        ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
+      });
+      if (completion !== undefined) return completion;
+    }
+
+    return this.completePassed(job, lastStepIndex);
+  }
+
+  private async runObjectiveOnly(
+    job: AcceptedExecutionJob,
+    setCurrentStep: (stepIndex: number) => void,
+  ): Promise<ExecutionCompletion> {
+    const stepIndex = 0;
+    setCurrentStep(stepIndex);
+    this.budget.beforeStep(job.runId, stepIndex);
+    const before = await this.capture(job);
+    const result = await this.executeStep(job, undefined, stepIndex, before);
+    if ("completion" in result) return result.completion;
+    const after = await this.capture(job);
+    const completion = await this.verify({
+      job,
+      before,
+      after,
+      claimIds: [],
+      stepIndex,
+      action: result.action,
+      outcome: result.outcome,
+    });
+    return completion ?? this.completePassed(job);
+  }
+
+  private async executeStep(
+    job: AcceptedExecutionJob,
+    step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }> | undefined,
+    stepIndex: number,
+    observation: ObservationGraph,
+  ): Promise<
+    | { readonly action: ResolvedAction; readonly outcome: ActionOutcome }
+    | { readonly completion: ExecutionCompletion }
+  > {
+    const traceIndex = job.plan === undefined ? undefined : stepIndex;
     const decision = await this.withinWallClock(job.runId, (signal) =>
       this.dependencies.decisionProvider.decide({
         job,
         observation,
+        ...(step === undefined ? {} : { step }),
+        stepIndex,
         budget: this.budget,
         signal,
       }));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "decision",
-      payload: toDecisionTracePayload(decision),
-    });
+    if (step !== undefined) assertDecisionMatchesStep(decision, step);
+    await this.recordStage(job.runId, traceIndex, "decision", toDecisionTracePayload(decision));
 
     const action = await this.withinWallClock(job.runId, (signal) =>
       this.dependencies.resolver.resolve(decision, observation, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "action_resolved",
-      payload: toResolvedActionTracePayload(action),
-    });
+    await this.recordStage(job.runId, traceIndex, "action_resolved", toResolvedActionTracePayload(action));
 
     const policyDecision = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.policyGate.authorize(action, {
-        job,
-        action,
-        signal,
-      }));
-
+      this.dependencies.policyGate.authorize(action, { job, action, signal }));
     if (policyDecision.status === "denied") {
-      await this.record({
-        runId: job.runId,
-        ...(stepIndex === undefined ? {} : { stepIndex }),
-        stage: "policy_denied",
-        payload: toDeniedPolicyTracePayload(policyDecision),
-      });
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status: "blocked",
-          errorCode: "PolicyDenied",
-        },
-      });
-
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "blocked",
-        errorCode: "PolicyDenied",
-      };
+      await this.recordStage(job.runId, traceIndex, "policy_denied", toDeniedPolicyTracePayload(policyDecision));
+      return { completion: await this.completeBlocked(job, "PolicyDenied", traceIndex) };
     }
 
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "policy_authorized",
-      payload: toAuthorizedPolicyTracePayload(policyDecision),
-    });
-
+    await this.recordStage(job.runId, traceIndex, "policy_authorized", toAuthorizedPolicyTracePayload(policyDecision));
     this.budget.maximumOutputTokens(job.runId);
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
-    const outcome = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.actionExecutor.execute(action, permit, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "action_executed",
-      payload: toActionOutcomeTracePayload(outcome),
-    });
-
+    let outcome: ActionOutcome;
+    try {
+      outcome = await this.withinWallClock(job.runId, (signal) =>
+        this.dependencies.actionExecutor.execute(action, permit, signal));
+    } catch (error) {
+      if (error instanceof ExecutionBlockedError || error instanceof ExecutionBudgetError) throw error;
+      throw new ActionOutcomeUnknownError();
+    }
+    await this.recordStage(job.runId, traceIndex, "action_executed", toActionOutcomeTracePayload(outcome));
     if (outcome.status === "failed") {
-      const errorCode = outcome.errorCode ?? "ActionFailed";
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status: "blocked",
-          errorCode,
-        },
-      });
-
       return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "blocked",
-        errorCode,
+        completion: await this.completeBlocked(job, outcome.errorCode ?? "ActionFailed", traceIndex),
       };
     }
+    return { action, outcome };
+  }
 
-    const after = await this.withinWallClock(job.runId, (signal) =>
+  private async capture(job: AcceptedExecutionJob, stepIndex?: number): Promise<ObservationGraph> {
+    const observation = await this.withinWallClock(job.runId, (signal) =>
       this.dependencies.observer.capture(job, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "observation",
-      payload: after,
+    await this.recordStage(job.runId, stepIndex, "observation", observation);
+    return observation;
+  }
+
+  private async verify(context: Omit<VerificationContext, "budget" | "signal">): Promise<ExecutionCompletion | undefined> {
+    const verification = await this.withinWallClock(context.job.runId, (signal) =>
+      this.dependencies.verifier.verify({ ...context, budget: this.budget, signal }));
+    await this.recordStage(
+      context.job.runId,
+      context.job.plan === undefined ? undefined : context.stepIndex,
+      "verification",
+      toVerificationTracePayload(verification),
+    );
+    if (verification.status === "passed") return undefined;
+
+    const finding = findingFromVerification(
+      context.job.runId,
+      verification,
+      context.before,
+      context.after,
+    );
+    const traceIndex = context.job.plan === undefined ? undefined : context.stepIndex;
+    await this.recordStage(context.job.runId, traceIndex, "finding", finding);
+    await this.recordStage(context.job.runId, traceIndex, "run_completed", {
+      status: "finding",
+      findingId: finding.findingId,
     });
-
-    const verification = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.verifier.verify({
-        job,
-        before: observation,
-        after,
-        action,
-        outcome,
-        budget: this.budget,
-        signal,
-      }));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "verification",
-      payload: toVerificationTracePayload(verification),
-    });
-
-    if (verification.status === "passed") {
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: { status: "passed" },
-      });
-
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "passed",
-      };
-    }
-
-    const finding = findingFromVerification(job.runId, verification, observation, after);
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "finding",
-      payload: finding,
-    });
-    await this.record({
-      runId: job.runId,
-      stage: "run_completed",
-      payload: {
-        status: "finding",
-        findingId: finding.findingId,
-      },
-    });
-
     return {
-      jobId: job.jobId,
-      runId: job.runId,
+      jobId: context.job.jobId,
+      runId: context.job.runId,
       status: "finding",
       finding,
     };
+  }
+
+  private async completePassed(job: AcceptedExecutionJob, stepIndex?: number): Promise<ExecutionCompletion> {
+    await this.recordStage(job.runId, stepIndex, "run_completed", { status: "passed" });
+    return { jobId: job.jobId, runId: job.runId, status: "passed" };
+  }
+
+  private async completeBlocked(
+    job: AcceptedExecutionJob,
+    errorCode: string,
+    stepIndex?: number,
+  ): Promise<ExecutionCompletion> {
+    await this.recordStage(job.runId, stepIndex, "run_completed", { status: "blocked", errorCode });
+    return { jobId: job.jobId, runId: job.runId, status: "blocked", errorCode };
+  }
+
+  private async recordStage<TStage extends TraceEventInput["stage"]>(
+    runId: string,
+    stepIndex: number | undefined,
+    stage: TStage,
+    payload: Extract<TraceEventInput, { readonly stage: TStage }>["payload"],
+  ): Promise<void> {
+    await this.record({
+      runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
+      stage,
+      payload,
+    } as TraceEventInput);
   }
 
   private async record(input: TraceEventInput): Promise<void> {
@@ -574,6 +632,30 @@ function toVerificationTracePayload(
   verification: VerificationResult,
 ): VerificationTracePayload {
   return verification;
+}
+
+function assertDecisionMatchesStep(
+  decision: AnyProposedAction,
+  step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }>,
+): void {
+  if (decision.kind !== step.kind) throw new ExecutionBlockedError("PlanStepMismatch");
+  if (step.kind === "navigate" && decision.kind === "navigate" && decision.path !== step.path) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
+  if (
+    (step.kind === "input" || step.kind === "select") &&
+    (decision.kind === "input" || decision.kind === "select") &&
+    decision.valueRef !== step.valueRef
+  ) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
+  if (
+    step.kind === "scroll" &&
+    decision.kind === "scroll" &&
+    (decision.direction !== step.direction || decision.amount !== step.amount)
+  ) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
 }
 
 function findingFromVerification(

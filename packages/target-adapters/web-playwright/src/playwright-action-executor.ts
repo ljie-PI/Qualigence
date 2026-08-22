@@ -57,8 +57,49 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       return { status: "failed", errorCode: "UnsupportedTargetKind" };
     }
 
-    if (action.kind === "navigate" || (action.kind === "scroll" && action.target === undefined)) {
-      return { status: "failed", errorCode: "UnsupportedAction" };
+    if (action.kind === "navigate") {
+      if (!this.session.allowedOrigins.includes(new URL(action.url).origin)) {
+        return { status: "failed", errorCode: "OriginViolation" };
+      }
+      this.session.invalidateObservations();
+      return this.session.withPage(async (page) => {
+        try {
+          await page.goto(action.url, {
+            waitUntil: "domcontentloaded",
+            timeout: this.session.navigationTimeoutMs,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/timeout/i.test(message)) return { status: "failed", errorCode: "ActionTimedOut" };
+          if (isInfrastructureFailure(message)) throw new WebTargetError("ActionInfrastructureFailure");
+          return { status: "failed", errorCode: "ActionFailed" };
+        }
+        return isOriginAllowed(page.url(), this.session.allowedOrigins)
+          ? { status: "ok" }
+          : { status: "failed", errorCode: "OriginViolation" };
+      });
+    }
+    if (action.kind === "scroll" && action.target === undefined) {
+      if (!this.session.hasGraph(action.graphId)) {
+        return { status: "failed", errorCode: "StaleObservation" };
+      }
+      this.session.invalidateObservations();
+      return this.session.withPage(async (page) => {
+        const distance = action.amount === "page" ? 1 : 0.25;
+        await page.evaluate(
+          ({ direction, distance }) => {
+            const horizontal = direction === "left" || direction === "right";
+            const sign = direction === "up" || direction === "left" ? -1 : 1;
+            window.scrollBy({
+              left: horizontal ? window.innerWidth * distance * sign : 0,
+              top: horizontal ? 0 : window.innerHeight * distance * sign,
+              behavior: "instant",
+            });
+          },
+          { direction: action.direction, distance },
+        );
+        return { status: "ok" };
+      });
     }
     const actionTarget = action.target;
     if (actionTarget === undefined) {
@@ -79,6 +120,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       return { status: "failed", errorCode: "StaleObservation" };
     }
 
+    this.session.invalidateObservations();
     return this.session.withPage(async (page): Promise<ActionOutcome> => {
       const locator = locatorFor(page, descriptor);
 
@@ -131,6 +173,21 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
         } else if (action.kind === "click") {
           await locator.click({ timeout: this.session.actionTimeoutMs });
+        } else if (action.kind === "scroll") {
+          const distance = action.amount === "page" ? 1 : 0.25;
+          await locator.evaluate((element, options) => {
+            element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+            const horizontal = options.direction === "left" || options.direction === "right";
+            const sign = options.direction === "up" || options.direction === "left" ? -1 : 1;
+            window.scrollBy({
+              left: horizontal ? window.innerWidth * options.distance * sign : 0,
+              top: horizontal ? 0 : window.innerHeight * options.distance * sign,
+              behavior: "instant",
+            });
+          }, {
+            direction: action.direction,
+            distance,
+          });
         } else {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }

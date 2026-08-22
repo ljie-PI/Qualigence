@@ -33,7 +33,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | partial | present | blocked | Tickets 16-18 complete contract expansion, budgets, and production valueRef resolution; ticket 19 still owns the bounded indexed Runtime |
+| Task 16 bounded Web execution | complete | present | pending PR | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 review and Chromium acceptance remain pending |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -367,6 +367,50 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
   or full-suite review was run per the remediation request. The scoped
   remediation Standards/Spec review reported no blocking findings; PR #73
   remains pending merge into the parent Ticket 17 branch.
+
+### Ticket 19 - Bounded multi-step Web Runtime (2026-08-22)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR, scoped review, and Chromium acceptance
+
+- `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
+  select, scroll, and verify steps sequentially. Every planned Trace stage,
+  including the one terminal event, carries its owning `stepIndex`; each Plan
+  step calls `ExecutionBudget.beforeStep` before observation.
+- Runtime supplies the current immutable Plan step to
+  `ModelBackedDecisionProvider`. Planned schemas allow only current-observation
+  `nodeId` grounding when required plus `reason`; deterministic code copies the
+  action kind, navigation path, scroll parameters, and input/select `valueRef`.
+  Verify steps bypass the decision model and receive exactly their claim IDs.
+- Every element action uses a fresh observation. Playwright accepts only the
+  latest registered descriptor map and invalidates it when a state-changing
+  action attempt starts. Navigation is canonicalized against the Job target and
+  origin allowlist; page/semantic scroll remains bounded to fixed directions and
+  `small|page` amounts.
+- Policy authorization remains before `goto`, value resolution, click, fill,
+  select, or scroll. A denied/failed/timed-out intermediate step stops all later
+  steps. A thrown action outcome is classified `ActionOutcomeUnknown` as an
+  error, is not retried, and emits one terminal event. Plans without an explicit
+  verify step receive one final verification against `expectedClaimIds`; the
+  execution application preserves the Runtime error in the persisted Run and
+  public result.
+- `RunnerOfferRuntime` passes the accepted Job and Plan objects unchanged into
+  `LeasedJobExecutor`, requires a healthy value provider when any Plan step uses
+  input/select, and advertises navigate/click/scroll plus value-backed actions
+  only when their complete production paths are composed. Objective-only jobs
+  retain the explicit bounded one-click path.
+- The focused non-E2E Gate
+  `corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright tests/component/web-execution`
+  passed 10 files / 115 tests with 1 pre-existing Task 21 skip. Root
+  `corepack pnpm typecheck` passed.
+- `tests/e2e/web-execution/multi-step-plan.test.ts` is prepared as the exact
+  post-review evidence file. It drives production Runner composition and real
+  file-backed values through navigate -> input -> select -> click -> scroll ->
+  verify, checks ordered indexed Trace, terminal uniqueness, final state, and
+  plaintext absence from model requests, logs, submitted/pre-ACK Trace, and raw
+  spool bytes. Per authority, it was not run before scoped review. No full suite
+  or implementation review was run.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 

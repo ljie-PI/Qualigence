@@ -97,6 +97,14 @@ export class PlaywrightBrowserSession {
     return this.options.actionTimeoutMs;
   }
 
+  get navigationTimeoutMs(): number {
+    return this.options.navigationTimeoutMs;
+  }
+
+  get targetUrl(): string {
+    return this.options.url;
+  }
+
   get latestGraphId(): string | undefined {
     return this.latestGraph;
   }
@@ -112,11 +120,17 @@ export class PlaywrightBrowserSession {
   }
 
   hasGraph(graphId: string): boolean {
-    return this.observations.has(graphId);
+    return this.latestGraph === graphId && this.observations.has(graphId);
   }
 
   descriptorFor(graphId: string, nodeId: string): LocatorDescriptor | undefined {
+    if (this.latestGraph !== graphId) return undefined;
     return this.observations.get(graphId)?.descriptors.get(nodeId);
+  }
+
+  invalidateObservations(): void {
+    this.observations.clear();
+    this.latestGraph = undefined;
   }
 
   artifactsFor(graphId: string): readonly CapturedArtifact[] {

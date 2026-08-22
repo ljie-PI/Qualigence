@@ -1,4 +1,5 @@
 export {
+  ActionOutcomeUnknownError,
   ExecutionBlockedError,
   ExecutionPermit,
   ExecutionRuntime,

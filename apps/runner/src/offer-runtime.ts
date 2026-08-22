@@ -1,4 +1,4 @@
-import type { ExecutionJobOffer, ExecutionCompletion, ExecutionPlanStep } from "@qualigence/runner-protocol";
+import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-protocol";
 import { capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
@@ -39,19 +39,15 @@ export class RunnerOfferRuntime {
       return;
     }
 
-    const currentStep = currentOneActionStep(offer.job.plan?.steps);
-    if (currentStep === null || (
-      (currentStep?.kind === "input" || currentStep?.kind === "select") &&
-      this.options.valueProvider === undefined
-    )) {
+    const needsValueProvider = offer.job.plan?.steps.some((step) =>
+      step.kind === "input" || step.kind === "select") ?? false;
+    if (needsValueProvider && this.options.valueProvider === undefined) {
       const lease = await this.options.session.accept(offer.offerId);
       await this.options.session.complete(lease, {
         jobId: lease.jobId,
         runId: lease.runId,
         status: "blocked",
-        errorCode: currentStep === null
-          ? "PlanExecutionUnsupported"
-          : "ActionValueProviderUnavailable",
+        errorCode: "ActionValueProviderUnavailable",
       });
       return;
     }
@@ -79,7 +75,6 @@ export class RunnerOfferRuntime {
         decisionProvider: new ModelBackedDecisionProvider(
           gateway,
           this.options.config.model.modelName,
-          currentStep,
         ),
         resolver: adapter,
         policyGate: admission.gate,
@@ -102,21 +97,11 @@ export class RunnerOfferRuntime {
   }
 }
 
-function currentOneActionStep(
-  steps: readonly ExecutionPlanStep[] | undefined,
-): Extract<ExecutionPlanStep, { readonly kind: "input" | "select" }> | undefined | null {
-  if (steps === undefined) return undefined;
-  if (steps.length !== 1) return null;
-  const step = steps[0];
-  if (step?.kind === "click") return undefined;
-  return step?.kind === "input" || step?.kind === "select"
-    ? step
-    : null;
-}
-
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {
   return capabilities({
     targetAdapters: ["web-playwright"],
-    actionKinds: valueProvider === undefined ? ["click"] : ["click", "input", "select"],
+    actionKinds: valueProvider === undefined
+      ? ["navigate", "click", "scroll"]
+      : ["navigate", "click", "input", "select", "scroll"],
   });
 }

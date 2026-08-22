@@ -47,6 +47,12 @@ const plannedDecisionSchema = z
   })
   .strict();
 
+const plannedReasonSchema = z
+  .object({
+    reason: z.string().min(1),
+  })
+  .strict();
+
 const evidenceValueSchema = z
   .object({
     graphId: z.string().min(1),
@@ -81,9 +87,10 @@ const verificationSchema = z.discriminatedUnion("status", [
 
 type DecisionProposal =
   | { readonly action: { readonly kind: "click"; readonly nodeId: string }; readonly reason: string }
-  | { readonly nodeId: string; readonly reason: string };
+  | { readonly nodeId: string; readonly reason: string }
+  | { readonly reason: string };
 
-type CurrentPlanActionStep = Extract<ExecutionPlanStep, { readonly kind: "input" | "select" }>;
+type CurrentPlanActionStep = Exclude<ExecutionPlanStep, { readonly kind: "verify" }>;
 
 export class InvalidModelEvidenceError extends Error implements StructuredOutputValidationError {
   readonly name = "StructuredOutputValidationError" as const;
@@ -95,15 +102,16 @@ export class InvalidModelEvidenceError extends Error implements StructuredOutput
   }
 }
 
-export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
+export class ModelBackedDecisionProvider implements ExecutionDecisionProvider<import("@qualigence/runner-kernel").ProposedActionKind> {
   constructor(
     private readonly gateway: StructuredModelInvoker,
     private readonly model: string,
-    private readonly currentStep?: CurrentPlanActionStep,
   ) {}
 
+  decide(context: AgentContext & { readonly step: CurrentPlanActionStep }): Promise<AnyProposedAction>;
   decide(context: AgentContext): Promise<ProposedAction>;
   async decide(context: AgentContext): Promise<AnyProposedAction> {
+    const currentStep = currentPlanStep(context);
     try {
       const maximumOutputTokens = context.budget?.maximumOutputTokens(context.job.runId);
       const result = await this.gateway.invokeStructured(
@@ -113,15 +121,15 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           messages: [
             {
               role: "system",
-              content: this.currentStep === undefined
+              content: currentStep === undefined
                 ? "Choose one visible node for the requested web action. Return only a click nodeId and a concise reason."
-                : `Choose one visible node for the immutable ${this.currentStep.kind} Plan step. Return only nodeId and a concise reason.`,
+                : decisionInstruction(currentStep),
             },
             {
               role: "user",
               content: JSON.stringify({
                 objective: context.job.objective,
-                ...(this.currentStep === undefined ? {} : { step: this.currentStep }),
+                ...(currentStep === undefined ? {} : { step: currentStep }),
                 observation: context.observation,
               }),
             },
@@ -131,11 +139,11 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider {
           ...(context.signal === undefined ? {} : { signal: context.signal }),
           invocation: { runId: context.job.runId, invocationId: uuidv7() },
         },
-        decisionContract(context, this.currentStep),
+        decisionContract(context, currentStep),
       );
       consumeUsageState(context, result.usageState, result.usage);
 
-      return toProposedAction(result.value, this.currentStep);
+      return toProposedAction(result.value, currentStep);
     } catch (error) {
       consumeErrorUsage(context, error);
       throwModelExecutionError(error);
@@ -166,14 +174,19 @@ export class ModelBackedVerifier implements Verifier {
               role: "user",
               content: JSON.stringify({
                 objective: context.job.objective,
+                claimIds: context.claimIds ?? [],
                 before: context.before,
                 after: context.after,
-                action: {
-                  kind: context.action.kind,
-                  nodeId: resolvedActionNodeId(context.action),
-                  graphId: context.action.graphId,
-                },
-                outcome: context.outcome,
+                ...(context.action === undefined
+                  ? {}
+                  : {
+                      action: {
+                        kind: context.action.kind,
+                        nodeId: resolvedActionNodeId(context.action),
+                        graphId: context.action.kind === "navigate" ? undefined : context.action.graphId,
+                      },
+                    }),
+                ...(context.outcome === undefined ? {} : { outcome: context.outcome }),
               }),
             },
           ],
@@ -291,14 +304,20 @@ function decisionContract(
   return {
     name: "execution-decision",
     jsonSchema: z.toJSONSchema(
-      currentStep === undefined ? clickDecisionSchema : plannedDecisionSchema,
+      currentStep === undefined
+        ? clickDecisionSchema
+        : stepNeedsNode(currentStep)
+          ? plannedDecisionSchema
+          : plannedReasonSchema,
     ) as JsonSchema,
     parse(value: unknown): DecisionProposal {
       const proposal: DecisionProposal = currentStep === undefined
         ? parseSchema(clickDecisionSchema, value)
-        : parseSchema(plannedDecisionSchema, value);
-      const nodeId = "action" in proposal ? proposal.action.nodeId : proposal.nodeId;
-      if (!context.observation.nodes.some((node) => node.id === nodeId)) {
+        : stepNeedsNode(currentStep)
+          ? parseSchema(plannedDecisionSchema, value)
+          : parseSchema(plannedReasonSchema, value);
+      const nodeId = proposalNodeId(proposal);
+      if (nodeId !== undefined && !context.observation.nodes.some((node) => node.id === nodeId)) {
         throw structuredOutputValidationError([
           { path: currentStep === undefined ? "action.nodeId" : "nodeId", reason: "unknown_node_reference" },
         ]);
@@ -337,8 +356,16 @@ function toProposedAction(
   proposal: DecisionProposal,
   currentStep: CurrentPlanActionStep | undefined,
 ): AnyProposedAction {
-  const nodeId = "action" in proposal ? proposal.action.nodeId : proposal.nodeId;
+  const nodeId = proposalNodeId(proposal);
+  if (currentStep?.kind === "navigate") {
+    return { kind: "navigate", path: currentStep.path, reason: proposal.reason };
+  }
+  if (currentStep?.kind === "click") {
+    if (nodeId === undefined) throw new ExecutionBlockedError("PlanExecutionUnsupported");
+    return { kind: "click", target: { nodeId }, reason: proposal.reason };
+  }
   if (currentStep?.kind === "input") {
+    if (nodeId === undefined) throw new ExecutionBlockedError("PlanExecutionUnsupported");
     return {
       kind: "input",
       target: { nodeId },
@@ -347,10 +374,23 @@ function toProposedAction(
     };
   }
   if (currentStep?.kind === "select") {
+    if (nodeId === undefined) throw new ExecutionBlockedError("PlanExecutionUnsupported");
     return {
       kind: "select",
       target: { nodeId },
       valueRef: currentStep.valueRef,
+      reason: proposal.reason,
+    };
+  }
+  if (currentStep?.kind === "scroll") {
+    if (currentStep.target !== undefined && nodeId === undefined) {
+      throw new ExecutionBlockedError("PlanExecutionUnsupported");
+    }
+    return {
+      kind: "scroll",
+      ...(nodeId === undefined ? {} : { target: { nodeId } }),
+      direction: currentStep.direction,
+      amount: currentStep.amount,
       reason: proposal.reason,
     };
   }
@@ -368,28 +408,68 @@ function validateCurrentStep(
 ): void {
   if (currentStep === undefined) {
     const steps = context.job.plan?.steps;
-    if (steps !== undefined && (steps.length !== 1 || steps[0]?.kind !== "click")) {
+    if (steps !== undefined) {
       throw new ExecutionBlockedError("PlanExecutionUnsupported");
     }
     return;
   }
   const planSteps = context.job.plan?.steps;
-  if (planSteps?.length !== 1 || !samePlanStep(planSteps[0], currentStep)) {
+  const stepIndex = context.stepIndex;
+  if (stepIndex === undefined || !samePlanStep(planSteps?.[stepIndex], currentStep)) {
     throw new ExecutionBlockedError("PlanExecutionUnsupported");
   }
 }
 
-function samePlanStep(left: ExecutionPlanStep, right: CurrentPlanActionStep): boolean {
-  if (left.kind !== right.kind || left.stepIndex !== right.stepIndex) return false;
-  if (left.kind !== "input" && left.kind !== "select") return false;
-  if (
-    left.target.purpose !== right.target.purpose ||
-    left.target.role !== right.target.role ||
-    left.target.name !== right.target.name
-  ) return false;
-  if (left.kind === "input" && right.kind === "input") return left.valueRef === right.valueRef;
-  if (left.kind === "select" && right.kind === "select") return left.valueRef === right.valueRef;
-  return false;
+function samePlanStep(
+  left: ExecutionPlanStep | undefined,
+  right: CurrentPlanActionStep,
+): boolean {
+  if (left === undefined || left.kind !== right.kind || left.stepIndex !== right.stepIndex) return false;
+  switch (left.kind) {
+    case "navigate":
+      return right.kind === "navigate" && left.path === right.path;
+    case "click":
+      return right.kind === "click" && samePlanTarget(left.target, right.target);
+    case "input":
+      return right.kind === "input" && left.valueRef === right.valueRef && samePlanTarget(left.target, right.target);
+    case "select":
+      return right.kind === "select" && left.valueRef === right.valueRef && samePlanTarget(left.target, right.target);
+    case "scroll":
+      return right.kind === "scroll" && left.direction === right.direction && left.amount === right.amount &&
+        (left.target === undefined ? right.target === undefined : right.target !== undefined && samePlanTarget(left.target, right.target));
+  }
+}
+
+function proposalNodeId(proposal: DecisionProposal): string | undefined {
+  if ("action" in proposal) {
+    return (proposal as { readonly action: { readonly nodeId: string } }).action.nodeId;
+  }
+  return "nodeId" in proposal ? proposal.nodeId : undefined;
+}
+
+function samePlanTarget(
+  left: { readonly role?: string; readonly name?: string; readonly purpose: string },
+  right: { readonly role?: string; readonly name?: string; readonly purpose: string },
+): boolean {
+  return left.purpose === right.purpose && left.role === right.role && left.name === right.name;
+}
+
+function currentPlanStep(context: AgentContext): CurrentPlanActionStep | undefined {
+  const step = context.step;
+  if (step === undefined) return undefined;
+  if (step.kind === "verify") throw new ExecutionBlockedError("PlanExecutionUnsupported");
+  return step;
+}
+
+function stepNeedsNode(step: CurrentPlanActionStep): boolean {
+  return step.kind === "click" || step.kind === "input" || step.kind === "select" ||
+    (step.kind === "scroll" && step.target !== undefined);
+}
+
+function decisionInstruction(step: CurrentPlanActionStep): string {
+  return stepNeedsNode(step)
+    ? `Ground the immutable ${step.kind} Plan step in the current observation. Return only nodeId and a concise reason.`
+    : `Confirm the immutable ${step.kind} Plan step. Return only a concise reason.`;
 }
 
 function validateClaims(

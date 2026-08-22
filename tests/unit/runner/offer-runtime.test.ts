@@ -4,12 +4,10 @@ import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
 
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
-const decisionSteps: unknown[] = [];
+const executedOffers: unknown[] = [];
 vi.mock("@qualigence/model-agent", () => ({
   ModelBackedDecisionProvider: class {
-    constructor(_gateway: unknown, _model: string, step: unknown) {
-      decisionSteps.push(step);
-    }
+    constructor(_gateway: unknown, _model: string) {}
   },
   ModelBackedVerifier: class {},
 }));
@@ -19,7 +17,8 @@ vi.mock("../../../apps/runner/src/job-executor.js", () => ({
       executorGates.push(dependencies.policyGate);
       executorCapabilities.push(dependencies.capabilities);
     }
-    async execute() {
+    async execute(offer: unknown) {
+      executedOffers.push(offer);
       return {
         lease: { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" },
         completion: { jobId: "job-staging", runId: "run-staging", status: "passed" as const },
@@ -35,7 +34,7 @@ describe("RunnerOfferRuntime", () => {
   }
 
   it("advertises no value-backed actions without a healthy provider", () => {
-    expect(runnerCapabilities().actionKinds).toEqual(["click"]);
+    expect(runnerCapabilities().actionKinds).toEqual(["navigate", "click", "scroll"]);
   });
 
   it("blocks a policyless offer before target construction or browser navigation", async () => {
@@ -147,7 +146,6 @@ describe("RunnerOfferRuntime", () => {
 
   it("injects one healthy value provider and advertises input/select capability", async () => {
     executorCapabilities.length = 0;
-    decisionSteps.length = 0;
     const valueProvider = { resolve: vi.fn(async () => "plaintext-secret") };
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target);
@@ -168,32 +166,35 @@ describe("RunnerOfferRuntime", () => {
     } as never);
 
     expect(createTarget).toHaveBeenCalledWith(expect.objectContaining({ valueProvider }));
-    expect(executorCapabilities[0]?.actionKinds).toEqual(["click", "input", "select"]);
-    expect(decisionSteps).toEqual([
-      { stepIndex: 0, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "profile.email" },
-    ]);
+    expect(executorCapabilities[0]?.actionKinds).toEqual(["navigate", "click", "input", "select", "scroll"]);
   });
 
-  it("fails closed before target construction for a multi-step plan", async () => {
-    const createTarget = vi.fn();
+  it("passes the accepted immutable multi-step Plan unchanged to the executor", async () => {
+    executedOffers.length = 0;
+    const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
+    const createTarget = vi.fn(() => target);
     const session = {
-      accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" })),
+      accept: vi.fn(),
       complete: vi.fn(async () => undefined),
+      submit: vi.fn(),
+      welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 },
     };
-    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: {} as never, config: config(), valueProvider: { resolve: vi.fn() } });
-
-    await runtime.run({
+    const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
+    const runtime = new RunnerOfferRuntime({ createTarget: createTarget as never, session: session as never, spool: spool as never, config: config(), valueProvider: { resolve: vi.fn() } });
+    const plan = { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ stepIndex: 0, kind: "input" as const, target: { purpose: "email" }, valueRef: "profile.email" }, { stepIndex: 1, kind: "select" as const, target: { purpose: "country" }, valueRef: "profile.country" }] as const, expectedClaimIds: ["claim-1"] as [string], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } };
+    const offeredJob = { jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web" as const, url: "https://example.test/" }, objective: "execute both steps", policy: { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"] as const, maximumRisk: "ExternalSideEffect" as const, explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" }, plan };
+    const offer = {
       offerId: "offer-1",
-      job: { jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "must not run ticket 19", policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"], maximumRisk: "ExternalSideEffect", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" }, plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ stepIndex: 0, kind: "input", target: { purpose: "email" }, valueRef: "profile.email" }, { stepIndex: 1, kind: "select", target: { purpose: "country" }, valueRef: "profile.country" }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } } },
+      job: offeredJob,
       requiredCapabilities: ["action:input", "action:select"],
       leaseDurationMs: 30_000,
-    });
+    };
 
-    expect(createTarget).not.toHaveBeenCalled();
-    expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      status: "blocked",
-      errorCode: "PlanExecutionUnsupported",
-    }));
+    await runtime.run(offer);
+
+    expect(executedOffers).toHaveLength(1);
+    expect((executedOffers[0] as typeof offer).job).toBe(offeredJob);
+    expect((executedOffers[0] as typeof offer).job.plan).toBe(plan);
   });
 
   it.each([

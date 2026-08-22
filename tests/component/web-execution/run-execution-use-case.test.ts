@@ -177,6 +177,7 @@ interface HarnessOptions {
   readonly policyGate: RunnerPolicyGate;
   readonly verifier: Verifier;
   readonly withArtifacts?: boolean;
+  readonly executeAction?: () => Promise<{ readonly status: "ok" | "failed"; readonly errorCode?: string }>;
 }
 
 interface Harness {
@@ -229,9 +230,7 @@ function createHarness(options: HarnessOptions): Harness {
         },
         policyGate: options.policyGate,
         actionExecutor: {
-          async execute() {
-            return { status: "ok" };
-          },
+          execute: options.executeAction ?? (async () => ({ status: "ok" })),
         },
         verifier: options.verifier,
         traceRecorder,
@@ -286,6 +285,15 @@ function rejectingHarness(error: Error): Harness {
     }),
     policyGate: new AllowAllRunnerPolicyGate(),
     verifier: passedVerifier,
+  });
+}
+
+function unknownActionOutcomeHarness(): Harness {
+  return createHarness({
+    makeObserver: () => scriptedObserver(twoGraphs()),
+    policyGate: new AllowAllRunnerPolicyGate(),
+    verifier: passedVerifier,
+    executeAction: async () => { throw new Error("connection lost after dispatch"); },
   });
 }
 
@@ -353,6 +361,20 @@ describe("RunExecutionUseCaseImpl", () => {
       errorCode: "BrowserUnavailable",
     });
     expect(harness.close).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an unknown action outcome as an error without retrying", async () => {
+    const harness = unknownActionOutcomeHarness();
+
+    const result = await harness.useCase.execute(request());
+
+    expect(result).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    expect((await harness.runs.get(result.runId))?.status).toBe("error");
+    expect(harness.traces.eventsFor(result.runId).filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(harness.traces.eventsFor(result.runId).at(-1)?.payload).toEqual({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
   });
 
   it("creates no Run and never opens a scope when the URL is invalid", async () => {
