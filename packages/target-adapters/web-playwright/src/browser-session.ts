@@ -814,6 +814,8 @@ interface SensitivePageRedaction {
 }
 
 export class PlaywrightBrowserSession {
+  readonly afterSensitiveEvidenceCandidateCreated?: (attempt: number) => Promise<void>;
+
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
   private browser: Browser | undefined;
@@ -842,7 +844,12 @@ export class PlaywrightBrowserSession {
     private readonly options: WebSessionOptions,
     private readonly launcher: BrowserLauncher = chromiumLauncher,
     private readonly testHooks: BrowserSessionTestHooks = {},
-  ) {}
+  ) {
+    if (testHooks.afterSensitiveEvidenceCandidateCreated !== undefined) {
+      this.afterSensitiveEvidenceCandidateCreated =
+        testHooks.afterSensitiveEvidenceCandidateCreated;
+    }
+  }
 
   get allowedOrigins(): readonly string[] {
     return this.options.allowedOrigins;
@@ -2122,10 +2129,6 @@ export class PlaywrightBrowserSession {
       if (await this.reconcileSensitiveActionTracking(tracker, true) === undefined) return false;
     }
     return true;
-  }
-
-  async afterSensitiveEvidenceCandidateCreated(attempt: number): Promise<void> {
-    await this.testHooks.afterSensitiveEvidenceCandidateCreated?.(attempt);
   }
 
   reportSensitiveEvidenceChangedDuringCapture(): void {

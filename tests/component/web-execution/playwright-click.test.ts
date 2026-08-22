@@ -1029,6 +1029,35 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expectSolidCrop(decodePng(screenshot.bytes), reflectionBox, [0, 0, 0, 255]);
   });
 
+  it("starts final reconciliation without a production-hook microtask checkpoint", async () => {
+    const control = captureCandidateControl();
+    const { observer } = await prepareCaptureCandidateScenario(
+      "no-candidate-hook-secret",
+      control,
+      {},
+    );
+    const events: string[] = [];
+    const completeSensitiveEvidenceCapture = session.completeSensitiveEvidenceCapture.bind(session);
+    Object.defineProperty(session, "afterSensitiveEvidenceCandidateCreated", {
+      configurable: true,
+      get: () => {
+        queueMicrotask(() => events.push("microtask"));
+        return undefined;
+      },
+    });
+    Object.defineProperty(session, "completeSensitiveEvidenceCapture", {
+      configurable: true,
+      value: () => {
+        events.push("reconciliation");
+        return completeSensitiveEvidenceCapture();
+      },
+    });
+
+    await expect(observer.capture(job)).resolves.toBeDefined();
+
+    expect(events).toEqual(["reconciliation", "microtask"]);
+  });
+
   it("fails closed after exactly two capture races without registering Graph or artifact bytes", async () => {
     const secret = "bounded-recapture-terminal-secret";
     const attempts: number[] = [];

@@ -533,7 +533,10 @@ export class PlaywrightObserver implements Observer {
         () => this.session.failIfSensitiveTrackingOverflowed(),
       );
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
-      if (bounded) await this.session.afterSensitiveEvidenceCandidateCreated(attempt + 1);
+      const afterCandidateCreated = this.session.afterSensitiveEvidenceCandidateCreated;
+      if (bounded && afterCandidateCreated !== undefined) {
+        await afterCandidateCreated(attempt + 1);
+      }
       const stable = await this.session.completeSensitiveEvidenceCapture();
       if (!stable) {
         this.session.reportSensitiveEvidenceChangedDuringCapture();
