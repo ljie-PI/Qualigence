@@ -711,7 +711,7 @@ parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
 implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
-round_3_product_head: `4cf68a006b6388a2399a2224b72f43a08b92a8d0`
+round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
 
 - Sensitive Promise instrumentation retains up to 128 exact observed receivers
   in a session-bounded enumerable registry, with WeakMap indexing and snapshots
@@ -768,8 +768,11 @@ round_3_product_head: `4cf68a006b6388a2399a2224b72f43a08b92a8d0`
   accessor conversion, prototype swap, exact 128/129 uninvoked-owner behavior,
   and zero-byte artifact rejection while retaining all invoked-owner cases.
   Invoked receivers retain their existing chain registration in addition to
-  immediate exact-owner registration. Product/test head:
-  `4cf68a006b6388a2399a2224b72f43a08b92a8d0`. Exact affected/full non-E2E command:
+  immediate exact-owner registration. Approved instrumentation updates every
+  retained chain snapshot that references the changed owner atomically; the
+  unchanged overlapping-own/prototype-owner test fails before this update and
+  succeeds afterward without invoking either custom method. Product/test head:
+  `416cc47dfbe649ed9a9241ead1203ac78a9feb18`. Exact affected/full non-E2E command:
   `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts
   tests/unit/runner/offer-runtime.test.ts
   tests/unit/runner-components/model-agent.test.ts
