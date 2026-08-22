@@ -701,6 +701,31 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
   passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run per instruction.
 
+### Ticket 43 - Promise owner revalidation remediation (2026-08-22)
+
+component: complete
+production_wiring: present
+verification: pending dedicated PR exact count and head
+pull_request: pending
+parent_ticket: `42`
+parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
+base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
+implementation_head: `6801a2e`
+
+- Sensitive Promise instrumentation retains up to 128 exact observed receivers
+  in a session-bounded enumerable registry, with WeakMap indexing and snapshots
+  of every `then`/`catch`/`finally` own descriptor and prototype-chain identity.
+  Owner or chain replacement, deletion, accessor/data transition, flag or
+  function-identity change poisons evidence without requiring another call.
+- Owner chains are revalidated at custom-call settlement and before Graph
+  construction, screenshot capture, final tracking reconciliation, artifact
+  serialization, and persistence. Registry overflow poisons scheduler
+  provenance while all application callbacks and native results still settle.
+  Session close clears owner entries, delegation frames, indexes, and hooks.
+- Exact Ticket 42/43 focused non-E2E Gate passed 12 files / 232 tests: 231
+  passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run before review per instruction.
+
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
 component: complete
