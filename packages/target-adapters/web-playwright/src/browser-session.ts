@@ -2898,17 +2898,17 @@ export class PlaywrightBrowserSession {
           name: PromiseMethodName,
           descriptor: PropertyDescriptor | undefined,
         ): void => {
-          const registered = registeredOwnerIndex.get(owner);
-          if (registered === undefined) return;
-          registered.chain = registered.chain.map((captured) => captured.owner === owner
-            ? {
-                ...captured,
-                descriptors: captured.descriptors.map(([capturedName, capturedDescriptor]) =>
-                  capturedName === name
-                    ? [capturedName, descriptor] as const
-                    : [capturedName, capturedDescriptor] as const),
-              }
-            : captured);
+          for (const registered of registeredOwners) {
+            registered.chain = registered.chain.map((captured) => captured.owner === owner
+              ? {
+                  ...captured,
+                  descriptors: captured.descriptors.map(([capturedName, capturedDescriptor]) =>
+                    capturedName === name
+                      ? [capturedName, descriptor] as const
+                      : [capturedName, capturedDescriptor] as const),
+                }
+              : captured);
+          }
         };
         const registeredOwnersIntact = (): boolean => {
           if (promiseAuthorityClosed || ownerRegistryOverflow) return false;

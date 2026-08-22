@@ -2565,13 +2565,29 @@ describe("Playwright resolve + execute against real Chromium", () => {
         } | null };
       }).document.querySelector('input[aria-label="Email"]');
       source?.addEventListener("input", () => {
+        const state = globalThis as typeof globalThis & { unchangedCustomCalls?: number };
         const receiver = Promise.resolve("unchanged");
+        const prototype = Object.create(Object.getPrototypeOf(receiver)) as {
+          catch: Promise<string>["catch"];
+        };
+        const inheritedCatch = receiver.catch;
+        Object.defineProperty(prototype, "catch", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (this: Promise<string>, ...args: unknown[]) {
+            state.unchangedCustomCalls = (state.unchangedCustomCalls ?? 0) + 1;
+            return Reflect.apply(inheritedCatch, this, args);
+          },
+        });
+        Object.setPrototypeOf(receiver, prototype);
         const delegate = receiver.then;
         Object.defineProperty(receiver, "then", {
           configurable: true,
           enumerable: false,
           writable: true,
           value: function (this: Promise<string>, ...args: unknown[]) {
+            state.unchangedCustomCalls = (state.unchangedCustomCalls ?? 0) + 1;
             return Reflect.apply(delegate, this, args);
           },
         });
@@ -2580,6 +2596,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
     }));
 
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    expect(await session.withPage(async (page) => page.evaluate(() =>
+      (globalThis as typeof globalThis & { unchangedCustomCalls?: number }).unchangedCustomCalls ?? 0,
+    ))).toBe(0);
     await expect(observer.capture(job)).resolves.toMatchObject({ graphId: expect.any(String) });
   });
 
