@@ -632,7 +632,9 @@ pull_request: pending
 
 component: complete
 production_wiring: present
-verification: pending dedicated PR
+verification: needs_info
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
+remediation_ticket: `43`
 pull_request: pending
 parent_ticket: `41`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
