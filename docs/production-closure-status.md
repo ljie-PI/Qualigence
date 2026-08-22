@@ -705,14 +705,14 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: final product-head Gate passed; E2E pending fresh final review
-pull_request: pending
+verification: passed; pending dedicated PR merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/82`
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
 implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
 round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
-final_product_head: `6bb1734cf74c81ef2fef10af86bcfb9785d55d92`
+final_product_head: `7515fde7390bb959326276657d8fbaa73dec898b`
 
 - Sensitive Promise instrumentation retains up to 128 exact observed receivers
   in a session-bounded enumerable registry, with WeakMap indexing and snapshots
@@ -727,6 +727,9 @@ final_product_head: `6bb1734cf74c81ef2fef10af86bcfb9785d55d92`
 - Exact Ticket 42/43 focused non-E2E Gate passed 12 files / 232 tests: 231
   passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run before review per instruction.
+- Fresh review after the PNG boundary fix reported no blocking findings. The
+  post-review Chromium acceptance passed 1 file / 1 test at the final product
+  head above; this PR-binding update is status-only.
 - Post-review persistence-boundary remediation adds a public BrowserSession
   integrity assertion and invokes it from the serialized
   `PlaywrightWebTargetAdapter.captureArtifacts()` operation immediately before
