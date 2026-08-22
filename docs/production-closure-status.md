@@ -672,7 +672,7 @@ product_head: `a42bb58bf6b4b5c4d5744014506a39f1e0e8ed1c`
   tests/unit/target-adapters/web-playwright/browser-session.test.ts
   tests/unit/target-adapters/web-playwright/png-redactor.test.ts
   tests/unit/runner-kernel/deterministic-policy-gate.test.ts
-  tests/component/web-execution`. It passed 12 files / 212 tests: 211 passed and
+  tests/component/web-execution`. It passed 12 files / 215 tests: 214 passed and
   1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
   passed.
 - Full non-E2E command with Git OpenSSL first on `PATH` and

@@ -2245,6 +2245,59 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
+  it.each(["then", "catch", "finally"] as const)(
+    "retains native behavior and counting for a post-activation Promise.%s override that delegates",
+    async (method) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${method}-delegate-secret` });
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.promise-${method}-delegate`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate((override) => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): { addEventListener(type: string, listener: () => void): void } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = globalThis as typeof globalThis & { delegatedResult?: string };
+          if (override === "then") {
+            const delegate = Promise.prototype.then;
+            Promise.prototype.then = function (...args) {
+              return Reflect.apply(delegate, this, args);
+            };
+            Promise.resolve("then").then((value) => { state.delegatedResult = value; });
+          } else if (override === "catch") {
+            const delegate = Promise.prototype.catch;
+            Promise.prototype.catch = function (...args) {
+              return Reflect.apply(delegate, this, args);
+            };
+            Promise.reject("catch").catch((reason) => { state.delegatedResult = String(reason); });
+          } else {
+            const delegate = Promise.prototype.finally;
+            Promise.prototype.finally = function (...args) {
+              return Reflect.apply(delegate, this, args);
+            };
+            Promise.resolve("finally").finally(() => undefined).then((value) => {
+              state.delegatedResult = value;
+            });
+          }
+        });
+      }, method));
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() =>
+        (globalThis as typeof globalThis & { delegatedResult?: string }).delegatedResult,
+      ))).toBe(method);
+      const counts = await session.sensitiveSchedulerCounts();
+      expect(counts.registrations).toBeGreaterThan(0);
+      expect(counts.executions).toBeGreaterThan(0);
+    },
+  );
+
   it("poisons Promise species paths while preserving settlement semantics", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();

@@ -1414,9 +1414,8 @@ export class PlaywrightBrowserSession {
                     method === "catch" ? promiseSnapshot.catch : promiseSnapshot.finally
                   : undefined;
                 if (descriptor.value !== expected && !approvedPromiseOverrides.has(descriptor.value)) {
-                  if (method !== "then") return false;
-                  // A custom then is approved only when its own delegation has
-                  // reached this tracked wrapper on the same receiver chain.
+                  // A custom method is approved only when its own delegation
+                  // has reached this tracked wrapper on the same receiver chain.
                   approvedPromiseOverrides.add(descriptor.value);
                 }
               }
@@ -1514,7 +1513,9 @@ export class PlaywrightBrowserSession {
             ] as const) {
               const descriptor = nativeDescriptor(Promise.prototype, method);
               if (descriptor === undefined || !("value" in descriptor) ||
-                  descriptor.value !== expected) return false;
+                  (descriptor.value !== expected &&
+                    (typeof descriptor.value !== "function" ||
+                      !approvedPromiseOverrides.has(descriptor.value)))) return false;
             }
             const constructor = nativeDescriptor(Promise.prototype, "constructor");
             const species = nativeDescriptor(Promise, Symbol.species);
