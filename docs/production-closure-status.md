@@ -783,6 +783,30 @@ round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
   tests/component/web-execution`. It passed 12 files / 244 tests: 243 passed
   and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run or claimed.
+- The post-review Ticket 18 production `RunnerOfferRuntime` valueRef E2E failed
+  1 file / 1 test with the externally stable `SensitiveEvidenceUnproven` on an
+  unmodified page/Promise path. The remediation did not rerun that E2E.
+- A test-only `BrowserSessionTestHooks` sink now receives only a closed safe
+  enum, never plaintext, browser causes, logs, or public error messages. The
+  focused production-shaped component reproduction identified
+  `EvidenceChangedDuringCapture`, not Promise-owner, Promise-integrity,
+  scheduler-bound, shadow-integrity, target-identity, or tracker-overflow poison.
+- Root cause: the normal causal 50 ms reflection could execute after the
+  pre-screenshot retained sensitive-element set was proven but before final
+  reconciliation. The newly proven reflected element correctly invalidated the
+  already captured screenshot, but the Observer treated that safe race as
+  terminal session poison. It now discards that graph/screenshot and performs
+  one bounded recapture from the updated retained set. A second race and every
+  other integrity failure remain fail closed as `SensitiveEvidenceUnproven`.
+- Product/test fix head: `0aafb8928b661f7a487c2120be84c14063182edf`;
+  12 commits from Ticket 43 base
+  `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`. The exact affected/full Ticket
+  43 non-E2E Gate passed 13 files / 245 tests: 244 passed and 1 existing Task 21
+  skip. Root `corepack pnpm typecheck` and `git diff --check` passed. Promise
+  owner tamper/128-129 overflow, scheduler overflow, reflection ambiguity,
+  closed-shadow, artifact-boundary, and native Promise tests remain green.
+  Because code changed after the failed E2E, a fresh coordinator review is
+  required before that E2E may be rerun.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
