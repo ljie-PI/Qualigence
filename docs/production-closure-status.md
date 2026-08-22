@@ -705,12 +705,13 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: round-2 review-finding fix Gate passed at exact implementation head
+verification: round-3 review-finding fix Gate passed at exact product head
 pull_request: pending
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
 implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
+round_3_product_head: `97a8d4ca1673bbc306e924e85840c8fd6929dcf1`
 
 - Sensitive Promise instrumentation retains up to 128 exact observed receivers
   in a session-bounded enumerable registry, with WeakMap indexing and snapshots
@@ -756,6 +757,27 @@ implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
   tests/component/web-execution`. It passed 12 files / 239 tests: 238 passed and
   1 existing Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check`
   passed. No E2E was run or claimed.
+- Round-3 registers the exact own/custom `then`/`catch`/`finally` descriptor
+  owner as soon as receiver-chain discovery finds it, before any wrapper is
+  installed and without requiring method invocation. The full descriptor and
+  prototype chain is captured first, then the intentionally installed
+  descriptor replaces the approved snapshot synchronously before application
+  execution resumes. Each owner counts once toward the 128-owner bound;
+  overflow poisons evidence while native callbacks still settle.
+- Tests prove unchanged uninvoked owners, replacement, deletion,
+  accessor conversion, prototype swap, exact 128/129 uninvoked-owner behavior,
+  and zero-byte artifact rejection while retaining all invoked-owner cases.
+  Product/test head: `97a8d4ca1673bbc306e924e85840c8fd6929dcf1`. Exact affected/full non-E2E command:
+  `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 12 files / 244 tests: 243 passed
+  and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run or claimed.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
