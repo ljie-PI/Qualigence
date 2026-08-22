@@ -873,6 +873,8 @@ test_head: `524456a1aaaba8e6f027b7fb940bd02e6a739bef`
 implementation_commits: `2`
 reviewed_head: `98db43140958d706f5a42d324239efbb6409c907`
 reviewed_local_commits_from_base: `4`
+review_blocker_precommit_head: `c7449174c068699fe106d266fc562b9615f6dc44`
+review_blocker_precommit_count: `522`
 
 - Every newly observed Promise method owner is fully instrumented before one
   post-instrumentation chain snapshot is recorded. Registry entries, chain
@@ -906,6 +908,22 @@ reviewed_local_commits_from_base: `4`
   Chromium E2E `corepack pnpm vitest run
   tests/e2e/web-execution/value-ref.test.ts` passed 1 file / 1 test at that
   reviewed head.
+- Review-blocker remediation captures native Promise-authority dependencies at
+  the first lines of the init closure and uses only those closure-private
+  references for property definition, descriptor/prototype inspection,
+  application, key enumeration, and freezing. Sensitive snapshots compare the
+  ambient intrinsic identities to that baseline and poison evidence on any
+  replacement without changing safe internal calls or application behavior.
+- Real-Chromium tests replace `Object.defineProperty` with no-op, throwing, and
+  forged-return implementations; hide descriptors; lie about prototypes;
+  replace `Reflect.apply`; and replace `Object.freeze`. Ordinary pre-sensitive
+  observation remains available, custom prototype-owner instrumentation uses
+  the native captured path and preserves the application result, and sensitive
+  evidence fails closed in every case.
+- The exact affected/full non-E2E Gate passed 13 files / 264 tests: 263 passed
+  and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run after this code change; fresh
+  exact-head review is required first.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 

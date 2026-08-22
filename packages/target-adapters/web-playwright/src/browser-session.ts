@@ -2831,11 +2831,22 @@ export class PlaywrightBrowserSession {
         promiseInitEpoch,
         maximumPromiseOwners,
       }) => {
+        const nativeObject = Object;
+        const nativeReflect = Reflect;
+        const nativeDefineProperty = Object.defineProperty;
+        const nativeDefineProperties = Object.defineProperties;
+        const nativeOwnDescriptor = Object.getOwnPropertyDescriptor;
+        const nativePrototypeOf = Object.getPrototypeOf;
+        const nativeFreeze = Object.freeze;
+        const nativeReflectApply = Reflect.apply;
+        const nativeReflectOwnKeys = Reflect.ownKeys;
+        const nativePromise = Promise;
+        const nativePrototype = Promise.prototype;
         const host = globalThis as typeof globalThis & Record<symbol, unknown>;
         const registrySymbol = Symbol.for(registryKey);
         if (host[registrySymbol] !== undefined) return;
         const originalAttachShadow = Element.prototype.attachShadow;
-        const originalDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
+        const originalDescriptor = nativeOwnDescriptor(Element.prototype, "attachShadow");
         if (originalDescriptor?.value !== originalAttachShadow) return;
         const roots: PrivateShadowRootEntry[] = [];
         const closedObservers: MutationObserver[] = [];
@@ -2848,12 +2859,12 @@ export class PlaywrightBrowserSession {
           this: Element,
           init: ShadowRootInit,
         ): ShadowRoot {
-          const root = originalAttachShadow.call(this, init);
+          const root = nativeReflectApply(originalAttachShadow, this, [init]);
           count += 1;
           if (count > maximumRoots) {
             overflow = true;
           } else {
-            roots.push(Object.freeze({ host: this, root, mode: init.mode }));
+            roots.push(nativeFreeze({ host: this, root, mode: init.mode }));
             if (init.mode === "closed") {
               const observer = new MutationObserver((records) => {
                 closedMutationCount += records.length;
@@ -2876,7 +2887,7 @@ export class PlaywrightBrowserSession {
           }
           return root;
         };
-        Object.defineProperties(wrappedAttachShadow, {
+        nativeDefineProperties(wrappedAttachShadow, {
           name: { configurable: true, value: originalAttachShadow.name },
           length: { configurable: true, value: originalAttachShadow.length },
           toString: {
@@ -2884,16 +2895,16 @@ export class PlaywrightBrowserSession {
             value: () => originalAttachShadow.toString(),
           },
         });
-        Object.defineProperty(Element.prototype, "attachShadow", {
+        nativeDefineProperty(Element.prototype, "attachShadow", {
           ...originalDescriptor,
           value: wrappedAttachShadow,
         });
-        const authority: PrivateShadowRegistry = Object.freeze({
+        const authority: PrivateShadowRegistry = nativeFreeze({
           snapshot(limit: number) {
             for (const observer of closedObservers) {
               closedMutationCount += observer.takeRecords().length;
             }
-            const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "attachShadow");
+            const descriptor = nativeOwnDescriptor(Element.prototype, "attachShadow");
             return {
               roots: roots.slice(0, limit),
               hosts: roots.slice(0, limit).map(({ host, mode }) => ({ host, mode })),
@@ -2915,12 +2926,12 @@ export class PlaywrightBrowserSession {
             return listeners.delete(listener) && Element.prototype.attachShadow === wrappedAttachShadow;
           },
         });
-        const gateway = Object.freeze({
+        const gateway = nativeFreeze({
           access(candidate: string): PrivateShadowRegistry | undefined {
             return candidate === accessToken ? authority : undefined;
           },
         });
-        Object.defineProperty(host, registrySymbol, {
+        nativeDefineProperty(host, registrySymbol, {
           configurable: false,
           enumerable: false,
           writable: false,
@@ -2928,14 +2939,9 @@ export class PlaywrightBrowserSession {
         });
         const promiseSymbol = Symbol.for(promiseKey);
         if (host[promiseSymbol] !== undefined) return;
-        const nativeOwnDescriptor = Object.getOwnPropertyDescriptor.bind(Object);
-        const nativePrototypeOf = Object.getPrototypeOf.bind(Object);
-        const nativeFreeze = Object.freeze.bind(Object);
-        const nativePromise = Promise;
-        const nativePrototype = Promise.prototype;
         const globalDescriptor = nativeOwnDescriptor(globalThis, "Promise");
         const prototypeDescriptor = nativeOwnDescriptor(nativePromise, "prototype");
-        const staticDescriptors = Reflect.ownKeys(nativePromise).map((key) =>
+        const staticDescriptors = nativeReflectOwnKeys(nativePromise).map((key) =>
           [key, nativeOwnDescriptor(nativePromise, key)] as const);
         const thenDescriptor = nativeOwnDescriptor(nativePrototype, "then");
         const catchDescriptor = nativeOwnDescriptor(nativePrototype, "catch");
@@ -2967,6 +2973,7 @@ export class PlaywrightBrowserSession {
         const registeredOwners: RegisteredPromiseOwner[] = [];
         let ownerRegistryOverflow = false;
         let ownerIntegrityPoisoned = false;
+        let intrinsicIntegrityPoisoned = false;
         let promiseAuthorityClosed = false;
         const instrumentedMethods = new WeakMap<Function, {
           readonly method: Function;
@@ -2985,6 +2992,23 @@ export class PlaywrightBrowserSession {
           current.configurable === captured.configurable &&
           current.enumerable === captured.enumerable &&
           current.writable === captured.writable;
+        const ambientIntrinsicsIntact = (): boolean => {
+          if (intrinsicIntegrityPoisoned) return false;
+          try {
+            const intact = Object === nativeObject && Reflect === nativeReflect &&
+              Object.defineProperty === nativeDefineProperty &&
+              Object.defineProperties === nativeDefineProperties &&
+              Object.getOwnPropertyDescriptor === nativeOwnDescriptor &&
+              Object.getPrototypeOf === nativePrototypeOf &&
+              Object.freeze === nativeFreeze && Reflect.apply === nativeReflectApply &&
+              Reflect.ownKeys === nativeReflectOwnKeys;
+            if (!intact) intrinsicIntegrityPoisoned = true;
+            return intact;
+          } catch {
+            intrinsicIntegrityPoisoned = true;
+            return false;
+          }
+        };
         interface CustomCallFrame {
           readonly token: readonly PrivatePromiseDelegationToken[];
           readonly expectedReceiver: unknown;
@@ -3105,7 +3129,7 @@ export class PlaywrightBrowserSession {
             [fulfilled, rejected] = hook.wrap(this, fulfilled, rejected, associated);
           }
           try {
-            const result = Reflect.apply(thenDescriptor?.value, this, [fulfilled, rejected]) as
+            const result = nativeReflectApply(thenDescriptor.value, this, [fulfilled, rejected]) as
               Promise<TResult1 | TResult2>;
             if (frame !== undefined && frame.expectedReceiver !== this) {
               const continuations = delegatedContinuations.get(frame) ?? new WeakSet<object>();
@@ -3120,7 +3144,7 @@ export class PlaywrightBrowserSession {
             }
           }
         };
-        Object.defineProperties(wrappedThen, {
+        nativeDefineProperties(wrappedThen, {
           name: { configurable: true, value: thenDescriptor.value.name },
           length: { configurable: true, value: thenDescriptor.value.length },
         });
@@ -3140,7 +3164,7 @@ export class PlaywrightBrowserSession {
             }
             pendingCustomCalls.push(frame);
             try {
-              const result = Reflect.apply(method, this, args);
+              const result = nativeReflectApply(method, this, args);
               if ((typeof result === "object" || typeof result === "function") && result !== null) {
                 if (parent !== undefined && frame.delegated) {
                   const continuations = delegatedContinuations.get(parent) ?? new WeakSet<object>();
@@ -3158,7 +3182,7 @@ export class PlaywrightBrowserSession {
               settle(frame);
             }
           };
-          Object.defineProperties(instrumented, {
+          nativeDefineProperties(instrumented, {
             name: { configurable: true, value: method.name },
             length: { configurable: true, value: method.length },
           });
@@ -3195,13 +3219,13 @@ export class PlaywrightBrowserSession {
                 if (owner === nativePrototype && name === "then" &&
                     (method === nativeMethod || method === wrappedThen)) {
                   if (method !== wrappedThen) {
-                    Object.defineProperty(owner, name, { ...descriptor, value: wrappedThen });
+                    nativeDefineProperty(owner, name, { ...descriptor, value: wrappedThen });
                   }
                 } else if (method !== nativeMethod && method !== wrappedThen) {
                   discoveredCustomMethod = true;
                   customMethods.push(name);
                   if (!instrumentedMethods.has(method)) {
-                    Object.defineProperty(owner, name, {
+                    nativeDefineProperty(owner, name, {
                       ...descriptor,
                       value: instrumentCustom(method, name),
                     });
@@ -3216,16 +3240,17 @@ export class PlaywrightBrowserSession {
           }
           return customMethods;
         };
-        Object.defineProperty(nativePrototype, "then", {
+        nativeDefineProperty(nativePrototype, "then", {
           ...thenDescriptor,
           value: wrappedThen,
         });
         observeReceiver(nativePrototype);
         const wrappedCatch = catchDescriptor.value as Promise<unknown>["catch"];
         const wrappedFinally = finallyDescriptor.value as Promise<unknown>["finally"];
-        const promiseAuthority: PrivatePromiseIntrinsics = Object.freeze({
+        const promiseAuthority: PrivatePromiseIntrinsics = nativeFreeze({
           attest(epoch: string) {
-            return epoch === promiseInitEpoch && host[promiseSymbol] === promiseGateway;
+            return epoch === promiseInitEpoch && host[promiseSymbol] === promiseGateway &&
+              ambientIntrinsicsIntact();
           },
           snapshot() {
             const ownersIntact = registeredOwnersIntact();
@@ -3237,7 +3262,7 @@ export class PlaywrightBrowserSession {
               wrappedThen,
               wrappedCatch,
               wrappedFinally,
-              intact: ownersIntact && Promise === nativePromise &&
+              intact: ownersIntact && ambientIntrinsicsIntact() && Promise === nativePromise &&
                 Promise.prototype === nativePrototype &&
                 sameDescriptor(nativeOwnDescriptor(globalThis, "Promise"), globalDescriptor) &&
                 sameDescriptor(nativeOwnDescriptor(nativePromise, "prototype"), prototypeDescriptor) &&
@@ -3289,12 +3314,12 @@ export class PlaywrightBrowserSession {
             return intact;
           },
         });
-        const promiseGateway = Object.freeze({
+        const promiseGateway = nativeFreeze({
           access(candidate: string): PrivatePromiseIntrinsics | undefined {
             return candidate === promiseAccessToken ? promiseAuthority : undefined;
           },
         });
-        Object.defineProperty(host, promiseSymbol, {
+        nativeDefineProperty(host, promiseSymbol, {
           configurable: false,
           enumerable: false,
           writable: false,

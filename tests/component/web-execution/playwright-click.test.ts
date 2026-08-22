@@ -2434,6 +2434,128 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(instrumented.prototypeDescriptors).toContain("finally:data:c:-:w");
   });
 
+  it.each([
+    "define-noop",
+    "define-throw",
+    "define-forged-return",
+    "descriptor-hide",
+    "prototype-lie",
+    "reflect-apply-throw",
+    "freeze-noop",
+  ] as const)(
+    "uses captured Promise intrinsics and rejects sensitive evidence after %s tampering",
+    async (tamper) => {
+      session = new PlaywrightBrowserSession(options());
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => `${tamper}-secret` });
+      await session.withPage(async (page) => page.evaluate((kind) => {
+        const state = globalThis as typeof globalThis & {
+          promiseIntrinsicTest?: {
+            readonly defineProperty: typeof Object.defineProperty;
+            readonly ownDescriptor: typeof Object.getOwnPropertyDescriptor;
+            readonly prototypeOf: typeof Object.getPrototypeOf;
+            readonly setPrototypeOf: typeof Object.setPrototypeOf;
+            readonly apply: typeof Reflect.apply;
+            result?: string;
+            customCalls: number;
+            instrumented?: boolean;
+          };
+        };
+        const saved = {
+          defineProperty: Object.defineProperty,
+          ownDescriptor: Object.getOwnPropertyDescriptor,
+          prototypeOf: Object.getPrototypeOf,
+          setPrototypeOf: Object.setPrototypeOf,
+          apply: Reflect.apply,
+          customCalls: 0,
+        };
+        state.promiseIntrinsicTest = saved;
+        if (kind === "define-noop") {
+          Object.defineProperty = (() => undefined) as unknown as typeof Object.defineProperty;
+        } else if (kind === "define-throw") {
+          Object.defineProperty = (() => { throw new Error("ambient defineProperty called"); }) as
+            typeof Object.defineProperty;
+        } else if (kind === "define-forged-return") {
+          Object.defineProperty = ((target: object) => target) as typeof Object.defineProperty;
+        } else if (kind === "descriptor-hide") {
+          Object.getOwnPropertyDescriptor = (() => undefined) as typeof Object.getOwnPropertyDescriptor;
+        } else if (kind === "prototype-lie") {
+          Object.getPrototypeOf = (() => null) as typeof Object.getPrototypeOf;
+        } else if (kind === "reflect-apply-throw") {
+          Reflect.apply = (() => { throw new Error("ambient Reflect.apply called"); }) as typeof Reflect.apply;
+        } else {
+          Object.freeze = ((value: object) => value) as ObjectConstructor["freeze"];
+        }
+      }, tamper));
+
+      const before = await observer.capture(job);
+      const action = await resolver.resolve(
+        valued("input", nodeNamed(before, "Email").id, `customer.intrinsic-${tamper}`),
+        before,
+      );
+      await session.withPage(async (page) => page.evaluate(() => {
+        const source = (globalThis as unknown as {
+          document: { querySelector(selector: string): {
+            addEventListener(type: string, listener: () => void, options: { readonly once: boolean }): void;
+          } | null };
+        }).document.querySelector('input[aria-label="Email"]');
+        source?.addEventListener("input", () => {
+          const state = (globalThis as typeof globalThis & {
+            promiseIntrinsicTest?: {
+              readonly defineProperty: typeof Object.defineProperty;
+              readonly ownDescriptor: typeof Object.getOwnPropertyDescriptor;
+              readonly prototypeOf: typeof Object.getPrototypeOf;
+              readonly setPrototypeOf: typeof Object.setPrototypeOf;
+              readonly apply: typeof Reflect.apply;
+              result?: string;
+              customCalls: number;
+              instrumented?: boolean;
+            };
+          }).promiseIntrinsicTest;
+          if (state === undefined) throw new Error("saved intrinsics unavailable");
+          const receiver = Promise.resolve("application-result");
+          const delegate = receiver.then;
+          const owner = Object.create(state.prototypeOf(receiver));
+          state.setPrototypeOf(receiver, owner);
+          const custom = function (this: Promise<string>, ...args: unknown[]): unknown {
+            state.customCalls += 1;
+            return state.apply(delegate, this, args);
+          };
+          state.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: custom,
+          });
+          const result = receiver.then((value) => `${value}-preserved`);
+          state.instrumented = state.ownDescriptor(owner, "then")?.value !== custom;
+          state.apply(Promise.prototype.then, result, [
+            (value: string) => { state.result = value; },
+          ]);
+        }, { once: true });
+      }));
+
+      await expect(executor.execute(action, allowedPermit())).rejects.toMatchObject({
+        code: "SensitiveEvidenceUnproven",
+      });
+      await expect.poll(() => session.withPage(async (page) => page.evaluate(() => {
+        const state = (globalThis as typeof globalThis & {
+          promiseIntrinsicTest?: { result?: string };
+        }).promiseIntrinsicTest;
+        return state?.result;
+      }))).toBe("application-result-preserved");
+      expect(await session.withPage(async (page) => page.evaluate(() => {
+        const state = (globalThis as typeof globalThis & {
+          promiseIntrinsicTest?: { customCalls: number; instrumented?: boolean };
+        }).promiseIntrinsicTest;
+        return { customCalls: state?.customCalls, instrumented: state?.instrumented };
+      }))).toEqual({ customCalls: 1, instrumented: true });
+      expect(session.latestGraphId).toBe(before.graphId);
+    },
+  );
+
   it.each([1, 2, 65] as const)(
     "counts a then captured after init and poisons only after %i calls exceed bounds",
     async (calls) => {
@@ -2695,7 +2817,6 @@ describe("Playwright resolve + execute against real Chromium", () => {
         } | null };
       }).document.querySelector('input[aria-label="Email"]');
       source?.addEventListener("input", () => {
-        Object.freeze = ((value: object) => value) as ObjectConstructor["freeze"];
         const state = globalThis as typeof globalThis & {
           frozenSnapshotOwner?: Promise<string> & { then: Promise<string>["then"] };
           frozenSnapshotDescriptor?: PropertyDescriptor;
