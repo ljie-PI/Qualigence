@@ -69,11 +69,17 @@ export class PlaywrightActionResolver implements ActionResolver {
         }
         await this.session.establishPrivateActionTarget(graph.graphId, actionTarget.nodeId, locator);
       });
-    } else if (!(await retainedTarget.handle.evaluate((element) => element.isConnected))) {
-      throw new WebTargetError(
-        "TargetNotFound",
-        `Node ${actionTarget.nodeId} no longer matches any element.`,
-      );
+    } else {
+      const connection = await retainedTarget.handle.evaluate((element, authority) => {
+        const snapshot = authority.snapshot();
+        return snapshot.operations.nodeIsConnected(element) ? "connected" as const : "detached" as const;
+      }, this.session.promiseIntrinsicsForEvidence());
+      if (connection === "detached") {
+        throw new WebTargetError(
+          "TargetNotFound",
+          `Node ${actionTarget.nodeId} no longer matches any element.`,
+        );
+      }
     }
 
     const target = {

@@ -139,6 +139,14 @@ const NEW_AUTHORITY_INTRINSIC_METHODS = [
   ["Uint8Array", "slice"],
   ["Uint8Array", "values"],
   ["TextEncoder", "encode"],
+  ["Element", "getClientRects"],
+  ["Element", "matches"],
+  ["Element", "closest"],
+  ["Document", "querySelector"],
+  ["Window", "getComputedStyle"],
+  ["Node", "getRootNode"],
+  ["Set", "add"],
+  ["Set", "size"],
 ] as const;
 
 const AUTHORITY_INTRINSIC_TAMPERS = AUTHORITY_INTRINSIC_METHODS.flatMap(
@@ -1562,16 +1570,95 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const after = await observer.capture(job);
     const screenshot = session.artifactsFor(after.graphId)
       .find((artifact) => artifact.mediaType === "image/png");
-    const sensitiveBox = await reflectedElement.boundingBox();
+    const geometries = await session.proveSensitiveTargetGeometry();
+    const sensitiveBox = geometries.find((geometry) =>
+      geometry.rectangle.width >= 85 && geometry.rectangle.width <= 95 &&
+      geometry.rectangle.height >= 40 && geometry.rectangle.height <= 50)?.rectangle;
     const unrelatedBox = await session.withPage(async (page) =>
       page.locator("[data-hostile-css-unrelated]").boundingBox());
     await reflection.dispose();
-    if (screenshot === undefined || sensitiveBox === null || unrelatedBox === null) {
+    if (screenshot === undefined || sensitiveBox === undefined || unrelatedBox === null) {
       throw new Error("Expected bounded hostile-CSS screenshot regions.");
     }
     const image = decodePng(screenshot.bytes);
-    expectSolidCrop(image, sensitiveBox, [0, 0, 0, 255]);
+    expectSolidCrop(image, {
+      x: Math.max(0, sensitiveBox.x),
+      y: Math.max(0, sensitiveBox.y),
+      width: Math.min(sensitiveBox.width, image.width - Math.max(0, sensitiveBox.x)),
+      height: Math.min(sensitiveBox.height, image.height - Math.max(0, sensitiveBox.y)),
+    }, [0, 0, 0, 255]);
     expectSolidCrop(image, unrelatedBox, [0, 255, 0, 255]);
+  });
+
+  it("uses CDP geometry when page geometry APIs are forged", async () => {
+    const secret = "forged-page-geometry-secret";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.forged-geometry"),
+      before,
+    );
+    const geometryBefore = session.proveSensitiveTargetGeometry;
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const actualGeometry = await session.proveSensitiveTargetGeometry();
+    await session.withPage(async (page) => page.locator('input[aria-label="Email"]').evaluate((element) => {
+      const forged = () => ({ x: 900, y: 600, width: 20, height: 20,
+        top: 600, right: 920, bottom: 620, left: 900, toJSON: () => ({}) });
+      Object.defineProperty(element, "getBoundingClientRect", { value: forged });
+      Object.defineProperty(element, "getClientRects", {
+        value: () => ({ 0: forged(), length: 1, item: () => forged(), [Symbol.iterator]: function* () {} }),
+      });
+      Object.defineProperty(element, "offsetWidth", { get: () => 20 });
+      Object.defineProperty(element, "offsetHeight", { get: () => 20 });
+    }));
+
+    expect(geometryBefore).toBeTypeOf("function");
+    const after = await observer.capture(job);
+    const screenshot = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "image/png");
+    if (actualGeometry[0] === undefined || screenshot === undefined) throw new Error("Expected geometry evidence.");
+    expectSolidCrop(decodePng(screenshot.bytes), actualGeometry[0].rectangle, [0, 0, 0, 255]);
+  });
+
+  it("follows the one-recapture rule when a CDP box changes during capture", async () => {
+    const attempts: number[] = [];
+    let shifted = false;
+    const secret = "cdp-box-recapture-secret";
+    session = new PlaywrightBrowserSession(options(), undefined, {
+      afterSensitiveEvidenceCandidateCreated: async (attempt) => { attempts.push(attempt); },
+    });
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.cdp-box-race"),
+      before,
+    );
+    expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
+    const original = session.proveSensitiveTargetGeometry.bind(session);
+    let calls = 0;
+    Object.defineProperty(session, "proveSensitiveTargetGeometry", {
+      value: async () => {
+        const geometry = await original();
+        calls += 1;
+        if (calls === 1 && !shifted) {
+          shifted = true;
+          await session.sensitiveTargets()[0]?.handle.evaluate((element) => {
+            (element as { style: { transform: string } }).style.transform = "translateX(4px)";
+          });
+        }
+        return geometry;
+      },
+    });
+
+    await expect(observer.capture(job)).resolves.toBeDefined();
+    expect(attempts).toEqual([1]);
   });
 
   it("redacts causally reflected URL fields and document title before serialization", async () => {
@@ -2701,10 +2788,15 @@ describe("Playwright resolve + execute against real Chromium", () => {
         const owner = ownerKey === "ArrayConstructor" ? Array
           : ownerKey === "Uint8ArrayConstructor" ? Uint8Array
             : ownerKey === "TextEncoder" ? TextEncoder.prototype
+              : ownerKey === "Window" ? globalThis
               : (globalThis as unknown as Record<string, { prototype: object }>)[ownerKey]?.prototype;
         if (owner === undefined) throw new Error("intrinsic owner unavailable");
-        Object.defineProperty(owner, property, {
-          ...Object.getOwnPropertyDescriptor(owner, property),
+        const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+        Object.defineProperty(owner, property, "get" in (descriptor ?? {}) ? {
+          ...descriptor,
+          get: function () { throw new Error("tampered intrinsic called"); },
+        } : {
+          ...descriptor,
           value: function () { throw new Error("tampered intrinsic called"); },
         });
       }, [ownerName, method]));

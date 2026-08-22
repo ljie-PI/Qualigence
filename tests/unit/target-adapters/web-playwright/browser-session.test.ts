@@ -27,6 +27,12 @@ function baseOptions(
   };
 }
 
+interface FakeMarkedElement {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+}
+
 function fakeLauncher(promiseAttested = true): {
   launcher: BrowserLauncher;
   launch: ReturnType<typeof vi.fn>;
@@ -46,8 +52,22 @@ function fakeLauncher(promiseAttested = true): {
   const promiseAuthority = {
     attest: (_epoch: string) => promiseAttested,
     close: () => true,
+    revalidateOwners: () => true,
+    snapshot: () => ({
+      intact: true,
+      descriptorShapeIntact: true,
+      operations: {
+        nodeIsConnected: () => true,
+        elementGetAttribute: (element: FakeMarkedElement, name: string) => element.getAttribute(name),
+        elementSetAttribute: (element: FakeMarkedElement, name: string, value: string) =>
+          element.setAttribute(name, value),
+        elementRemoveAttribute: (element: FakeMarkedElement, name: string) => element.removeAttribute(name),
+      },
+    }),
   };
   const promiseHandle = {
+    snapshot: promiseAuthority.snapshot,
+    revalidateOwners: promiseAuthority.revalidateOwners,
     evaluate: vi.fn(async (
       callback: (value: typeof promiseAuthority, argument?: string) => unknown,
       argument?: string,
@@ -99,7 +119,12 @@ describe("PlaywrightBrowserSession", () => {
     ]);
     const callbacks: { readonly label: string; readonly node: ts.Node; readonly source: ts.SourceFile }[] = [];
 
-    for (const relativePath of ["browser-session.ts", "playwright-observer.ts"]) {
+    for (const relativePath of [
+      "browser-session.ts",
+      "playwright-observer.ts",
+      "playwright-action-resolver.ts",
+      "playwright-action-executor.ts",
+    ]) {
       const text = readFileSync(new URL(
         `../../../../packages/target-adapters/web-playwright/src/${relativePath}`,
         import.meta.url,
@@ -147,6 +172,9 @@ describe("PlaywrightBrowserSession", () => {
         if (ts.isForOfStatement(node)) {
           violations.push(`${callback.label}:for-of`);
         }
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+          violations.push(`${callback.label}:instanceof`);
+        }
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
           const owner = node.expression.expression.getText(callback.source);
           const method = node.expression.name.text;
@@ -154,6 +182,19 @@ describe("PlaywrightBrowserSession", () => {
               ((owner === "Array" || owner.endsWith("Array")) && method === "from") ||
               owner === "Object" || owner === "Reflect" || owner === "Number") {
             violations.push(`${callback.label}:${owner}.${method}`);
+          }
+          if ([
+            "getBoundingClientRect", "getClientRects", "matches", "closest", "querySelector",
+            "getRootNode", "getAttribute", "hasAttribute", "setAttribute", "removeAttribute",
+            "createTreeWalker",
+          ].includes(method)) {
+            violations.push(`${callback.label}:dom.${method}`);
+          }
+        }
+        if (ts.isNewExpression(node)) {
+          const constructor = node.expression.getText(callback.source);
+          if (["Set", "Map", "WeakSet", "WeakMap", "Array", "String", "Function"].includes(constructor)) {
+            violations.push(`${callback.label}:new ${constructor}`);
           }
         }
         ts.forEachChild(node, inspect);
@@ -359,6 +400,9 @@ describe("PlaywrightBrowserSession", () => {
     const { launcher } = fakeLauncher();
     const session = new PlaywrightBrowserSession(baseOptions(), launcher);
     await session.start();
+    Object.defineProperty(session, "proveMarkerBackendNodeId", {
+      value: async () => 1,
+    });
     const attributes = new Map<string, string>();
     const dispose = vi.fn(async () => undefined);
     interface FakeHandle {

@@ -80,7 +80,11 @@ export class PlaywrightActionExecutor implements ActionExecutor {
 
     return this.session.withPage(async (page): Promise<ActionOutcome> => {
       const target = privateTarget.handle;
-      if (!(await target.evaluate((element) => element.isConnected))) {
+      const connection = await target.evaluate((element, authority) => {
+        const snapshot = authority.snapshot();
+        return snapshot.operations.nodeIsConnected(element) ? "connected" as const : "detached" as const;
+      }, this.session.promiseIntrinsicsForEvidence());
+      if (connection === "detached") {
         return { status: "failed", errorCode: "TargetNotFound" };
       }
       if (!(await target.isVisible())) {

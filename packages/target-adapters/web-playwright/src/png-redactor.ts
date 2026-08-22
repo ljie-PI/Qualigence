@@ -86,7 +86,7 @@ export function redactPngRectangles(
     const top = Math.max(0, Math.floor(rectangle.y));
     const right = Math.min(width, Math.ceil(rectangle.x + rectangle.width));
     const bottom = Math.min(height, Math.ceil(rectangle.y + rectangle.height));
-    if (left >= right || top >= bottom) throw new Error("png-rectangle-coverage-unproven");
+    if (left >= right || top >= bottom) continue;
     for (let y = top; y < bottom; y += 1) {
       for (let x = left; x < right; x += 1) {
         const pixel = y * stride + x * channels;

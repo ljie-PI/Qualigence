@@ -35,9 +35,25 @@ async function bindPrivateTarget(
   session.beginSensitiveActionTracking = vi.fn(async () => undefined);
   session.beginCausalAction = vi.fn(async () => undefined);
   session.endCausalAction = vi.fn(async () => undefined);
+  const attributes = new Map<string, string>();
+  const operations = {
+    nodeIsConnected: () => true,
+    elementGetAttribute: (_element: object, name: string) => attributes.get(name) ?? null,
+    elementSetAttribute: (_element: object, name: string, value: string) => { attributes.set(name, value); },
+    elementRemoveAttribute: (_element: object, name: string) => { attributes.delete(name); },
+  };
+  Object.defineProperty(session, "promiseIntrinsicsForEvidence", {
+    configurable: true,
+    value: () => ({ snapshot: () => ({ operations }) }),
+  });
+  Object.defineProperty(session, "proveMarkerBackendNodeId", {
+    configurable: true,
+    value: async () => 1,
+  });
   const handle = {
     ...target,
-    evaluate: async () => true,
+    evaluate: async (callback: (element: object, argument: unknown) => unknown, argument: unknown) =>
+      callback(handle, argument),
     dispose: async () => undefined,
   };
   const locator = {

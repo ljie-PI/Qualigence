@@ -20,7 +20,7 @@ import {
   buildObservationGraph,
   type ObservationCandidate,
 } from "./observation-builder.js";
-import type { JSHandle, Page } from "playwright";
+import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 import { redactPngRectangles, type ScreenshotRectangle } from "./png-redactor.js";
 
@@ -29,73 +29,37 @@ const REDACTED = "[REDACTED]";
 async function captureScreenshot(
   page: Page,
   sensitiveTargets: readonly SensitiveActionTarget[],
-  authority: JSHandle<PrivatePromiseIntrinsics>,
+  session: PlaywrightBrowserSession,
   validateEvidence: () => Promise<void>,
 ): Promise<Uint8Array> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       if (sensitiveTargets.length === 0) {
         await validateEvidence();
         return new Uint8Array(await page.screenshot({ timeout: 5000 }));
       }
       const regions: ScreenshotRectangle[] = [];
-      for (let targetIndex = 0; targetIndex < sensitiveTargets.length; targetIndex += 1) {
-        const sensitiveTarget = sensitiveTargets[targetIndex];
-        if (sensitiveTarget === undefined) throw new Error("sensitive-target-unproven");
-        const region = await sensitiveTarget.handle.evaluate((element, input) => {
-          const snapshot = input.authority.snapshot();
-          if (!snapshot.intact || !snapshot.descriptorShapeIntact ||
-              !input.authority.revalidateOwners()) return undefined;
-          const rect = element.getBoundingClientRect();
-          const finite = (value: number): boolean =>
-            value === value && value !== Infinity && value !== -Infinity;
-          return element.isConnected && element.getAttribute(input.identity.attribute) === input.identity.token &&
-            finite(rect.x) && finite(rect.y) && finite(rect.width) && finite(rect.height) &&
-            rect.width > 0 && rect.height > 0
-            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-            : undefined;
-        }, {
-          authority,
-          identity: { attribute: PRIVATE_TARGET_ATTRIBUTE, token: sensitiveTarget.token },
-        });
-        if (region === undefined) {
-          throw new WebTargetError(
-            "SensitiveTargetUnproven",
-            "A sensitive target has no unique bounded screenshot region.",
-          );
-        }
-        regions[regions.length] = region;
+      const before = await session.proveSensitiveTargetGeometry();
+      if (before.length !== sensitiveTargets.length) throw new WebTargetError("SensitiveTargetUnproven");
+      for (let targetIndex = 0; targetIndex < before.length; targetIndex += 1) {
+        const geometry = before[targetIndex];
+        if (geometry === undefined) throw new WebTargetError("SensitiveTargetUnproven");
+        regions[targetIndex] = geometry.rectangle;
       }
       await validateEvidence();
       const screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
-      for (let index = 0; index < sensitiveTargets.length; index += 1) {
-        const sensitiveTarget = sensitiveTargets[index];
-        const expectedRegion = regions[index];
-        if (sensitiveTarget === undefined || expectedRegion === undefined) {
-          throw new Error("sensitive-target-unproven");
-        }
-        const remainsExact = await sensitiveTarget.handle.evaluate((element, input) => {
-          const snapshot = input.authority.snapshot();
-          if (!snapshot.intact || !snapshot.descriptorShapeIntact ||
-              !input.authority.revalidateOwners()) return false;
-          const rect = element.getBoundingClientRect();
-          return element.isConnected && element.getAttribute(input.expected.attribute) === input.expected.token &&
-            rect.x === input.expected.region.x && rect.y === input.expected.region.y &&
-            rect.width === input.expected.region.width && rect.height === input.expected.region.height;
-        }, {
-          authority,
-          expected: {
-            attribute: PRIVATE_TARGET_ATTRIBUTE,
-            token: sensitiveTarget.token,
-            region: expectedRegion,
-          },
-        });
-        if (!remainsExact) {
-          throw new WebTargetError(
-            "SensitiveTargetUnproven",
-            "A sensitive target identity changed during screenshot capture.",
-          );
+      const after = await session.proveSensitiveTargetGeometry();
+      if (after.length !== before.length) throw new WebTargetError("SensitiveTargetUnproven");
+      for (let index = 0; index < before.length; index += 1) {
+        const expected = before[index];
+        const current = after[index];
+        if (expected === undefined || current === undefined ||
+            expected.backendNodeId !== current.backendNodeId ||
+            expected.rectangle.x !== current.rectangle.x || expected.rectangle.y !== current.rectangle.y ||
+            expected.rectangle.width !== current.rectangle.width ||
+            expected.rectangle.height !== current.rectangle.height) {
+          throw new Error("sensitive-target-geometry-changed");
         }
       }
       const viewport = page.viewportSize();
@@ -103,6 +67,9 @@ async function captureScreenshot(
       return redactPngRectangles(screenshot, regions, viewport);
     } catch (error) {
       if (error instanceof WebTargetError) throw error;
+      if (error instanceof Error && error.message !== "sensitive-target-geometry-changed") {
+        throw new WebTargetError("SensitiveTargetUnproven");
+      }
       lastError = error;
       await page.waitForTimeout(50);
     }
@@ -140,7 +107,7 @@ function collectCandidates(identity: {
     const result: boolean[] = [];
     for (let index = 0; index < elements.length; index += 1) {
       const element = elements[index];
-      result[index] = element?.isConnected === true;
+      result[index] = element !== undefined && operations.nodeIsConnected(element);
     }
     return result;
   };
@@ -164,25 +131,31 @@ function collectCandidates(identity: {
     const chunks: string[] = [];
     let bytes = 0;
     const roots: Node[] = [element];
-    if (element.shadowRoot !== null) roots[roots.length] = element.shadowRoot;
+    const ownShadowRoot = operations.elementShadowRoot(element);
+    if (ownShadowRoot !== null) roots[roots.length] = ownShadowRoot;
     let elements = 0;
     for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
       const root = roots[rootIndex];
       if (root === undefined) throw new Error("text-root-unprovable");
-      const walker = element.ownerDocument.createTreeWalker(
+      const ownerDocument = operations.nodeOwnerDocument(element);
+      if (ownerDocument === null) throw new Error("text-root-unprovable");
+      const walker = operations.documentCreateTreeWalker(
+        ownerDocument,
         root,
         NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
       );
-      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (node instanceof CharacterData) {
+      for (let node = operations.treeWalkerNextNode(walker); node !== null;
+        node = operations.treeWalkerNextNode(walker)) {
+        if (operations.isCharacterData(node)) {
           bytes += utf8Bytes(node.data);
           if (bytes > identity.maximumNodeBytes) throw new Error("node-byte-overflow");
           chunks[chunks.length] = node.data;
-        } else if (node instanceof Element) {
+        } else if (operations.isElement(node)) {
           elements += 1;
           if (elements > identity.maximumDomElements) throw new Error("dom-element-overflow");
-          if (node.shadowRoot !== null) {
-            roots[roots.length] = node.shadowRoot;
+          const shadowRoot = operations.elementShadowRoot(node);
+          if (shadowRoot !== null) {
+            roots[roots.length] = shadowRoot;
             if (roots.length > identity.maximumShadowRoots + 1) {
               throw new Error("shadow-root-overflow");
             }
@@ -210,29 +183,30 @@ function collectCandidates(identity: {
   };
 
   function isVisible(element: Element): boolean {
-    if (!(element instanceof HTMLElement)) {
+    const htmlElement = operations.isHtmlElement(element) ? element as HTMLElement : undefined;
+    if (htmlElement === undefined) {
       return true;
     }
-    if (element.hidden) {
+    if (htmlElement.hidden) {
       return false;
     }
-    const style = window.getComputedStyle(element);
+    const style = operations.computedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") {
       return false;
     }
-    return element.getClientRects().length > 0;
+    return operations.elementClientRectCount(element) > 0;
   }
 
   function roleOf(element: Element): string {
-    const explicit = boundedProperty(element.getAttribute("role"));
+    const explicit = boundedProperty(operations.elementGetAttribute(element, "role"));
     if (explicit) {
       return explicit;
     }
-    const tag = operations.stringToLowerCase(element.tagName);
+    const tag = operations.stringToLowerCase(operations.elementTagName(element));
     if (tag === "button") {
       return "button";
     }
-    if (tag === "a" && element.hasAttribute("href")) {
+    if (tag === "a" && operations.elementHasAttribute(element, "href")) {
       return "link";
     }
     if (tag === "select") {
@@ -242,7 +216,7 @@ function collectCandidates(identity: {
       return "textbox";
     }
     if (tag === "input") {
-      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
+      const type = operations.stringToLowerCase(operations.elementGetAttribute(element, "type") ?? "text");
       if (type === "button" || type === "submit" || type === "reset") {
         return "button";
       }
@@ -258,21 +232,23 @@ function collectCandidates(identity: {
   }
 
   function accessibleName(element: Element): string {
-    const ariaLabel = boundedProperty(element.getAttribute("aria-label"));
+    const ariaLabel = boundedProperty(operations.elementGetAttribute(element, "aria-label"));
     if (ariaLabel && operations.stringTrim(ariaLabel) !== "") {
       return ariaLabel;
     }
-    const labelledBy = boundedProperty(element.getAttribute("aria-labelledby"));
+    const labelledBy = boundedProperty(operations.elementGetAttribute(element, "aria-labelledby"));
     if (labelledBy) {
       const ids = operations.stringSplitWhitespace(labelledBy);
       let joined = "";
       for (let index = 0; index < ids.length; index += 1) {
         const id = ids[index];
         if (id === undefined) continue;
-        const root = element.getRootNode();
-        const node = root instanceof Document || root instanceof ShadowRoot
-          ? root.getElementById(id)
-          : null;
+        const root = operations.nodeGetRootNode(element);
+        const node = operations.isDocument(root)
+          ? operations.documentGetElementById(root, id)
+          : operations.isShadowRoot(root)
+            ? operations.rootQuerySelector(root, `[id="${id}"]`)
+            : null;
         if (node !== null) joined += `${joined === "" ? "" : " "}${boundedText(node)}`;
       }
       joined = operations.stringTrim(joined);
@@ -280,41 +256,39 @@ function collectCandidates(identity: {
         return joined;
       }
     }
-    if (element.id !== "") {
-      const escaped =
-        typeof CSS !== "undefined" && CSS.escape
-          ? CSS.escape(element.id)
-          : element.id;
-      const root = element.getRootNode();
-      const label = root instanceof Document || root instanceof ShadowRoot
-        ? root.querySelector(`label[for="${escaped}"]`)
+    const elementId = operations.elementId(element);
+    if (elementId !== "") {
+      const root = operations.nodeGetRootNode(element);
+      const label = operations.isDocument(root) || operations.isShadowRoot(root)
+        ? operations.rootQuerySelector(root, `label[for="${elementId}"]`)
         : null;
       if (label) {
         const text = boundedText(label);
         if (operations.stringTrim(text) !== "") return text;
       }
     }
-    const wrapping = element.closest("label");
+    const wrapping = operations.elementClosest(element, "label");
     if (wrapping) {
       const text = boundedText(wrapping);
       if (operations.stringTrim(text) !== "") return text;
     }
-    const tag = operations.stringToLowerCase(element.tagName);
-    if (tag === "button" || tag === "a" || element.getAttribute("role") === "button") {
+    const tag = operations.stringToLowerCase(operations.elementTagName(element));
+    if (tag === "button" || tag === "a" || operations.elementGetAttribute(element, "role") === "button") {
       const text = boundedText(element);
       if (operations.stringTrim(text) !== "") {
         return text;
       }
     }
-    if (element instanceof HTMLInputElement) {
-      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
+    if (operations.isInput(element)) {
+      const inputElement = element as HTMLInputElement;
+      const type = operations.stringToLowerCase(operations.elementGetAttribute(element, "type") ?? "text");
       if (
         (type === "submit" || type === "button" || type === "reset") &&
-        element.value !== ""
+        inputElement.value !== ""
       ) {
-        return element.value;
+        return inputElement.value;
       }
-      const placeholder = boundedProperty(element.placeholder);
+      const placeholder = boundedProperty(inputElement.placeholder);
       if (placeholder !== null && placeholder !== "") {
         return placeholder;
       }
@@ -345,12 +319,13 @@ function collectCandidates(identity: {
   let domElements = 0;
   for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
     const root = roots[rootIndex];
-    const distinctRoots = operations.createSet<Document | ShadowRoot>();
+    let duplicateRoot = false;
     for (let index = 0; index < roots.length; index += 1) {
-      const candidate = roots[index];
-      if (candidate !== undefined) distinctRoots.add(candidate);
+      for (let prior = 0; prior < index; prior += 1) {
+        if (roots[index] === roots[prior]) duplicateRoot = true;
+      }
     }
-    if (root === undefined || distinctRoots.size !== roots.length ||
+    if (root === undefined || duplicateRoot ||
         rootIndex > identity.maximumShadowRoots) {
       return {
         candidates: [],
@@ -359,9 +334,10 @@ function collectCandidates(identity: {
         failure: "shadow-root-identity-unprovable",
       };
     }
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      if (!(node instanceof Element)) {
+    const walker = operations.documentCreateTreeWalker(document, root, NodeFilter.SHOW_ELEMENT);
+    for (let node = operations.treeWalkerNextNode(walker); node !== null;
+      node = operations.treeWalkerNextNode(walker)) {
+      if (!operations.isElement(node)) {
         return {
           candidates: [],
           sensitiveIndexes: [],
@@ -378,8 +354,9 @@ function collectCandidates(identity: {
           failure: "dom-element-overflow",
         };
       }
-      if (node.matches(selector)) elements[elements.length] = node;
-      if (shadow === undefined && node.shadowRoot !== null) roots[roots.length] = node.shadowRoot;
+      if (operations.elementMatches(node, selector)) elements[elements.length] = node;
+      const shadowRoot = operations.elementShadowRoot(node);
+      if (shadow === undefined && shadowRoot !== null) roots[roots.length] = shadowRoot;
       if (elements.length > identity.maximumCandidates) {
         return {
           candidates: [],
@@ -405,14 +382,13 @@ function collectCandidates(identity: {
       const role = roleOf(element);
       const name = operations.stringTrim(accessibleName(element));
 
-    const isFormField =
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement;
+    const isFormField = operations.isInput(element) || operations.isTextArea(element);
     let value: string | undefined;
     if (isFormField) {
-      const type = operations.stringToLowerCase(element.getAttribute("type") ?? "text");
-      if (type !== "password" && element.value !== "") {
-        value = boundedProperty(element.value) ?? undefined;
+      const type = operations.stringToLowerCase(operations.elementGetAttribute(element, "type") ?? "text");
+      const field = element as HTMLInputElement | HTMLTextAreaElement;
+      if (type !== "password" && field.value !== "") {
+        value = boundedProperty(field.value) ?? undefined;
       }
     }
 
@@ -424,7 +400,7 @@ function collectCandidates(identity: {
       role === "radio" ||
       role === "combobox";
     let text: string | undefined;
-    if (!interactive || element.hasAttribute("data-qualigence-observe")) {
+    if (!interactive || operations.elementHasAttribute(element, "data-qualigence-observe")) {
       const content = boundedText(element);
       if (operations.stringTrim(content) !== "") {
         text = content;
@@ -433,7 +409,7 @@ function collectCandidates(identity: {
 
     const disabled =
       (element as HTMLButtonElement).disabled === true ||
-      element.getAttribute("aria-disabled") === "true";
+      operations.elementGetAttribute(element, "aria-disabled") === "true";
 
     let candidateBytes = 0;
     candidateBytes = addBytes(candidateBytes, role);
@@ -460,12 +436,12 @@ function collectCandidates(identity: {
     }
       candidates[candidates.length] = candidate;
     }
-  } catch (error) {
+  } catch {
     return {
       candidates: [],
       sensitiveIndexes: [],
       sensitiveConnected: connected(identity.sensitiveElements),
-      failure: error instanceof Error ? error.message : "snapshot-unprovable",
+      failure: "snapshot-unprovable",
     };
   }
 
@@ -505,9 +481,9 @@ export class PlaywrightObserver implements Observer {
       return await this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
       for (let attempt = 0; attempt < 2; attempt += 1) {
+      const bounded = this.session.hasSensitiveActionTracker();
       await this.session.prepareSensitiveEvidenceCapture();
       const sensitiveTargets = this.session.sensitiveTargets();
-      const bounded = this.session.hasSensitiveActionTracker();
       const captured = await page.evaluate(collectCandidates, {
         sensitiveElements: sensitiveTargets.map((target) => target.handle),
         shadowRegistry: bounded ? this.session.shadowRegistryForEvidence() : undefined,
@@ -534,26 +510,40 @@ export class PlaywrightObserver implements Observer {
           "The bounded observation snapshot could not be proven.",
         );
       }
-      if (captured.sensitiveConnected.some((connected) => !connected) ||
-          captured.sensitiveIndexes.some((index) => index < 0)) {
+      let missingSensitiveTarget = false;
+      for (let index = 0; index < captured.sensitiveConnected.length; index += 1) {
+        if (captured.sensitiveConnected[index] !== true) missingSensitiveTarget = true;
+      }
+      for (let index = 0; index < captured.sensitiveIndexes.length; index += 1) {
+        if ((captured.sensitiveIndexes[index] ?? -1) < 0) missingSensitiveTarget = true;
+      }
+      if (missingSensitiveTarget) {
         throw new WebTargetError(
           "SensitiveTargetUnproven",
           "A sensitive action target cannot be proven in the current observation.",
         );
       }
       this.session.recordPreSensitiveObservationCandidateCount(captured.candidates.length);
-      const sensitiveIndexes = new Set(captured.sensitiveIndexes);
-      const raw = captured.candidates.map((candidate, index) => ({
-        role: candidate.role,
-        ...(sensitiveIndexes.has(index)
-          ? { name: REDACTED, text: REDACTED, value: REDACTED }
-          : {
-              ...(candidate.name === undefined ? {} : { name: candidate.name }),
-              ...(candidate.text === undefined ? {} : { text: candidate.text }),
-              ...(candidate.value === undefined ? {} : { value: candidate.value }),
-            }),
-        ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
-      }));
+      const raw: ObservationCandidate[] = [];
+      for (let candidateIndex = 0; candidateIndex < captured.candidates.length; candidateIndex += 1) {
+        const candidate = captured.candidates[candidateIndex];
+        if (candidate === undefined) throw new WebTargetError("SensitiveTargetUnproven");
+        let sensitive = false;
+        for (let index = 0; index < captured.sensitiveIndexes.length; index += 1) {
+          if (captured.sensitiveIndexes[index] === candidateIndex) sensitive = true;
+        }
+        raw[candidateIndex] = {
+          role: candidate.role,
+          ...(sensitive
+            ? { name: REDACTED, text: REDACTED, value: REDACTED }
+            : {
+                ...(candidate.name === undefined ? {} : { name: candidate.name }),
+                ...(candidate.text === undefined ? {} : { text: candidate.text }),
+                ...(candidate.value === undefined ? {} : { value: candidate.value }),
+              }),
+          ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
+        };
+      }
       const pageMetadata = await this.session.redactSensitivePageMetadata(
         page.url(),
         await page.title(),
@@ -585,11 +575,11 @@ export class PlaywrightObserver implements Observer {
         artifactRefs: artifactNames,
       };
 
-      await this.session.verifySensitiveShadowRoots();
+      if (bounded) await this.session.verifySensitiveShadowRoots();
       const screenshot = await captureScreenshot(
         page,
         sensitiveTargets,
-        this.session.promiseIntrinsicsForEvidence(),
+        this.session,
         () => this.session.failIfSensitiveTrackingOverflowed(),
       );
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);

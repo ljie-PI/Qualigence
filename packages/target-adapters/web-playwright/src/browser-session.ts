@@ -173,6 +173,17 @@ export interface PrivateActionTarget {
 export interface SensitiveActionTarget extends PrivateActionTarget {
   readonly nodeId: string | undefined;
   readonly closedShadowRoot: boolean;
+  readonly backendNodeId: number;
+}
+
+export interface SensitiveTargetGeometry {
+  readonly backendNodeId: number;
+  readonly rectangle: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
 }
 
 export const PRIVATE_TARGET_ATTRIBUTE = "data-qualigence-private-target";
@@ -199,6 +210,8 @@ const SENSITIVE_ACTION_ATTRIBUTES = [
   "value",
 ] as const;
 const PRIVATE_SHADOW_REGISTRY_DESCRIPTION = "qualigence.private.shadow-registry";
+const SCREENSHOT_VIEWPORT = Object.freeze({ width: 1280, height: 720 });
+const SCREENSHOT_DEVICE_SCALE_FACTOR = 1;
 
 export interface BoundedCdpSession {
   getDocument(): Promise<CdpDomNode>;
@@ -209,6 +222,8 @@ export interface BoundedCdpSession {
     functionDeclaration: string,
     args: readonly unknown[],
   ): Promise<boolean>;
+  getBoxModel(backendNodeId: number): Promise<CdpBoxModel>;
+  getLayoutMetrics(): Promise<CdpLayoutMetrics>;
   releaseObjectGroup(): Promise<void>;
 }
 
@@ -221,6 +236,8 @@ export interface RawCdpSession {
     functionDeclaration: string,
     args: readonly unknown[],
   ): Promise<unknown>;
+  getBoxModel?(backendNodeId: number): Promise<unknown>;
+  getLayoutMetrics?(): Promise<unknown>;
   releaseObjectGroup(): Promise<unknown>;
 }
 
@@ -230,10 +247,25 @@ interface CdpDomNode {
   readonly nodeType: number;
   readonly childNodeCount: number;
   readonly shadowRootType: string | undefined;
+  readonly attributes: readonly string[];
   readonly children: readonly CdpDomNode[];
   readonly shadowRoots: readonly CdpDomNode[];
   readonly contentDocument: CdpDomNode | undefined;
   readonly templateContent: CdpDomNode | undefined;
+}
+
+interface CdpBoxModel {
+  readonly content: readonly number[];
+  readonly border: readonly number[];
+}
+
+interface CdpLayoutMetrics {
+  readonly pageX: number;
+  readonly pageY: number;
+  readonly clientWidth: number;
+  readonly clientHeight: number;
+  readonly scale: number;
+  readonly zoom: number;
 }
 
 interface CdpResponseBudget {
@@ -371,16 +403,69 @@ function normalizedCdpLeaf(validated: ValidatedCdpNode): CdpDomNode {
     return value;
   };
   const shadowRootType = cdpOwnValue(validated.source, "shadowRootType");
+  const rawAttributes = cdpOwnValue(validated.source, "attributes");
+  const attributes: string[] = [];
+  if (rawAttributes !== undefined) {
+    if (!Array.isArray(rawAttributes) || rawAttributes.length % 2 !== 0) {
+      throw new Error("cdp-response-unproven");
+    }
+    for (let index = 0; index < rawAttributes.length; index += 1) {
+      const value = cdpOwnValue(rawAttributes, String(index));
+      if (typeof value !== "string") throw new Error("cdp-response-unproven");
+      attributes[index] = value;
+    }
+  }
   return {
     nodeId: number("nodeId"),
     backendNodeId: number("backendNodeId"),
     nodeType: number("nodeType"),
     childNodeCount: number("childNodeCount", 0),
     shadowRootType: typeof shadowRootType === "string" ? shadowRootType : undefined,
+    attributes,
     children: [],
     shadowRoots: [],
     contentDocument: undefined,
     templateContent: undefined,
+  };
+}
+
+function cdpFiniteNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("cdp-response-unproven");
+  }
+  return value;
+}
+
+function cdpQuad(value: unknown): readonly number[] {
+  if (!Array.isArray(value) || value.length !== 8) throw new Error("cdp-response-unproven");
+  const quad: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    quad[index] = cdpFiniteNumber(cdpOwnValue(value, String(index)));
+  }
+  return quad;
+}
+
+function cdpBoxModelResponse(value: unknown): CdpBoxModel {
+  const response = asCdpObject(value);
+  const keys = Reflect.ownKeys(response);
+  if (keys.length !== 1 || keys[0] !== "model") throw new Error("cdp-response-unproven");
+  const model = asCdpObject(cdpOwnValue(response, "model"));
+  return {
+    content: cdpQuad(cdpOwnValue(model, "content")),
+    border: cdpQuad(cdpOwnValue(model, "border")),
+  };
+}
+
+function cdpLayoutMetricsResponse(value: unknown): CdpLayoutMetrics {
+  const response = asCdpObject(value);
+  const viewport = asCdpObject(cdpOwnValue(response, "cssVisualViewport"));
+  return {
+    pageX: cdpFiniteNumber(cdpOwnValue(viewport, "pageX")),
+    pageY: cdpFiniteNumber(cdpOwnValue(viewport, "pageY")),
+    clientWidth: cdpFiniteNumber(cdpOwnValue(viewport, "clientWidth")),
+    clientHeight: cdpFiniteNumber(cdpOwnValue(viewport, "clientHeight")),
+    scale: cdpFiniteNumber(cdpOwnValue(viewport, "scale")),
+    zoom: cdpFiniteNumber(cdpOwnValue(viewport, "zoom")),
   };
 }
 
@@ -527,6 +612,18 @@ export function createBoundedCdpSession(
         return value;
       });
     },
+    getBoxModel: async (backendNodeId) => {
+      if (raw.getBoxModel === undefined) throw new Error("cdp-response-unproven");
+      const response = await raw.getBoxModel(backendNodeId)
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => cdpBoxModelResponse(response));
+    },
+    getLayoutMetrics: async () => {
+      if (raw.getLayoutMetrics === undefined) throw new Error("cdp-response-unproven");
+      const response = await raw.getLayoutMetrics()
+        .catch(() => { throw new Error("cdp-response-unproven"); });
+      return stableCdpResponse(() => cdpLayoutMetricsResponse(response));
+    },
     releaseObjectGroup: async () => {
       const response = await raw.releaseObjectGroup()
         .catch(() => { throw new Error("cdp-response-unproven"); });
@@ -545,11 +642,18 @@ export async function inventoryPiercedDom(
     readonly maximumShadowRoots: number;
     readonly maximumFrames: number;
   },
+  marker?: { readonly attribute: string; readonly tokens: readonly string[] },
 ): Promise<{
   readonly shadowHosts: readonly { readonly backendNodeId: number; readonly mode: string }[];
   readonly shadowRootCount: number;
   readonly frameCount: number;
   readonly nodeCount: number;
+  readonly documentBackendNodeId: number;
+  readonly markedNodes: readonly {
+    readonly backendNodeId: number;
+    readonly token: string;
+    readonly frameDepth: number;
+  }[];
 }> {
   if (limits.maximumNodes < 1 || limits.maximumShadowRoots < 0 || limits.maximumFrames < 0) {
     throw new Error("cdp-limits-unproven");
@@ -558,6 +662,8 @@ export async function inventoryPiercedDom(
   const queue: CdpDomNode[] = [];
   const seen = new Set<number>();
   const shadowHosts: { readonly backendNodeId: number; readonly mode: string }[] = [];
+  const markedNodes: { readonly backendNodeId: number; readonly token: string; readonly frameDepth: number }[] = [];
+  const frameDepths = new Map<number, number>();
   let requestCount = 1;
   let shadowRootCount = 0;
   let frameCount = 0;
@@ -575,6 +681,7 @@ export async function inventoryPiercedDom(
     }
     seen.add(node.backendNodeId);
     queue.push(node);
+    if (!frameDepths.has(node.backendNodeId)) frameDepths.set(node.backendNodeId, kind === "frame" ? 1 : 0);
   };
   append(root, "node");
 
@@ -594,7 +701,23 @@ export async function inventoryPiercedDom(
         described.children.length !== described.childNodeCount) {
       throw new Error("shadow-node-identity-unproven");
     }
-    for (const child of described.children) append(child, "node");
+    const frameDepth = frameDepths.get(shallow.backendNodeId) ?? 0;
+    if (marker !== undefined) {
+      for (let attributeIndex = 0; attributeIndex < described.attributes.length; attributeIndex += 2) {
+        if (described.attributes[attributeIndex] !== marker.attribute) continue;
+        const token = described.attributes[attributeIndex + 1];
+        if (token === undefined) throw new Error("shadow-node-identity-unproven");
+        for (let tokenIndex = 0; tokenIndex < marker.tokens.length; tokenIndex += 1) {
+          if (marker.tokens[tokenIndex] === token) {
+            markedNodes[markedNodes.length] = { backendNodeId: described.backendNodeId, token, frameDepth };
+          }
+        }
+      }
+    }
+    for (const child of described.children) {
+      append(child, "node");
+      frameDepths.set(child.backendNodeId, frameDepth);
+    }
     for (const shadowRoot of described.shadowRoots) {
       if (shadowRoot.shadowRootType === "user-agent") continue;
       shadowHosts.push({
@@ -602,15 +725,24 @@ export async function inventoryPiercedDom(
         mode: shadowRoot.shadowRootType ?? "",
       });
       append(shadowRoot, "shadow");
+      frameDepths.set(shadowRoot.backendNodeId, frameDepth);
     }
-    if (described.contentDocument !== undefined) append(described.contentDocument, "frame");
-    if (described.templateContent !== undefined) append(described.templateContent, "node");
+    if (described.contentDocument !== undefined) {
+      append(described.contentDocument, "frame");
+      frameDepths.set(described.contentDocument.backendNodeId, frameDepth + 1);
+    }
+    if (described.templateContent !== undefined) {
+      append(described.templateContent, "node");
+      frameDepths.set(described.templateContent.backendNodeId, frameDepth);
+    }
   }
   return {
     shadowHosts,
     shadowRootCount,
     frameCount,
     nodeCount: seen.size,
+    documentBackendNodeId: root.backendNodeId,
+    markedNodes,
   };
 }
 
@@ -721,6 +853,37 @@ export interface PrivateAuthorityOperations {
     parameters: URLSearchParams,
     callback: (value: string, key: string) => void,
   ) => void;
+  readonly isElement: (value: unknown) => value is Element;
+  readonly isHtmlElement: (value: unknown) => value is HTMLElement;
+  readonly isCharacterData: (value: unknown) => value is CharacterData;
+  readonly isNode: (value: unknown) => value is Node;
+  readonly isDocument: (value: unknown) => value is Document;
+  readonly isShadowRoot: (value: unknown) => value is ShadowRoot;
+  readonly isInput: (value: unknown) => value is HTMLInputElement;
+  readonly isTextArea: (value: unknown) => value is HTMLTextAreaElement;
+  readonly isSelect: (value: unknown) => value is HTMLSelectElement;
+  readonly isTitle: (value: unknown) => value is HTMLTitleElement;
+  readonly nodeIsConnected: (node: Node) => boolean;
+  readonly nodeOwnerDocument: (node: Node) => Document | null;
+  readonly nodeParentElement: (node: Node) => HTMLElement | null;
+  readonly nodeValue: (node: Node) => string | null;
+  readonly nodeGetRootNode: (node: Node) => Node;
+  readonly nodeContains: (node: Node, other: Node | null) => boolean;
+  readonly elementShadowRoot: (element: Element) => ShadowRoot | null;
+  readonly elementTagName: (element: Element) => string;
+  readonly elementId: (element: Element) => string;
+  readonly elementMatches: (element: Element, selector: string) => boolean;
+  readonly elementClosest: (element: Element, selector: string) => Element | null;
+  readonly elementGetAttribute: (element: Element, name: string) => string | null;
+  readonly elementHasAttribute: (element: Element, name: string) => boolean;
+  readonly elementSetAttribute: (element: Element, name: string, value: string) => void;
+  readonly elementRemoveAttribute: (element: Element, name: string) => void;
+  readonly rootQuerySelector: (root: Document | ShadowRoot, selector: string) => Element | null;
+  readonly documentGetElementById: (document: Document, id: string) => HTMLElement | null;
+  readonly documentCreateTreeWalker: (document: Document, root: Node, whatToShow: number) => TreeWalker;
+  readonly treeWalkerNextNode: (walker: TreeWalker) => Node | null;
+  readonly computedStyle: (element: Element) => CSSStyleDeclaration;
+  readonly elementClientRectCount: (element: Element) => number;
 }
 
 interface PrivatePromiseDelegationToken {
@@ -1053,9 +1216,16 @@ export class PlaywrightBrowserSession {
       await this.failIfSensitiveTrackingOverflowed();
       await this.verifySensitiveShadowRoots();
       for (const target of this.sensitiveActionTargets.values()) {
-        const intact = await target.handle.evaluate((element, identity) =>
-          element.isConnected && element.getAttribute(identity.attribute) === identity.token,
-        { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
+        const intact = await target.handle.evaluate((element, input) => {
+          const snapshot = input.authority.snapshot();
+          return snapshot.intact && snapshot.descriptorShapeIntact && input.authority.revalidateOwners() &&
+            snapshot.operations.nodeIsConnected(element) &&
+            snapshot.operations.elementGetAttribute(element, input.attribute) === input.token;
+        }, {
+          authority: this.promiseIntrinsics,
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token: target.token,
+        });
         if (!intact) {
           this.reportSensitiveEvidenceDiagnostic("SensitiveTargetIdentityUnproven");
           throw new Error("sensitive-target-identity-unproven");
@@ -1131,6 +1301,7 @@ export class PlaywrightBrowserSession {
         "The sensitive action target has no resolution-bound identity.",
       );
     }
+    if (this.sensitiveActionTrackers.length > 0) await this.failIfSensitiveTrackingOverflowed();
     if (
       !this.sensitiveActionTargets.has(target.token) &&
       this.sensitiveActionTargets.size >= MAXIMUM_SENSITIVE_ACTION_TARGETS
@@ -1155,43 +1326,68 @@ export class PlaywrightBrowserSession {
           "The sensitive action target no longer has its resolution-bound identity.",
         );
       }
-      const registered = { ...target, nodeId, closedShadowRoot: false };
-      this.sensitiveActionTargets.set(target.token, registered);
       try {
         target.markerInstalled = true;
-        registered.markerInstalled = true;
-        const markerInstalled = await target.handle.evaluate((element, identity) => {
-          element.setAttribute(identity.attribute, identity.token);
-          return element.getAttribute(identity.attribute) === identity.token;
-        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token });
+        const markerInstalled = await target.handle.evaluate((element, input) => {
+          const snapshot = input.authority.snapshot();
+          snapshot.operations.elementSetAttribute(element, input.attribute, input.token);
+          return snapshot.operations.elementGetAttribute(element, input.attribute) === input.token;
+        }, {
+          authority: this.promiseIntrinsicsForEvidence(),
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token: target.token,
+        });
         if (!markerInstalled) {
           throw new WebTargetError(
             "SensitiveTargetUnproven",
             "The sensitive action target could not install its private marker.",
           );
         }
+        const backendNodeId = await this.proveMarkerBackendNodeId(target.token);
+        const registered: SensitiveActionTarget = {
+          ...target,
+          nodeId,
+          closedShadowRoot: false,
+          backendNodeId,
+          markerInstalled: true,
+        };
+        this.privateActionTargets.set(`${graphId}\0${nodeId}`, registered);
+        this.sensitiveActionTargets.set(target.token, registered);
       } catch (error) {
         this.sensitiveActionTargets.delete(target.token);
-        await target.handle.evaluate((element, identity) => {
-          if (element.getAttribute(identity.attribute) === identity.token) {
-            element.removeAttribute(identity.attribute);
+        await target.handle.evaluate((element, input) => {
+          const operations = input.authority.snapshot().operations;
+          if (operations.elementGetAttribute(element, input.attribute) === input.token) {
+            operations.elementRemoveAttribute(element, input.attribute);
           }
-        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+        }, {
+          authority: this.promiseIntrinsicsForEvidence(),
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token: target.token,
+        }).catch(() => undefined);
         target.markerInstalled = false;
-        registered.markerInstalled = false;
+        if (error instanceof WebTargetError && error.code === "SensitiveTargetUnproven") {
+          throw this.sensitiveEvidenceFailure();
+        }
         throw error;
       }
-    } else if (!(await target.handle.evaluate((element, identity) =>
-      element.getAttribute(identity.attribute) === identity.token,
-    { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }))) {
+    } else if (!(await target.handle.evaluate((element, input) => {
+      const snapshot = input.authority.snapshot();
+      return snapshot.intact && snapshot.descriptorShapeIntact && input.authority.revalidateOwners() &&
+        snapshot.operations.elementGetAttribute(element, input.attribute) === input.token;
+    }, {
+      authority: this.promiseIntrinsicsForEvidence(),
+      attribute: PRIVATE_TARGET_ATTRIBUTE,
+      token: target.token,
+    }))) {
       throw new WebTargetError(
         "SensitiveTargetUnproven",
         "The sensitive action target lost its private marker.",
       );
     }
-    const registered = { ...target, nodeId, markerInstalled: true, closedShadowRoot: false };
+    const registered = this.sensitiveActionTargets.get(target.token);
+    if (registered === undefined) throw new WebTargetError("SensitiveTargetUnproven");
     this.privateActionTargets.set(`${graphId}\0${nodeId}`, registered);
-    this.sensitiveActionTargets.set(target.token, registered);
   }
 
   sensitiveTargets(): readonly SensitiveActionTarget[] {
@@ -1312,7 +1508,7 @@ export class PlaywrightBrowserSession {
         const limits = input.limits;
         const promiseSnapshot = input.promiseIntrinsics.snapshot();
         const operations = promiseSnapshot.operations;
-        if (!element.isConnected) {
+        if (!operations.nodeIsConnected(element)) {
           throw new Error("target-disconnected");
         }
         const byteLength = (text: string): number =>
@@ -1321,25 +1517,31 @@ export class PlaywrightBrowserSession {
           const chunks: string[] = [];
           let bytes = 0;
           const roots: Node[] = [candidate];
-          if (candidate.shadowRoot !== null) operations.arrayPush(roots, candidate.shadowRoot);
+          const candidateShadowRoot = operations.elementShadowRoot(candidate);
+          if (candidateShadowRoot !== null) operations.arrayPush(roots, candidateShadowRoot);
           let elements = 0;
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
             if (root === undefined) throw new Error("text-root-unprovable");
-            const walker = candidate.ownerDocument.createTreeWalker(
+            const ownerDocument = operations.nodeOwnerDocument(candidate);
+            if (ownerDocument === null) throw new Error("text-root-unprovable");
+            const walker = operations.documentCreateTreeWalker(
+              ownerDocument,
               root,
               NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
             );
-            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-              if (node instanceof CharacterData) {
+            for (let node = operations.treeWalkerNextNode(walker); node !== null;
+              node = operations.treeWalkerNextNode(walker)) {
+              if (operations.isCharacterData(node)) {
                 bytes += byteLength(node.data);
                 if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
                 operations.arrayPush(chunks, node.data);
-              } else if (node instanceof Element) {
+              } else if (operations.isElement(node)) {
                 elements += 1;
                 if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
-                if (node.shadowRoot !== null) {
-                  operations.arrayPush(roots, node.shadowRoot);
+                const shadowRoot = operations.elementShadowRoot(node);
+                if (shadowRoot !== null) {
+                  operations.arrayPush(roots, shadowRoot);
                   if (roots.length > limits.maximumShadowRoots + 1) {
                     throw new Error("shadow-root-overflow");
                   }
@@ -1355,22 +1557,23 @@ export class PlaywrightBrowserSession {
           readonly properties: SensitiveActionPropertySnapshot;
           readonly bytes: number;
         } => {
-          const selectedOption = candidate instanceof HTMLSelectElement
+          const selectedOption = operations.isSelect(candidate)
             ? candidate.selectedOptions.item(0)
             : null;
           const properties: SensitiveActionPropertySnapshot = {
-            inputValue: candidate instanceof HTMLInputElement ||
-                candidate instanceof HTMLTextAreaElement
+            inputValue: operations.isInput(candidate) || operations.isTextArea(candidate)
               ? candidate.value
               : null,
-            selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
+            selectValue: operations.isSelect(candidate) ? candidate.value : null,
             selectedOptionText: selectedOption?.text ?? null,
             textContent: boundedText(candidate),
             attributes: (() => {
               const attributes: (string | null)[] = [];
               for (let index = 0; index < limits.attributes.length; index += 1) {
                 const name = limits.attributes[index];
-                if (name !== undefined) operations.arrayPush(attributes, candidate.getAttribute(name));
+                if (name !== undefined) operations.arrayPush(
+                  attributes, operations.elementGetAttribute(candidate, name),
+                );
               }
               return attributes;
             })(),
@@ -1404,7 +1607,9 @@ export class PlaywrightBrowserSession {
           }
           const found: Element[] = [];
           let elements = 0;
-          const roots: (Document | ShadowRoot)[] = [element.ownerDocument];
+          const ownerDocument = operations.nodeOwnerDocument(element);
+          if (ownerDocument === null) throw new Error("shadow-root-identity-unprovable");
+          const roots: (Document | ShadowRoot)[] = [ownerDocument];
           for (let index = 0; index < shadow.roots.length; index += 1) {
             const entry = shadow.roots[index];
             if (entry !== undefined) operations.arrayPush(roots, entry.root);
@@ -1412,28 +1617,30 @@ export class PlaywrightBrowserSession {
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
             if (root === undefined) throw new Error("shadow-root-identity-unprovable");
-            const walker = element.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-              if (!(node instanceof Element)) throw new Error("candidate-unprovable");
+            const walker = operations.documentCreateTreeWalker(ownerDocument, root, NodeFilter.SHOW_ELEMENT);
+            for (let node = operations.treeWalkerNextNode(walker); node !== null;
+              node = operations.treeWalkerNextNode(walker)) {
+              if (!operations.isElement(node)) throw new Error("candidate-unprovable");
               elements += 1;
               if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
-              if (node.matches(limits.candidateSelector)) {
+              if (operations.elementMatches(node, limits.candidateSelector)) {
                 operations.arrayPush(found, node);
                 if (found.length > limits.maximumCandidates) throw new Error("candidate-overflow");
               }
             }
           }
-          const distinctRoots = operations.createSet<Document | ShadowRoot>();
+          let duplicateRoot = false;
           for (let index = 0; index < roots.length; index += 1) {
-            const root = roots[index];
-            if (root !== undefined) operations.setAdd(distinctRoots, root);
+            for (let prior = 0; prior < index; prior += 1) {
+              if (roots[index] === roots[prior]) duplicateRoot = true;
+            }
           }
           let missingRoot = false;
           for (let index = 0; index < shadow.roots.length; index += 1) {
             const entry = shadow.roots[index];
             if (entry !== undefined && !operations.arrayIncludes(roots, entry.root)) missingRoot = true;
           }
-          if (operations.setSize(distinctRoots) !== roots.length ||
+          if (duplicateRoot ||
               roots.length !== shadow.roots.length + 1 || missingRoot) {
             throw new Error("shadow-root-identity-unprovable");
           }
@@ -1532,7 +1739,9 @@ export class PlaywrightBrowserSession {
               subtree: true,
           });
         };
-        observeRoot(element.ownerDocument);
+        const trackerOwnerDocument = operations.nodeOwnerDocument(element);
+        if (trackerOwnerDocument === null) throw new Error("target-document-unproven");
+        observeRoot(trackerOwnerDocument);
         const initialShadowRoots = registry.snapshot(limits.maximumShadowRoots).roots;
         for (let index = 0; index < initialShadowRoots.length; index += 1) {
           const entry = initialShadowRoots[index];
@@ -1721,7 +1930,7 @@ export class PlaywrightBrowserSession {
           if (event.target !== element) {
             try {
               const target = event.target;
-              if (target instanceof Element) {
+              if (operations.isElement(target)) {
                 const candidate = snapshot(target);
                 const properties = values(candidate.properties);
                 for (let index = 0; index < properties.length; index += 1) {
@@ -2092,7 +2301,8 @@ export class PlaywrightBrowserSession {
   ): Promise<readonly string[]> {
     if (this.context === undefined) throw new Error("browser-context-unavailable");
     const control = await target.evaluate((element, input) => {
-      if (input.actionKind === "select" && element instanceof HTMLSelectElement) {
+      const operations = input.authority.snapshot().operations;
+      if (input.actionKind === "select" && operations.isSelect(element)) {
         if (element.options.length > input.maximumOptions) {
           throw new Error("normalization-option-overflow");
         }
@@ -2124,15 +2334,16 @@ export class PlaywrightBrowserSession {
         }
         return { tag: "select" as const, options };
       }
-      if (input.actionKind === "input" && element instanceof HTMLInputElement) {
+      if (input.actionKind === "input" && operations.isInput(element)) {
         return { tag: "input" as const, type: element.type };
       }
-      if (input.actionKind === "input" && element instanceof HTMLTextAreaElement) {
+      if (input.actionKind === "input" && operations.isTextArea(element)) {
         return { tag: "textarea" as const };
       }
       throw new Error("normalization-target-unprovable");
     }, {
       actionKind: kind,
+      authority: this.promiseIntrinsicsForEvidence(),
       maximumOptions: MAXIMUM_SENSITIVE_ACTION_CANDIDATES,
       maximumCharsPerValue: MAXIMUM_OBSERVATION_NODE_BYTES,
       maximumTotalChars: MAXIMUM_OBSERVATION_SNAPSHOT_BYTES,
@@ -2170,8 +2381,10 @@ export class PlaywrightBrowserSession {
         const normalized = await normalizationPage.evaluate((input): string[] => {
           const candidate = input.candidate;
           const actionKind = input.actionKind;
-          if (actionKind === "select" && candidate instanceof HTMLSelectElement) {
-            const selected = candidate.selectedOptions.item(0);
+          const tag = candidate.tagName;
+          if (actionKind === "select" && tag === "SELECT") {
+            const select = candidate as HTMLSelectElement;
+            const selected = select.selectedOptions.item(0);
             if (selected === null) throw new Error("normalized-selection-unprovable");
             const forms = [selected.value, selected.label, selected.textContent ?? ""];
             let totalChars = 0;
@@ -2188,8 +2401,7 @@ export class PlaywrightBrowserSession {
             }
             return forms;
           }
-          if (actionKind === "input" &&
-              (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement)) {
+          if (actionKind === "input" && (tag === "INPUT" || tag === "TEXTAREA")) {
             if (candidate.value.length > input.maximumCharsPerValue) {
               throw new Error("normalized-form-length-overflow");
             }
@@ -2251,15 +2463,20 @@ export class PlaywrightBrowserSession {
       }
       let registeredCount = 0;
       for (const frame of frames) {
-        const boundedElements = await frame.evaluate((maximumElements) => {
-          const walker = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+        const boundedElements = await frame.evaluate((input) => {
+          const snapshot = input.authority.snapshot();
+          const operations = snapshot.operations;
+          const walker = operations.documentCreateTreeWalker(document, document, NodeFilter.SHOW_ELEMENT);
           let count = 0;
-          while (walker.nextNode() !== null) {
+          while (operations.treeWalkerNextNode(walker) !== null) {
             count += 1;
-            if (count > maximumElements) return false;
+            if (count > input.maximumElements) return false;
           }
           return true;
-        }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
+        }, {
+          maximumElements: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
+          authority: this.promiseIntrinsicsForEvidence(),
+        });
         if (!boundedElements) throw new Error("dom-element-overflow");
         const realmRoots = await frame.evaluate(({ registryKey, accessToken, maximumRoots }) => {
           const gateway = (globalThis as typeof globalThis & Record<symbol, unknown>)[
@@ -2345,6 +2562,144 @@ export class PlaywrightBrowserSession {
     } catch {
       this.reportSensitiveEvidenceDiagnostic("ShadowIntegrityUnproven");
       throw this.sensitiveEvidenceFailure();
+    }
+  }
+
+  async proveSensitiveTargetGeometry(): Promise<readonly SensitiveTargetGeometry[]> {
+    if (this.page === undefined || this.promiseIntrinsics === undefined || !this.promiseInitAttested) {
+      throw new WebTargetError("SensitiveTargetUnproven");
+    }
+    const targets = this.sensitiveTargets();
+    if (targets.length === 0) return [];
+    await this.failIfSensitiveTrackingOverflowed();
+    await this.verifySensitiveShadowRoots();
+    const viewport = this.page.viewportSize();
+    if (viewport === null || viewport.width !== SCREENSHOT_VIEWPORT.width ||
+        viewport.height !== SCREENSHOT_VIEWPORT.height) {
+      throw new WebTargetError("SensitiveTargetUnproven");
+    }
+    const tokens: string[] = [];
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      if (target === undefined) throw new WebTargetError("SensitiveTargetUnproven");
+      tokens[index] = target.token;
+    }
+    const session = await this.page.context().newCDPSession(this.page);
+    const cdp = createBoundedCdpSession({
+      getDocument: () => session.send("DOM.getDocument", { depth: 0, pierce: true }),
+      describeNode: (reference) => session.send("DOM.describeNode", { ...reference, depth: 1, pierce: false }),
+      resolveNode: (backendNodeId) => session.send("DOM.resolveNode", {
+        backendNodeId,
+        objectGroup: "qualigence-sensitive-geometry-proof",
+      }),
+      callFunctionOn: (objectId, functionDeclaration, args) => session.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration,
+        arguments: args.map((value) => ({ value })),
+        returnByValue: true,
+      }),
+      getBoxModel: (backendNodeId) => session.send("DOM.getBoxModel", { backendNodeId }),
+      getLayoutMetrics: () => session.send("Page.getLayoutMetrics"),
+      releaseObjectGroup: () => session.send("Runtime.releaseObjectGroup", {
+        objectGroup: "qualigence-sensitive-geometry-proof",
+      }),
+    }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
+    try {
+      const inventory = await inventoryPiercedDom(cdp, {
+        maximumNodes: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
+        maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+        maximumFrames: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+      }, { attribute: PRIVATE_TARGET_ATTRIBUTE, tokens });
+      const metrics = await cdp.getLayoutMetrics();
+      if (metrics.scale !== 1 || metrics.zoom !== 1 || metrics.clientWidth !== viewport.width ||
+          metrics.clientHeight !== viewport.height || !Number.isFinite(metrics.pageX) ||
+          !Number.isFinite(metrics.pageY) || SCREENSHOT_DEVICE_SCALE_FACTOR !== 1) {
+        throw new Error("screenshot-coordinate-contract-unproven");
+      }
+      const result: SensitiveTargetGeometry[] = [];
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+        const target = targets[targetIndex];
+        if (target === undefined) throw new Error("sensitive-target-unproven");
+        let matched: typeof inventory.markedNodes[number] | undefined;
+        for (let nodeIndex = 0; nodeIndex < inventory.markedNodes.length; nodeIndex += 1) {
+          const candidate = inventory.markedNodes[nodeIndex];
+          if (candidate?.token !== target.token) continue;
+          if (matched !== undefined) throw new Error("sensitive-target-ambiguous");
+          matched = candidate;
+        }
+        if (matched === undefined || matched.frameDepth !== 0 ||
+            matched.backendNodeId !== target.backendNodeId) {
+          throw new Error("sensitive-target-cross-frame");
+        }
+        const box = await cdp.getBoxModel(matched.backendNodeId);
+        const quad = box.border;
+        const x0 = quad[0];
+        const y0 = quad[1];
+        if (x0 === undefined || y0 === undefined) throw new Error("sensitive-target-geometry-unproven");
+        for (let index = 2; index < quad.length; index += 2) {
+          if (quad[index] !== x0 && quad[index + 1] !== y0) {
+            const axisAligned = quad[0] === quad[6] && quad[2] === quad[4] &&
+              quad[1] === quad[3] && quad[5] === quad[7];
+            if (!axisAligned) throw new Error("sensitive-target-transform-unproven");
+          }
+        }
+        const xs = [quad[0]!, quad[2]!, quad[4]!, quad[6]!];
+        const ys = [quad[1]!, quad[3]!, quad[5]!, quad[7]!];
+        // DOM.getBoxModel quads are in the main-frame viewport coordinate
+        // space used by Page.captureScreenshot when captureBeyondViewport is
+        // false. pageX/pageY describe document scroll and must not be applied.
+        const left = Math.min(...xs);
+        const top = Math.min(...ys);
+        const right = Math.max(...xs);
+        const bottom = Math.max(...ys);
+        if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) {
+          throw new Error("sensitive-target-geometry-unproven");
+        }
+        result[targetIndex] = {
+          backendNodeId: matched.backendNodeId,
+          rectangle: { x: left, y: top, width: right - left, height: bottom - top },
+        };
+      }
+      return result;
+    } catch (error) {
+      throw error;
+    } finally {
+      await cdp.releaseObjectGroup().catch(() => undefined);
+      await session.detach().catch(() => undefined);
+    }
+  }
+
+  private async proveMarkerBackendNodeId(token: string): Promise<number> {
+    if (this.page === undefined) throw new WebTargetError("SensitiveTargetUnproven");
+    const session = await this.page.context().newCDPSession(this.page);
+    const cdp = createBoundedCdpSession({
+      getDocument: () => session.send("DOM.getDocument", { depth: 0, pierce: true }),
+      describeNode: (reference) => session.send("DOM.describeNode", { ...reference, depth: 1, pierce: false }),
+      resolveNode: (backendNodeId) => session.send("DOM.resolveNode", { backendNodeId }),
+      callFunctionOn: (objectId, functionDeclaration, args) => session.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration,
+        arguments: args.map((value) => ({ value })),
+        returnByValue: true,
+      }),
+      releaseObjectGroup: () => session.send("Runtime.releaseObjectGroup", {
+        objectGroup: "qualigence-marker-proof",
+      }),
+    }, MAXIMUM_SENSITIVE_DOM_ELEMENTS);
+    try {
+      const inventory = await inventoryPiercedDom(cdp, {
+        maximumNodes: MAXIMUM_SENSITIVE_DOM_ELEMENTS,
+        maximumShadowRoots: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+        maximumFrames: MAXIMUM_SENSITIVE_SHADOW_ROOTS,
+      }, { attribute: PRIVATE_TARGET_ATTRIBUTE, tokens: [token] });
+      if (inventory.markedNodes.length !== 1 || inventory.markedNodes[0]?.frameDepth !== 0) {
+        throw new Error("sensitive-target-identity-unproven");
+      }
+      return inventory.markedNodes[0].backendNodeId;
+    } catch {
+      throw new WebTargetError("SensitiveTargetUnproven");
+    } finally {
+      await session.detach().catch(() => undefined);
     }
   }
 
@@ -2586,25 +2941,31 @@ export class PlaywrightBrowserSession {
             const chunks: string[] = [];
             let bytes = 0;
             const textRoots: Node[] = [candidate];
-            if (candidate.shadowRoot !== null) operations.arrayPush(textRoots, candidate.shadowRoot);
+            const candidateShadowRoot = operations.elementShadowRoot(candidate);
+            if (candidateShadowRoot !== null) operations.arrayPush(textRoots, candidateShadowRoot);
             let elements = 0;
             for (let rootIndex = 0; rootIndex < textRoots.length; rootIndex += 1) {
               const textRoot = textRoots[rootIndex];
               if (textRoot === undefined) throw new Error("text-root-unprovable");
-              const walker = candidate.ownerDocument.createTreeWalker(
+              const ownerDocument = operations.nodeOwnerDocument(candidate);
+              if (ownerDocument === null) throw new Error("text-root-unprovable");
+              const walker = operations.documentCreateTreeWalker(
+                ownerDocument,
                 textRoot,
                 NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
               );
-              for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-                if (node instanceof CharacterData) {
+              for (let node = operations.treeWalkerNextNode(walker); node !== null;
+                node = operations.treeWalkerNextNode(walker)) {
+                if (operations.isCharacterData(node)) {
                   bytes += byteLength(node.data);
                   if (bytes > limits.maximumNodeBytes) throw new Error("node-byte-overflow");
                   operations.arrayPush(chunks, node.data);
-                } else if (node instanceof Element) {
+                } else if (operations.isElement(node)) {
                   elements += 1;
                   if (elements > limits.maximumDomElements) throw new Error("dom-element-overflow");
-                  if (node.shadowRoot !== null) {
-                    operations.arrayPush(textRoots, node.shadowRoot);
+                  const shadowRoot = operations.elementShadowRoot(node);
+                  if (shadowRoot !== null) {
+                    operations.arrayPush(textRoots, shadowRoot);
                     if (textRoots.length > limits.maximumShadowRoots + 1) {
                       throw new Error("shadow-root-overflow");
                     }
@@ -2634,7 +2995,7 @@ export class PlaywrightBrowserSession {
           if (state.scheduledPoison) return fail("scheduled-causality-bounds-exceeded");
           if (state.shadowPoison) return fail("shadow-root-unproven");
           if (state.ambiguousEvent) return fail("event-target-causality-ambiguous");
-          if (!state.target.isConnected) return fail("target-replaced");
+          if (!operations.nodeIsConnected(state.target)) return fail("target-replaced");
           const shadow = state.shadowRegistry.snapshot(limits.maximumShadowRoots);
           if (!shadow.intact || shadow.overflow ||
               shadow.count !== shadow.roots.length ||
@@ -2646,20 +3007,20 @@ export class PlaywrightBrowserSession {
             readonly properties: SensitiveActionPropertySnapshot;
             readonly bytes: number;
           } => {
-            const selectedOption = candidate instanceof HTMLSelectElement
+            const selectedOption = operations.isSelect(candidate)
               ? candidate.selectedOptions.item(0)
               : null;
             const properties: SensitiveActionPropertySnapshot = {
-              inputValue: candidate instanceof HTMLInputElement ||
-                  candidate instanceof HTMLTextAreaElement ? candidate.value : null,
-              selectValue: candidate instanceof HTMLSelectElement ? candidate.value : null,
+              inputValue: operations.isInput(candidate) || operations.isTextArea(candidate)
+                ? candidate.value : null,
+              selectValue: operations.isSelect(candidate) ? candidate.value : null,
               selectedOptionText: selectedOption?.text ?? null,
               textContent: boundedText(candidate),
               attributes: (() => {
                 const attributes: (string | null)[] = [];
                 for (let index = 0; index < limits.attributes.length; index += 1) {
                   const name = limits.attributes[index];
-                  if (name !== undefined) attributes[index] = candidate.getAttribute(name);
+                  if (name !== undefined) attributes[index] = operations.elementGetAttribute(candidate, name);
                 }
                 return attributes;
               })(),
@@ -2699,7 +3060,9 @@ export class PlaywrightBrowserSession {
               return false;
             })();
           const nodes: Element[] = [];
-          const roots: (Document | ShadowRoot)[] = [state.target.ownerDocument];
+          const ownerDocument = operations.nodeOwnerDocument(state.target);
+          if (ownerDocument === null) return fail("target-document-unproven");
+          const roots: (Document | ShadowRoot)[] = [ownerDocument];
           for (let index = 0; index < shadow.roots.length; index += 1) {
             const entry = shadow.roots[index];
             if (entry !== undefined) operations.arrayPush(roots, entry.root);
@@ -2708,28 +3071,30 @@ export class PlaywrightBrowserSession {
           for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
             const root = roots[rootIndex];
             if (root === undefined) return fail("shadow-root-identity-unproven");
-            const walker = state.target.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-              if (!(node instanceof Element)) return fail("candidate-unprovable");
+            const walker = operations.documentCreateTreeWalker(ownerDocument, root, NodeFilter.SHOW_ELEMENT);
+            for (let node = operations.treeWalkerNextNode(walker); node !== null;
+              node = operations.treeWalkerNextNode(walker)) {
+              if (!operations.isElement(node)) return fail("candidate-unprovable");
               domElements += 1;
               if (domElements > limits.maximumDomElements) return fail("dom-element-overflow");
-              if (node.matches(limits.candidateSelector)) {
+              if (operations.elementMatches(node, limits.candidateSelector)) {
                 operations.arrayPush(nodes, node);
                 if (nodes.length > limits.maximumCandidates) return fail("candidate-overflow");
               }
             }
           }
-          const distinctRoots = operations.createSet<Document | ShadowRoot>();
+          let duplicateRoot = false;
           for (let index = 0; index < roots.length; index += 1) {
-            const root = roots[index];
-            if (root !== undefined) operations.setAdd(distinctRoots, root);
+            for (let prior = 0; prior < index; prior += 1) {
+              if (roots[index] === roots[prior]) duplicateRoot = true;
+            }
           }
           let missingRoot = false;
           for (let index = 0; index < shadow.roots.length; index += 1) {
             const entry = shadow.roots[index];
             if (entry !== undefined && !operations.arrayIncludes(roots, entry.root)) missingRoot = true;
           }
-          if (operations.setSize(distinctRoots) !== roots.length ||
+          if (duplicateRoot ||
               roots.length !== shadow.roots.length + 1 || missingRoot) {
             return fail("shadow-root-identity-unproven");
           }
@@ -2762,17 +3127,19 @@ export class PlaywrightBrowserSession {
               const tracked = state.records[index];
               if (tracked !== undefined && tracked.causal && (
                 tracked.record.target === candidate ||
-                (tracked.record.target instanceof Node && candidate.contains(tracked.record.target))
+                (operations.isNode(tracked.record.target) &&
+                  operations.nodeContains(candidate, tracked.record.target))
               )) return true;
             }
             return false;
           };
           const causallyChanged = (candidate: Element): boolean =>
             candidate === state.target || operations.arrayIncludes(state.causalElements, candidate) ||
-            candidate.hasAttribute(limits.privateTargetAttribute) || hasCausalRecord(candidate);
+            operations.elementHasAttribute(candidate, limits.privateTargetAttribute) ||
+              hasCausalRecord(candidate);
           const add = (candidate: Element | null): boolean => {
-            if (candidate === null || !candidate.isConnected ||
-                candidate.ownerDocument !== state.target.ownerDocument) return false;
+            if (candidate === null || !operations.nodeIsConnected(candidate) ||
+                operations.nodeOwnerDocument(candidate) !== ownerDocument) return false;
             if (!operations.arrayIncludes(elements, candidate)) operations.arrayPush(elements, candidate);
             return elements.length <= limits.maximumTargets;
           };
@@ -2793,7 +3160,7 @@ export class PlaywrightBrowserSession {
               }
             }
             if (!changedToForm) continue;
-            if (candidate.element instanceof HTMLTitleElement) continue;
+            if (operations.isTitle(candidate.element)) continue;
             let beforeContainsForm = false;
             for (let index = 0; index < beforeValues.length; index += 1) {
               if (containsForm(beforeValues[index] ?? null)) beforeContainsForm = true;
@@ -2823,12 +3190,12 @@ export class PlaywrightBrowserSession {
             inspectedBytes += bytes;
             if (inspectedBytes > limits.maximumSnapshotBytes) return "snapshot-byte-overflow";
             if (!containsForm(property)) return undefined;
-            if (candidate instanceof HTMLTitleElement) return undefined;
+            if (operations.isTitle(candidate)) return undefined;
             if (kind === "childList" && candidate !== null && causallyChanged(candidate)) {
               return add(candidate) ? undefined : "sensitive-target-overflow";
             }
             if (candidate === null || !causallyChanged(candidate) ||
-                (!causal && !candidate.hasAttribute(limits.privateTargetAttribute))) {
+                (!causal && !operations.elementHasAttribute(candidate, limits.privateTargetAttribute))) {
               return "same-form-causality-ambiguous";
             }
             return add(candidate) ? undefined : "sensitive-target-overflow";
@@ -2838,7 +3205,7 @@ export class PlaywrightBrowserSession {
             if (tracked === undefined) continue;
             const mutation = tracked.record;
             if (mutation.type === "attributes") {
-              if (!(mutation.target instanceof Element) || mutation.attributeName === null) {
+              if (!operations.isElement(mutation.target) || mutation.attributeName === null) {
                 return fail("attribute-target-unprovable");
               }
               let currentContainsTarget = false;
@@ -2847,17 +3214,19 @@ export class PlaywrightBrowserSession {
               }
               if (currentContainsTarget) continue;
               const reason = inspect(
-                mutation.target.getAttribute(mutation.attributeName),
+                operations.elementGetAttribute(mutation.target, mutation.attributeName),
                 mutation.target,
                 tracked.causal,
                 mutation.type,
               );
               if (reason !== undefined) return fail(reason);
             } else if (mutation.type === "characterData") {
-              if (!(mutation.target instanceof CharacterData)) return fail("text-target-unprovable");
+              if (!operations.isCharacterData(mutation.target)) return fail("text-target-unprovable");
               let currentCandidate: SensitiveActionCandidateSnapshot | undefined;
               for (let index = 0; index < current.length; index += 1) {
-                if (current[index]?.element === mutation.target.parentElement) currentCandidate = current[index];
+                if (current[index]?.element === operations.nodeParentElement(mutation.target)) {
+                  currentCandidate = current[index];
+                }
               }
               if (currentCandidate !== undefined) {
                 let beforeCandidate: SensitiveActionCandidateSnapshot | undefined;
@@ -2881,7 +3250,7 @@ export class PlaywrightBrowserSession {
               }
               const reason = inspect(
                 mutation.target.data,
-                mutation.target.parentElement,
+                operations.nodeParentElement(mutation.target),
                 tracked.causal,
                 mutation.type,
               );
@@ -2894,9 +3263,9 @@ export class PlaywrightBrowserSession {
               for (let nodeIndex = 0; nodeIndex < mutation.addedNodes.length; nodeIndex += 1) {
                 const node = mutation.addedNodes[nodeIndex];
                 if (node === undefined) continue;
-                const candidate = node instanceof Element ? node : node.parentElement;
-                if (candidate !== null && !candidate.isConnected) continue;
-                if (candidate instanceof HTMLTitleElement) continue;
+                const candidate = operations.isElement(node) ? node : operations.nodeParentElement(node);
+                if (candidate !== null && !operations.nodeIsConnected(candidate)) continue;
+                if (candidate !== null && operations.isTitle(candidate)) continue;
                 let currentContainsCandidate = false;
                 for (let index = 0; index < current.length; index += 1) {
                   if (current[index]?.element === candidate) currentContainsCandidate = true;
@@ -2919,9 +3288,9 @@ export class PlaywrightBrowserSession {
                   }
                   continue;
                 }
-                const text = node instanceof Element
+                const text = operations.isElement(node)
                   ? boundedText(node)
-                  : node.nodeValue;
+                  : operations.nodeValue(node);
                 const reason = inspect(text, candidate, tracked.causal, mutation.type);
                 if (reason !== undefined) return fail(`child:${reason}`);
               }
@@ -3073,21 +3442,30 @@ export class PlaywrightBrowserSession {
       for (const handle of unique) {
         this.privateTargetOrdinal += 1;
         const token = `target-${this.privateTargetOrdinal}`;
-        const markerInstalled = await handle.evaluate((element, identity) => {
-          element.setAttribute(identity.attribute, identity.token);
-          return element.isConnected && element.getAttribute(identity.attribute) === identity.token;
-        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token });
+        const markerInstalled = await handle.evaluate((element, input) => {
+          const snapshot = input.authority.snapshot();
+          snapshot.operations.elementSetAttribute(element, input.attribute, input.token);
+          return snapshot.operations.nodeIsConnected(element) &&
+            snapshot.operations.elementGetAttribute(element, input.attribute) === input.token;
+        }, {
+          authority: this.promiseIntrinsicsForEvidence(),
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token,
+        });
         if (!markerInstalled) throw new Error("reflected-marker-unproven");
+        const backendNodeId = await this.proveMarkerBackendNodeId(token);
         const target: SensitiveActionTarget = {
           token,
           locator: this.page.locator(`[${PRIVATE_TARGET_ATTRIBUTE}="${token}"]`),
           handle,
           markerInstalled: true,
           nodeId: undefined,
-          closedShadowRoot: await handle.evaluate((element) => {
-            const root = element.getRootNode();
-            return root instanceof ShadowRoot && root.mode === "closed";
-          }),
+          closedShadowRoot: await handle.evaluate((element, authority) => {
+            const operations = authority.snapshot().operations;
+            const root = operations.nodeGetRootNode(element);
+            return operations.isShadowRoot(root) && root.mode === "closed";
+          }, this.promiseIntrinsicsForEvidence()),
+          backendNodeId,
         };
         this.sensitiveActionTargets.set(token, target);
         registered.push(target);
@@ -3095,11 +3473,16 @@ export class PlaywrightBrowserSession {
     } catch (error) {
       for (const target of registered) {
         this.sensitiveActionTargets.delete(target.token);
-        await target.handle.evaluate((element, identity) => {
-          if (element.getAttribute(identity.attribute) === identity.token) {
-            element.removeAttribute(identity.attribute);
+        await target.handle.evaluate((element, input) => {
+          const operations = input.authority.snapshot().operations;
+          if (operations.elementGetAttribute(element, input.attribute) === input.token) {
+            operations.elementRemoveAttribute(element, input.attribute);
           }
-        }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+        }, {
+          authority: this.promiseIntrinsicsForEvidence(),
+          attribute: PRIVATE_TARGET_ATTRIBUTE,
+          token: target.token,
+        }).catch(() => undefined);
       }
       await Promise.all(unique.map((handle) => handle.dispose().catch(() => undefined)));
       throw error;
@@ -3153,7 +3536,10 @@ export class PlaywrightBrowserSession {
 
     this.browser = browser;
     try {
-      const context = await browser.newContext();
+      const context = await browser.newContext({
+        viewport: SCREENSHOT_VIEWPORT,
+        deviceScaleFactor: SCREENSHOT_DEVICE_SCALE_FACTOR,
+      });
       context.setDefaultTimeout(this.options.actionTimeoutMs);
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
       this.context = context;
@@ -3182,7 +3568,18 @@ export class PlaywrightBrowserSession {
         const nativeUint8Array = Uint8Array;
         const nativeTextEncoder = TextEncoder;
         const nativeSymbol = Symbol;
+        const nativeNode = Node;
         const nativeElement = Element;
+        const nativeHtmlElement = HTMLElement;
+        const nativeCharacterData = CharacterData;
+        const nativeDocument = Document;
+        const nativeDocumentFragment = DocumentFragment;
+        const nativeShadowRoot = ShadowRoot;
+        const nativeTreeWalker = TreeWalker;
+        const nativeInput = HTMLInputElement;
+        const nativeTextArea = HTMLTextAreaElement;
+        const nativeSelect = HTMLSelectElement;
+        const nativeTitle = HTMLTitleElement;
         const nativeMutationObserver = MutationObserver;
         const nativeUrlSearchParams = URLSearchParams;
         const nativeDefineProperty = Object.defineProperty;
@@ -3192,6 +3589,7 @@ export class PlaywrightBrowserSession {
         const nativeFreeze = Object.freeze;
         const nativeReflectApply = Reflect.apply;
         const nativeReflectOwnKeys = Reflect.ownKeys;
+        const nativeIsPrototypeOf = Object.prototype.isPrototypeOf;
         const nativeArrayPush = Array.prototype.push;
         const nativeArrayPop = Array.prototype.pop;
         const nativeArrayShift = Array.prototype.shift;
@@ -3223,6 +3621,39 @@ export class PlaywrightBrowserSession {
         const nativeSymbolFor = Symbol.for;
         const nativeSymbolSpecies = Symbol.species;
         const nativeElementPrototype = Element.prototype;
+        const nativeNodePrototype = Node.prototype;
+        const nativeHtmlElementPrototype = HTMLElement.prototype;
+        const nativeCharacterDataPrototype = CharacterData.prototype;
+        const nativeDocumentPrototype = Document.prototype;
+        const nativeDocumentFragmentPrototype = DocumentFragment.prototype;
+        const nativeShadowRootPrototype = ShadowRoot.prototype;
+        const nativeTreeWalkerPrototype = TreeWalker.prototype;
+        const nativeInputPrototype = HTMLInputElement.prototype;
+        const nativeTextAreaPrototype = HTMLTextAreaElement.prototype;
+        const nativeSelectPrototype = HTMLSelectElement.prototype;
+        const nativeTitlePrototype = HTMLTitleElement.prototype;
+        const nativeNodeIsConnected = nativeOwnDescriptor(nativeNodePrototype, "isConnected")?.get;
+        const nativeNodeOwnerDocument = nativeOwnDescriptor(nativeNodePrototype, "ownerDocument")?.get;
+        const nativeNodeParentElement = nativeOwnDescriptor(nativeNodePrototype, "parentElement")?.get;
+        const nativeNodeValue = nativeOwnDescriptor(nativeNodePrototype, "nodeValue")?.get;
+        const nativeNodeGetRootNode = nativeNodePrototype.getRootNode;
+        const nativeNodeContains = nativeNodePrototype.contains;
+        const nativeElementShadowRoot = nativeOwnDescriptor(nativeElementPrototype, "shadowRoot")?.get;
+        const nativeElementTagName = nativeOwnDescriptor(nativeElementPrototype, "tagName")?.get;
+        const nativeElementId = nativeOwnDescriptor(nativeElementPrototype, "id")?.get;
+        const nativeElementMatches = nativeElementPrototype.matches;
+        const nativeElementClosest = nativeElementPrototype.closest;
+        const nativeElementGetAttribute = nativeElementPrototype.getAttribute;
+        const nativeElementHasAttribute = nativeElementPrototype.hasAttribute;
+        const nativeElementSetAttribute = nativeElementPrototype.setAttribute;
+        const nativeElementRemoveAttribute = nativeElementPrototype.removeAttribute;
+        const nativeElementGetClientRects = nativeElementPrototype.getClientRects;
+        const nativeDocumentQuerySelector = nativeDocumentPrototype.querySelector;
+        const nativeDocumentFragmentQuerySelector = nativeDocumentFragmentPrototype.querySelector;
+        const nativeDocumentGetElementById = nativeDocumentPrototype.getElementById;
+        const nativeDocumentCreateTreeWalker = nativeDocumentPrototype.createTreeWalker;
+        const nativeTreeWalkerNextNode = nativeTreeWalkerPrototype.nextNode;
+        const nativeGetComputedStyle = globalThis.getComputedStyle;
         const nativeMutationObserverPrototype = MutationObserver.prototype;
         const nativeMutationObserverObserve = MutationObserver.prototype.observe;
         const nativeMutationObserverTakeRecords = MutationObserver.prototype.takeRecords;
@@ -3237,7 +3668,11 @@ export class PlaywrightBrowserSession {
         const nativeWeakSetPrototype = WeakSet.prototype;
         const nativeMapPrototype = Map.prototype;
         const nativeWeakMapPrototype = WeakMap.prototype;
-        if (nativeSetSize === undefined || nativePrototypeOf(nativeSetPrototype) === null ||
+        if (nativeSetSize === undefined || nativeNodeIsConnected === undefined ||
+            nativeNodeOwnerDocument === undefined || nativeNodeParentElement === undefined ||
+            nativeNodeValue === undefined || nativeElementShadowRoot === undefined ||
+            nativeElementTagName === undefined || nativeElementId === undefined ||
+            nativePrototypeOf(nativeSetPrototype) === null ||
             nativePrototypeOf(nativeWeakSetPrototype) === null || nativePrototypeOf(nativeMapPrototype) === null ||
             nativePrototypeOf(nativeWeakMapPrototype) === null) return;
         const apply = (target: Function, receiver: unknown, argumentsList: readonly unknown[]): unknown =>
@@ -3325,6 +3760,25 @@ export class PlaywrightBrowserSession {
         ): void => {
           apply(nativeUrlSearchParamsForEach, parameters, [callback]);
         };
+        const isPrototype = (prototype: object, value: unknown): boolean =>
+          value !== null && (typeof value === "object" || typeof value === "function") &&
+          apply(nativeIsPrototypeOf, prototype, [value]) === true;
+        const nodeIsConnected = (node: Node): boolean => apply(nativeNodeIsConnected, node, []) as boolean;
+        const nodeOwnerDocument = (node: Node): Document | null =>
+          apply(nativeNodeOwnerDocument, node, []) as Document | null;
+        const nodeParentElement = (node: Node): HTMLElement | null =>
+          apply(nativeNodeParentElement, node, []) as HTMLElement | null;
+        const nodeValue = (node: Node): string | null => apply(nativeNodeValue, node, []) as string | null;
+        const nodeGetRootNode = (node: Node): Node => apply(nativeNodeGetRootNode, node, []) as Node;
+        const nodeContains = (node: Node, other: Node | null): boolean =>
+          apply(nativeNodeContains, node, [other]) as boolean;
+        const elementShadowRoot = (element: Element): ShadowRoot | null =>
+          apply(nativeElementShadowRoot, element, []) as ShadowRoot | null;
+        const elementTagName = (element: Element): string => apply(nativeElementTagName, element, []) as string;
+        const elementId = (element: Element): string => apply(nativeElementId, element, []) as string;
+        const rootQuerySelector = (root: Document | ShadowRoot, selector: string): Element | null =>
+          apply(isPrototype(nativeDocumentPrototype, root)
+            ? nativeDocumentQuerySelector : nativeDocumentFragmentQuerySelector, root, [selector]) as Element | null;
         const host = globalThis as typeof globalThis & Record<symbol, unknown>;
         const freezeDescriptor = (
           descriptor: PropertyDescriptor | undefined,
@@ -3512,8 +3966,9 @@ export class PlaywrightBrowserSession {
           ] as const));
         };
         const baselineProperties: readonly (readonly [object, readonly PropertyKey[]])[] = [
-          [globalThis, ["Object", "Reflect", "Array", "Set", "WeakSet", "Map", "WeakMap", "Function", "String", "Symbol", "Promise", "Element", "MutationObserver", "URLSearchParams", "Uint8Array", "TextEncoder"]],
+          [globalThis, ["Object", "Reflect", "Array", "Set", "WeakSet", "Map", "WeakMap", "Function", "String", "Symbol", "Promise", "Node", "Element", "HTMLElement", "CharacterData", "Document", "DocumentFragment", "ShadowRoot", "TreeWalker", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement", "HTMLTitleElement", "MutationObserver", "URLSearchParams", "Uint8Array", "TextEncoder", "getComputedStyle"]],
           [nativeObject, ["defineProperty", "defineProperties", "getOwnPropertyDescriptor", "getPrototypeOf", "freeze"]],
+          [nativeObject.prototype, ["isPrototypeOf"]],
           [nativeReflect, ["apply", "ownKeys"]],
           [nativeArray, ["prototype", "from"]],
           [nativeSet, ["prototype"]],
@@ -3530,7 +3985,23 @@ export class PlaywrightBrowserSession {
           [nativeFunction.prototype, ["call", "toString"]],
           [nativeString.prototype, ["includes", "startsWith", "trim", "toLowerCase", "split", "charCodeAt"]],
           [nativeSymbol, ["for", "species"]],
-          [nativeElementPrototype, ["attachShadow"]],
+          [nativeNode, ["prototype"]],
+          [nativeNodePrototype, ["isConnected", "ownerDocument", "parentElement", "nodeValue", "getRootNode", "contains"]],
+          [nativeElement, ["prototype"]],
+          [nativeElementPrototype, ["attachShadow", "shadowRoot", "tagName", "id", "matches", "closest", "getAttribute", "hasAttribute", "setAttribute", "removeAttribute", "getClientRects"]],
+          [nativeHtmlElement, ["prototype"]],
+          [nativeCharacterData, ["prototype"]],
+          [nativeDocument, ["prototype"]],
+          [nativeDocumentPrototype, ["querySelector", "getElementById", "createTreeWalker"]],
+          [nativeDocumentFragment, ["prototype"]],
+          [nativeDocumentFragmentPrototype, ["querySelector"]],
+          [nativeShadowRoot, ["prototype"]],
+          [nativeTreeWalker, ["prototype"]],
+          [nativeTreeWalkerPrototype, ["nextNode"]],
+          [nativeInput, ["prototype"]],
+          [nativeTextArea, ["prototype"]],
+          [nativeSelect, ["prototype"]],
+          [nativeTitle, ["prototype"]],
           [nativeMutationObserverPrototype, ["observe", "takeRecords", "disconnect"]],
           [nativeUrlSearchParams, ["prototype"]],
           [nativeUrlSearchParamsPrototype, ["forEach"]],
@@ -3563,7 +4034,18 @@ export class PlaywrightBrowserSession {
           textEncoder: nativeTextEncoder,
           symbol: nativeSymbol,
           promise: nativePromise,
+          node: nativeNode,
           element: nativeElement,
+          htmlElement: nativeHtmlElement,
+          characterData: nativeCharacterData,
+          document: nativeDocument,
+          documentFragment: nativeDocumentFragment,
+          shadowRoot: nativeShadowRoot,
+          treeWalker: nativeTreeWalker,
+          input: nativeInput,
+          textArea: nativeTextArea,
+          select: nativeSelect,
+          title: nativeTitle,
           mutationObserver: nativeMutationObserver,
           urlSearchParams: nativeUrlSearchParams,
           arrayPrototype: nativeArray.prototype,
@@ -3576,6 +4058,17 @@ export class PlaywrightBrowserSession {
           uint8ArrayPrototype: nativeUint8ArrayPrototype,
           textEncoderPrototype: nativeTextEncoderPrototype,
           elementPrototype: nativeElementPrototype,
+          nodePrototype: nativeNodePrototype,
+          htmlElementPrototype: nativeHtmlElementPrototype,
+          characterDataPrototype: nativeCharacterDataPrototype,
+          documentPrototype: nativeDocumentPrototype,
+          documentFragmentPrototype: nativeDocumentFragmentPrototype,
+          shadowRootPrototype: nativeShadowRootPrototype,
+          treeWalkerPrototype: nativeTreeWalkerPrototype,
+          inputPrototype: nativeInputPrototype,
+          textAreaPrototype: nativeTextAreaPrototype,
+          selectPrototype: nativeSelectPrototype,
+          titlePrototype: nativeTitlePrototype,
           mutationObserverPrototype: nativeMutationObserverPrototype,
           urlSearchParamsPrototype: nativeUrlSearchParamsPrototype,
           entries: nativeFreeze(intrinsicBaselineEntries),
@@ -3597,7 +4090,13 @@ export class PlaywrightBrowserSession {
               WeakMap === intrinsicBaseline.weakMap && Function === intrinsicBaseline.function &&
               String === intrinsicBaseline.string && Symbol === intrinsicBaseline.symbol &&
               Uint8Array === intrinsicBaseline.uint8Array && TextEncoder === intrinsicBaseline.textEncoder &&
-              Promise === intrinsicBaseline.promise && Element === intrinsicBaseline.element &&
+              Promise === intrinsicBaseline.promise && Node === intrinsicBaseline.node &&
+              Element === intrinsicBaseline.element && HTMLElement === intrinsicBaseline.htmlElement &&
+              CharacterData === intrinsicBaseline.characterData && Document === intrinsicBaseline.document &&
+              DocumentFragment === intrinsicBaseline.documentFragment && ShadowRoot === intrinsicBaseline.shadowRoot &&
+              TreeWalker === intrinsicBaseline.treeWalker && HTMLInputElement === intrinsicBaseline.input &&
+              HTMLTextAreaElement === intrinsicBaseline.textArea && HTMLSelectElement === intrinsicBaseline.select &&
+              HTMLTitleElement === intrinsicBaseline.title && getComputedStyle === nativeGetComputedStyle &&
               MutationObserver === intrinsicBaseline.mutationObserver &&
               URLSearchParams === intrinsicBaseline.urlSearchParams &&
               nativeArray.prototype === intrinsicBaseline.arrayPrototype &&
@@ -3609,7 +4108,18 @@ export class PlaywrightBrowserSession {
               nativeString.prototype === intrinsicBaseline.stringPrototype &&
               nativeUint8Array.prototype === intrinsicBaseline.uint8ArrayPrototype &&
               nativeTextEncoder.prototype === intrinsicBaseline.textEncoderPrototype &&
+              nativeNode.prototype === intrinsicBaseline.nodePrototype &&
               nativeElement.prototype === intrinsicBaseline.elementPrototype &&
+              nativeHtmlElement.prototype === intrinsicBaseline.htmlElementPrototype &&
+              nativeCharacterData.prototype === intrinsicBaseline.characterDataPrototype &&
+              nativeDocument.prototype === intrinsicBaseline.documentPrototype &&
+              nativeDocumentFragment.prototype === intrinsicBaseline.documentFragmentPrototype &&
+              nativeShadowRoot.prototype === intrinsicBaseline.shadowRootPrototype &&
+              nativeTreeWalker.prototype === intrinsicBaseline.treeWalkerPrototype &&
+              nativeInput.prototype === intrinsicBaseline.inputPrototype &&
+              nativeTextArea.prototype === intrinsicBaseline.textAreaPrototype &&
+              nativeSelect.prototype === intrinsicBaseline.selectPrototype &&
+              nativeTitle.prototype === intrinsicBaseline.titlePrototype &&
               nativeMutationObserver.prototype === intrinsicBaseline.mutationObserverPrototype &&
               nativeUrlSearchParams.prototype === intrinsicBaseline.urlSearchParamsPrototype;
             for (let index = 0; intact && index < intrinsicBaseline.entries.length; index += 1) {
@@ -3960,6 +4470,52 @@ export class PlaywrightBrowserSession {
           disconnectMutationObserver,
           createUrlSearchParams: (search: string): URLSearchParams => new nativeUrlSearchParams(search),
           urlSearchParamsForEach,
+          isElement: (value: unknown): value is Element => isPrototype(nativeElementPrototype, value),
+          isHtmlElement: (value: unknown): value is HTMLElement => isPrototype(nativeHtmlElementPrototype, value),
+          isCharacterData: (value: unknown): value is CharacterData => isPrototype(nativeCharacterDataPrototype, value),
+          isNode: (value: unknown): value is Node => isPrototype(nativeNodePrototype, value),
+          isDocument: (value: unknown): value is Document => isPrototype(nativeDocumentPrototype, value),
+          isShadowRoot: (value: unknown): value is ShadowRoot => isPrototype(nativeShadowRootPrototype, value),
+          isInput: (value: unknown): value is HTMLInputElement => isPrototype(nativeInputPrototype, value),
+          isTextArea: (value: unknown): value is HTMLTextAreaElement => isPrototype(nativeTextAreaPrototype, value),
+          isSelect: (value: unknown): value is HTMLSelectElement => isPrototype(nativeSelectPrototype, value),
+          isTitle: (value: unknown): value is HTMLTitleElement => isPrototype(nativeTitlePrototype, value),
+          nodeIsConnected,
+          nodeOwnerDocument,
+          nodeParentElement,
+          nodeValue,
+          nodeGetRootNode,
+          nodeContains,
+          elementShadowRoot,
+          elementTagName,
+          elementId,
+          elementMatches: (element: Element, selector: string): boolean =>
+            apply(nativeElementMatches, element, [selector]) as boolean,
+          elementClosest: (element: Element, selector: string): Element | null =>
+            apply(nativeElementClosest, element, [selector]) as Element | null,
+          elementGetAttribute: (element: Element, name: string): string | null =>
+            apply(nativeElementGetAttribute, element, [name]) as string | null,
+          elementHasAttribute: (element: Element, name: string): boolean =>
+            apply(nativeElementHasAttribute, element, [name]) as boolean,
+          elementSetAttribute: (element: Element, name: string, value: string): void => {
+            apply(nativeElementSetAttribute, element, [name, value]);
+          },
+          elementRemoveAttribute: (element: Element, name: string): void => {
+            apply(nativeElementRemoveAttribute, element, [name]);
+          },
+          rootQuerySelector,
+          documentGetElementById: (document: Document, id: string): HTMLElement | null =>
+            apply(nativeDocumentGetElementById, document, [id]) as HTMLElement | null,
+          documentCreateTreeWalker: (document: Document, root: Node, whatToShow: number): TreeWalker =>
+            apply(nativeDocumentCreateTreeWalker, document, [root, whatToShow]) as TreeWalker,
+          treeWalkerNextNode: (walker: TreeWalker): Node | null =>
+            apply(nativeTreeWalkerNextNode, walker, []) as Node | null,
+          computedStyle: (element: Element): CSSStyleDeclaration =>
+            apply(nativeGetComputedStyle, globalThis, [element]) as CSSStyleDeclaration,
+          elementClientRectCount: (element: Element): number => {
+            const rects = apply(nativeElementGetClientRects, element, []) as DOMRectList;
+            return rects.length;
+          },
         });
         const promiseAuthority: PrivatePromiseIntrinsics = nativeFreeze({
           attest(epoch: string) {
@@ -4208,13 +4764,19 @@ export class PlaywrightBrowserSession {
     ]);
     if (this.page) {
       await this.abandonSensitiveActionTracking().catch(record);
+      const promiseIntrinsics = this.promiseIntrinsics;
       for (const target of targets.values()) {
-        if (target.markerInstalled) {
-          await target.handle.evaluate((element, identity) => {
-            if (element.getAttribute(identity.attribute) === identity.token) {
-              element.removeAttribute(identity.attribute);
+        if (target.markerInstalled && promiseIntrinsics !== undefined) {
+          await target.handle.evaluate((element, input) => {
+            const operations = input.authority.snapshot().operations;
+            if (operations.elementGetAttribute(element, input.attribute) === input.token) {
+              operations.elementRemoveAttribute(element, input.attribute);
             }
-          }, { attribute: PRIVATE_TARGET_ATTRIBUTE, token: target.token }).catch(() => undefined);
+          }, {
+            authority: promiseIntrinsics,
+            attribute: PRIVATE_TARGET_ATTRIBUTE,
+            token: target.token,
+          }).catch(() => undefined);
         }
       }
       if (this.promiseIntrinsics) {
