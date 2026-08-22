@@ -869,7 +869,7 @@ parent_ticket: `43`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/82`
 base_head: `09365f5fd5e33c1ec374c2dc435803e5e0d381a4`
 implementation_head: `683932fbe1a0ca62ab39356609d5edd3f61da63c`
-implementation_commits: `1`
+implementation_commits: `2` pending final test-head SHA
 
 - Every newly observed Promise method owner is fully instrumented before one
   post-instrumentation chain snapshot is recorded. Registry entries, chain
@@ -882,8 +882,8 @@ implementation_commits: `1`
   leaves the changed application method untouched, and cannot be cleared by
   restoring the approved descriptor.
 - Tests cover first delegating instrumentation, second delegating assignments
-  for own `then`/`catch`/`finally` and a prototype owner, nondelegating uninvoked
-  replacement, delete/accessor/prototype mutations, repeated unchanged
+  for own and prototype `then`/`catch`/`finally`, nondelegating uninvoked
+  replacement, delete/accessor/flag/prototype mutations, repeated unchanged
   observation, sticky restoration, application result preservation, and page
   replacement of `Object.freeze`.
 - Exact affected/full Ticket 43/44 non-E2E command:
@@ -894,7 +894,7 @@ implementation_commits: `1`
   tests/unit/target-adapters/web-playwright/browser-session.test.ts
   tests/unit/target-adapters/web-playwright/png-redactor.test.ts
   tests/unit/runner-kernel/deterministic-policy-gate.test.ts
-  tests/component/web-execution`. It passed 13 files / 254 tests: 253 passed and
+  tests/component/web-execution`. It passed 13 files / 257 tests: 256 passed and
   1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run before review per instruction.
 - Dedicated PR number, exact remote head, PR commit count, and exact-head review

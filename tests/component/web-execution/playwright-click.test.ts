@@ -2574,6 +2574,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     ["catch", "own"],
     ["finally", "own"],
     ["then", "prototype"],
+    ["catch", "prototype"],
+    ["finally", "prototype"],
   ] as const)(
     "keeps a second delegating Promise.%s application result but poisons its %s owner",
     async (method, ownerKind) => {
@@ -2890,7 +2892,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
-  it.each(["replace", "delete", "accessor", "prototype"] as const)(
+  it.each(["replace", "delete", "accessor", "flags", "prototype"] as const)(
     "rejects evidence after an observed but uninvoked Promise owner %s mutation",
     async (mutation) => {
       session = new PlaywrightBrowserSession(options());
@@ -2961,6 +2963,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
             enumerable: false,
             get: () => current,
           });
+        } else if (kind === "flags") {
+          const current = Object.getOwnPropertyDescriptor(owner, "then");
+          if (current === undefined) throw new Error("observed descriptor unavailable");
+          Object.defineProperty(owner, "then", { ...current, enumerable: true });
         } else {
           Object.setPrototypeOf(owner, Object.create(Object.getPrototypeOf(owner)));
         }
@@ -3017,7 +3023,9 @@ describe("Playwright resolve + execute against real Chromium", () => {
             return Reflect.apply(delegate, this, args);
           },
         });
-        Reflect.apply(Promise.prototype.then, receiver, []);
+        for (let index = 0; index < 3; index += 1) {
+          Reflect.apply(Promise.prototype.then, receiver, []);
+        }
       }, { once: true });
     }));
 
