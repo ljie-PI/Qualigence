@@ -1514,9 +1514,7 @@ export class PlaywrightBrowserSession {
             ] as const) {
               const descriptor = nativeDescriptor(Promise.prototype, method);
               if (descriptor === undefined || !("value" in descriptor) ||
-                  (descriptor.value !== expected &&
-                    (typeof descriptor.value !== "function" ||
-                      !approvedPromiseOverrides.has(descriptor.value)))) return false;
+                  descriptor.value !== expected) return false;
             }
             const constructor = nativeDescriptor(Promise.prototype, "constructor");
             const species = nativeDescriptor(Promise, Symbol.species);
