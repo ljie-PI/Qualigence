@@ -838,6 +838,22 @@ final_product_head: `6bb1734cf74c81ef2fef10af86bcfb9785d55d92`
   tests/component/web-execution`. It passed 13 files: 248 passed and 1 existing
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed.
   The E2E remains pending a fresh final exact-head review.
+- Post-review Ticket 18 valueRef E2E reached screenshot validation but failed
+  1 file / 1 test with `Invalid PNG signature`. Diagnosis inspected only safe
+  artifact manifests (`kind`, `mediaType`, and `size`), never artifact bytes or
+  plaintext. The selected artifact was the production screenshot, not metadata
+  or JSON: `kind=screenshot`, `mediaType=image/png`, `size=0`.
+- Root cause: `redactPngRectangles()` returned Node's `Buffer` subtype across
+  the Playwright browser argument boundary. The screenshot retained the correct
+  PNG media type but serialized to an empty byte array in the sensitive
+  artifact cache. Fix head `7515fde7390bb959326276657d8fbaa73dec898b`
+  returns an exact `Uint8Array`; the E2E now selects the final Graph's unique
+  artifact by screenshot kind plus `image/png` media type and reports only safe
+  manifests on mismatch. Production artifact kind mapping remains unchanged.
+- The exact affected/full Ticket 43 non-E2E Gate passed 13 files / 249 tests:
+  248 passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. Because product and test code changed after the
+  failed E2E, it was not rerun and requires fresh exact-head review first.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
