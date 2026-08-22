@@ -705,13 +705,14 @@ product_head: `cff0fed336801fddf16c57307124ae3ee2967b2b`
 
 component: complete
 production_wiring: present
-verification: round-3 review-finding fix Gate passed at exact product head
+verification: final product-head Gate passed; E2E pending fresh final review
 pull_request: pending
 parent_ticket: `42`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/81`
 base_head: `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`
 implementation_head: `f24033ec734e09654c88c01d473093bf353fe1f6`
 round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
+final_product_head: `6bb1734cf74c81ef2fef10af86bcfb9785d55d92`
 
 - Sensitive Promise instrumentation retains up to 128 exact observed receivers
   in a session-bounded enumerable registry, with WeakMap indexing and snapshots
@@ -807,7 +808,8 @@ round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
   closed-shadow, artifact-boundary, and native Promise tests remain green.
   Because code changed after the failed E2E, a fresh coordinator review is
   required before that E2E may be rerun.
-- Deterministic bounded-recapture evidence head:
+- Historical deterministic bounded-recapture evidence head, superseded by the
+  final product head below:
   `1a7e3b1e9d8f7b5ec1e6d38655d3b92fad9c4c25`; 14 commits from Ticket 43 base
   `416b600fd0a0cb30f2a25f4c1664e0bbf12f27b6`. An internal test-only hook,
   absent by default and not exported from the product package root, receives
@@ -822,6 +824,20 @@ round_3_product_head: `416cc47dfbe649ed9a9241ead1203ac78a9feb18`
 - Exact affected/full Ticket 43 non-E2E Gate passed 13 files / 248 tests: 247
   passed and 1 existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run or claimed before review.
+- Final product head: `6bb1734cf74c81ef2fef10af86bcfb9785d55d92`.
+  It removes the production-hook-absent microtask yield before final evidence
+  reconciliation while retaining the bounded test-only hook behavior. Exact
+  focused command: `corepack pnpm vitest run
+  tests/unit/runner/action-value-provider.test.ts
+  tests/unit/runner/offer-runtime.test.ts
+  tests/unit/runner-components/model-agent.test.ts
+  tests/unit/target-adapters/web-playwright/action-resolution.test.ts
+  tests/unit/target-adapters/web-playwright/browser-session.test.ts
+  tests/unit/target-adapters/web-playwright/png-redactor.test.ts
+  tests/unit/runner-kernel/deterministic-policy-gate.test.ts
+  tests/component/web-execution`. It passed 13 files: 248 passed and 1 existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed.
+  The E2E remains pending a fresh final exact-head review.
 
 ### Ticket 16 - Multi-step Plan contract expand (2026-08-20)
 
