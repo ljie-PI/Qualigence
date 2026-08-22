@@ -3007,6 +3007,7 @@ export class PlaywrightBrowserSession {
           if (existing?.name === name) return method;
           const instrumented = function (this: unknown, ...args: unknown[]): unknown {
             observeReceiver(this, true, true);
+            registerOwner(this);
             const parent = pendingCustomCalls.at(-1);
             let frame = takeContinuationFrame(this);
             if (frame === undefined) {
