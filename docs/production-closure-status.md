@@ -638,7 +638,7 @@ parent_ticket: `41`
 parent_pull_request: `https://github.com/ljie-PI/Qualigence/pull/80`
 base_head: `6940f7785789e4278524ee8da20379430dffbe61`
 review_head: `dd4da5e154ea42b62451dca0e524ff855cda87e0`
-product_head: `a36d9b9d9eeb96740a1443ca4e2f8fba74dff4de`
+product_head: `a42bb58bf6b4b5c4d5744014506a39f1e0e8ed1c`
 
 - Promise instrumentation now wraps only the current `Promise.prototype.then`
   call boundary. Native `catch` and `finally` remain untouched, naturally route
