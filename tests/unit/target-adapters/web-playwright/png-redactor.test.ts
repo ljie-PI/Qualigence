@@ -73,6 +73,8 @@ describe("PNG screenshot redaction", () => {
       width: 2,
       height: 1,
     });
+    expect(redacted.constructor).toBe(Uint8Array);
+    expect(Buffer.isBuffer(redacted)).toBe(false);
     const output = chunks(redacted);
     const idat = Buffer.concat(output.filter(({ type }) => type === "IDAT").map(({ data }) => data));
 

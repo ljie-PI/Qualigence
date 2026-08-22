@@ -271,14 +271,18 @@ describe("production valueRef browser execution", () => {
     expect(finalObservation(trace, "run-input-crlf").nodes.some((node) => node.text === "ab")).toBe(true);
     expect(trace.some((event) => event.runId === "run-select" && event.stage === "finding")).toBe(true);
 
+    const artifactManifests = artifacts.map(safeArtifactManifest);
     const observationArtifacts = artifacts
-      .filter(({ artifact }) => artifact.mediaType === "application/json")
+      .filter((captured) => {
+        const manifest = safeArtifactManifest(captured);
+        return manifest.kind === "observation" && manifest.mediaType === "application/json";
+      })
       .map(({ artifact }) => new TextDecoder().decode(artifact.bytes));
-    const screenshotMetadata = artifacts
-      .filter(({ artifact }) => artifact.mediaType === "image/png")
-      .map(({ runId, artifact }) => ({ runId, name: artifact.name, mediaType: artifact.mediaType }));
+    const screenshotMetadata = artifactManifests.filter((manifest) =>
+      manifest.kind === "screenshot" && manifest.mediaType === "image/png");
     expect(observationArtifacts).toHaveLength(6);
     expect(screenshotMetadata).toHaveLength(6);
+    expect(artifactManifests.every(({ size }) => size > 0)).toBe(true);
     const parsedObservationArtifacts = observationArtifacts.map((artifact) =>
       JSON.parse(artifact) as ObservationGraph);
     const crlfArtifact = parsedObservationArtifacts.find((graph) =>
@@ -294,18 +298,16 @@ describe("production valueRef browser execution", () => {
     expect(crlfArtifact!.nodes.some((node) => node.text === CRLF_BROWSER_VALUE)).toBe(true);
     expect(crlfArtifact!.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(3);
 
-    const finalScreenshots = new Map(screenshotMetadata.map(({ runId, name }) => {
-      const screenshot = artifacts.find(({ runId: candidateRunId, artifact }) =>
-        candidateRunId === runId && artifact.name === name);
-      return [runId, screenshot?.artifact.bytes] as const;
-    }));
     for (const [runId, target] of [
       ["run-input-lf", { x: -20, y: 40, width: 200, height: 40 }],
       ["run-input-crlf", { x: 40, y: 100, width: 200, height: 40 }],
       ["run-select", { x: 40, y: 160, width: 200, height: 40 }],
     ] as const) {
-      const screenshot = finalScreenshots.get(runId);
-      if (screenshot === undefined) throw new Error(`Missing final screenshot for ${runId}.`);
+      const screenshot = selectUniqueFinalScreenshot(
+        artifacts,
+        runId,
+        finalObservation(trace, runId),
+      );
       const image = decodePng(screenshot);
       expectSolidCrop(image, target, [0, 0, 0, 255]);
       expectSolidCrop(image, { x: 300, y: 100, width: 80, height: 80 }, [0, 255, 0, 255]);
@@ -351,6 +353,58 @@ function nodeNamed(graph: ObservationGraph, name: string) {
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (node === undefined) throw new Error(`Expected node named ${name}.`);
   return node;
+}
+
+type CollectedArtifact = {
+  readonly runId: string;
+  readonly artifact: CapturedArtifact;
+};
+
+interface SafeArtifactManifest {
+  readonly runId: string;
+  readonly name: string;
+  readonly kind: "observation" | "screenshot" | "other";
+  readonly mediaType: CapturedArtifact["mediaType"];
+  readonly size: number;
+}
+
+function safeArtifactManifest({ runId, artifact }: CollectedArtifact): SafeArtifactManifest {
+  const kind = artifact.name.endsWith("-observation.json")
+    ? "observation"
+    : artifact.name.endsWith(".png")
+      ? "screenshot"
+      : "other";
+  return {
+    runId,
+    name: artifact.name,
+    kind,
+    mediaType: artifact.mediaType,
+    size: artifact.bytes.byteLength,
+  };
+}
+
+function selectUniqueFinalScreenshot(
+  artifacts: readonly CollectedArtifact[],
+  runId: string,
+  graph: ObservationGraph,
+): Uint8Array {
+  const finalRefs = new Set(graph.artifactRefs ?? []);
+  const candidates = artifacts.filter((captured) => {
+    const manifest = safeArtifactManifest(captured);
+    return manifest.runId === runId &&
+      finalRefs.has(manifest.name) &&
+      manifest.kind === "screenshot" &&
+      manifest.mediaType === "image/png";
+  });
+  if (candidates.length !== 1) {
+    const manifests = artifacts
+      .filter((captured) => captured.runId === runId)
+      .map(safeArtifactManifest);
+    throw new Error(
+      `Expected one final PNG screenshot for ${runId}; safe manifests: ${JSON.stringify(manifests)}`,
+    );
+  }
+  return candidates[0]!.artifact.bytes;
 }
 
 function offer(

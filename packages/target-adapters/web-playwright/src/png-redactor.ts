@@ -115,14 +115,14 @@ export function redactPngRectangles(
         (value - filterDelta(filter, left, above, upperLeft)) & 0xff;
     }
   }
-  return Buffer.concat([
+  return Uint8Array.from(Buffer.concat([
     Buffer.from(PNG_SIGNATURE),
     Buffer.from(header.bytes),
     ...beforeIdat.map((chunk) => Buffer.from(chunk.bytes)),
     pngChunk("IDAT", deflateSync(refiltered)),
     ...afterIdat.map((chunk) => Buffer.from(chunk.bytes)),
     Buffer.from(end.bytes),
-  ]);
+  ]));
 }
 
 function parsePng(source: Uint8Array): {

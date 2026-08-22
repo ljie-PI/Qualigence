@@ -89,6 +89,11 @@ function isAlive(pid: number): boolean {
   }
 }
 
+function hasPngSignature(bytes: Uint8Array | undefined): boolean {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  return bytes !== undefined && signature.every((byte, index) => bytes[index] === byte);
+}
+
 const job: AcceptedExecutionJob = {
   jobId: "job-facade",
   runId: "run-facade",
@@ -346,6 +351,18 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     expect(Object.isFrozen(artifacts)).toBe(true);
     expect(artifacts.every(Object.isFrozen)).toBe(true);
     const json = artifacts.find((artifact) => artifact.mediaType === "application/json");
+    const pngs = artifacts.filter((artifact) =>
+      artifact.name.endsWith(".png") && artifact.mediaType === "image/png");
+    const pngManifests = pngs.map(({ name, mediaType, bytes }) => ({
+      name,
+      kind: "screenshot" as const,
+      mediaType,
+      size: bytes.byteLength,
+    }));
+    expect(pngManifests).toHaveLength(1);
+    if (!hasPngSignature(pngs[0]?.bytes)) {
+      throw new Error(`Invalid PNG artifact; safe manifest: ${JSON.stringify(pngManifests[0])}`);
+    }
     expect(new TextDecoder().decode(json?.bytes)).toContain(observed.graphId);
     if (json === undefined) throw new Error("Observation artifact is unavailable");
     json.bytes.fill(0);
