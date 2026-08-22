@@ -72,9 +72,10 @@ export interface BrowserLauncher {
   launch(options: { readonly headless: boolean }): Promise<Browser>;
 }
 
-/** Internal hook used only to exercise the artifact-integrity event-loop boundary. */
+/** Internal hooks used only to exercise sensitive evidence boundaries. */
 export interface BrowserSessionTestHooks {
   readonly afterArtifactIntegrityChecks?: () => Promise<void>;
+  readonly afterSensitiveEvidenceCandidateCreated?: (attempt: number) => Promise<void>;
   readonly onSensitiveEvidenceDiagnostic?: (
     reason: SensitiveEvidenceDiagnosticReason,
   ) => void;
@@ -2123,8 +2124,15 @@ export class PlaywrightBrowserSession {
     return true;
   }
 
-  sensitiveEvidenceChangedDuringCapture(): WebTargetError {
+  async afterSensitiveEvidenceCandidateCreated(attempt: number): Promise<void> {
+    await this.testHooks.afterSensitiveEvidenceCandidateCreated?.(attempt);
+  }
+
+  reportSensitiveEvidenceChangedDuringCapture(): void {
     this.reportSensitiveEvidenceDiagnostic("EvidenceChangedDuringCapture");
+  }
+
+  sensitiveEvidenceChangedDuringCapture(): WebTargetError {
     return this.sensitiveEvidenceFailure();
   }
 

@@ -40,14 +40,12 @@ describe("RunnerOfferRuntime production valueRef path", () => {
         <label>Email <input aria-label="Email" /></label>
         <p data-qualigence-observe id="status">Waiting</p>
         <p data-qualigence-observe id="reflection"></p>
-        <p data-qualigence-observe id="delayed-reflection"></p>
+        <p data-qualigence-observe id="second-reflection"></p>
         <script>
           document.querySelector('input').addEventListener('input', (event) => {
             document.getElementById('status').textContent = 'ready';
             document.getElementById('reflection').textContent = event.target.value;
-            setTimeout(() => {
-              document.getElementById('delayed-reflection').textContent = 'reflected:' + event.target.value;
-            }, 50);
+            document.getElementById('second-reflection').textContent = 'reflected:' + event.target.value;
           });
         </script>
       `, "Runtime valueRef"),

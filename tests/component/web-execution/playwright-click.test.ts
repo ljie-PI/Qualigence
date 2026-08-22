@@ -21,6 +21,9 @@ import {
   PlaywrightObserver,
   PRIVATE_TARGET_ATTRIBUTE,
   chromiumLauncher,
+  type BrowserLauncher,
+  type BrowserSessionTestHooks,
+  type SensitiveEvidenceDiagnosticReason,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -450,6 +453,130 @@ describe("Playwright resolve + execute against real Chromium", () => {
     };
   }
 
+  function captureCandidateControl(): {
+    readonly launcher: BrowserLauncher;
+    readonly install: () => Promise<void>;
+    readonly mutate: (
+      target: "first-reflection" | "second-reflection" | "unrelated" | "clear-reflections",
+      value: string,
+    ) => Promise<void>;
+  } {
+    let install: (() => Promise<void>) | undefined;
+    let mutate: ((
+      target: "first-reflection" | "second-reflection" | "unrelated" | "clear-reflections",
+      value: string,
+    ) => Promise<void>) | undefined;
+    const launcher: BrowserLauncher = {
+      launch: async (launchOptions) => {
+        const browser = await chromiumLauncher.launch(launchOptions);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...contextOptions) => {
+          const context = await newContext(...contextOptions);
+          const newPage = context.newPage.bind(context);
+          context.newPage = async () => {
+            const page = await newPage();
+            if (mutate !== undefined) return page;
+            install = async () => page.evaluate(() => {
+              interface TestElement {
+                append(node: TestElement): void;
+                addEventListener(type: string, listener: (event: { target: TestElement }) => void): void;
+                setAttribute(name: string, value: string): void;
+                style: { cssText: string };
+                value: string;
+              }
+              const state = globalThis as unknown as {
+                document: {
+                  body: TestElement;
+                  createElement(tag: string): TestElement;
+                  querySelector(selector: string): TestElement | null;
+                };
+              };
+              for (const [id, top] of [
+                ["recapture-reflection-first", 20],
+                ["recapture-reflection-second", 70],
+              ] as const) {
+                const reflected = state.document.createElement("input");
+                reflected.setAttribute("data-qualigence-observe", "");
+                reflected.setAttribute("id", id);
+                reflected.setAttribute("aria-label", id);
+                reflected.style.cssText = `position:fixed;left:500px;top:${top}px;background:rgb(255,0,0);border:0;padding:0;width:100px;height:40px`;
+                state.document.body.append(reflected);
+              }
+              state.document.querySelector('input[aria-label="Email"]')?.addEventListener(
+                "input",
+                (event) => {
+                  for (const id of ["recapture-reflection-first", "recapture-reflection-second"]) {
+                    const reflected = state.document.querySelector(`#${id}`);
+                    if (reflected !== null) reflected.value = event.target.value;
+                  }
+                },
+              );
+            });
+            mutate = async (target, value) => page.evaluate((input) => {
+              interface TestElement { textContent: string | null; value: string }
+              const state = globalThis as unknown as {
+                document: {
+                  getElementById(id: string): TestElement | null;
+                  querySelector(selector: string): TestElement | null;
+                };
+              };
+              const first = state.document.getElementById("recapture-reflection-first");
+              const second = state.document.getElementById("recapture-reflection-second");
+              if (input.target === "clear-reflections") {
+                if (first !== null) first.value = "";
+                if (second !== null) second.value = "";
+              } else if (input.target === "first-reflection") {
+                if (first !== null) first.value = input.value;
+              } else if (input.target === "second-reflection") {
+                if (second !== null) second.value = input.value;
+              } else {
+                const unrelated = state.document.getElementById("total");
+                if (unrelated !== null) unrelated.textContent = input.value;
+              }
+            }, { target, value });
+            return page;
+          };
+          return context;
+        };
+        return browser;
+      },
+    };
+    return {
+      launcher,
+      install: async () => {
+        if (install === undefined) throw new Error("Application page was not captured");
+        await install();
+      },
+      mutate: async (target, value) => {
+        if (mutate === undefined) throw new Error("Application page was not captured");
+        await mutate(target, value);
+      },
+    };
+  }
+
+  async function prepareCaptureCandidateScenario(
+    secret: string,
+    control: ReturnType<typeof captureCandidateControl>,
+    testHooks: BrowserSessionTestHooks,
+  ): Promise<{ readonly observer: PlaywrightObserver; readonly before: ObservationGraph }> {
+    session = new PlaywrightBrowserSession(options(), control.launcher, testHooks);
+    await session.start();
+    await control.install();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+    const before = await observer.capture(job);
+    const action = await resolver.resolve(
+      valued("input", nodeNamed(before, "Email").id, "customer.bounded-recapture"),
+      before,
+    );
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await control.mutate("clear-reflections", "");
+    await session.prepareSensitiveEvidenceCapture();
+    expect(await session.completeSensitiveEvidenceCapture()).toBe(true);
+    return { observer, before };
+  }
+
   async function wire(overrides: Partial<WebSessionOptions> = {}): Promise<{
     observer: PlaywrightObserver;
     resolver: PlaywrightActionResolver;
@@ -866,6 +993,98 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expectSolidCrop(image, boxes.firstReflection!, [0, 0, 0, 255]);
     expectSolidCrop(image, boxes.secondReflection!, [0, 0, 0, 255]);
     expectSolidCrop(image, boxes.unrelated!, [0, 255, 0, 255]);
+  });
+
+  it("recaptures once when a tracked reflection changes after artifact candidates are created", async () => {
+    const secret = "bounded-recapture-secret";
+    const attempts: number[] = [];
+    const diagnostics: SensitiveEvidenceDiagnosticReason[] = [];
+    const control = captureCandidateControl();
+    const { observer } = await prepareCaptureCandidateScenario(secret, control, {
+      afterSensitiveEvidenceCandidateCreated: async (attempt) => {
+        attempts.push(attempt);
+        if (attempt === 1) await control.mutate("first-reflection", secret);
+      },
+      onSensitiveEvidenceDiagnostic: (reason) => diagnostics.push(reason),
+    });
+
+    const graph = await observer.capture(job);
+    const artifacts = session.artifactsFor(graph.graphId);
+    const graphArtifact = artifacts.find((artifact) => artifact.mediaType === "application/json");
+    const screenshot = artifacts.find((artifact) => artifact.mediaType === "image/png");
+    const reflectionBox = await session.withPage(async (page) =>
+      page.locator("#recapture-reflection-first").boundingBox());
+    if (graphArtifact === undefined || screenshot === undefined || reflectionBox === null) {
+      throw new Error("Expected recaptured Graph and masked reflection artifact");
+    }
+    const artifactGraph = JSON.parse(new TextDecoder().decode(graphArtifact.bytes)) as ObservationGraph;
+
+    expect(attempts).toEqual([1, 2]);
+    expect(diagnostics).toEqual(["EvidenceChangedDuringCapture"]);
+    expect(graph.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(4);
+    expect(artifactGraph.nodes.filter((node) => node.name === "[REDACTED]")).toHaveLength(4);
+    expect(JSON.stringify(graph)).not.toContain(secret);
+    expect(artifacts.every((artifact) => !new TextDecoder().decode(artifact.bytes).includes(secret)))
+      .toBe(true);
+    expectSolidCrop(decodePng(screenshot.bytes), reflectionBox, [0, 0, 0, 255]);
+  });
+
+  it("fails closed after exactly two capture races without registering Graph or artifact bytes", async () => {
+    const secret = "bounded-recapture-terminal-secret";
+    const attempts: number[] = [];
+    const diagnostics: SensitiveEvidenceDiagnosticReason[] = [];
+    const control = captureCandidateControl();
+    const { observer, before } = await prepareCaptureCandidateScenario(secret, control, {
+      afterSensitiveEvidenceCandidateCreated: async (attempt) => {
+        attempts.push(attempt);
+        await control.mutate(attempt === 1 ? "first-reflection" : "second-reflection", secret);
+      },
+      onSensitiveEvidenceDiagnostic: (reason) => diagnostics.push(reason),
+    });
+    let returnedGraph: ObservationGraph | undefined;
+    let returnedArtifactBytes = 0;
+
+    await expect((async () => {
+      returnedGraph = await observer.capture(job);
+      returnedArtifactBytes = session.artifactsFor(returnedGraph.graphId)
+        .reduce((total, artifact) => total + artifact.bytes.byteLength, 0);
+    })()).rejects.toMatchObject({ code: "SensitiveEvidenceUnproven" });
+
+    expect(attempts).toEqual([1, 2]);
+    expect(diagnostics).toEqual([
+      "EvidenceChangedDuringCapture",
+      "EvidenceChangedDuringCapture",
+    ]);
+    expect(returnedGraph).toBeUndefined();
+    expect(returnedArtifactBytes).toBe(0);
+    expect(session.latestGraphId).toBe(before.graphId);
+    expect(session.hasGraph("run-click:observation:2")).toBe(false);
+    expect(() => session.artifactsFor("run-click:observation:2")).toThrowError(
+      expect.objectContaining({ code: "SensitiveEvidenceUnproven" }),
+    );
+  });
+
+  it("never retries a non-race sensitive evidence poison", async () => {
+    const secret = "non-retry-poison-secret";
+    const attempts: number[] = [];
+    const diagnostics: SensitiveEvidenceDiagnosticReason[] = [];
+    const control = captureCandidateControl();
+    const { observer, before } = await prepareCaptureCandidateScenario(secret, control, {
+      afterSensitiveEvidenceCandidateCreated: async (attempt) => {
+        attempts.push(attempt);
+        await control.mutate("unrelated", secret);
+      },
+      onSensitiveEvidenceDiagnostic: (reason) => diagnostics.push(reason),
+    });
+
+    await expect(observer.capture(job)).rejects.toMatchObject({
+      code: "SensitiveEvidenceUnproven",
+    });
+    expect(attempts).toEqual([1]);
+    expect(diagnostics).toContain("ReflectionCurrentStateUnproven");
+    expect(diagnostics).not.toContain("EvidenceChangedDuringCapture");
+    expect(session.latestGraphId).toBe(before.graphId);
+    expect(session.hasGraph("run-click:observation:2")).toBe(false);
   });
 
   it("redacts and masks causal text and input reflections in an open shadow root", async () => {
