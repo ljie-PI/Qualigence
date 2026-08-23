@@ -153,10 +153,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         } catch {
           destination = undefined;
         }
-        if (
-          destination !== undefined &&
-          !isSafeTargetUrl(destination, this.session)
-        ) {
+        if (destination === undefined || !isSafeTargetUrl(destination, this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
       }

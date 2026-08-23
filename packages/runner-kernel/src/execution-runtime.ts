@@ -629,10 +629,17 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));
     });
     try {
+      let rejectAborted: ((reason: unknown) => void) | undefined;
+      const abortOperation = (): void => rejectAborted?.(operationSignal.reason);
       const aborted = new Promise<never>((_resolve, reject) => {
-        operationSignal.addEventListener("abort", () => reject(operationSignal.reason), { once: true });
+        rejectAborted = reject;
+        operationSignal.addEventListener("abort", abortOperation, { once: true });
       });
-      return await Promise.race([operation(operationSignal), deadline, aborted]);
+      try {
+        return await Promise.race([operation(operationSignal), deadline, aborted]);
+      } finally {
+        operationSignal.removeEventListener("abort", abortOperation);
+      }
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }

@@ -200,6 +200,35 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(goto).not.toHaveBeenCalled();
   });
 
+  it("rejects a malformed link destination before click", async () => {
+    const click = vi.fn(async () => undefined);
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => "http://[invalid",
+        click,
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    expect(click).not.toHaveBeenCalled();
+  });
+
   it("does not dispatch an action when its AbortSignal is already aborted", async () => {
     const click = vi.fn(async () => undefined);
     const graphId = "run-1:observation:1";

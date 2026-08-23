@@ -435,7 +435,7 @@ review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded
   preserved.
 - Production abort propagation now runs from Runner shutdown through
   `RunnerOfferRuntime`, `LeasedJobExecutor`, Runtime, and the Playwright adapter
-  to the action call. The formal-review focused Gate passed 10 files / 156 tests
+  to the action call. The formal-review focused Gate passed 10 files / 157 tests
   with 1 pre-existing Task 21 skip; the added core caller file passed 9 tests.
   Root `corepack pnpm typecheck` and `git diff --check` passed. The Chromium
   acceptance now contains 1 success plus 7 required failure variants and remains
