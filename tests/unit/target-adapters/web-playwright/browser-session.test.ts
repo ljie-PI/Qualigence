@@ -120,7 +120,7 @@ describe("PlaywrightBrowserSession", () => {
 
     expect(session.currentNavigationGeneration).toBe(0);
     frameNavigated?.(childFrame);
-    expect(session.hasGraph("graph-child")).toBe(false);
+    expect(session.hasGraph("graph-child")).toBe(true);
     expect(session.currentNavigationGeneration).toBe(0);
     expect(session.currentCrossOriginNavigationCount).toBe(0);
 

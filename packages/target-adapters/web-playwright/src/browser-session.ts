@@ -392,8 +392,8 @@ export class PlaywrightBrowserSession {
       const page = await context.newPage();
       this.page = page;
       page.on("framenavigated", (frame) => {
-        this.invalidateObservations();
         if (frame !== page.mainFrame()) return;
+        this.invalidateObservations();
         this.navigationGeneration += 1;
         try {
           if (!this.isTargetOrigin(frame.url())) this.crossOriginNavigationCount += 1;
