@@ -56,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 core-blocker remediation has not rerun E2E pending fresh review |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 final core-blocker product head is `8fab60237c528a46623d8f341cc24c7c1714a1dd`; E2E awaits fresh coordinator review |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -449,6 +449,8 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 component: complete
 production_wiring: present
 verification: passed; pending dedicated PR merge
+final_core_blocker_product_head: `8fab60237c528a46623d8f341cc24c7c1714a1dd`
+final_status_commit: same commit as this ledger entry
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
 final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
@@ -459,7 +461,7 @@ dispatch_authority_fix_commit: same commit as this ledger entry
 implementation_head: same commit as this ledger entry
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-branch_commit_count: 13 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 17 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -595,6 +597,25 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 - Final branch verification after merging current `main` passed 14 files / 260
   tests with one existing Task 21 skip, including 8 real Chromium E2E cases.
   Root build, typecheck, diff check, and scoped Standards/Spec review passed.
+- Final PR86 core-blocker remediation validates both offered requirements and
+  immutable Plan action tokens against the composed Runner capabilities before
+  lease acceptance. Forged input/select offers without a healthy value provider
+  now fail with `CapabilityMismatch`, zero accepts, and no target/model effects.
+- One accepted-lease lifecycle now spans target startup, Runtime, terminal Trace,
+  Trace drain/ACK, and `session.complete`; completion receives the latest renewed
+  token. Renewal failure or authoritative expiry aborts an in-flight drain,
+  prevents completion/acknowledgement, and cleanup stops renewal only afterward.
+- Browser startup now reads `page.url()` after initial `goto` and requires exact
+  protocol/hostname/effective-port equality with the configured Job target
+  origin. Cross-origin redirects terminalize as `OriginViolation` before model or
+  observation, while same-origin path redirects proceed; rejected `goto` remains
+  `NavigationFailed` or `NavigationTimedOut`.
+- Final focused non-E2E Gate at product head
+  `8fab60237c528a46623d8f341cc24c7c1714a1dd` passed 13 files / 264 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. The adjacent disconnect/recovery component passed 1
+  file / 7 tests using Git OpenSSL with its explicit config. No E2E, GitHub
+  checks, or review is claimed; E2E remains gated on fresh coordinator review.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
