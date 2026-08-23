@@ -381,6 +381,7 @@ export class PlaywrightBrowserSession {
       );
     }
 
+    const startupCrossOriginNavigationCount = this.crossOriginNavigationCount;
     try {
       const context = await browser.newContext();
       this.context = context;
@@ -402,13 +403,12 @@ export class PlaywrightBrowserSession {
       });
       signal?.throwIfAborted();
 
-      const crossOriginNavigationCount = this.crossOriginNavigationCount;
       await page.goto(this.configuredTargetUrl, {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
       this.assertPageTargetOrigin(page);
-      if (this.crossOriginNavigationCount !== crossOriginNavigationCount) {
+      if (this.crossOriginNavigationCount !== startupCrossOriginNavigationCount) {
         throw new WebTargetError(
           "OriginViolation",
           "Initial navigation left the configured target origin.",
@@ -419,6 +419,12 @@ export class PlaywrightBrowserSession {
       await this.disposeResources();
       this.state = "closed";
       if (signal?.aborted) throw signal.reason;
+      if (this.crossOriginNavigationCount !== startupCrossOriginNavigationCount) {
+        throw new WebTargetError(
+          "OriginViolation",
+          "Initial navigation left the configured target origin.",
+        );
+      }
       throw this.toNavigationError(error);
     }
 

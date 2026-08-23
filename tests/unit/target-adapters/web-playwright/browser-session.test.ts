@@ -271,6 +271,41 @@ describe("PlaywrightBrowserSession", () => {
     expect(session.currentCrossOriginNavigationCount).toBe(1);
   });
 
+  it("preserves OriginViolation when initial navigation crosses origin before page.goto rejects", async () => {
+    let currentUrl = "about:blank";
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const mainFrame = { url: () => currentUrl };
+    const page = {
+      goto: vi.fn(async () => {
+        currentUrl = "https://other.test/temporary";
+        frameNavigated?.(mainFrame);
+        throw new Error("net::ERR_CONNECTION_RESET");
+      }),
+      url: () => currentUrl,
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new PlaywrightBrowserSession(baseOptions(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+
+    await expect(session.start()).rejects.toMatchObject({ code: "OriginViolation" });
+    expect(session.currentCrossOriginNavigationCount).toBe(1);
+  });
+
   it("allows an initial redirect that remains on the configured target origin", async () => {
     let origin = "";
     const server = await startServer((request, response) => {
