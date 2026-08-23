@@ -262,8 +262,7 @@ export class PlaywrightObserver implements Observer {
       });
       this.session.assertPageTargetOrigin(page);
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
-      this.session.assertPageTargetOrigin(page);
-      this.session.registerObservation(graphWithRefs.graphId, {
+      this.session.registerCapturedObservation(page, graphWithRefs.graphId, {
         descriptors,
         artifacts,
       });

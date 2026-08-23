@@ -185,6 +185,22 @@ export class PlaywrightBrowserSession {
     this.latestGraph = graphId;
   }
 
+  registerCapturedObservation(
+    page: Pick<Page, "url">,
+    graphId: string,
+    observation: StoredObservation,
+  ): void {
+    this.assertPageTargetOrigin(page);
+    this.registerObservation(graphId, observation);
+    try {
+      this.assertPageTargetOrigin(page);
+    } catch (error) {
+      this.observations.delete(graphId);
+      if (this.latestGraph === graphId) this.latestGraph = undefined;
+      throw error;
+    }
+  }
+
   hasGraph(graphId: string): boolean {
     return this.latestGraph === graphId && this.observations.has(graphId);
   }
