@@ -31,6 +31,7 @@ export type {
 export {
   canonicalJson,
   MissionCompiler,
+  testPlanSnapshotHash,
 } from "./application/mission-compiler.js";
 
 export {
@@ -58,14 +59,32 @@ export type {
 export type {
   DispatchableJob,
   DispatchableMission,
+  AcceptedMissionDispatch,
   JobAttemptRecord,
   JobAttemptStatus,
+  MissionDispatchAcceptanceReceipt,
   MissionDispatchDescriptor,
   MissionExecutionRecord,
   MissionJobExecution,
+  MissionSchedulingSnapshot,
+  PendingMissionDispatch,
   PrdMissionRepository,
   SaveCompiledMissionInput,
 } from "./application/prd-mission-repository.js";
+
+export { missionStartCommandHash, MissionSchedulingError, MissionSchedulingService } from "./application/mission-scheduling-service.js";
+export type {
+  AcceptedMissionExecutionJob,
+  MissionSchedulingErrorCode,
+  MissionSchedulingIds,
+  ScheduleMissionInput,
+  ScheduleMissionJob,
+  SchedulingMission,
+  SchedulingMissionJob,
+  ScheduledMission,
+  ScheduledRunIdentity,
+  StartMissionCommand,
+} from "./application/mission-scheduling-service.js";
 
 export type {
   AllocatePrdRevisionInput,

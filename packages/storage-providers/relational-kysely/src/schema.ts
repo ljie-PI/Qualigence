@@ -572,6 +572,91 @@ export interface TestPlanVersionRevisionsTable {
   created_at: string;
 }
 
+export interface MissionStartCommandsTable {
+  idempotency_key: string;
+  command_hash: string;
+  mission_id: string;
+  expected_mission_version: number;
+  mission_revision: number;
+  mission_compiled_hash: string;
+  mission_snapshot_json: string;
+  result_json: string;
+  created_at: string;
+}
+
+export interface MissionSchedulingHeadsTable {
+  mission_id: string;
+  mission_revision: number;
+  version: number;
+  compiled_hash: string;
+}
+
+export interface MissionJobAttemptsTable {
+  attempt_id: string;
+  mission_id: string;
+  mission_revision: number;
+  logical_job_id: string;
+  runner_job_id: string;
+  run_id: string;
+  status: string;
+  created_at: string;
+}
+
+export interface RunnerExecutionJobsTable {
+  runner_job_id: string;
+  attempt_id: string;
+  runner_id: string;
+  accepted_job_json: string;
+  accepted_job_hash: string;
+  created_at: string;
+}
+
+export interface MissionExecutionProvenanceTable {
+  attempt_id: string;
+  project_id: string;
+  mission_id: string;
+  mission_revision: number;
+  mission_compiled_hash: string;
+  mission_snapshot_json: string;
+  logical_job_id: string;
+  test_case_snapshot_json: string;
+  test_case_snapshot_hash: string;
+  plan_id: string;
+  plan_version: number;
+  plan_snapshot_hash: string;
+  plan_snapshot_json: string;
+  target_id: string;
+  target_version: number;
+  target_snapshot_hash: string;
+  target_snapshot_json: string;
+  runner_id: string;
+  policy_json: string;
+  policy_hash: string;
+  created_at: string;
+}
+
+export interface MissionDispatchOutboxTable {
+  attempt_id: string;
+  mission_id: string;
+  runner_id: string;
+  runner_job_id: string;
+  run_id: string;
+  idempotency_key: string;
+  required_capabilities_json: string;
+  accepted_job_json: string;
+  status: string;
+  version: number;
+  accepted_at: string | null;
+  acceptance_receipt_json: string | null;
+  created_at: string;
+}
+
+export interface MissionDispatchWakeupsTable {
+  wakeup_id: string;
+  generation: number;
+  updated_at: string;
+}
+
 export interface SqliteMasterTable {
   type: string;
   name: string;
@@ -631,5 +716,12 @@ export interface Database {
   target_revisions: TargetRevisionsTable;
   test_plan_heads: TestPlanHeadsTable;
   test_plan_version_revisions: TestPlanVersionRevisionsTable;
+  mission_scheduling_heads: MissionSchedulingHeadsTable;
+  mission_start_commands: MissionStartCommandsTable;
+  mission_job_attempts: MissionJobAttemptsTable;
+  runner_execution_jobs: RunnerExecutionJobsTable;
+  mission_execution_provenance: MissionExecutionProvenanceTable;
+  mission_dispatch_outbox: MissionDispatchOutboxTable;
+  mission_dispatch_wakeups: MissionDispatchWakeupsTable;
   sqlite_master: SqliteMasterTable;
 }

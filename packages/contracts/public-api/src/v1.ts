@@ -123,6 +123,19 @@ export interface RunDto {
   readonly completedAt?: string;
 }
 
+export interface StartMissionResultDto {
+  readonly missionId: string;
+  readonly missionRevision: number;
+  readonly missionVersion: number;
+  readonly status: "running";
+  readonly runs: readonly {
+    readonly logicalJobId: string;
+    readonly attemptId: string;
+    readonly runnerJobId: string;
+    readonly runId: string;
+  }[];
+}
+
 export interface SkillVersionDto {
   readonly skillId: string;
   readonly version: number;
@@ -294,6 +307,10 @@ export interface CreateMissionBody {
   readonly targetSnapshotHash: string;
   readonly planId: string;
   readonly planVersion: number;
+}
+
+export interface StartMissionBody {
+  readonly expectedVersion: number;
 }
 
 export interface ApproveTestPlanBody {

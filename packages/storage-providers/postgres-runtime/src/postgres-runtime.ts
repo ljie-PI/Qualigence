@@ -154,6 +154,20 @@ export async function migratePostgres(
       await input.beforeStep?.({ version: step.version, name: step.name });
       await db.transaction().execute(async (trx) => {
         await createTenantSchemaTables(trx, step.tables);
+        if (step.version === 9) {
+          await sql`
+            insert into mission_scheduling_heads (tenant_id, mission_id, mission_revision, version, compiled_hash)
+            select current.tenant_id, current.mission_id, current.revision, 1, current.compiled_hash
+            from missions current
+            where not exists (
+              select 1 from missions newer
+              where newer.tenant_id = current.tenant_id
+                and newer.mission_id = current.mission_id
+                and newer.revision > current.revision
+            )
+            on conflict (tenant_id, mission_id) do nothing
+          `.execute(trx);
+        }
         if (input.roles !== undefined) {
           await applyRowLevelSecurity(trx, input.roles, step.tables);
         }

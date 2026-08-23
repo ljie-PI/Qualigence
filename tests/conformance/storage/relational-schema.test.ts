@@ -44,22 +44,55 @@ describe("shared relational schema catalog", () => {
   });
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(8);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(9);
   });
 
   it("assigns every relational table to one sequential released schema version", () => {
     expect(RELATIONAL_SCHEMA_VERSIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
     ]);
     expect(RELATIONAL_SCHEMA_VERSIONS.flatMap((migration) => migration.tables)).toEqual(
       relationalTableNames(),
     );
   });
 
+  it("assigns the exact Mission scheduling tables to migration 009", () => {
+    expect(RELATIONAL_SCHEMA_VERSIONS.find(({ version }) => version === 9)?.tables).toEqual([
+      "mission_scheduling_heads",
+      "mission_start_commands",
+      "mission_job_attempts",
+      "runner_execution_jobs",
+      "mission_execution_provenance",
+      "mission_dispatch_outbox",
+      "mission_dispatch_wakeups",
+    ]);
+  });
+
+  it("gives the Mission dispatch outbox durable CAS and acceptance columns", async () => {
+    const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      expect(await tableColumns(runtime, "mission_dispatch_outbox")).toEqual([
+        "attempt_id", "mission_id", "runner_id", "runner_job_id", "run_id",
+        "idempotency_key", "required_capabilities_json", "accepted_job_json",
+        "status", "version", "accepted_at", "acceptance_receipt_json", "created_at",
+      ]);
+      expect(await indexColumns(runtime, "mission_dispatch_outbox_command_job_unique")).toEqual([
+        "idempotency_key", "runner_job_id",
+      ]);
+      expect(await indexIsUnique(runtime, "mission_dispatch_outbox_command_job_unique")).toBe(true);
+      expect(await indexColumns(runtime, "mission_dispatch_outbox_pending")).toEqual([
+        "status", "created_at", "attempt_id",
+      ]);
+      expect(normalizeSql(await indexSql(runtime, "mission_dispatch_outbox_pending"))).toBe(
+        'create index "mission_dispatch_outbox_pending" on "mission_dispatch_outbox" ("status", "created_at", "attempt_id") where status = \'pending\'',
+      );
+    } finally { await runtime.close(); }
+  });
+
   it("adds the migration-007 Local intake authority", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {
-      expect(await runtime.schemaVersion()).toBe(8);
+      expect(await runtime.schemaVersion()).toBe(9);
       expect(await tableColumns(runtime, "local_run_intakes")).toEqual([
         "run_id", "job_id", "job_json", "job_sha256", "dispatch_state", "dispatch_attempt",
         "dispatch_last_attempt_at", "dispatch_error_code", "completion_state", "completion_attempt",
@@ -72,7 +105,7 @@ describe("shared relational schema catalog", () => {
   it("freezes migration-006 runner-control tables, hashed-only tokens, and active indexes", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {
-      expect(await runtime.schemaVersion()).toBe(8);
+      expect(await runtime.schemaVersion()).toBe(9);
       expect(await tableColumns(runtime, "runner_sessions")).toEqual([
         "session_id",
         "runner_id",
@@ -162,6 +195,15 @@ interface SqliteColumnInfo {
   readonly name: string;
 }
 
+interface SqliteIndexInfo {
+  readonly name: string;
+}
+
+interface SqliteIndexList {
+  readonly name: string;
+  readonly unique: number;
+}
+
 async function tableColumns(
   runtime: SqliteRuntime,
   table: string,
@@ -194,4 +236,18 @@ async function indexSql(runtime: SqliteRuntime, name: string): Promise<string> {
     .executeTakeFirst();
   expect(row?.sql, `index ${name}`).toEqual(expect.any(String));
   return row?.sql ?? "";
+}
+
+async function indexColumns(runtime: SqliteRuntime, name: string): Promise<readonly string[]> {
+  const result = await sql<SqliteIndexInfo>`PRAGMA index_info(${sql.raw(name)})`.execute(runtime.db);
+  return result.rows.map((row) => row.name);
+}
+
+async function indexIsUnique(runtime: SqliteRuntime, name: string): Promise<boolean> {
+  const result = await sql<SqliteIndexList>`PRAGMA index_list(mission_dispatch_outbox)`.execute(runtime.db);
+  return result.rows.find((row) => row.name === name)?.unique === 1;
+}
+
+function normalizeSql(statement: string): string {
+  return statement.replace(/\s+/g, " ").trim().toLowerCase();
 }

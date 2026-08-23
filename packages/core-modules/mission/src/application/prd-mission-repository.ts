@@ -10,6 +10,12 @@ import type {
   TestCase,
   TestPlanRevision,
 } from "../domain/test-plan-revision.js";
+import type {
+  AcceptedMissionExecutionJob,
+  ScheduleMissionInput,
+  ScheduledMission,
+  StartMissionCommand,
+} from "./mission-scheduling-service.js";
 
 /**
  * The concrete, provider-neutral instructions needed to turn a compiled Mission
@@ -30,6 +36,7 @@ export interface MissionDispatchDescriptor {
     readonly targetSnapshotHash: string;
     readonly runnerId: string;
     readonly planVersion: number;
+    readonly planSnapshotHash: string;
     readonly configuration: TargetConfiguration;
   };
 }
@@ -60,6 +67,7 @@ export interface DispatchableJob {
 export interface DispatchableMission {
   readonly missionId: string;
   readonly missionRevision: number;
+  readonly missionVersion?: number;
   readonly projectId: string;
   readonly planId: string;
   readonly prdId: string;
@@ -69,6 +77,23 @@ export interface DispatchableMission {
   readonly executionPolicy: ApprovedExecutionPolicy;
   readonly stopOnBlockedTestCase: boolean;
   readonly jobs: readonly DispatchableJob[];
+}
+
+export interface MissionSchedulingSnapshot extends DispatchableMission {
+  readonly missionVersion: number;
+  readonly compiledHash: string;
+  readonly planVersion: number;
+  readonly planSnapshotHash: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
+  readonly jobs: readonly (DispatchableJob & {
+    readonly snapshotHash: string;
+    readonly budget: {
+      readonly maximumStepsPerJob: number;
+      readonly maximumWallClockMs: number;
+      readonly maximumModelTokens: number;
+    };
+  })[];
 }
 
 export type JobAttemptStatus = "passed" | "finding" | "blocked" | "error";
@@ -109,6 +134,34 @@ export interface MissionExecutionRecord {
   readonly jobs: readonly MissionJobExecution[];
 }
 
+export interface PendingMissionDispatch {
+  readonly attemptId: string;
+  readonly missionId: string;
+  readonly runnerId: string;
+  readonly runnerJobId: string;
+  readonly runId: string;
+  readonly requiredCapabilities: readonly string[];
+  readonly job: AcceptedMissionExecutionJob;
+  readonly status: "pending";
+  readonly version: number;
+  readonly createdAt: string;
+}
+
+export interface MissionDispatchAcceptanceReceipt {
+  readonly status: "accepted" | "already_active";
+  readonly jobId: string;
+  readonly runId: string;
+  readonly acceptedAt: string;
+}
+
+export interface AcceptedMissionDispatch
+  extends Omit<PendingMissionDispatch, "status"> {
+  readonly status: "accepted";
+  readonly version: number;
+  readonly acceptedAt: string;
+  readonly receipt: MissionDispatchAcceptanceReceipt;
+}
+
 /**
  * Persistence boundary for the PRD → Mission bridge. It never runs a model or a
  * browser; it only stores immutable PRD/plan/mission snapshots and records
@@ -133,4 +186,13 @@ export interface PrdMissionRepository {
   loadMissionExecution(
     missionId: string,
   ): Promise<MissionExecutionRecord | undefined>;
+  replayMissionSchedule(command: StartMissionCommand): Promise<ScheduledMission | undefined>;
+  loadMissionForScheduling(missionId: string): Promise<MissionSchedulingSnapshot | undefined>;
+  scheduleMission(input: ScheduleMissionInput): Promise<ScheduledMission>;
+  pendingDispatches(limit: number): Promise<readonly PendingMissionDispatch[]>;
+  markDispatchAccepted(
+    attemptId: string,
+    receipt: MissionDispatchAcceptanceReceipt,
+    expectedVersion: number,
+  ): Promise<AcceptedMissionDispatch>;
 }

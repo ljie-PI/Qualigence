@@ -14,6 +14,7 @@ import {
   type RunExecutionResult,
   type RunExecutionUseCase,
 } from "@qualigence/execution-application";
+import { PrdMissionRepositoryTestStub } from "../../helpers/prd-mission-repository.js";
 
 const sourceRef = {
   prdId: "prd-1",
@@ -58,7 +59,7 @@ function dispatchableMission(
   };
 }
 
-class FakeRepository implements PrdMissionRepository {
+class FakeRepository extends PrdMissionRepositoryTestStub implements PrdMissionRepository {
   mission: DispatchableMission | undefined;
   readonly attempts: JobAttemptRecord[] = [];
   readonly jobStatuses: Array<{ jobId: string; status: string }> = [];
