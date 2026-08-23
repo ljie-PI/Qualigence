@@ -51,7 +51,8 @@ reserved without a reviewed plan amendment.
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR
+verification: passed; pending dedicated PR merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 pull_request: pending
 review_fix_product_head: `7c5cc19427b91e280287e4ef9df169b26c2ed013`
 
