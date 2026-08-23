@@ -299,6 +299,130 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
 
+  it("blocks a redirect after the model decision before resolver locator reads", async () => {
+    const graphId = "run-before-resolver-origin:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    let currentUrl = fixture.url;
+    const locatorReads = {
+      count: vi.fn(async () => 1),
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+      getAttribute: vi.fn(async () => null),
+    };
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      getByRole: () => ({ ...locatorReads, click: vi.fn() }),
+    } as never);
+    const traces = new InMemoryTraceStore();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => graph },
+      decisionProvider: {
+        decide: async () => {
+          currentUrl = cross.url;
+          return click(nodeId);
+        },
+      },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-before-resolver-origin",
+      runId: "run-before-resolver-origin",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-before-resolver-origin");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(locatorReads.count).not.toHaveBeenCalled();
+    expect(locatorReads.isVisible).not.toHaveBeenCalled();
+    expect(locatorReads.isEnabled).not.toHaveBeenCalled();
+    expect(locatorReads.getAttribute).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(0);
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
+    expect(JSON.stringify(trace)).not.toContain(cross.origin);
+  });
+
+  it("discards a resolution when the page redirects during its locator read", async () => {
+    const graphId = "run-raced-resolver-origin:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    let currentUrl = fixture.url;
+    const count = vi.fn(async () => {
+      currentUrl = cross.url;
+      return 1;
+    });
+    const policyGate = { authorize: vi.fn(async () => ({ status: "allowed", reason: "not reached" } as const)) };
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      getByRole: () => ({
+        count,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: vi.fn(),
+      }),
+    } as never);
+    const traces = new InMemoryTraceStore();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => graph },
+      decisionProvider: { decide: async () => click(nodeId) },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate,
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-raced-resolver-origin",
+      runId: "run-raced-resolver-origin",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-raced-resolver-origin");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(count).toHaveBeenCalledOnce();
+    expect(policyGate.authorize).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(0);
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(JSON.stringify(trace)).not.toContain(cross.origin);
+  });
+
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
     const crossOriginContent = "private cross-origin account data";
     let currentUrl = fixture.url;
@@ -480,6 +604,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
         nodes: [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }],
       };
       let currentUrl = fixture.url;
+      let locatorReads = 0;
+      const valueProvider = { resolve: vi.fn(async () => "private-value") };
       session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
       session.registerObservation(graphId, {
         descriptors: new Map([[nodeId, descriptor]]),
@@ -488,10 +614,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       session.withPage = async (operation) => operation({
         url: () => currentUrl,
         getByRole: () => ({
-          count: async () => 1,
-          isVisible: async () => true,
-          isEnabled: async () => true,
-          getAttribute: async () => null,
+          count: async () => { locatorReads += 1; return 1; },
+          isVisible: async () => { locatorReads += 1; return true; },
+          isEnabled: async () => { locatorReads += 1; return true; },
+          getAttribute: async () => { locatorReads += 1; return null; },
           click: sideEffects.click,
           fill: sideEffects.fill,
           selectOption: sideEffects.selectOption,
@@ -506,11 +632,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
         resolver: new PlaywrightActionResolver(session),
         policyGate: {
           authorize: async () => {
+            locatorReads = 0;
             currentUrl = cross.url;
             return { status: "allowed", reason: "simulate an unobserved navigation" };
           },
         },
-        actionExecutor: new PlaywrightActionExecutor(session, { resolve: async () => "private-value" }),
+        actionExecutor: new PlaywrightActionExecutor(session, valueProvider),
         verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
         traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
       });
@@ -534,9 +661,73 @@ describe("Playwright resolve + execute against real Chromium", () => {
       expect(sideEffects.fill).not.toHaveBeenCalled();
       expect(sideEffects.selectOption).not.toHaveBeenCalled();
       expect(sideEffects.scroll).not.toHaveBeenCalled();
+      expect(locatorReads).toBe(0);
+      expect(valueProvider.resolve).not.toHaveBeenCalled();
       expect(traces.eventsFor(`run-origin-${kind}`).filter((event) => event.stage === "run_completed")).toHaveLength(1);
     },
   );
+
+  it("blocks when the page redirects during executor preflight before authorization or dispatch", async () => {
+    const graphId = "run-raced-executor-origin:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    let currentUrl = fixture.url;
+    let countCalls = 0;
+    const clickEffect = vi.fn(async () => undefined);
+    const authorizationWindow = { assertActionAuthorized: vi.fn() };
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      getByRole: () => ({
+        count: async () => {
+          countCalls += 1;
+          if (countCalls === 2) currentUrl = cross.url;
+          return 1;
+        },
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: clickEffect,
+      }),
+    } as never);
+    const traces = new InMemoryTraceStore();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => graph },
+      decisionProvider: { decide: async () => click(nodeId) },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionAuthorizationWindow: authorizationWindow,
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-raced-executor-origin",
+      runId: "run-raced-executor-origin",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-raced-executor-origin");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(1);
+    expect(authorizationWindow.assertActionAuthorized).not.toHaveBeenCalled();
+    expect(clickEffect).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(JSON.stringify(trace)).not.toContain(cross.origin);
+  });
 
   it.each(["click", "input", "select", "scroll"] as const)(
     "allows %s when the page remains on the observed target origin",

@@ -104,6 +104,7 @@ describe("PlaywrightActionResolver negative paths", () => {
     const session = sessionWithGraph(graphId);
     session.withPage = async (operation) => operation({
       getByRole: () => ({ count: async () => 1 }),
+      url: () => "https://example.test/",
     } as never);
     const resolver = new PlaywrightActionResolver(session);
 
@@ -118,6 +119,9 @@ describe("PlaywrightActionResolver negative paths", () => {
       url: "https://example.test:443/start",
       allowedOrigins: ["https://example.test", "https://other.test"],
     }, noopLauncher);
+    session.withPage = async (operation) => operation({
+      url: () => "https://example.test/start",
+    } as never);
     const resolver = new PlaywrightActionResolver(session);
 
     await expect(
@@ -140,6 +144,7 @@ describe("PlaywrightActionResolver negative paths", () => {
     const session = sessionWithGraph(graphId);
     session.withPage = async (operation) => operation({
       getByRole: () => ({ count: async () => 1 }),
+      url: () => "https://example.test/",
     } as never);
     const resolver = new PlaywrightActionResolver(session);
 

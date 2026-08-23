@@ -62,6 +62,8 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (!isSafeTargetUrl(action.url, this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
+        const originFailure = targetOriginFailure(page, this.session);
+        if (originFailure !== undefined) return originFailure;
         try {
           permit.assertAuthorizedForDispatch(signal);
           await page.goto(action.url, {
@@ -74,8 +76,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
           throw error;
         }
-        const originState = targetOriginState(page, this.session);
-        return originState === "safe"
+        return hasTargetOrigin(page, this.session)
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
@@ -86,7 +87,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       }
       return this.session.withPage(async (page) => {
         signal?.throwIfAborted();
-        const guardFailure = this.guardPageAction(page.url(), action.graphId);
+        const guardFailure = this.guardPageAction(page, action.graphId);
         if (guardFailure !== undefined) return guardFailure;
         this.session.invalidateObservations();
         const distance = action.amount === "page" ? 1 : 0.25;
@@ -110,8 +111,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
           throw error;
         }
-        const originState = targetOriginState(page, this.session);
-        return originState === "safe"
+        return hasTargetOrigin(page, this.session)
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
@@ -137,6 +137,8 @@ export class PlaywrightActionExecutor implements ActionExecutor {
 
     return this.session.withPage(async (page): Promise<ActionOutcome> => {
       signal?.throwIfAborted();
+      const originFailure = targetOriginFailure(page, this.session);
+      if (originFailure !== undefined) return originFailure;
       const locator = locatorFor(page, descriptor);
 
       let count: number;
@@ -149,12 +151,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         enabled = visible && await locator.isEnabled();
         href = enabled ? await locator.getAttribute("href") : null;
       } catch {
-        if (targetOriginState(page, this.session) === "violation") {
-          return { status: "failed", errorCode: "OriginViolation" };
-        }
+        const readOriginFailure = targetOriginFailure(page, this.session);
+        if (readOriginFailure !== undefined) return readOriginFailure;
         signal?.throwIfAborted();
         return { status: "failed", errorCode: "ActionFailed" };
       }
+      const preflightOriginFailure = targetOriginFailure(page, this.session);
+      if (preflightOriginFailure !== undefined) return preflightOriginFailure;
       if (count === 0) {
         return { status: "failed", errorCode: "TargetNotFound" };
       }
@@ -194,7 +197,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           signal?.throwIfAborted();
           this.session.registerSensitiveValue(value);
           const guardFailure = this.guardElementAction(
-            page.url(),
+            page,
             action.graphId,
             actionTarget.nodeId,
             descriptor,
@@ -210,7 +213,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
         } else if (action.kind === "click") {
           const guardFailure = this.guardElementAction(
-            page.url(),
+            page,
             action.graphId,
             actionTarget.nodeId,
             descriptor,
@@ -221,7 +224,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           await locator.click({ timeout: this.session.actionTimeoutMs });
         } else if (action.kind === "scroll") {
           const guardFailure = this.guardElementAction(
-            page.url(),
+            page,
             action.graphId,
             actionTarget.nodeId,
             descriptor,
@@ -253,17 +256,15 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         throw error;
       }
 
-      const originState = targetOriginState(page, this.session);
-      return originState === "safe"
+      return hasTargetOrigin(page, this.session)
         ? { status: "ok" }
         : { status: "failed", errorCode: "ActionOutcomeUnknown" };
     });
   }
 
-  private guardPageAction(pageUrl: string, graphId: string): ActionOutcome | undefined {
-    if (!isSafeTargetUrl(pageUrl, this.session)) {
-      return { status: "failed", errorCode: "OriginViolation" };
-    }
+  private guardPageAction(page: { url(): string }, graphId: string): ActionOutcome | undefined {
+    const originFailure = targetOriginFailure(page, this.session);
+    if (originFailure !== undefined) return originFailure;
     if (!this.session.hasGraph(graphId)) {
       return { status: "failed", errorCode: "StaleObservation" };
     }
@@ -271,12 +272,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
   }
 
   private guardElementAction(
-    pageUrl: string,
+    page: { url(): string },
     graphId: string,
     nodeId: string,
     descriptor: LocatorDescriptor,
   ): ActionOutcome | undefined {
-    const pageFailure = this.guardPageAction(pageUrl, graphId);
+    const pageFailure = this.guardPageAction(page, graphId);
     if (pageFailure !== undefined) return pageFailure;
     if (this.session.descriptorFor(graphId, nodeId) !== descriptor) {
       return { status: "failed", errorCode: "StaleObservation" };
@@ -294,13 +295,21 @@ function isSafeTargetUrl(url: string, session: PlaywrightBrowserSession): boolea
   }
 }
 
-function targetOriginState(
+function targetOriginFailure(
   page: { url(): string },
   session: PlaywrightBrowserSession,
-): "safe" | "violation" | "unknown" {
+): ActionOutcome | undefined {
   try {
-    return isSafeTargetUrl(page.url(), session) ? "safe" : "violation";
+    session.assertPageTargetOrigin(page);
+    return undefined;
   } catch {
-    return "unknown";
+    return { status: "failed", errorCode: "OriginViolation" };
   }
+}
+
+function hasTargetOrigin(
+  page: { url(): string },
+  session: PlaywrightBrowserSession,
+): boolean {
+  return targetOriginFailure(page, session) === undefined;
 }

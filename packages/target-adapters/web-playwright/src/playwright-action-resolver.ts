@@ -41,7 +41,12 @@ export class PlaywrightActionResolver implements ActionResolver {
       if (!this.session.isTargetOrigin(url.href)) {
         throw new WebTargetError("OriginViolation", "The planned navigation leaves the Job target origin.");
       }
-      return { targetKind: "web", kind: "navigate", url: url.href };
+      return this.session.withPage(async (page) => {
+        this.session.assertPageTargetOrigin(page);
+        const resolved = { targetKind: "web", kind: "navigate", url: url.href } as const;
+        this.session.assertPageTargetOrigin(page);
+        return resolved;
+      });
     }
     if (!this.session.hasGraph(graph.graphId)) {
       throw new WebTargetError(
@@ -50,13 +55,18 @@ export class PlaywrightActionResolver implements ActionResolver {
       );
     }
     if (action.kind === "scroll" && action.target === undefined) {
-      return {
-        targetKind: "web",
-        kind: "scroll",
-        graphId: graph.graphId,
-        direction: action.direction,
-        amount: action.amount,
-      };
+      return this.session.withPage(async (page) => {
+        this.session.assertPageTargetOrigin(page);
+        const resolved = {
+          targetKind: "web",
+          kind: "scroll",
+          graphId: graph.graphId,
+          direction: action.direction,
+          amount: action.amount,
+        } as const;
+        this.session.assertPageTargetOrigin(page);
+        return resolved;
+      });
     }
     const actionTarget = action.target;
     if (actionTarget === undefined) {
@@ -73,50 +83,62 @@ export class PlaywrightActionResolver implements ActionResolver {
       );
     }
 
-    const count = await this.session.withPage((page) =>
-      locatorFor(page, descriptor).count(),
-    );
-    if (count === 0) {
-      throw new WebTargetError(
-        "TargetNotFound",
-        `Node ${actionTarget.nodeId} no longer matches any element.`,
-      );
-    }
-    if (count > 1) {
-      throw new WebTargetError(
-        "AmbiguousTarget",
-        `Node ${actionTarget.nodeId} matches ${count} elements.`,
-      );
-    }
+    return this.session.withPage(async (page) => {
+      this.session.assertPageTargetOrigin(page);
+      let count: number;
+      try {
+        count = await locatorFor(page, descriptor).count();
+      } catch (error) {
+        this.session.assertPageTargetOrigin(page);
+        throw error;
+      }
+      this.session.assertPageTargetOrigin(page);
 
-    const target = {
-      nodeId: actionTarget.nodeId,
-      selector: actionToken(graph.graphId, actionTarget.nodeId),
-    };
-    if (action.kind === "input" || action.kind === "select") {
-      return {
-        targetKind: "web",
-        kind: action.kind,
-        target,
-        graphId: graph.graphId,
-        valueRef: action.valueRef,
+      if (count === 0) {
+        throw new WebTargetError(
+          "TargetNotFound",
+          `Node ${actionTarget.nodeId} no longer matches any element.`,
+        );
+      }
+      if (count > 1) {
+        throw new WebTargetError(
+          "AmbiguousTarget",
+          `Node ${actionTarget.nodeId} matches ${count} elements.`,
+        );
+      }
+
+      const target = {
+        nodeId: actionTarget.nodeId,
+        selector: actionToken(graph.graphId, actionTarget.nodeId),
       };
-    }
-    if (action.kind === "scroll") {
-      return {
-        targetKind: "web",
-        kind: "scroll",
-        target,
-        graphId: graph.graphId,
-        direction: action.direction,
-        amount: action.amount,
-      };
-    }
-    return {
-      targetKind: "web",
-      kind: "click",
-      target,
-      graphId: graph.graphId,
-    };
+      let resolved: AnyResolvedWebAction;
+      if (action.kind === "input" || action.kind === "select") {
+        resolved = {
+          targetKind: "web",
+          kind: action.kind,
+          target,
+          graphId: graph.graphId,
+          valueRef: action.valueRef,
+        };
+      } else if (action.kind === "scroll") {
+        resolved = {
+          targetKind: "web",
+          kind: "scroll",
+          target,
+          graphId: graph.graphId,
+          direction: action.direction,
+          amount: action.amount,
+        };
+      } else {
+        resolved = {
+          targetKind: "web",
+          kind: "click",
+          target,
+          graphId: graph.graphId,
+        };
+      }
+      this.session.assertPageTargetOrigin(page);
+      return resolved;
+    });
   }
 }
