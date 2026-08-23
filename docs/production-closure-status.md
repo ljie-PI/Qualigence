@@ -463,8 +463,8 @@ core_blocker_fix_commit: same commit as this ledger entry
 dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
 dispatch_authority_fix_commit: same commit as this ledger entry
 implementation_head: `42985b803dae09d34327a326c393615a12d19ab7`
-reviewed_head: `b4cddef580919332fea577ab51d955703e4e8b43`
-chromium_e2e_head: `b4cddef580919332fea577ab51d955703e4e8b43`
+reviewed_head: `215e47acfef80f877c5795298fa091d93e96255d`
+chromium_e2e_head: `215e47acfef80f877c5795298fa091d93e96255d`
 branch_commit_count: 32 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
@@ -684,7 +684,10 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 - At product head `42985b803dae09d34327a326c393615a12d19ab7`, the exact
   amended Ticket 19 non-E2E Gate passed 13 files / 282 tests with 1 pre-existing
   Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed.
-  No E2E was run; fresh exact-base review remains required.
+  Fresh exact-base review reported no blockers. The post-review real Chromium
+  acceptance then passed 1 file / 8 tests at reviewed head
+  `215e47acfef80f877c5795298fa091d93e96255d`; this final evidence update is
+  status-only.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
