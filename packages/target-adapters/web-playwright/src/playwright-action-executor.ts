@@ -61,7 +61,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
     }
 
     if (action.kind === "navigate") {
-      if (!this.session.isTargetOrigin(action.url)) {
+      if (!isSafeTargetUrl(action.url, this.session)) {
         return { status: "failed", errorCode: "OriginViolation" };
       }
       this.session.invalidateObservations();
@@ -79,7 +79,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (isInfrastructureFailure(message)) throw new WebTargetError("ActionInfrastructureFailure");
           return { status: "failed", errorCode: "ActionFailed" };
         }
-        return this.session.isTargetOrigin(page.url())
+        return isSafeTargetUrl(page.url(), this.session)
           ? { status: "ok" }
           : { status: "failed", errorCode: "OriginViolation" };
       });
@@ -147,15 +147,15 @@ export class PlaywrightActionExecutor implements ActionExecutor {
 
       const href = await locator.getAttribute("href");
       if (href !== null) {
-        let destinationOrigin: string | undefined;
+        let destination: string | undefined;
         try {
-          destinationOrigin = new URL(href, page.url()).origin;
+          destination = new URL(href, page.url()).href;
         } catch {
-          destinationOrigin = undefined;
+          destination = undefined;
         }
         if (
-          destinationOrigin !== undefined &&
-          !this.session.isTargetOrigin(destinationOrigin)
+          destination !== undefined &&
+          !isSafeTargetUrl(destination, this.session)
         ) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
@@ -211,11 +211,20 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         return { status: "failed", errorCode: "ActionFailed" };
       }
 
-      if (!this.session.isTargetOrigin(page.url())) {
+      if (!isSafeTargetUrl(page.url(), this.session)) {
         return { status: "failed", errorCode: "OriginViolation" };
       }
 
       return { status: "ok" };
     });
+  }
+}
+
+function isSafeTargetUrl(url: string, session: PlaywrightBrowserSession): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.username === "" && parsed.password === "" && session.isTargetOrigin(parsed.href);
+  } catch {
+    return false;
   }
 }

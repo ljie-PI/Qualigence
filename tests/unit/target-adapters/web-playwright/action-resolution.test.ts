@@ -186,6 +186,20 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(goto).not.toHaveBeenCalled();
   });
 
+  it("rejects credentialed same-origin navigation before page.goto", async () => {
+    const goto = vi.fn(async () => undefined);
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.withPage = async (operation) => operation({ goto, url: () => "https://example.test/" } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "navigate",
+      url: "https://user:pass@example.test/checkout",
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    expect(goto).not.toHaveBeenCalled();
+  });
+
   it("does not dispatch an action when its AbortSignal is already aborted", async () => {
     const click = vi.fn(async () => undefined);
     const graphId = "run-1:observation:1";
