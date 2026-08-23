@@ -11,6 +11,7 @@ import {
   type ActionExecutor,
   type ActionResolver,
   type ExecutionDecisionProvider,
+  type ExecutionBudget,
   type ExecutionPermit,
   type Observer,
   type ResolvedAction,
@@ -43,6 +44,7 @@ export interface LeasedJobExecutorDependencies {
   readonly renewalDelay?: RenewalDelay;
   readonly objectiveOnlyMaximumWallClockMs?: number;
   readonly objectiveOnlyMaximumModelTokens?: number;
+  readonly budget?: ExecutionBudget;
 }
 
 export interface LeasedJobResult {
@@ -129,11 +131,14 @@ export class LeasedJobExecutor {
     );
 
     const guardedExecutor: ActionExecutor = {
-      execute: async (action: ResolvedAction, permit: ExecutionPermit) => {
-        if (guardedSignal.aborted || !window.mayStartAction()) {
+      execute: async (action: ResolvedAction, permit: ExecutionPermit, runtimeSignal?: AbortSignal) => {
+        const actionSignal = runtimeSignal === undefined
+          ? guardedSignal
+          : AbortSignal.any([guardedSignal, runtimeSignal]);
+        if (actionSignal.aborted || !window.mayStartAction()) {
           throw new ExecutionBlockedError("LeaseExpired");
         }
-        return this.deps.actionExecutor.execute(action, permit);
+        return this.deps.actionExecutor.execute(action, permit, actionSignal);
       },
     };
 
@@ -145,6 +150,7 @@ export class LeasedJobExecutor {
       actionExecutor: guardedExecutor,
       verifier: this.deps.verifier,
       traceRecorder: new SpoolingTraceRecorder(this.deps.spool),
+      ...(this.deps.budget === undefined ? {} : { budget: this.deps.budget }),
       ...(this.deps.objectiveOnlyMaximumWallClockMs === undefined
         ? {}
         : { objectiveOnlyMaximumWallClockMs: this.deps.objectiveOnlyMaximumWallClockMs }),
@@ -153,13 +159,20 @@ export class LeasedJobExecutor {
         : { objectiveOnlyMaximumModelTokens: this.deps.objectiveOnlyMaximumModelTokens }),
     });
 
-    const runtimeResult = await runtime.run(offer.job).then(
+    const runtimeResult = await runtime.run(offer.job, guardedSignal).then(
       (completion) => ({ status: "fulfilled" as const, completion }),
       (error: unknown) => ({ status: "rejected" as const, error }),
     );
     controller.stop();
     const renewalResult = await renewal;
-    if (renewalResult.status === "rejected") throw renewalResult.error;
+    if (
+      renewalResult.status === "rejected" &&
+      !(
+        runtimeResult.status === "fulfilled" &&
+        runtimeResult.completion.status === "error" &&
+        runtimeResult.completion.errorCode === "ActionOutcomeUnknown"
+      )
+    ) throw renewalResult.error;
     if (runtimeResult.status === "rejected") throw runtimeResult.error;
     return { lease: controller.currentLease(), completion: runtimeResult.completion, window };
   }

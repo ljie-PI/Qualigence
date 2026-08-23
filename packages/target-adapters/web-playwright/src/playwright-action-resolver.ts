@@ -35,8 +35,11 @@ export class PlaywrightActionResolver implements ActionResolver {
       } catch {
         throw new WebTargetError("NavigationFailed", "The planned navigation path is invalid.");
       }
-      if (!this.session.allowedOrigins.includes(url.origin)) {
-        throw new WebTargetError("OriginViolation", "The planned navigation leaves the approved origin.");
+      if (url.username !== "" || url.password !== "") {
+        throw new WebTargetError("NavigationFailed", "The planned navigation must not embed credentials.");
+      }
+      if (!this.session.isTargetOrigin(url.href)) {
+        throw new WebTargetError("OriginViolation", "The planned navigation leaves the Job target origin.");
       }
       return { targetKind: "web", kind: "navigate", url: url.href };
     }

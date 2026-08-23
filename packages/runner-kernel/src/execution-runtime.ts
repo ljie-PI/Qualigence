@@ -183,6 +183,20 @@ export class ActionOutcomeUnknownError extends Error {
   }
 }
 
+export type ExecutionTargetErrorStatus = "blocked" | "error";
+
+/** Adapter-neutral expected target failure that Runtime can terminalize safely. */
+export class ExecutionTargetError extends Error {
+  constructor(
+    readonly errorCode: string,
+    readonly completionStatus: ExecutionTargetErrorStatus,
+    message?: string,
+  ) {
+    super(message ?? errorCode);
+    this.name = "ExecutionTargetError";
+  }
+}
+
 export interface Observer {
   capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
 }
@@ -262,9 +276,11 @@ export interface ExecutionRuntimeDependencies<TKind extends ProposedActionKind =
   readonly budget?: ExecutionBudget;
   readonly objectiveOnlyMaximumWallClockMs?: number;
   readonly objectiveOnlyMaximumModelTokens?: number;
+  readonly terminalRecordingTimeoutMs?: number;
 }
 
 const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
+const DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS = 5_000;
 
 export class ExecutionPermit {
   readonly [executionPermitBrand] = true;
@@ -285,8 +301,13 @@ export class ExecutionPermit {
 
 export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
   private readonly budget: ExecutionBudget;
+  private readonly terminalRecordingTimeoutMs: number;
 
   constructor(private readonly dependencies: ExecutionRuntimeDependencies<TKind>) {
+    this.terminalRecordingTimeoutMs = dependencies.terminalRecordingTimeoutMs ?? DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.terminalRecordingTimeoutMs) || this.terminalRecordingTimeoutMs <= 0) {
+      throw new Error("terminalRecordingTimeoutMs must be a positive safe integer.");
+    }
     if (dependencies.budget !== undefined) {
       this.budget = dependencies.budget;
       return;
@@ -301,61 +322,34 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     });
   }
 
-  async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+  async run(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ExecutionCompletion> {
     let budgetStarted = false;
     let currentStepIndex: number | undefined;
     try {
       this.budget.begin(job);
       budgetStarted = true;
-      return await this.runUntilCompletion(job, (stepIndex) => {
-        currentStepIndex = stepIndex;
-      });
-    } catch (error) {
-      const errorCode =
-        error instanceof ExecutionBlockedError
-          ? error.errorCode
-          : error instanceof ExecutionBudgetError
-            ? error.code
-            : error instanceof ActionOutcomeUnknownError
-              ? error.errorCode
-              : undefined;
-      if (errorCode === undefined) {
-        throw error;
-      }
-
-      const status = errorCode === "ModelUsageUnavailable" || errorCode === "ActionOutcomeUnknown"
-        ? "error"
-        : "blocked";
+      let completion: ExecutionCompletion;
       try {
-        if (!budgetStarted) {
-          throw error;
-        }
-        await this.record({
-          runId: job.runId,
-          ...(job.plan === undefined || currentStepIndex === undefined
-            ? {}
-            : { stepIndex: currentStepIndex }),
-          stage: "run_completed",
-          payload: {
-            status,
-            errorCode,
-          },
-        });
-      } catch (recordError) {
-        if (
-          !(recordError instanceof ExecutionBudgetError) ||
-          recordError.code !== "WallClockBudgetExceeded"
-        ) {
-          throw recordError;
-        }
+        completion = await this.runUntilCompletion(job, (stepIndex) => {
+          currentStepIndex = stepIndex;
+        }, signal);
+      } catch (error) {
+        const mapped = completionFromError(job, error);
+        if (mapped === undefined) throw error;
+        completion = mapped;
       }
 
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status,
-        errorCode,
-      };
+      try {
+        await this.recordTerminal(completion, job.plan === undefined ? undefined : currentStepIndex);
+        return completion;
+      } catch {
+        return {
+          jobId: job.jobId,
+          runId: job.runId,
+          status: "error",
+          errorCode: "TerminalTracePersistenceFailed",
+        };
+      }
     } finally {
       if (budgetStarted) {
         this.budget.finish(job.runId);
@@ -366,9 +360,10 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
   private async runUntilCompletion(
     job: AcceptedExecutionJob,
     setCurrentStep: (stepIndex: number) => void,
+    signal?: AbortSignal,
   ): Promise<ExecutionCompletion> {
     if (job.plan === undefined) {
-      return this.runObjectiveOnly(job, setCurrentStep);
+      return this.runObjectiveOnly(job, setCurrentStep, signal);
     }
 
     let firstObservation: ObservationGraph | undefined;
@@ -382,7 +377,7 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       lastStepIndex = stepIndex;
       setCurrentStep(stepIndex);
       this.budget.beforeStep(job.runId, stepIndex);
-      const observation = await this.capture(job, stepIndex);
+      const observation = await this.capture(job, stepIndex, signal);
       firstObservation ??= observation;
 
       if (step.kind === "verify") {
@@ -395,19 +390,19 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
           stepIndex,
           ...(lastAction === undefined ? {} : { action: lastAction }),
           ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
-        });
+        }, signal);
         if (completion !== undefined) return completion;
         continue;
       }
 
-      const result = await this.executeStep(job, step, stepIndex, observation);
+      const result = await this.executeStep(job, step, stepIndex, observation, signal);
       if ("completion" in result) return result.completion;
       lastAction = result.action;
       lastOutcome = result.outcome;
     }
 
     if (!hasExplicitVerification) {
-      const after = await this.capture(job, lastStepIndex);
+      const after = await this.capture(job, lastStepIndex, signal);
       const completion = await this.verify({
         job,
         before: firstObservation ?? after,
@@ -416,24 +411,25 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
         stepIndex: lastStepIndex,
         ...(lastAction === undefined ? {} : { action: lastAction }),
         ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
-      });
+      }, signal);
       if (completion !== undefined) return completion;
     }
 
-    return this.completePassed(job, lastStepIndex);
+    return this.passedCompletion(job);
   }
 
   private async runObjectiveOnly(
     job: AcceptedExecutionJob,
     setCurrentStep: (stepIndex: number) => void,
+    signal?: AbortSignal,
   ): Promise<ExecutionCompletion> {
     const stepIndex = 0;
     setCurrentStep(stepIndex);
     this.budget.beforeStep(job.runId, stepIndex);
-    const before = await this.capture(job);
-    const result = await this.executeStep(job, undefined, stepIndex, before);
+    const before = await this.capture(job, undefined, signal);
+    const result = await this.executeStep(job, undefined, stepIndex, before, signal);
     if ("completion" in result) return result.completion;
-    const after = await this.capture(job);
+    const after = await this.capture(job, undefined, signal);
     const completion = await this.verify({
       job,
       before,
@@ -442,8 +438,8 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       stepIndex,
       action: result.action,
       outcome: result.outcome,
-    });
-    return completion ?? this.completePassed(job);
+    }, signal);
+    return completion ?? this.passedCompletion(job);
   }
 
   private async executeStep(
@@ -451,32 +447,33 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }> | undefined,
     stepIndex: number,
     observation: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<
     | { readonly action: ResolvedAction; readonly outcome: ActionOutcome }
     | { readonly completion: ExecutionCompletion }
   > {
     const traceIndex = job.plan === undefined ? undefined : stepIndex;
-    const decision = await this.withinWallClock(job.runId, (signal) =>
+    const decision = await this.withinWallClock(job.runId, (operationSignal) =>
       this.dependencies.decisionProvider.decide({
         job,
         observation,
         ...(step === undefined ? {} : { step }),
         stepIndex,
         budget: this.budget,
-        signal,
-      }));
+        signal: operationSignal,
+      }), signal);
     if (step !== undefined) assertDecisionMatchesStep(decision, step);
     await this.recordStage(job.runId, traceIndex, "decision", toDecisionTracePayload(decision));
 
-    const action = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.resolver.resolve(decision, observation, signal));
+    const action = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.resolver.resolve(decision, observation, operationSignal), signal);
     await this.recordStage(job.runId, traceIndex, "action_resolved", toResolvedActionTracePayload(action));
 
-    const policyDecision = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.policyGate.authorize(action, { job, action, signal }));
+    const policyDecision = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.policyGate.authorize(action, { job, action, signal: operationSignal }), signal);
     if (policyDecision.status === "denied") {
       await this.recordStage(job.runId, traceIndex, "policy_denied", toDeniedPolicyTracePayload(policyDecision));
-      return { completion: await this.completeBlocked(job, "PolicyDenied", traceIndex) };
+      return { completion: this.blockedCompletion(job, "PolicyDenied") };
     }
 
     await this.recordStage(job.runId, traceIndex, "policy_authorized", toAuthorizedPolicyTracePayload(policyDecision));
@@ -484,31 +481,45 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
     let outcome: ActionOutcome;
     try {
-      outcome = await this.withinWallClock(job.runId, (signal) =>
-        this.dependencies.actionExecutor.execute(action, permit, signal));
+      outcome = await this.withinWallClock(job.runId, (operationSignal) =>
+        this.dependencies.actionExecutor.execute(action, permit, operationSignal), signal);
     } catch (error) {
-      if (error instanceof ExecutionBlockedError || error instanceof ExecutionBudgetError) throw error;
+      if (error instanceof ExecutionBlockedError) throw error;
+      if (
+        error instanceof ExecutionTargetError &&
+        error.errorCode !== "ActionInfrastructureFailure"
+      ) throw error;
       throw new ActionOutcomeUnknownError();
     }
     await this.recordStage(job.runId, traceIndex, "action_executed", toActionOutcomeTracePayload(outcome));
     if (outcome.status === "failed") {
+      if (outcome.errorCode === "ActionOutcomeUnknown") {
+        return { completion: this.errorCompletion(job, outcome.errorCode) };
+      }
       return {
-        completion: await this.completeBlocked(job, outcome.errorCode ?? "ActionFailed", traceIndex),
+        completion: this.blockedCompletion(job, outcome.errorCode ?? "ActionFailed"),
       };
     }
     return { action, outcome };
   }
 
-  private async capture(job: AcceptedExecutionJob, stepIndex?: number): Promise<ObservationGraph> {
-    const observation = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.observer.capture(job, signal));
+  private async capture(
+    job: AcceptedExecutionJob,
+    stepIndex?: number,
+    signal?: AbortSignal,
+  ): Promise<ObservationGraph> {
+    const observation = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.observer.capture(job, operationSignal), signal);
     await this.recordStage(job.runId, stepIndex, "observation", observation);
     return observation;
   }
 
-  private async verify(context: Omit<VerificationContext, "budget" | "signal">): Promise<ExecutionCompletion | undefined> {
-    const verification = await this.withinWallClock(context.job.runId, (signal) =>
-      this.dependencies.verifier.verify({ ...context, budget: this.budget, signal }));
+  private async verify(
+    context: Omit<VerificationContext, "budget" | "signal">,
+    signal?: AbortSignal,
+  ): Promise<ExecutionCompletion | undefined> {
+    const verification = await this.withinWallClock(context.job.runId, (operationSignal) =>
+      this.dependencies.verifier.verify({ ...context, budget: this.budget, signal: operationSignal }), signal);
     await this.recordStage(
       context.job.runId,
       context.job.plan === undefined ? undefined : context.stepIndex,
@@ -525,10 +536,6 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     );
     const traceIndex = context.job.plan === undefined ? undefined : context.stepIndex;
     await this.recordStage(context.job.runId, traceIndex, "finding", finding);
-    await this.recordStage(context.job.runId, traceIndex, "run_completed", {
-      status: "finding",
-      findingId: finding.findingId,
-    });
     return {
       jobId: context.job.jobId,
       runId: context.job.runId,
@@ -537,18 +544,41 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     };
   }
 
-  private async completePassed(job: AcceptedExecutionJob, stepIndex?: number): Promise<ExecutionCompletion> {
-    await this.recordStage(job.runId, stepIndex, "run_completed", { status: "passed" });
+  private passedCompletion(job: AcceptedExecutionJob): ExecutionCompletion {
     return { jobId: job.jobId, runId: job.runId, status: "passed" };
   }
 
-  private async completeBlocked(
+  private blockedCompletion(
     job: AcceptedExecutionJob,
     errorCode: string,
-    stepIndex?: number,
-  ): Promise<ExecutionCompletion> {
-    await this.recordStage(job.runId, stepIndex, "run_completed", { status: "blocked", errorCode });
+  ): ExecutionCompletion {
     return { jobId: job.jobId, runId: job.runId, status: "blocked", errorCode };
+  }
+
+  private errorCompletion(
+    job: AcceptedExecutionJob,
+    errorCode: string,
+  ): ExecutionCompletion {
+    return { jobId: job.jobId, runId: job.runId, status: "error", errorCode };
+  }
+
+  private async recordTerminal(
+    completion: ExecutionCompletion,
+    stepIndex?: number,
+  ): Promise<void> {
+    const input = terminalTraceInput(completion, stepIndex);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error("TerminalTracePersistenceFailed")),
+        this.terminalRecordingTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([this.dependencies.traceRecorder.append(input), deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
   }
 
   private async recordStage<TStage extends TraceEventInput["stage"]>(
@@ -573,9 +603,14 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
   private async withinWallClock<T>(
     runId: string,
     operation: (signal: AbortSignal) => Promise<T>,
+    externalSignal?: AbortSignal,
   ): Promise<T> {
     const remainingMs = this.budget.remainingWallClockMs(runId);
     const controller = new AbortController();
+    const operationSignal = externalSignal === undefined
+      ? controller.signal
+      : AbortSignal.any([externalSignal, controller.signal]);
+    operationSignal.throwIfAborted();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
       const checkDeadline = () => {
@@ -590,10 +625,66 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));
     });
     try {
-      return await Promise.race([operation(controller.signal), deadline]);
+      const aborted = new Promise<never>((_resolve, reject) => {
+        operationSignal.addEventListener("abort", () => reject(operationSignal.reason), { once: true });
+      });
+      return await Promise.race([operation(operationSignal), deadline, aborted]);
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
+  }
+}
+
+function completionFromError(
+  job: AcceptedExecutionJob,
+  error: unknown,
+): ExecutionCompletion | undefined {
+  if (error instanceof ExecutionTargetError) {
+    return {
+      jobId: job.jobId,
+      runId: job.runId,
+      status: error.completionStatus,
+      errorCode: error.errorCode,
+    };
+  }
+  const errorCode = error instanceof ExecutionBlockedError
+    ? error.errorCode
+    : error instanceof ExecutionBudgetError
+      ? error.code
+      : error instanceof ActionOutcomeUnknownError
+        ? error.errorCode
+        : undefined;
+  if (errorCode === undefined) return undefined;
+  const status = errorCode === "ModelUsageUnavailable" || errorCode === "ActionOutcomeUnknown"
+    ? "error"
+    : "blocked";
+  return { jobId: job.jobId, runId: job.runId, status, errorCode };
+}
+
+function terminalTraceInput(
+  completion: ExecutionCompletion,
+  stepIndex?: number,
+): TraceEventInput {
+  const base = {
+    runId: completion.runId,
+    ...(stepIndex === undefined ? {} : { stepIndex }),
+    stage: "run_completed" as const,
+  };
+  switch (completion.status) {
+    case "passed":
+      return { ...base, payload: { status: "passed" } };
+    case "finding":
+      return { ...base, payload: { status: "finding", findingId: completion.finding.findingId } };
+    case "blocked":
+      return {
+        ...base,
+        payload: {
+          status: "blocked",
+          ...(completion.errorCode === undefined ? {} : { errorCode: completion.errorCode }),
+        },
+      };
+    case "error":
+      return { ...base, payload: { status: "error", errorCode: completion.errorCode } };
   }
 }
 

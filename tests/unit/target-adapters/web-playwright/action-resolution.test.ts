@@ -5,6 +5,7 @@ import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
   PlaywrightBrowserSession,
+  WebTargetError,
   actionToken,
   isActionToken,
   type BrowserLauncher,
@@ -106,18 +107,26 @@ describe("PlaywrightActionResolver negative paths", () => {
   });
 
   it("canonicalizes an immutable navigation path against the Job target origin", async () => {
-    const resolver = new PlaywrightActionResolver(sessionWithGraph("run-1:observation:1"));
+    const session = new PlaywrightBrowserSession({
+      ...options(),
+      url: "https://example.test:443/start",
+      allowedOrigins: ["https://example.test", "https://other.test"],
+    }, noopLauncher);
+    const resolver = new PlaywrightActionResolver(session);
 
     await expect(
-      resolver.resolve(navigate("/checkout?source=plan"), graphWith("run-1:observation:1", "n-0-abcd1234")),
+      resolver.resolve(navigate("/checkout?source=plan#summary"), graphWith("run-1:observation:1", "n-0-abcd1234")),
     ).resolves.toEqual({
       targetKind: "web",
       kind: "navigate",
-      url: "https://example.test/checkout?source=plan",
+      url: "https://example.test/checkout?source=plan#summary",
     });
     await expect(
       resolver.resolve(navigate("https://other.test/checkout"), graphWith("run-1:observation:1", "n-0-abcd1234")),
     ).rejects.toMatchObject({ code: "OriginViolation" });
+    await expect(
+      resolver.resolve(navigate("https://user:pass@example.test/checkout"), graphWith("run-1:observation:1", "n-0-abcd1234")),
+    ).rejects.toMatchObject({ code: "NavigationFailed" });
   });
 
   it("preserves only fixed scroll parameters and optional current-graph grounding", async () => {
@@ -160,6 +169,48 @@ describe("PlaywrightActionResolver negative paths", () => {
 });
 
 describe("PlaywrightActionExecutor value resolution", () => {
+  it("rejects a policy-allowed origin that differs from the Job target before page.goto", async () => {
+    const goto = vi.fn(async () => undefined);
+    const session = new PlaywrightBrowserSession({
+      ...options(),
+      allowedOrigins: ["https://example.test", "https://other.test"],
+    }, noopLauncher);
+    session.withPage = async (operation) => operation({ goto, url: () => "https://example.test/" } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "navigate",
+      url: "https://other.test/checkout",
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    expect(goto).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch an action when its AbortSignal is already aborted", async () => {
+    const click = vi.fn(async () => undefined);
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({ count: async () => 1, isVisible: async () => true, isEnabled: async () => true, getAttribute: async () => null, click }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+    const abort = new AbortController();
+    abort.abort(new Error("cancelled"));
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+    }, permit, abort.signal)).rejects.toThrow("cancelled");
+    expect(click).not.toHaveBeenCalled();
+  });
+
   it("executes approved navigation and page scroll then invalidates old descriptors", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
@@ -326,5 +377,26 @@ describe("PlaywrightActionExecutor value resolution", () => {
     }, permit).catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: "ActionInfrastructureFailure" });
     expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
+  });
+
+  it.each([
+    ["BrowserLaunchFailed", "error"],
+    ["NavigationFailed", "error"],
+    ["NavigationTimedOut", "error"],
+    ["StaleObservation", "blocked"],
+    ["UnknownObservationNode", "blocked"],
+    ["TargetNotFound", "blocked"],
+    ["AmbiguousTarget", "blocked"],
+    ["OriginViolation", "blocked"],
+    ["ActionTimedOut", "blocked"],
+    ["TargetNotVisible", "blocked"],
+    ["TargetDisabled", "blocked"],
+    ["ActionValueUnavailable", "blocked"],
+    ["UnsupportedAction", "blocked"],
+    ["ConcurrentSessionOperation", "error"],
+    ["SessionClosed", "error"],
+    ["ActionInfrastructureFailure", "error"],
+  ] as const)("classifies WebTargetError %s as %s", (code, completionStatus) => {
+    expect(new WebTargetError(code)).toMatchObject({ code, completionStatus });
   });
 });

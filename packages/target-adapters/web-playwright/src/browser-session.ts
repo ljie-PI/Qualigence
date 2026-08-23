@@ -1,4 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 
 export type WebTargetErrorCode =
@@ -12,18 +13,50 @@ export type WebTargetErrorCode =
   | "OriginViolation"
   | "ActionTimedOut"
   | "ActionInfrastructureFailure"
+  | "TargetNotVisible"
+  | "TargetDisabled"
+  | "ActionValueUnavailable"
   | "UnsupportedAction"
   | "ConcurrentSessionOperation"
   | "SessionClosed";
 
-export class WebTargetError extends Error {
+export class WebTargetError extends ExecutionTargetError {
   constructor(
     readonly code: WebTargetErrorCode,
     message?: string,
   ) {
-    super(message ?? code);
+    super(code, completionStatus(code), message);
     this.name = "WebTargetError";
   }
+}
+
+function completionStatus(code: WebTargetErrorCode): ExecutionTargetErrorStatus {
+  switch (code) {
+    case "StaleObservation":
+    case "UnknownObservationNode":
+    case "TargetNotFound":
+    case "AmbiguousTarget":
+    case "OriginViolation":
+    case "ActionTimedOut":
+    case "TargetNotVisible":
+    case "TargetDisabled":
+    case "ActionValueUnavailable":
+    case "UnsupportedAction":
+      return "blocked";
+    case "BrowserLaunchFailed":
+    case "NavigationFailed":
+    case "NavigationTimedOut":
+    case "ActionInfrastructureFailure":
+    case "ConcurrentSessionOperation":
+    case "SessionClosed":
+      return "error";
+    default:
+      return assertNever(code);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled WebTargetError code: ${String(value)}`);
 }
 
 export interface WebSessionOptions {
@@ -103,6 +136,14 @@ export class PlaywrightBrowserSession {
 
   get targetUrl(): string {
     return this.options.url;
+  }
+
+  isTargetOrigin(url: string): boolean {
+    try {
+      return normalizeOrigin(url) === normalizeOrigin(this.options.url);
+    } catch {
+      return false;
+    }
   }
 
   get latestGraphId(): string | undefined {

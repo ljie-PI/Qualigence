@@ -184,14 +184,14 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(after.url).toBe(fixture.url);
   });
 
-  it("maps a blocked click to ActionTimedOut", async () => {
+  it("maps a dispatched click timeout to ActionOutcomeUnknown", async () => {
     const { observer, resolver, executor } = await wire({ actionTimeoutMs: 1_200 });
     const before = await observer.capture(job);
     const blocked = nodeNamed(before, "Blocked action");
     const action = await resolver.resolve(click(blocked.id), before);
     expect(await executor.execute(action, allowedPermit())).toEqual({
       status: "failed",
-      errorCode: "ActionTimedOut",
+      errorCode: "ActionOutcomeUnknown",
     });
   });
 

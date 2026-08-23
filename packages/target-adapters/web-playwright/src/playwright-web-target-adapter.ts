@@ -63,38 +63,47 @@ export class PlaywrightWebTargetAdapter
     await this.session.start();
   }
 
-  async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
+  async capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph> {
+    signal?.throwIfAborted();
     return this.guard(() => this.observer.capture(job));
   }
 
   resolve(
     action: ProposedAction,
     graph: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<ResolvedWebAction>;
   resolve(
     action: AnyProposedAction,
     graph: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<AnyResolvedWebAction>;
   async resolve(
     action: AnyProposedAction,
     graph: ObservationGraph,
+    signal?: AbortSignal,
   ): Promise<AnyResolvedWebAction> {
+    signal?.throwIfAborted();
     return this.guard(() => this.resolver.resolve(action, graph));
   }
 
   execute(
     action: ResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome>;
   execute(
     action: AnyResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome>;
   async execute(
     action: AnyResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome> {
-    return this.guard(() => this.executor.execute(action, permit));
+    signal?.throwIfAborted();
+    return this.guard(() => this.executor.execute(action, permit, signal));
   }
 
   async captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]> {

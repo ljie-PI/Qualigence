@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   capabilities,
   type ExecutionCompletion,
@@ -374,6 +374,68 @@ describe("LeasedJobExecutor", () => {
     expect(result.completion).toMatchObject({ errorCode: "LeaseExpired" });
     expect(executed).toBe(0);
     expect(executor.mayStartNextAction()).toBe(false);
+  });
+
+  it("propagates caller abort through a dispatched action and completes it as unknown once", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const abort = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    let markDispatched: (() => void) | undefined;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const action = vi.fn(async (_resolved, _permit, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      markDispatched?.();
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      actionExecutor: { execute: action },
+    }));
+
+    const execution = executor.execute(offer([]), new FakeSession(), abort.signal);
+    await dispatched;
+    abort.abort(new Error("shutdown"));
+    const result = await execution;
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(action).toHaveBeenCalledOnce();
+    expect(result.completion).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    const events = await spool.pending("run-1", 1, { maximumEvents: 100, maximumBytes: 1_000_000 });
+    expect(events.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+  });
+
+  it("preserves unknown action outcome when lease renewal aborts a dispatched action", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let markDispatched: (() => void) | undefined;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      renewalDelay: delay,
+      actionExecutor: {
+        execute: async (_action, _permit, signal) => {
+          markDispatched?.();
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+      },
+    }));
+    const session = new FakeSession();
+    session.renew = async () => {
+      throw new Error("LeaseLost");
+    };
+
+    const execution = executor.execute(offer([]), session);
+    await dispatched;
+    delay.release();
+    const result = await execution;
+
+    expect(result.completion).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    const events = await spool.pending("run-1", 1, { maximumEvents: 100, maximumBytes: 1_000_000 });
+    expect(events.filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 });
 

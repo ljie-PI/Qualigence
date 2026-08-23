@@ -25,7 +25,7 @@ export class RunnerOfferRuntime {
     this.createTarget = options.createTarget ?? ((targetOptions) => new PlaywrightWebTargetAdapter(targetOptions));
   }
 
-  async run(offer: ExecutionJobOffer): Promise<void> {
+  async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const admission = DeterministicRunnerPolicyGate.admitJob(offer.job);
     if (admission.status === "denied") {
       const lease = await this.options.session.accept(offer.offerId);
@@ -85,7 +85,7 @@ export class RunnerOfferRuntime {
         objectiveOnlyMaximumWallClockMs: this.options.config.actionTimeoutMs,
         objectiveOnlyMaximumModelTokens: this.options.config.model.maximumTokensPerCall,
       });
-      const result = await executor.execute(offer, this.options.session as RunnerSession);
+      const result = await executor.execute(offer, this.options.session as RunnerSession, signal);
       await new TraceUploadPump(this.options.spool, this.options.session, offer.job.runId, {
         maximumEvents: this.options.session.welcome.traceBatchMaximumEvents,
         maximumBytes: this.options.session.welcome.traceBatchMaximumBytes,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
   DeterministicExecutionBudget,
+  ExecutionTargetError,
   ExecutionRuntime,
   resolvedActionNodeId,
   toDecisionTracePayload,
@@ -71,6 +72,24 @@ describe("ExecutionRuntime", () => {
     );
   });
 
+  it("does not append a terminal when budget admission fails before execution starts", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => { throw new Error("not reached"); } },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "not reached" }),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+    });
+    const job = indexedJob();
+    job.plan.budget.maximumWallClockMs = 0;
+
+    await expect(runtime.run(job)).rejects.toMatchObject({ code: "ExecutionBudgetInvalid" });
+    expect(traceRecorder.eventsFor(job.runId)).toEqual([]);
+  });
+
   it("classifies wall-clock exhaustion before permit minting", async () => {
     let now = 0;
     let policyCalls = 0;
@@ -99,8 +118,8 @@ describe("ExecutionRuntime", () => {
     expect(policyCalls).toBe(0);
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
-      graphId: "graph-1",
-      nodes: [],
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
     });
   });
 
@@ -197,14 +216,28 @@ describe("ExecutionRuntime", () => {
       expect(completion).toEqual({
         jobId: "job-indexed",
         runId: "run-indexed",
-        status: "blocked",
-        errorCode: "WallClockBudgetExceeded",
+        status: hangingStage === "action" ? "error" : "blocked",
+        errorCode: hangingStage === "action"
+          ? "ActionOutcomeUnknown"
+          : "WallClockBudgetExceeded",
       });
       expect(aborted).toBe(true);
-      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).not.toMatchObject({
-        status: "blocked",
-        errorCode: "WallClockBudgetExceeded",
+      expect(traceRecorder.eventsFor("run-indexed").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toMatchObject({
+        status: hangingStage === "action" ? "error" : "blocked",
+        errorCode: hangingStage === "action"
+          ? "ActionOutcomeUnknown"
+          : "WallClockBudgetExceeded",
       });
+      if (hangingStage === "action") {
+        expect(traceRecorder.eventsFor("run-indexed").map((event) => event.stage)).toEqual([
+          "observation",
+          "decision",
+          "action_resolved",
+          "policy_authorized",
+          "run_completed",
+        ]);
+      }
     },
   );
 
@@ -212,6 +245,7 @@ describe("ExecutionRuntime", () => {
     vi.useFakeTimers();
     let now = 0;
     let rejectLate: ((error: Error) => void) | undefined;
+    const appended: unknown[] = [];
     const runtime = new ExecutionRuntime({
       observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
       decisionProvider: new ScriptedDecisionProvider({
@@ -224,7 +258,11 @@ describe("ExecutionRuntime", () => {
       actionExecutor: { execute: async () => ({ status: "ok" }) },
       verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
       traceRecorder: {
-        append: async () => new Promise<never>((_resolve, reject) => { rejectLate = reject; }),
+        append: async (event) => {
+          appended.push(event);
+          if (appended.length > 1) return {} as never;
+          return new Promise<never>((_resolve, reject) => { rejectLate = reject; });
+        },
       },
       budget: new DeterministicExecutionBudget({
         clock: { now: () => now },
@@ -253,9 +291,130 @@ describe("ExecutionRuntime", () => {
       status: "blocked",
       errorCode: "WallClockBudgetExceeded",
     });
+    expect(appended).toHaveLength(2);
+    expect(appended.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "WallClockBudgetExceeded" },
+    });
     rejectLate?.(new Error("late Trace rejection"));
     await Promise.resolve();
     await Promise.resolve();
+  });
+
+  it.each([
+    ["StaleObservation", "blocked"],
+    ["UnknownObservationNode", "blocked"],
+    ["TargetNotFound", "blocked"],
+    ["AmbiguousTarget", "blocked"],
+    ["OriginViolation", "blocked"],
+    ["ActionTimedOut", "blocked"],
+    ["TargetNotVisible", "blocked"],
+    ["TargetDisabled", "blocked"],
+    ["ActionValueUnavailable", "blocked"],
+    ["UnsupportedAction", "blocked"],
+    ["BrowserLaunchFailed", "error"],
+    ["NavigationFailed", "error"],
+    ["NavigationTimedOut", "error"],
+    ["ConcurrentSessionOperation", "error"],
+    ["SessionClosed", "error"],
+    ["ActionInfrastructureFailure", "error"],
+  ] as const)("maps expected target error %s to a terminal %s completion", async (errorCode, status) => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: {
+        resolve: async () => {
+          throw new ExecutionTargetError(errorCode, status);
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({ status, errorCode });
+    expect(traceRecorder.eventsFor("run-objective").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(traceRecorder.eventsFor("run-objective").at(-1)?.payload).toEqual({ status, errorCode });
+  });
+
+  it("reports terminal recorder failure deterministically without a duplicate append", async () => {
+    let terminalAppends = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: { authorize: async () => ({ status: "denied", reason: "test" }) },
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          if (event.stage === "run_completed") {
+            terminalAppends += 1;
+            throw new Error("spool unavailable");
+          }
+          return {} as never;
+        },
+      },
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toEqual({
+      jobId: "job-objective",
+      runId: "run-objective",
+      status: "error",
+      errorCode: "TerminalTracePersistenceFailed",
+    });
+    expect(terminalAppends).toBe(1);
+  });
+
+  it("bounds a hanging terminal recorder independently from an expired execution budget", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let terminalAppends = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async () => {
+          now = 1_000;
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "test" };
+        },
+      },
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          if (event.stage === "run_completed") {
+            terminalAppends += 1;
+            return new Promise<never>(() => undefined);
+          }
+          return {} as never;
+        },
+      },
+      budget: new DeterministicExecutionBudget({ clock: { now: () => now } }),
+      terminalRecordingTimeoutMs: 25,
+    });
+
+    const completion = runtime.run(indexedJob());
+    await vi.advanceTimersByTimeAsync(25);
+
+    await expect(completion).resolves.toMatchObject({
+      status: "error",
+      errorCode: "TerminalTracePersistenceFailed",
+    });
+    expect(terminalAppends).toBe(1);
   });
 
   it.each([
@@ -564,6 +723,52 @@ describe("ExecutionRuntime", () => {
     expect(traceRecorder.eventsFor(job.runId).at(-1)).toMatchObject({
       stepIndex: 0,
       payload: { status: "error", errorCode: "ActionOutcomeUnknown" },
+    });
+  });
+
+  it("preserves an explicit unknown action outcome as error", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+      resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "failed", errorCode: "ActionOutcomeUnknown" }) },
+      verifier: { verify: async () => { throw new Error("verification must not run"); } },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+    expect(traceRecorder.eventsFor("run-objective").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+  });
+
+  it("maps an expected executor target rejection but treats infrastructure loss after dispatch as unknown", async () => {
+    const run = async (error: ExecutionTargetError) => {
+      const traceRecorder = new InMemoryTraceRecorder();
+      const runtime = new ExecutionRuntime({
+        observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+        decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+        resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+        policyGate: new AllowAllRunnerPolicyGate(),
+        actionExecutor: { execute: async () => { throw error; } },
+        verifier: { verify: async () => { throw new Error("verification must not run"); } },
+        traceRecorder,
+        ...objectiveOnlyBudget,
+      });
+      return runtime.run(objectiveJob());
+    };
+
+    await expect(run(new ExecutionTargetError("TargetDisabled", "blocked"))).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "TargetDisabled",
+    });
+    await expect(run(new ExecutionTargetError("ActionInfrastructureFailure", "error"))).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
     });
   });
 
@@ -965,6 +1170,17 @@ function indexedJob() {
       expectedClaimIds: ["claim-1"] as [string],
       budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
     },
+  };
+}
+
+function objectiveJob() {
+  return {
+    jobId: "job-objective",
+    runId: "run-objective",
+    projectId: "project-test",
+    target: { kind: "web" as const, url: "https://example.test/" },
+    objective: "click",
+    policy,
   };
 }
 

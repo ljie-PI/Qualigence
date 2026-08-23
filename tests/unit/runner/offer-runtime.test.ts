@@ -5,6 +5,7 @@ import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
 const executedOffers: unknown[] = [];
+const executionSignals: Array<AbortSignal | undefined> = [];
 vi.mock("@qualigence/model-agent", () => ({
   ModelBackedDecisionProvider: class {
     constructor(_gateway: unknown, _model: string) {}
@@ -17,8 +18,9 @@ vi.mock("../../../apps/runner/src/job-executor.js", () => ({
       executorGates.push(dependencies.policyGate);
       executorCapabilities.push(dependencies.capabilities);
     }
-    async execute(offer: unknown) {
+    async execute(offer: unknown, _session: unknown, signal?: AbortSignal) {
       executedOffers.push(offer);
+      executionSignals.push(signal);
       return {
         lease: { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" },
         completion: { jobId: "job-staging", runId: "run-staging", status: "passed" as const },
@@ -171,6 +173,7 @@ describe("RunnerOfferRuntime", () => {
 
   it("passes the accepted immutable multi-step Plan unchanged to the executor", async () => {
     executedOffers.length = 0;
+    executionSignals.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target);
     const session = {
@@ -190,11 +193,13 @@ describe("RunnerOfferRuntime", () => {
       leaseDurationMs: 30_000,
     };
 
-    await runtime.run(offer);
+    const abort = new AbortController();
+    await runtime.run(offer, abort.signal);
 
     expect(executedOffers).toHaveLength(1);
     expect((executedOffers[0] as typeof offer).job).toBe(offeredJob);
     expect((executedOffers[0] as typeof offer).job.plan).toBe(plan);
+    expect(executionSignals).toEqual([abort.signal]);
   });
 
   it.each([

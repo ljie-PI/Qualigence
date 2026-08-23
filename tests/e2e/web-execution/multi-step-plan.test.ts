@@ -12,10 +12,26 @@ import type {
   ExecutionPlanStep,
   ObservationGraph,
 } from "@qualigence/runner-protocol";
+import { capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import {
+  DeterministicExecutionBudget,
+  type AgentContext,
+  type AnyProposedAction,
+  type ExecutionBudget,
+  type RunnerPolicyGate,
+} from "@qualigence/runner-kernel";
+import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
+import {
+  PlaywrightActionExecutor,
+  PlaywrightActionResolver,
+  PlaywrightBrowserSession,
+  PlaywrightObserver,
+} from "@qualigence/web-playwright/internal";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
+import { LeasedJobExecutor } from "../../../apps/runner/src/job-executor.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import {
   htmlDocument,
@@ -218,6 +234,325 @@ describe("bounded multi-step production Web Runtime", () => {
     expect(serializedEvidence).not.toContain(COUNTRY);
   }, 60_000);
 });
+
+describe("bounded multi-step Chromium failure classifications", () => {
+  it.each([
+    {
+      name: "stale descriptor after DOM change",
+      html: '<button aria-label="Continue">Continue</button>',
+      steps: [
+        { stepIndex: 0, kind: "click", target: { role: "button", name: "Continue", purpose: "continue" } },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("click", "Continue"),
+      policyGate: (session: PlaywrightBrowserSession): RunnerPolicyGate => ({
+        authorize: async () => {
+          await session.withPage(async (page) => {
+            await page.locator("button").evaluate("element => element.remove()");
+          });
+          return { status: "allowed", reason: "test" };
+        },
+      }),
+      expectedStatus: "blocked",
+      errorCode: "TargetNotFound",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "cross-origin navigation",
+      html: "<p>Start</p>",
+      steps: [
+        { stepIndex: 0, kind: "navigate", path: "https://other.test/checkout" },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: stepDecision,
+      allowedOrigins: (origin: string) => [origin, "https://other.test"],
+      expectedStatus: "blocked",
+      errorCode: "OriginViolation",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "disabled input",
+      html: '<label>Email <input aria-label="Email" disabled /></label>',
+      steps: [
+        { stepIndex: 0, kind: "input", target: { role: "textbox", name: "Email", purpose: "enter email" }, valueRef: "profile.email" },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("input", "Email", "profile.email"),
+      valueProvider: { resolve: async () => EMAIL },
+      expectedStatus: "blocked",
+      errorCode: "TargetDisabled",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "missing valueRef",
+      html: '<label>Email <input aria-label="Email" /></label>',
+      steps: [
+        { stepIndex: 0, kind: "input", target: { role: "textbox", name: "Email", purpose: "enter email" }, valueRef: "profile.missing" },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("input", "Email", "profile.missing"),
+      valueProvider: { resolve: async () => { throw new Error("missing"); } },
+      expectedStatus: "blocked",
+      errorCode: "ActionValueUnavailable",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "step budget",
+      html: "<p>Start</p>",
+      routes: { "/next": "<p>Next</p>" },
+      steps: [
+        { stepIndex: 0, kind: "navigate", path: "/next" },
+        { stepIndex: 1, kind: "navigate", path: "/later" },
+      ],
+      decide: stepDecision,
+      budgetLimits: { maximumStepsPerJob: 1, maximumWallClockMs: 10_000, maximumModelTokens: 100 },
+      expectedStatus: "blocked",
+      errorCode: "StepBudgetExceeded",
+      failureStepIndex: 1,
+      expectedDecisions: 1,
+    },
+    {
+      name: "wall budget",
+      html: '<button aria-label="Continue">Continue</button>',
+      steps: [
+        { stepIndex: 0, kind: "click", target: { role: "button", name: "Continue", purpose: "continue" } },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("click", "Continue"),
+      budgetFactory: (clock: { now: number }): ExecutionBudget => new DeterministicExecutionBudget({
+        clock: { now: () => clock.now },
+      }),
+      afterDecision: (clock: { now: number }) => { clock.now = 10; },
+      budgetLimits: { maximumStepsPerJob: 2, maximumWallClockMs: 10, maximumModelTokens: 100 },
+      expectedStatus: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "model budget",
+      html: '<button aria-label="Continue">Continue</button>',
+      steps: [
+        { stepIndex: 0, kind: "click", target: { role: "button", name: "Continue", purpose: "continue" } },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: async (context: AgentContext) => {
+        context.budget?.consumeModelUsage(context.job.runId, { totalTokens: 2 });
+        return nodeDecision("click", "Continue")(context);
+      },
+      budgetLimits: { maximumStepsPerJob: 2, maximumWallClockMs: 10_000, maximumModelTokens: 1 },
+      expectedStatus: "blocked",
+      errorCode: "ModelBudgetExceeded",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+  ] satisfies readonly BrowserFailureCase[])(
+    "$name is terminal and does not execute a later step",
+    async (testCase) => {
+      const result = await runBrowserFailure(testCase);
+
+      expect(result.completion).toMatchObject({
+        status: testCase.expectedStatus,
+        errorCode: testCase.errorCode,
+      });
+      expect(result.leaseCompletions).toEqual([result.completion]);
+      expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+      expect(result.trace.at(-1)).toMatchObject({
+        stage: "run_completed",
+        stepIndex: testCase.failureStepIndex,
+        payload: { status: testCase.expectedStatus, errorCode: testCase.errorCode },
+      });
+      expect(result.trace.some((event) =>
+        event.stage !== "run_completed" &&
+        event.stepIndex !== undefined &&
+        event.stepIndex >= testCase.failureStepIndex + 1)).toBe(false);
+      expect(result.decisions).toBe(testCase.expectedDecisions);
+    },
+    60_000,
+  );
+});
+
+type PlanSteps = readonly [ExecutionPlanStep, ...ExecutionPlanStep[]];
+
+interface BrowserFailureCase {
+  readonly name: string;
+  readonly html: string;
+  readonly routes?: Readonly<Record<string, string>>;
+  readonly steps: PlanSteps;
+  readonly decide: (context: AgentContext) => Promise<AnyProposedAction>;
+  readonly policyGate?: (session: PlaywrightBrowserSession) => RunnerPolicyGate;
+  readonly valueProvider?: { resolve(valueRef: string): Promise<string> };
+  readonly allowedOrigins?: (origin: string) => readonly string[];
+  readonly budgetLimits?: {
+    readonly maximumStepsPerJob: number;
+    readonly maximumWallClockMs: number;
+    readonly maximumModelTokens: number;
+  };
+  readonly budgetFactory?: (clock: { now: number }) => ExecutionBudget;
+  readonly afterDecision?: (clock: { now: number }) => void;
+  readonly expectedStatus: "blocked" | "error";
+  readonly errorCode: string;
+  readonly failureStepIndex: number;
+  readonly expectedDecisions: number;
+}
+
+async function runBrowserFailure(testCase: BrowserFailureCase) {
+  fixture = await startFixtureServer({
+    "/": htmlDocument(testCase.html, testCase.name),
+    ...(testCase.routes ?? {}),
+  });
+  const root = await mkdtemp(join(tmpdir(), "qualigence-ticket19-failure-"));
+  roots.push(root);
+  spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "runner-spool.db") });
+  const session = new PlaywrightBrowserSession({
+    url: fixture.url,
+    headed: false,
+    navigationTimeoutMs: 10_000,
+    actionTimeoutMs: 5_000,
+    allowedOrigins: testCase.allowedOrigins?.(fixture.origin) ?? [fixture.origin],
+  });
+  try {
+    await session.start();
+  } catch (error) {
+    if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+      throw new Error("ChromiumUnavailable", { cause: error });
+    }
+    throw error;
+  }
+
+  const clock = { now: 0 };
+  let decisions = 0;
+  const leaseCompletions: ExecutionCompletion[] = [];
+  const lease: ExecutionJobLease = {
+    jobId: `job-${testCase.name}`,
+    runId: `run-${testCase.name}`,
+    leaseToken: `lease-${testCase.name}`,
+    leaseEpoch: 1,
+    expiresAt: "2099-08-22T00:00:00.000Z",
+  };
+  const runnerSession: RunnerSession = {
+    welcome: {
+      sessionId: "session-failure",
+      resumeToken: "resume-failure",
+      selectedProtocolMajor: 1,
+      serverVersion: "test",
+      heartbeatIntervalMs: 10_000,
+      leaseDurationMs: 60_000,
+      traceBatchMaximumEvents: 100,
+      traceBatchMaximumBytes: 1_000_000,
+      maximumInFlightBatches: 1,
+      maximumPendingWriteBytes: 1_000_000,
+    },
+    nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+    accept: async () => lease,
+    renew: async () => lease,
+    submit: async (batch) => ({
+      batchId: batch.batchId,
+      runId: batch.runId,
+      nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+    }),
+    complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => {
+      leaseCompletions.push(completion);
+    },
+    close: async () => undefined,
+  };
+  const observer = new PlaywrightObserver(session);
+  const resolver = new PlaywrightActionResolver(session);
+  const actionExecutor = new PlaywrightActionExecutor(session, testCase.valueProvider);
+  const executor = new LeasedJobExecutor({
+    observer,
+    resolver,
+    actionExecutor,
+    decisionProvider: {
+      decide: async (context) => {
+        decisions += 1;
+        const decision = await testCase.decide(context);
+        testCase.afterDecision?.(clock);
+        return decision as never;
+      },
+    },
+    policyGate: testCase.policyGate?.(session) ?? new AllowAllRunnerPolicyGate(),
+    verifier: { verify: async () => { throw new Error("later verification must not run"); } },
+    spool,
+    capabilities: capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["navigate", "click", "input", "select", "scroll"],
+    }),
+    actionDeadlineSafetyMarginMs: 0,
+    ...(testCase.budgetFactory === undefined ? {} : { budget: testCase.budgetFactory(clock) }),
+  });
+  const budget = testCase.budgetLimits ?? {
+    maximumStepsPerJob: testCase.steps.length,
+    maximumWallClockMs: 10_000,
+    maximumModelTokens: 100,
+  };
+  const offer: ExecutionJobOffer = {
+    offerId: `offer-${testCase.name}`,
+    job: {
+      jobId: lease.jobId,
+      runId: lease.runId,
+      projectId: "project-ticket-19",
+      target: { kind: "web", url: fixture.url },
+      objective: testCase.name,
+      policy: {
+        policyId: `policy-${testCase.name}`,
+        environment: "isolated_test",
+        allowedOrigins: testCase.allowedOrigins?.(fixture.origin) ?? [fixture.origin],
+        allowedActionKinds: ["navigate", "click", "input", "select", "scroll"],
+        maximumRisk: "ExternalSideEffect",
+        explorationAllowed: false,
+        issuedAt: "2026-08-22T00:00:00.000Z",
+        expiresAt: "2099-08-22T00:00:00.000Z",
+      },
+      plan: {
+        missionId: "mission-ticket-19",
+        missionRevision: 1,
+        testCaseId: `case-${testCase.name}`,
+        steps: testCase.steps,
+        expectedClaimIds: ["claim-later"],
+        budget,
+      },
+    },
+    requiredCapabilities: [],
+    leaseDurationMs: 60_000,
+  };
+
+  try {
+    const result = await executor.execute(offer, runnerSession);
+    await runnerSession.complete(result.lease, result.completion);
+    const trace = await spool.pending(lease.runId, 1, {
+      maximumEvents: 100,
+      maximumBytes: 1_000_000,
+    });
+    return { completion: result.completion, leaseCompletions, trace, decisions };
+  } finally {
+    await session.close();
+  }
+}
+
+function nodeDecision(
+  kind: "click" | "input",
+  name: string,
+  valueRef?: string,
+): (context: AgentContext) => Promise<AnyProposedAction> {
+  return async (context) => {
+    const node = context.observation.nodes.find((candidate) => candidate.name === name);
+    if (node === undefined) throw new Error(`Missing ${name} node.`);
+    return kind === "input"
+      ? { kind, target: { nodeId: node.id }, valueRef: valueRef!, reason: "ground input" }
+      : { kind, target: { nodeId: node.id }, reason: "ground click" };
+  };
+}
+
+async function stepDecision(context: AgentContext): Promise<AnyProposedAction> {
+  const step = context.step;
+  if (step?.kind !== "navigate") throw new Error("Expected navigation step.");
+  return { kind: "navigate", path: step.path, reason: "follow approved path" };
+}
 
 function offer(): ExecutionJobOffer {
   const steps = [

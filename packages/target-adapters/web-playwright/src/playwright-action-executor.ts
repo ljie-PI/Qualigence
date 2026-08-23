@@ -8,7 +8,6 @@ import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
   WebTargetError,
-  isOriginAllowed,
 } from "./browser-session.js";
 import { locatorFor } from "./action-locator.js";
 import { isActionToken } from "./action-token.js";
@@ -35,15 +34,19 @@ export class PlaywrightActionExecutor implements ActionExecutor {
   execute(
     action: ResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome>;
   execute(
     action: AnyResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome>;
   async execute(
     action: AnyResolvedAction,
     permit: ExecutionPermit,
+    signal?: AbortSignal,
   ): Promise<ActionOutcome> {
+    signal?.throwIfAborted();
     if (!(permit instanceof ExecutionPermit)) {
       throw new WebTargetError(
         "ConcurrentSessionOperation",
@@ -58,23 +61,25 @@ export class PlaywrightActionExecutor implements ActionExecutor {
     }
 
     if (action.kind === "navigate") {
-      if (!this.session.allowedOrigins.includes(new URL(action.url).origin)) {
+      if (!this.session.isTargetOrigin(action.url)) {
         return { status: "failed", errorCode: "OriginViolation" };
       }
       this.session.invalidateObservations();
       return this.session.withPage(async (page) => {
+        signal?.throwIfAborted();
         try {
           await page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: this.session.navigationTimeoutMs,
           });
         } catch (error) {
+          signal?.throwIfAborted();
           const message = error instanceof Error ? error.message : String(error);
-          if (/timeout/i.test(message)) return { status: "failed", errorCode: "ActionTimedOut" };
+          if (/timeout/i.test(message)) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           if (isInfrastructureFailure(message)) throw new WebTargetError("ActionInfrastructureFailure");
           return { status: "failed", errorCode: "ActionFailed" };
         }
-        return isOriginAllowed(page.url(), this.session.allowedOrigins)
+        return this.session.isTargetOrigin(page.url())
           ? { status: "ok" }
           : { status: "failed", errorCode: "OriginViolation" };
       });
@@ -85,6 +90,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       }
       this.session.invalidateObservations();
       return this.session.withPage(async (page) => {
+        signal?.throwIfAborted();
         const distance = action.amount === "page" ? 1 : 0.25;
         await page.evaluate(
           ({ direction, distance }) => {
@@ -122,6 +128,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
 
     this.session.invalidateObservations();
     return this.session.withPage(async (page): Promise<ActionOutcome> => {
+      signal?.throwIfAborted();
       const locator = locatorFor(page, descriptor);
 
       const count = await locator.count();
@@ -148,7 +155,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         }
         if (
           destinationOrigin !== undefined &&
-          !this.session.allowedOrigins.includes(destinationOrigin)
+          !this.session.isTargetOrigin(destinationOrigin)
         ) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
@@ -165,6 +172,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           } catch {
             return { status: "failed", errorCode: "ActionValueUnavailable" };
           }
+          signal?.throwIfAborted();
           this.session.registerSensitiveValue(value);
           if (action.kind === "input") {
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
@@ -192,17 +200,18 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }
       } catch (error) {
+        signal?.throwIfAborted();
         const message = error instanceof Error ? error.message : String(error);
         if (isInfrastructureFailure(message)) {
           throw new WebTargetError("ActionInfrastructureFailure");
         }
         if (/timeout/i.test(message)) {
-          return { status: "failed", errorCode: "ActionTimedOut" };
+          return { status: "failed", errorCode: "ActionOutcomeUnknown" };
         }
         return { status: "failed", errorCode: "ActionFailed" };
       }
 
-      if (!isOriginAllowed(page.url(), this.session.allowedOrigins)) {
+      if (!this.session.isTargetOrigin(page.url())) {
         return { status: "failed", errorCode: "OriginViolation" };
       }
 

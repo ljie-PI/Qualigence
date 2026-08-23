@@ -14,6 +14,12 @@ Ticket 18 formal-blocker scope amendment (2026-08-21) additionally includes
 `tests/unit/runner-kernel/deterministic-policy-gate.test.ts` for Web input/select
 risk classification and pre-side-effect policy-denial coverage only.
 
+Ticket 19 formal-review scope amendment (2026-08-23):
+`tests/unit/runner/job-executor.test.ts` is added as the exact existing core
+caller test needed to prove caller/lease abort propagation into a dispatched
+action and non-replayable `ActionOutcomeUnknown`. No broader Runner behavior is
+transferred into Ticket 19.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -373,6 +379,8 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 component: complete
 production_wiring: present
 verification: pending dedicated PR, scoped review, and Chromium acceptance
+review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
+review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
   select, scroll, and verify steps sequentially. Every planned Trace stage,
@@ -411,6 +419,27 @@ verification: pending dedicated PR, scoped review, and Chromium acceptance
   plaintext absence from model requests, logs, submitted/pre-ACK Trace, and raw
   spool bytes. Per authority, it was not run before scoped review. No full suite
   or implementation review was run.
+- Formal core-review remediation makes terminal Trace emission a single
+  Runtime-owned operation outside the already-expired execution budget, bounded
+  by an independent five-second recorder timeout. Failure returns deterministic
+  `TerminalTracePersistenceFailed` without retrying the append. Wall deadline,
+  caller abort, lease abort, Playwright timeout, or target loss after action
+  dispatch returns `ActionOutcomeUnknown`; no later step or automatic action
+  replay occurs.
+- Expected Playwright resolver/executor failures are exhaustively classified:
+  stale/changed/missing/ambiguous/hidden/disabled targets, cross-origin, missing
+  values, action timeout, and unsupported actions become stable blocked/error
+  completions; unexpected non-action failures may still throw. Explicit
+  navigation is canonicalized against the Job target protocol/host/port, not a
+  broader policy allowlist, and credentials remain rejected while fragments are
+  preserved.
+- Production abort propagation now runs from Runner shutdown through
+  `RunnerOfferRuntime`, `LeasedJobExecutor`, Runtime, and the Playwright adapter
+  to the action call. The formal-review focused Gate passed 10 files / 154 tests
+  with 1 pre-existing Task 21 skip; the added core caller file passed 9 tests.
+  Root `corepack pnpm typecheck` and `git diff --check` passed. The Chromium
+  acceptance now contains 1 success plus 7 required failure variants and remains
+  deliberately not run until the fresh exact-base review is clean.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
