@@ -200,6 +200,24 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(goto).not.toHaveBeenCalled();
   });
 
+  it("retains OriginViolation when page.goto reaches another origin before throwing", async () => {
+    let currentUrl = "https://example.test/";
+    const goto = vi.fn(async () => {
+      currentUrl = "https://other.test/checkout";
+      throw new Error("navigation timeout");
+    });
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.withPage = async (operation) => operation({ goto, url: () => currentUrl } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "navigate",
+      url: "https://example.test/checkout",
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    expect(goto).toHaveBeenCalledOnce();
+  });
+
   it("rejects a malformed link destination before click", async () => {
     const click = vi.fn(async () => undefined);
     const graphId = "run-1:observation:1";
@@ -252,6 +270,75 @@ describe("PlaywrightActionExecutor value resolution", () => {
       graphId,
     }, permit, abort.signal)).rejects.toThrow("cancelled");
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it("re-proves descriptor identity immediately before the element side effect", async () => {
+    const click = vi.fn(async () => undefined);
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Add" };
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => {
+          session.registerObservation(graphId, {
+            descriptors: new Map([[nodeId, { ...descriptor }]]),
+            artifacts: [],
+          });
+          return true;
+        },
+        getAttribute: async () => null,
+        click,
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "StaleObservation" });
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("retains OriginViolation when an element action crosses origin before throwing", async () => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    let currentUrl = "https://example.test/";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: async () => {
+          currentUrl = "https://other.test/";
+          throw new Error("action timeout");
+        },
+      }),
+      url: () => currentUrl,
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
   });
 
   it("executes approved navigation and page scroll then invalidates old descriptors", async () => {

@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AcceptedExecutionJob,
   ObservationGraph,
   ObservationNode,
 } from "@qualigence/runner-protocol";
-import { ExecutionPermit, ExecutionRuntime, type ProposedAction } from "@qualigence/runner-kernel";
+import {
+  ExecutionPermit,
+  ExecutionRuntime,
+  type AnyProposedAction,
+  type ProposedAction,
+} from "@qualigence/runner-kernel";
 import { InMemoryTraceStore, TraceIngestor } from "@qualigence/evidence";
 import { InMemoryProtocolTraceRecorder } from "@qualigence/in-memory-runner-protocol";
 import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
@@ -13,6 +18,8 @@ import {
   PlaywrightActionResolver,
   PlaywrightBrowserSession,
   PlaywrightObserver,
+  type BrowserLauncher,
+  type LocatorDescriptor,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -30,6 +37,24 @@ function click(nodeId: string): ProposedAction {
 
 function valued(kind: "input" | "select", nodeId: string, valueRef: string) {
   return { kind, target: { nodeId }, valueRef, reason: "component test" } as const;
+}
+
+function elementAction(kind: "click" | "input" | "select" | "scroll", nodeId: string): AnyProposedAction {
+  switch (kind) {
+    case "click":
+      return click(nodeId);
+    case "input":
+    case "select":
+      return valued(kind, nodeId, `value.${kind}`);
+    case "scroll":
+      return {
+        kind: "scroll",
+        target: { nodeId },
+        direction: "down",
+        amount: "small",
+        reason: "component test",
+      };
+  }
 }
 
 function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
@@ -272,4 +297,168 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serializedVerifierContext).not.toContain(secret);
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
   });
+
+  it.each(["click", "input", "select", "scroll"] as const)(
+    "blocks %s before its page side effect when the page silently leaves the observed origin",
+    async (kind) => {
+      const sideEffects = {
+        click: vi.fn(async () => undefined),
+        fill: vi.fn(async () => undefined),
+        selectOption: vi.fn(async () => undefined),
+        scroll: vi.fn(async () => undefined),
+      };
+      const graphId = `run-origin-${kind}:observation:1`;
+      const nodeId = "n-0-matching";
+      const descriptor: LocatorDescriptor = {
+        kind: "role",
+        role: kind === "input" ? "textbox" : kind === "select" ? "combobox" : "button",
+        name: "Matching control",
+      };
+      const graph: ObservationGraph = {
+        graphId,
+        url: fixture.url,
+        nodes: [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }],
+      };
+      let currentUrl = fixture.url;
+      session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, descriptor]]),
+        artifacts: [],
+      });
+      session.withPage = async (operation) => operation({
+        url: () => currentUrl,
+        getByRole: () => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          getAttribute: async () => null,
+          click: sideEffects.click,
+          fill: sideEffects.fill,
+          selectOption: sideEffects.selectOption,
+          evaluate: sideEffects.scroll,
+        }),
+      } as never);
+      const traces = new InMemoryTraceStore();
+      const proposed = elementAction(kind, nodeId);
+      const runtime = new ExecutionRuntime({
+        observer: { capture: async () => graph },
+        decisionProvider: { decide: async () => proposed as never },
+        resolver: new PlaywrightActionResolver(session),
+        policyGate: {
+          authorize: async () => {
+            currentUrl = cross.url;
+            return { status: "allowed", reason: "simulate an unobserved navigation" };
+          },
+        },
+        actionExecutor: new PlaywrightActionExecutor(session, { resolve: async () => "private-value" }),
+        verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
+        traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      });
+      const result = await runtime.run({
+        ...job,
+        jobId: `job-origin-${kind}`,
+        runId: `run-origin-${kind}`,
+        target: { kind: "web", url: fixture.url },
+        plan: {
+          missionId: "mission-origin",
+          missionRevision: 1,
+          testCaseId: `case-${kind}`,
+          steps: [{ stepIndex: 0, ...elementPlanStep(kind) }],
+          expectedClaimIds: ["claim-origin"],
+          budget: { maximumStepsPerJob: 1, maximumWallClockMs: 5_000, maximumModelTokens: 100 },
+        },
+      });
+
+      expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+      expect(sideEffects.click).not.toHaveBeenCalled();
+      expect(sideEffects.fill).not.toHaveBeenCalled();
+      expect(sideEffects.selectOption).not.toHaveBeenCalled();
+      expect(sideEffects.scroll).not.toHaveBeenCalled();
+      expect(traces.eventsFor(`run-origin-${kind}`).filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    },
+  );
+
+  it.each(["click", "input", "select", "scroll"] as const)(
+    "allows %s when the page remains on the observed target origin",
+    async (kind) => {
+      const sideEffect = vi.fn(async () => undefined);
+      const graphId = `run-same-origin-${kind}:observation:1`;
+      const nodeId = "n-0-matching";
+      const descriptor: LocatorDescriptor = {
+        kind: "role",
+        role: kind === "input" ? "textbox" : kind === "select" ? "combobox" : "button",
+        name: "Matching control",
+      };
+      const graph: ObservationGraph = {
+        graphId,
+        url: fixture.url,
+        nodes: [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }],
+      };
+      session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, descriptor]]),
+        artifacts: [],
+      });
+      session.withPage = async (operation) => operation({
+        url: () => fixture.url,
+        getByRole: () => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          getAttribute: async () => null,
+          click: sideEffect,
+          fill: sideEffect,
+          selectOption: sideEffect,
+          evaluate: sideEffect,
+        }),
+      } as never);
+      const proposed = elementAction(kind, nodeId);
+      const runtime = new ExecutionRuntime({
+        observer: {
+          capture: async () => {
+            session.registerObservation(graphId, {
+              descriptors: new Map([[nodeId, descriptor]]),
+              artifacts: [],
+            });
+            return graph;
+          },
+        },
+        decisionProvider: { decide: async () => proposed as never },
+        resolver: new PlaywrightActionResolver(session),
+        policyGate: new AllowAllRunnerPolicyGate(),
+        actionExecutor: new PlaywrightActionExecutor(session, { resolve: async () => "private-value" }),
+        verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
+        traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(new InMemoryTraceStore())),
+      });
+
+      await expect(runtime.run({
+        ...job,
+        jobId: `job-same-origin-${kind}`,
+        runId: `run-same-origin-${kind}`,
+        target: { kind: "web", url: fixture.url },
+        plan: {
+          missionId: "mission-origin",
+          missionRevision: 1,
+          testCaseId: `case-${kind}`,
+          steps: [{ stepIndex: 0, ...elementPlanStep(kind) }],
+          expectedClaimIds: ["claim-origin"],
+          budget: { maximumStepsPerJob: 1, maximumWallClockMs: 5_000, maximumModelTokens: 100 },
+        },
+      })).resolves.toMatchObject({ status: "passed" });
+      expect(sideEffect).toHaveBeenCalledOnce();
+    },
+  );
 });
+
+function elementPlanStep(kind: "click" | "input" | "select" | "scroll") {
+  const target = { role: "control", purpose: "exercise origin guard" };
+  switch (kind) {
+    case "click":
+      return { kind, target } as const;
+    case "input":
+    case "select":
+      return { kind, target, valueRef: `value.${kind}` } as const;
+    case "scroll":
+      return { kind, target, direction: "down", amount: "small" } as const;
+  }
+}
