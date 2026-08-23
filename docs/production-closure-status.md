@@ -56,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 final observation-origin product head is `878ba4e9b44c28b259c8551f9d7d92e8be527fcc`; E2E awaits fresh coordinator review |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 final observation-origin product head is `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb`; E2E awaits fresh coordinator review |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -450,7 +450,7 @@ component: complete
 production_wiring: present
 verification: passed; pending dedicated PR merge
 final_core_blocker_product_head: `8fab60237c528a46623d8f341cc24c7c1714a1dd`
-final_observation_origin_product_head: `878ba4e9b44c28b259c8551f9d7d92e8be527fcc`
+final_observation_origin_product_head: `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb`
 final_status_commit: same commit as this ledger entry
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
@@ -459,10 +459,10 @@ core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
 core_blocker_fix_commit: same commit as this ledger entry
 dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
 dispatch_authority_fix_commit: same commit as this ledger entry
-implementation_head: `878ba4e9b44c28b259c8551f9d7d92e8be527fcc`
+implementation_head: `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb`
 reviewed_head: `b4cddef580919332fea577ab51d955703e4e8b43`
 chromium_e2e_head: `b4cddef580919332fea577ab51d955703e4e8b43`
-branch_commit_count: 24 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 26 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -632,7 +632,7 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
   or artifact and invokes no later action. Controlled redirects during DOM
   collection and before artifact return also fail closed; same-origin path
   changes continue. The final Ticket 19 non-E2E Gate at product head
-  `878ba4e9b44c28b259c8551f9d7d92e8be527fcc` passed 13 files / 270 tests with 1
+  `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb` passed 13 files / 270 tests with 1
   pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. E2E was not rerun and remains gated on fresh review.
 
