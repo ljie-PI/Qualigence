@@ -198,25 +198,71 @@ Every ticket is delivered from its own isolated branch/worktree through exactly
 one dedicated pull request. Never combine multiple tickets in one PR. Parallel
 implementation is permitted only when branches/worktrees and Files scopes are
 isolated; changes to shared contracts, protocols, authority, or status merge
-serially. A local commit, clean review, or passing E2E does not complete a
-ticket. Before merge, production status records the PR URL, implementation and
-review heads, Gates, review, and applicable E2E. GitHub PR metadata plus the
-final exact-head review identify the final head without a self-referential
-status commit. The ticket remains `claimed` until its PR is merged.
+serially. Keep the branch local while implementation, review fixes, and E2E are
+in progress. Create one non-draft PR only after the focused Gate, typecheck,
+diff check, complete-matrix review, required E2E, and final status evidence are
+clean. Verify the remote PR head/diff equal that reviewed head, then merge
+directly after required remote checks. The PR head may add one final
+documentation-only evidence commit after the reviewed code head; its code/test
+diff must remain byte-identical to the reviewed code/test diff. A local commit,
+clean review, or passing E2E does not complete a ticket. The ticket remains
+`claimed` until its PR is merged.
 After merge, record the PR URL and merge commit in the ignored local ticket,
 set it to `resolved`, delete the remote and local ticket branches, and remove
 the ticket worktree before starting dependent work. Do not create a second
 closure PR solely to record the merge SHA.
 
+Before production edits, stateful/side-effecting/concurrent/retrying/timeout or
+terminal work freezes a behavior matrix in the local ticket under
+`## Behavior Matrix`, with columns: scenario/precondition,
+side-effect boundary (`not_started | started | outcome_unknown`), public result,
+durable state, retry/replay rule, and terminal evidence. Cover applicable
+success, validation/auth/policy/capability rejection, timeout/cancel before and
+after dispatch, unknown outcome, duplicate/conflicting replay, concurrency/
+restart, and terminal-persistence failure. Mark inapplicable rows `N/A` with a
+reason. Docs-only, static mapping, and simple leaf changes may mark the matrix
+`N/A`. The tracked `start` ledger entry records matrix applicability and points
+to the local ticket.
+
 For every ticket, implementation and review fixes run only the focused
 non-E2E Gate in the table, `corepack pnpm typecheck`, and `git diff --check`.
-Commit before a scoped exact-base Standards and Spec review. Provision external
-E2E only after that review reports no Critical or Important findings. A code
-change after E2E requires affected focused tests and a fresh review before E2E
-is rerun. Stop after five review rounds; unresolved Critical/Important findings
-create a ready-for-agent remediation ticket, block dependents, set the original
-ticket to `needs-info`, and move to another independent frontier. Ticket 01 is
-docs-only and runs no product E2E.
+Commit before a scoped exact-base Standards and Spec review. Every review round
+covers the whole ticket diff and every applicable behavior-matrix row, not only
+the previous report. The report includes `Behavior Matrix Coverage`, listing
+every row as `pass | finding | N/A`, each `N/A` reason, and the reviewed head.
+Append round number, reviewed head, and core findings to the local ticket; a
+documentation-only commit is not a review round. Provision external E2E only
+after no core Critical or Important findings remain. A code change after E2E
+requires affected focused tests and a fresh complete-matrix review before E2E
+is rerun.
+
+A core blocker violates explicit acceptance, an applicable existing architecture
+or security invariant, a public/persisted contract, a required existing Gate, or
+the primary workflow's correctness/data integrity. Advanced hardening adds a new
+threat model, environment, or defense-in-depth requirement beyond that authority;
+every Critical finding is a core blocker regardless of classification. Only
+non-Critical advanced hardening is non-blocking unless the user explicitly
+promotes it. After at most five
+review rounds, a remaining core blocker sets the original ticket to `needs-info`,
+blocks dependents, and requires a maintainer scope/ownership decision. Do not
+create recursive remediation tickets. Record non-blocking advanced hardening as
+a GitHub follow-up Issue linked to the fixed/reviewed head and source branch/PR,
+and do not implement it in the current ticket.
+
+`docs/production-closure-status.md` may change in at most three commits for one
+ticket: `start` (including the matrix pointer), optional `blocked`, and `final`.
+The final status-only commit follows clean code review and E2E. Never append one
+ledger entry per review round or finding. Documentation-only tickets/commits do
+not run `/code-review`, do not count as review rounds, and do not run product
+E2E; verify consistency, authority/reference coverage, and `git diff --check`.
+A commit mixing code/tests and docs follows the normal code-review protocol.
+Ticket 01 is docs-only.
+
+Do not split by a fixed number of files or contexts. Split only at stable seams
+where each ticket is independently valid/testable and no invalid intermediate
+production state is created. Keep an end-to-end cross-context vertical slice
+together when its invariant spans those contexts, and read/review every selected
+context.
 
 ### Ticket Files and focused Gates
 

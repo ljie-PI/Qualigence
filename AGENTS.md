@@ -4,7 +4,7 @@
 
 ### Issue Tracker
 
-Issues and specs live as Local Markdown under `.scratch/<feature>/`. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
+Implementation issues and specs live as Local Markdown under `.scratch/<feature>/`; deferred advanced-hardening review findings use GitHub Issues. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
 
 ### Triage Labels
 
@@ -22,4 +22,8 @@ Before editing code, inspect the surrounding module and its callers, adapters, t
 
 Before a closure task, read `docs/superpowers/plans/2026-08-16-production-closure-temporary.md` sections **Status and authority**, **Global Constraints**, **Current execution state**, and **Dependency order**, the complete selected Task, and its cited architecture sections. The coordinator or reviewer owns later Task dependencies and plan changes.
 
-For a pull request, run the documented focused Gate, `corepack pnpm typecheck`, and `git diff --check`. Run `/code-review` against the exact merge-base after the final commit. A Critical or Important finding blocks the dependent task until a new fix commit passes the affected Gates and a fresh review.
+For stateful, side-effecting, concurrent, retrying, timeout-sensitive, or terminal work, freeze the applicable behavior matrix in the local ticket before editing; simple docs/static/leaf work may mark it `N/A`. Every `/code-review` round covers the complete matrix and whole code/test diff and reports every row as `pass | finding | N/A`.
+
+Create the non-draft pull request only after the documented focused Gate, `corepack pnpm typecheck`, `git diff --check`, complete-matrix `/code-review`, required E2E, and final status evidence are clean. The PR may add one final documentation-only evidence commit after the reviewed code head; verify its code/test diff is unchanged, then merge directly after required checks. Documentation-only tickets/commits do not run `/code-review` or product E2E; verify document consistency, authority/reference coverage, and `git diff --check`.
+
+Critical findings always block. Important findings block only when they violate explicit acceptance, an applicable existing architecture/security invariant, a public/persisted contract, a required Gate, or primary-workflow correctness/data integrity. Record non-Critical advanced hardening as a deferred GitHub Issue and do not implement it in the current ticket unless the user promotes it.
