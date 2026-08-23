@@ -464,17 +464,26 @@ describe("RunnerOfferRuntime", () => {
     executorCapabilities.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target) as never;
-    const session = { accept: vi.fn(async () => ({ ...STARTUP_LEASE, jobId: "job-staging", runId: "run-staging" })), renew: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
-    const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
-    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
-    await runtime.run({
+    const offer = {
       offerId: "offer-staging",
       job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "HTTPS://STAGING.example.test:443/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
       requiredCapabilities: [], leaseDurationMs: 30_000,
-    } as never);
+    };
+    const session = {
+      accept: vi.fn(async () => {
+        offer.job.target.url = "https://other.test/changed-after-accept";
+        return { ...STARTUP_LEASE, jobId: "job-staging", runId: "run-staging" };
+      }),
+      renew: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(),
+      welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 },
+    };
+    const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
+    const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
+    await runtime.run(offer as never);
     expect((createTarget as unknown as {
-      mock: { calls: Array<readonly [{ readonly allowedOrigins: readonly string[]; readonly expectedOrigin: string }]> };
+      mock: { calls: Array<readonly [{ readonly url: string; readonly allowedOrigins: readonly string[]; readonly expectedOrigin: string }]> };
     }).mock.calls[0]?.[0]).toMatchObject({
+      url: "HTTPS://STAGING.example.test:443/",
       allowedOrigins: ["https://staging.example.test"],
       expectedOrigin: "https://staging.example.test",
     });

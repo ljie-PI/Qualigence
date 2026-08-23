@@ -64,6 +64,8 @@ export class RunnerOfferRuntime {
       return;
     }
 
+    const targetUrl = offer.job.target.url;
+    const expectedOrigin = new URL(targetUrl).origin;
     const lease = await this.options.session.accept(offer.offerId);
     const lifecycle = new AcceptedLeaseLifecycle(
       offer,
@@ -75,8 +77,8 @@ export class RunnerOfferRuntime {
     let adapter: PlaywrightWebTargetAdapter | undefined;
     try {
       const target = this.createTarget({
-        url: offer.job.target.url,
-        expectedOrigin: new URL(offer.job.target.url).origin,
+        url: targetUrl,
+        expectedOrigin,
         headed: this.options.config.headed,
         navigationTimeoutMs: this.options.config.navigationTimeoutMs,
         actionTimeoutMs: this.options.config.actionTimeoutMs,

@@ -37,6 +37,22 @@ async function captureScreenshot(
   throw lastError;
 }
 
+async function readPageValue<T>(
+  page: Page,
+  assertTargetOrigin: () => void,
+  read: () => Promise<T>,
+): Promise<T> {
+  assertTargetOrigin();
+  try {
+    const value = await read();
+    assertTargetOrigin();
+    return value;
+  } catch (error) {
+    assertTargetOrigin();
+    throw error;
+  }
+}
+
 /**
  * Executed inside the page. Collects semantic candidates in DOM order without
  * exposing any selector to the caller. Password field values are never read.
@@ -227,10 +243,16 @@ export class PlaywrightObserver implements Observer {
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
-      this.session.assertPageTargetOrigin(page);
-      const captured = (await page.evaluate(collectCandidates)) as ObservationCandidate[];
+      const assertTargetOrigin = (): void => {
+        this.session.assertPageTargetOrigin(page);
+      };
+      const captured = await readPageValue(
+        page,
+        assertTargetOrigin,
+        async () => (await page.evaluate(collectCandidates)) as ObservationCandidate[],
+      );
       await this.hooks.afterDomCollection?.();
-      this.session.assertPageTargetOrigin(page);
+      assertTargetOrigin();
       const raw = captured.map((candidate) => ({
         role: candidate.role,
         ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
@@ -239,28 +261,28 @@ export class PlaywrightObserver implements Observer {
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
       const url = this.session.redactSensitiveText(this.session.assertPageTargetOrigin(page));
-      this.session.assertPageTargetOrigin(page);
-      const title = this.session.redactSensitiveText(await page.title());
-      this.session.assertPageTargetOrigin(page);
+      const title = this.session.redactSensitiveText(await readPageValue(
+        page,
+        assertTargetOrigin,
+        () => page.title(),
+      ));
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
-      this.session.assertPageTargetOrigin(page);
+      assertTargetOrigin();
       const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
         { url, ...(title !== "" ? { title } : {}) },
       );
-      this.session.assertPageTargetOrigin(page);
+      assertTargetOrigin();
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
       };
 
-      const screenshot = await captureScreenshot(page, () => {
-        this.session.assertPageTargetOrigin(page);
-      });
-      this.session.assertPageTargetOrigin(page);
+      const screenshot = await captureScreenshot(page, assertTargetOrigin);
+      assertTargetOrigin();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.registerCapturedObservation(page, graphWithRefs.graphId, {
         descriptors,
