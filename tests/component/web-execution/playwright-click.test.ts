@@ -116,6 +116,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
   function options(overrides: Partial<WebSessionOptions> = {}): WebSessionOptions {
     return {
       url: fixture.url,
+      expectedOrigin: fixture.origin,
       headed: false,
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 10_000,
@@ -296,6 +297,165 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(serializedTrace).not.toContain(secret);
     expect(serializedVerifierContext).not.toContain(secret);
     expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
+  });
+
+  it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
+    const crossOriginContent = "private cross-origin account data";
+    let currentUrl = fixture.url;
+    const evaluate = vi.fn(async () => currentUrl === fixture.url
+      ? [{ role: "button", name: "Continue" }]
+      : [{ role: "button", name: crossOriginContent }]);
+    const title = vi.fn(async () => currentUrl === fixture.url ? "Safe page" : crossOriginContent);
+    const screenshot = vi.fn(async () => new TextEncoder().encode(
+      currentUrl === fixture.url ? "safe screenshot" : crossOriginContent,
+    ));
+    const clickEffect = vi.fn(async () => undefined);
+
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      evaluate,
+      title,
+      screenshot,
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: clickEffect,
+      }),
+    } as never);
+    const observer = new PlaywrightObserver(session);
+    const traces = new InMemoryTraceStore();
+    const recorder = new InMemoryProtocolTraceRecorder(new TraceIngestor(traces));
+    const modelContexts: string[] = [];
+    const capturedArtifacts: string[] = [];
+    const runtime = new ExecutionRuntime({
+      observer,
+      decisionProvider: {
+        decide: async (context) => {
+          modelContexts.push(JSON.stringify(context));
+          capturedArtifacts.push(...session.artifactsFor(context.observation.graphId)
+            .map((artifact) => new TextDecoder().decode(artifact.bytes)));
+          return click(nodeNamed(context.observation, "Continue").id);
+        },
+      },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          const recorded = await recorder.append(event);
+          if (event.stage === "action_executed") {
+            currentUrl = cross.url;
+          }
+          return recorded;
+        },
+      },
+    });
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-delayed-origin",
+      runId: "run-delayed-origin",
+      target: { kind: "web", url: fixture.url },
+      plan: {
+        missionId: "mission-delayed-origin",
+        missionRevision: 1,
+        testCaseId: "case-delayed-origin",
+        steps: [
+          { stepIndex: 0, kind: "click", target: { role: "button", purpose: "continue" } },
+          { stepIndex: 1, kind: "click", target: { role: "button", purpose: "continue again" } },
+        ],
+        expectedClaimIds: ["claim-delayed-origin"],
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 5_000, maximumModelTokens: 100 },
+      },
+    });
+
+    const trace = traces.eventsFor("run-delayed-origin");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(clickEffect).toHaveBeenCalledOnce();
+    expect(modelContexts).toHaveLength(1);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(title).toHaveBeenCalledTimes(1);
+    expect(screenshot).toHaveBeenCalledTimes(1);
+    expect(trace.filter((event) => event.stage === "observation")).toHaveLength(1);
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
+    expect(JSON.stringify([trace, modelContexts])).not.toContain(crossOriginContent);
+    expect(JSON.stringify([trace, modelContexts])).not.toContain(cross.origin);
+    expect(capturedArtifacts.join("\n")).not.toContain(crossOriginContent);
+    currentUrl = fixture.url;
+    expect(() => session.artifactsFor("run-delayed-origin:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  });
+
+  it("continues after a delayed same-origin path change", async () => {
+    let currentUrl = fixture.url;
+    const clickEffect = vi.fn(async () => undefined);
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      evaluate: async () => [{ role: "button", name: "Continue" }],
+      title: async () => "Safe page",
+      screenshot: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: clickEffect,
+      }),
+    } as never);
+    const traces = new InMemoryTraceStore();
+    const recorder = new InMemoryProtocolTraceRecorder(new TraceIngestor(traces));
+    const runtime = new ExecutionRuntime({
+      observer: new PlaywrightObserver(session),
+      decisionProvider: {
+        decide: async (context) => click(nodeNamed(context.observation, "Continue").id),
+      },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          const recorded = await recorder.append(event);
+          if (event.stage === "action_executed" && event.stepIndex === 0) {
+            currentUrl = `${fixture.origin}/next`;
+          }
+          return recorded;
+        },
+      },
+    });
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-delayed-path",
+      runId: "run-delayed-path",
+      target: { kind: "web", url: fixture.url },
+      plan: {
+        missionId: "mission-delayed-path",
+        missionRevision: 1,
+        testCaseId: "case-delayed-path",
+        steps: [
+          { stepIndex: 0, kind: "click", target: { role: "button", purpose: "continue" } },
+          { stepIndex: 1, kind: "click", target: { role: "button", purpose: "continue again" } },
+        ],
+        expectedClaimIds: ["claim-delayed-path"],
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 5_000, maximumModelTokens: 100 },
+      },
+    });
+
+    expect(result).toMatchObject({ status: "passed" });
+    expect(clickEffect).toHaveBeenCalledTimes(2);
+    expect(traces.eventsFor("run-delayed-path").filter((event) => event.stage === "observation"))
+      .toContainEqual(expect.objectContaining({
+        stepIndex: 1,
+        payload: expect.objectContaining({ url: `${fixture.origin}/next` }),
+      }));
   });
 
   it.each(["click", "input", "select", "scroll"] as const)(

@@ -459,7 +459,7 @@ describe("RunnerOfferRuntime", () => {
     expect(createTarget).not.toHaveBeenCalled();
   });
 
-  it("passes only staging policy origins to an admitted target", async () => {
+  it("passes the immutable Job target origin and policy origins to an admitted target", async () => {
     executorGates.length = 0;
     executorCapabilities.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
@@ -469,10 +469,15 @@ describe("RunnerOfferRuntime", () => {
     const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
     await runtime.run({
       offerId: "offer-staging",
-      job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
+      job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "HTTPS://STAGING.example.test:443/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
       requiredCapabilities: [], leaseDurationMs: 30_000,
     } as never);
-    expect((createTarget as unknown as { mock: { calls: Array<readonly [{ readonly allowedOrigins: readonly string[] }]> } }).mock.calls[0]?.[0]?.allowedOrigins).toEqual(["https://staging.example.test"]);
+    expect((createTarget as unknown as {
+      mock: { calls: Array<readonly [{ readonly allowedOrigins: readonly string[]; readonly expectedOrigin: string }]> };
+    }).mock.calls[0]?.[0]).toMatchObject({
+      allowedOrigins: ["https://staging.example.test"],
+      expectedOrigin: "https://staging.example.test",
+    });
     expect(executorGates).toHaveLength(1);
     expect(spool.pending).toHaveBeenCalledWith("run-staging", 1, { maximumEvents: 1, maximumBytes: 9 });
     await expect(executorGates[0]!.authorize({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }, { job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://staging.example.test/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } }, action: { kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" } })).resolves.toMatchObject({ status: "allowed" });

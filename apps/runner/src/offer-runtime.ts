@@ -76,6 +76,7 @@ export class RunnerOfferRuntime {
     try {
       const target = this.createTarget({
         url: offer.job.target.url,
+        expectedOrigin: new URL(offer.job.target.url).origin,
         headed: this.options.config.headed,
         navigationTimeoutMs: this.options.config.navigationTimeoutMs,
         actionTimeoutMs: this.options.config.actionTimeoutMs,

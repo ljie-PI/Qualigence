@@ -107,7 +107,12 @@ export class PlaywrightWebTargetAdapter
   }
 
   async captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]> {
-    return this.guard(async () => this.session.artifactsFor(graphId));
+    return this.guard(() => this.session.withPage(async (page) => {
+      this.session.assertPageTargetOrigin(page);
+      const artifacts = this.session.artifactsFor(graphId);
+      this.session.assertPageTargetOrigin(page);
+      return artifacts;
+    }));
   }
 
   async close(): Promise<void> {

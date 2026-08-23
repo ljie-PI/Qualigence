@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AcceptedExecutionJob,
   ObservationGraph,
@@ -10,6 +10,7 @@ import {
   PlaywrightWebTargetAdapter,
   type WebSessionOptions,
 } from "@qualigence/web-playwright";
+import type { BrowserLauncher } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
 function allowedPermit(): ExecutionPermit {
@@ -102,6 +103,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
   function options(): WebSessionOptions {
     return {
       url: fixture.url,
+      expectedOrigin: fixture.origin,
       headed: false,
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 10_000,
@@ -163,6 +165,41 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     await expect(
       adapter.captureArtifacts("run-facade:observation:404"),
     ).rejects.toMatchObject({ code: "StaleObservation" });
+  });
+
+  it("does not return registered artifacts after the page leaves the Job target origin", async () => {
+    let currentUrl = fixture.url;
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => currentUrl,
+      evaluate: vi.fn(async () => [{ role: "button", name: "Add to cart" }]),
+      title: vi.fn(async () => "Facade"),
+      screenshot: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    adapter = new PlaywrightWebTargetAdapter(options(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await adapter.start();
+    const observed = await adapter.capture({
+      ...job,
+      target: { kind: "web", url: fixture.url },
+    });
+    currentUrl = "https://other.test/private";
+
+    await expect(adapter.captureArtifacts(observed.graphId)).rejects.toMatchObject({
+      code: "OriginViolation",
+    });
   });
 
   it("rejects concurrent reentry with ConcurrentSessionOperation", async () => {

@@ -15,6 +15,7 @@ function baseOptions(
 ): WebSessionOptions {
   return {
     url: "https://example.test/",
+    expectedOrigin: "https://example.test",
     headed: false,
     navigationTimeoutMs: 5_000,
     actionTimeoutMs: 5_000,
@@ -162,6 +163,7 @@ describe("PlaywrightBrowserSession", () => {
     });
     const session = new PlaywrightBrowserSession(baseOptions({
       url: `${source.origin}/redirect`,
+      expectedOrigin: source.origin,
       allowedOrigins: [source.origin, destination.origin],
     }));
 
@@ -188,6 +190,7 @@ describe("PlaywrightBrowserSession", () => {
     origin = server.origin;
     const session = new PlaywrightBrowserSession(baseOptions({
       url: `${origin}/redirect`,
+      expectedOrigin: origin,
       allowedOrigins: [origin],
     }));
 
@@ -236,6 +239,7 @@ describe("PlaywrightBrowserSession", () => {
 
   it("exposes origin helpers used by the executor allowlist", () => {
     expect(normalizeOrigin("https://example.test/a/b?x=1")).toBe("https://example.test");
+    expect(normalizeOrigin("https://EXAMPLE.TEST:443/a")).toBe("https://example.test");
     expect(isOriginAllowed("https://example.test/page", ["https://example.test"])).toBe(true);
     expect(isOriginAllowed("https://evil.test/page", ["https://example.test"])).toBe(false);
     expect(() => new WebTargetError("NavigationFailed")).not.toThrow();

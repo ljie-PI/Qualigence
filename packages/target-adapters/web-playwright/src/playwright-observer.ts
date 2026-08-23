@@ -11,15 +11,28 @@ import {
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 
-async function captureScreenshot(page: Page): Promise<Uint8Array> {
+export interface PlaywrightObserverHooks {
+  readonly afterDomCollection?: () => void | Promise<void>;
+}
+
+async function captureScreenshot(
+  page: Page,
+  assertTargetOrigin: () => void,
+): Promise<Uint8Array> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    assertTargetOrigin();
+    let screenshot: Uint8Array;
     try {
-      return new Uint8Array(await page.screenshot({ timeout: 5000 }));
+      screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
     } catch (error) {
+      assertTargetOrigin();
       lastError = error;
       await page.waitForTimeout(50);
+      continue;
     }
+    assertTargetOrigin();
+    return screenshot;
   }
   throw lastError;
 }
@@ -206,12 +219,18 @@ function buildArtifacts(
 }
 
 export class PlaywrightObserver implements Observer {
-  constructor(private readonly session: PlaywrightBrowserSession) {}
+  constructor(
+    private readonly session: PlaywrightBrowserSession,
+    private readonly hooks: PlaywrightObserverHooks = {},
+  ) {}
 
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
+      this.session.assertPageTargetOrigin(page);
       const captured = (await page.evaluate(collectCandidates)) as ObservationCandidate[];
+      await this.hooks.afterDomCollection?.();
+      this.session.assertPageTargetOrigin(page);
       const raw = captured.map((candidate) => ({
         role: candidate.role,
         ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
@@ -219,23 +238,31 @@ export class PlaywrightObserver implements Observer {
         ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
-      const url = this.session.redactSensitiveText(page.url());
+      const url = this.session.redactSensitiveText(this.session.assertPageTargetOrigin(page));
+      this.session.assertPageTargetOrigin(page);
       const title = this.session.redactSensitiveText(await page.title());
+      this.session.assertPageTargetOrigin(page);
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
+      this.session.assertPageTargetOrigin(page);
       const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
         { url, ...(title !== "" ? { title } : {}) },
       );
+      this.session.assertPageTargetOrigin(page);
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
       };
 
-      const screenshot = await captureScreenshot(page);
+      const screenshot = await captureScreenshot(page, () => {
+        this.session.assertPageTargetOrigin(page);
+      });
+      this.session.assertPageTargetOrigin(page);
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
+      this.session.assertPageTargetOrigin(page);
       this.session.registerObservation(graphWithRefs.graphId, {
         descriptors,
         artifacts,

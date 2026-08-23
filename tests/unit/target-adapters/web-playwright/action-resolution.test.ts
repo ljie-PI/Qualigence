@@ -21,6 +21,7 @@ import {
 function options(): WebSessionOptions {
   return {
     url: "https://example.test/",
+    expectedOrigin: "https://example.test",
     headed: false,
     navigationTimeoutMs: 5_000,
     actionTimeoutMs: 5_000,

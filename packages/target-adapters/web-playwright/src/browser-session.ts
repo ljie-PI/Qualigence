@@ -61,6 +61,7 @@ function assertNever(value: never): never {
 
 export interface WebSessionOptions {
   readonly url: string;
+  readonly expectedOrigin?: string;
   readonly headed: boolean;
   readonly navigationTimeoutMs: number;
   readonly actionTimeoutMs: number;
@@ -116,11 +117,16 @@ export class PlaywrightBrowserSession {
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
   private readonly sensitiveValues = new Set<string>();
+  private readonly configuredTargetUrl: string;
+  private readonly configuredExpectedOrigin: string;
 
   constructor(
     private readonly options: WebSessionOptions,
     private readonly launcher: BrowserLauncher = chromiumLauncher,
-  ) {}
+  ) {
+    this.configuredTargetUrl = options.url;
+    this.configuredExpectedOrigin = options.expectedOrigin ?? options.url;
+  }
 
   get allowedOrigins(): readonly string[] {
     return this.options.allowedOrigins;
@@ -135,15 +141,34 @@ export class PlaywrightBrowserSession {
   }
 
   get targetUrl(): string {
-    return this.options.url;
+    return this.configuredTargetUrl;
   }
 
   isTargetOrigin(url: string): boolean {
     try {
-      return normalizeOrigin(url) === normalizeOrigin(this.options.url);
+      return normalizeOrigin(url) === normalizeOrigin(this.configuredExpectedOrigin);
     } catch {
       return false;
     }
+  }
+
+  assertPageTargetOrigin(page: Pick<Page, "url">): string {
+    let currentUrl: string;
+    try {
+      currentUrl = page.url();
+    } catch {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The current page origin could not be verified.",
+      );
+    }
+    if (!this.isTargetOrigin(currentUrl)) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The current page left the configured target origin.",
+      );
+    }
+    return currentUrl;
   }
 
   get latestGraphId(): string | undefined {
@@ -244,16 +269,11 @@ export class PlaywrightBrowserSession {
       this.page = page;
       signal?.throwIfAborted();
 
-      await page.goto(this.options.url, {
+      await page.goto(this.configuredTargetUrl, {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
-      if (!this.isTargetOrigin(page.url())) {
-        throw new WebTargetError(
-          "OriginViolation",
-          "Initial navigation left the configured target origin.",
-        );
-      }
+      this.assertPageTargetOrigin(page);
       signal?.throwIfAborted();
     } catch (error) {
       await this.disposeResources();
@@ -268,11 +288,11 @@ export class PlaywrightBrowserSession {
   private validateTarget(): void {
     let parsed: URL;
     try {
-      parsed = new URL(this.options.url);
+      parsed = new URL(this.configuredTargetUrl);
     } catch {
       throw new WebTargetError(
         "NavigationFailed",
-        `Invalid target URL: ${this.options.url}`,
+        `Invalid target URL: ${this.configuredTargetUrl}`,
       );
     }
 
@@ -290,7 +310,23 @@ export class PlaywrightBrowserSession {
       );
     }
 
-    if (!this.options.allowedOrigins.includes(parsed.origin)) {
+    let expectedOrigin: string;
+    try {
+      expectedOrigin = normalizeOrigin(this.configuredExpectedOrigin);
+    } catch {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The configured Job target origin is invalid.",
+      );
+    }
+    if (parsed.origin !== expectedOrigin) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The navigation target does not match the configured Job target origin.",
+      );
+    }
+
+    if (!this.options.allowedOrigins.includes(expectedOrigin)) {
       throw new WebTargetError(
         "OriginViolation",
         `Target origin ${parsed.origin} is not in the allowlist.`,

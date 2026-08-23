@@ -23,7 +23,10 @@ export {
   type BuiltObservation,
   type ObservationCandidate,
 } from "./observation-builder.js";
-export { PlaywrightObserver } from "./playwright-observer.js";
+export {
+  PlaywrightObserver,
+  type PlaywrightObserverHooks,
+} from "./playwright-observer.js";
 export { PlaywrightActionResolver } from "./playwright-action-resolver.js";
 export { PlaywrightActionExecutor } from "./playwright-action-executor.js";
 export { actionToken, isActionToken } from "./action-token.js";
