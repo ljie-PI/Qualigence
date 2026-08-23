@@ -14,11 +14,12 @@ Ticket 18 formal-blocker scope amendment (2026-08-21) additionally includes
 `tests/unit/runner-kernel/deterministic-policy-gate.test.ts` for Web input/select
 risk classification and pre-side-effect policy-denial coverage only.
 
-Ticket 19 formal-review scope amendment (2026-08-23):
-`tests/unit/runner/job-executor.test.ts` is added as the exact existing core
-caller test needed to prove caller/lease abort propagation into a dispatched
-action and non-replayable `ActionOutcomeUnknown`. No broader Runner behavior is
-transferred into Ticket 19.
+Ticket 19 formal-blocker authority/status amendment (2026-08-23):
+`tests/unit/runner/job-executor.test.ts` is added to the complete approved scope
+and focused Gate as required production caller coverage. It may change only to
+prove caller/lease abort propagation into a dispatched action and the stable,
+non-replayable `ActionOutcomeUnknown` terminal result. No other Runner behavior
+transfers into Ticket 19.
 
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
@@ -39,7 +40,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | passed; pending PR | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 focused Gate, exact-base review, and Chromium acceptance pass |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 origin-race remediation has not rerun E2E pending fresh review |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -378,13 +379,13 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR merge
+verification: focused Gate passed; fresh review pending
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
-implementation_head: `683b0b74450157a2d358a965a095c3445bf8a912`
+implementation_head: `27a5edb8475205157ccac8a41393faf28cce1100`
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-branch_commit_count: 7 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 9 commits ahead of `origin/main`, including this status commit
 pull_request: pending
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -448,6 +449,21 @@ pull_request: pending
   Chromium acceptance passed 1 file / 8 tests without skips, with every failure
   variant asserting no later step, exactly one terminal, and its stable
   completion classification. The dedicated PR remains pending.
+- Formal origin-race remediation re-reads the live page URL and compares its
+  canonical origin exactly with the Job target origin immediately before every
+  click, fill, selectOption, and page/element scroll side effect. It also
+  re-proves the current graph and exact descriptor identity at that boundary;
+  navigation target URLs retain the same exact-origin rule. Post-action and
+  thrown-action handling check origin first so navigation during dispatch is
+  classified as `OriginViolation` rather than timeout or unknown outcome.
+- Deterministic Runtime/component tables cover click, input, select, and scroll
+  after a silent cross-origin page change with matching locator behavior. All
+  four terminate blocked with `OriginViolation`, emit one terminal event, and
+  invoke no action side effect; all four same-origin controls dispatch once.
+- The amended Ticket 19 focused Gate passed 11 files / 177 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. This code changed after the prior Chromium E2E, so
+  E2E was not rerun and remains pending a fresh exact-base review.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
