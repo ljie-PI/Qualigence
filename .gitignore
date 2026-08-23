@@ -7,9 +7,8 @@ coverage/
 .vitest/
 *.tsbuildinfo
 
-# Worktrees, agent state, and local scratch data
+# Worktrees and local agent state
 .worktrees/
-.scratch/
 .pi-subagents/
 .tmp/
 .tmp-*/

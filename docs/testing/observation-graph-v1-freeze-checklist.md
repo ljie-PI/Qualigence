@@ -1,11 +1,12 @@
 # Observation Graph v1 — Freeze Checklist (candidate)
 
 Status: **candidate** — Observation Graph v1 is a candidate and MUST NOT be
-frozen until the LS-13 (M3 Gate) evidence below is attached and signed off. The
-LS-12 migration tooling can only ever emit a report with `status: "candidate"`
-and `gate.frozen: false`; the `frozen` transition happens in a later PR.
+frozen until tickets 22-35 produce and validate the Graph migration, Desktop,
+native Windows, manual, CI, and release evidence below. Current migration
+tooling emits only `status: "candidate"` and `gate.frozen: false`; ticket 35
+owns the deterministic `frozen` transition.
 
-## What LS-12 delivered
+## Candidate Baseline
 
 - [x] Single Observation Graph v1 contract + JSON Schema
       (`@qualigence/observation-contracts`), re-exported additively from
@@ -21,7 +22,7 @@ and `gate.frozen: false`; the `frozen` transition happens in a later PR.
       (`qualigence migrate-observation`) with a durable JSONL ledger and an
       atomic candidate Freeze Report.
 
-## Freeze Gate — required before v1 may be frozen (LS-13)
+## Freeze Gate
 
 - [ ] Web Playwright and Windows UIA conformance pass on the shared
       node/state/checkpoint fields.

@@ -1,6 +1,6 @@
 # Issue Tracker: Local Markdown
 
-Implementation issues and specs for this repo live as Markdown files under `.scratch/`. GitHub pull requests and GitHub Issues are not general request or triage surfaces. The sole exception is a deferred, non-blocking advanced-hardening finding produced by scoped review: create one GitHub Issue for that follow-up and do not implement it in the current ticket.
+Implementation issues and specs for this repo are tracked Markdown files under `.scratch/`. GitHub pull requests and GitHub Issues are not general request or triage surfaces. The sole exception is a deferred, non-blocking advanced-hardening finding produced by scoped review: create one GitHub Issue for that follow-up and do not implement it in the current ticket.
 
 ## Conventions
 
@@ -16,11 +16,11 @@ When a skill says to fetch a ticket, read the referenced path. The user will nor
 
 ## Closure Tasks
 
-The production-closure plan is the task authority. Create or update a local issue when implementation work is planned or a core blocker stops its owning ticket. Do not create recursive local remediation tickets after review.
+The tracked umbrella spec and ticket files are the production-closure authority. Create or update a ticket when implementation work is planned or a core blocker stops its owning ticket. Do not create recursive local remediation tickets after review.
 
 Every closure issue must record:
 
-- Closure task and plan section.
+- Closure ticket and legacy allocation, when applicable.
 - A precise fixed point: base SHA and reviewed head SHA.
 - Affected context from `CONTEXT-MAP.md`.
 - Finding severity: Critical, Important, Minor, or Suggestion.

@@ -4,7 +4,7 @@
 
 ### Issue Tracker
 
-Implementation issues and specs live as Local Markdown under `.scratch/<feature>/`; deferred advanced-hardening review findings use GitHub Issues. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
+Implementation issues and specs are tracked Markdown under `.scratch/<feature>/`; deferred advanced-hardening review findings use GitHub Issues. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
 
 ### Triage Labels
 
@@ -20,7 +20,7 @@ Before editing code, inspect the surrounding module and its callers, adapters, t
 
 ## Closure Work
 
-Before a closure task, read `docs/superpowers/plans/2026-08-16-production-closure-temporary.md` sections **Status and authority**, **Global Constraints**, **Current execution state**, and **Dependency order**, the complete selected Task, and its cited architecture sections. The coordinator or reviewer owns later Task dependencies and plan changes.
+Before a closure task, read `.scratch/remaining-production-closure/spec.md`, the complete selected ticket, and every architecture/context reference named by that ticket. The tracked spec and tickets are the current execution authority; the coordinator or reviewer owns later ticket dependencies and authority changes.
 
 For stateful, side-effecting, concurrent, retrying, timeout-sensitive, or terminal work, freeze the applicable behavior matrix in the local ticket before editing; simple docs/static/leaf work may mark it `N/A`. Every `/code-review` round covers the complete matrix and whole code/test diff and reports every row as `pass | finding | N/A`.
 
