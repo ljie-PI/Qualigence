@@ -3,6 +3,7 @@ import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
 import {
   PlaywrightBrowserSession,
   PlaywrightObserver,
+  type BrowserLauncher,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -128,6 +129,52 @@ describe("PlaywrightObserver against real Chromium", () => {
     expect(title).not.toHaveBeenCalled();
     expect(screenshot).not.toHaveBeenCalled();
     currentUrl = fixture.url;
+    expect(() => session.artifactsFor("run-observe:observation:1"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  });
+
+  it("discards a capture when main-frame navigation leaves and returns during collection", async () => {
+    const mainFrame = {};
+    let currentUrl = fixture.url;
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => currentUrl,
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      evaluate: vi.fn(async () => [{ role: "button", name: "Matching control" }]),
+      title: vi.fn(async () => "Matching page"),
+      screenshot: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    session = new PlaywrightBrowserSession(options(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await session.start();
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: () => {
+        currentUrl = "https://other.test/private";
+        frameNavigated?.(mainFrame);
+        currentUrl = fixture.url;
+        frameNavigated?.(mainFrame);
+      },
+    });
+
+    await expect(observer.capture(job)).rejects.toMatchObject({ code: "OriginViolation" });
+    expect(page.title).not.toHaveBeenCalled();
+    expect(page.screenshot).not.toHaveBeenCalled();
     expect(() => session.artifactsFor("run-observe:observation:1"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   });

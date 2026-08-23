@@ -32,6 +32,13 @@ function options(): WebSessionOptions {
 const noopLauncher = { launch: vi.fn() } as unknown as BrowserLauncher;
 const permit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
 
+function bindResolved<TAction extends object>(
+  session: PlaywrightBrowserSession,
+  action: TAction,
+): TAction {
+  return session.bindResolvedAction(action, session.currentNavigationGeneration);
+}
+
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "test" };
 }
@@ -122,6 +129,10 @@ describe("PlaywrightActionResolver negative paths", () => {
     session.withPage = async (operation) => operation({
       url: () => "https://example.test/start",
     } as never);
+    session.registerObservation("run-1:observation:1", {
+      descriptors: new Map(),
+      artifacts: [],
+    });
     const resolver = new PlaywrightActionResolver(session);
 
     await expect(
@@ -189,11 +200,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
     session.withPage = async (operation) => operation({ goto, url: () => "https://example.test/" } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "navigate",
       url: "https://other.test/checkout",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
     expect(goto).not.toHaveBeenCalled();
   });
 
@@ -203,11 +214,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
     session.withPage = async (operation) => operation({ goto, url: () => "https://example.test/" } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "navigate",
       url: "https://user:pass@example.test/checkout",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
     expect(goto).not.toHaveBeenCalled();
   });
 
@@ -221,11 +232,11 @@ describe("PlaywrightActionExecutor value resolution", () => {
     session.withPage = async (operation) => operation({ goto, url: () => currentUrl } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "navigate",
       url: "https://example.test/checkout",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
     expect(goto).toHaveBeenCalledOnce();
   });
 
@@ -249,12 +260,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
     expect(click).not.toHaveBeenCalled();
   });
 
@@ -274,12 +285,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     const abort = new AbortController();
     abort.abort(new Error("cancelled"));
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
-    }, permit, abort.signal)).rejects.toThrow("cancelled");
+    }), permit, abort.signal)).rejects.toThrow("cancelled");
     expect(click).not.toHaveBeenCalled();
   });
 
@@ -311,12 +322,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "StaleObservation" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "StaleObservation" });
     expect(click).not.toHaveBeenCalled();
   });
 
@@ -344,12 +355,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
   });
 
   it.each(["navigate", "click", "input", "select", "scroll"] as const)(
@@ -412,6 +423,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
           : kind === "scroll"
             ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
             : { targetKind: "web", kind, target, graphId };
+      bindResolved(session, action);
       const executor = new PlaywrightActionExecutor(session, { resolve: async () => "private-value" });
 
       const execution = executor.execute(action as never, dispatchPermit);
@@ -459,6 +471,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
           : kind === "scroll"
             ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
             : { targetKind: "web", kind, target, graphId };
+      bindResolved(session, action);
       const executor = new PlaywrightActionExecutor(session, { resolve: async () => "private-value" });
 
       await expect(executor.execute(action as never, permit)).resolves.toEqual({
@@ -484,22 +497,22 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "navigate",
       url: "https://example.test/checkout",
-    }, permit)).resolves.toEqual({ status: "ok" });
+    }), permit)).resolves.toEqual({ status: "ok" });
     session.registerObservation(graphId, {
       descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "button", name: "Add" }]]),
       artifacts: [],
     });
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "scroll",
       graphId,
       direction: "down",
       amount: "page",
-    }, permit)).resolves.toEqual({ status: "ok" });
+    }), permit)).resolves.toEqual({ status: "ok" });
 
     expect(calls[0]).toBe("goto:https://example.test/checkout");
     expect(calls[1]).toContain("scroll:");
@@ -529,14 +542,14 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "scroll",
       graphId,
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       direction: "down",
       amount,
-    }, permit)).resolves.toEqual({ status: "ok" });
+    }), permit)).resolves.toEqual({ status: "ok" });
 
     expect(evaluate).toHaveBeenCalledWith(expect.any(Function), { direction: "down", distance });
   });
@@ -577,7 +590,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.email",
     } as const;
 
-    await expect(executor.execute(action, permit)).resolves.toEqual({ status: "ok" });
+    await expect(executor.execute(bindResolved(session, action), permit)).resolves.toEqual({ status: "ok" });
     expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
   });
 
@@ -596,13 +609,13 @@ describe("PlaywrightActionExecutor value resolution", () => {
       resolve: async () => { throw new Error("plaintext-secret"); },
     });
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "input",
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
       valueRef: "customer.email",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
   });
 
   it("returns unknown outcome for an invoked infrastructure failure without Playwright plaintext", async () => {
@@ -626,13 +639,13 @@ describe("PlaywrightActionExecutor value resolution", () => {
       resolve: async () => "plaintext-secret",
     });
 
-    const failure = await executor.execute({
+    const failure = await executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "input",
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
       valueRef: "customer.email",
-    }, permit);
+    }), permit);
     expect(failure).toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
     expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
   });
@@ -675,6 +688,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
         : kind === "scroll"
           ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
           : { targetKind: "web", kind, target, graphId };
+    bindResolved(session, action);
 
     await expect(executor.execute(action as never, permit)).resolves.toEqual({
       status: "failed",
@@ -710,12 +724,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
   });
 
   it("maps an unreadable post-dispatch page origin to unknown outcome", async () => {
@@ -743,12 +757,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
     expect(click).toHaveBeenCalledOnce();
   });
 
@@ -773,12 +787,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "TargetDisabled" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "TargetDisabled" });
     expect(click).not.toHaveBeenCalled();
   });
 
@@ -800,12 +814,12 @@ describe("PlaywrightActionExecutor value resolution", () => {
     } as never);
     const executor = new PlaywrightActionExecutor(session);
 
-    await expect(executor.execute({
+    await expect(executor.execute(bindResolved(session, {
       targetKind: "web",
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionFailed" });
+    }), permit)).resolves.toEqual({ status: "failed", errorCode: "ActionFailed" });
     expect(click).not.toHaveBeenCalled();
   });
 

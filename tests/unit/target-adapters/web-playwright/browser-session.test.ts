@@ -88,6 +88,48 @@ describe("PlaywrightBrowserSession", () => {
     expect(closed()).toBe(true);
   });
 
+  it("clears descriptor authority on every frame navigation and advances generation for the main frame", async () => {
+    const mainFrame = {};
+    const childFrame = {};
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const page = {
+      goto: vi.fn(async () => null),
+      url: () => "https://example.test/",
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new PlaywrightBrowserSession(baseOptions(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await session.start();
+    session.registerObservation("graph-child", { descriptors: new Map(), artifacts: [] });
+
+    expect(session.currentNavigationGeneration).toBe(0);
+    frameNavigated?.(childFrame);
+    expect(session.hasGraph("graph-child")).toBe(false);
+    expect(session.currentNavigationGeneration).toBe(0);
+
+    session.registerObservation("graph-main", { descriptors: new Map(), artifacts: [] });
+    frameNavigated?.(mainFrame);
+    expect(session.hasGraph("graph-main")).toBe(false);
+    expect(session.currentNavigationGeneration).toBe(1);
+
+    await session.close();
+  });
+
   it("rejects a non-http(s) scheme before launching a browser", async () => {
     const { launcher, launch } = fakeLauncher();
     const session = new PlaywrightBrowserSession(

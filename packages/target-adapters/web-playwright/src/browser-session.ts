@@ -106,6 +106,10 @@ export interface StoredObservation {
   readonly artifacts: readonly CapturedArtifact[];
 }
 
+interface RegisteredObservation extends StoredObservation {
+  readonly navigationGeneration: number;
+}
+
 export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
@@ -116,7 +120,9 @@ export class PlaywrightBrowserSession {
   private navigationGeneration = 0;
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
-  private readonly observations = new Map<string, StoredObservation>();
+  private readonly observations = new Map<string, RegisteredObservation>();
+  private readonly observationGenerations = new Map<string, number>();
+  private readonly resolvedActionGenerations = new WeakMap<object, number>();
   private readonly sensitiveValues = new Set<string>();
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
@@ -143,6 +149,10 @@ export class PlaywrightBrowserSession {
 
   get targetUrl(): string {
     return this.configuredTargetUrl;
+  }
+
+  get currentNavigationGeneration(): number {
+    return this.navigationGeneration;
   }
 
   isTargetOrigin(url: string): boolean {
@@ -186,18 +196,18 @@ export class PlaywrightBrowserSession {
 
   async readOnExpectedOrigin<T>(
     page: Pick<Page, "url">,
+    expectedNavigationGeneration: number,
     read: () => Promise<T>,
   ): Promise<T> {
-    const navigationGeneration = this.navigationGeneration;
-    this.assertPageTargetOrigin(page, navigationGeneration);
+    this.assertPageTargetOrigin(page, expectedNavigationGeneration);
     let value: T;
     try {
       value = await read();
     } catch (error) {
-      this.assertPageTargetOrigin(page, navigationGeneration);
+      this.assertPageTargetOrigin(page, expectedNavigationGeneration);
       throw error;
     }
-    this.assertPageTargetOrigin(page, navigationGeneration);
+    this.assertPageTargetOrigin(page, expectedNavigationGeneration);
     return value;
   }
 
@@ -210,8 +220,14 @@ export class PlaywrightBrowserSession {
     return this.observationOrdinal;
   }
 
-  registerObservation(graphId: string, observation: StoredObservation): void {
-    this.observations.set(graphId, observation);
+  registerObservation(
+    graphId: string,
+    observation: StoredObservation,
+    navigationGeneration = this.navigationGeneration,
+  ): void {
+    this.assertNavigationGeneration(navigationGeneration);
+    this.observations.set(graphId, { ...observation, navigationGeneration });
+    this.observationGenerations.set(graphId, navigationGeneration);
     this.latestGraph = graphId;
   }
 
@@ -219,11 +235,12 @@ export class PlaywrightBrowserSession {
     page: Pick<Page, "url">,
     graphId: string,
     observation: StoredObservation,
+    navigationGeneration: number,
   ): void {
-    this.assertPageTargetOrigin(page);
-    this.registerObservation(graphId, observation);
+    this.assertPageTargetOrigin(page, navigationGeneration);
+    this.registerObservation(graphId, observation, navigationGeneration);
     try {
-      this.assertPageTargetOrigin(page);
+      this.assertPageTargetOrigin(page, navigationGeneration);
     } catch (error) {
       this.observations.delete(graphId);
       if (this.latestGraph === graphId) this.latestGraph = undefined;
@@ -232,12 +249,63 @@ export class PlaywrightBrowserSession {
   }
 
   hasGraph(graphId: string): boolean {
-    return this.latestGraph === graphId && this.observations.has(graphId);
+    return this.latestGraph === graphId &&
+      this.observations.get(graphId)?.navigationGeneration === this.navigationGeneration;
   }
 
   descriptorFor(graphId: string, nodeId: string): LocatorDescriptor | undefined {
-    if (this.latestGraph !== graphId) return undefined;
-    return this.observations.get(graphId)?.descriptors.get(nodeId);
+    const observation = this.requireCurrentObservation(graphId);
+    return observation.descriptors.get(nodeId);
+  }
+
+  requireCurrentObservationGeneration(graphId: string): number {
+    return this.requireCurrentObservation(graphId).navigationGeneration;
+  }
+
+  assertObservationGeneration(graphId: string, navigationGeneration: number): void {
+    this.assertNavigationGeneration(navigationGeneration);
+    const observation = this.requireCurrentObservation(graphId);
+    if (observation.navigationGeneration !== navigationGeneration) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The observation belongs to a different navigation generation.",
+      );
+    }
+  }
+
+  async readForObservation<T>(
+    page: Pick<Page, "url">,
+    graphId: string,
+    navigationGeneration: number,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    this.assertObservationGeneration(graphId, navigationGeneration);
+    try {
+      const value = await this.readOnExpectedOrigin(page, navigationGeneration, read);
+      this.assertObservationGeneration(graphId, navigationGeneration);
+      return value;
+    } catch (error) {
+      this.assertObservationGeneration(graphId, navigationGeneration);
+      throw error;
+    }
+  }
+
+  bindResolvedAction<T extends object>(action: T, navigationGeneration: number): T {
+    this.assertNavigationGeneration(navigationGeneration);
+    this.resolvedActionGenerations.set(action, navigationGeneration);
+    return action;
+  }
+
+  requireResolvedActionGeneration(action: object): number {
+    const navigationGeneration = this.resolvedActionGenerations.get(action);
+    if (navigationGeneration === undefined) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The resolved action has no navigation-generation authority.",
+      );
+    }
+    this.assertNavigationGeneration(navigationGeneration);
+    return navigationGeneration;
   }
 
   invalidateObservations(): void {
@@ -246,15 +314,17 @@ export class PlaywrightBrowserSession {
   }
 
   artifactsFor(graphId: string): readonly CapturedArtifact[] {
-    if (this.page !== undefined) this.assertPageTargetOrigin(this.page);
     const observation = this.observations.get(graphId);
-    if (!observation) {
+    if (observation === undefined) {
       throw new WebTargetError(
         "StaleObservation",
         `No observation registered for graph ${graphId}.`,
       );
     }
-    if (this.page !== undefined) this.assertPageTargetOrigin(this.page);
+    this.assertNavigationGeneration(observation.navigationGeneration);
+    if (this.page !== undefined) {
+      this.assertPageTargetOrigin(this.page, observation.navigationGeneration);
+    }
     return observation.artifacts;
   }
 
@@ -315,8 +385,9 @@ export class PlaywrightBrowserSession {
 
       const page = await context.newPage();
       this.page = page;
-      page.on("framenavigated", () => {
-        this.navigationGeneration += 1;
+      page.on("framenavigated", (frame) => {
+        this.invalidateObservations();
+        if (frame === page.mainFrame()) this.navigationGeneration += 1;
       });
       signal?.throwIfAborted();
 
@@ -383,6 +454,37 @@ export class PlaywrightBrowserSession {
         `Target origin ${parsed.origin} is not in the allowlist.`,
       );
     }
+  }
+
+  private assertNavigationGeneration(expectedNavigationGeneration: number): void {
+    if (this.navigationGeneration !== expectedNavigationGeneration) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The page navigation generation no longer matches the captured authority.",
+      );
+    }
+  }
+
+  private requireCurrentObservation(graphId: string): RegisteredObservation {
+    const registeredGeneration = this.observationGenerations.get(graphId);
+    if (
+      registeredGeneration !== undefined &&
+      registeredGeneration !== this.navigationGeneration
+    ) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The observation belongs to a prior navigation generation.",
+      );
+    }
+    const observation = this.observations.get(graphId);
+    if (this.latestGraph !== graphId || observation === undefined) {
+      throw new WebTargetError(
+        "StaleObservation",
+        `No current observation is registered for graph ${graphId}.`,
+      );
+    }
+    this.assertNavigationGeneration(observation.navigationGeneration);
+    return observation;
   }
 
   private toNavigationError(error: unknown): WebTargetError {

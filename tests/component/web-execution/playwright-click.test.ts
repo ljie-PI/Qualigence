@@ -35,6 +35,10 @@ function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "component test" };
 }
 
+function navigate(path: string): ProposedAction<"navigate"> {
+  return { kind: "navigate", path, reason: "component test" };
+}
+
 function valued(kind: "input" | "select", nodeId: string, valueRef: string) {
   return { kind, target: { nodeId }, valueRef, reason: "component test" } as const;
 }
@@ -104,6 +108,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
         `,
         "Clicks",
       ),
+      "/next": htmlDocument(
+        "<button onclick=\"document.body.dataset.clicked='true'\">Next action</button>",
+        "Next",
+      ),
     });
   });
 
@@ -142,17 +150,28 @@ describe("Playwright resolve + execute against real Chromium", () => {
   async function startTrackedFakeSession(
     locatorFactory: (navigate: (url: string) => void) => object,
   ): Promise<PlaywrightBrowserSession> {
+    return (await startControllableTrackedFakeSession(locatorFactory)).trackedSession;
+  }
+
+  async function startControllableTrackedFakeSession(
+    locatorFactory: (navigate: (url: string) => void) => object,
+  ): Promise<{
+    readonly trackedSession: PlaywrightBrowserSession;
+    readonly navigate: (url: string) => void;
+  }> {
     let currentUrl = fixture.url;
-    let frameNavigated: (() => void) | undefined;
+    const mainFrame = {};
+    let frameNavigated: ((frame: object) => void) | undefined;
     const navigate = (url: string): void => {
       currentUrl = url;
-      frameNavigated?.();
+      frameNavigated?.(mainFrame);
     };
     const locator = locatorFactory(navigate);
     const page = {
       goto: vi.fn(async () => undefined),
       url: () => currentUrl,
-      on: vi.fn((event: string, listener: () => void) => {
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
         if (event === "framenavigated") frameNavigated = listener;
       }),
       getByRole: () => locator,
@@ -172,7 +191,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
       launch: vi.fn(async () => browser),
     } as unknown as BrowserLauncher);
     await tracked.start();
-    return tracked;
+    return { trackedSession: tracked, navigate };
   }
 
   it("resolves to a de-identified token and performs a same-origin click", async () => {
@@ -193,6 +212,24 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const after = await observer.capture(job);
     const total = after.nodes.find((node) => node.text?.includes("Cart total"));
     expect(total?.text).toContain("$19");
+  });
+
+  it("uses a fresh observation generation after planned navigation", async () => {
+    const { observer, resolver, executor } = await wire();
+    const before = await observer.capture(job);
+    const beforeGeneration = session.currentNavigationGeneration;
+    const navigation = await resolver.resolve(navigate("/next"), before);
+
+    expect(await executor.execute(navigation, allowedPermit())).toEqual({ status: "ok" });
+    expect(session.currentNavigationGeneration).toBeGreaterThan(beforeGeneration);
+    expect(session.hasGraph(before.graphId)).toBe(false);
+
+    const after = await observer.capture(job);
+    const nextAction = await resolver.resolve(
+      click(nodeNamed(after, "Next action").id),
+      after,
+    );
+    expect(await executor.execute(nextAction, allowedPermit())).toEqual({ status: "ok" });
   });
 
   it("rejects an unknown node without clicking", async () => {
@@ -536,6 +573,226 @@ describe("Playwright resolve + execute against real Chromium", () => {
       payload: { status: "blocked", errorCode: "OriginViolation" },
     });
   });
+
+  it("blocks an observation-to-resolution navigation bounce before locator reads", async () => {
+    const graphId = "run-pre-resolution-bounce:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    const count = vi.fn(async () => 1);
+    const sideEffect = vi.fn(async () => undefined);
+    const controlled = await startControllableTrackedFakeSession(() => ({
+      count,
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+      getAttribute: vi.fn(async () => null),
+      click: sideEffect,
+    }));
+    session = controlled.trackedSession;
+    const traces = new InMemoryTraceStore();
+    const policyGate = { authorize: vi.fn(async () => ({ status: "allowed", reason: "not reached" } as const)) };
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => {
+          session.registerObservation(graphId, {
+            descriptors: new Map([[nodeId, descriptor]]),
+            artifacts: [],
+          });
+          return graph;
+        },
+      },
+      decisionProvider: {
+        decide: async () => {
+          controlled.navigate(cross.url);
+          controlled.navigate(fixture.url);
+          return click(nodeId);
+        },
+      },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate,
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-pre-resolution-bounce",
+      runId: "run-pre-resolution-bounce",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-pre-resolution-bounce");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(count).not.toHaveBeenCalled();
+    expect(policyGate.authorize).not.toHaveBeenCalled();
+    expect(sideEffect).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(0);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
+  });
+
+  it("blocks a resolution-to-execution navigation bounce before executor reads", async () => {
+    const graphId = "run-pre-execution-bounce:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    const count = vi.fn(async () => 1);
+    const isVisible = vi.fn(async () => true);
+    const sideEffect = vi.fn(async () => undefined);
+    const controlled = await startControllableTrackedFakeSession(() => ({
+      count,
+      isVisible,
+      isEnabled: vi.fn(async () => true),
+      getAttribute: vi.fn(async () => null),
+      click: sideEffect,
+    }));
+    session = controlled.trackedSession;
+    const traces = new InMemoryTraceStore();
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => {
+          session.registerObservation(graphId, {
+            descriptors: new Map([[nodeId, descriptor]]),
+            artifacts: [],
+          });
+          return graph;
+        },
+      },
+      decisionProvider: { decide: async () => click(nodeId) },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: {
+        authorize: async () => {
+          controlled.navigate(cross.url);
+          controlled.navigate(fixture.url);
+          return { status: "allowed", reason: "navigation raced execution" };
+        },
+      },
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-pre-execution-bounce",
+      runId: "run-pre-execution-bounce",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-pre-execution-bounce");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(count).toHaveBeenCalledOnce();
+    expect(isVisible).not.toHaveBeenCalled();
+    expect(sideEffect).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
+  });
+
+  it.each(["input", "select"] as const)(
+    "blocks %s when navigation bounces while value resolution is pending",
+    async (kind) => {
+      const graphId = `run-value-bounce-${kind}:observation:1`;
+      const nodeId = "n-0-safe-control";
+      const descriptor: LocatorDescriptor = {
+        kind: "role",
+        role: kind === "input" ? "textbox" : "combobox",
+        name: "Safe control",
+      };
+      const graph: ObservationGraph = {
+        graphId,
+        url: fixture.url,
+        nodes: [{ id: nodeId, role: descriptor.role, name: "Safe control", confidence: 1 }],
+      };
+      let releaseValue: (() => void) | undefined;
+      let markValueStarted: (() => void) | undefined;
+      const valueRelease = new Promise<void>((resolve) => { releaseValue = resolve; });
+      const valueStarted = new Promise<void>((resolve) => { markValueStarted = resolve; });
+      const fill = vi.fn(async () => undefined);
+      const selectOption = vi.fn(async () => undefined);
+      const controlled = await startControllableTrackedFakeSession(() => ({
+        count: vi.fn(async () => 1),
+        isVisible: vi.fn(async () => true),
+        isEnabled: vi.fn(async () => true),
+        getAttribute: vi.fn(async () => null),
+        fill,
+        selectOption,
+      }));
+      session = controlled.trackedSession;
+      const traces = new InMemoryTraceStore();
+      const valueProvider = {
+        resolve: vi.fn(async () => {
+          markValueStarted?.();
+          await valueRelease;
+          return "private-value";
+        }),
+      };
+      const runtime = new ExecutionRuntime({
+        observer: {
+          capture: async () => {
+            session.registerObservation(graphId, {
+              descriptors: new Map([[nodeId, descriptor]]),
+              artifacts: [],
+            });
+            return graph;
+          },
+        },
+        decisionProvider: { decide: async () => valued(kind, nodeId, `value.${kind}`) as never },
+        resolver: new PlaywrightActionResolver(session),
+        policyGate: new AllowAllRunnerPolicyGate(),
+        actionExecutor: new PlaywrightActionExecutor(session, valueProvider),
+        verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+        traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+        objectiveOnlyMaximumWallClockMs: 5_000,
+        objectiveOnlyMaximumModelTokens: 100,
+      });
+
+      const execution = runtime.run({
+        ...job,
+        jobId: `job-value-bounce-${kind}`,
+        runId: `run-value-bounce-${kind}`,
+        target: { kind: "web", url: fixture.url },
+        plan: {
+          missionId: "mission-value-bounce",
+          missionRevision: 1,
+          testCaseId: `case-value-bounce-${kind}`,
+          steps: [{ stepIndex: 0, kind, target: { role: descriptor.role, purpose: "set value" }, valueRef: `value.${kind}` }],
+          expectedClaimIds: ["claim-value-bounce"],
+          budget: { maximumStepsPerJob: 1, maximumWallClockMs: 5_000, maximumModelTokens: 100 },
+        },
+      });
+      await valueStarted;
+      controlled.navigate(cross.url);
+      controlled.navigate(fixture.url);
+      releaseValue?.();
+
+      await expect(execution).resolves.toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+      expect(valueProvider.resolve).toHaveBeenCalledOnce();
+      expect(fill).not.toHaveBeenCalled();
+      expect(selectOption).not.toHaveBeenCalled();
+      expect(traces.eventsFor(`run-value-bounce-${kind}`).at(-1)).toMatchObject({
+        stage: "run_completed",
+        payload: { status: "blocked", errorCode: "OriginViolation" },
+      });
+    },
+  );
 
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
     const crossOriginContent = "private cross-origin account data";

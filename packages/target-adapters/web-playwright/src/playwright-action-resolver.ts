@@ -28,6 +28,7 @@ export class PlaywrightActionResolver implements ActionResolver {
     if (action.kind === "window") {
       throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
     }
+    const navigationGeneration = this.session.requireCurrentObservationGeneration(graph.graphId);
     if (action.kind === "navigate") {
       let url: URL;
       try {
@@ -42,21 +43,18 @@ export class PlaywrightActionResolver implements ActionResolver {
         throw new WebTargetError("OriginViolation", "The planned navigation leaves the Job target origin.");
       }
       return this.session.withPage(async (page) => {
-        this.session.assertPageTargetOrigin(page);
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
         const resolved = { targetKind: "web", kind: "navigate", url: url.href } as const;
-        this.session.assertPageTargetOrigin(page);
-        return resolved;
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        return this.session.bindResolvedAction(resolved, navigationGeneration);
       });
-    }
-    if (!this.session.hasGraph(graph.graphId)) {
-      throw new WebTargetError(
-        "StaleObservation",
-        `Graph ${graph.graphId} is not the session's current observation.`,
-      );
     }
     if (action.kind === "scroll" && action.target === undefined) {
       return this.session.withPage(async (page) => {
-        this.session.assertPageTargetOrigin(page);
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
         const resolved = {
           targetKind: "web",
           kind: "scroll",
@@ -64,8 +62,9 @@ export class PlaywrightActionResolver implements ActionResolver {
           direction: action.direction,
           amount: action.amount,
         } as const;
-        this.session.assertPageTargetOrigin(page);
-        return resolved;
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        return this.session.bindResolvedAction(resolved, navigationGeneration);
       });
     }
     const actionTarget = action.target;
@@ -84,10 +83,11 @@ export class PlaywrightActionResolver implements ActionResolver {
     }
 
     return this.session.withPage(async (page) => {
-      const readOnExpectedOrigin = <T>(read: () => Promise<T>): Promise<T> =>
-        this.session.readOnExpectedOrigin(page, read);
+      this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+      const readForObservation = <T>(read: () => Promise<T>): Promise<T> =>
+        this.session.readForObservation(page, graph.graphId, navigationGeneration, read);
       const locator = locatorFor(page, descriptor);
-      const count = await readOnExpectedOrigin(() => locator.count());
+      const count = await readForObservation(() => locator.count());
 
       if (count === 0) {
         throw new WebTargetError(
@@ -132,8 +132,9 @@ export class PlaywrightActionResolver implements ActionResolver {
           graphId: graph.graphId,
         };
       }
-      this.session.assertPageTargetOrigin(page);
-      return resolved;
+      this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+      this.session.assertPageTargetOrigin(page, navigationGeneration);
+      return this.session.bindResolvedAction(resolved, navigationGeneration);
     });
   }
 }

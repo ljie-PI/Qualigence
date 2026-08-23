@@ -17,38 +17,37 @@ export interface PlaywrightObserverHooks {
 
 async function captureScreenshot(
   page: Page,
-  assertTargetOrigin: () => void,
+  assertCaptureAuthority: () => void,
 ): Promise<Uint8Array> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assertTargetOrigin();
+    assertCaptureAuthority();
     let screenshot: Uint8Array;
     try {
       screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
     } catch (error) {
-      assertTargetOrigin();
+      assertCaptureAuthority();
       lastError = error;
       await page.waitForTimeout(50);
       continue;
     }
-    assertTargetOrigin();
+    assertCaptureAuthority();
     return screenshot;
   }
   throw lastError;
 }
 
 async function readPageValue<T>(
-  page: Page,
-  assertTargetOrigin: () => void,
+  assertCaptureAuthority: () => void,
   read: () => Promise<T>,
 ): Promise<T> {
-  assertTargetOrigin();
+  assertCaptureAuthority();
   try {
     const value = await read();
-    assertTargetOrigin();
+    assertCaptureAuthority();
     return value;
   } catch (error) {
-    assertTargetOrigin();
+    assertCaptureAuthority();
     throw error;
   }
 }
@@ -243,16 +242,16 @@ export class PlaywrightObserver implements Observer {
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
-      const assertTargetOrigin = (): void => {
-        this.session.assertPageTargetOrigin(page);
+      const navigationGeneration = this.session.currentNavigationGeneration;
+      const assertCaptureAuthority = (): void => {
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
       };
       const captured = await readPageValue(
-        page,
-        assertTargetOrigin,
+        assertCaptureAuthority,
         async () => (await page.evaluate(collectCandidates)) as ObservationCandidate[],
       );
       await this.hooks.afterDomCollection?.();
-      assertTargetOrigin();
+      assertCaptureAuthority();
       const raw = captured.map((candidate) => ({
         role: candidate.role,
         ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
@@ -260,34 +259,35 @@ export class PlaywrightObserver implements Observer {
         ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
-      const url = this.session.redactSensitiveText(this.session.assertPageTargetOrigin(page));
+      const url = this.session.redactSensitiveText(
+        this.session.assertPageTargetOrigin(page, navigationGeneration),
+      );
       const title = this.session.redactSensitiveText(await readPageValue(
-        page,
-        assertTargetOrigin,
+        assertCaptureAuthority,
         () => page.title(),
       ));
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
-      assertTargetOrigin();
+      assertCaptureAuthority();
       const { graph, descriptors } = buildObservationGraph(
         job.runId,
         ordinal,
         raw,
         { url, ...(title !== "" ? { title } : {}) },
       );
-      assertTargetOrigin();
+      assertCaptureAuthority();
       const graphWithRefs: ObservationGraph = {
         ...graph,
         artifactRefs: artifactNames,
       };
 
-      const screenshot = await captureScreenshot(page, assertTargetOrigin);
-      assertTargetOrigin();
+      const screenshot = await captureScreenshot(page, assertCaptureAuthority);
+      assertCaptureAuthority();
       const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
       this.session.registerCapturedObservation(page, graphWithRefs.graphId, {
         descriptors,
         artifacts,
-      });
+      }, navigationGeneration);
       return graphWithRefs;
     });
   }
