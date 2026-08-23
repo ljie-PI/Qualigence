@@ -53,6 +53,7 @@ component: complete
 production_wiring: present
 verification: passed; pending dedicated PR
 pull_request: pending
+review_fix_product_head: `7c5cc19a4e38c8566758db8ff1f7bc7b63b29fdc`
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
@@ -64,15 +65,22 @@ pull_request: pending
 - The shared SQLite/PostgreSQL contract proves semantic replay without allocator
   calls, stable different-command conflicts, stale Mission/Plan revision/hash/
   status/version rejection without writes, failure rollback after each of nine
-  writes, concurrent writers, process restart, tenant isolation, forced RLS, and
-  immutable lineage.
+  writes, deterministic true-overlap same-key/same-command and
+  same-key/different-command races, stale different-key/version conflict, process
+  restart, tenant isolation, forced RLS, and one atomic immutable lineage.
+- Mission creation now pins the approved Test Plan ID/revision/hash and Target
+  revision/hash in the immutable compiled Mission and dispatch binding. Mission
+  start compares those values with the authoritative current Plan row/head and
+  Target revision before any allocator or write; it never derives the expected
+  Plan hash from the current row. The shared SQLite/PostgreSQL contract includes
+  a pre-load stale Plan mutation with zero writes.
 - Focused Gate
   `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts`
-  passed 4 files / 54 tests with Docker PostgreSQL and explicit Git OpenSSL.
-  Supplemental migration/provider verification passed 1 file / 12 tests via
-  `corepack pnpm vitest run tests/contract/postgres/postgres-runtime.test.ts`.
-  `corepack pnpm install --frozen-lockfile`, `corepack pnpm typecheck`, and
-  `git diff --check` passed. External E2E and the full suite were not run.
+  passed 4 files / 61 tests with Docker PostgreSQL and explicit Git OpenSSL.
+  Storage conformance passed 1 file / 9 tests and the Docker PostgreSQL runtime
+  provider passed 1 file / 12 tests. Final root typecheck and diff-check results
+  are recorded by the exact review-fix head. External E2E was not run before
+  fresh review.
 
 ### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
 
