@@ -1,6 +1,6 @@
 # Issue Tracker: Local Markdown
 
-Issues and specs for this repo live as Markdown files under `.scratch/`. GitHub pull requests and GitHub Issues are not request or triage surfaces for this workflow.
+Implementation issues and specs for this repo are tracked Markdown files under `.scratch/`. GitHub pull requests and GitHub Issues are not general request or triage surfaces. The sole exception is a deferred, non-blocking advanced-hardening finding produced by scoped review: create one GitHub Issue for that follow-up and do not implement it in the current ticket.
 
 ## Conventions
 
@@ -16,11 +16,11 @@ When a skill says to fetch a ticket, read the referenced path. The user will nor
 
 ## Closure Tasks
 
-The production-closure plan is the task authority. Create or update a local issue when a task is blocked, review identifies work outside its approved Files block, or a deferred non-blocking finding needs an owner.
+The tracked umbrella spec and ticket files are the production-closure authority. Create or update a ticket when implementation work is planned or a core blocker stops its owning ticket. Do not create recursive local remediation tickets after review.
 
 Every closure issue must record:
 
-- Closure task and plan section.
+- Closure ticket and legacy allocation, when applicable.
 - A precise fixed point: base SHA and reviewed head SHA.
 - Affected context from `CONTEXT-MAP.md`.
 - Finding severity: Critical, Important, Minor, or Suggestion.
@@ -30,7 +30,18 @@ Every closure issue must record:
 
 ## Review Findings
 
-`/code-review` has separate Standards and Spec axes. Record each blocking finding independently. Critical and Important findings block merge and dependent work owned by that finding's task. After a fix or restack, update the local issue with the new head SHA, rerun the affected Gates, and run a fresh scoped review.
+`/code-review` has separate Standards and Spec axes. Every round reviews the complete applicable behavior matrix and whole diff. Critical findings block. Important findings block only when they violate explicit acceptance, an applicable existing architecture/security invariant, a public or persisted contract, a required Gate, or primary-workflow correctness/data integrity. After a core fix, rerun affected Gates and a fresh complete-matrix review.
+
+## Deferred Follow-ups
+
+Advanced hardening is a new threat model, environment, exhaustive defense-in-depth requirement, or protection beyond the current ticket and existing invariants. A Critical finding is always a core blocker. Non-Critical advanced hardening is non-blocking unless the user promotes it into scope.
+
+For each deferred advanced-hardening finding:
+
+- Create one GitHub Issue in `ljie-PI/Qualigence` after the scoped review.
+- Include source ticket, branch or PR, fixed/reviewed head SHA, severity/risk, authority citation, affected files/Gates, and acceptance criteria.
+- Do not add it as a blocker, change the current branch for it, or begin implementation automatically.
+- Keep core implementation tickets and their dependency graph in Local Markdown.
 
 Never put secrets, PRD plaintext, raw evidence, tokens, certificates, connection strings, or customer identifiers in a local issue.
 
