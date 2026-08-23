@@ -63,9 +63,25 @@ export type {
   MissionDispatchDescriptor,
   MissionExecutionRecord,
   MissionJobExecution,
+  MissionSchedulingSnapshot,
   PrdMissionRepository,
   SaveCompiledMissionInput,
 } from "./application/prd-mission-repository.js";
+
+export { missionStartCommandHash, MissionSchedulingError, MissionSchedulingService } from "./application/mission-scheduling-service.js";
+export type {
+  AcceptedMissionExecutionJob,
+  MissionSchedulingErrorCode,
+  MissionSchedulingIds,
+  MissionSchedulingRepository,
+  ScheduleMissionInput,
+  ScheduleMissionJob,
+  SchedulingMission,
+  SchedulingMissionJob,
+  ScheduledMission,
+  ScheduledRunIdentity,
+  StartMissionCommand,
+} from "./application/mission-scheduling-service.js";
 
 export type {
   AllocatePrdRevisionInput,

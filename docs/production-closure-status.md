@@ -30,7 +30,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | partial | present | blocked | Tickets 16-18 complete contract expansion, budgets, and production valueRef resolution; ticket 19 still owns the bounded indexed Runtime |
@@ -41,12 +41,38 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
 | Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
 
-Current relational schema is version 8. Migrations 001-008 are immutable;
-remaining allocations are 009 (Mission/Run/outbox and
-its atomic dispatch wakeup),
-010 (Intelligence leases/Result inbox), 011 (Intelligence wakeups/dispositions), 012
+Current relational schema is version 9. Migrations 001-009 are immutable;
+remaining allocations are 010 (Intelligence leases/Result inbox),
+011 (Intelligence wakeups/dispositions), 012
 (Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
- reserved without a reviewed plan amendment.
+reserved without a reviewed plan amendment.
+
+### Ticket 04 - Atomic Mission scheduling and dispatch outbox (2026-08-23)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR
+pull_request: pending
+
+- `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
+  scheduling application seam. No network operation occurs in its transaction;
+  dispatch delivery remains Ticket 05.
+- Additive migration 009 owns the Mission scheduling head, complete idempotency
+  command, logical attempt, Runner `AcceptedExecutionJob`, Run, immutable
+  Mission/Test Plan/Target/TestCase/project/Runner/policy provenance, dispatch
+  outbox, and atomic dispatch wakeup. Migrations 001-008 remain unchanged.
+- The shared SQLite/PostgreSQL contract proves semantic replay without allocator
+  calls, stable different-command conflicts, stale Mission/Plan revision/hash/
+  status/version rejection without writes, failure rollback after each of ten
+  writes, concurrent writers, process restart, tenant isolation, forced RLS, and
+  immutable lineage.
+- Focused Gate
+  `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts`
+  passed 4 files / 54 tests with Docker PostgreSQL and explicit Git OpenSSL.
+  Supplemental migration/provider verification passed 1 file / 12 tests via
+  `corepack pnpm vitest run tests/contract/postgres/postgres-runtime.test.ts`.
+  `corepack pnpm install --frozen-lockfile`, `corepack pnpm typecheck`, and
+  `git diff --check` passed. External E2E and the full suite were not run.
 
 ### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
 

@@ -18,6 +18,7 @@ import type {
   TestPlanRevision,
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
+import "./mission-scheduling-store.contract.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
 
@@ -169,7 +170,7 @@ async function seed(store: SqlitePrdMissionStore, plan: TestPlanRevision) {
 }
 
 describe("SqlitePrdMissionStore", () => {
-  it("creates the eight PRD-bridge tables via migration 002", async () => {
+  it("creates the PRD bridge and additive Mission scheduling tables", async () => {
     const runtime = await open();
     const rows = await runtime.db
       .selectFrom("sqlite_master")
@@ -186,6 +187,13 @@ describe("SqlitePrdMissionStore", () => {
       "mission_revisions",
       "execution_jobs",
       "execution_job_attempts",
+      "mission_scheduling_heads",
+      "mission_start_commands",
+      "mission_job_attempts",
+      "runner_execution_jobs",
+      "mission_execution_provenance",
+      "mission_dispatch_outbox",
+      "mission_dispatch_wakeups",
     ]) {
       expect(names.has(table), `missing table ${table}`).toBe(true);
     }

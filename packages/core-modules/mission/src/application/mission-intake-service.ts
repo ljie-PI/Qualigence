@@ -4,7 +4,7 @@ import { MissionCompiler } from "./mission-compiler.js";
 import type { DispatchableMission, PrdMissionRepository } from "./prd-mission-repository.js";
 import type { TestPlanRepository } from "./test-plan-repository.js";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
-import type { TestMission } from "../domain/test-mission.js";
+import type { MissionStatus, TestMission } from "../domain/test-mission.js";
 import type { Clock } from "@qualigence/shared-kernel";
 
 export class MissionIntakeError extends Error {
@@ -32,13 +32,14 @@ export interface MissionIntakeResult {
   readonly missionId: string;
   readonly projectId: string;
   readonly revision: number;
+  readonly version: number;
   readonly targetId: string;
   readonly targetVersion: number;
   readonly targetSnapshotHash: string;
   readonly runnerId: string;
   readonly planId: string;
   readonly planVersion: number;
-  readonly status: "approved";
+  readonly status: MissionStatus;
 }
 
 function missionId(key: string): string {
@@ -75,13 +76,14 @@ function resultOf(mission: DispatchableMission): MissionIntakeResult {
     missionId: mission.missionId,
     projectId: mission.projectId,
     revision: mission.missionRevision,
+    version: mission.missionVersion ?? 1,
     targetId: binding.targetId,
     targetVersion: binding.targetVersion,
     targetSnapshotHash: binding.targetSnapshotHash,
     runnerId: binding.runnerId,
     planId: mission.planId,
     planVersion: binding.planVersion,
-    status: "approved",
+    status: mission.status,
   };
 }
 

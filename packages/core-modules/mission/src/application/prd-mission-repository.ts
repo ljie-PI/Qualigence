@@ -60,6 +60,7 @@ export interface DispatchableJob {
 export interface DispatchableMission {
   readonly missionId: string;
   readonly missionRevision: number;
+  readonly missionVersion?: number;
   readonly projectId: string;
   readonly planId: string;
   readonly prdId: string;
@@ -69,6 +70,21 @@ export interface DispatchableMission {
   readonly executionPolicy: ApprovedExecutionPolicy;
   readonly stopOnBlockedTestCase: boolean;
   readonly jobs: readonly DispatchableJob[];
+}
+
+export interface MissionSchedulingSnapshot extends DispatchableMission {
+  readonly missionVersion: number;
+  readonly compiledHash: string;
+  readonly planSnapshotHash: string;
+  readonly planSnapshotJson: string;
+  readonly jobs: readonly (DispatchableJob & {
+    readonly snapshotHash: string;
+    readonly budget: {
+      readonly maximumStepsPerJob: number;
+      readonly maximumWallClockMs: number;
+      readonly maximumModelTokens: number;
+    };
+  })[];
 }
 
 export type JobAttemptStatus = "passed" | "finding" | "blocked" | "error";

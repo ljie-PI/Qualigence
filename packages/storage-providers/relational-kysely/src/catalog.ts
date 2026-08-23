@@ -1241,6 +1241,67 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     foreignKeys: [{ columns: ["plan_id"], references: { table: "test_plan_heads", columns: ["plan_id"] } }],
     checks: [{ name: "test_plan_version_revisions_status_check", predicate: "status IN ('draft', 'approved')" }],
   },
+  // ---- Migration 009: Mission scheduling ------------------------------
+  {
+    name: "mission_scheduling_heads", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("mission_id"), i("mission_revision"), i("version"), t("compiled_hash")],
+    primaryKey: ["mission_id"], uniques: [],
+    foreignKeys: [{ columns: ["mission_id", "mission_revision"], references: { table: "missions", columns: ["mission_id", "revision"] } }], checks: [],
+  },
+  {
+    name: "mission_start_commands", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("idempotency_key"), t("command_hash"), t("mission_id"), i("expected_mission_version"), i("mission_revision"), t("mission_compiled_hash"), t("mission_snapshot_json"), t("result_json"), t("created_at")],
+    primaryKey: ["idempotency_key"],
+    uniques: [{ name: "mission_start_commands_mission_unique", columns: ["mission_id"] }],
+    foreignKeys: [{ columns: ["mission_id", "mission_revision"], references: { table: "missions", columns: ["mission_id", "revision"] } }], checks: [],
+  },
+  {
+    name: "mission_job_attempts", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("attempt_id"), t("mission_id"), i("mission_revision"), t("logical_job_id"), t("runner_job_id"), t("run_id"), t("status"), t("created_at")],
+    primaryKey: ["attempt_id"],
+    uniques: [
+      { name: "mission_job_attempts_runner_job_unique", columns: ["runner_job_id"] },
+      { name: "mission_job_attempts_run_unique", columns: ["run_id"] },
+    ],
+    foreignKeys: [
+      { columns: ["mission_id", "mission_revision"], references: { table: "missions", columns: ["mission_id", "revision"] } },
+      { columns: ["logical_job_id"], references: { table: "execution_jobs", columns: ["job_id"] } },
+      { columns: ["run_id"], references: { table: "execution_runs", columns: ["run_id"] } },
+    ],
+    checks: [{ name: "mission_job_attempts_status_check", predicate: "status IN ('pending_dispatch', 'accepted', 'passed', 'finding', 'blocked', 'error')" }],
+  },
+  {
+    name: "runner_execution_jobs", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("runner_job_id"), t("attempt_id"), t("runner_id"), t("accepted_job_json"), t("accepted_job_hash"), t("created_at")],
+    primaryKey: ["runner_job_id"],
+    uniques: [{ name: "runner_execution_jobs_attempt_unique", columns: ["attempt_id"] }],
+    foreignKeys: [{ columns: ["attempt_id"], references: { table: "mission_job_attempts", columns: ["attempt_id"] } }], checks: [],
+  },
+  {
+    name: "mission_execution_provenance", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("attempt_id"), t("project_id"), t("mission_id"), i("mission_revision"), t("mission_compiled_hash"), t("mission_snapshot_json"), t("logical_job_id"), t("test_case_snapshot_json"), t("test_case_snapshot_hash"), t("plan_id"), i("plan_version"), t("plan_snapshot_hash"), t("plan_snapshot_json"), t("target_id"), i("target_version"), t("target_snapshot_hash"), t("target_snapshot_json"), t("runner_id"), t("policy_json"), t("policy_hash"), t("created_at")],
+    primaryKey: ["attempt_id"], uniques: [],
+    foreignKeys: [{ columns: ["attempt_id"], references: { table: "mission_job_attempts", columns: ["attempt_id"] } }], checks: [],
+  },
+  {
+    name: "mission_dispatch_outbox", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("attempt_id"), t("mission_id"), t("runner_id"), t("runner_job_id"), t("run_id"), t("idempotency_key"), t("required_capabilities_json"), t("accepted_job_json"), t("status"), i("version"), t("created_at")],
+    primaryKey: ["attempt_id"],
+    uniques: [
+      { name: "mission_dispatch_outbox_runner_job_unique", columns: ["runner_job_id"] },
+      { name: "mission_dispatch_outbox_run_unique", columns: ["run_id"] },
+      { name: "mission_dispatch_outbox_command_job_unique", columns: ["idempotency_key", "runner_job_id"] },
+    ],
+    foreignKeys: [{ columns: ["attempt_id"], references: { table: "mission_job_attempts", columns: ["attempt_id"] } }],
+    checks: [{ name: "mission_dispatch_outbox_status_check", predicate: "status IN ('pending', 'accepted', 'blocked')" }],
+    partialIndexes: [{ name: "mission_dispatch_outbox_pending", columns: ["created_at", "attempt_id"], predicate: "status = 'pending'" }],
+  },
+  {
+    name: "mission_dispatch_wakeups", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
+    columns: [t("wakeup_id"), i("generation"), t("updated_at")],
+    primaryKey: ["wakeup_id"], uniques: [], foreignKeys: [],
+    checks: [{ name: "mission_dispatch_wakeups_generation_check", predicate: "generation > 0" }],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1251,7 +1312,8 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 5, name: "investigation-review", tables: tablesFromTo("investigation_cases", "evidence_audit_events") },
   { version: 6, name: "runner-control", tables: tablesFromTo("runner_sessions", "execution_completions") },
   { version: 7, name: "local-run-intake", tables: tablesFromTo("local_run_intakes", "local_run_intakes") },
-  { version: 8, name: "target-test-plan-revisions", tables: tablesFrom("project_targets") },
+  { version: 8, name: "target-test-plan-revisions", tables: tablesFromTo("project_targets", "test_plan_version_revisions") },
+  { version: 9, name: "mission-scheduling", tables: tablesFrom("mission_scheduling_heads") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

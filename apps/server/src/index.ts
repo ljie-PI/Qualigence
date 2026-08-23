@@ -1,4 +1,5 @@
 export { buildServer } from "./server.js";
+export { MissionDispatchService } from "./mission-dispatch-service.js";
 export { bootstrapServerDatabase } from "./bootstrap.js";
 export type { ServerBootstrapInput } from "./bootstrap.js";
 export { provisionAuxSchema } from "./aux-schema.js";

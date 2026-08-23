@@ -18,6 +18,8 @@ import type {
   ReviewTaskDto,
   RunDto,
   SkillVersionDto,
+  StartMissionBody,
+  StartMissionResultDto,
   TargetDto,
   TestPlanDto,
 } from "@qualigence/public-api";
@@ -163,6 +165,17 @@ export class PublicApiClient {
       body,
       idempotencyKey: options.idempotencyKey,
     });
+  }
+
+  async startMission(
+    missionId: string,
+    body: StartMissionBody,
+    options: MutationOptions,
+  ): Promise<CommandEnvelope<StartMissionResultDto>> {
+    return this.request<CommandEnvelope<StartMissionResultDto>>(
+      `/v1/missions/${encodeURIComponent(missionId)}/start`,
+      { method: "POST", body, idempotencyKey: options.idempotencyKey },
+    );
   }
 
   async listRuns(): Promise<ListEnvelope<RunDto>> {

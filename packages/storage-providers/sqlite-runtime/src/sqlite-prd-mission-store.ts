@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrdDocument, PrdSourceRef } from "@qualigence/context-intake";
 import type {
   DispatchableJob,
@@ -7,6 +8,7 @@ import type {
   MissionDispatchDescriptor,
   MissionExecutionRecord,
   MissionJobExecution,
+  MissionSchedulingSnapshot,
   MissionStatus,
   PrdMissionRepository,
   SaveCompiledMissionInput,
@@ -135,6 +137,8 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
         .onConflict((oc) => oc.columns(["mission_id", "revision"]).doNothing())
         .execute();
 
+      await db.insertInto("mission_scheduling_heads").values({ mission_id: mission.missionId, mission_revision: mission.missionRevision, version: 1, compiled_hash: mission.compiledHash }).onConflict((oc) => oc.column("mission_id").doNothing()).execute();
+
       for (const job of mission.jobs) {
         await db
           .insertInto("execution_jobs")
@@ -202,9 +206,11 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
       snapshot: JSON.parse(row.snapshot_json) as TestCase,
     }));
 
+    const schedulingHead = await db.selectFrom("mission_scheduling_heads").select("version").where("mission_id", "=", missionId).executeTakeFirst();
     return {
       missionId: mission.mission_id,
       missionRevision: mission.revision,
+      missionVersion: schedulingHead?.version ?? 1,
       projectId: mission.project_id,
       planId: mission.plan_id,
       prdId: mission.prd_id,
@@ -214,6 +220,37 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
       executionPolicy: compiledMission.executionPolicy,
       stopOnBlockedTestCase: mission.stop_on_blocked === 1,
       jobs,
+    };
+  }
+
+  async loadMissionForScheduling(missionId: string): Promise<MissionSchedulingSnapshot | undefined> {
+    const mission = await this.runtime.db.selectFrom("missions").selectAll().where("mission_id", "=", missionId).orderBy("revision", "desc").executeTakeFirst();
+    if (mission === undefined) return undefined;
+    const compiledRow = await this.runtime.db.selectFrom("mission_revisions").select("compiled_json").where("mission_id", "=", missionId).where("revision", "=", mission.revision).executeTakeFirstOrThrow();
+    const compiled = JSON.parse(compiledRow.compiled_json) as CompiledMission;
+    const jobs = await this.runtime.db.selectFrom("execution_jobs").selectAll().where("mission_id", "=", missionId).where("mission_revision", "=", mission.revision).orderBy("job_id").execute();
+    const schedulingHead = await this.runtime.db.selectFrom("mission_scheduling_heads").select("version").where("mission_id", "=", missionId).executeTakeFirst();
+    const planSnapshot = await planSnapshotJson(this.runtime.db, mission.plan_id, (JSON.parse(mission.dispatch_json) as MissionDispatchDescriptor).binding?.planVersion);
+    return {
+      missionId,
+      missionRevision: mission.revision,
+      missionVersion: schedulingHead?.version ?? 1,
+      compiledHash: mission.compiled_hash,
+      projectId: mission.project_id,
+      planId: mission.plan_id,
+      planSnapshotHash: planSnapshot === undefined ? "" : createHash("sha256").update(planSnapshot).digest("hex"),
+      planSnapshotJson: planSnapshot ?? "",
+      prdId: mission.prd_id,
+      prdRevision: mission.prd_revision,
+      status: mission.status as MissionStatus,
+      dispatch: JSON.parse(mission.dispatch_json) as MissionDispatchDescriptor,
+      executionPolicy: compiled.executionPolicy,
+      stopOnBlockedTestCase: mission.stop_on_blocked === 1,
+      jobs: jobs.map((job) => {
+        const compiledJob = compiled.jobs.find((candidate) => candidate.jobId === job.job_id);
+        if (compiledJob === undefined) throw new Error(`Missing compiled Job ${job.job_id}.`);
+        return { jobId: job.job_id, testCaseId: job.test_case_id, objective: job.objective, requiredCapabilities: JSON.parse(job.required_capabilities_json) as string[], status: job.status as ExecutionJobStatus, sourceRefs: JSON.parse(job.source_refs_json) as PrdSourceRef[], snapshotHash: job.snapshot_hash, snapshot: JSON.parse(job.snapshot_json) as TestCase, budget: compiledJob.budget };
+      }),
     };
   }
 
@@ -331,4 +368,10 @@ export class SqlitePrdMissionStore implements PrdMissionRepository {
       jobs,
     };
   }
+}
+
+async function planSnapshotJson(db: SqliteRuntime["db"], planId: string, version: number | undefined): Promise<string | undefined> {
+  if (version === undefined) return undefined;
+  const row = await db.selectFrom("test_plan_version_revisions").select("plan_json").where("plan_id", "=", planId).where("version", "=", version).executeTakeFirst();
+  return row?.plan_json;
 }

@@ -238,7 +238,7 @@ function groundedProposal(document: PrdDocument): unknown {
 
 function configFor(model: MockModelServer, dataDir: string): CliConfig {
   return {
-    model: { baseUrl: model.baseUrl, apiKey: API_KEY, modelName: MODEL_NAME },
+    model: { baseUrl: model.baseUrl, apiKey: API_KEY, modelName: MODEL_NAME, maximumTokensPerCall: 1_000 },
     dataDir,
   };
 }
@@ -338,6 +338,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
       if (!approved.ok) return;
 
       // 5. Compile the approved plan into an immutable, versioned Mission.
+      const policyIssuedAt = new Date().toISOString();
       const mission: TestMission = {
         missionId: "mission-cart",
         projectId: document.projectId,
@@ -351,7 +352,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
           maximumModelTokens: 100_000,
           stopOnBlockedTestCase: true,
         },
-        executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: [fixture.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-01T00:00:00.000Z", expiresAt: "2099-08-01T00:01:00.000Z" },
+        executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: [fixture.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: policyIssuedAt, expiresAt: new Date(Date.parse(policyIssuedAt) + 120_000).toISOString() },
         status: "approved",
       };
       const compiled = new MissionCompiler().compile(approved.value, mission, target);
