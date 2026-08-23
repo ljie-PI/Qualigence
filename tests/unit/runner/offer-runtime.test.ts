@@ -1,42 +1,196 @@
-import { describe, expect, it, vi } from "vitest";
-import type { RunnerCapabilities } from "@qualigence/runner-protocol";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  ExecutionEventBatch,
+  ExecutionJobLease,
+  ExecutionJobOffer,
+  RunnerCapabilities,
+  TraceEvent,
+} from "@qualigence/runner-protocol";
 import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
+import type { RunnerSpool } from "@qualigence/runner-spool";
+import { WebTargetError } from "@qualigence/web-playwright";
 
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
 const executedOffers: unknown[] = [];
 const executionSignals: Array<AbortSignal | undefined> = [];
+const modelConstructions: string[] = [];
 vi.mock("@qualigence/model-agent", () => ({
   ModelBackedDecisionProvider: class {
-    constructor(_gateway: unknown, _model: string) {}
+    constructor(_gateway: unknown, _model: string) {
+      modelConstructions.push("decision");
+    }
   },
-  ModelBackedVerifier: class {},
+  ModelBackedVerifier: class {
+    constructor() {
+      modelConstructions.push("verifier");
+    }
+  },
 }));
-vi.mock("../../../apps/runner/src/job-executor.js", () => ({
-  LeasedJobExecutor: class {
+vi.mock("@qualigence/model-gateway", () => ({
+  ModelGateway: class {
+    constructor() {
+      modelConstructions.push("gateway");
+    }
+  },
+}));
+vi.mock("@qualigence/openai-compatible-model-provider", () => ({
+  OpenAICompatibleModelProvider: class {
+    constructor() {
+      modelConstructions.push("provider");
+    }
+  },
+}));
+vi.mock("../../../apps/runner/src/job-executor.js", async () => {
+  const actual = await vi.importActual<typeof import("../../../apps/runner/src/job-executor.js")>(
+    "../../../apps/runner/src/job-executor.js",
+  );
+  return {
+    ...actual,
+    LeasedJobExecutor: class {
     constructor(dependencies: { readonly policyGate: RunnerPolicyGate; readonly capabilities: RunnerCapabilities }) {
       executorGates.push(dependencies.policyGate);
       executorCapabilities.push(dependencies.capabilities);
     }
-    async execute(offer: unknown, _session: unknown, signal?: AbortSignal) {
+    async execute(
+      offer: unknown,
+      _session: unknown,
+      signal?: AbortSignal,
+      initialLease?: ExecutionJobLease,
+    ) {
       executedOffers.push(offer);
       executionSignals.push(signal);
       return {
-        lease: { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" },
+        lease: initialLease ?? { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" },
         completion: { jobId: "job-staging", runId: "run-staging", status: "passed" as const },
       };
     }
-  },
-}));
+    },
+  };
+});
 import { RunnerOfferRuntime, runnerCapabilities } from "../../../apps/runner/src/offer-runtime.js";
+
+const STARTUP_LEASE: ExecutionJobLease = {
+  jobId: "job-startup",
+  runId: "run-startup",
+  leaseToken: "lease-token",
+  leaseEpoch: 1,
+  expiresAt: "2099-08-18T00:01:00.000Z",
+};
+
+function admittedOffer(): ExecutionJobOffer {
+  return {
+    offerId: "offer-startup",
+    job: {
+      jobId: STARTUP_LEASE.jobId,
+      runId: STARTUP_LEASE.runId,
+      projectId: "project-test",
+      target: { kind: "web", url: "https://example.test/" },
+      objective: "exercise startup",
+      policy: {
+        policyId: "policy-startup",
+        environment: "isolated_test",
+        allowedOrigins: ["https://example.test"],
+        allowedActionKinds: ["click"],
+        maximumRisk: "Normal",
+        explorationAllowed: false,
+        issuedAt: "2099-08-18T00:00:00.000Z",
+        expiresAt: "2099-08-18T00:01:00.000Z",
+      },
+    },
+    requiredCapabilities: [],
+    leaseDurationMs: 30_000,
+  };
+}
+
+function recordingSpool(options: { readonly appendError?: Error; readonly acknowledgeError?: Error } = {}) {
+  const appended: TraceEvent[] = [];
+  let nextAcknowledgedSequence = 1;
+  const append = vi.fn(async (event: TraceEvent) => {
+    if (options.appendError !== undefined) throw options.appendError;
+    appended.push(event);
+  });
+  const pending = vi.fn(async (runId: string, fromSequence: number) =>
+    appended.filter((event) =>
+      event.runId === runId &&
+      event.sequenceNumber >= Math.max(fromSequence, nextAcknowledgedSequence)));
+  const acknowledge = vi.fn(async (_runId: string, nextExpectedSequenceNumber: number) => {
+    if (options.acknowledgeError !== undefined) throw options.acknowledgeError;
+    nextAcknowledgedSequence = nextExpectedSequenceNumber;
+  });
+  const spool: RunnerSpool = {
+    append,
+    pending,
+    acknowledge,
+    usage: async () => ({
+      bytes: 0,
+      events: appended.filter((event) => event.sequenceNumber >= nextAcknowledgedSequence).length,
+    }),
+  };
+  return { spool, appended, append, pending, acknowledge };
+}
 
 describe("RunnerOfferRuntime", () => {
   function config() {
     return { headed: false, navigationTimeoutMs: 1_000, actionTimeoutMs: 1_000, model: { baseUrl: "https://models.test", apiKey: "secret", modelName: "test" } } as never;
   }
 
+  beforeEach(() => {
+    executorGates.length = 0;
+    executorCapabilities.length = 0;
+    executedOffers.length = 0;
+    executionSignals.length = 0;
+    modelConstructions.length = 0;
+  });
+
   it("advertises no value-backed actions without a healthy provider", () => {
     expect(runnerCapabilities().actionKinds).toEqual(["navigate", "click", "scroll"]);
+  });
+
+  it("preserves capability denial before lease acceptance and target startup", async () => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(),
+      complete: vi.fn(),
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run({
+      ...admittedOffer(),
+      requiredCapabilities: ["unsupported:capability"],
+    })).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+    expect(session.accept).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+  });
+
+  it("does not construct or start a target when lease acceptance fails", async () => {
+    const failure = new Error("lease unavailable");
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(async () => { throw failure; }),
+      complete: vi.fn(),
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+
+    expect(session.accept).toHaveBeenCalledOnce();
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
   });
 
   it("blocks a policyless offer before target construction or browser navigation", async () => {
@@ -200,6 +354,189 @@ describe("RunnerOfferRuntime", () => {
     expect((executedOffers[0] as typeof offer).job).toBe(offeredJob);
     expect((executedOffers[0] as typeof offer).job.plan).toBe(plan);
     expect(executionSignals).toEqual([abort.signal]);
+  });
+
+  it.each([
+    ["StaleObservation", "blocked"],
+    ["UnknownObservationNode", "blocked"],
+    ["TargetNotFound", "blocked"],
+    ["AmbiguousTarget", "blocked"],
+    ["OriginViolation", "blocked"],
+    ["ActionTimedOut", "blocked"],
+    ["TargetNotVisible", "blocked"],
+    ["TargetDisabled", "blocked"],
+    ["ActionValueUnavailable", "blocked"],
+    ["UnsupportedAction", "blocked"],
+    ["BrowserLaunchFailed", "error"],
+    ["NavigationFailed", "error"],
+    ["NavigationTimedOut", "error"],
+    ["ActionInfrastructureFailure", "error"],
+    ["ConcurrentSessionOperation", "error"],
+    ["SessionClosed", "error"],
+  ] as const)("terminalizes startup WebTargetError %s as %s after accepting its lease", async (code, status) => {
+    const target = {
+      start: vi.fn(async () => { throw new WebTargetError(code); }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, appended, append, acknowledge } = recordingSpool();
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      submit: vi.fn(async (batch: ExecutionEventBatch) => ({
+        batchId: batch.batchId,
+        runId: batch.runId,
+        nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+      })),
+      complete: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    await runtime.run(admittedOffer());
+
+    expect(session.accept).toHaveBeenCalledOnce();
+    expect(session.accept).toHaveBeenCalledWith("offer-startup");
+    expect(session.accept.mock.invocationCallOrder[0]!).toBeLessThan(target.start.mock.invocationCallOrder[0]!);
+    expect(append).toHaveBeenCalledOnce();
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      runId: STARTUP_LEASE.runId,
+      sequenceNumber: 1,
+      stage: "run_completed",
+      payload: { status, errorCode: code },
+    });
+    expect(session.submit).toHaveBeenCalledOnce();
+    expect(session.submit.mock.calls[0]?.[0].events).toEqual(appended);
+    expect(acknowledge).toHaveBeenCalledOnce();
+    expect(session.complete).toHaveBeenCalledOnce();
+    expect(session.complete).toHaveBeenCalledWith(STARTUP_LEASE, {
+      jobId: STARTUP_LEASE.jobId,
+      runId: STARTUP_LEASE.runId,
+      status,
+      errorCode: code,
+    });
+    expect(acknowledge.mock.invocationCallOrder[0]!).toBeLessThan(session.complete.mock.invocationCallOrder[0]!);
+    expect(target.capture).not.toHaveBeenCalled();
+    expect(target.resolve).not.toHaveBeenCalled();
+    expect(target.execute).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+    expect(executedOffers).toEqual([]);
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not complete when startup terminal Trace append fails", async () => {
+    const failure = new Error("spool append unavailable");
+    const target = {
+      start: vi.fn(async () => { throw new WebTargetError("BrowserLaunchFailed"); }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, append, pending } = recordingSpool({ appendError: failure });
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      submit: vi.fn(),
+      complete: vi.fn(),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+
+    expect(session.accept).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledOnce();
+    expect(pending).not.toHaveBeenCalled();
+    expect(session.submit).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["submit", "acknowledge"] as const)("does not retry or complete when startup Trace %s fails", async (failurePoint) => {
+    const failure = new Error(`${failurePoint} unavailable`);
+    const target = {
+      start: vi.fn(async () => { throw new WebTargetError("NavigationFailed"); }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, appended, append, pending, acknowledge } = recordingSpool(
+      failurePoint === "acknowledge" ? { acknowledgeError: failure } : {},
+    );
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      submit: vi.fn(async (batch: ExecutionEventBatch) => {
+        if (failurePoint === "submit") throw failure;
+        return {
+          batchId: batch.batchId,
+          runId: batch.runId,
+          nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+        };
+      }),
+      complete: vi.fn(),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+
+    expect(append).toHaveBeenCalledOnce();
+    expect(appended).toHaveLength(1);
+    expect(pending).toHaveBeenCalledOnce();
+    expect(session.submit).toHaveBeenCalledOnce();
+    expect(acknowledge).toHaveBeenCalledTimes(failurePoint === "acknowledge" ? 1 : 0);
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("propagates an unexpected startup error after cleanup without terminalizing it", async () => {
+    const failure = new Error("programmer error");
+    const target = {
+      start: vi.fn(async () => { throw failure; }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, append } = recordingSpool();
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      submit: vi.fn(),
+      complete: vi.fn(),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+
+    expect(session.accept).toHaveBeenCalledOnce();
+    expect(append).not.toHaveBeenCalled();
+    expect(session.submit).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
   });
 
   it.each([

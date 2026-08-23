@@ -21,6 +21,15 @@ prove caller/lease abort propagation into a dispatched action and the stable,
 non-replayable `ActionOutcomeUnknown` terminal result. No other Runner behavior
 transfers into Ticket 19.
 
+Ticket 19 final formal-blocker authority/status amendment (2026-08-23):
+`tests/unit/runner/offer-runtime.test.ts` is added to the complete approved scope
+and focused Gate. It is production `RunnerOfferRuntime` caller/startup coverage
+only. It may change only to prove authoritative lease acceptance before target
+startup, expected pre-action target-error terminalization through the production
+Spool/upload lifecycle, exactly-once completion after ACK, cleanup after partial
+startup, and fail-closed Trace append/drain behavior. Capability/policy denial
+and connection/reconnect behavior remain unchanged.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -382,10 +391,11 @@ production_wiring: present
 verification: focused Gate passed; fresh review pending
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
-implementation_head: `27a5edb8475205157ccac8a41393faf28cce1100`
+final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
+implementation_head: same commit as this ledger entry
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-branch_commit_count: 9 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 10 commits ahead of `origin/main`, including this status commit
 pull_request: pending
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -464,6 +474,21 @@ pull_request: pending
   pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. This code changed after the prior Chromium E2E, so
   E2E was not rerun and remains pending a fresh exact-base review.
+- Final startup-terminalization remediation accepts the authoritative lease
+  before target construction/start, then keeps start, production Runtime setup,
+  Trace drain, completion, and partial-start cleanup in one lifecycle. Every
+  established startup `WebTargetError` uses the Runtime's stable blocked/error
+  classification, appends one `run_completed` through `SpoolingTraceRecorder`,
+  receives a `TraceUploadPump` submit/ACK, and completes the lease once without
+  model/provider/action execution. Append, submit, or ACK failure performs no
+  retry and no false completion; unexpected setup errors propagate after close.
+- TDD RED was 19 failures in `tests/unit/runner/offer-runtime.test.ts`, proving
+  target startup preceded lease acceptance and escaped Trace/completion/cleanup.
+  GREEN affected offer/job/runtime tests passed 3 files / 95 tests. The amended
+  Ticket 19 Gate passed 12 files / 211 tests with 1 pre-existing Task 21 skip;
+  root `corepack pnpm typecheck` and `git diff --check` passed. Connection and
+  disconnect behavior is unchanged. Chromium E2E was not rerun because code
+  changed after its reviewed head; a fresh exact-base review remains required.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 

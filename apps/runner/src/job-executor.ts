@@ -53,6 +53,18 @@ export interface LeasedJobResult {
   readonly window: LeaseWindow;
 }
 
+export function assertOfferCapabilities(
+  offer: ExecutionJobOffer,
+  runnerCapabilities: RunnerCapabilities,
+): void {
+  const negotiation = negotiateCapabilities(runnerCapabilities, offer.requiredCapabilities);
+  if (negotiation.outcome === "rejected") {
+    throw new RunnerAppError("CapabilityMismatch", "runner cannot satisfy the offer's requirements", {
+      details: { missingCapabilities: negotiation.rejection.missingCapabilities },
+    });
+  }
+}
+
 function defaultClocks(): LeaseWindowClocks {
   return {
     monotonicNow: (): number => Math.trunc(performance.now()),
@@ -94,15 +106,10 @@ export class LeasedJobExecutor {
     offer: ExecutionJobOffer,
     session: RunnerSession,
     signal?: AbortSignal,
+    acceptedLease?: ExecutionJobLease,
   ): Promise<LeasedJobResult> {
-    const negotiation = negotiateCapabilities(this.deps.capabilities, offer.requiredCapabilities);
-    if (negotiation.outcome === "rejected") {
-      throw new RunnerAppError("CapabilityMismatch", "runner cannot satisfy the offer's requirements", {
-        details: { missingCapabilities: negotiation.rejection.missingCapabilities },
-      });
-    }
-
-    const initialLease = await session.accept(offer.offerId);
+    assertOfferCapabilities(offer, this.deps.capabilities);
+    const initialLease = acceptedLease ?? await session.accept(offer.offerId);
     const window = new LeaseWindow(initialLease, this.clocks, {
       leaseDurationMs: offer.leaseDurationMs,
       actionDeadlineSafetyMarginMs: this.safetyMarginMs,
