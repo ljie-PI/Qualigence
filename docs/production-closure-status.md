@@ -458,9 +458,9 @@ core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
 core_blocker_fix_commit: same commit as this ledger entry
 dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
 dispatch_authority_fix_commit: same commit as this ledger entry
-implementation_head: same commit as this ledger entry
-reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
+implementation_head: `8fab60237c528a46623d8f341cc24c7c1714a1dd`
+reviewed_head: `b4cddef580919332fea577ab51d955703e4e8b43`
+chromium_e2e_head: `b4cddef580919332fea577ab51d955703e4e8b43`
 branch_commit_count: 17 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
@@ -597,6 +597,10 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 - Final branch verification after merging current `main` passed 14 files / 260
   tests with one existing Task 21 skip, including 8 real Chromium E2E cases.
   Root build, typecheck, diff check, and scoped Standards/Spec review passed.
+- After the final lease/capability/redirect fixes, the focused Gate passed 264
+  tests with one existing Task 21 skip and fresh review reported no blockers.
+  The post-review real Chromium acceptance then passed 1 file / 8 tests at the
+  reviewed head above. This final evidence update is status-only.
 - Final PR86 core-blocker remediation validates both offered requirements and
   immutable Plan action tokens against the composed Runner capabilities before
   lease acceptance. Forged input/select offers without a healthy value provider
