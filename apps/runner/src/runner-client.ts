@@ -67,9 +67,28 @@ export class RunnerClient {
   async serveNextOffer(signal: AbortSignal): Promise<ServedOffer> {
     const session = this.requireSession();
     const offer = await session.nextOffer(signal);
-    const result = await this.deps.executor.execute(offer, session, signal);
-    await this.drain(offer.job.runId);
-    await session.complete(result.lease, result.completion);
+    let finalized = false;
+    const result = await this.deps.executor.execute(
+      offer,
+      session,
+      signal,
+      undefined,
+      async ({ completion, signal: finalizationSignal, currentLease }) => {
+        finalized = true;
+        await new TraceUploadPump(
+          this.deps.spool,
+          session,
+          offer.job.runId,
+          this.batchLimit(session),
+        ).drain(finalizationSignal);
+        finalizationSignal.throwIfAborted();
+        await session.complete(currentLease(), completion);
+      },
+    );
+    if (!finalized) {
+      await this.drain(offer.job.runId);
+      await session.complete(result.lease, result.completion);
+    }
     return { runId: offer.job.runId, status: result.completion.status };
   }
 

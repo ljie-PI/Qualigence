@@ -1,7 +1,10 @@
 export {
+  ActionOutcomeUnknownError,
   ExecutionBlockedError,
   ExecutionPermit,
   ExecutionRuntime,
+  ExecutionTargetError,
+  TerminalTracePersistenceError,
   classifyDesktopActionRisk,
   isDesktopAction,
   isWebAction,
@@ -12,6 +15,8 @@ export {
 
 export type {
   ActionExecutor,
+  ActionAuthorizationWindow,
+  ActionDispatchSnapshot,
   ActionOutcome,
   ActionResolver,
   AgentContext,
@@ -22,6 +27,7 @@ export type {
   ExecutionPermitDescriptor,
   ExecutionRisk,
   ExecutionRuntimeDependencies,
+  ExecutionTargetErrorStatus,
   PolicyDecision,
   ProposedAction,
   ProposedActionKind,

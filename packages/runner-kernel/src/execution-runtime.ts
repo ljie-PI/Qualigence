@@ -5,6 +5,7 @@ import type {
   DecisionTracePayload,
   DeniedPolicyTracePayload,
   ExecutionCompletion,
+  ExecutionPlanStep,
   FindingEnvelope,
   ObservationGraph,
   ResolvedActionTracePayload,
@@ -75,7 +76,7 @@ interface LegacyResolvedWebClick {
  * owned by `@qualigence/desktop-contracts` and re-exported through Runner
  * Protocol.
  */
-export type ResolvedAction = ResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
+export type ResolvedAction = AnyResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
 export type AnyResolvedAction = AnyResolvedWebAction | LegacyResolvedWebClick | ResolvedDesktopAction;
 
 /** True when a resolved action targets a Windows Desktop app via UIA. */
@@ -173,24 +174,59 @@ export class ExecutionBlockedError extends Error {
   }
 }
 
+export class ActionOutcomeUnknownError extends Error {
+  readonly errorCode = "ActionOutcomeUnknown";
+
+  constructor() {
+    super("The action outcome could not be determined.");
+    this.name = "ActionOutcomeUnknownError";
+  }
+}
+
+export class TerminalTracePersistenceError extends Error {
+  readonly code = "TerminalTracePersistenceFailed";
+  readonly disposition = "terminal_persistence_failed";
+
+  constructor(cause: unknown) {
+    super("The terminal Trace event could not be persisted.", { cause });
+    this.name = "TerminalTracePersistenceError";
+  }
+}
+
+export type ExecutionTargetErrorStatus = "blocked" | "error";
+
+/** Adapter-neutral expected target failure that Runtime can terminalize safely. */
+export class ExecutionTargetError extends Error {
+  constructor(
+    readonly errorCode: string,
+    readonly completionStatus: ExecutionTargetErrorStatus,
+    message?: string,
+  ) {
+    super(message ?? errorCode);
+    this.name = "ExecutionTargetError";
+  }
+}
+
 export interface Observer {
   capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
 }
 
-export interface ExecutionDecisionProvider {
-  decide(context: AgentContext): Promise<ProposedAction>;
+export interface ExecutionDecisionProvider<TKind extends ProposedActionKind = "click"> {
+  decide(context: AgentContext): Promise<ProposedAction<TKind>>;
 }
 
 export interface AgentContext {
   readonly job: AcceptedExecutionJob;
   readonly observation: ObservationGraph;
+  readonly step?: ExecutionPlanStep;
+  readonly stepIndex?: number;
   readonly budget?: ExecutionBudget;
   readonly signal?: AbortSignal;
 }
 
-export interface ActionResolver {
+export interface ActionResolver<TKind extends ProposedActionKind = "click"> {
   resolve(
-    action: ProposedAction,
+    action: ProposedAction<TKind>,
     graph: ObservationGraph,
     signal?: AbortSignal,
   ): Promise<ResolvedAction>;
@@ -213,6 +249,15 @@ export interface ActionExecutor {
   execute(action: ResolvedAction, permit: ExecutionPermit, signal?: AbortSignal): Promise<ActionOutcome>;
 }
 
+/** Synchronous authority checked by an executor at the side-effect boundary. */
+export interface ActionAuthorizationWindow {
+  assertActionAuthorized(): void;
+}
+
+export interface ActionDispatchSnapshot {
+  readonly crossOriginNavigationCount: number;
+}
+
 export interface Verifier {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
@@ -221,8 +266,10 @@ export interface VerificationContext {
   readonly job: AcceptedExecutionJob;
   readonly before: ObservationGraph;
   readonly after: ObservationGraph;
-  readonly action: ResolvedAction;
-  readonly outcome: ActionOutcome;
+  readonly claimIds?: readonly string[];
+  readonly stepIndex?: number;
+  readonly action?: ResolvedAction;
+  readonly outcome?: ActionOutcome;
   readonly budget?: ExecutionBudget;
   readonly signal?: AbortSignal;
 }
@@ -237,42 +284,79 @@ export type TraceEventInput = TraceEvent extends infer TEvent
     : never
   : never;
 
-export interface ExecutionRuntimeDependencies {
+export interface ExecutionRuntimeDependencies<TKind extends ProposedActionKind = "click"> {
   readonly observer: Observer;
-  readonly decisionProvider: ExecutionDecisionProvider;
-  readonly resolver: ActionResolver;
+  readonly decisionProvider: ExecutionDecisionProvider<TKind>;
+  readonly resolver: ActionResolver<TKind>;
   readonly policyGate: RunnerPolicyGate;
   readonly actionExecutor: ActionExecutor;
+  readonly actionAuthorizationWindow?: ActionAuthorizationWindow;
   readonly verifier: Verifier;
   readonly traceRecorder: TraceRecorder;
   readonly budget?: ExecutionBudget;
   readonly objectiveOnlyMaximumWallClockMs?: number;
   readonly objectiveOnlyMaximumModelTokens?: number;
+  readonly terminalRecordingTimeoutMs?: number;
 }
 
 const executionPermitBrand: unique symbol = Symbol("ExecutionPermit");
+const DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS = 5_000;
 
 export class ExecutionPermit {
   readonly [executionPermitBrand] = true;
+  private dispatched = false;
+  private snapshot: ActionDispatchSnapshot | undefined;
 
   private constructor(
     readonly reason: string,
     readonly descriptor?: ExecutionPermitDescriptor,
+    private readonly authorizationWindow?: ActionAuthorizationWindow,
   ) {}
 
-  static fromAllowedDecision(decision: PolicyDecision): ExecutionPermit {
+  static fromAllowedDecision(
+    decision: PolicyDecision,
+    authorizationWindow?: ActionAuthorizationWindow,
+  ): ExecutionPermit {
     if (decision.status !== "allowed") {
       throw new Error("ExecutionPermit requires an allowed policy decision.");
     }
 
-    return new ExecutionPermit(decision.reason, decision.descriptor);
+    return new ExecutionPermit(decision.reason, decision.descriptor, authorizationWindow);
+  }
+
+  /**
+   * Recheck authority synchronously, then mark the exact point after which an
+   * executor must invoke its side effect without awaiting anything else.
+   */
+  assertAuthorizedForDispatch(
+    signal?: AbortSignal,
+    snapshot?: () => ActionDispatchSnapshot,
+  ): void {
+    signal?.throwIfAborted();
+    this.authorizationWindow?.assertActionAuthorized();
+    signal?.throwIfAborted();
+    this.snapshot = snapshot === undefined ? undefined : Object.freeze({ ...snapshot() });
+    this.dispatched = true;
+  }
+
+  get dispatchStarted(): boolean {
+    return this.dispatched;
+  }
+
+  get dispatchSnapshot(): ActionDispatchSnapshot | undefined {
+    return this.snapshot;
   }
 }
 
-export class ExecutionRuntime {
+export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
   private readonly budget: ExecutionBudget;
+  private readonly terminalRecordingTimeoutMs: number;
 
-  constructor(private readonly dependencies: ExecutionRuntimeDependencies) {
+  constructor(private readonly dependencies: ExecutionRuntimeDependencies<TKind>) {
+    this.terminalRecordingTimeoutMs = dependencies.terminalRecordingTimeoutMs ?? DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.terminalRecordingTimeoutMs) || this.terminalRecordingTimeoutMs <= 0) {
+      throw new Error("terminalRecordingTimeoutMs must be a positive safe integer.");
+    }
     if (dependencies.budget !== undefined) {
       this.budget = dependencies.budget;
       return;
@@ -287,50 +371,30 @@ export class ExecutionRuntime {
     });
   }
 
-  async run(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
+  async run(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ExecutionCompletion> {
     let budgetStarted = false;
+    let currentStepIndex: number | undefined;
     try {
       this.budget.begin(job);
       budgetStarted = true;
-      return await this.runUntilCompletion(job);
-    } catch (error) {
-      const errorCode = error instanceof ExecutionBlockedError
-        ? error.errorCode
-        : error instanceof ExecutionBudgetError
-          ? error.code
-          : undefined;
-      if (errorCode === undefined) {
-        throw error;
-      }
-
-      const status = errorCode === "ModelUsageUnavailable" ? "error" : "blocked";
+      let completion: ExecutionCompletion;
       try {
-        if (!budgetStarted) {
-          throw error;
-        }
-        await this.record({
-          runId: job.runId,
-          stage: "run_completed",
-          payload: {
-            status,
-            errorCode,
-          },
-        });
-      } catch (recordError) {
-        if (
-          !(recordError instanceof ExecutionBudgetError) ||
-          recordError.code !== "WallClockBudgetExceeded"
-        ) {
-          throw recordError;
-        }
+        completion = await this.runUntilCompletion(job, (stepIndex) => {
+          currentStepIndex = stepIndex;
+        }, signal);
+      } catch (error) {
+        const mapped = completionFromError(job, error);
+        if (mapped === undefined) throw error;
+        completion = mapped;
       }
 
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status,
-        errorCode,
-      };
+      try {
+        await this.recordTerminal(completion, job.plan === undefined ? undefined : currentStepIndex);
+        return completion;
+      } catch (cause) {
+        if (cause instanceof TerminalTracePersistenceError) throw cause;
+        throw new TerminalTracePersistenceError(cause);
+      }
     } finally {
       if (budgetStarted) {
         this.budget.finish(job.runId);
@@ -338,173 +402,241 @@ export class ExecutionRuntime {
     }
   }
 
-  private async runUntilCompletion(job: AcceptedExecutionJob): Promise<ExecutionCompletion> {
-    // Ticket 19 replaces this compatibility pipeline with the bounded indexed
-    // loop. Until then, only the current first action can own recorded stages.
-    const stepIndex = job.plan?.steps[0]?.stepIndex;
-    this.budget.beforeStep(job.runId, stepIndex ?? 0);
-    const observation = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.observer.capture(job, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "observation",
-      payload: observation,
-    });
+  private async runUntilCompletion(
+    job: AcceptedExecutionJob,
+    setCurrentStep: (stepIndex: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ExecutionCompletion> {
+    if (job.plan === undefined) {
+      return this.runObjectiveOnly(job, setCurrentStep, signal);
+    }
 
-    const decision = await this.withinWallClock(job.runId, (signal) =>
+    let firstObservation: ObservationGraph | undefined;
+    let lastAction: ResolvedAction | undefined;
+    let lastOutcome: ActionOutcome | undefined;
+    let lastStepIndex = 0;
+    let hasExplicitVerification = false;
+
+    for (const [ordinal, step] of job.plan.steps.entries()) {
+      const stepIndex = step.stepIndex ?? ordinal;
+      lastStepIndex = stepIndex;
+      setCurrentStep(stepIndex);
+      this.budget.beforeStep(job.runId, stepIndex);
+      const observation = await this.capture(job, stepIndex, signal);
+      firstObservation ??= observation;
+
+      if (step.kind === "verify") {
+        hasExplicitVerification = true;
+        const completion = await this.verify({
+          job,
+          before: firstObservation,
+          after: observation,
+          claimIds: step.claimIds,
+          stepIndex,
+          ...(lastAction === undefined ? {} : { action: lastAction }),
+          ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
+        }, signal);
+        if (completion !== undefined) return completion;
+        continue;
+      }
+
+      const result = await this.executeStep(job, step, stepIndex, observation, signal);
+      if ("completion" in result) return result.completion;
+      lastAction = result.action;
+      lastOutcome = result.outcome;
+    }
+
+    if (!hasExplicitVerification) {
+      const after = await this.capture(job, lastStepIndex, signal);
+      const completion = await this.verify({
+        job,
+        before: firstObservation ?? after,
+        after,
+        claimIds: job.plan.expectedClaimIds,
+        stepIndex: lastStepIndex,
+        ...(lastAction === undefined ? {} : { action: lastAction }),
+        ...(lastOutcome === undefined ? {} : { outcome: lastOutcome }),
+      }, signal);
+      if (completion !== undefined) return completion;
+    }
+
+    return this.passedCompletion(job);
+  }
+
+  private async runObjectiveOnly(
+    job: AcceptedExecutionJob,
+    setCurrentStep: (stepIndex: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ExecutionCompletion> {
+    const stepIndex = 0;
+    setCurrentStep(stepIndex);
+    this.budget.beforeStep(job.runId, stepIndex);
+    const before = await this.capture(job, undefined, signal);
+    const result = await this.executeStep(job, undefined, stepIndex, before, signal);
+    if ("completion" in result) return result.completion;
+    const after = await this.capture(job, undefined, signal);
+    const completion = await this.verify({
+      job,
+      before,
+      after,
+      claimIds: [],
+      stepIndex,
+      action: result.action,
+      outcome: result.outcome,
+    }, signal);
+    return completion ?? this.passedCompletion(job);
+  }
+
+  private async executeStep(
+    job: AcceptedExecutionJob,
+    step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }> | undefined,
+    stepIndex: number,
+    observation: ObservationGraph,
+    signal?: AbortSignal,
+  ): Promise<
+    | { readonly action: ResolvedAction; readonly outcome: ActionOutcome }
+    | { readonly completion: ExecutionCompletion }
+  > {
+    const traceIndex = job.plan === undefined ? undefined : stepIndex;
+    const decision = await this.withinWallClock(job.runId, (operationSignal) =>
       this.dependencies.decisionProvider.decide({
         job,
         observation,
+        ...(step === undefined ? {} : { step }),
+        stepIndex,
         budget: this.budget,
-        signal,
-      }));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "decision",
-      payload: toDecisionTracePayload(decision),
-    });
+        signal: operationSignal,
+      }), signal);
+    if (step !== undefined) assertDecisionMatchesStep(decision, step);
+    await this.recordStage(job.runId, traceIndex, "decision", toDecisionTracePayload(decision));
 
-    const action = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.resolver.resolve(decision, observation, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "action_resolved",
-      payload: toResolvedActionTracePayload(action),
-    });
+    const action = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.resolver.resolve(decision, observation, operationSignal), signal);
+    await this.recordStage(job.runId, traceIndex, "action_resolved", toResolvedActionTracePayload(action));
 
-    const policyDecision = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.policyGate.authorize(action, {
-        job,
-        action,
-        signal,
-      }));
-
+    const policyDecision = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.policyGate.authorize(action, { job, action, signal: operationSignal }), signal);
     if (policyDecision.status === "denied") {
-      await this.record({
-        runId: job.runId,
-        ...(stepIndex === undefined ? {} : { stepIndex }),
-        stage: "policy_denied",
-        payload: toDeniedPolicyTracePayload(policyDecision),
-      });
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status: "blocked",
-          errorCode: "PolicyDenied",
-        },
-      });
-
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "blocked",
-        errorCode: "PolicyDenied",
-      };
+      await this.recordStage(job.runId, traceIndex, "policy_denied", toDeniedPolicyTracePayload(policyDecision));
+      return { completion: this.blockedCompletion(job, "PolicyDenied") };
     }
 
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "policy_authorized",
-      payload: toAuthorizedPolicyTracePayload(policyDecision),
-    });
-
+    await this.recordStage(job.runId, traceIndex, "policy_authorized", toAuthorizedPolicyTracePayload(policyDecision));
     this.budget.maximumOutputTokens(job.runId);
-    const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
-    const outcome = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.actionExecutor.execute(action, permit, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "action_executed",
-      payload: toActionOutcomeTracePayload(outcome),
-    });
-
+    const permit = ExecutionPermit.fromAllowedDecision(
+      policyDecision,
+      this.dependencies.actionAuthorizationWindow,
+    );
+    let outcome: ActionOutcome;
+    try {
+      outcome = await this.withinWallClock(job.runId, (operationSignal) =>
+        this.dependencies.actionExecutor.execute(action, permit, operationSignal), signal);
+    } catch (error) {
+      if (permit.dispatchStarted) throw new ActionOutcomeUnknownError();
+      throw error;
+    }
+    await this.recordStage(job.runId, traceIndex, "action_executed", toActionOutcomeTracePayload(outcome));
     if (outcome.status === "failed") {
-      const errorCode = outcome.errorCode ?? "ActionFailed";
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: {
-          status: "blocked",
-          errorCode,
-        },
-      });
-
+      if (permit.dispatchStarted || outcome.errorCode === "ActionOutcomeUnknown") {
+        return { completion: this.errorCompletion(job, "ActionOutcomeUnknown") };
+      }
       return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "blocked",
-        errorCode,
+        completion: this.blockedCompletion(job, outcome.errorCode ?? "ActionFailed"),
       };
     }
+    return { action, outcome };
+  }
 
-    const after = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.observer.capture(job, signal));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "observation",
-      payload: after,
-    });
+  private async capture(
+    job: AcceptedExecutionJob,
+    stepIndex?: number,
+    signal?: AbortSignal,
+  ): Promise<ObservationGraph> {
+    const observation = await this.withinWallClock(job.runId, (operationSignal) =>
+      this.dependencies.observer.capture(job, operationSignal), signal);
+    await this.recordStage(job.runId, stepIndex, "observation", observation);
+    return observation;
+  }
 
-    const verification = await this.withinWallClock(job.runId, (signal) =>
-      this.dependencies.verifier.verify({
-        job,
-        before: observation,
-        after,
-        action,
-        outcome,
-        budget: this.budget,
-        signal,
-      }));
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "verification",
-      payload: toVerificationTracePayload(verification),
-    });
+  private async verify(
+    context: Omit<VerificationContext, "budget" | "signal">,
+    signal?: AbortSignal,
+  ): Promise<ExecutionCompletion | undefined> {
+    const verification = await this.withinWallClock(context.job.runId, (operationSignal) =>
+      this.dependencies.verifier.verify({ ...context, budget: this.budget, signal: operationSignal }), signal);
+    await this.recordStage(
+      context.job.runId,
+      context.job.plan === undefined ? undefined : context.stepIndex,
+      "verification",
+      toVerificationTracePayload(verification),
+    );
+    if (verification.status === "passed") return undefined;
 
-    if (verification.status === "passed") {
-      await this.record({
-        runId: job.runId,
-        stage: "run_completed",
-        payload: { status: "passed" },
-      });
-
-      return {
-        jobId: job.jobId,
-        runId: job.runId,
-        status: "passed",
-      };
-    }
-
-    const finding = findingFromVerification(job.runId, verification, observation, after);
-    await this.record({
-      runId: job.runId,
-      ...(stepIndex === undefined ? {} : { stepIndex }),
-      stage: "finding",
-      payload: finding,
-    });
-    await this.record({
-      runId: job.runId,
-      stage: "run_completed",
-      payload: {
-        status: "finding",
-        findingId: finding.findingId,
-      },
-    });
-
+    const finding = findingFromVerification(
+      context.job.runId,
+      verification,
+      context.before,
+      context.after,
+    );
+    const traceIndex = context.job.plan === undefined ? undefined : context.stepIndex;
+    await this.recordStage(context.job.runId, traceIndex, "finding", finding);
     return {
-      jobId: job.jobId,
-      runId: job.runId,
+      jobId: context.job.jobId,
+      runId: context.job.runId,
       status: "finding",
       finding,
     };
+  }
+
+  private passedCompletion(job: AcceptedExecutionJob): ExecutionCompletion {
+    return { jobId: job.jobId, runId: job.runId, status: "passed" };
+  }
+
+  private blockedCompletion(
+    job: AcceptedExecutionJob,
+    errorCode: string,
+  ): ExecutionCompletion {
+    return { jobId: job.jobId, runId: job.runId, status: "blocked", errorCode };
+  }
+
+  private errorCompletion(
+    job: AcceptedExecutionJob,
+    errorCode: string,
+  ): ExecutionCompletion {
+    return { jobId: job.jobId, runId: job.runId, status: "error", errorCode };
+  }
+
+  private async recordTerminal(
+    completion: ExecutionCompletion,
+    stepIndex?: number,
+  ): Promise<void> {
+    const input = terminalTraceInput(completion, stepIndex);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error("TerminalTracePersistenceFailed")),
+        this.terminalRecordingTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([this.dependencies.traceRecorder.append(input), deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  }
+
+  private async recordStage<TStage extends TraceEventInput["stage"]>(
+    runId: string,
+    stepIndex: number | undefined,
+    stage: TStage,
+    payload: Extract<TraceEventInput, { readonly stage: TStage }>["payload"],
+  ): Promise<void> {
+    await this.record({
+      runId,
+      ...(stepIndex === undefined ? {} : { stepIndex }),
+      stage,
+      payload,
+    } as TraceEventInput);
   }
 
   private async record(input: TraceEventInput): Promise<void> {
@@ -515,9 +647,14 @@ export class ExecutionRuntime {
   private async withinWallClock<T>(
     runId: string,
     operation: (signal: AbortSignal) => Promise<T>,
+    externalSignal?: AbortSignal,
   ): Promise<T> {
     const remainingMs = this.budget.remainingWallClockMs(runId);
     const controller = new AbortController();
+    const operationSignal = externalSignal === undefined
+      ? controller.signal
+      : AbortSignal.any([externalSignal, controller.signal]);
+    operationSignal.throwIfAborted();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
       const checkDeadline = () => {
@@ -532,10 +669,73 @@ export class ExecutionRuntime {
       timeout = setTimeout(checkDeadline, Math.min(remainingMs, 2_147_483_647));
     });
     try {
-      return await Promise.race([operation(controller.signal), deadline]);
+      let rejectAborted: ((reason: unknown) => void) | undefined;
+      const abortOperation = (): void => rejectAborted?.(operationSignal.reason);
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectAborted = reject;
+        operationSignal.addEventListener("abort", abortOperation, { once: true });
+      });
+      try {
+        return await Promise.race([operation(operationSignal), deadline, aborted]);
+      } finally {
+        operationSignal.removeEventListener("abort", abortOperation);
+      }
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
+  }
+}
+
+function completionFromError(
+  job: AcceptedExecutionJob,
+  error: unknown,
+): ExecutionCompletion | undefined {
+  if (error instanceof ExecutionTargetError) {
+    return {
+      jobId: job.jobId,
+      runId: job.runId,
+      status: error.completionStatus,
+      errorCode: error.errorCode,
+    };
+  }
+  const errorCode = error instanceof ExecutionBlockedError
+    ? error.errorCode
+    : error instanceof ExecutionBudgetError
+      ? error.code
+      : error instanceof ActionOutcomeUnknownError
+        ? error.errorCode
+        : undefined;
+  if (errorCode === undefined) return undefined;
+  const status = errorCode === "ModelUsageUnavailable" || errorCode === "ActionOutcomeUnknown"
+    ? "error"
+    : "blocked";
+  return { jobId: job.jobId, runId: job.runId, status, errorCode };
+}
+
+function terminalTraceInput(
+  completion: ExecutionCompletion,
+  stepIndex?: number,
+): TraceEventInput {
+  const base = {
+    runId: completion.runId,
+    ...(stepIndex === undefined ? {} : { stepIndex }),
+    stage: "run_completed" as const,
+  };
+  switch (completion.status) {
+    case "passed":
+      return { ...base, payload: { status: "passed" } };
+    case "finding":
+      return { ...base, payload: { status: "finding", findingId: completion.finding.findingId } };
+    case "blocked":
+      return {
+        ...base,
+        payload: {
+          status: "blocked",
+          ...(completion.errorCode === undefined ? {} : { errorCode: completion.errorCode }),
+        },
+      };
+    case "error":
+      return { ...base, payload: { status: "error", errorCode: completion.errorCode } };
   }
 }
 
@@ -574,6 +774,30 @@ function toVerificationTracePayload(
   verification: VerificationResult,
 ): VerificationTracePayload {
   return verification;
+}
+
+function assertDecisionMatchesStep(
+  decision: AnyProposedAction,
+  step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }>,
+): void {
+  if (decision.kind !== step.kind) throw new ExecutionBlockedError("PlanStepMismatch");
+  if (step.kind === "navigate" && decision.kind === "navigate" && decision.path !== step.path) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
+  if (
+    (step.kind === "input" || step.kind === "select") &&
+    (decision.kind === "input" || decision.kind === "select") &&
+    decision.valueRef !== step.valueRef
+  ) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
+  if (
+    step.kind === "scroll" &&
+    decision.kind === "scroll" &&
+    (decision.direction !== step.direction || decision.amount !== step.amount)
+  ) {
+    throw new ExecutionBlockedError("PlanStepMismatch");
+  }
 }
 
 function findingFromVerification(

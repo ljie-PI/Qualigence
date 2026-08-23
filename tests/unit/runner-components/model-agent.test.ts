@@ -82,17 +82,20 @@ describe("model-backed runner components", () => {
   });
 
   it("retains the legacy click proposal for a single immutable click Plan step", async () => {
+    const step = { stepIndex: 0, kind: "click" as const, target: { purpose: "add" } };
     const provider = new ModelBackedDecisionProvider(
-      new ScriptedGateway([{ action: { kind: "click", nodeId: "node-add" }, reason: "add" }]),
+      new ScriptedGateway([{ nodeId: "node-add", reason: "add" }]),
       "test-model",
     );
 
     await expect(provider.decide({
       job: {
         ...job(),
-        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [{ stepIndex: 0, kind: "click", target: { purpose: "add" } }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
+        plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [step], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
       },
       observation: observation("before", [{ id: "node-add", role: "button", confidence: 1 }]),
+      step,
+      stepIndex: 0,
     })).resolves.toEqual({ kind: "click", target: { nodeId: "node-add" }, reason: "add" });
   });
 
@@ -121,13 +124,15 @@ describe("model-backed runner components", () => {
     const gateway = new ScriptedGateway([
       { nodeId: `node-${kind}`, reason: `perform ${kind}` },
     ]);
-    const provider = new ModelBackedDecisionProvider(gateway, "test-model", step);
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model");
 
     const decision = await provider.decide({
       job: plannedJob,
       observation: observation("before", [
         { id: `node-${kind}`, role: step.target.role, name: kind, confidence: 1 },
       ]),
+      step,
+      stepIndex: 0,
     });
 
     expect(decision).toEqual({
@@ -139,13 +144,59 @@ describe("model-backed runner components", () => {
     expect(gateway.requests[0]?.messages[1]?.content).toContain(valueRef);
   });
 
+  it.each([
+    [
+      { stepIndex: 0, kind: "navigate", path: "/checkout" } as const,
+      { reason: "open checkout" },
+      { kind: "navigate", path: "/checkout", reason: "open checkout" },
+    ],
+    [
+      { stepIndex: 0, kind: "click", target: { purpose: "continue" } } as const,
+      { nodeId: "node-current", reason: "continue" },
+      { kind: "click", target: { nodeId: "node-current" }, reason: "continue" },
+    ],
+    [
+      { stepIndex: 0, kind: "scroll", target: { purpose: "summary" }, direction: "down", amount: "page" } as const,
+      { nodeId: "node-current", reason: "review summary" },
+      { kind: "scroll", target: { nodeId: "node-current" }, direction: "down", amount: "page", reason: "review summary" },
+    ],
+    [
+      { stepIndex: 0, kind: "scroll", direction: "up", amount: "small" } as const,
+      { reason: "return upward" },
+      { kind: "scroll", direction: "up", amount: "small", reason: "return upward" },
+    ],
+  ])("derives the %s action only from the current immutable Plan step", async (step, output, expected) => {
+    const plannedJob = {
+      ...job(),
+      plan: {
+        missionId: "mission-1",
+        missionRevision: 1,
+        testCaseId: "case-current-step",
+        steps: [step],
+        expectedClaimIds: ["claim-1"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 },
+      },
+    } as const;
+    const gateway = new ScriptedGateway([output]);
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model");
+
+    await expect(provider.decide({
+      job: plannedJob,
+      observation: observation("before", [
+        { id: "node-current", role: "button", confidence: 1 },
+      ]),
+      step,
+      stepIndex: step.stepIndex,
+    })).resolves.toEqual(expected);
+  });
+
   it("rejects a supplied step that does not match the immutable Job Plan", async () => {
     const jobStep = { stepIndex: 0, kind: "input" as const, target: { purpose: "email" }, valueRef: "profile.email" };
     const provider = new ModelBackedDecisionProvider(
-      new ScriptedGateway([{ action: { kind: "input", nodeId: "node-input" }, reason: "input" }]),
+      new ScriptedGateway([{ nodeId: "node-input", reason: "input" }]),
       "test-model",
-      { ...jobStep, valueRef: "model-chosen-value" },
     );
+    const suppliedStep = { ...jobStep, valueRef: "model-chosen-value" };
 
     await expect(provider.decide({
       job: {
@@ -153,6 +204,8 @@ describe("model-backed runner components", () => {
         plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [jobStep], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
       },
       observation: observation("before", [{ id: "node-input", role: "textbox", confidence: 1 }]),
+      step: suppliedStep,
+      stepIndex: 0,
     })).rejects.toMatchObject({ errorCode: "PlanExecutionUnsupported" });
   });
 
@@ -165,7 +218,6 @@ describe("model-backed runner components", () => {
     const provider = new ModelBackedDecisionProvider(
       new ModelGateway({ provider: modelProvider }),
       "test-model",
-      step,
     );
 
     await expect(provider.decide({
@@ -174,6 +226,8 @@ describe("model-backed runner components", () => {
         plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps: [step], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 100 } },
       },
       observation: observation("before", [{ id: "node-input", role: "textbox", confidence: 1 }]),
+      step,
+      stepIndex: 0,
     })).resolves.toEqual({
       kind: "input",
       target: { nodeId: "node-input" },

@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
 import {
   PlaywrightBrowserSession,
   PlaywrightObserver,
+  type BrowserLauncher,
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
@@ -35,6 +36,7 @@ describe("PlaywrightObserver against real Chromium", () => {
   function options(): WebSessionOptions {
     return {
       url: fixture.url,
+      expectedOrigin: fixture.origin,
       headed: false,
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 10_000,
@@ -97,5 +99,135 @@ describe("PlaywrightObserver against real Chromium", () => {
     const second = await observer.capture(job);
     expect(first.graphId).toBe("run-observe:observation:1");
     expect(second.graphId).toBe("run-observe:observation:2");
+  });
+
+  it("discards a capture when the page crosses origin during DOM collection", async () => {
+    const otherOrigin = "https://other.test";
+    let currentUrl = fixture.url;
+    const evaluate = vi.fn(async () => [{ role: "button", name: "Private account" }]);
+    const title = vi.fn(async () => "Private account");
+    const screenshot = vi.fn(async () => new TextEncoder().encode("private screenshot"));
+    session = new PlaywrightBrowserSession(options());
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      evaluate,
+      title,
+      screenshot,
+    } as never);
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: () => {
+        currentUrl = `${otherOrigin}/private`;
+      },
+    });
+
+    await expect(observer.capture({
+      ...job,
+      target: { kind: "web", url: fixture.url },
+    })).rejects.toMatchObject({ code: "OriginViolation" });
+
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(title).not.toHaveBeenCalled();
+    expect(screenshot).not.toHaveBeenCalled();
+    currentUrl = fixture.url;
+    expect(() => session.artifactsFor("run-observe:observation:1"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  });
+
+  it("discards a capture when main-frame navigation leaves and returns during collection", async () => {
+    let currentUrl = fixture.url;
+    const mainFrame = { url: () => currentUrl };
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => currentUrl,
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      evaluate: vi.fn(async () => [{ role: "button", name: "Matching control" }]),
+      title: vi.fn(async () => "Matching page"),
+      screenshot: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    session = new PlaywrightBrowserSession(options(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await session.start();
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: () => {
+        currentUrl = "https://other.test/private";
+        frameNavigated?.(mainFrame);
+        currentUrl = fixture.url;
+        frameNavigated?.(mainFrame);
+      },
+    });
+
+    await expect(observer.capture(job)).rejects.toMatchObject({ code: "OriginViolation" });
+    expect(page.title).not.toHaveBeenCalled();
+    expect(page.screenshot).not.toHaveBeenCalled();
+    expect(() => session.artifactsFor("run-observe:observation:1"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  });
+
+  it("blocks an unreadable URL before reading the DOM", async () => {
+    const evaluate = vi.fn();
+    const title = vi.fn();
+    const screenshot = vi.fn();
+    session = new PlaywrightBrowserSession(options());
+    session.withPage = async (operation) => operation({
+      url: () => { throw new Error("page crashed"); },
+      evaluate,
+      title,
+      screenshot,
+    } as never);
+
+    await expect(new PlaywrightObserver(session).capture({
+      ...job,
+      target: { kind: "web", url: fixture.url },
+    })).rejects.toMatchObject({ code: "OriginViolation" });
+
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(title).not.toHaveBeenCalled();
+    expect(screenshot).not.toHaveBeenCalled();
+  });
+
+  it("allows a delayed path change on the configured target origin", async () => {
+    let currentUrl = fixture.url;
+    const evaluate = vi.fn(async () => [{ role: "button", name: "Continue" }]);
+    const title = vi.fn(async () => "Same origin");
+    const screenshot = vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+    session = new PlaywrightBrowserSession(options());
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      evaluate,
+      title,
+      screenshot,
+    } as never);
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: () => {
+        currentUrl = `${fixture.origin}/after`;
+      },
+    });
+
+    const graph = await observer.capture({
+      ...job,
+      target: { kind: "web", url: fixture.url },
+    });
+
+    expect(graph.url).toBe(`${fixture.origin}/after`);
+    expect(graph.nodes).toEqual([
+      expect.objectContaining({ role: "button", name: "Continue" }),
+    ]);
+    expect(session.artifactsFor(graph.graphId)).toHaveLength(2);
   });
 });

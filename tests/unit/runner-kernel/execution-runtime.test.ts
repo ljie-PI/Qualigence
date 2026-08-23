@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
   DeterministicExecutionBudget,
+  ExecutionBudgetError,
+  ExecutionTargetError,
   ExecutionRuntime,
   resolvedActionNodeId,
   toDecisionTracePayload,
@@ -71,6 +73,24 @@ describe("ExecutionRuntime", () => {
     );
   });
 
+  it("does not append a terminal when budget admission fails before execution starts", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => { throw new Error("not reached"); } },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "not reached" }),
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+    });
+    const job = indexedJob();
+    job.plan.budget.maximumWallClockMs = 0;
+
+    await expect(runtime.run(job)).rejects.toMatchObject({ code: "ExecutionBudgetInvalid" });
+    expect(traceRecorder.eventsFor(job.runId)).toEqual([]);
+  });
+
   it("classifies wall-clock exhaustion before permit minting", async () => {
     let now = 0;
     let policyCalls = 0;
@@ -99,9 +119,46 @@ describe("ExecutionRuntime", () => {
     expect(policyCalls).toBe(0);
     expect(executorCalls).toBe(0);
     expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toEqual({
-      graphId: "graph-1",
-      nodes: [],
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
     });
+  });
+
+  it("keeps wall-clock exhaustion at the final pre-dispatch check blocked", async () => {
+    let remainingChecks = 0;
+    let executorCalls = 0;
+    const traceRecorder = new InMemoryTraceRecorder();
+    const budget = {
+      begin: () => undefined,
+      beforeStep: () => undefined,
+      remainingWallClockMs: () => {
+        remainingChecks += 1;
+        if (remainingChecks === 9) {
+          throw new ExecutionBudgetError("WallClockBudgetExceeded");
+        }
+        return 1_000;
+      },
+      maximumOutputTokens: () => 100,
+      consumeModelUsage: () => undefined,
+      finish: () => undefined,
+    };
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "test" }),
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    await expect(runtime.run(indexedJob())).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 
   it("keeps model-budget exhaustion in the approved blocked classification", async () => {
@@ -175,9 +232,13 @@ describe("ExecutionRuntime", () => {
             : { status: "allowed", reason: "allowed" },
         },
         actionExecutor: {
-          execute: async (_action, _permit, signal) => hangingStage === "action"
-            ? never(signal)
-            : { status: "ok" },
+          execute: async (_action, permit, signal) => {
+            if (hangingStage === "action") {
+              permit.assertAuthorizedForDispatch(signal);
+              return never(signal);
+            }
+            return { status: "ok" };
+          },
         },
         verifier: {
           verify: async (context) => hangingStage === "verifier"
@@ -197,14 +258,28 @@ describe("ExecutionRuntime", () => {
       expect(completion).toEqual({
         jobId: "job-indexed",
         runId: "run-indexed",
-        status: "blocked",
-        errorCode: "WallClockBudgetExceeded",
+        status: hangingStage === "action" ? "error" : "blocked",
+        errorCode: hangingStage === "action"
+          ? "ActionOutcomeUnknown"
+          : "WallClockBudgetExceeded",
       });
       expect(aborted).toBe(true);
-      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).not.toMatchObject({
-        status: "blocked",
-        errorCode: "WallClockBudgetExceeded",
+      expect(traceRecorder.eventsFor("run-indexed").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+      expect(traceRecorder.eventsFor("run-indexed").at(-1)?.payload).toMatchObject({
+        status: hangingStage === "action" ? "error" : "blocked",
+        errorCode: hangingStage === "action"
+          ? "ActionOutcomeUnknown"
+          : "WallClockBudgetExceeded",
       });
+      if (hangingStage === "action") {
+        expect(traceRecorder.eventsFor("run-indexed").map((event) => event.stage)).toEqual([
+          "observation",
+          "decision",
+          "action_resolved",
+          "policy_authorized",
+          "run_completed",
+        ]);
+      }
     },
   );
 
@@ -212,6 +287,7 @@ describe("ExecutionRuntime", () => {
     vi.useFakeTimers();
     let now = 0;
     let rejectLate: ((error: Error) => void) | undefined;
+    const appended: unknown[] = [];
     const runtime = new ExecutionRuntime({
       observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
       decisionProvider: new ScriptedDecisionProvider({
@@ -224,7 +300,11 @@ describe("ExecutionRuntime", () => {
       actionExecutor: { execute: async () => ({ status: "ok" }) },
       verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
       traceRecorder: {
-        append: async () => new Promise<never>((_resolve, reject) => { rejectLate = reject; }),
+        append: async (event) => {
+          appended.push(event);
+          if (appended.length > 1) return {} as never;
+          return new Promise<never>((_resolve, reject) => { rejectLate = reject; });
+        },
       },
       budget: new DeterministicExecutionBudget({
         clock: { now: () => now },
@@ -253,9 +333,129 @@ describe("ExecutionRuntime", () => {
       status: "blocked",
       errorCode: "WallClockBudgetExceeded",
     });
+    expect(appended).toHaveLength(2);
+    expect(appended.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "WallClockBudgetExceeded" },
+    });
     rejectLate?.(new Error("late Trace rejection"));
     await Promise.resolve();
     await Promise.resolve();
+  });
+
+  it.each([
+    ["StaleObservation", "blocked"],
+    ["UnknownObservationNode", "blocked"],
+    ["TargetNotFound", "blocked"],
+    ["AmbiguousTarget", "blocked"],
+    ["OriginViolation", "blocked"],
+    ["ActionTimedOut", "blocked"],
+    ["TargetNotVisible", "blocked"],
+    ["TargetDisabled", "blocked"],
+    ["ActionValueUnavailable", "blocked"],
+    ["UnsupportedAction", "blocked"],
+    ["BrowserLaunchFailed", "error"],
+    ["NavigationFailed", "error"],
+    ["NavigationTimedOut", "error"],
+    ["ConcurrentSessionOperation", "error"],
+    ["SessionClosed", "error"],
+    ["ActionInfrastructureFailure", "error"],
+  ] as const)("maps expected target error %s to a terminal %s completion", async (errorCode, status) => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: {
+        resolve: async () => {
+          throw new ExecutionTargetError(errorCode, status);
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({ status, errorCode });
+    expect(traceRecorder.eventsFor("run-objective").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(traceRecorder.eventsFor("run-objective").at(-1)?.payload).toEqual({ status, errorCode });
+  });
+
+  it("reports terminal recorder failure as a distinct disposition without a duplicate append", async () => {
+    let terminalAppends = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({
+        kind: "click",
+        target: { nodeId: "node-1" },
+        reason: "test",
+      }),
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: { authorize: async () => ({ status: "denied", reason: "test" }) },
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          if (event.stage === "run_completed") {
+            terminalAppends += 1;
+            throw new Error("spool unavailable");
+          }
+          return {} as never;
+        },
+      },
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+    });
+    expect(terminalAppends).toBe(1);
+  });
+
+  it("bounds a hanging terminal recorder independently from an expired execution budget", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let terminalAppends = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: {
+        decide: async () => {
+          now = 1_000;
+          return { kind: "click", target: { nodeId: "node-1" }, reason: "test" };
+        },
+      },
+      resolver: { resolve: async () => { throw new Error("not reached"); } },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: {
+        append: async (event) => {
+          if (event.stage === "run_completed") {
+            terminalAppends += 1;
+            return new Promise<never>(() => undefined);
+          }
+          return {} as never;
+        },
+      },
+      budget: new DeterministicExecutionBudget({ clock: { now: () => now } }),
+      terminalRecordingTimeoutMs: 25,
+    });
+
+    const completion = runtime.run(indexedJob());
+    const completionExpectation = expect(completion).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await completionExpectation;
+    expect(terminalAppends).toBe(1);
   });
 
   it.each([
@@ -337,6 +537,377 @@ describe("ExecutionRuntime", () => {
     const actionEvents = traceRecorder.eventsFor("run-indexed").filter((event) => event.stage !== "run_completed");
     expect(actionEvents).not.toHaveLength(0);
     expect(actionEvents.every((event) => event.stepIndex === 0)).toBe(true);
+  });
+
+  it("executes every immutable plan step sequentially with fresh grounding and indexed Trace", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const calls: string[] = [];
+    const decisionSteps: unknown[] = [];
+    const verifiedClaimIds: readonly string[][] = [];
+    let observationOrdinal = 0;
+    const budget = new DeterministicExecutionBudget();
+    const beforeStep = vi.spyOn(budget, "beforeStep");
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async () => {
+          observationOrdinal += 1;
+          calls.push(`observe:${observationOrdinal}`);
+          return {
+            graphId: `graph-${observationOrdinal}`,
+            nodes: [
+              { id: `node-${observationOrdinal}`, role: "button", name: `Step ${observationOrdinal}`, confidence: 1 },
+            ],
+          };
+        },
+      },
+      decisionProvider: {
+        decide: async (context) => {
+          const step = context.step!;
+          decisionSteps.push(step);
+          calls.push(`decide:${context.stepIndex}:${step.kind}`);
+          if (step.kind === "navigate") return { kind: "navigate", path: step.path, reason: "approved path" };
+          if (step.kind === "input" || step.kind === "select") {
+            return { kind: step.kind, target: { nodeId: context.observation.nodes[0]!.id }, valueRef: step.valueRef, reason: "ground field" };
+          }
+          if (step.kind === "scroll") {
+            return { kind: "scroll", target: { nodeId: context.observation.nodes[0]!.id }, direction: step.direction, amount: step.amount, reason: "ground region" };
+          }
+          if (step.kind === "click") {
+            return { kind: "click", target: { nodeId: context.observation.nodes[0]!.id }, reason: "ground control" };
+          }
+          throw new Error("verify must not call the decision provider");
+        },
+      },
+      resolver: {
+        resolve: async (proposal, graph) => {
+          const action = proposal as AnyProposedAction;
+          calls.push(`resolve:${action.kind}:${graph.graphId}`);
+          if (action.kind === "navigate") {
+            return { targetKind: "web", kind: "navigate", url: `https://example.test${action.path}` };
+          }
+          const target = action.target === undefined
+            ? undefined
+            : { nodeId: action.target.nodeId, selector: `${graph.graphId}:${action.target.nodeId}` };
+          if (action.kind === "input" || action.kind === "select") {
+            return { targetKind: "web", kind: action.kind, target: target!, graphId: graph.graphId, valueRef: action.valueRef };
+          }
+          if (action.kind === "scroll") {
+            return { targetKind: "web", kind: "scroll", ...(target === undefined ? {} : { target }), graphId: graph.graphId, direction: action.direction, amount: action.amount };
+          }
+          return { targetKind: "web", kind: "click", target: target!, graphId: graph.graphId };
+        },
+      },
+      policyGate: {
+        authorize: async (action) => {
+          calls.push(`policy:${action.kind}`);
+          return { status: "allowed", reason: "approved" };
+        },
+      },
+      actionExecutor: {
+        execute: async (action) => {
+          calls.push(`execute:${action.kind}`);
+          return { status: "ok" };
+        },
+      },
+      verifier: {
+        verify: async (context) => {
+          (verifiedClaimIds as string[][]).push([...(context.claimIds ?? [])]);
+          calls.push(`verify:${context.after.graphId}`);
+          return { status: "passed", summary: "claims passed", claims: [] };
+        },
+      },
+      traceRecorder,
+      budget,
+    });
+    const plan = {
+      missionId: "mission-19",
+      missionRevision: 3,
+      testCaseId: "case-multi-step",
+      steps: [
+        { stepIndex: 0, kind: "navigate", path: "/form" },
+        { stepIndex: 1, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "profile.email" },
+        { stepIndex: 2, kind: "select", target: { role: "combobox", purpose: "choose country" }, valueRef: "profile.country" },
+        { stepIndex: 3, kind: "click", target: { role: "button", purpose: "submit" } },
+        { stepIndex: 4, kind: "scroll", target: { purpose: "review result" }, direction: "down", amount: "page" },
+        { stepIndex: 5, kind: "verify", claimIds: ["claim-result"] },
+      ],
+      expectedClaimIds: ["claim-result"],
+      budget: { maximumStepsPerJob: 6, maximumWallClockMs: 10_000, maximumModelTokens: 1_000 },
+    } as const;
+    const job = {
+      jobId: "job-multi-step",
+      runId: "run-multi-step",
+      projectId: "project-test",
+      target: { kind: "web" as const, url: "https://example.test/" },
+      objective: "complete the form",
+      policy: {
+        ...policy,
+        allowedActionKinds: ["navigate", "input", "select", "click", "scroll"] as const,
+        maximumRisk: "ExternalSideEffect" as const,
+      },
+      plan,
+    };
+
+    await expect(runtime.run(job)).resolves.toEqual({
+      jobId: "job-multi-step",
+      runId: "run-multi-step",
+      status: "passed",
+    });
+
+    expect(decisionSteps).toEqual(plan.steps.slice(0, 5));
+    expect(verifiedClaimIds).toEqual([["claim-result"]]);
+    expect(beforeStep.mock.calls).toEqual(plan.steps.map((step) => ["run-multi-step", step.stepIndex]));
+    expect(calls).toEqual([
+      "observe:1", "decide:0:navigate", "resolve:navigate:graph-1", "policy:navigate", "execute:navigate",
+      "observe:2", "decide:1:input", "resolve:input:graph-2", "policy:input", "execute:input",
+      "observe:3", "decide:2:select", "resolve:select:graph-3", "policy:select", "execute:select",
+      "observe:4", "decide:3:click", "resolve:click:graph-4", "policy:click", "execute:click",
+      "observe:5", "decide:4:scroll", "resolve:scroll:graph-5", "policy:scroll", "execute:scroll",
+      "observe:6", "verify:graph-6",
+    ]);
+    const trace = traceRecorder.eventsFor("run-multi-step");
+    expect(trace.filter((event) => event.stage === "decision")).toHaveLength(5);
+    expect(trace.filter((event) => event.stage === "verification")).toHaveLength(1);
+    expect(trace.map((event) => event.stepIndex)).toEqual([
+      0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2,
+      3, 3, 3, 3, 3,
+      4, 4, 4, 4, 4,
+      5, 5, 5,
+    ]);
+    expect(trace.at(-1)).toMatchObject({ stage: "run_completed", stepIndex: 5, payload: { status: "passed" } });
+  });
+
+  it("runs one final verification with expected claims when the Plan has no verify step", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const verificationContexts: unknown[] = [];
+    let captures = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: `graph-${++captures}`, nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      decisionProvider: { decide: async () => ({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }) },
+      resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "ok" }) },
+      verifier: { verify: async (context) => { verificationContexts.push(context); return { status: "passed", summary: "passed", claims: [] }; } },
+      traceRecorder,
+    });
+    const job = twoClickPlanJob({
+      steps: [{ stepIndex: 0, kind: "click", target: { purpose: "continue" } }],
+      maximumStepsPerJob: 1,
+    });
+
+    await expect(runtime.run(job)).resolves.toMatchObject({ status: "passed" });
+
+    expect(verificationContexts).toHaveLength(1);
+    expect(verificationContexts[0]).toMatchObject({ claimIds: ["claim-final"], stepIndex: 0 });
+    expect(captures).toBe(2);
+    expect(traceRecorder.eventsFor(job.runId).at(-1)).toMatchObject({ stage: "run_completed", stepIndex: 0 });
+  });
+
+  it.each([
+    ["denial", "PolicyDenied"],
+    ["timeout", "ActionTimedOut"],
+  ] as const)("stops later Plan steps after an intermediate %s", async (failure, errorCode) => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let decisionCalls = 0;
+    let executorCalls = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      decisionProvider: { decide: async () => { decisionCalls += 1; return { kind: "click", target: { nodeId: "node-1" }, reason: "continue" }; } },
+      resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
+      policyGate: {
+        authorize: async () => failure === "denial"
+          ? { status: "denied", reason: "denied" }
+          : { status: "allowed", reason: "allowed" },
+      },
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "failed", errorCode: "ActionTimedOut" }; } },
+      verifier: { verify: async () => { throw new Error("later verification must not run"); } },
+      traceRecorder,
+    });
+    const job = twoClickPlanJob();
+
+    await expect(runtime.run(job)).resolves.toMatchObject({ status: "blocked", errorCode });
+
+    expect(decisionCalls).toBe(1);
+    expect(executorCalls).toBe(failure === "denial" ? 0 : 1);
+    const trace = traceRecorder.eventsFor(job.runId);
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({ stepIndex: 0, payload: { status: "blocked", errorCode } });
+  });
+
+  it("classifies an unknown action outcome as error and never retries or starts a later step", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let decisions = 0;
+    let attempts = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      decisionProvider: { decide: async () => { decisions += 1; return { kind: "click", target: { nodeId: "node-1" }, reason: "continue" }; } },
+      resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async (_action, permit, signal) => { attempts += 1; permit.assertAuthorizedForDispatch(signal); throw new Error("connection lost after dispatch"); } },
+      verifier: { verify: async () => { throw new Error("verification must not run"); } },
+      traceRecorder,
+    });
+    const job = twoClickPlanJob();
+
+    await expect(runtime.run(job)).resolves.toEqual({
+      jobId: job.jobId,
+      runId: job.runId,
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+
+    expect(decisions).toBe(1);
+    expect(attempts).toBe(1);
+    expect(traceRecorder.eventsFor(job.runId).filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(traceRecorder.eventsFor(job.runId).at(-1)).toMatchObject({
+      stepIndex: 0,
+      payload: { status: "error", errorCode: "ActionOutcomeUnknown" },
+    });
+  });
+
+  it.each([
+    [
+      "navigate",
+      { kind: "navigate", path: "/next", reason: "navigate" },
+      { targetKind: "web", kind: "navigate", url: "https://example.test/next" },
+      { stepIndex: 0, kind: "navigate", path: "/next" },
+    ],
+    [
+      "click",
+      { kind: "click", target: { nodeId: "node-1" }, reason: "click" },
+      { targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" },
+      { stepIndex: 0, kind: "click", target: { purpose: "click" } },
+    ],
+    [
+      "input",
+      { kind: "input", target: { nodeId: "node-1" }, valueRef: "value.input", reason: "input" },
+      { targetKind: "web", kind: "input", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", valueRef: "value.input" },
+      { stepIndex: 0, kind: "input", target: { purpose: "input" }, valueRef: "value.input" },
+    ],
+    [
+      "select",
+      { kind: "select", target: { nodeId: "node-1" }, valueRef: "value.select", reason: "select" },
+      { targetKind: "web", kind: "select", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", valueRef: "value.select" },
+      { stepIndex: 0, kind: "select", target: { purpose: "select" }, valueRef: "value.select" },
+    ],
+    [
+      "scroll",
+      { kind: "scroll", target: { nodeId: "node-1" }, direction: "down", amount: "small", reason: "scroll" },
+      { targetKind: "web", kind: "scroll", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", direction: "down", amount: "small" },
+      { stepIndex: 0, kind: "scroll", target: { purpose: "scroll" }, direction: "down", amount: "small" },
+    ],
+  ] as const)("terminalizes a generic dispatched %s rejection as unknown without starting the next step", async (_kind, proposal, resolved, firstStep) => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let decisions = 0;
+    let attempts = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      decisionProvider: { decide: async () => { decisions += 1; return proposal as never; } },
+      resolver: { resolve: async () => resolved as never },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async (_action, permit, signal) => { attempts += 1; permit.assertAuthorizedForDispatch(signal); throw new Error("generic Playwright rejection"); } },
+      verifier: { verify: async () => { throw new Error("later verification must not run"); } },
+      traceRecorder,
+    });
+    const job = {
+      ...indexedJob(),
+      jobId: `job-unknown-${_kind}`,
+      runId: `run-unknown-${_kind}`,
+      plan: {
+        ...indexedJob().plan,
+        steps: [
+          firstStep,
+          { stepIndex: 1, kind: "click", target: { purpose: "must not run" } },
+        ],
+        maximumStepsPerJob: 2,
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
+    };
+
+    await expect(runtime.run(job as never)).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+    expect(decisions).toBe(1);
+    expect(attempts).toBe(1);
+    expect(traceRecorder.eventsFor(job.runId).filter((event) => event.stage === "run_completed")).toHaveLength(1);
+  });
+
+  it("preserves an explicit unknown action outcome as error", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+      resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => ({ status: "failed", errorCode: "ActionOutcomeUnknown" }) },
+      verifier: { verify: async () => { throw new Error("verification must not run"); } },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+    expect(traceRecorder.eventsFor("run-objective").filter((event) => event.stage === "run_completed")).toHaveLength(1);
+  });
+
+  it("maps a timeout reported after dispatch to unknown outcome", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+      resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: {
+        execute: async (_action, permit, signal) => {
+          permit.assertAuthorizedForDispatch(signal);
+          return { status: "failed", errorCode: "ActionTimedOut" };
+        },
+      },
+      verifier: { verify: async () => { throw new Error("verification must not run"); } },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+  });
+
+  it("maps an expected executor target rejection but treats infrastructure loss after dispatch as unknown", async () => {
+    const run = async (error: ExecutionTargetError) => {
+      const traceRecorder = new InMemoryTraceRecorder();
+      const runtime = new ExecutionRuntime({
+        observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+        decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+        resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+        policyGate: new AllowAllRunnerPolicyGate(),
+        actionExecutor: { execute: async (_action, permit, signal) => {
+          if (error.errorCode === "ActionInfrastructureFailure") {
+            permit.assertAuthorizedForDispatch(signal);
+          }
+          throw error;
+        } },
+        verifier: { verify: async () => { throw new Error("verification must not run"); } },
+        traceRecorder,
+        ...objectiveOnlyBudget,
+      });
+      return runtime.run(objectiveJob());
+    };
+
+    await expect(run(new ExecutionTargetError("TargetDisabled", "blocked"))).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "TargetDisabled",
+    });
+    await expect(run(new ExecutionTargetError("ActionInfrastructureFailure", "error"))).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
   });
 
   it.each([
@@ -736,6 +1307,47 @@ function indexedJob() {
       steps: [{ stepIndex: 0, kind: "click" as const, target: { purpose: "continue" } }] as const,
       expectedClaimIds: ["claim-1"] as [string],
       budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+    },
+  };
+}
+
+function objectiveJob() {
+  return {
+    jobId: "job-objective",
+    runId: "run-objective",
+    projectId: "project-test",
+    target: { kind: "web" as const, url: "https://example.test/" },
+    objective: "click",
+    policy,
+  };
+}
+
+function twoClickPlanJob(options: {
+  readonly steps?: readonly [{ readonly stepIndex: number; readonly kind: "click"; readonly target: { readonly purpose: string } }];
+  readonly maximumStepsPerJob?: number;
+} = {}) {
+  const steps = options.steps ?? [
+    { stepIndex: 0, kind: "click" as const, target: { purpose: "first" } },
+    { stepIndex: 1, kind: "click" as const, target: { purpose: "second" } },
+  ];
+  return {
+    jobId: "job-two-step",
+    runId: "run-two-step",
+    projectId: "project-test",
+    target: { kind: "web" as const, url: "https://example.test/" },
+    objective: "execute bounded clicks",
+    policy,
+    plan: {
+      missionId: "mission-1",
+      missionRevision: 1,
+      testCaseId: "case-two-step",
+      steps,
+      expectedClaimIds: ["claim-final"] as [string],
+      budget: {
+        maximumStepsPerJob: options.maximumStepsPerJob ?? 2,
+        maximumWallClockMs: 1_000,
+        maximumModelTokens: 1_000,
+      },
     },
   };
 }

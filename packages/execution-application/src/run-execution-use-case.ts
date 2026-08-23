@@ -142,6 +142,16 @@ export class RunExecutionUseCaseImpl implements RunExecutionUseCase {
       };
     }
 
+    if (completion.status === "error") {
+      await this.completeRun(scope, runId, "error", completion.errorCode);
+      return {
+        runId,
+        status: "error",
+        errorCode: completion.errorCode,
+        evidenceRefs: artifactRefs,
+      };
+    }
+
     // Runtime "blocked" completion: policy denial, invalid model structure,
     // stale node, or action failure. No Finding is produced.
     const errorCode = completion.errorCode;

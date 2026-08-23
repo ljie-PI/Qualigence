@@ -1,20 +1,30 @@
-import type { ExecutionJobOffer, ExecutionCompletion, ExecutionPlanStep } from "@qualigence/runner-protocol";
+import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-protocol";
 import { capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
-import { DeterministicRunnerPolicyGate } from "@qualigence/runner-kernel";
+import {
+  DeterministicRunnerPolicyGate,
+  ExecutionTargetError,
+} from "@qualigence/runner-kernel";
 import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
 import type { ActionValueProvider } from "./action-value-provider.js";
-import { LeasedJobExecutor } from "./job-executor.js";
+import {
+  AcceptedLeaseLifecycle,
+  assertOfferCapabilities,
+  LeasedJobExecutor,
+  type AcceptedLeaseLifecycleOptions,
+} from "./job-executor.js";
 import type { RunnerConfig } from "./config.js";
+import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
 
 export interface RunnerOfferRuntimeOptions {
-  readonly session: Pick<RunnerSession, "accept" | "complete" | "submit" | "welcome">;
+  readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome">;
   readonly spool: RunnerSpool;
   readonly config: RunnerConfig;
   readonly valueProvider?: ActionValueProvider;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
+  readonly leaseLifecycle?: AcceptedLeaseLifecycleOptions;
 }
 
 /** The sole remote Runner composition for one untrusted offered Job. */
@@ -25,47 +35,88 @@ export class RunnerOfferRuntime {
     this.createTarget = options.createTarget ?? ((targetOptions) => new PlaywrightWebTargetAdapter(targetOptions));
   }
 
-  async run(offer: ExecutionJobOffer): Promise<void> {
+  async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
+    const currentCapabilities = runnerCapabilities(this.options.valueProvider);
+    assertOfferCapabilities(offer, currentCapabilities);
     const admission = DeterministicRunnerPolicyGate.admitJob(offer.job);
     if (admission.status === "denied") {
       const lease = await this.options.session.accept(offer.offerId);
+      const lifecycle = new AcceptedLeaseLifecycle(
+        offer,
+        this.options.session as RunnerSession,
+        lease,
+        signal,
+        this.options.leaseLifecycle,
+      );
       const completion: ExecutionCompletion = {
         jobId: lease.jobId,
         runId: lease.runId,
         status: "blocked",
         errorCode: admission.code,
       };
-      await this.options.session.complete(lease, completion);
+      try {
+        await lifecycle.duringLease(() =>
+          this.options.session.complete(lifecycle.currentLease(), completion));
+        await lifecycle.finish(completion);
+      } finally {
+        await lifecycle.dispose();
+      }
       return;
     }
 
-    const currentStep = currentOneActionStep(offer.job.plan?.steps);
-    if (currentStep === null || (
-      (currentStep?.kind === "input" || currentStep?.kind === "select") &&
-      this.options.valueProvider === undefined
-    )) {
-      const lease = await this.options.session.accept(offer.offerId);
-      await this.options.session.complete(lease, {
-        jobId: lease.jobId,
-        runId: lease.runId,
-        status: "blocked",
-        errorCode: currentStep === null
-          ? "PlanExecutionUnsupported"
-          : "ActionValueProviderUnavailable",
-      });
-      return;
-    }
-
-    const adapter = this.createTarget({
-      url: offer.job.target.url,
-      headed: this.options.config.headed,
-      navigationTimeoutMs: this.options.config.navigationTimeoutMs,
-      actionTimeoutMs: this.options.config.actionTimeoutMs,
-      allowedOrigins: offer.job.policy.allowedOrigins,
-      ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
-    });
-    await adapter.start();
+    const targetUrl = offer.job.target.url;
+    const expectedOrigin = new URL(targetUrl).origin;
+    const lease = await this.options.session.accept(offer.offerId);
+    const lifecycle = new AcceptedLeaseLifecycle(
+      offer,
+      this.options.session as RunnerSession,
+      lease,
+      signal,
+      this.options.leaseLifecycle,
+    );
+    let adapter: PlaywrightWebTargetAdapter | undefined;
     try {
+      const target = this.createTarget({
+        url: targetUrl,
+        expectedOrigin,
+        headed: this.options.config.headed,
+        navigationTimeoutMs: this.options.config.navigationTimeoutMs,
+        actionTimeoutMs: this.options.config.actionTimeoutMs,
+        allowedOrigins: offer.job.policy.allowedOrigins,
+        ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
+      });
+      adapter = target;
+      try {
+        await lifecycle.duringLease((startupSignal) => target.start(startupSignal));
+      } catch (error) {
+        if (!(error instanceof ExecutionTargetError)) throw error;
+        const completionStatus = error.completionStatus;
+        const errorCode = error.errorCode;
+        const completion: ExecutionCompletion = completionStatus === "blocked"
+          ? {
+              jobId: lease.jobId,
+              runId: lease.runId,
+              status: "blocked",
+              errorCode,
+            }
+          : {
+              jobId: lease.jobId,
+              runId: lease.runId,
+              status: "error",
+              errorCode,
+            };
+        await lifecycle.duringLease(() => new SpoolingTraceRecorder(this.options.spool).append({
+          runId: lease.runId,
+          stage: "run_completed",
+          payload: completion.status === "blocked"
+            ? { status: "blocked", errorCode }
+            : { status: "error", errorCode },
+        }).then(() => undefined));
+        await lifecycle.duringLease((finalizationSignal) =>
+          this.finalize(lifecycle, completion, finalizationSignal));
+        await lifecycle.finish(completion);
+        return;
+      }
       const { ModelBackedDecisionProvider, ModelBackedVerifier } = await import("@qualigence/model-agent");
       const { ModelGateway } = await import("@qualigence/model-gateway");
       const { OpenAICompatibleModelProvider } = await import("@qualigence/openai-compatible-model-provider");
@@ -75,48 +126,56 @@ export class RunnerOfferRuntime {
       });
       const gateway = new ModelGateway({ provider });
       const executor = new LeasedJobExecutor({
-        observer: adapter,
+        observer: target,
         decisionProvider: new ModelBackedDecisionProvider(
           gateway,
           this.options.config.model.modelName,
-          currentStep,
         ),
-        resolver: adapter,
+        resolver: target,
         policyGate: admission.gate,
-        actionExecutor: adapter,
+        actionExecutor: target,
         verifier: new ModelBackedVerifier(gateway, this.options.config.model.modelName),
         spool: this.options.spool,
-        capabilities: runnerCapabilities(this.options.valueProvider),
+        capabilities: currentCapabilities,
         objectiveOnlyMaximumWallClockMs: this.options.config.actionTimeoutMs,
         objectiveOnlyMaximumModelTokens: this.options.config.model.maximumTokensPerCall,
       });
-      const result = await executor.execute(offer, this.options.session as RunnerSession);
-      await new TraceUploadPump(this.options.spool, this.options.session, offer.job.runId, {
-        maximumEvents: this.options.session.welcome.traceBatchMaximumEvents,
-        maximumBytes: this.options.session.welcome.traceBatchMaximumBytes,
-      }).drain();
-      await this.options.session.complete(result.lease, result.completion);
+      await executor.execute(
+        offer,
+        this.options.session as RunnerSession,
+        signal,
+        lifecycle,
+        ({ completion, signal: finalizationSignal }) =>
+          this.finalize(lifecycle, completion, finalizationSignal),
+      );
     } finally {
-      await adapter.close();
+      try {
+        await adapter?.close();
+      } finally {
+        await lifecycle.dispose();
+      }
     }
   }
-}
 
-function currentOneActionStep(
-  steps: readonly ExecutionPlanStep[] | undefined,
-): Extract<ExecutionPlanStep, { readonly kind: "input" | "select" }> | undefined | null {
-  if (steps === undefined) return undefined;
-  if (steps.length !== 1) return null;
-  const step = steps[0];
-  if (step?.kind === "click") return undefined;
-  return step?.kind === "input" || step?.kind === "select"
-    ? step
-    : null;
+  private async finalize(
+    lifecycle: AcceptedLeaseLifecycle,
+    completion: ExecutionCompletion,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await new TraceUploadPump(this.options.spool, this.options.session, completion.runId, {
+      maximumEvents: this.options.session.welcome.traceBatchMaximumEvents,
+      maximumBytes: this.options.session.welcome.traceBatchMaximumBytes,
+    }).drain(signal);
+    signal.throwIfAborted();
+    await this.options.session.complete(lifecycle.currentLease(), completion);
+  }
 }
 
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {
   return capabilities({
     targetAdapters: ["web-playwright"],
-    actionKinds: valueProvider === undefined ? ["click"] : ["click", "input", "select"],
+    actionKinds: valueProvider === undefined
+      ? ["navigate", "click", "scroll"]
+      : ["navigate", "click", "input", "select", "scroll"],
   });
 }

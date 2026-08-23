@@ -36,13 +36,14 @@ async function runOffer(
   offer: ExecutionJobOffer,
   spool: RunnerSpool,
   valueProvider?: ActionValueProvider,
+  signal?: AbortSignal,
 ): Promise<void> {
   await new RunnerOfferRuntime({
     config,
     session,
     spool,
     ...(valueProvider === undefined ? {} : { valueProvider }),
-  }).run(offer);
+  }).run(offer, signal);
 }
 
 async function main(): Promise<void> {
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
   while (!stopping) {
     try {
       const offer = await session.nextOffer(abort.signal);
-      await runOffer(config, session, offer, spool, valueProvider);
+      await runOffer(config, session, offer, spool, valueProvider, abort.signal);
     } catch (error) {
       if (stopping) {
         break;

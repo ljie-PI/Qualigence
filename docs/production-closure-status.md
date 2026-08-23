@@ -14,6 +14,29 @@ Ticket 18 formal-blocker scope amendment (2026-08-21) additionally includes
 `tests/unit/runner-kernel/deterministic-policy-gate.test.ts` for Web input/select
 risk classification and pre-side-effect policy-denial coverage only.
 
+Ticket 19 formal-blocker authority/status amendment (2026-08-23):
+`tests/unit/runner/job-executor.test.ts` is added to the complete approved scope
+and focused Gate as required production caller coverage. It may change only to
+prove caller/lease abort propagation into a dispatched action and the stable,
+non-replayable `ActionOutcomeUnknown` terminal result. No other Runner behavior
+transfers into Ticket 19.
+
+Ticket 19 final formal-blocker authority/status amendment (2026-08-23):
+`tests/unit/runner/offer-runtime.test.ts` is added to the complete approved scope
+and focused Gate. It is production `RunnerOfferRuntime` caller/startup coverage
+only. It may change only to prove authoritative lease acceptance before target
+startup, expected pre-action target-error terminalization through the production
+Spool/upload lifecycle, exactly-once completion after ACK, cleanup after partial
+startup, and fail-closed Trace append/drain behavior. Capability/policy denial
+and connection/reconnect behavior remain unchanged.
+
+Ticket 19 dispatch-authority formal-blocker amendment (approved 2026-08-23):
+`tests/unit/runner/lease-renewal-controller.test.ts` is added to the complete
+approved scope and focused Gate as a required lifecycle caller test only. It may
+change only to prove that renewal failure closes the current action-authorization
+window and prevents dispatch after asynchronous action preflight. No other
+Runner renewal behavior transfers into Ticket 19.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -33,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | partial | present | blocked | Tickets 16-18 complete contract expansion, budgets, and production valueRef resolution; ticket 19 still owns the bounded indexed Runtime |
+| Task 16 bounded Web execution | complete | present | focused Gate and post-review Chromium acceptance passed | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 dispatch-bounce final product head is `e993e3b98c9a7b1a3159770c41e7490357ff5354` |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -52,7 +75,7 @@ reserved without a reviewed plan amendment.
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR merge
+verification: core workflow passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 final_core_blocker_product_head: `b13ed8d6dac37581c2b6cf0a03e10811ea4fd040`
 final_review: product behavior clean; pending scope-only exact-head confirmation
@@ -420,6 +443,305 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
   or full-suite review was run per the remediation request. The scoped
   remediation Standards/Spec review reported no blocking findings; PR #73
   remains pending merge into the parent Ticket 17 branch.
+
+### Ticket 19 - Bounded multi-step Web Runtime (2026-08-23)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR merge
+final_core_blocker_product_head: `8fab60237c528a46623d8f341cc24c7c1714a1dd`
+final_observation_origin_product_head: `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb`
+final_action_origin_product_head: `f4d15a47609e715e1367a1b4a2c299fb76277469`
+final_per_read_origin_product_head: `c6ae8df0cd45771bdfca97aa7b4c7db12d270094`
+final_navigation_generation_product_head: `42985b803dae09d34327a326c393615a12d19ab7`
+final_same_origin_action_navigation_product_head: `3d77fd3c91b5113089145ccf9282618cea448d49`
+final_dispatch_bounce_product_head: `c220079e1ff2eaa46b3ecb77c6ffd0165fc70eff`
+final_dispatch_bounce_review_fix_head: `041fc3fabd9758c002f57caf296e04bf9393615a`
+final_dispatch_bounce_review_round_2_head: `e993e3b98c9a7b1a3159770c41e7490357ff5354`
+final_status_commit: same commit as this ledger entry
+review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
+review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
+final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
+core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
+core_blocker_fix_commit: same commit as this ledger entry
+dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
+dispatch_authority_fix_commit: same commit as this ledger entry
+implementation_head: `3d77fd3c91b5113089145ccf9282618cea448d49`
+reviewed_head: `0219cc133ba6d9c388b5ff080a1311154634fe6b`
+chromium_e2e_head: `0219cc133ba6d9c388b5ff080a1311154634fe6b`
+branch_commit_count: 43 commits ahead of `origin/main`, including this status commit
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
+
+- `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
+  select, scroll, and verify steps sequentially. Every planned Trace stage,
+  including the one terminal event, carries its owning `stepIndex`; each Plan
+  step calls `ExecutionBudget.beforeStep` before observation.
+- Runtime supplies the current immutable Plan step to
+  `ModelBackedDecisionProvider`. Planned schemas allow only current-observation
+  `nodeId` grounding when required plus `reason`; deterministic code copies the
+  action kind, navigation path, scroll parameters, and input/select `valueRef`.
+  Verify steps bypass the decision model and receive exactly their claim IDs.
+- Every element action uses a fresh observation. Playwright accepts only the
+  latest registered descriptor map and invalidates it when a state-changing
+  action attempt starts. Navigation is canonicalized against the Job target and
+  origin allowlist; page/semantic scroll remains bounded to fixed directions and
+  `small|page` amounts.
+- Policy authorization remains before `goto`, value resolution, click, fill,
+  select, or scroll. A denied/failed/timed-out intermediate step stops all later
+  steps. A thrown action outcome is classified `ActionOutcomeUnknown` as an
+  error, is not retried, and emits one terminal event. Plans without an explicit
+  verify step receive one final verification against `expectedClaimIds`; the
+  execution application preserves the Runtime error in the persisted Run and
+  public result.
+- `RunnerOfferRuntime` passes the accepted Job and Plan objects unchanged into
+  `LeasedJobExecutor`, requires a healthy value provider when any Plan step uses
+  input/select, and advertises navigate/click/scroll plus value-backed actions
+  only when their complete production paths are composed. Objective-only jobs
+  retain the explicit bounded one-click path.
+- The focused non-E2E Gate
+  `corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright tests/component/web-execution`
+  passed 10 files / 115 tests with 1 pre-existing Task 21 skip. Root
+  `corepack pnpm typecheck` passed.
+- `tests/e2e/web-execution/multi-step-plan.test.ts` is prepared as the exact
+  post-review evidence file. It drives production Runner composition and real
+  file-backed values through navigate -> input -> select -> click -> scroll ->
+  verify, checks ordered indexed Trace, terminal uniqueness, final state, and
+  plaintext absence from model requests, logs, submitted/pre-ACK Trace, and raw
+  spool bytes. Per authority, it was not run before scoped review.
+- Formal core-review remediation makes terminal Trace emission a single
+  Runtime-owned operation outside the already-expired execution budget, bounded
+  by an independent five-second recorder timeout. Failure returns deterministic
+  `TerminalTracePersistenceFailed` without retrying the append. Wall deadline,
+  caller abort, lease abort, Playwright timeout, or target loss after action
+  dispatch returns `ActionOutcomeUnknown`; no later step or automatic action
+  replay occurs.
+- Expected Playwright resolver/executor failures are exhaustively classified:
+  stale/changed/missing/ambiguous/hidden/disabled targets, cross-origin, missing
+  values, action timeout, and unsupported actions become stable blocked/error
+  completions; unexpected non-action failures may still throw. Explicit
+  navigation is canonicalized against the Job target protocol/host/port, not a
+  broader policy allowlist, and credentials remain rejected while fragments are
+  preserved.
+- Production abort propagation now runs from Runner shutdown through
+  `RunnerOfferRuntime`, `LeasedJobExecutor`, Runtime, and the Playwright adapter
+  to the action call. The formal-review focused Gate passed 10 files / 157 tests
+  with 1 pre-existing Task 21 skip; the added core caller file passed 9 tests.
+  Root `corepack pnpm typecheck` and `git diff --check` passed. The Chromium
+  acceptance contains 1 success plus 7 required failure variants.
+- Fresh exact-base Standards and Spec review of head `683b0b7` against merge
+  base `de2b773` reported no Critical or Important findings. Post-review real
+  Chromium acceptance passed 1 file / 8 tests without skips, with every failure
+  variant asserting no later step, exactly one terminal, and its stable
+  completion classification. The dedicated PR remains pending.
+- Formal origin-race remediation re-reads the live page URL and compares its
+  canonical origin exactly with the Job target origin immediately before every
+  click, fill, selectOption, and page/element scroll side effect. It also
+  re-proves the current graph and exact descriptor identity at that boundary;
+  navigation target URLs retain the same exact-origin rule. Post-action and
+  thrown-action handling check origin first so navigation during dispatch is
+  classified as `OriginViolation` rather than timeout or unknown outcome.
+- Deterministic Runtime/component tables cover click, input, select, and scroll
+  after a silent cross-origin page change with matching locator behavior. All
+  four terminate blocked with `OriginViolation`, emit one terminal event, and
+  invoke no action side effect; all four same-origin controls dispatch once.
+- The amended Ticket 19 focused Gate passed 11 files / 177 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. This code changed after the prior Chromium E2E, so
+  E2E was not rerun and remains pending a fresh exact-base review.
+- Final startup-terminalization remediation accepts the authoritative lease
+  before target construction/start, then keeps start, production Runtime setup,
+  Trace drain, completion, and partial-start cleanup in one lifecycle. Every
+  established startup `WebTargetError` uses the Runtime's stable blocked/error
+  classification, appends one `run_completed` through `SpoolingTraceRecorder`,
+  receives a `TraceUploadPump` submit/ACK, and completes the lease once without
+  model/provider/action execution. Append, submit, or ACK failure performs no
+  retry and no false completion; unexpected setup errors propagate after close.
+- TDD RED was 19 failures in `tests/unit/runner/offer-runtime.test.ts`, proving
+  target startup preceded lease acceptance and escaped Trace/completion/cleanup.
+  GREEN affected offer/job/runtime tests passed 3 files / 95 tests. The amended
+  Ticket 19 Gate passed 12 files / 211 tests with 1 pre-existing Task 21 skip;
+  root `corepack pnpm typecheck` and `git diff --check` passed. Connection and
+  disconnect behavior is unchanged. Chromium E2E was not rerun because code
+  changed after its reviewed head; a fresh exact-base review remains required.
+- Final core-blocker remediation starts one authoritative `AcceptedLeaseLifecycle`
+  immediately after acceptance and before target construction/startup. Its one
+  `LeaseWindow`, renewal controller, current token, and abort signal span startup
+  and execution; renewal refreshes that same window, while expiry or renewal
+  failure aborts and closes partial target startup before any model/action work.
+- `TerminalTracePersistenceError` now carries the distinct
+  `terminal_persistence_failed` disposition from `ExecutionRuntime` and
+  `SpoolingTraceRecorder`. `RunnerOfferRuntime` never drains or calls
+  `session.complete` for that disposition; startup append, submit, and ACK
+  failures retain the same fail-closed behavior.
+- Playwright marks dispatch immediately before `goto`, `click`, `fill`,
+  `selectOption`, and page/element scroll invocation. Any same-origin generic
+  rejection after invocation returns `ActionOutcomeUnknown`, terminalizes as an
+  infrastructure error, and cannot retry or start a later step. Pre-dispatch
+  origin, descriptor, visibility, enabled, and value checks retain their stable
+  blocked outcomes.
+- TDD RED was 12 failures across the Runtime, Runner executor/offer, and
+  Playwright action seams. The final Ticket 19 Gate passed 12 files / 230 tests
+  with 1 pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run; fresh exact-base review is required
+  before rerunning Chromium acceptance.
+- Dispatch-authority remediation adds the adapter-neutral
+  `ActionAuthorizationWindow` to each policy-minted `ExecutionPermit`. The
+  production accepted-lease lifecycle supplies its current `LeaseWindow` and
+  cancellation state through `ExecutionRuntime`; Playwright checks it
+  synchronously after asynchronous preflight and immediately before `goto`,
+  `click`, `fill`, `selectOption`, or scroll dispatch. Renewal failure, lease
+  expiry, and caller stop/cancel during preflight therefore invoke no side
+  effect. Once dispatch is marked, rejection, timeout, page crash, unreadable
+  post-action state, or any non-exact post-action origin returns the
+  non-replayable `ActionOutcomeUnknown` error; pre-dispatch origin mismatch
+  remains blocked as `OriginViolation`.
+- Production Runner capability coverage proves `action:navigate`,
+  `action:click`, and `action:scroll` always negotiate, while `action:input` and
+  `action:select` negotiate only with a healthy value provider. TDD RED was 15
+  failures across the Playwright and lifecycle caller seams. The amended Ticket
+  19 Gate passed 13 files / 253 tests with 1 pre-existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run; fresh
+  exact-base review is required before Chromium acceptance.
+- Final branch verification after merging current `main` passed 14 files / 260
+  tests with one existing Task 21 skip, including 8 real Chromium E2E cases.
+  Root build, typecheck, diff check, and scoped Standards/Spec review passed.
+- After the final lease/capability/redirect fixes, the focused Gate passed 264
+  tests with one existing Task 21 skip and fresh review reported no blockers.
+  The post-review real Chromium acceptance then passed 1 file / 8 tests at the
+  reviewed head above. This final evidence update is status-only.
+- Final PR86 core-blocker remediation validates both offered requirements and
+  immutable Plan action tokens against the composed Runner capabilities before
+  lease acceptance. Forged input/select offers without a healthy value provider
+  now fail with `CapabilityMismatch`, zero accepts, and no target/model effects.
+- One accepted-lease lifecycle now spans target startup, Runtime, terminal Trace,
+  Trace drain/ACK, and `session.complete`; completion receives the latest renewed
+  token. Renewal failure or authoritative expiry aborts an in-flight drain,
+  prevents completion/acknowledgement, and cleanup stops renewal only afterward.
+- Browser startup now reads `page.url()` after initial `goto` and requires exact
+  protocol/hostname/effective-port equality with the configured Job target
+  origin. Cross-origin redirects terminalize as `OriginViolation` before model or
+  observation, while same-origin path redirects proceed; rejected `goto` remains
+  `NavigationFailed` or `NavigationTimedOut`.
+- Final focused non-E2E Gate at product head
+  `8fab60237c528a46623d8f341cc24c7c1714a1dd` passed 13 files / 264 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. The adjacent disconnect/recovery component passed 1
+  file / 7 tests using Git OpenSSL with its explicit config. No E2E, GitHub
+  checks, or review is claimed; E2E remains gated on fresh coordinator review.
+- Final observation-origin remediation passes the immutable canonical Job target
+  origin from `RunnerOfferRuntime` into each Playwright session. Before every
+  DOM, URL metadata, title, screenshot, Graph build/registration, and artifact
+  return, the adapter reads `page.url()` and requires exact normalized scheme,
+  hostname, and effective-port equality. An unreadable URL or mismatch throws
+  blocked `OriginViolation`; candidates and raced registrations are discarded.
+- TDD reproduced a delayed cross-origin redirect after one successful action and
+  proved the next capture emits no cross-origin observation Trace, model context,
+  or artifact and invokes no later action. Controlled redirects during DOM
+  collection and before artifact return also fail closed; same-origin path
+  changes continue. The final Ticket 19 non-E2E Gate at product head
+  `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb` passed 13 files / 270 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. E2E was not rerun and remains gated on fresh review.
+- Final action-origin remediation uses the session's immutable Job target-origin
+  assertion before resolver or executor locator/DOM reads and after asynchronous
+  resolution/preflight reads. Resolver races return no resolved payload or
+  `action_resolved` Trace; executor races stop before the synchronous action
+  authorization check and dispatch, while the immediate dispatch check remains.
+- TDD proved redirects before resolver/executor reads perform zero cross-origin
+  locator or value-provider reads, and redirects during resolution/preflight
+  terminalize blocked as `OriginViolation` without recording cross-origin
+  resolution details. The final Ticket 19 non-E2E Gate at product head
+  `f4d15a47609e715e1367a1b4a2c299fb76277469` passed 13 files / 273 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run; fresh exact-base review remains
+  required.
+- Per-read origin remediation adds `readOnExpectedOrigin` to the BrowserSession
+  authority. It snapshots the session navigation generation, synchronously
+  checks exact origin immediately before one awaited DOM read, and requires both
+  the exact origin and generation to remain unchanged immediately afterward.
+  Executor `count`, visibility, enabled, and `href` reads and resolver `count`
+  now use independent helper calls, so one successful guard never covers
+  multiple awaits.
+- Runtime tests prove a `count` redirect stops visibility/enabled/attribute
+  reads, an A-to-B-to-A `framenavigated` bounce is rejected by generation even
+  though the final URL is same-origin, and a visibility redirect stops
+  enabled/attribute reads. Each case performs no action side effect, records no
+  raced `action_resolved`, and emits one terminal blocked `OriginViolation` as
+  applicable; the same-origin controls remain green.
+- The final Ticket 19 non-E2E Gate at product head
+  `c6ae8df0cd45771bdfca97aa7b4c7db12d270094` passed 13 files / 275 tests with 1
+  pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run; a fresh exact-base review remains
+  required before Chromium acceptance.
+- Navigation-generation remediation binds each observation's private descriptor
+  registry and each resolved action object to the exact monotonic main-frame
+  generation. Every main-frame navigation immediately clears descriptor
+  authority and advances the generation, so an A -> B -> A
+  bounce cannot revive a graph merely because its final origin matches.
+- Observer collection, resolver DOM reads, executor preflight, value resolution,
+  authorization, and dispatch all revalidate the immutable generation. The
+  adapter exposes no generation in Graph or Trace. TDD first failed 6 focused
+  cases; coverage now proves no locator read or resolution Trace after a
+  pre-resolver bounce, no side effect after a post-resolver or value-provider
+  bounce, immediate registry clearing, unchanged same-origin behavior, and a
+  fresh usable observation after planned navigation.
+- At product head `42985b803dae09d34327a326c393615a12d19ab7`, the exact
+  amended Ticket 19 non-E2E Gate passed 13 files / 282 tests with 1 pre-existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed.
+  Fresh exact-base review reported no blockers. The post-review real Chromium
+  acceptance then passed 1 file / 8 tests at reviewed head
+  `215e47acfef80f877c5795298fa091d93e96255d`; this final evidence update is
+  status-only.
+- Scope decision: advanced browser-normalization redaction for CR/LF-transformed
+  secret values is deferred with the closed Ticket 39-45 hardening chain. It is
+  not counted as evidence for this ticket. Ticket 19 verifies the primary
+  immutable multi-step execution, policy/budget/lease, re-observation,
+  input/select, terminal Trace, and no-retry uncertain-action workflow.
+- Same-origin action-navigation regression remediation keeps every pre-dispatch
+  exact-origin and observation-generation guard unchanged. After a dispatched
+  Playwright promise resolves, click/input/select/scroll now require only a
+  readable live URL on the immutable Job target origin; legitimate navigation
+  generation advancement succeeds while the old descriptor remains invalid and
+  the next step captures a fresh observation. A post-dispatch cross-origin or
+  unreadable URL and every dispatch rejection remain non-replayable
+  `ActionOutcomeUnknown` errors.
+- TDD RED was four fake-generation failures plus the real Chromium same-origin
+  link workflow. At product head
+  `3d77fd3c91b5113089145ccf9282618cea448d49`, the exact Ticket 19 non-E2E Gate
+  passed 13 files / 289 tests with 1 pre-existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. The prepared Chromium
+  acceptance now covers the same-origin link workflow, fresh `/next`
+  observation, next-step execution, one terminal, cross-origin unknown outcome,
+  and rejected-dispatch unknown outcome. Fresh Standards/Spec review of head
+  `49c97362565fdf38bbd8228a1485fcf886ae74b7` against exact merge base
+  `14bcf76cc686244775a127c86cfaa2b19e4ad4a2` reported no Critical or Important
+  findings. The post-review Chromium acceptance then passed 1 file / 10 tests
+  without skips at that reviewed head.
+- Final dispatch-bounce remediation tracks a session-private monotonic
+  cross-origin navigation count relative to the immutable Job target origin.
+  Every main-frame navigation still advances navigation generation and clears
+  descriptor authority; only unreadable or non-target origins advance the new
+  count. The Playwright executor snapshots that count in the permit immediately
+  before dispatch after all prechecks, then reports success only when the final
+  URL is exact target-origin and the count is unchanged. A dispatched
+  A-to-B-to-A transition is therefore `ActionOutcomeUnknown`; a later fresh
+  same-origin dispatch is not globally poisoned.
+- TDD RED proved the missing session count and the incorrect successful outcome
+  after a deterministic A-to-B-to-A click. Unit coverage now includes the exact
+  event sequence, startup A-to-B-to-A rejection, unchanged same-origin
+  navigation, fresh-observation reuse, and permit snapshot values. The affected
+  non-E2E Web set passed 7 files / 183 tests with 1 pre-existing Task 21 skip;
+  the real Chromium component case passed with final URL back on A, no next
+  step, and exactly one terminal. Review remediation also preserves
+  `OriginViolation` when startup crosses origin before its `goto` rejects and
+  keeps child-frame navigation outside main-frame descriptor authority. The
+  exact Ticket 19 non-E2E Gate passed 13 files / 293 tests with 1 pre-existing
+  Task 21 skip; root `corepack pnpm typecheck` and `git diff --check` passed.
+  Fresh Standards/Spec review of head
+  `0219cc133ba6d9c388b5ff080a1311154634fe6b` against exact merge base
+  `14bcf76cc686244775a127c86cfaa2b19e4ad4a2` reported no Critical or Important
+  findings. The post-review Chromium acceptance then passed 1 file / 10 tests
+  without skips at that reviewed head.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 

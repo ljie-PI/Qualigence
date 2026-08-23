@@ -32,8 +32,9 @@ export class TraceUploadPump {
   ) {}
 
   /** Submit at most one batch. Returns `done` when nothing more is pending. */
-  async pumpOnce(): Promise<TraceUploadPumpResult> {
-    const events = await this.spool.pending(this.runId, this.cursor, this.limit);
+  async pumpOnce(signal?: AbortSignal): Promise<TraceUploadPumpResult> {
+    signal?.throwIfAborted();
+    const events = await abortable(this.spool.pending(this.runId, this.cursor, this.limit), signal);
     if (events.length === 0) {
       return { submitted: 0, done: true };
     }
@@ -44,20 +45,42 @@ export class TraceUploadPump {
       firstSequenceNumber: first.sequenceNumber,
       events,
     };
-    const ack = await this.submitter.submit(batch);
-    await this.spool.acknowledge(this.runId, ack.nextExpectedSequenceNumber);
+    signal?.throwIfAborted();
+    const ack = await abortable(this.submitter.submit(batch), signal);
+    signal?.throwIfAborted();
+    await abortable(this.spool.acknowledge(this.runId, ack.nextExpectedSequenceNumber), signal);
+    signal?.throwIfAborted();
     this.cursor = Math.max(this.cursor, ack.nextExpectedSequenceNumber);
-    const remaining = await this.spool.pending(this.runId, this.cursor, this.limit);
+    const remaining = await abortable(this.spool.pending(this.runId, this.cursor, this.limit), signal);
     return { submitted: events.length, done: remaining.length === 0 };
   }
 
   /** Drain the spool until Core has acknowledged every spooled event. */
-  async drain(): Promise<void> {
+  async drain(signal?: AbortSignal): Promise<void> {
     for (;;) {
-      const result = await this.pumpOnce();
+      const result = await this.pumpOnce(signal);
       if (result.done) {
         return;
       }
     }
   }
+}
+
+function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return operation;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }

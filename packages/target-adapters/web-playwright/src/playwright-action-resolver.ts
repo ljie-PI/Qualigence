@@ -25,20 +25,52 @@ export class PlaywrightActionResolver implements ActionResolver {
     action: AnyProposedAction,
     graph: ObservationGraph,
   ): Promise<AnyResolvedWebAction> {
-    if (action.kind === "navigate" || action.kind === "window" || (action.kind === "scroll" && action.target === undefined)) {
+    if (action.kind === "window") {
       throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
+    }
+    const navigationGeneration = this.session.requireCurrentObservationGeneration(graph.graphId);
+    if (action.kind === "navigate") {
+      let url: URL;
+      try {
+        url = new URL(action.path, this.session.targetUrl);
+      } catch {
+        throw new WebTargetError("NavigationFailed", "The planned navigation path is invalid.");
+      }
+      if (url.username !== "" || url.password !== "") {
+        throw new WebTargetError("NavigationFailed", "The planned navigation must not embed credentials.");
+      }
+      if (!this.session.isTargetOrigin(url.href)) {
+        throw new WebTargetError("OriginViolation", "The planned navigation leaves the Job target origin.");
+      }
+      return this.session.withPage(async (page) => {
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        const resolved = { targetKind: "web", kind: "navigate", url: url.href } as const;
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        return this.session.bindResolvedAction(resolved, navigationGeneration);
+      });
+    }
+    if (action.kind === "scroll" && action.target === undefined) {
+      return this.session.withPage(async (page) => {
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        const resolved = {
+          targetKind: "web",
+          kind: "scroll",
+          graphId: graph.graphId,
+          direction: action.direction,
+          amount: action.amount,
+        } as const;
+        this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+        this.session.assertPageTargetOrigin(page, navigationGeneration);
+        return this.session.bindResolvedAction(resolved, navigationGeneration);
+      });
     }
     const actionTarget = action.target;
     if (actionTarget === undefined) {
       throw new WebTargetError("UnsupportedAction", "This action requires a semantic target.");
     }
-    if (!this.session.hasGraph(graph.graphId)) {
-      throw new WebTargetError(
-        "StaleObservation",
-        `Graph ${graph.graphId} is not the session's registered observation.`,
-      );
-    }
-
     const descriptor = this.session.descriptorFor(
       graph.graphId,
       actionTarget.nodeId,
@@ -50,43 +82,59 @@ export class PlaywrightActionResolver implements ActionResolver {
       );
     }
 
-    const count = await this.session.withPage((page) =>
-      locatorFor(page, descriptor).count(),
-    );
-    if (count === 0) {
-      throw new WebTargetError(
-        "TargetNotFound",
-        `Node ${actionTarget.nodeId} no longer matches any element.`,
-      );
-    }
-    if (count > 1) {
-      throw new WebTargetError(
-        "AmbiguousTarget",
-        `Node ${actionTarget.nodeId} matches ${count} elements.`,
-      );
-    }
+    return this.session.withPage(async (page) => {
+      this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+      const readForObservation = <T>(read: () => Promise<T>): Promise<T> =>
+        this.session.readForObservation(page, graph.graphId, navigationGeneration, read);
+      const locator = locatorFor(page, descriptor);
+      const count = await readForObservation(() => locator.count());
 
-    const target = {
-      nodeId: actionTarget.nodeId,
-      selector: actionToken(graph.graphId, actionTarget.nodeId),
-    };
-    if (action.kind === "input" || action.kind === "select") {
-      return {
-        targetKind: "web",
-        kind: action.kind,
-        target,
-        graphId: graph.graphId,
-        valueRef: action.valueRef,
+      if (count === 0) {
+        throw new WebTargetError(
+          "TargetNotFound",
+          `Node ${actionTarget.nodeId} no longer matches any element.`,
+        );
+      }
+      if (count > 1) {
+        throw new WebTargetError(
+          "AmbiguousTarget",
+          `Node ${actionTarget.nodeId} matches ${count} elements.`,
+        );
+      }
+
+      const target = {
+        nodeId: actionTarget.nodeId,
+        selector: actionToken(graph.graphId, actionTarget.nodeId),
       };
-    }
-    if (action.kind !== "click") {
-      throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");
-    }
-    return {
-      targetKind: "web",
-      kind: "click",
-      target,
-      graphId: graph.graphId,
-    };
+      let resolved: AnyResolvedWebAction;
+      if (action.kind === "input" || action.kind === "select") {
+        resolved = {
+          targetKind: "web",
+          kind: action.kind,
+          target,
+          graphId: graph.graphId,
+          valueRef: action.valueRef,
+        };
+      } else if (action.kind === "scroll") {
+        resolved = {
+          targetKind: "web",
+          kind: "scroll",
+          target,
+          graphId: graph.graphId,
+          direction: action.direction,
+          amount: action.amount,
+        };
+      } else {
+        resolved = {
+          targetKind: "web",
+          kind: "click",
+          target,
+          graphId: graph.graphId,
+        };
+      }
+      this.session.assertObservationGeneration(graph.graphId, navigationGeneration);
+      this.session.assertPageTargetOrigin(page, navigationGeneration);
+      return this.session.bindResolvedAction(resolved, navigationGeneration);
+    });
   }
 }

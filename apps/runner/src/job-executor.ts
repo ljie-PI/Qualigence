@@ -4,16 +4,17 @@ import type {
   ExecutionJobOffer,
   RunnerCapabilities,
 } from "@qualigence/runner-protocol";
-import { negotiateCapabilities } from "@qualigence/runner-protocol";
+import { advertisedCapabilityTokens, capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
 import {
   ExecutionBlockedError,
   ExecutionRuntime,
+  TerminalTracePersistenceError,
+  type ActionAuthorizationWindow,
   type ActionExecutor,
   type ActionResolver,
   type ExecutionDecisionProvider,
-  type ExecutionPermit,
+  type ExecutionBudget,
   type Observer,
-  type ResolvedAction,
   type RunnerPolicyGate,
   type Verifier,
 } from "@qualigence/runner-kernel";
@@ -43,6 +44,13 @@ export interface LeasedJobExecutorDependencies {
   readonly renewalDelay?: RenewalDelay;
   readonly objectiveOnlyMaximumWallClockMs?: number;
   readonly objectiveOnlyMaximumModelTokens?: number;
+  readonly budget?: ExecutionBudget;
+}
+
+export interface AcceptedLeaseLifecycleOptions {
+  readonly clocks?: LeaseWindowClocks;
+  readonly actionDeadlineSafetyMarginMs?: number;
+  readonly renewalDelay?: RenewalDelay;
 }
 
 export interface LeasedJobResult {
@@ -51,11 +59,167 @@ export interface LeasedJobResult {
   readonly window: LeaseWindow;
 }
 
+export interface AcceptedLeaseFinalization {
+  readonly completion: ExecutionCompletion;
+  readonly signal: AbortSignal;
+  currentLease(): ExecutionJobLease;
+}
+
+export type AcceptedLeaseFinalizer = (finalization: AcceptedLeaseFinalization) => Promise<void>;
+
+type RenewalResult =
+  | { readonly status: "fulfilled" }
+  | { readonly status: "rejected"; readonly error: unknown };
+
+export function assertOfferCapabilities(
+  offer: ExecutionJobOffer,
+  runnerCapabilities: RunnerCapabilities,
+): void {
+  const planActionKinds = offer.job.plan?.steps.flatMap((step) =>
+    step.kind === "verify" ? [] : [step.kind]) ?? [];
+  const planActionCapabilities = advertisedCapabilityTokens(capabilities({
+    actionKinds: planActionKinds,
+    model: { structuredOutput: false },
+  }));
+  const negotiation = negotiateCapabilities(
+    runnerCapabilities,
+    [...new Set([...offer.requiredCapabilities, ...planActionCapabilities])],
+  );
+  if (negotiation.outcome === "rejected") {
+    throw new RunnerAppError("CapabilityMismatch", "runner cannot satisfy the offer's requirements", {
+      details: { missingCapabilities: negotiation.rejection.missingCapabilities },
+    });
+  }
+}
+
 function defaultClocks(): LeaseWindowClocks {
   return {
     monotonicNow: (): number => Math.trunc(performance.now()),
     wallNow: (): number => Date.now(),
   };
+}
+
+/** One authoritative lease window spanning accepted-Job startup and execution. */
+export class AcceptedLeaseLifecycle implements ActionAuthorizationWindow {
+  readonly window: LeaseWindow;
+  readonly signal: AbortSignal;
+  private readonly controller: LeaseRenewalController;
+  private readonly executionAbort: AbortController;
+  private readonly renewal: Promise<RenewalResult>;
+
+  constructor(
+    offer: ExecutionJobOffer,
+    session: RunnerSession,
+    initialLease: ExecutionJobLease,
+    callerSignal?: AbortSignal,
+    options: AcceptedLeaseLifecycleOptions = {},
+  ) {
+    const clocks = options.clocks ?? defaultClocks();
+    this.window = new LeaseWindow(initialLease, clocks, {
+      leaseDurationMs: offer.leaseDurationMs,
+      actionDeadlineSafetyMarginMs:
+        options.actionDeadlineSafetyMarginMs ?? DEFAULT_ACTION_DEADLINE_SAFETY_MARGIN_MS,
+    });
+    const executionAbort = new AbortController();
+    this.executionAbort = executionAbort;
+    this.signal = callerSignal === undefined
+      ? executionAbort.signal
+      : AbortSignal.any([callerSignal, executionAbort.signal]);
+    const controllerDependencies = {
+      session,
+      initialLease,
+      window: this.window,
+      leaseDurationMs: offer.leaseDurationMs,
+      executionAbort,
+    };
+    this.controller = new LeaseRenewalController(
+      options.renewalDelay === undefined
+        ? controllerDependencies
+        : { ...controllerDependencies, delay: options.renewalDelay },
+    );
+    this.renewal = this.controller.run(callerSignal ?? new AbortController().signal).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+  }
+
+  currentLease(): ExecutionJobLease {
+    return this.controller.currentLease();
+  }
+
+  mayStartAction(): boolean {
+    return !this.signal.aborted && this.window.mayStartAction();
+  }
+
+  assertActionAuthorized(): void {
+    this.assertActionActive();
+  }
+
+  async duringLease<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.assertLeaseActive();
+    const operationResult = Promise.resolve().then(() => operation(this.signal));
+    const renewalFailure = this.renewal.then((result) => {
+      if (result.status === "rejected") throw result.error;
+      return new Promise<never>(() => undefined);
+    });
+    let rejectAborted: ((reason: unknown) => void) | undefined;
+    const abortOperation = (): void => rejectAborted?.(this.signal.reason);
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject;
+      this.signal.addEventListener("abort", abortOperation, { once: true });
+    });
+    let value: T;
+    try {
+      value = await Promise.race([operationResult, renewalFailure, aborted]);
+    } finally {
+      this.signal.removeEventListener("abort", abortOperation);
+    }
+    this.assertLeaseActive();
+    return value;
+  }
+
+  async finish(completion?: ExecutionCompletion): Promise<ExecutionJobLease> {
+    this.controller.stop();
+    const renewal = await this.renewal;
+    if (
+      renewal.status === "rejected" &&
+      !(completion?.status === "error" && completion.errorCode === "ActionOutcomeUnknown") &&
+      !(
+        completion?.status === "blocked" &&
+        completion.errorCode === "LeaseExpired" &&
+        renewal.error instanceof RunnerAppError &&
+        renewal.error.code === "LeaseExpired"
+      )
+    ) {
+      throw renewal.error;
+    }
+    return this.currentLease();
+  }
+
+  async dispose(): Promise<void> {
+    this.controller.stop();
+    await this.renewal;
+  }
+
+  private assertLeaseActive(): void {
+    if (this.signal.aborted) throw this.signal.reason;
+    if (this.window.hasExpired()) {
+      const error = new ExecutionBlockedError("LeaseExpired");
+      this.window.close();
+      this.executionAbort.abort(error);
+      throw error;
+    }
+  }
+
+  private assertActionActive(): void {
+    if (this.signal.aborted) throw this.signal.reason;
+    if (!this.window.mayStartAction()) {
+      const error = new ExecutionBlockedError("LeaseExpired");
+      this.window.close();
+      this.executionAbort.abort(error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -92,59 +256,35 @@ export class LeasedJobExecutor {
     offer: ExecutionJobOffer,
     session: RunnerSession,
     signal?: AbortSignal,
+    acceptedLifecycle?: AcceptedLeaseLifecycle,
+    finalize?: AcceptedLeaseFinalizer,
   ): Promise<LeasedJobResult> {
-    const negotiation = negotiateCapabilities(this.deps.capabilities, offer.requiredCapabilities);
-    if (negotiation.outcome === "rejected") {
-      throw new RunnerAppError("CapabilityMismatch", "runner cannot satisfy the offer's requirements", {
-        details: { missingCapabilities: negotiation.rejection.missingCapabilities },
-      });
-    }
-
-    const initialLease = await session.accept(offer.offerId);
-    const window = new LeaseWindow(initialLease, this.clocks, {
-      leaseDurationMs: offer.leaseDurationMs,
-      actionDeadlineSafetyMarginMs: this.safetyMarginMs,
-    });
-    this.currentWindow = window;
-
-    const executionAbort = new AbortController();
-    const guardedSignal = signal === undefined
-      ? executionAbort.signal
-      : AbortSignal.any([signal, executionAbort.signal]);
-    const controllerDependencies = {
+    assertOfferCapabilities(offer, this.deps.capabilities);
+    const lifecycle = acceptedLifecycle ?? new AcceptedLeaseLifecycle(
+      offer,
       session,
-      initialLease,
-      window,
-      leaseDurationMs: offer.leaseDurationMs,
-      executionAbort,
-    };
-    const controller = new LeaseRenewalController(
-      this.deps.renewalDelay === undefined
-        ? controllerDependencies
-        : { ...controllerDependencies, delay: this.deps.renewalDelay },
-    );
-    const renewal = controller.run(signal ?? new AbortController().signal).then(
-      () => ({ status: "fulfilled" as const }),
-      (error: unknown) => ({ status: "rejected" as const, error }),
-    );
-
-    const guardedExecutor: ActionExecutor = {
-      execute: async (action: ResolvedAction, permit: ExecutionPermit) => {
-        if (guardedSignal.aborted || !window.mayStartAction()) {
-          throw new ExecutionBlockedError("LeaseExpired");
-        }
-        return this.deps.actionExecutor.execute(action, permit);
+      await session.accept(offer.offerId),
+      signal,
+      {
+        clocks: this.clocks,
+        actionDeadlineSafetyMarginMs: this.safetyMarginMs,
+        ...(this.deps.renewalDelay === undefined ? {} : { renewalDelay: this.deps.renewalDelay }),
       },
-    };
+    );
+    const window = lifecycle.window;
+    this.currentWindow = window;
+    const guardedSignal = lifecycle.signal;
 
     const runtime = new ExecutionRuntime({
       observer: this.deps.observer,
       decisionProvider: this.deps.decisionProvider,
       resolver: this.deps.resolver,
       policyGate: this.deps.policyGate,
-      actionExecutor: guardedExecutor,
+      actionExecutor: this.deps.actionExecutor,
+      actionAuthorizationWindow: lifecycle,
       verifier: this.deps.verifier,
       traceRecorder: new SpoolingTraceRecorder(this.deps.spool),
+      ...(this.deps.budget === undefined ? {} : { budget: this.deps.budget }),
       ...(this.deps.objectiveOnlyMaximumWallClockMs === undefined
         ? {}
         : { objectiveOnlyMaximumWallClockMs: this.deps.objectiveOnlyMaximumWallClockMs }),
@@ -153,14 +293,34 @@ export class LeasedJobExecutor {
         : { objectiveOnlyMaximumModelTokens: this.deps.objectiveOnlyMaximumModelTokens }),
     });
 
-    const runtimeResult = await runtime.run(offer.job).then(
+    const runtimeResult = await runtime.run(offer.job, guardedSignal).then(
       (completion) => ({ status: "fulfilled" as const, completion }),
       (error: unknown) => ({ status: "rejected" as const, error }),
     );
-    controller.stop();
-    const renewalResult = await renewal;
-    if (renewalResult.status === "rejected") throw renewalResult.error;
-    if (runtimeResult.status === "rejected") throw runtimeResult.error;
-    return { lease: controller.currentLease(), completion: runtimeResult.completion, window };
+    let lease: ExecutionJobLease;
+    try {
+      if (runtimeResult.status === "rejected") {
+        if (acceptedLifecycle === undefined) await lifecycle.finish();
+        throw runtimeResult.error;
+      }
+      if (finalize !== undefined) {
+        await lifecycle.duringLease((finalizationSignal) => finalize({
+          completion: runtimeResult.completion,
+          signal: finalizationSignal,
+          currentLease: () => lifecycle.currentLease(),
+        }));
+      }
+      lease = await lifecycle.finish(runtimeResult.completion);
+    } catch (renewalError) {
+      if (
+        runtimeResult.status === "rejected" &&
+        runtimeResult.error instanceof TerminalTracePersistenceError
+      ) {
+        throw runtimeResult.error;
+      }
+      if (acceptedLifecycle === undefined) await lifecycle.dispose();
+      throw renewalError;
+    }
+    return { lease, completion: runtimeResult.completion, window };
   }
 }

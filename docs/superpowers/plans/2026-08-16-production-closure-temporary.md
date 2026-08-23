@@ -256,6 +256,29 @@ prove denial occurs before value-provider or executor effects. Web
 click/scroll/navigation and all existing Desktop classifications remain
 unchanged.
 
+Ticket 19 formal-blocker amendment (approved 2026-08-23):
+`tests/unit/runner/job-executor.test.ts` is added to the complete approved scope
+and focused Gate as required production caller coverage. It may change only to
+prove caller/lease abort propagation into a dispatched action and the stable,
+non-replayable `ActionOutcomeUnknown` terminal result. No other Runner behavior
+transfers into Ticket 19.
+
+Ticket 19 final formal-blocker amendment (approved 2026-08-23):
+`tests/unit/runner/offer-runtime.test.ts` is added to the complete approved scope
+and focused Gate. It is production `RunnerOfferRuntime` caller/startup coverage
+only. It may change only to prove authoritative lease acceptance before target
+startup, expected pre-action target-error terminalization through the production
+Spool/upload lifecycle, exactly-once completion after ACK, cleanup after partial
+startup, and fail-closed Trace append/drain behavior. Capability/policy denial
+and connection/reconnect behavior remain unchanged.
+
+Ticket 19 dispatch-authority formal-blocker amendment (approved 2026-08-23):
+`tests/unit/runner/lease-renewal-controller.test.ts` is added to the complete
+approved scope and focused Gate as a required lifecycle caller test only. It may
+change only to prove that renewal failure closes the current action-authorization
+window and prevents dispatch after asynchronous action preflight. No other
+Runner renewal behavior transfers into Ticket 19.
+
 Ticket 03 round-3 review additionally approved
 `apps/admin-cli/src/commands/migrate.ts`,
 `tests/conformance/storage/relational-schema.test.ts`,
@@ -302,7 +325,7 @@ authoritative current rows rather than deriving an expected hash from them.
 | 16 | Task 16 contract expand | `packages/contracts/runner-protocol/{src,proto}`; `packages/runner-kernel/src`; `packages/core-application/src/runner/execution-job-service.ts`; `packages/protocol-adapters/{grpc-runner-protocol/src/mappers.ts,in-memory-runner-protocol/src/index.ts}`; `packages/testkit/src/index.ts`; `apps/runner/src/{offer-runtime.ts,spooling-trace-recorder.ts}`; `tests/{type,conformance/runner-protocol,unit/runner-kernel,unit/core-daemon/execution-job-service.test.ts,unit/runner/offer-runtime.test.ts,unit/runner/trace-upload-pump.test.ts}`; status | `corepack pnpm vitest run tests/conformance/runner-protocol/accepted-execution-job-plan.test.ts tests/conformance/runner-protocol/proto-schema.test.ts tests/conformance/runner-protocol/grpc-mappers.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner/trace-upload-pump.test.ts tests/contract/runner-control/sqlite-runner-control-store.test.ts` |
 | 17 | Task 16 budget/usage | `packages/{contracts/model-provider,model-gateway,model-providers/openai-compatible,runner-components/model-agent,runner-kernel}/src`; `apps/runner/src/{config.ts,offer-runtime.ts,job-executor.ts}`; `apps/cli/src/{config.ts,local-run-composition-root.ts}`; `tests/{unit/model-gateway,unit/runner-components,unit/runner-kernel,contract/model-providers}`; `tests/unit/runner/job-executor.test.ts`; `tests/component/web-execution/local-run-composition-root.test.ts`; status | `corepack pnpm vitest run tests/unit/runner-kernel tests/unit/model-gateway tests/unit/runner-components/model-agent.test.ts tests/contract/model-providers/openai-compatible-model-provider.test.ts tests/unit/runner/job-executor.test.ts tests/component/web-execution/local-run-composition-root.test.ts` |
 | 18 | Task 16 valueRef | `apps/runner/src/{action-value-provider,config,main,index,offer-runtime}.ts`; `packages/runner-components/model-agent/src/model-agent.ts`; `packages/target-adapters/web-playwright/src`; `packages/runner-kernel/src/deterministic-policy-gate.ts`; `tests/{unit/runner,unit/target-adapters/web-playwright,component/web-execution}`; `tests/unit/runner-components/model-agent.test.ts`; `tests/unit/runner-kernel/deterministic-policy-gate.test.ts`; status | `corepack pnpm vitest run tests/unit/runner/action-value-provider.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/component/web-execution` |
-| 19 | Task 16 bounded Runtime | `packages/{runner-kernel,runner-components/model-agent,target-adapters/web-playwright,execution-application}/src`; `apps/runner/src`; `tests/{unit/runner-kernel,unit/runner-components,unit/target-adapters/web-playwright,component/web-execution}`; status | `corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright tests/component/web-execution` |
+| 19 | Task 16 bounded Runtime | `packages/{runner-kernel,runner-components/model-agent,target-adapters/web-playwright,execution-application}/src`; `apps/runner/src`; `tests/{unit/runner-kernel,unit/runner-components,unit/target-adapters/web-playwright,component/web-execution}`; `tests/unit/runner/{job-executor,lease-renewal-controller,offer-runtime}.test.ts`; status | `corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/unit/runner-components/model-agent.test.ts tests/unit/target-adapters/web-playwright tests/unit/runner/job-executor.test.ts tests/unit/runner/lease-renewal-controller.test.ts tests/unit/runner/offer-runtime.test.ts tests/component/web-execution` |
 | 20 | LS-09 closure | `packages/{runner-components/exploration,core-modules/mission,storage-providers/sqlite-runtime}/src`; `tests/{unit/runner-components/exploration,replay/exploration,contract/sqlite}`; status | `corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts` |
 | 21 | LS-09 Reference benchmark | `packages/benchmarking/detection/**`; `apps/benchmark-runner/**`; `benchmarks/detection-v1/**`; `pnpm-lock.yaml`; `tests/{unit/benchmarking/detection,contract/sqlite/benchmark-store.test.ts,e2e/detection-benchmark}`; status | `corepack pnpm vitest run tests/unit/benchmarking/detection tests/contract/sqlite/benchmark-store.test.ts` with the model provider replaced only by the existing contract seam during edit-time tests |
 | 22 | Task 17 Graph expand | `packages/contracts/observation/**`; `packages/contracts/runner-protocol/src`; `tests/{conformance/observation,property/observation-graph.test.ts}`; `docs/superpowers/specs/2026-08-01-ls-12-m3-observation-graph-v1-migration-design.md`; `docs/superpowers/plans/2026-08-01-ls-12-m3-observation-graph-v1-migration.md`; status | `corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts` |

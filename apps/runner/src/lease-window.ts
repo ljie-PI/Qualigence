@@ -24,19 +24,24 @@ export class LeaseWindow {
   private readonly clocks: LeaseWindowClocks;
   private readonly options: LeaseWindowOptions;
   private deadlineMonotonic: number;
+  private expiryMonotonic: number;
   private baselineWall: number;
   private closed = false;
 
   constructor(_lease: ExecutionJobLease, clocks: LeaseWindowClocks, options: LeaseWindowOptions) {
     this.clocks = clocks;
     this.options = options;
-    this.deadlineMonotonic = this.computeDeadline();
+    const receivedAt = clocks.monotonicNow();
+    this.deadlineMonotonic = receivedAt + options.leaseDurationMs - options.actionDeadlineSafetyMarginMs;
+    this.expiryMonotonic = receivedAt + options.leaseDurationMs;
     this.baselineWall = clocks.wallNow();
   }
 
   /** Reset the window from the current monotonic clock after a successful renew. */
   renew(_lease: ExecutionJobLease): void {
-    this.deadlineMonotonic = this.computeDeadline();
+    const receivedAt = this.clocks.monotonicNow();
+    this.deadlineMonotonic = receivedAt + this.options.leaseDurationMs - this.options.actionDeadlineSafetyMarginMs;
+    this.expiryMonotonic = receivedAt + this.options.leaseDurationMs;
     this.baselineWall = this.clocks.wallNow();
   }
 
@@ -60,11 +65,9 @@ export class LeaseWindow {
     return true;
   }
 
-  private computeDeadline(): number {
-    return (
-      this.clocks.monotonicNow() +
-      this.options.leaseDurationMs -
-      this.options.actionDeadlineSafetyMarginMs
-    );
+  /** True once the authoritative lease duration has elapsed since receipt. */
+  hasExpired(): boolean {
+    return this.clocks.monotonicNow() >= this.expiryMonotonic;
   }
+
 }
