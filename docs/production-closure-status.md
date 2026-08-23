@@ -56,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 final per-read origin product head is `c6ae8df0cd45771bdfca97aa7b4c7db12d270094`; E2E awaits fresh coordinator review |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 navigation-generation product head is `42985b803dae09d34327a326c393615a12d19ab7`; E2E awaits fresh coordinator review |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -453,6 +453,7 @@ final_core_blocker_product_head: `8fab60237c528a46623d8f341cc24c7c1714a1dd`
 final_observation_origin_product_head: `4c7250c576497bbfd97f3fe6cf8f80ecc9ac77fb`
 final_action_origin_product_head: `f4d15a47609e715e1367a1b4a2c299fb76277469`
 final_per_read_origin_product_head: `c6ae8df0cd45771bdfca97aa7b4c7db12d270094`
+final_navigation_generation_product_head: `42985b803dae09d34327a326c393615a12d19ab7`
 final_status_commit: same commit as this ledger entry
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
@@ -461,10 +462,10 @@ core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
 core_blocker_fix_commit: same commit as this ledger entry
 dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
 dispatch_authority_fix_commit: same commit as this ledger entry
-implementation_head: `c6ae8df0cd45771bdfca97aa7b4c7db12d270094`
+implementation_head: `42985b803dae09d34327a326c393615a12d19ab7`
 reviewed_head: `b4cddef580919332fea577ab51d955703e4e8b43`
 chromium_e2e_head: `b4cddef580919332fea577ab51d955703e4e8b43`
-branch_commit_count: 30 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 32 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -668,6 +669,22 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
   pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run; a fresh exact-base review remains
   required before Chromium acceptance.
+- Navigation-generation remediation binds each observation's private descriptor
+  registry and each resolved action object to the exact monotonic main-frame
+  generation. Every frame navigation immediately clears descriptor authority;
+  a main-frame navigation also advances the generation, so an A -> B -> A
+  bounce cannot revive a graph merely because its final origin matches.
+- Observer collection, resolver DOM reads, executor preflight, value resolution,
+  authorization, and dispatch all revalidate the immutable generation. The
+  adapter exposes no generation in Graph or Trace. TDD first failed 6 focused
+  cases; coverage now proves no locator read or resolution Trace after a
+  pre-resolver bounce, no side effect after a post-resolver or value-provider
+  bounce, immediate registry clearing, unchanged same-origin behavior, and a
+  fresh usable observation after planned navigation.
+- At product head `42985b803dae09d34327a326c393615a12d19ab7`, the exact
+  amended Ticket 19 non-E2E Gate passed 13 files / 282 tests with 1 pre-existing
+  Task 21 skip. Root `corepack pnpm typecheck` and `git diff --check` passed.
+  No E2E was run; fresh exact-base review remains required.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
