@@ -56,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 same-origin action-navigation product head is `3d77fd3c91b5113089145ccf9282618cea448d49`; E2E awaits fresh coordinator review |
+| Task 16 bounded Web execution | complete | present | focused Gate and post-review Chromium acceptance passed | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 same-origin action-navigation product head is `3d77fd3c91b5113089145ccf9282618cea448d49` |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -464,9 +464,9 @@ core_blocker_fix_commit: same commit as this ledger entry
 dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
 dispatch_authority_fix_commit: same commit as this ledger entry
 implementation_head: `3d77fd3c91b5113089145ccf9282618cea448d49`
-reviewed_head: `215e47acfef80f877c5795298fa091d93e96255d`
-chromium_e2e_head: `215e47acfef80f877c5795298fa091d93e96255d`
-branch_commit_count: 35 commits ahead of `origin/main`, including this status commit
+reviewed_head: `49c97362565fdf38bbd8228a1485fcf886ae74b7`
+chromium_e2e_head: `49c97362565fdf38bbd8228a1485fcf886ae74b7`
+branch_commit_count: 36 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -704,8 +704,11 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
   `corepack pnpm typecheck` and `git diff --check` passed. The prepared Chromium
   acceptance now covers the same-origin link workflow, fresh `/next`
   observation, next-step execution, one terminal, cross-origin unknown outcome,
-  and rejected-dispatch unknown outcome. Per authority, it was not run before a
-  fresh review.
+  and rejected-dispatch unknown outcome. Fresh Standards/Spec review of head
+  `49c97362565fdf38bbd8228a1485fcf886ae74b7` against exact merge base
+  `14bcf76cc686244775a127c86cfaa2b19e4ad4a2` reported no Critical or Important
+  findings. The post-review Chromium acceptance then passed 1 file / 10 tests
+  without skips at that reviewed head.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
