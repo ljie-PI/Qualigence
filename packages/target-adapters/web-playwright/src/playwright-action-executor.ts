@@ -84,7 +84,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             navigationGeneration,
           );
           if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-          permit.assertAuthorizedForDispatch(signal);
+          permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
           await page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: this.session.navigationTimeoutMs,
@@ -95,7 +95,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
           throw error;
         }
-        return hasTargetOrigin(page, this.session)
+        return hasKnownActionOutcome(page, this.session, permit)
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
@@ -118,7 +118,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             navigationGeneration,
           );
           if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-          permit.assertAuthorizedForDispatch(signal);
+          permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
           await page.evaluate(
             ({ direction, distance }) => {
               const horizontal = direction === "left" || direction === "right";
@@ -137,7 +137,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
           throw error;
         }
-        return hasTargetOrigin(page, this.session)
+        return hasKnownActionOutcome(page, this.session, permit)
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
@@ -291,7 +291,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-            permit.assertAuthorizedForDispatch(signal);
+            permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {
             const dispatchGenerationFailure = navigationGenerationFailure(
@@ -300,7 +300,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-            permit.assertAuthorizedForDispatch(signal);
+            permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
           }
         } else if (action.kind === "click") {
@@ -319,7 +319,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             navigationGeneration,
           );
           if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-          permit.assertAuthorizedForDispatch(signal);
+          permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
           await locator.click({ timeout: this.session.actionTimeoutMs });
         } else if (action.kind === "scroll") {
           const guardFailure = this.guardElementAction(
@@ -338,7 +338,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             navigationGeneration,
           );
           if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-          permit.assertAuthorizedForDispatch(signal);
+          permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
           await locator.evaluate((element, options) => {
             element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
             const horizontal = options.direction === "left" || options.direction === "right";
@@ -362,7 +362,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         throw error;
       }
 
-      return hasTargetOrigin(page, this.session)
+      return hasKnownActionOutcome(page, this.session, permit)
         ? { status: "ok" }
         : { status: "failed", errorCode: "ActionOutcomeUnknown" };
     });
@@ -434,6 +434,22 @@ function hasTargetOrigin(
   session: PlaywrightBrowserSession,
 ): boolean {
   return targetOriginFailure(page, session) === undefined;
+}
+
+function dispatchSnapshot(session: PlaywrightBrowserSession): {
+  readonly crossOriginNavigationCount: number;
+} {
+  return { crossOriginNavigationCount: session.currentCrossOriginNavigationCount };
+}
+
+function hasKnownActionOutcome(
+  page: { url(): string },
+  session: PlaywrightBrowserSession,
+  permit: ExecutionPermit,
+): boolean {
+  return hasTargetOrigin(page, session) &&
+    permit.dispatchSnapshot?.crossOriginNavigationCount ===
+      session.currentCrossOriginNavigationCount;
 }
 
 function navigationGenerationFailure(

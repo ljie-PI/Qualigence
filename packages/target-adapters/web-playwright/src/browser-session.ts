@@ -118,6 +118,7 @@ export class PlaywrightBrowserSession {
   private page: Page | undefined;
   private operation: Promise<unknown> = Promise.resolve();
   private navigationGeneration = 0;
+  private crossOriginNavigationCount = 0;
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, RegisteredObservation>();
@@ -153,6 +154,10 @@ export class PlaywrightBrowserSession {
 
   get currentNavigationGeneration(): number {
     return this.navigationGeneration;
+  }
+
+  get currentCrossOriginNavigationCount(): number {
+    return this.crossOriginNavigationCount;
   }
 
   isTargetOrigin(url: string): boolean {
@@ -387,15 +392,28 @@ export class PlaywrightBrowserSession {
       this.page = page;
       page.on("framenavigated", (frame) => {
         this.invalidateObservations();
-        if (frame === page.mainFrame()) this.navigationGeneration += 1;
+        if (frame !== page.mainFrame()) return;
+        this.navigationGeneration += 1;
+        try {
+          if (!this.isTargetOrigin(frame.url())) this.crossOriginNavigationCount += 1;
+        } catch {
+          this.crossOriginNavigationCount += 1;
+        }
       });
       signal?.throwIfAborted();
 
+      const crossOriginNavigationCount = this.crossOriginNavigationCount;
       await page.goto(this.configuredTargetUrl, {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
       this.assertPageTargetOrigin(page);
+      if (this.crossOriginNavigationCount !== crossOriginNavigationCount) {
+        throw new WebTargetError(
+          "OriginViolation",
+          "Initial navigation left the configured target origin.",
+        );
+      }
       signal?.throwIfAborted();
     } catch (error) {
       await this.disposeResources();

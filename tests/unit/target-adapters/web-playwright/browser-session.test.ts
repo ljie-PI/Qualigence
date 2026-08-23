@@ -88,13 +88,14 @@ describe("PlaywrightBrowserSession", () => {
     expect(closed()).toBe(true);
   });
 
-  it("clears descriptor authority on every frame navigation and advances generation for the main frame", async () => {
-    const mainFrame = {};
-    const childFrame = {};
+  it("tracks main-frame cross-origin history independently from navigation generation", async () => {
+    let currentUrl = "https://example.test/";
+    const mainFrame = { url: () => currentUrl };
+    const childFrame = { url: () => "https://other.test/child" };
     let frameNavigated: ((frame: object) => void) | undefined;
     const page = {
       goto: vi.fn(async () => null),
-      url: () => "https://example.test/",
+      url: () => currentUrl,
       mainFrame: () => mainFrame,
       on: vi.fn((event: string, listener: (frame: object) => void) => {
         if (event === "framenavigated") frameNavigated = listener;
@@ -121,11 +122,26 @@ describe("PlaywrightBrowserSession", () => {
     frameNavigated?.(childFrame);
     expect(session.hasGraph("graph-child")).toBe(false);
     expect(session.currentNavigationGeneration).toBe(0);
+    expect(session.currentCrossOriginNavigationCount).toBe(0);
 
     session.registerObservation("graph-main", { descriptors: new Map(), artifacts: [] });
+    currentUrl = "https://example.test/next";
     frameNavigated?.(mainFrame);
     expect(session.hasGraph("graph-main")).toBe(false);
     expect(session.currentNavigationGeneration).toBe(1);
+    expect(session.currentCrossOriginNavigationCount).toBe(0);
+
+    currentUrl = "https://other.test/temporary";
+    frameNavigated?.(mainFrame);
+    currentUrl = "https://example.test/returned";
+    frameNavigated?.(mainFrame);
+    expect(session.currentNavigationGeneration).toBe(3);
+    expect(session.currentCrossOriginNavigationCount).toBe(1);
+
+    currentUrl = "not a url";
+    frameNavigated?.(mainFrame);
+    expect(session.currentNavigationGeneration).toBe(4);
+    expect(session.currentCrossOriginNavigationCount).toBe(2);
 
     await session.close();
   });
@@ -217,6 +233,42 @@ describe("PlaywrightBrowserSession", () => {
       await source.close();
       await destination.close();
     }
+  });
+
+  it("rejects initial navigation that crosses origin and returns before page.goto resolves", async () => {
+    let currentUrl = "about:blank";
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const mainFrame = { url: () => currentUrl };
+    const page = {
+      goto: vi.fn(async () => {
+        currentUrl = "https://other.test/temporary";
+        frameNavigated?.(mainFrame);
+        currentUrl = "https://example.test/returned";
+        frameNavigated?.(mainFrame);
+      }),
+      url: () => currentUrl,
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new PlaywrightBrowserSession(baseOptions(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+
+    await expect(session.start()).rejects.toMatchObject({ code: "OriginViolation" });
+    expect(session.currentCrossOriginNavigationCount).toBe(1);
   });
 
   it("allows an initial redirect that remains on the configured target origin", async () => {

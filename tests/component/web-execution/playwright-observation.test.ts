@@ -134,8 +134,8 @@ describe("PlaywrightObserver against real Chromium", () => {
   });
 
   it("discards a capture when main-frame navigation leaves and returns during collection", async () => {
-    const mainFrame = {};
     let currentUrl = fixture.url;
+    const mainFrame = { url: () => currentUrl };
     let frameNavigated: ((frame: object) => void) | undefined;
     const page = {
       goto: vi.fn(async () => undefined),

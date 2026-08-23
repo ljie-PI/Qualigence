@@ -254,6 +254,10 @@ export interface ActionAuthorizationWindow {
   assertActionAuthorized(): void;
 }
 
+export interface ActionDispatchSnapshot {
+  readonly crossOriginNavigationCount: number;
+}
+
 export interface Verifier {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
@@ -301,6 +305,7 @@ const DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS = 5_000;
 export class ExecutionPermit {
   readonly [executionPermitBrand] = true;
   private dispatched = false;
+  private snapshot: ActionDispatchSnapshot | undefined;
 
   private constructor(
     readonly reason: string,
@@ -323,15 +328,23 @@ export class ExecutionPermit {
    * Recheck authority synchronously, then mark the exact point after which an
    * executor must invoke its side effect without awaiting anything else.
    */
-  assertAuthorizedForDispatch(signal?: AbortSignal): void {
+  assertAuthorizedForDispatch(
+    signal?: AbortSignal,
+    snapshot?: () => ActionDispatchSnapshot,
+  ): void {
     signal?.throwIfAborted();
     this.authorizationWindow?.assertActionAuthorized();
     signal?.throwIfAborted();
+    this.snapshot = snapshot === undefined ? undefined : Object.freeze({ ...snapshot() });
     this.dispatched = true;
   }
 
   get dispatchStarted(): boolean {
     return this.dispatched;
+  }
+
+  get dispatchSnapshot(): ActionDispatchSnapshot | undefined {
+    return this.snapshot;
   }
 }
 

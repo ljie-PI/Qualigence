@@ -482,13 +482,113 @@ describe("PlaywrightActionExecutor value resolution", () => {
     },
   );
 
+  it("maps a successful A-to-B-to-A dispatch to unknown without poisoning a fresh dispatch", async () => {
+    const graphId = "run-1:observation:1";
+    const freshGraphId = "run-1:observation:2";
+    const nodeId = "n-0-abcd1234";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Add" };
+    let currentUrl = "https://example.test/";
+    let dispatchNumber = 0;
+    let frameNavigated: ((frame: object) => void) | undefined;
+    const mainFrame = { url: () => currentUrl };
+    const navigate = (url: string): void => {
+      currentUrl = url;
+      frameNavigated?.(mainFrame);
+    };
+    const dispatch = vi.fn(async () => {
+      dispatchNumber += 1;
+      if (dispatchNumber === 1) {
+        navigate("https://other.test/temporary");
+        navigate("https://example.test/returned");
+        return;
+      }
+      navigate("https://example.test/next");
+    });
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => currentUrl,
+      mainFrame: () => mainFrame,
+      on: vi.fn((event: string, listener: (frame: object) => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: dispatch,
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    const session = new PlaywrightBrowserSession(options(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await session.start();
+    const executor = new PlaywrightActionExecutor(session);
+
+    try {
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, descriptor]]),
+        artifacts: [],
+      });
+      const bouncedAction = bindResolved(session, {
+        targetKind: "web" as const,
+        kind: "click" as const,
+        target: { nodeId, selector: actionToken(graphId, nodeId) },
+        graphId,
+      });
+
+      const bouncedPermit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
+      await expect(executor.execute(
+        bouncedAction,
+        bouncedPermit,
+      )).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+      expect(currentUrl).toBe("https://example.test/returned");
+      expect(bouncedPermit.dispatchSnapshot).toEqual({ crossOriginNavigationCount: 0 });
+      expect(session.currentCrossOriginNavigationCount).toBe(1);
+      expect(session.hasGraph(graphId)).toBe(false);
+
+      session.registerObservation(freshGraphId, {
+        descriptors: new Map([[nodeId, descriptor]]),
+        artifacts: [],
+      });
+      const sameOriginAction = bindResolved(session, {
+        targetKind: "web" as const,
+        kind: "click" as const,
+        target: { nodeId, selector: actionToken(freshGraphId, nodeId) },
+        graphId: freshGraphId,
+      });
+      const sameOriginPermit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
+      await expect(executor.execute(
+        sameOriginAction,
+        sameOriginPermit,
+      )).resolves.toEqual({ status: "ok" });
+      expect(currentUrl).toBe("https://example.test/next");
+      expect(sameOriginPermit.dispatchSnapshot).toEqual({ crossOriginNavigationCount: 1 });
+      expect(session.currentCrossOriginNavigationCount).toBe(1);
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    } finally {
+      await session.close();
+    }
+  });
+
   it.each(["click", "input", "select", "scroll"] as const)(
     "accepts successful %s dispatch when a handler advances navigation generation on the target origin",
     async (kind) => {
       const graphId = "run-1:observation:1";
       const nodeId = "n-0-abcd1234";
-      const mainFrame = {};
       let currentUrl = "https://example.test/";
+      const mainFrame = { url: () => currentUrl };
       let frameNavigated: ((frame: object) => void) | undefined;
       const dispatch = vi.fn(async () => {
         currentUrl = "https://example.test/next";

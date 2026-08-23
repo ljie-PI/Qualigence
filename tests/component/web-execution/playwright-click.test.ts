@@ -85,7 +85,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
   let session: PlaywrightBrowserSession;
 
   beforeEach(async () => {
-    cross = await startFixtureServer({ "/": htmlDocument("<h1>Other origin</h1>") });
+    cross = await startFixtureServer({
+      "/": htmlDocument("<h1>Other origin</h1>"),
+      "/bounce": `<!doctype html><html><head><meta charset="utf-8"><script>
+          const returnUrl = new URL(location.href).searchParams.get('return');
+          if (returnUrl) location.replace(returnUrl);
+        </script></head><body><p>Temporary other origin</p></body></html>`,
+    });
     fixture = await startFixtureServer({
       "/": htmlDocument(
         `
@@ -97,6 +103,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
           <a id="leave" href="${cross.origin}/">Leave site</a>
           <a href="/next">Continue to next page</a>
           <a href="/next" onpointerdown="this.href='${cross.origin}/'">Cross after dispatch</a>
+          <a href="/returned" onclick="event.preventDefault(); location.href='${cross.origin}/bounce?return='+encodeURIComponent(location.origin+'/returned')">Bounce and return</a>
           <span style="position:relative;display:inline-block">
             <button id="blocked">Blocked action</button>
             <span style="position:absolute;inset:0"></span>
@@ -118,6 +125,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       "/next": htmlDocument(
         "<button onclick=\"document.body.dataset.clicked='true'\">Next action</button>",
         "Next",
+      ),
+      "/returned": htmlDocument(
+        "<button onclick=\"document.body.dataset.clicked='true'\">Next action</button>",
+        "Returned",
       ),
     });
   });
@@ -167,7 +178,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     readonly navigate: (url: string) => void;
   }> {
     let currentUrl = fixture.url;
-    const mainFrame = {};
+    const mainFrame = { url: () => currentUrl };
     let frameNavigated: ((frame: object) => void) | undefined;
     const navigate = (url: string): void => {
       currentUrl = url;
@@ -335,6 +346,29 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(result.result).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
     expect(result.decisions).toBe(1);
     expect(result.observations).toHaveLength(1);
+    expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(result.trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      stepIndex: 0,
+      payload: { status: "error", errorCode: "ActionOutcomeUnknown" },
+    });
+  });
+
+  it("terminalizes an A-to-B-to-A link navigation as unknown without a later step", async () => {
+    const result = await runTwoClickPlan("Bounce and return");
+
+    expect(result.result).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    expect(result.decisions).toBe(1);
+    expect(result.observations).toHaveLength(1);
+    expect(session.currentCrossOriginNavigationCount).toBeGreaterThan(0);
+    await session.withPage(async (page) => page.waitForURL(`${fixture.origin}/returned`));
+    await expect(session.withPage(async (page) => page.url())).resolves.toBe(`${fixture.origin}/returned`);
+    expect(result.trace.filter((event) => event.stage === "action_executed")).toEqual([
+      expect.objectContaining({
+        stepIndex: 0,
+        payload: { status: "failed", errorCode: "ActionOutcomeUnknown" },
+      }),
+    ]);
     expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
     expect(result.trace.at(-1)).toMatchObject({
       stage: "run_completed",
