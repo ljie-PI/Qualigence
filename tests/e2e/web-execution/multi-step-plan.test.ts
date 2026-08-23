@@ -248,7 +248,7 @@ describe("bounded multi-step Chromium failure classifications", () => {
       policyGate: (session: PlaywrightBrowserSession): RunnerPolicyGate => ({
         authorize: async () => {
           await session.withPage(async (page) => {
-            await page.locator("button").evaluate("element => element.remove()");
+            await page.setContent(htmlDocument("<p>Target changed</p>", "Changed"));
           });
           return { status: "allowed", reason: "test" };
         },
