@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DeterministicRunnerPolicyGate,
   DeterministicExecutionBudget,
+  ExecutionBudgetError,
   ExecutionTargetError,
   ExecutionRuntime,
   resolvedActionNodeId,
@@ -121,6 +122,43 @@ describe("ExecutionRuntime", () => {
       status: "blocked",
       errorCode: "WallClockBudgetExceeded",
     });
+  });
+
+  it("keeps wall-clock exhaustion at the final pre-dispatch check blocked", async () => {
+    let remainingChecks = 0;
+    let executorCalls = 0;
+    const traceRecorder = new InMemoryTraceRecorder();
+    const budget = {
+      begin: () => undefined,
+      beforeStep: () => undefined,
+      remainingWallClockMs: () => {
+        remainingChecks += 1;
+        if (remainingChecks === 9) {
+          throw new ExecutionBudgetError("WallClockBudgetExceeded");
+        }
+        return 1_000;
+      },
+      maximumOutputTokens: () => 100,
+      consumeModelUsage: () => undefined,
+      finish: () => undefined,
+    };
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "test" }),
+      resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => { executorCalls += 1; return { status: "ok" }; } },
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder,
+      budget,
+    });
+
+    await expect(runtime.run(indexedJob())).resolves.toMatchObject({
+      status: "blocked",
+      errorCode: "WallClockBudgetExceeded",
+    });
+    expect(executorCalls).toBe(0);
+    expect(traceRecorder.eventsFor("run-indexed").filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 
   it("keeps model-budget exhaustion in the approved blocked classification", async () => {

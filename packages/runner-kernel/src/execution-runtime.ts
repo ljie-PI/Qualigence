@@ -480,15 +480,19 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     this.budget.maximumOutputTokens(job.runId);
     const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
     let outcome: ActionOutcome;
+    let actionDispatchStarted = false;
     try {
-      outcome = await this.withinWallClock(job.runId, (operationSignal) =>
-        this.dependencies.actionExecutor.execute(action, permit, operationSignal), signal);
+      outcome = await this.withinWallClock(job.runId, (operationSignal) => {
+        actionDispatchStarted = true;
+        return this.dependencies.actionExecutor.execute(action, permit, operationSignal);
+      }, signal);
     } catch (error) {
       if (error instanceof ExecutionBlockedError) throw error;
       if (
         error instanceof ExecutionTargetError &&
         error.errorCode !== "ActionInfrastructureFailure"
       ) throw error;
+      if (!actionDispatchStarted) throw error;
       throw new ActionOutcomeUnknownError();
     }
     await this.recordStage(job.runId, traceIndex, "action_executed", toActionOutcomeTracePayload(outcome));
