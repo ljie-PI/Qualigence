@@ -17,15 +17,6 @@ export interface ActionValueProvider {
   resolve(valueRef: string): Promise<string>;
 }
 
-function isInfrastructureFailure(message: string): boolean {
-  return (
-    /Target closed/i.test(message) ||
-    /Browser has been closed/i.test(message) ||
-    /crash/i.test(message) ||
-    /Protocol error/i.test(message)
-  );
-}
-
 export class PlaywrightActionExecutor implements ActionExecutor {
   constructor(
     private readonly session: PlaywrightBrowserSession,
@@ -71,7 +62,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (!isSafeTargetUrl(action.url, this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
+        let dispatched = false;
         try {
+          dispatched = true;
           await page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: this.session.navigationTimeoutMs,
@@ -80,10 +73,8 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (!isSafeTargetUrl(page.url(), this.session)) {
             return { status: "failed", errorCode: "OriginViolation" };
           }
+          if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           signal?.throwIfAborted();
-          const message = error instanceof Error ? error.message : String(error);
-          if (/timeout/i.test(message)) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
-          if (isInfrastructureFailure(message)) throw new WebTargetError("ActionInfrastructureFailure");
           return { status: "failed", errorCode: "ActionFailed" };
         }
         return isSafeTargetUrl(page.url(), this.session)
@@ -101,7 +92,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (guardFailure !== undefined) return guardFailure;
         this.session.invalidateObservations();
         const distance = action.amount === "page" ? 1 : 0.25;
+        let dispatched = false;
         try {
+          dispatched = true;
           await page.evaluate(
             ({ direction, distance }) => {
               const horizontal = direction === "left" || direction === "right";
@@ -118,8 +111,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (!isSafeTargetUrl(page.url(), this.session)) {
             return { status: "failed", errorCode: "OriginViolation" };
           }
+          if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           signal?.throwIfAborted();
-          return classifyActionFailure(error);
+          return { status: "failed", errorCode: "ActionFailed" };
         }
         if (!isSafeTargetUrl(page.url(), this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
@@ -150,21 +144,35 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       signal?.throwIfAborted();
       const locator = locatorFor(page, descriptor);
 
-      const count = await locator.count();
+      let count: number;
+      let visible: boolean;
+      let enabled: boolean;
+      let href: string | null;
+      try {
+        count = await locator.count();
+        visible = count === 1 && await locator.isVisible();
+        enabled = visible && await locator.isEnabled();
+        href = enabled ? await locator.getAttribute("href") : null;
+      } catch {
+        if (!isSafeTargetUrl(page.url(), this.session)) {
+          return { status: "failed", errorCode: "OriginViolation" };
+        }
+        signal?.throwIfAborted();
+        return { status: "failed", errorCode: "ActionFailed" };
+      }
       if (count === 0) {
         return { status: "failed", errorCode: "TargetNotFound" };
       }
       if (count > 1) {
         return { status: "failed", errorCode: "AmbiguousTarget" };
       }
-      if (!(await locator.isVisible())) {
+      if (!visible) {
         return { status: "failed", errorCode: "TargetNotVisible" };
       }
-      if (!(await locator.isEnabled())) {
+      if (!enabled) {
         return { status: "failed", errorCode: "TargetDisabled" };
       }
 
-      const href = await locator.getAttribute("href");
       if (href !== null) {
         let destination: string | undefined;
         try {
@@ -177,6 +185,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         }
       }
 
+      let dispatched = false;
       try {
         if (action.kind === "input" || action.kind === "select") {
           if (this.valueProvider === undefined) {
@@ -199,8 +208,10 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
           if (action.kind === "input") {
+            dispatched = true;
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {
+            dispatched = true;
             await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
           }
         } else if (action.kind === "click") {
@@ -212,6 +223,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           );
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
+          dispatched = true;
           await locator.click({ timeout: this.session.actionTimeoutMs });
         } else if (action.kind === "scroll") {
           const guardFailure = this.guardElementAction(
@@ -223,6 +235,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
           const distance = action.amount === "page" ? 1 : 0.25;
+          dispatched = true;
           await locator.evaluate((element, options) => {
             element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
             const horizontal = options.direction === "left" || options.direction === "right";
@@ -243,8 +256,9 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (!isSafeTargetUrl(page.url(), this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
+        if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
         signal?.throwIfAborted();
-        return classifyActionFailure(error);
+        return { status: "failed", errorCode: "ActionFailed" };
       }
 
       if (!isSafeTargetUrl(page.url(), this.session)) {
@@ -278,17 +292,6 @@ export class PlaywrightActionExecutor implements ActionExecutor {
     }
     return undefined;
   }
-}
-
-function classifyActionFailure(error: unknown): ActionOutcome {
-  const message = error instanceof Error ? error.message : String(error);
-  if (isInfrastructureFailure(message)) {
-    throw new WebTargetError("ActionInfrastructureFailure");
-  }
-  if (/timeout/i.test(message)) {
-    return { status: "failed", errorCode: "ActionOutcomeUnknown" };
-  }
-  return { status: "failed", errorCode: "ActionFailed" };
 }
 
 function isSafeTargetUrl(url: string, session: PlaywrightBrowserSession): boolean {

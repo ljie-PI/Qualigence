@@ -477,7 +477,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
     }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionValueUnavailable" });
   });
 
-  it("rethrows an infrastructure failure without Playwright plaintext", async () => {
+  it("returns unknown outcome for an invoked infrastructure failure without Playwright plaintext", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);
     session.registerObservation(graphId, {
@@ -504,9 +504,112 @@ describe("PlaywrightActionExecutor value resolution", () => {
       target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
       graphId,
       valueRef: "customer.email",
-    }, permit).catch((error: unknown) => error);
-    expect(failure).toMatchObject({ code: "ActionInfrastructureFailure" });
+    }, permit);
+    expect(failure).toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
     expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
+  });
+
+  it.each([
+    ["navigate", "goto"],
+    ["click", "click"],
+    ["input", "fill"],
+    ["select", "selectOption"],
+    ["scroll", "evaluate"],
+  ] as const)("maps a generic %s rejection after %s invocation to unknown outcome", async (kind, method) => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    const invoked = vi.fn(async () => { throw new Error("generic Playwright failure"); });
+    session.withPage = async (operation) => operation({
+      goto: method === "goto" ? invoked : vi.fn(),
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: method === "click" ? invoked : vi.fn(),
+        fill: method === "fill" ? invoked : vi.fn(),
+        selectOption: method === "selectOption" ? invoked : vi.fn(),
+        evaluate: method === "evaluate" ? invoked : vi.fn(),
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "secret" });
+    const target = { nodeId, selector: actionToken(graphId, nodeId) };
+    const action = kind === "navigate"
+      ? { targetKind: "web", kind, url: "https://example.test/next" }
+      : kind === "input" || kind === "select"
+        ? { targetKind: "web", kind, target, graphId, valueRef: "profile.value" }
+        : kind === "scroll"
+          ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
+          : { targetKind: "web", kind, target, graphId };
+
+    await expect(executor.execute(action as never, permit)).resolves.toEqual({
+      status: "failed",
+      errorCode: "ActionOutcomeUnknown",
+    });
+    expect(invoked).toHaveBeenCalledOnce();
+  });
+
+  it("keeps disabled-target rejection blocked before click dispatch", async () => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    const click = vi.fn();
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => false,
+        getAttribute: async () => null,
+        click,
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "TargetDisabled" });
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("keeps a generic pre-dispatch locator failure blocked without invoking click", async () => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    const click = vi.fn();
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => { throw new Error("locator transport failure"); },
+        click,
+      }),
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionFailed" });
+    expect(click).not.toHaveBeenCalled();
   });
 
   it.each([

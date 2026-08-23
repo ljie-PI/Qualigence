@@ -4,6 +4,7 @@ export {
   ExecutionPermit,
   ExecutionRuntime,
   ExecutionTargetError,
+  TerminalTracePersistenceError,
   classifyDesktopActionRisk,
   isDesktopAction,
   isWebAction,

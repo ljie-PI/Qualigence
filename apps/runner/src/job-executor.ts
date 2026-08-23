@@ -8,6 +8,7 @@ import { negotiateCapabilities } from "@qualigence/runner-protocol";
 import {
   ExecutionBlockedError,
   ExecutionRuntime,
+  TerminalTracePersistenceError,
   type ActionExecutor,
   type ActionResolver,
   type ExecutionDecisionProvider,
@@ -47,11 +48,21 @@ export interface LeasedJobExecutorDependencies {
   readonly budget?: ExecutionBudget;
 }
 
+export interface AcceptedLeaseLifecycleOptions {
+  readonly clocks?: LeaseWindowClocks;
+  readonly actionDeadlineSafetyMarginMs?: number;
+  readonly renewalDelay?: RenewalDelay;
+}
+
 export interface LeasedJobResult {
   readonly lease: ExecutionJobLease;
   readonly completion: ExecutionCompletion;
   readonly window: LeaseWindow;
 }
+
+type RenewalResult =
+  | { readonly status: "fulfilled" }
+  | { readonly status: "rejected"; readonly error: unknown };
 
 export function assertOfferCapabilities(
   offer: ExecutionJobOffer,
@@ -70,6 +81,115 @@ function defaultClocks(): LeaseWindowClocks {
     monotonicNow: (): number => Math.trunc(performance.now()),
     wallNow: (): number => Date.now(),
   };
+}
+
+/** One authoritative lease window spanning accepted-Job startup and execution. */
+export class AcceptedLeaseLifecycle {
+  readonly window: LeaseWindow;
+  readonly signal: AbortSignal;
+  private readonly controller: LeaseRenewalController;
+  private readonly executionAbort: AbortController;
+  private readonly renewal: Promise<RenewalResult>;
+
+  constructor(
+    offer: ExecutionJobOffer,
+    session: RunnerSession,
+    initialLease: ExecutionJobLease,
+    callerSignal?: AbortSignal,
+    options: AcceptedLeaseLifecycleOptions = {},
+  ) {
+    const clocks = options.clocks ?? defaultClocks();
+    this.window = new LeaseWindow(initialLease, clocks, {
+      leaseDurationMs: offer.leaseDurationMs,
+      actionDeadlineSafetyMarginMs:
+        options.actionDeadlineSafetyMarginMs ?? DEFAULT_ACTION_DEADLINE_SAFETY_MARGIN_MS,
+    });
+    const executionAbort = new AbortController();
+    this.executionAbort = executionAbort;
+    this.signal = callerSignal === undefined
+      ? executionAbort.signal
+      : AbortSignal.any([callerSignal, executionAbort.signal]);
+    const controllerDependencies = {
+      session,
+      initialLease,
+      window: this.window,
+      leaseDurationMs: offer.leaseDurationMs,
+      executionAbort,
+    };
+    this.controller = new LeaseRenewalController(
+      options.renewalDelay === undefined
+        ? controllerDependencies
+        : { ...controllerDependencies, delay: options.renewalDelay },
+    );
+    this.renewal = this.controller.run(callerSignal ?? new AbortController().signal).then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+  }
+
+  currentLease(): ExecutionJobLease {
+    return this.controller.currentLease();
+  }
+
+  mayStartAction(): boolean {
+    return !this.signal.aborted && this.window.mayStartAction();
+  }
+
+  async duringLease<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.assertActive();
+    const operationResult = Promise.resolve().then(() => operation(this.signal));
+    const renewalFailure = this.renewal.then((result) => {
+      if (result.status === "rejected") throw result.error;
+      return new Promise<never>(() => undefined);
+    });
+    let rejectAborted: ((reason: unknown) => void) | undefined;
+    const abortOperation = (): void => rejectAborted?.(this.signal.reason);
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject;
+      this.signal.addEventListener("abort", abortOperation, { once: true });
+    });
+    let value: T;
+    try {
+      value = await Promise.race([operationResult, renewalFailure, aborted]);
+    } finally {
+      this.signal.removeEventListener("abort", abortOperation);
+    }
+    this.assertActive();
+    return value;
+  }
+
+  async finish(completion?: ExecutionCompletion): Promise<ExecutionJobLease> {
+    this.controller.stop();
+    const renewal = await this.renewal;
+    if (
+      renewal.status === "rejected" &&
+      !(completion?.status === "error" && completion.errorCode === "ActionOutcomeUnknown") &&
+      !(
+        completion?.status === "blocked" &&
+        completion.errorCode === "LeaseExpired" &&
+        renewal.error instanceof RunnerAppError &&
+        renewal.error.code === "LeaseExpired"
+      )
+    ) {
+      throw renewal.error;
+    }
+    return this.currentLease();
+  }
+
+  async dispose(): Promise<void> {
+    this.controller.stop();
+    await this.renewal;
+  }
+
+  private assertActive(): void {
+    if (this.signal.aborted) throw this.signal.reason;
+    if (!this.window.mayStartAction()) {
+      const error = new ExecutionBlockedError("LeaseExpired");
+      this.window.close();
+      this.executionAbort.abort(error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -106,43 +226,30 @@ export class LeasedJobExecutor {
     offer: ExecutionJobOffer,
     session: RunnerSession,
     signal?: AbortSignal,
-    acceptedLease?: ExecutionJobLease,
+    acceptedLifecycle?: AcceptedLeaseLifecycle,
   ): Promise<LeasedJobResult> {
     assertOfferCapabilities(offer, this.deps.capabilities);
-    const initialLease = acceptedLease ?? await session.accept(offer.offerId);
-    const window = new LeaseWindow(initialLease, this.clocks, {
-      leaseDurationMs: offer.leaseDurationMs,
-      actionDeadlineSafetyMarginMs: this.safetyMarginMs,
-    });
-    this.currentWindow = window;
-
-    const executionAbort = new AbortController();
-    const guardedSignal = signal === undefined
-      ? executionAbort.signal
-      : AbortSignal.any([signal, executionAbort.signal]);
-    const controllerDependencies = {
+    const lifecycle = acceptedLifecycle ?? new AcceptedLeaseLifecycle(
+      offer,
       session,
-      initialLease,
-      window,
-      leaseDurationMs: offer.leaseDurationMs,
-      executionAbort,
-    };
-    const controller = new LeaseRenewalController(
-      this.deps.renewalDelay === undefined
-        ? controllerDependencies
-        : { ...controllerDependencies, delay: this.deps.renewalDelay },
+      await session.accept(offer.offerId),
+      signal,
+      {
+        clocks: this.clocks,
+        actionDeadlineSafetyMarginMs: this.safetyMarginMs,
+        ...(this.deps.renewalDelay === undefined ? {} : { renewalDelay: this.deps.renewalDelay }),
+      },
     );
-    const renewal = controller.run(signal ?? new AbortController().signal).then(
-      () => ({ status: "fulfilled" as const }),
-      (error: unknown) => ({ status: "rejected" as const, error }),
-    );
+    const window = lifecycle.window;
+    this.currentWindow = window;
+    const guardedSignal = lifecycle.signal;
 
     const guardedExecutor: ActionExecutor = {
       execute: async (action: ResolvedAction, permit: ExecutionPermit, runtimeSignal?: AbortSignal) => {
         const actionSignal = runtimeSignal === undefined
           ? guardedSignal
           : AbortSignal.any([guardedSignal, runtimeSignal]);
-        if (actionSignal.aborted || !window.mayStartAction()) {
+        if (actionSignal.aborted || !lifecycle.mayStartAction()) {
           throw new ExecutionBlockedError("LeaseExpired");
         }
         return this.deps.actionExecutor.execute(action, permit, actionSignal);
@@ -170,17 +277,21 @@ export class LeasedJobExecutor {
       (completion) => ({ status: "fulfilled" as const, completion }),
       (error: unknown) => ({ status: "rejected" as const, error }),
     );
-    controller.stop();
-    const renewalResult = await renewal;
-    if (
-      renewalResult.status === "rejected" &&
-      !(
-        runtimeResult.status === "fulfilled" &&
-        runtimeResult.completion.status === "error" &&
-        runtimeResult.completion.errorCode === "ActionOutcomeUnknown"
-      )
-    ) throw renewalResult.error;
+    let lease: ExecutionJobLease;
+    try {
+      lease = await lifecycle.finish(
+        runtimeResult.status === "fulfilled" ? runtimeResult.completion : undefined,
+      );
+    } catch (renewalError) {
+      if (
+        runtimeResult.status === "rejected" &&
+        runtimeResult.error instanceof TerminalTracePersistenceError
+      ) {
+        throw runtimeResult.error;
+      }
+      throw renewalError;
+    }
     if (runtimeResult.status === "rejected") throw runtimeResult.error;
-    return { lease: controller.currentLease(), completion: runtimeResult.completion, window };
+    return { lease, completion: runtimeResult.completion, window };
   }
 }

@@ -4,7 +4,11 @@ import {
   type TraceEvent,
   type TraceEventHashInput,
 } from "@qualigence/runner-protocol";
-import type { TraceEventInput, TraceRecorder } from "@qualigence/runner-kernel";
+import {
+  TerminalTracePersistenceError,
+  type TraceEventInput,
+  type TraceRecorder,
+} from "@qualigence/runner-kernel";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 
 /**
@@ -23,7 +27,14 @@ export class SpoolingTraceRecorder implements TraceRecorder {
   async append(input: TraceEventInput): Promise<TraceEvent> {
     const sequenceNumber = this.nextSequenceByRun.get(input.runId) ?? 1;
     const event = withHash(withEnvelope(input, sequenceNumber));
-    await this.spool.append(event);
+    try {
+      await this.spool.append(event);
+    } catch (cause) {
+      if (input.stage === "run_completed") {
+        throw new TerminalTracePersistenceError(cause);
+      }
+      throw cause;
+    }
     this.nextSequenceByRun.set(input.runId, sequenceNumber + 1);
     return event;
   }

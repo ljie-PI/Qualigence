@@ -183,6 +183,16 @@ export class ActionOutcomeUnknownError extends Error {
   }
 }
 
+export class TerminalTracePersistenceError extends Error {
+  readonly code = "TerminalTracePersistenceFailed";
+  readonly disposition = "terminal_persistence_failed";
+
+  constructor(cause: unknown) {
+    super("The terminal Trace event could not be persisted.", { cause });
+    this.name = "TerminalTracePersistenceError";
+  }
+}
+
 export type ExecutionTargetErrorStatus = "blocked" | "error";
 
 /** Adapter-neutral expected target failure that Runtime can terminalize safely. */
@@ -342,13 +352,9 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       try {
         await this.recordTerminal(completion, job.plan === undefined ? undefined : currentStepIndex);
         return completion;
-      } catch {
-        return {
-          jobId: job.jobId,
-          runId: job.runId,
-          status: "error",
-          errorCode: "TerminalTracePersistenceFailed",
-        };
+      } catch (cause) {
+        if (cause instanceof TerminalTracePersistenceError) throw cause;
+        throw new TerminalTracePersistenceError(cause);
       }
     } finally {
       if (budgetStarted) {

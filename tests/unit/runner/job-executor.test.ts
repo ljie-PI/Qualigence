@@ -437,6 +437,26 @@ describe("LeasedJobExecutor", () => {
     const events = await spool.pending("run-1", 1, { maximumEvents: 100, maximumBytes: 1_000_000 });
     expect(events.filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
+
+  it("propagates terminal Trace persistence failure instead of returning a completion", async () => {
+    const durableSpool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const spool: RunnerSpool = {
+      append: async (event) => {
+        if (event.stage === "run_completed") throw new Error("spool unavailable");
+        await durableSpool.append(event);
+      },
+      pending: (runId, fromSequence, limit) => durableSpool.pending(runId, fromSequence, limit),
+      acknowledge: (runId, nextExpectedSequenceNumber) => durableSpool.acknowledge(runId, nextExpectedSequenceNumber),
+      usage: () => durableSpool.usage(),
+    };
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state));
+
+    await expect(executor.execute(offer([]), new FakeSession())).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+    });
+  });
 });
 
 async function waitFor(assertion: () => void): Promise<void> {

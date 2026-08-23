@@ -13,8 +13,9 @@ export type {
 export { SpoolingTraceRecorder, findingOf } from "./spooling-trace-recorder.js";
 export { TraceUploadPump } from "./trace-upload-pump.js";
 export type { TraceBatchSubmitter, TraceUploadPumpResult } from "./trace-upload-pump.js";
-export { LeasedJobExecutor } from "./job-executor.js";
+export { AcceptedLeaseLifecycle, LeasedJobExecutor } from "./job-executor.js";
 export type {
+  AcceptedLeaseLifecycleOptions,
   LeasedJobExecutorDependencies,
   LeasedJobResult,
 } from "./job-executor.js";

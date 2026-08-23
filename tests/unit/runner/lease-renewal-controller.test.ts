@@ -150,6 +150,32 @@ describe("LeaseRenewalController", () => {
     expect(controller.currentLease()).toEqual(INITIAL_LEASE);
   });
 
+  it("rejects a lease that expired before a delayed renewal attempt", async () => {
+    const session = new FakeSession();
+    const delay = new ManualDelay();
+    const executionAbort = new AbortController();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const window = makeWindow(state);
+    const controller = new LeaseRenewalController({
+      session,
+      initialLease: INITIAL_LEASE,
+      window,
+      leaseDurationMs: 60_000,
+      executionAbort,
+      delay,
+    });
+
+    const running = controller.run(new AbortController().signal);
+    const rejected = expect(running).rejects.toMatchObject({ code: "LeaseExpired" });
+    state.monotonic = 61_000;
+    delay.release();
+
+    await rejected;
+    expect(session.renewCalls).toHaveLength(0);
+    expect(executionAbort.signal.aborted).toBe(true);
+    expect(window.mayStartAction()).toBe(false);
+  });
+
   it("treats stop as normal completion and never renews afterward", async () => {
     const session = new FakeSession();
     const delay = new ManualDelay();

@@ -14,7 +14,10 @@ const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
 const executedOffers: unknown[] = [];
 const executionSignals: Array<AbortSignal | undefined> = [];
+const executionLifecycles: unknown[] = [];
+const executionWindowStates: boolean[] = [];
 const modelConstructions: string[] = [];
+let executorFailure: unknown;
 vi.mock("@qualigence/model-agent", () => ({
   ModelBackedDecisionProvider: class {
     constructor(_gateway: unknown, _model: string) {
@@ -56,12 +59,21 @@ vi.mock("../../../apps/runner/src/job-executor.js", async () => {
       offer: unknown,
       _session: unknown,
       signal?: AbortSignal,
-      initialLease?: ExecutionJobLease,
+      lifecycle?: {
+        finish(): Promise<ExecutionJobLease>;
+        mayStartAction(): boolean;
+      },
     ) {
       executedOffers.push(offer);
       executionSignals.push(signal);
+      executionLifecycles.push(lifecycle);
+      executionWindowStates.push(lifecycle?.mayStartAction() ?? false);
+      if (executorFailure !== undefined) throw executorFailure;
+      const lease = lifecycle === undefined
+        ? { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" }
+        : await lifecycle.finish();
       return {
-        lease: initialLease ?? { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" },
+        lease,
         completion: { jobId: "job-staging", runId: "run-staging", status: "passed" as const },
       };
     }
@@ -130,6 +142,27 @@ function recordingSpool(options: { readonly appendError?: Error; readonly acknow
   return { spool, appended, append, pending, acknowledge };
 }
 
+class ManualDelay {
+  readonly waits: number[] = [];
+  private readonly pending: Array<() => void> = [];
+
+  wait(ms: number, signal: AbortSignal): Promise<void> {
+    this.waits.push(ms);
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      this.pending.push(finish);
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  }
+
+  release(): void {
+    this.pending.shift()?.();
+  }
+}
+
 describe("RunnerOfferRuntime", () => {
   function config() {
     return { headed: false, navigationTimeoutMs: 1_000, actionTimeoutMs: 1_000, model: { baseUrl: "https://models.test", apiKey: "secret", modelName: "test" } } as never;
@@ -140,7 +173,10 @@ describe("RunnerOfferRuntime", () => {
     executorCapabilities.length = 0;
     executedOffers.length = 0;
     executionSignals.length = 0;
+    executionLifecycles.length = 0;
+    executionWindowStates.length = 0;
     modelConstructions.length = 0;
+    executorFailure = undefined;
   });
 
   it("advertises no value-backed actions without a healthy provider", () => {
@@ -286,7 +322,7 @@ describe("RunnerOfferRuntime", () => {
     executorCapabilities.length = 0;
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target) as never;
-    const session = { accept: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
+    const session = { accept: vi.fn(async () => ({ ...STARTUP_LEASE, jobId: "job-staging", runId: "run-staging" })), renew: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
     const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
     const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: spool as never, config: config() });
     await runtime.run({
@@ -305,7 +341,7 @@ describe("RunnerOfferRuntime", () => {
     const valueProvider = { resolve: vi.fn(async () => "plaintext-secret") };
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target);
-    const session = { accept: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
+    const session = { accept: vi.fn(async () => ({ ...STARTUP_LEASE, jobId: "job-staging", runId: "run-staging" })), renew: vi.fn(), complete: vi.fn(async () => undefined), submit: vi.fn(), welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 } };
     const spool = { pending: vi.fn(async () => []), acknowledge: vi.fn() };
     const runtime = new RunnerOfferRuntime({
       createTarget: createTarget as never,
@@ -331,7 +367,8 @@ describe("RunnerOfferRuntime", () => {
     const target = { start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), capture: vi.fn(), resolve: vi.fn(), execute: vi.fn() };
     const createTarget = vi.fn(() => target);
     const session = {
-      accept: vi.fn(),
+      accept: vi.fn(async () => ({ ...STARTUP_LEASE, jobId: "job-1", runId: "run-1" })),
+      renew: vi.fn(),
       complete: vi.fn(async () => undefined),
       submit: vi.fn(),
       welcome: { traceBatchMaximumEvents: 1, traceBatchMaximumBytes: 9 },
@@ -354,6 +391,211 @@ describe("RunnerOfferRuntime", () => {
     expect((executedOffers[0] as typeof offer).job).toBe(offeredJob);
     expect((executedOffers[0] as typeof offer).job.plan).toBe(plan);
     expect(executionSignals).toEqual([abort.signal]);
+  });
+
+  it("renews the authoritative lease window during target startup and completes with the renewed token", async () => {
+    const state = { monotonic: 0, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseStartup: (() => void) | undefined;
+    const startup = new Promise<void>((resolve) => { releaseStartup = resolve; });
+    const target = {
+      start: vi.fn(async () => startup),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const renewedLease = { ...STARTUP_LEASE, leaseToken: "renewed-token", leaseEpoch: 2 };
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(async () => renewedLease),
+      submit: vi.fn(),
+      complete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const { spool } = recordingSpool();
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+      leaseLifecycle: {
+        clocks: { monotonicNow: () => state.monotonic, wallNow: () => state.wall },
+        actionDeadlineSafetyMarginMs: 0,
+        renewalDelay: delay,
+      },
+    });
+
+    const running = runtime.run(admittedOffer());
+    await waitFor(() => expect(delay.waits).toEqual([10_000]));
+    expect(target.start).toHaveBeenCalledOnce();
+    state.monotonic = 10_000;
+    delay.release();
+    await waitFor(() => expect(session.renew).toHaveBeenCalledWith(STARTUP_LEASE));
+    state.monotonic = 35_000;
+    releaseStartup?.();
+    await running;
+
+    expect(executionLifecycles).toHaveLength(1);
+    expect(executionWindowStates).toEqual([true]);
+    expect(session.complete).toHaveBeenCalledWith(
+      renewedLease,
+      expect.objectContaining({ status: "passed" }),
+    );
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("aborts and terminalizes lease expiry during target startup without executing a model", async () => {
+    const state = { monotonic: 0, wall: 100_000 };
+    const delay = new ManualDelay();
+    let startupSignal: AbortSignal | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const target = {
+      start: vi.fn(async (signal?: AbortSignal) => {
+        startupSignal = signal;
+        markStarted?.();
+        return new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, appended } = recordingSpool();
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(),
+      submit: vi.fn(async (batch: ExecutionEventBatch) => ({
+        batchId: batch.batchId,
+        runId: batch.runId,
+        nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+      })),
+      complete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+      leaseLifecycle: {
+        clocks: { monotonicNow: () => state.monotonic, wallNow: () => state.wall },
+        actionDeadlineSafetyMarginMs: 0,
+        renewalDelay: delay,
+      },
+    });
+
+    const running = runtime.run(admittedOffer());
+    await started;
+    state.monotonic = 30_000;
+    delay.release();
+    await running;
+
+    expect(delay.waits).toEqual([10_000]);
+    expect(startupSignal?.aborted).toBe(true);
+    expect(session.renew).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+    expect(executedOffers).toEqual([]);
+    expect(target.capture).not.toHaveBeenCalled();
+    expect(target.execute).not.toHaveBeenCalled();
+    expect(appended.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "LeaseExpired" },
+    });
+    expect(session.complete).toHaveBeenCalledWith(
+      STARTUP_LEASE,
+      expect.objectContaining({ status: "blocked", errorCode: "LeaseExpired" }),
+    );
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("aborts target startup and does not complete when lease renewal fails", async () => {
+    const failure = new Error("LeaseLost");
+    const delay = new ManualDelay();
+    let startupSignal: AbortSignal | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const target = {
+      start: vi.fn(async (signal?: AbortSignal) => {
+        startupSignal = signal;
+        markStarted?.();
+        return new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(async () => { throw failure; }),
+      submit: vi.fn(),
+      complete: vi.fn(),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool: recordingSpool().spool,
+      config: config(),
+      leaseLifecycle: { renewalDelay: delay },
+    });
+
+    const running = runtime.run(admittedOffer());
+    await started;
+    delay.release();
+
+    await expect(running).rejects.toBe(failure);
+    expect(startupSignal?.aborted).toBe(true);
+    expect(modelConstructions).toEqual([]);
+    expect(executedOffers).toEqual([]);
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not drain or complete a normal execution disposition when terminal Trace persistence fails", async () => {
+    const failure = Object.assign(new Error("terminal Trace append failed"), {
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+    });
+    executorFailure = failure;
+    const target = {
+      start: vi.fn(async () => undefined),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const { spool, pending } = recordingSpool();
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(),
+      submit: vi.fn(),
+      complete: vi.fn(),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+
+    expect(pending).not.toHaveBeenCalled();
+    expect(session.submit).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -454,7 +696,11 @@ describe("RunnerOfferRuntime", () => {
       config: config(),
     });
 
-    await expect(runtime.run(admittedOffer())).rejects.toBe(failure);
+    await expect(runtime.run(admittedOffer())).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+      cause: failure,
+    });
 
     expect(session.accept).toHaveBeenCalledOnce();
     expect(append).toHaveBeenCalledOnce();
@@ -552,3 +798,15 @@ describe("RunnerOfferRuntime", () => {
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ errorCode: "PolicyMissing" }));
   });
 });
+
+async function waitFor(assertion: () => void): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch {
+      await Promise.resolve();
+    }
+  }
+  assertion();
+}

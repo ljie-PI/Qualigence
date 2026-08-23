@@ -49,7 +49,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 origin-race remediation has not rerun E2E pending fresh review |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 core-blocker remediation has not rerun E2E pending fresh review |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -392,10 +392,12 @@ verification: focused Gate passed; fresh review pending
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
 final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
+core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
+core_blocker_fix_commit: same commit as this ledger entry
 implementation_head: same commit as this ledger entry
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-branch_commit_count: 10 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 11 commits ahead of `origin/main`, including this status commit
 pull_request: pending
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -489,6 +491,27 @@ pull_request: pending
   root `corepack pnpm typecheck` and `git diff --check` passed. Connection and
   disconnect behavior is unchanged. Chromium E2E was not rerun because code
   changed after its reviewed head; a fresh exact-base review remains required.
+- Final core-blocker remediation starts one authoritative `AcceptedLeaseLifecycle`
+  immediately after acceptance and before target construction/startup. Its one
+  `LeaseWindow`, renewal controller, current token, and abort signal span startup
+  and execution; renewal refreshes that same window, while expiry or renewal
+  failure aborts and closes partial target startup before any model/action work.
+- `TerminalTracePersistenceError` now carries the distinct
+  `terminal_persistence_failed` disposition from `ExecutionRuntime` and
+  `SpoolingTraceRecorder`. `RunnerOfferRuntime` never drains or calls
+  `session.complete` for that disposition; startup append, submit, and ACK
+  failures retain the same fail-closed behavior.
+- Playwright marks dispatch immediately before `goto`, `click`, `fill`,
+  `selectOption`, and page/element scroll invocation. Any same-origin generic
+  rejection after invocation returns `ActionOutcomeUnknown`, terminalizes as an
+  infrastructure error, and cannot retry or start a later step. Pre-dispatch
+  origin, descriptor, visibility, enabled, and value checks retain their stable
+  blocked outcomes.
+- TDD RED was 12 failures across the Runtime, Runner executor/offer, and
+  Playwright action seams. The final Ticket 19 Gate passed 12 files / 229 tests
+  with 1 pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
+  `git diff --check` passed. No E2E was run; fresh exact-base review is required
+  before rerunning Chromium acceptance.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 

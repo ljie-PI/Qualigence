@@ -1,6 +1,7 @@
 import type { ExecutionJobLease } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { LeaseWindow } from "./lease-window.js";
+import { RunnerAppError } from "./errors.js";
 
 export interface RenewalDelay {
   wait(ms: number, signal: AbortSignal): Promise<void>;
@@ -72,6 +73,9 @@ export class LeaseRenewalController {
         this.fail(error);
       }
       if (renewalSignal.aborted) return;
+      if (this.deps.window.hasExpired()) {
+        this.fail(new RunnerAppError("LeaseExpired", "execution lease expired before renewal"));
+      }
 
       const deadlineAbort = new AbortController();
       const renewResult = Promise.resolve()

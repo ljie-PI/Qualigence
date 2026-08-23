@@ -382,7 +382,7 @@ describe("ExecutionRuntime", () => {
     expect(traceRecorder.eventsFor("run-objective").at(-1)?.payload).toEqual({ status, errorCode });
   });
 
-  it("reports terminal recorder failure deterministically without a duplicate append", async () => {
+  it("reports terminal recorder failure as a distinct disposition without a duplicate append", async () => {
     let terminalAppends = 0;
     const runtime = new ExecutionRuntime({
       observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
@@ -407,11 +407,9 @@ describe("ExecutionRuntime", () => {
       ...objectiveOnlyBudget,
     });
 
-    await expect(runtime.run(objectiveJob())).resolves.toEqual({
-      jobId: "job-objective",
-      runId: "run-objective",
-      status: "error",
-      errorCode: "TerminalTracePersistenceFailed",
+    await expect(runtime.run(objectiveJob())).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
     });
     expect(terminalAppends).toBe(1);
   });
@@ -446,12 +444,13 @@ describe("ExecutionRuntime", () => {
     });
 
     const completion = runtime.run(indexedJob());
+    const completionExpectation = expect(completion).rejects.toMatchObject({
+      code: "TerminalTracePersistenceFailed",
+      disposition: "terminal_persistence_failed",
+    });
     await vi.advanceTimersByTimeAsync(25);
 
-    await expect(completion).resolves.toMatchObject({
-      status: "error",
-      errorCode: "TerminalTracePersistenceFailed",
-    });
+    await completionExpectation;
     expect(terminalAppends).toBe(1);
   });
 
@@ -762,6 +761,74 @@ describe("ExecutionRuntime", () => {
       stepIndex: 0,
       payload: { status: "error", errorCode: "ActionOutcomeUnknown" },
     });
+  });
+
+  it.each([
+    [
+      "navigate",
+      { kind: "navigate", path: "/next", reason: "navigate" },
+      { targetKind: "web", kind: "navigate", url: "https://example.test/next" },
+      { stepIndex: 0, kind: "navigate", path: "/next" },
+    ],
+    [
+      "click",
+      { kind: "click", target: { nodeId: "node-1" }, reason: "click" },
+      { targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" },
+      { stepIndex: 0, kind: "click", target: { purpose: "click" } },
+    ],
+    [
+      "input",
+      { kind: "input", target: { nodeId: "node-1" }, valueRef: "value.input", reason: "input" },
+      { targetKind: "web", kind: "input", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", valueRef: "value.input" },
+      { stepIndex: 0, kind: "input", target: { purpose: "input" }, valueRef: "value.input" },
+    ],
+    [
+      "select",
+      { kind: "select", target: { nodeId: "node-1" }, valueRef: "value.select", reason: "select" },
+      { targetKind: "web", kind: "select", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", valueRef: "value.select" },
+      { stepIndex: 0, kind: "select", target: { purpose: "select" }, valueRef: "value.select" },
+    ],
+    [
+      "scroll",
+      { kind: "scroll", target: { nodeId: "node-1" }, direction: "down", amount: "small", reason: "scroll" },
+      { targetKind: "web", kind: "scroll", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current", direction: "down", amount: "small" },
+      { stepIndex: 0, kind: "scroll", target: { purpose: "scroll" }, direction: "down", amount: "small" },
+    ],
+  ] as const)("terminalizes a generic dispatched %s rejection as unknown without starting the next step", async (_kind, proposal, resolved, firstStep) => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    let decisions = 0;
+    let attempts = 0;
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      decisionProvider: { decide: async () => { decisions += 1; return proposal as never; } },
+      resolver: { resolve: async () => resolved as never },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: { execute: async () => { attempts += 1; throw new Error("generic Playwright rejection"); } },
+      verifier: { verify: async () => { throw new Error("later verification must not run"); } },
+      traceRecorder,
+    });
+    const job = {
+      ...indexedJob(),
+      jobId: `job-unknown-${_kind}`,
+      runId: `run-unknown-${_kind}`,
+      plan: {
+        ...indexedJob().plan,
+        steps: [
+          firstStep,
+          { stepIndex: 1, kind: "click", target: { purpose: "must not run" } },
+        ],
+        maximumStepsPerJob: 2,
+        budget: { maximumStepsPerJob: 2, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+      },
+    };
+
+    await expect(runtime.run(job as never)).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+    expect(decisions).toBe(1);
+    expect(attempts).toBe(1);
+    expect(traceRecorder.eventsFor(job.runId).filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 
   it("preserves an explicit unknown action outcome as error", async () => {

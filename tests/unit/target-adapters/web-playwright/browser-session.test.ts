@@ -116,6 +116,29 @@ describe("PlaywrightBrowserSession", () => {
     });
   });
 
+  it("closes acquired browser resources without waiting for aborted startup", async () => {
+    const abort = new AbortController();
+    const failure = new Error("lease lost");
+    let rejectContext: ((reason: unknown) => void) | undefined;
+    const newContext = vi.fn(() => new Promise<never>((_resolve, reject) => {
+      rejectContext = reject;
+    }));
+    const close = vi.fn(async () => {
+      rejectContext?.(new Error("browser closed"));
+    });
+    const session = new PlaywrightBrowserSession(baseOptions(), {
+      launch: vi.fn(async () => ({ newContext, close })),
+    } as unknown as BrowserLauncher);
+
+    const starting = session.start(abort.signal);
+    await vi.waitFor(() => expect(newContext).toHaveBeenCalledOnce());
+    abort.abort(failure);
+    await expect(session.close()).resolves.toBeUndefined();
+
+    await expect(starting).rejects.toBe(failure);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("rejects page operations after the session is closed", async () => {
     const { launcher } = fakeLauncher();
     const session = new PlaywrightBrowserSession(baseOptions(), launcher);

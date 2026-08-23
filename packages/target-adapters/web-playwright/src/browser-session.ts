@@ -197,7 +197,8 @@ export class PlaywrightBrowserSession {
     return redacted;
   }
 
-  async start(): Promise<void> {
+  async start(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.state === "started") {
       return;
     }
@@ -209,41 +210,49 @@ export class PlaywrightBrowserSession {
     }
 
     this.state = "starting";
-    this.startPromise = this.doStart();
+    this.startPromise = this.doStart(signal);
     return this.startPromise;
   }
 
-  private async doStart(): Promise<void> {
+  private async doStart(signal?: AbortSignal): Promise<void> {
     this.validateTarget();
+    signal?.throwIfAborted();
 
     let browser: Browser;
     try {
       browser = await this.launcher.launch({ headless: !this.options.headed });
+      this.browser = browser;
+      signal?.throwIfAborted();
     } catch (error) {
+      await this.disposeResources();
       this.state = "closed";
+      if (signal?.aborted) throw signal.reason;
       throw new WebTargetError(
         "BrowserLaunchFailed",
         error instanceof Error ? error.message : String(error),
       );
     }
 
-    this.browser = browser;
     try {
       const context = await browser.newContext();
+      this.context = context;
+      signal?.throwIfAborted();
       context.setDefaultTimeout(this.options.actionTimeoutMs);
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
-      this.context = context;
 
       const page = await context.newPage();
       this.page = page;
+      signal?.throwIfAborted();
 
       await page.goto(this.options.url, {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
+      signal?.throwIfAborted();
     } catch (error) {
       await this.disposeResources();
       this.state = "closed";
+      if (signal?.aborted) throw signal.reason;
       throw this.toNavigationError(error);
     }
 
@@ -321,7 +330,15 @@ export class PlaywrightBrowserSession {
       return;
     }
     if (this.state === "starting" && this.startPromise) {
-      await this.startPromise.catch(() => undefined);
+      const startup = this.startPromise;
+      this.state = "closing";
+      const firstError = await this.disposeResources();
+      void startup.finally(async () => {
+        await this.disposeResources();
+        this.state = "closed";
+      }).catch(() => undefined);
+      if (firstError) throw firstError;
+      return;
     }
 
     this.state = "closing";
@@ -341,17 +358,20 @@ export class PlaywrightBrowserSession {
       }
     };
 
-    if (this.page) {
-      await this.page.close().catch(record);
-      this.page = undefined;
+    const page = this.page;
+    this.page = undefined;
+    if (page) {
+      await page.close().catch(record);
     }
-    if (this.context) {
-      await this.context.close().catch(record);
-      this.context = undefined;
+    const context = this.context;
+    this.context = undefined;
+    if (context) {
+      await context.close().catch(record);
     }
-    if (this.browser) {
-      await this.browser.close().catch(record);
-      this.browser = undefined;
+    const browser = this.browser;
+    this.browser = undefined;
+    if (browser) {
+      await browser.close().catch(record);
     }
     return firstError;
   }

@@ -2,20 +2,31 @@ import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-
 import { capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
-import { DeterministicRunnerPolicyGate, ExecutionTargetError } from "@qualigence/runner-kernel";
+import {
+  DeterministicRunnerPolicyGate,
+  ExecutionBlockedError,
+  ExecutionTargetError,
+} from "@qualigence/runner-kernel";
 import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
 import type { ActionValueProvider } from "./action-value-provider.js";
-import { assertOfferCapabilities, LeasedJobExecutor } from "./job-executor.js";
+import { isRunnerAppError } from "./errors.js";
+import {
+  AcceptedLeaseLifecycle,
+  assertOfferCapabilities,
+  LeasedJobExecutor,
+  type AcceptedLeaseLifecycleOptions,
+} from "./job-executor.js";
 import type { RunnerConfig } from "./config.js";
 import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
 
 export interface RunnerOfferRuntimeOptions {
-  readonly session: Pick<RunnerSession, "accept" | "complete" | "submit" | "welcome">;
+  readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome">;
   readonly spool: RunnerSpool;
   readonly config: RunnerConfig;
   readonly valueProvider?: ActionValueProvider;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
+  readonly leaseLifecycle?: AcceptedLeaseLifecycleOptions;
 }
 
 /** The sole remote Runner composition for one untrusted offered Job. */
@@ -56,44 +67,66 @@ export class RunnerOfferRuntime {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider);
     assertOfferCapabilities(offer, currentCapabilities);
     const lease = await this.options.session.accept(offer.offerId);
-    const adapter = this.createTarget({
-      url: offer.job.target.url,
-      headed: this.options.config.headed,
-      navigationTimeoutMs: this.options.config.navigationTimeoutMs,
-      actionTimeoutMs: this.options.config.actionTimeoutMs,
-      allowedOrigins: offer.job.policy.allowedOrigins,
-      ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
-    });
+    const lifecycle = new AcceptedLeaseLifecycle(
+      offer,
+      this.options.session as RunnerSession,
+      lease,
+      signal,
+      this.options.leaseLifecycle,
+    );
+    let adapter: PlaywrightWebTargetAdapter | undefined;
     try {
+      const target = this.createTarget({
+        url: offer.job.target.url,
+        headed: this.options.config.headed,
+        navigationTimeoutMs: this.options.config.navigationTimeoutMs,
+        actionTimeoutMs: this.options.config.actionTimeoutMs,
+        allowedOrigins: offer.job.policy.allowedOrigins,
+        ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
+      });
+      adapter = target;
       let result: {
         readonly lease: typeof lease;
         readonly completion: ExecutionCompletion;
       } | undefined;
       try {
-        await adapter.start();
+        await lifecycle.duringLease((startupSignal) => target.start(startupSignal));
       } catch (error) {
-        if (!(error instanceof ExecutionTargetError)) throw error;
-        const completion: ExecutionCompletion = error.completionStatus === "blocked"
+        if (
+          !(error instanceof ExecutionTargetError) &&
+          !(error instanceof ExecutionBlockedError && error.errorCode === "LeaseExpired") &&
+          !(isRunnerAppError(error) && error.code === "LeaseExpired")
+        ) throw error;
+        const completionStatus = error instanceof ExecutionTargetError
+          ? error.completionStatus
+          : "blocked";
+        const errorCode = error instanceof ExecutionTargetError
+          ? error.errorCode
+          : error instanceof ExecutionBlockedError
+            ? error.errorCode
+            : error.code;
+        const completion: ExecutionCompletion = completionStatus === "blocked"
           ? {
               jobId: lease.jobId,
               runId: lease.runId,
               status: "blocked",
-              errorCode: error.errorCode,
+              errorCode,
             }
           : {
               jobId: lease.jobId,
               runId: lease.runId,
               status: "error",
-              errorCode: error.errorCode,
+              errorCode,
             };
+        const completionLease = await lifecycle.finish(completion);
         await new SpoolingTraceRecorder(this.options.spool).append({
           runId: lease.runId,
           stage: "run_completed",
           payload: completion.status === "blocked"
-            ? { status: "blocked", errorCode: error.errorCode }
-            : { status: "error", errorCode: error.errorCode },
+            ? { status: "blocked", errorCode }
+            : { status: "error", errorCode },
         });
-        result = { lease, completion };
+        result = { lease: completionLease, completion };
       }
       if (result === undefined) {
         const { ModelBackedDecisionProvider, ModelBackedVerifier } = await import("@qualigence/model-agent");
@@ -105,14 +138,14 @@ export class RunnerOfferRuntime {
         });
         const gateway = new ModelGateway({ provider });
         const executor = new LeasedJobExecutor({
-          observer: adapter,
+          observer: target,
           decisionProvider: new ModelBackedDecisionProvider(
             gateway,
             this.options.config.model.modelName,
           ),
-          resolver: adapter,
+          resolver: target,
           policyGate: admission.gate,
-          actionExecutor: adapter,
+          actionExecutor: target,
           verifier: new ModelBackedVerifier(gateway, this.options.config.model.modelName),
           spool: this.options.spool,
           capabilities: currentCapabilities,
@@ -123,7 +156,7 @@ export class RunnerOfferRuntime {
           offer,
           this.options.session as RunnerSession,
           signal,
-          lease,
+          lifecycle,
         );
       }
       await new TraceUploadPump(this.options.spool, this.options.session, result.lease.runId, {
@@ -132,7 +165,11 @@ export class RunnerOfferRuntime {
       }).drain();
       await this.options.session.complete(result.lease, result.completion);
     } finally {
-      await adapter.close();
+      try {
+        await adapter?.close();
+      } finally {
+        await lifecycle.dispose();
+      }
     }
   }
 }

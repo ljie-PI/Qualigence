@@ -27,7 +27,7 @@ import { PlaywrightActionExecutor, type ActionValueProvider } from "./playwright
 import type { CapturedArtifact } from "./types.js";
 
 export interface WebTargetSession {
-  start(): Promise<void>;
+  start(signal?: AbortSignal): Promise<void>;
   captureArtifacts(graphId: string): Promise<readonly CapturedArtifact[]>;
   close(): Promise<void>;
 }
@@ -59,8 +59,8 @@ export class PlaywrightWebTargetAdapter
     this.executor = new PlaywrightActionExecutor(this.session, options.valueProvider);
   }
 
-  async start(): Promise<void> {
-    await this.session.start();
+  async start(signal?: AbortSignal): Promise<void> {
+    await this.session.start(signal);
   }
 
   async capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph> {
