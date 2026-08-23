@@ -20,7 +20,8 @@ import type {
 import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
 import { ProjectTargetService, type ProjectTargetRepository } from "@qualigence/project-target";
-import { MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
+import { MissionIntakeService, TestPlanService, type MissionSchedulingIds, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
+import { MissionDispatchService } from "./mission-dispatch-service.js";
 import type { AuxDatabase } from "./aux-schema.js";
 import {
   ApiError,
@@ -51,6 +52,7 @@ export interface ServerDeps {
   readonly projectTargetRepository?: (stores: TenantStores, tenantId: string) => ProjectTargetRepository;
   readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
   readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
+  readonly missionSchedulingIds?: MissionSchedulingIds;
 }
 
 export function projectTargetService(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetService {
@@ -72,6 +74,13 @@ export function testPlanService(deps: ServerDeps, stores: TenantStores, tenantId
 export function missionIntakeService(deps: ServerDeps, stores: TenantStores, tenantId: string): MissionIntakeService {
   const repository = deps.prdMissionRepository?.(stores, tenantId) ?? new PostgresPrdMissionRepository(stores.db, tenantId);
   return new MissionIntakeService(projectTargets(deps, stores, tenantId), testPlans(deps, stores, tenantId), repository, deps.clock);
+}
+
+export function missionDispatchService(deps: ServerDeps, stores: TenantStores, tenantId: string): MissionDispatchService {
+  const repository = deps.prdMissionRepository?.(stores, tenantId) ?? new PostgresPrdMissionRepository(stores.db, tenantId);
+  return deps.missionSchedulingIds === undefined
+    ? new MissionDispatchService(repository, deps.clock)
+    : new MissionDispatchService(repository, deps.clock, deps.missionSchedulingIds);
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */

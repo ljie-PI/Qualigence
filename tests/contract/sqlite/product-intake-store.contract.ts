@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { PrdDocument } from "@qualigence/context-intake";
-import { createDraftTestPlan, MissionIntakeService, TestPlanService, type PrdMissionRepository, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
+import { createDraftTestPlan, MissionIntakeService, TestPlanService, testPlanSnapshotHash, type PrdMissionRepository, type TestPlanRepository, type TestPlanRevision } from "@qualigence/mission";
 import { createTargetRevision, type ProjectTargetRepository } from "@qualigence/project-target";
 import { sequentialIds, validatedProposal } from "../../unit/core-modules/mission/fixtures.js";
 
@@ -300,8 +300,9 @@ export function productIntakeProviderContract(factory: ProductIntakeProviderFact
     const verify = await factory.open();
     try {
       const persisted = await verify.missions.loadMissionForDispatch(fulfilled!.value.missionId);
+      const persistedPlan = await verify.plans.get(fulfilled!.value.planId, fulfilled!.value.planVersion);
       expect(persisted?.jobs).toHaveLength(1);
-      expect(persisted?.dispatch.binding).toMatchObject({ targetId: fulfilled!.value.targetId, runnerId: fulfilled!.value.runnerId, planVersion: fulfilled!.value.planVersion });
+      expect(persisted?.dispatch.binding).toMatchObject({ targetId: fulfilled!.value.targetId, runnerId: fulfilled!.value.runnerId, planVersion: fulfilled!.value.planVersion, planSnapshotHash: testPlanSnapshotHash(persistedPlan!) });
       expect(persisted?.planId).toBe(fulfilled!.value.planId);
     } finally { await verify.close(); }
   });

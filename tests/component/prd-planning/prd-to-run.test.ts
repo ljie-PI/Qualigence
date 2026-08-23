@@ -238,7 +238,7 @@ function groundedProposal(document: PrdDocument): unknown {
 
 function configFor(model: MockModelServer, dataDir: string): CliConfig {
   return {
-    model: { baseUrl: model.baseUrl, apiKey: API_KEY, modelName: MODEL_NAME },
+    model: { baseUrl: model.baseUrl, apiKey: API_KEY, modelName: MODEL_NAME, maximumTokensPerCall: 1_000 },
     dataDir,
   };
 }
@@ -300,8 +300,10 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
 
       const target: TargetCapabilitySummary & PlannerTargetSummary = {
         targetId: "target-web",
+        targetVersion: 1,
+        targetSnapshotHash: "target-web-hash",
         supportedStepKinds: ["navigate", "click", "verify"],
-        capabilities: ["web.navigate", "web.click", "web.assert"],
+        capabilities: ["target:web-playwright"],
       };
 
       // 2. Model produces a proposal ONLY — no ids, no persistence.
@@ -338,6 +340,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
       if (!approved.ok) return;
 
       // 5. Compile the approved plan into an immutable, versioned Mission.
+      const policyIssuedAt = new Date().toISOString();
       const mission: TestMission = {
         missionId: "mission-cart",
         projectId: document.projectId,
@@ -351,7 +354,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
           maximumModelTokens: 100_000,
           stopOnBlockedTestCase: true,
         },
-        executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: [fixture.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-01T00:00:00.000Z", expiresAt: "2099-08-01T00:01:00.000Z" },
+        executionPolicy: { policyId: "policy-mission", environment: "isolated_test", allowedOrigins: [fixture.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: policyIssuedAt, expiresAt: new Date(Date.parse(policyIssuedAt) + 120_000).toISOString() },
         status: "approved",
       };
       const compiled = new MissionCompiler().compile(approved.value, mission, target);
@@ -374,6 +377,15 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
           headed: false,
           navigationTimeoutMs: 20_000,
           actionTimeoutMs: 15_000,
+          binding: {
+            targetId: target.targetId,
+            targetVersion: target.targetVersion,
+            targetSnapshotHash: target.targetSnapshotHash,
+            runnerId: "runner-1",
+            planVersion: approved.value.version,
+            planSnapshotHash: sha256Hex(JSON.stringify(approved.value)),
+            configuration: { kind: "web", startUrl: fixture.url, allowedOrigins: [fixture.origin], browser: "chromium" },
+          },
         },
         stopOnBlockedTestCase: true,
       });

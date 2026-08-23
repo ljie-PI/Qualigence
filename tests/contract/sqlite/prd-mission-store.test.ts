@@ -18,6 +18,7 @@ import type {
   TestPlanRevision,
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
+import "./mission-scheduling-store.contract.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
 
@@ -101,8 +102,10 @@ function approvedPlan(): TestPlanRevision {
 
 const webTarget: TargetCapabilitySummary = {
   targetId: "target-web",
+  targetVersion: 1,
+  targetSnapshotHash: "target-hash",
   supportedStepKinds: ["navigate", "click", "verify"],
-  capabilities: ["web.navigate", "web.click", "web.assert"],
+  capabilities: ["target:web-playwright"],
 };
 
 function mission(): TestMission {
@@ -130,13 +133,24 @@ function compiledMission(plan: TestPlanRevision): CompiledMission {
   return result.value;
 }
 
-const dispatch: MissionDispatchDescriptor = {
-  targetUrl: "https://example.test/",
-  modelProfileId: "default",
-  headed: false,
-  navigationTimeoutMs: 20_000,
-  actionTimeoutMs: 15_000,
-};
+function dispatch(plan: TestPlanRevision): MissionDispatchDescriptor {
+  return {
+    targetUrl: "https://example.test/",
+    modelProfileId: "default",
+    headed: false,
+    navigationTimeoutMs: 20_000,
+    actionTimeoutMs: 15_000,
+    binding: {
+      targetId: webTarget.targetId,
+      targetVersion: webTarget.targetVersion,
+      targetSnapshotHash: webTarget.targetSnapshotHash,
+      runnerId: "runner-1",
+      planVersion: plan.version,
+      planSnapshotHash: sha256Hex(JSON.stringify(plan)),
+      configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" },
+    },
+  };
+}
 
 let dir: string;
 let filename: string;
@@ -163,13 +177,13 @@ async function seed(store: SqlitePrdMissionStore, plan: TestPlanRevision) {
     planId: plan.planId,
     prdId: prdDocument.prdId,
     prdRevision: prdDocument.revision,
-    dispatch,
+    dispatch: dispatch(plan),
     stopOnBlockedTestCase: true,
   });
 }
 
 describe("SqlitePrdMissionStore", () => {
-  it("creates the eight PRD-bridge tables via migration 002", async () => {
+  it("creates the PRD bridge and additive Mission scheduling tables", async () => {
     const runtime = await open();
     const rows = await runtime.db
       .selectFrom("sqlite_master")
@@ -186,6 +200,13 @@ describe("SqlitePrdMissionStore", () => {
       "mission_revisions",
       "execution_jobs",
       "execution_job_attempts",
+      "mission_scheduling_heads",
+      "mission_start_commands",
+      "mission_job_attempts",
+      "runner_execution_jobs",
+      "mission_execution_provenance",
+      "mission_dispatch_outbox",
+      "mission_dispatch_wakeups",
     ]) {
       expect(names.has(table), `missing table ${table}`).toBe(true);
     }
@@ -204,6 +225,12 @@ describe("SqlitePrdMissionStore", () => {
     expect(loaded?.projectId).toBe("proj-1");
     expect(loaded?.executionPolicy).toEqual(mission().executionPolicy);
     expect(loaded?.planId).toBe(plan.planId);
+    expect(loaded?.dispatch.binding).toMatchObject({
+      planVersion: plan.version,
+      planSnapshotHash: sha256Hex(JSON.stringify(plan)),
+      targetVersion: webTarget.targetVersion,
+      targetSnapshotHash: webTarget.targetSnapshotHash,
+    });
     expect(loaded?.dispatch.targetUrl).toBe("https://example.test/");
     expect(loaded?.jobs).toHaveLength(1);
     const job = loaded?.jobs[0];
@@ -211,6 +238,13 @@ describe("SqlitePrdMissionStore", () => {
     expect(job?.status).toBe("queued");
     expect(job?.sourceRefs[0]?.revision).toBe(1);
     expect(job?.sourceRefs[0]?.quotedTextSha256).toBe(groundedRef.quotedTextSha256);
+    await expect(store.loadMissionForScheduling("mission-1")).resolves.toMatchObject({
+      planId: plan.planId,
+      planVersion: plan.version,
+      planSnapshotHash: sha256Hex(JSON.stringify(plan)),
+      targetVersion: 1,
+      targetSnapshotHash: "target-hash",
+    });
     await runtime.close();
   });
 
@@ -277,9 +311,25 @@ describe("SqlitePrdMissionStore", () => {
       planId: plan.planId,
       prdId: prdDocument.prdId,
       prdRevision: prdDocument.revision,
-      dispatch,
+      dispatch: dispatch(plan),
       stopOnBlockedTestCase: true,
-    })).rejects.toThrow(/project provenance/);
+    })).rejects.toThrow(/provenance/);
+    await runtime.close();
+  });
+
+  it("rejects a dispatch binding that disagrees with immutable Plan and Target provenance", async () => {
+    const runtime = await open();
+    const store = new SqlitePrdMissionStore(runtime);
+    const plan = approvedPlan();
+    await expect(store.saveCompiledMission({
+      mission: compiledMission(plan),
+      projectId: "proj-1",
+      planId: plan.planId,
+      prdId: prdDocument.prdId,
+      prdRevision: prdDocument.revision,
+      dispatch: { ...dispatch(plan), binding: { ...dispatch(plan).binding!, planSnapshotHash: "stale-plan-hash" } },
+      stopOnBlockedTestCase: true,
+    })).rejects.toThrow(/provenance/);
     await runtime.close();
   });
 });

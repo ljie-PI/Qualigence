@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { approveTestPlan, createDraftTestPlan, MissionIntakeService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { createTargetRevision, type ProjectTargetRepository } from "@qualigence/project-target";
 import { DeterministicRunnerPolicyGate } from "@qualigence/runner-kernel";
+import { PrdMissionRepositoryTestStub } from "../../../helpers/prd-mission-repository.js";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
 describe("MissionIntakeService policy issuance", () => {
@@ -11,7 +13,8 @@ describe("MissionIntakeService policy issuance", () => {
     if (!draft.ok) throw new Error(draft.error.code);
     const approved = approveTestPlan(draft.value, { expectedVersion: 1, reviewerId: "reviewer", idempotencyKey: "approve" }, { now: () => "2026-08-21T12:00:00.000Z" });
     if (!approved.ok) throw new Error(approved.error.code);
-    const service = new MissionIntakeService({ getRevision: async () => target } as unknown as ProjectTargetRepository, { get: async () => approved.value } as unknown as TestPlanRepository, { loadMissionForDispatch: async () => undefined } as unknown as PrdMissionRepository, { now: () => "2026-08-21T12:00:00.000Z" });
+    const missions = Object.assign(new PrdMissionRepositoryTestStub(), { loadMissionForDispatch: async () => undefined });
+    const service = new MissionIntakeService({ getRevision: async () => target } as unknown as ProjectTargetRepository, { get: async () => approved.value } as unknown as TestPlanRepository, missions, { now: () => "2026-08-21T12:00:00.000Z" });
     await expect(service.create({ projectId: "project-1", targetId: "target-1", targetVersion: 1, targetSnapshotHash: target.snapshotHash, planId: approved.value.planId, planVersion: 2, idempotencyKey: "mission-create" })).rejects.toMatchObject({ code: "MissionInputMismatch" });
   });
   it("issues a current budget-bounded policy admitted by Runner", async () => {
@@ -24,11 +27,20 @@ describe("MissionIntakeService policy issuance", () => {
     let saved: Parameters<PrdMissionRepository["saveCompiledMission"]>[0] | undefined;
     const targets = { getRevision: async () => target } as unknown as ProjectTargetRepository;
     const plans = { get: async () => approved.value } as unknown as TestPlanRepository;
-    const missions = { loadMissionForDispatch: async () => undefined, saveCompiledMission: async (input: Parameters<PrdMissionRepository["saveCompiledMission"]>[0]) => { saved = input; return { missionId: input.mission.missionId, missionRevision: input.mission.missionRevision, projectId: input.projectId, planId: input.planId, prdId: input.prdId, prdRevision: input.prdRevision, status: "approved", dispatch: input.dispatch, executionPolicy: input.mission.executionPolicy, stopOnBlockedTestCase: input.stopOnBlockedTestCase, jobs: input.mission.jobs.map((job) => ({ jobId: job.jobId, testCaseId: job.testCaseId, objective: job.testCaseSnapshot.objective, requiredCapabilities: job.requiredCapabilities, status: job.status, sourceRefs: job.testCaseSnapshot.sourceRefs, snapshot: job.testCaseSnapshot })) }; } } as unknown as PrdMissionRepository;
+    const missions = Object.assign(new PrdMissionRepositoryTestStub(), { loadMissionForDispatch: async () => undefined, saveCompiledMission: async (input: Parameters<PrdMissionRepository["saveCompiledMission"]>[0]) => { saved = input; return { missionId: input.mission.missionId, missionRevision: input.mission.missionRevision, missionVersion: 1, projectId: input.projectId, planId: input.planId, prdId: input.prdId, prdRevision: input.prdRevision, status: "approved" as const, dispatch: input.dispatch, executionPolicy: input.mission.executionPolicy, stopOnBlockedTestCase: input.stopOnBlockedTestCase, jobs: input.mission.jobs.map((job) => ({ jobId: job.jobId, testCaseId: job.testCaseId, objective: job.testCaseSnapshot.objective, requiredCapabilities: job.requiredCapabilities, status: job.status, sourceRefs: job.testCaseSnapshot.sourceRefs, snapshot: job.testCaseSnapshot })) }; } });
     const service = new MissionIntakeService(targets, plans, missions, { now: () => now });
 
     await service.create({ projectId: "project-1", targetId: "target-1", targetVersion: 1, targetSnapshotHash: target.snapshotHash, planId: approved.value.planId, planVersion: 2, idempotencyKey: "mission-create" });
 
+    const approvedPlanHash = createHash("sha256").update(JSON.stringify(approved.value)).digest("hex");
+    expect(saved?.mission).toMatchObject({
+      planId: approved.value.planId,
+      planVersion: approved.value.version,
+      planSnapshotHash: approvedPlanHash,
+      targetVersion: target.version,
+      targetSnapshotHash: target.snapshotHash,
+    });
+    expect(saved?.dispatch.binding).toMatchObject({ planSnapshotHash: approvedPlanHash });
     expect(saved?.mission.executionPolicy).toMatchObject({ issuedAt: now, expiresAt: "2026-08-21T12:01:00.000Z" });
     const job = saved?.mission.jobs[0];
     expect(DeterministicRunnerPolicyGate.admitJob({

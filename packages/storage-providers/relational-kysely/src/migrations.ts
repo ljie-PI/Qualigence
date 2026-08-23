@@ -8,8 +8,9 @@ import { migration005 } from "./migrations/005-investigation-review.js";
 import { migration006 } from "./migrations/006-runner-control.js";
 import { migration007 } from "./migrations/007-local-run-intake.js";
 import { migration008 } from "./migrations/008-target-test-plan.js";
+import { migration009 } from "./migrations/009-mission-scheduling.js";
 
-export const SUPPORTED_SCHEMA_VERSION = 8;
+export const SUPPORTED_SCHEMA_VERSION = 9;
 
 export interface Migration {
   readonly version: number;
@@ -136,4 +137,5 @@ export const MIGRATIONS: readonly Migration[] = [
   migration006,
   migration007,
   migration008,
+  migration009,
 ];

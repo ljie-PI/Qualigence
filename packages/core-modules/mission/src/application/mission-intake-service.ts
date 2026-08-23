@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import type { ProjectTargetRepository, TargetRevision } from "@qualigence/project-target";
-import { MissionCompiler } from "./mission-compiler.js";
+import { MissionCompiler, testPlanSnapshotHash } from "./mission-compiler.js";
 import type { DispatchableMission, PrdMissionRepository } from "./prd-mission-repository.js";
 import type { TestPlanRepository } from "./test-plan-repository.js";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
-import type { TestMission } from "../domain/test-mission.js";
+import type { MissionStatus, TestMission } from "../domain/test-mission.js";
 import type { Clock } from "@qualigence/shared-kernel";
 
 export class MissionIntakeError extends Error {
@@ -32,13 +32,14 @@ export interface MissionIntakeResult {
   readonly missionId: string;
   readonly projectId: string;
   readonly revision: number;
+  readonly version: number;
   readonly targetId: string;
   readonly targetVersion: number;
   readonly targetSnapshotHash: string;
   readonly runnerId: string;
   readonly planId: string;
   readonly planVersion: number;
-  readonly status: "approved";
+  readonly status: MissionStatus;
 }
 
 function missionId(key: string): string {
@@ -75,13 +76,14 @@ function resultOf(mission: DispatchableMission): MissionIntakeResult {
     missionId: mission.missionId,
     projectId: mission.projectId,
     revision: mission.missionRevision,
+    version: mission.missionVersion ?? 1,
     targetId: binding.targetId,
     targetVersion: binding.targetVersion,
     targetSnapshotHash: binding.targetSnapshotHash,
     runnerId: binding.runnerId,
     planId: mission.planId,
     planVersion: binding.planVersion,
-    status: "approved",
+    status: mission.status,
   };
 }
 
@@ -136,6 +138,7 @@ export class MissionIntakeService {
     const [firstTestCaseId, ...restTestCaseIds] = testCaseIds;
     if (firstTestCaseId === undefined) throw new MissionIntakeError("MissionCompilationFailed", "approved Test Plan has no test cases");
     const maximumWallClockMs = 60_000;
+    const planHash = testPlanSnapshotHash(plan);
     const mission: TestMission = {
       missionId: id,
       projectId: command.projectId,
@@ -146,7 +149,13 @@ export class MissionIntakeService {
       executionPolicy: approvedPolicy(target, this.clock.now(), maximumWallClockMs),
       status: "approved",
     };
-    const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, supportedStepKinds: supportedKinds(target), capabilities: [] });
+    const compiled = this.compiler.compile(plan, mission, {
+      targetId: target.targetId,
+      targetVersion: target.version,
+      targetSnapshotHash: target.snapshotHash,
+      supportedStepKinds: supportedKinds(target),
+      capabilities: [target.configuration.kind === "web" ? "target:web-playwright" : "target:desktop-windows-uia"],
+    });
     if (!compiled.ok) throw new MissionIntakeError("MissionCompilationFailed", compiled.error.message);
     const targetUrl = target.configuration.kind === "web" ? target.configuration.startUrl : "https://desktop.invalid/";
     const saved = await this.missions.saveCompiledMission({
@@ -161,7 +170,7 @@ export class MissionIntakeService {
         headed: target.configuration.kind === "desktop",
         navigationTimeoutMs: 30_000,
         actionTimeoutMs: 10_000,
-        binding: { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, runnerId: target.runnerId, planVersion: plan.version, configuration: target.configuration },
+        binding: { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, runnerId: target.runnerId, planVersion: plan.version, planSnapshotHash: planHash, configuration: target.configuration },
       },
       stopOnBlockedTestCase: true,
     });

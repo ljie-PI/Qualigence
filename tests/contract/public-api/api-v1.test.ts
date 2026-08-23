@@ -222,13 +222,23 @@ describe("Public API v1 contract", () => {
       const targetV2 = (await targetUpdate.json()) as typeof target;
       const missionResponse = await fetch(url("/v1/missions"), { method: "POST", headers: headers("mission-1"), body: JSON.stringify({ projectId: "product-project", targetId: targetV2.resource.targetId, targetVersion: targetV2.resource.version, targetSnapshotHash: targetV2.resource.snapshotHash, planId: draft.resource.planId, planVersion: approved.resource.version }) });
       expect(missionResponse.status).toBe(201);
-      expect(await missionResponse.json()).toMatchObject({ resource: { targetId: "checkout", targetVersion: 2, runnerId: "runner-1", planVersion: 2, status: "approved" } });
+      const mission = (await missionResponse.json()) as { resource: { missionId: string; version: number; targetId: string; targetVersion: number; runnerId: string; planVersion: number; status: string } };
+      expect(mission).toMatchObject({ resource: { targetId: "checkout", targetVersion: 2, runnerId: "runner-1", planVersion: 2, status: "approved", version: 1 } });
+
+      const start = await fetch(url(`/v1/missions/${mission.resource.missionId}/start`), { method: "POST", headers: headers("start-mission-1"), body: JSON.stringify({ expectedVersion: mission.resource.version }) });
+      expect(start.status).toBe(202);
+      const scheduled = (await start.json()) as { resource: { missionVersion: number; runs: readonly { runId: string; attemptId: string; runnerJobId: string }[] } };
+      expect(scheduled.resource).toMatchObject({ missionVersion: 2, status: "running", runs: [{ runId: expect.any(String), attemptId: expect.any(String), runnerJobId: expect.any(String) }] });
+      const replay = await fetch(url(`/v1/missions/${mission.resource.missionId}/start`), { method: "POST", headers: headers("start-mission-1"), body: JSON.stringify({ expectedVersion: mission.resource.version }) });
+      expect(replay.status).toBe(202);
+      expect((await replay.json()) as { resource: unknown }).toMatchObject({ resource: scheduled.resource });
 
       await fx.provider.withTenant("tenant-a", async ({ db }) => {
-        const mission = await db.selectFrom("mission_revisions").select("compiled_json").executeTakeFirstOrThrow();
+        const missionRevision = await db.selectFrom("mission_revisions").select("compiled_json").executeTakeFirstOrThrow();
         const jobs = await db.selectFrom("execution_jobs").select(["job_id", "snapshot_json"]).execute();
-        expect(JSON.parse(mission.compiled_json)).toMatchObject({ missionRevision: 1, jobs: [{ status: "queued" }] });
+        expect(JSON.parse(missionRevision.compiled_json)).toMatchObject({ missionRevision: 1, jobs: [{ status: "queued" }] });
         expect(jobs).toHaveLength(1);
+        await expect(db.selectFrom("mission_dispatch_outbox").select("status").executeTakeFirstOrThrow()).resolves.toMatchObject({ status: "pending" });
       });
     });
 

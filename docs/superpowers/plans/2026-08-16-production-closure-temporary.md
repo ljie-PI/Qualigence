@@ -287,6 +287,24 @@ Ticket 03 round-3 review additionally approved
 schema 8 expectations introduced by migration 008. These files may not change
 Ticket 02 migration, backup, restore, or forward-upgrade behavior.
 
+Ticket 04 first-review blocker amendment (approved 2026-08-23):
+`tests/conformance/storage/relational-schema.test.ts` is added solely to update
+the current schema version and sequential migration expectation to 9 and to
+assert the exact migration-009 table inventory. Migrations 001-008 remain
+unchanged.
+The required `PrdMissionRepository` scheduling methods also require exact
+caller updates in `tests/helpers/prd-mission-repository.ts` and
+`tests/unit/execution-application/mission-execution-use-case.test.ts`; these
+files are included solely to keep the existing application seam required and
+verified, with no execution behavior expansion.
+Within Ticket 04's already approved
+`packages/core-modules/mission` and
+`packages/storage-providers/{relational-kysely,sqlite-runtime,postgres-runtime}`
+roots, the Ticket 03 Mission intake/domain/persistence path may change only to
+persist the immutable approved Test Plan revision/hash and Target revision/hash
+at Mission creation, so Mission start compares those pinned values with the
+authoritative current rows rather than deriving an expected hash from them.
+
 | Ticket | Legacy allocation | Files | Focused non-E2E Gate |
 |---:|---|---|---|
 | 01 | Authority prerequisite | `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md`; this plan; `docs/production-closure-status.md`; `docs/contexts/storage/CONTEXT.md`; LS-12 design/plan | document consistency plus `git diff --check` |

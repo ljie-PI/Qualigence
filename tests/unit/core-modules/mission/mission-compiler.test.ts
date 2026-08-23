@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   approveTestPlan,
+  capabilityForStep,
   canonicalJson,
   createDraftTestPlan,
   MissionCompiler,
@@ -11,14 +12,18 @@ import type {
   TestPlanRevision,
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
+import { sha256Hex } from "@qualigence/context-intake";
+import { capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
 
 const webTarget: TargetCapabilitySummary = {
   targetId: "target-web",
+  targetVersion: 1,
+  targetSnapshotHash: "target-hash",
   supportedStepKinds: ["navigate", "click", "verify"],
-  capabilities: ["web.navigate", "web.click", "web.assert"],
+  capabilities: ["target:web-playwright"],
 };
 
 function mission(overrides: Partial<TestMission> = {}): TestMission {
@@ -103,13 +108,36 @@ describe("MissionCompiler", () => {
     expect(job.testCaseSnapshot.sourceRefs[0]?.revision).toBe(plan.prdRevision);
     expect(job.status).toBe("queued");
     expect(job.requiredCapabilities).toEqual([
-      "web.assert",
-      "web.click",
-      "web.navigate",
+      "action:click",
+      "action:navigate",
+      "model:structured-output",
+      "target:web-playwright",
     ]);
+    expect(negotiateCapabilities(capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["click"],
+    }), job.requiredCapabilities)).toEqual({
+      outcome: "rejected",
+      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:navigate"] },
+    });
+    expect(negotiateCapabilities(capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["navigate", "click", "input", "select", "scroll"],
+    }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
     expect(result.value.projectId).toBe("p");
     expect(Object.isFrozen(job.testCaseSnapshot)).toBe(true);
     expect(Object.isFrozen(result.value)).toBe(true);
+  });
+
+  it.each([
+    ["navigate", "action:navigate"],
+    ["click", "action:click"],
+    ["input", "action:input"],
+    ["select", "action:select"],
+    ["scroll", "action:scroll"],
+    ["verify", "model:structured-output"],
+  ] as const)("maps %s to the capability consumed by Runner negotiation", async (kind, capability) => {
+    expect(capabilityForStep(kind)).toBe(capability);
   });
 
   it("produces a byte-identical snapshot for identical inputs", () => {
@@ -158,6 +186,17 @@ describe("MissionCompiler", () => {
       mission(),
       webTarget,
     );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "TargetCapabilityMismatch" },
+    });
+  });
+
+  it("rejects a target that has no Runner protocol target token", () => {
+    const result = compiler.compile(approved(), mission(), {
+      ...webTarget,
+      capabilities: ["web.click"],
+    });
     expect(result).toMatchObject({
       ok: false,
       error: { code: "TargetCapabilityMismatch" },

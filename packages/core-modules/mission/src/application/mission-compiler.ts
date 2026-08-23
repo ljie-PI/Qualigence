@@ -34,6 +34,10 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
+export function testPlanSnapshotHash(plan: TestPlanRevision): string {
+  return sha256Hex(JSON.stringify(plan));
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const nested of Object.values(value as Record<string, unknown>)) {
@@ -44,8 +48,15 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function requiredCapabilities(testCase: TestCase): readonly string[] {
-  const capabilities = new Set<string>();
+function requiredCapabilities(testCase: TestCase, target: TargetCapabilitySummary): readonly string[] {
+  const targetCapabilities = target.capabilities.filter((capability) => capability.startsWith("target:"));
+  if (targetCapabilities.length !== 1) {
+    throw new Error("Target must declare exactly one Runner target capability.");
+  }
+  const capabilities = new Set<string>([
+    ...targetCapabilities,
+    "model:structured-output",
+  ]);
   for (const step of testCase.steps) {
     capabilities.add(capabilityForStep(step.kind));
   }
@@ -127,6 +138,18 @@ export class MissionCompiler {
         }
       }
 
+      let capabilities: readonly string[];
+      try {
+        capabilities = requiredCapabilities(testCase, target);
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "TargetCapabilityMismatch",
+            message: error instanceof Error ? error.message : "Target Runner capability is invalid.",
+          },
+        };
+      }
       const snapshot = deepFreeze(structuredClone(testCase));
       const snapshotHash = sha256Hex(canonicalJson(snapshot));
       const idempotencyKey = `${mission.missionId}:${mission.revision}:${testCase.id}`;
@@ -139,7 +162,7 @@ export class MissionCompiler {
         testCaseId: testCase.id,
         testCaseSnapshot: snapshot,
         targetId: mission.targetId,
-        requiredCapabilities: requiredCapabilities(testCase),
+        requiredCapabilities: capabilities,
         budget: {
           maximumStepsPerJob: mission.executionBudget.maximumStepsPerJob,
           maximumWallClockMs: mission.executionBudget.maximumWallClockMs,
@@ -168,7 +191,12 @@ export class MissionCompiler {
         missionId: mission.missionId,
         missionRevision: mission.revision,
         projectId: mission.projectId,
+        planId: plan.planId,
+        planVersion: plan.version,
+        planSnapshotHash: testPlanSnapshotHash(plan),
         targetId: mission.targetId,
+        targetVersion: target.targetVersion,
+        targetSnapshotHash: target.targetSnapshotHash,
         jobs: jobs.map((job) => ({
           jobId: job.jobId,
           testCaseId: job.testCaseId,
@@ -187,7 +215,12 @@ export class MissionCompiler {
         missionId: mission.missionId,
         missionRevision: mission.revision,
         projectId: mission.projectId,
+        planId: plan.planId,
+        planVersion: plan.version,
+        planSnapshotHash: testPlanSnapshotHash(plan),
         targetId: mission.targetId,
+        targetVersion: target.targetVersion,
+        targetSnapshotHash: target.targetSnapshotHash,
         executionPolicy: deepFreeze(structuredClone(mission.executionPolicy)),
         jobs: [firstJob, ...restJobs],
         compiledHash,

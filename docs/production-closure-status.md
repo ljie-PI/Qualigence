@@ -53,7 +53,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 10 durable Runner control | complete | present | passed | PR #60 plus follow-up evidence; provider-neutral SQLite/PostgreSQL contracts |
 | Task 11 Local intake/Launcher loop | complete | present | passed | PR #66; built-process Local E2E and three final Gate groups |
 | Task 15 deterministic execution policy | complete | present | passed | PR #63 and PR #65 provenance follow-up |
-| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
+| Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
 | Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review pending | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 core-blocker remediation has not rerun E2E pending fresh review |
@@ -64,12 +64,65 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
 | Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
 
-Current relational schema is version 8. Migrations 001-008 are immutable;
-remaining allocations are 009 (Mission/Run/outbox and
-its atomic dispatch wakeup),
-010 (Intelligence leases/Result inbox), 011 (Intelligence wakeups/dispositions), 012
+Current branch relational schema is version 9. Migrations 001-008 are immutable;
+unmerged migration 009 remains owned by Ticket 04; remaining allocations after
+merge are 010 (Intelligence leases/Result inbox),
+011 (Intelligence wakeups/dispositions), 012
 (Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
- reserved without a reviewed plan amendment.
+reserved without a reviewed plan amendment.
+
+### Ticket 04 - Atomic Mission scheduling and dispatch outbox (2026-08-23)
+
+component: complete
+production_wiring: present
+verification: passed; pending dedicated PR merge
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
+final_core_blocker_product_head: `b13ed8d6dac37581c2b6cf0a03e10811ea4fd040`
+final_review: product behavior clean; pending scope-only exact-head confirmation
+
+- `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
+  scheduling application seam. No network operation occurs in its transaction;
+  dispatch delivery remains Ticket 05.
+- `PrdMissionRepository` is the single Mission persistence seam: its existing
+  intake methods are preserved and its SQLite/PostgreSQL implementations now own
+  atomic scheduling, bounded stable pending-outbox reads, and expected-version
+  idempotent acceptance. The parallel scheduling repository was removed.
+- Additive migration 009 owns the Mission scheduling head, complete idempotency
+  command, logical attempt, Runner `AcceptedExecutionJob`, Run, immutable
+  Mission/Test Plan/Target/TestCase/project/Runner/policy provenance, dispatch
+  outbox, and atomic dispatch wakeup. Migrations 001-008 remain unchanged.
+- The shared SQLite/PostgreSQL contract proves semantic replay without allocator
+  calls, stable different-command conflicts, stale Mission/Plan revision/hash/
+  status/version rejection without writes, failure rollback after each of nine
+  writes, deterministic true-overlap same-key/same-command and
+  same-key/different-command races, stale different-key/version conflict, process
+  restart, tenant isolation, forced RLS, and one atomic immutable lineage.
+- Scope includes the shared test repository helper and MissionExecutionUseCase
+  caller test solely because Ticket 04 made the existing scheduling methods
+  required on `PrdMissionRepository`; no production behavior was added there.
+- Mission creation now pins the approved Test Plan ID/revision/hash and Target
+  revision/hash in the immutable compiled Mission and dispatch binding. Mission
+  start compares those values with the authoritative current Plan row/head and
+  Target revision before any allocator or write; it never derives the expected
+  Plan hash from the current row. The shared SQLite/PostgreSQL contract includes
+  a pre-load stale Plan mutation with zero writes.
+- Migration 009 records outbox `status`, `version`, nullable `accepted_at`, and
+  the exact token-free acceptance receipt under consistency checks and the
+  tenant/status/created/attempt pending index. The provider contract proves
+  bounded stable pending selection, exact replay after restart, stale-version
+  rejection, and one concurrent acceptance winner.
+- Compiled and outbox requirements use Runner Protocol negotiation tokens:
+  `target:web-playwright`, `action:navigate`, action tokens derived from Plan
+  steps, and `model:structured-output`. Contract evidence rejects a real Runner
+  capability set without navigate, accepts the future full Web action set, and
+  proves the outbox snapshot is unchanged when the logical Job row changes.
+- Focused Gate
+  `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts`
+  passed 4 files / 71 tests with Docker PostgreSQL and explicit Git OpenSSL.
+  Full storage conformance plus SQLite/PostgreSQL provider contracts passed 15
+  files / 141 tests. The affected Mission/execution/storage suite passed 7 files
+  / 51 tests. Root typecheck and diff check passed. Per instruction, no E2E was
+  run.
 
 ### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
 
@@ -1776,3 +1829,6 @@ files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
+- Final scope review includes exactly the shared test repository helper and
+  MissionExecutionUseCase caller test required by the now-mandatory existing
+  `PrdMissionRepository` scheduling methods. No production scope changed.
