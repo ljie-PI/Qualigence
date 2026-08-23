@@ -14,7 +14,6 @@ export { SqliteArtifactManifestStore } from "./sqlite-artifact-manifest-store.js
 export { SqliteModelInvocationStore } from "./sqlite-model-invocation-store.js";
 
 export { SqlitePrdMissionStore } from "./sqlite-prd-mission-store.js";
-export { SqliteMissionSchedulingRepository } from "./sqlite-mission-scheduling-repository.js";
 export { SqliteProjectTargetStore } from "./sqlite-project-target-store.js";
 export { SqliteTestPlanStore, TestPlanStoreError } from "./sqlite-test-plan-store.js";
 

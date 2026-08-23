@@ -84,12 +84,12 @@ export interface CompiledMission {
 export function capabilityForStep(kind: IntentStep["kind"]): string {
   switch (kind) {
     case "navigate":
-      return "web.navigate";
+      return "action:navigate";
     case "click":
-      return "web.click";
+      return "action:click";
     case "input":
-      return "web.input";
+      return "action:input";
     case "verify":
-      return "web.assert";
+      return "model:structured-output";
   }
 }

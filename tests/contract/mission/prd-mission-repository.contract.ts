@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { MissionSchedulingIds, ScheduledMission } from "@qualigence/mission";
+import { capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
+import type {
+  AcceptedMissionDispatch,
+  MissionDispatchAcceptanceReceipt,
+  MissionSchedulingIds,
+  PendingMissionDispatch,
+  ScheduledMission,
+} from "@qualigence/mission";
 
 export type SchedulingMutation =
   | "mission_revision"
@@ -38,6 +45,15 @@ export interface MissionSchedulingHarness {
   mutate(name: string, mutation: SchedulingMutation, tenantId?: string): Promise<void>;
   mutateBeforeStart(name: string, mutation: SchedulingMutation, tenantId?: string): Promise<void>;
   overlap(inputs: readonly [MissionSchedulingOverlapInput, MissionSchedulingOverlapInput]): Promise<readonly [MissionSchedulingOverlapResult, MissionSchedulingOverlapResult]>;
+  pendingDispatches(limit: number, tenantId?: string): Promise<readonly PendingMissionDispatch[]>;
+  markDispatchAccepted(input: {
+    readonly attemptId: string;
+    readonly receipt: MissionDispatchAcceptanceReceipt;
+    readonly expectedVersion: number;
+    readonly tenantId?: string;
+  }): Promise<AcceptedMissionDispatch>;
+  mutateLogicalJobCapabilities(name: string, capabilities: readonly string[], tenantId?: string): Promise<void>;
+  overlapAccept(inputs: readonly [MissionDispatchAcceptInput, MissionDispatchAcceptInput]): Promise<readonly [PromiseSettledResult<AcceptedMissionDispatch>, PromiseSettledResult<AcceptedMissionDispatch>]>;
   state(name: string, tenantId?: string): Promise<SchedulingState>;
   restart(): Promise<void>;
   close(): Promise<void>;
@@ -59,6 +75,13 @@ export interface MissionSchedulingOverlapInput extends Omit<MissionSchedulingSta
 export interface MissionSchedulingOverlapResult {
   readonly outcome: PromiseSettledResult<ScheduledMission>;
   readonly allocations: number;
+}
+
+export interface MissionDispatchAcceptInput {
+  readonly attemptId: string;
+  readonly receipt: MissionDispatchAcceptanceReceipt;
+  readonly expectedVersion: number;
+  readonly tenantId?: string;
 }
 
 export interface MissionSchedulingContractAdapter {
@@ -93,15 +116,15 @@ export function schedulingFixture(name: string): MissionSchedulingFixture {
   const testCase = { id: `case-${name}`, title: "Checkout", objective: "verify checkout", preconditions: [], steps: [{ kind: "click", target: { role: "button", name: "Pay", purpose: "submit checkout" } }], expectedClaims: [claim], sourceRefs, priority: "high" };
   const plan = { planId, projectId: `project-${name}`, prdId: `prd-${name}`, prdRevision: 1, version: 2, status: "approved", expectedClaims: [claim], testCases: [testCase], approval: { reviewerId: "reviewer-1", approvedAt: NOW, idempotencyKey: `approve-${name}` } };
   const policy = { policyId: `policy-${name}`, environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: NOW, expiresAt: "2026-08-22T00:01:00.000Z" };
-  const compiledJob = { jobId: logicalJobId, missionId, missionRevision: 1, testCaseId: testCase.id, testCaseSnapshot: testCase, targetId, requiredCapabilities: ["web.click"], budget: { maximumStepsPerJob: 10, maximumWallClockMs: 60_000, maximumModelTokens: 1_000 }, status: "queued", idempotencyKey: `${missionId}:1:${testCase.id}`, snapshotHash: hash(JSON.stringify(testCase)) };
+  const compiledJob = { jobId: logicalJobId, missionId, missionRevision: 1, testCaseId: testCase.id, testCaseSnapshot: testCase, targetId, requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"], budget: { maximumStepsPerJob: 10, maximumWallClockMs: 60_000, maximumModelTokens: 1_000 }, status: "queued", idempotencyKey: `${missionId}:1:${testCase.id}`, snapshotHash: hash(JSON.stringify(testCase)) };
   const planHash = hash(JSON.stringify(plan));
   const compiled = { missionId, missionRevision: 1, projectId: `project-${name}`, planId, planVersion: 2, planSnapshotHash: planHash, targetId, targetVersion: 1, targetSnapshotHash: `target-hash-${name}`, executionPolicy: policy, jobs: [compiledJob], compiledHash: hash(JSON.stringify({ missionId, name })) };
   const dispatch = { targetUrl: "https://example.test/", modelProfileId: "default", headed: false, navigationTimeoutMs: 30_000, actionTimeoutMs: 10_000, binding: { targetId, targetVersion: 1, targetSnapshotHash: `target-hash-${name}`, runnerId: `runner-${name}`, planVersion: 2, planSnapshotHash: planHash, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } } };
   return { missionId, planId, targetId, logicalJobId, planJson: JSON.stringify(plan), planHash, compiledJson: JSON.stringify(compiled), compiledHash: compiled.compiledHash, dispatchJson: JSON.stringify(dispatch), jobSnapshotJson: JSON.stringify(testCase), jobSnapshotHash: compiledJob.snapshotHash, sourceRefsJson: JSON.stringify(sourceRefs), requiredCapabilitiesJson: JSON.stringify(compiledJob.requiredCapabilities) };
 }
 
-export function missionSchedulingRepositoryContract(name: string, adapter: MissionSchedulingContractAdapter): void {
-  describe(`Mission scheduling repository contract (${name})`, () => {
+export function prdMissionRepositorySchedulingContract(name: string, adapter: MissionSchedulingContractAdapter): void {
+  describe(`PrdMissionRepository scheduling contract (${name})`, () => {
     it("atomically schedules complete immutable execution authority and survives restart", async () => {
       const harness = await adapter.createHarness();
       try {
@@ -115,8 +138,116 @@ export function missionSchedulingRepositoryContract(name: string, adapter: Missi
         expect(JSON.parse(String(state.provenanceRecord?.target_snapshot_json))).toMatchObject({ targetId: "target-complete", displayName: "Target", runnerId: "runner-complete", version: 1 });
         expect(JSON.parse(String(state.provenanceRecord?.plan_snapshot_json))).toMatchObject({ planId: "plan-complete", version: 2, status: "approved" });
         expect(JSON.parse(String(state.provenanceRecord?.mission_snapshot_json))).toMatchObject({ missionId: "mission-complete", compiledHash: schedulingFixture("complete").compiledHash });
+        expect(await harness.pendingDispatches(1)).toEqual([
+          expect.objectContaining({
+            attemptId: "attempt-winner",
+            requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"],
+            status: "pending",
+            version: 1,
+          }),
+        ]);
         await harness.restart();
         await expect(harness.start({ name: "complete", idempotencyKey: "start-complete", ids: throwingIds() })).resolves.toEqual(result);
+      } finally { await harness.close(); }
+    });
+
+    it("selects pending dispatches in stable order and validates the batch bound", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-pending-order";
+      try {
+        await harness.seed("pending-z", tenantId);
+        await harness.seed("pending-a", tenantId);
+        await harness.start({ name: "pending-z", tenantId, idempotencyKey: "start-z", ids: ids("z") });
+        await harness.start({ name: "pending-a", tenantId, idempotencyKey: "start-a", ids: ids("a") });
+
+        for (const invalidLimit of [0, 257, 1.5, Number.POSITIVE_INFINITY]) {
+          await expect(harness.pendingDispatches(invalidLimit, tenantId)).rejects.toThrow("Invalid Mission dispatch batch limit");
+        }
+        expect((await harness.pendingDispatches(1, tenantId)).map(({ attemptId }) => attemptId)).toEqual(["attempt-a"]);
+        expect((await harness.pendingDispatches(2, tenantId)).map(({ attemptId }) => attemptId)).toEqual(["attempt-a", "attempt-z"]);
+      } finally { await harness.close(); }
+    });
+
+    it("accepts with CAS, replays the exact token-free receipt after restart, and preserves requirements", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-accept-replay";
+      try {
+        await harness.seed("accept-replay", tenantId);
+        await harness.start({ name: "accept-replay", tenantId, idempotencyKey: "start-accept-replay", ids: ids("accept-replay") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        const receipt = receiptFor(pending, "accepted");
+
+        await expect(harness.markDispatchAccepted({
+          attemptId: pending.attemptId,
+          receipt: { ...receipt, ...({ leaseToken: "forbidden-secret" } as Record<string, string>) },
+          expectedVersion: pending.version,
+          tenantId,
+        })).rejects.toThrow("Invalid Mission dispatch acceptance receipt");
+        const accepted = await harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt, expectedVersion: pending.version, tenantId });
+        expect(accepted).toMatchObject({ status: "accepted", version: 2, acceptedAt: receipt.acceptedAt, receipt });
+        expect(accepted.requiredCapabilities).toEqual(pending.requiredCapabilities);
+        await harness.restart();
+        await expect(harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt, expectedVersion: pending.version, tenantId })).resolves.toEqual(accepted);
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([]);
+      } finally { await harness.close(); }
+    });
+
+    it("keeps outbox requirements immutable and negotiates exact Runner protocol tokens", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-capabilities";
+      try {
+        await harness.seed("capabilities", tenantId);
+        await harness.start({ name: "capabilities", tenantId, idempotencyKey: "start-capabilities", ids: ids("capabilities") });
+        await harness.mutateLogicalJobCapabilities("capabilities", ["model:vision-input"], tenantId);
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+
+        expect(pending.requiredCapabilities).toEqual([
+          "action:click",
+          "model:structured-output",
+          "target:web-playwright",
+        ]);
+        expect(negotiateCapabilities(capabilities({
+          targetAdapters: ["web-playwright"],
+          actionKinds: ["click"],
+        }), pending.requiredCapabilities)).toEqual({ outcome: "accepted" });
+        expect(negotiateCapabilities(capabilities({
+          targetAdapters: ["web-playwright"],
+          actionKinds: [],
+        }), pending.requiredCapabilities)).toEqual({
+          outcome: "rejected",
+          rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:click"] },
+        });
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([pending]);
+      } finally { await harness.close(); }
+    });
+
+    it("rejects stale acceptance without changing the pending dispatch", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-accept-stale";
+      try {
+        await harness.seed("accept-stale", tenantId);
+        await harness.start({ name: "accept-stale", tenantId, idempotencyKey: "start-accept-stale", ids: ids("accept-stale") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        await expect(harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt: receiptFor(pending, "accepted"), expectedVersion: 0, tenantId })).rejects.toMatchObject({ code: "MissionDispatchVersionConflict", actualVersion: 1 });
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([pending]);
+      } finally { await harness.close(); }
+    });
+
+    it("allows one concurrent acceptance winner and rejects the conflicting receipt", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-accept-race";
+      try {
+        await harness.seed("accept-race", tenantId);
+        await harness.start({ name: "accept-race", tenantId, idempotencyKey: "start-accept-race", ids: ids("accept-race") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        const outcomes = await harness.overlapAccept([
+          { attemptId: pending.attemptId, receipt: receiptFor(pending, "accepted"), expectedVersion: pending.version, tenantId },
+          { attemptId: pending.attemptId, receipt: receiptFor(pending, "already_active"), expectedVersion: pending.version, tenantId },
+        ]);
+        expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+        expect(outcomes.filter(({ status }) => status === "rejected").map((outcome) => outcome.status === "rejected" ? outcome.reason : undefined)).toEqual([
+          expect.objectContaining({ code: "MissionDispatchReceiptConflict", actualVersion: 2 }),
+        ]);
       } finally { await harness.close(); }
     });
 
@@ -244,6 +375,15 @@ function ids(suffix: string): MissionSchedulingIds {
 function throwingIds(): MissionSchedulingIds {
   const fail = (): string => { throw new Error("allocator invoked"); };
   return { allocateAttemptId: fail, allocateRunnerJobId: fail, allocateRunId: fail };
+}
+
+function receiptFor(pending: PendingMissionDispatch, status: MissionDispatchAcceptanceReceipt["status"]): MissionDispatchAcceptanceReceipt {
+  return {
+    status,
+    jobId: pending.runnerJobId,
+    runId: pending.runId,
+    acceptedAt: "2026-08-22T00:00:01.000Z",
+  };
 }
 
 function hash(value: string): string {

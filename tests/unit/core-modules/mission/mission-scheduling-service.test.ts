@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   MissionSchedulingService,
-  type MissionSchedulingRepository,
+  type PrdMissionRepository,
   type SchedulingMission,
   type ScheduledMission,
 } from "@qualigence/mission";
@@ -68,7 +68,7 @@ const mission: SchedulingMission = {
     jobId: "logical-job-1",
     testCaseId: "case-1",
     objective: "verify checkout",
-    requiredCapabilities: ["web.click"],
+    requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"],
     status: "queued",
     snapshotHash: "case-hash",
     snapshot: {
@@ -88,8 +88,8 @@ const mission: SchedulingMission = {
 describe("MissionSchedulingService", () => {
   it("returns a semantic replay without invoking any identity allocator", async () => {
     const repository = {
-      replay: vi.fn(async () => scheduled),
-    } as unknown as MissionSchedulingRepository;
+      replayMissionSchedule: vi.fn(async () => scheduled),
+    } as unknown as PrdMissionRepository;
     const allocateAttemptId = vi.fn(() => "unused-attempt");
     const allocateRunnerJobId = vi.fn(() => "unused-job");
     const allocateRunId = vi.fn(() => "unused-run");
@@ -106,16 +106,17 @@ describe("MissionSchedulingService", () => {
   });
 
   it("constructs the immutable Runner Job at the application seam", async () => {
-    let scheduledInput: Parameters<MissionSchedulingRepository["schedule"]>[0] | undefined;
-    const schedule = vi.fn(async (input: Parameters<MissionSchedulingRepository["schedule"]>[0]) => {
+    type ScheduleMission = NonNullable<PrdMissionRepository["scheduleMission"]>;
+    let scheduledInput: Parameters<ScheduleMission>[0] | undefined;
+    const scheduleMission = vi.fn(async (input: Parameters<ScheduleMission>[0]) => {
       scheduledInput = input;
       return scheduled;
     });
     const repository = {
-      replay: vi.fn(async () => undefined),
-      loadMission: vi.fn(async () => mission),
-      schedule,
-    } as unknown as MissionSchedulingRepository;
+      replayMissionSchedule: vi.fn(async () => undefined),
+      loadMissionForScheduling: vi.fn(async () => mission),
+      scheduleMission,
+    } as unknown as PrdMissionRepository;
     const service = new MissionSchedulingService(repository, {
       allocateAttemptId: () => "attempt-1",
       allocateRunnerJobId: () => "runner-job-1",
@@ -133,7 +134,7 @@ describe("MissionSchedulingService", () => {
         logicalJobId: "logical-job-1",
         attemptId: "attempt-1",
         runnerId: "runner-1",
-        requiredCapabilities: ["web.click"],
+        requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"],
         job: expect.objectContaining({
           jobId: "runner-job-1",
           runId: "run-1",

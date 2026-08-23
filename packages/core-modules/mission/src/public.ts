@@ -59,12 +59,15 @@ export type {
 export type {
   DispatchableJob,
   DispatchableMission,
+  AcceptedMissionDispatch,
   JobAttemptRecord,
   JobAttemptStatus,
+  MissionDispatchAcceptanceReceipt,
   MissionDispatchDescriptor,
   MissionExecutionRecord,
   MissionJobExecution,
   MissionSchedulingSnapshot,
+  PendingMissionDispatch,
   PrdMissionRepository,
   SaveCompiledMissionInput,
 } from "./application/prd-mission-repository.js";
@@ -74,7 +77,6 @@ export type {
   AcceptedMissionExecutionJob,
   MissionSchedulingErrorCode,
   MissionSchedulingIds,
-  MissionSchedulingRepository,
   ScheduleMissionInput,
   ScheduleMissionJob,
   SchedulingMission,

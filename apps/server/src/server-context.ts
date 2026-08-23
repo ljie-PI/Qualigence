@@ -17,10 +17,10 @@ import type {
   PostgresDatabase,
   TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
-import { PostgresMissionSchedulingRepository, PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
+import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
 import { ProjectTargetService, type ProjectTargetRepository } from "@qualigence/project-target";
-import { MissionIntakeService, TestPlanService, type MissionSchedulingIds, type MissionSchedulingRepository, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
+import { MissionIntakeService, TestPlanService, type MissionSchedulingIds, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { MissionDispatchService } from "./mission-dispatch-service.js";
 import type { AuxDatabase } from "./aux-schema.js";
 import {
@@ -52,7 +52,6 @@ export interface ServerDeps {
   readonly projectTargetRepository?: (stores: TenantStores, tenantId: string) => ProjectTargetRepository;
   readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
   readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
-  readonly missionSchedulingRepository?: (stores: TenantStores, tenantId: string) => MissionSchedulingRepository;
   readonly missionSchedulingIds?: MissionSchedulingIds;
 }
 
@@ -78,7 +77,7 @@ export function missionIntakeService(deps: ServerDeps, stores: TenantStores, ten
 }
 
 export function missionDispatchService(deps: ServerDeps, stores: TenantStores, tenantId: string): MissionDispatchService {
-  const repository = deps.missionSchedulingRepository?.(stores, tenantId) ?? new PostgresMissionSchedulingRepository(stores.db, tenantId);
+  const repository = deps.prdMissionRepository?.(stores, tenantId) ?? new PostgresPrdMissionRepository(stores.db, tenantId);
   return deps.missionSchedulingIds === undefined
     ? new MissionDispatchService(repository, deps.clock)
     : new MissionDispatchService(repository, deps.clock, deps.missionSchedulingIds);

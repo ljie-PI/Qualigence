@@ -2,22 +2,23 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import {
+  type AcceptedMissionDispatch,
   MissionSchedulingService,
-  type MissionSchedulingRepository,
+  type PrdMissionRepository,
 } from "@qualigence/mission";
 import {
-  SqliteMissionSchedulingRepository,
+  SqlitePrdMissionStore,
   SqliteRuntime,
 } from "@qualigence/sqlite-runtime";
 import {
-  missionSchedulingRepositoryContract,
+  prdMissionRepositorySchedulingContract,
   schedulingFixture,
   type MissionSchedulingHarness,
   type MissionSchedulingStartInput,
   type SchedulingMutation,
-} from "../mission/mission-scheduling-repository.contract.js";
+} from "../mission/prd-mission-repository.contract.js";
 
-missionSchedulingRepositoryContract("SQLite", {
+prdMissionRepositorySchedulingContract("SQLite", {
   async createHarness(): Promise<MissionSchedulingHarness> {
     const directory = await mkdtemp(join(process.cwd(), ".tmp-mission-scheduling-"));
     const runtimes = new Map<string, SqliteRuntime>();
@@ -37,21 +38,22 @@ missionSchedulingRepositoryContract("SQLite", {
       },
       async start(input) {
         const database = await runtime(input.tenantId);
-        const persisted = new SqliteMissionSchedulingRepository(database, input.failAfterWrite);
+        const persisted = new SqlitePrdMissionStore(database, input.failAfterWrite);
         const key = `${input.tenantId ?? "local"}:${input.name}`;
-        const repository: MissionSchedulingRepository = {
-          replay: (command) => persisted.replay(command),
-          async loadMission(missionId) {
-            const snapshot = await persisted.loadMission(missionId);
-            const mutation = pendingMutations.get(key);
-            if (mutation !== undefined) {
-              pendingMutations.delete(key);
-              await applyMutation(database, input.name, mutation);
-            }
-            return snapshot;
+        const repository = new Proxy(persisted, {
+          get(target, property, receiver) {
+            if (property !== "loadMissionForScheduling") return Reflect.get(target, property, receiver);
+            return async (missionId: string) => {
+              const snapshot = await target.loadMissionForScheduling(missionId);
+              const mutation = pendingMutations.get(key);
+              if (mutation !== undefined) {
+                pendingMutations.delete(key);
+                await applyMutation(database, input.name, mutation);
+              }
+              return snapshot;
+            };
           },
-          schedule: (scheduleInput) => persisted.schedule(scheduleInput),
-        };
+        }) as PrdMissionRepository;
         return startWithRepository(repository, input);
       },
       async mutate(name, mutation, tenantId) {
@@ -84,6 +86,36 @@ missionSchedulingRepositoryContract("SQLite", {
       async state(name, tenantId) {
         return readState(await runtime(tenantId), name);
       },
+      async pendingDispatches(limit, tenantId) {
+        return new SqlitePrdMissionStore(await runtime(tenantId)).pendingDispatches(limit);
+      },
+      async markDispatchAccepted(input) {
+        return new SqlitePrdMissionStore(await runtime(input.tenantId)).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion);
+      },
+      async mutateLogicalJobCapabilities(name, capabilities, tenantId) {
+        await (await runtime(tenantId)).db.updateTable("execution_jobs").set({ required_capabilities_json: JSON.stringify(capabilities) }).where("job_id", "=", schedulingFixture(name).logicalJobId).execute();
+      },
+      async overlapAccept(inputs) {
+        const workers = inputs.map((input) => new Worker(new URL("./mission-scheduling-worker.mjs", import.meta.url), {
+          workerData: {
+            operation: "accept",
+            filename: join(directory, `${input.tenantId ?? "local"}.db`),
+            attemptId: input.attemptId,
+            receipt: input.receipt,
+            expectedVersion: input.expectedVersion,
+          },
+        }));
+        try {
+          await Promise.all(workers.map(waitForLoaded));
+          const results = workers.map(waitForAcceptanceResult);
+          workers.forEach((worker) => worker.postMessage("release"));
+          const [first, second] = await Promise.all(results);
+          if (first === undefined || second === undefined) throw new Error("Both SQLite acceptance workers must return a result");
+          return [first.outcome, second.outcome];
+        } finally {
+          await Promise.all(workers.map((worker) => worker.terminate()));
+        }
+      },
       async restart() {
         const entries = [...runtimes.entries()];
         await Promise.all(entries.map(([, opened]) => opened.close()));
@@ -98,7 +130,7 @@ missionSchedulingRepositoryContract("SQLite", {
   },
 });
 
-function startWithRepository(repository: MissionSchedulingRepository, input: MissionSchedulingStartInput) {
+function startWithRepository(repository: PrdMissionRepository, input: MissionSchedulingStartInput) {
   return new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({
     missionId: schedulingFixture(input.name).missionId,
     expectedVersion: input.expectedVersion ?? 1,
@@ -114,6 +146,13 @@ function waitForLoaded(worker: Worker): Promise<void> {
 }
 
 function waitForResult(worker: Worker): Promise<Awaited<ReturnType<MissionSchedulingHarness["overlap"]>>[number]> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+}
+
+function waitForAcceptanceResult(worker: Worker): Promise<{ readonly outcome: PromiseSettledResult<AcceptedMissionDispatch> }> {
   return new Promise((resolve, reject) => {
     worker.once("message", resolve);
     worker.once("error", reject);

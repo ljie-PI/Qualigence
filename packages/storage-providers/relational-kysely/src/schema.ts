@@ -646,6 +646,8 @@ export interface MissionDispatchOutboxTable {
   accepted_job_json: string;
   status: string;
   version: number;
+  accepted_at: string | null;
+  acceptance_receipt_json: string | null;
   created_at: string;
 }
 

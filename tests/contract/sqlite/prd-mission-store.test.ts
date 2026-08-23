@@ -105,7 +105,7 @@ const webTarget: TargetCapabilitySummary = {
   targetVersion: 1,
   targetSnapshotHash: "target-hash",
   supportedStepKinds: ["navigate", "click", "verify"],
-  capabilities: ["web.navigate", "web.click", "web.assert"],
+  capabilities: ["target:web-playwright"],
 };
 
 function mission(): TestMission {

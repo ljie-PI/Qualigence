@@ -2,24 +2,24 @@ import { afterAll, beforeAll, describe, expect } from "vitest";
 import { Client } from "pg";
 import {
   MissionSchedulingService,
-  type MissionSchedulingRepository,
+  type PrdMissionRepository,
   type ScheduledMission,
 } from "@qualigence/mission";
 import {
   createPostgresRuntime,
-  PostgresMissionSchedulingRepository,
+  PostgresPrdMissionRepository,
   provisionPostgres,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 import {
-  missionSchedulingRepositoryContract,
+  prdMissionRepositorySchedulingContract,
   schedulingFixture,
   type MissionSchedulingHarness,
   type MissionSchedulingOverlapResult,
   type MissionSchedulingStartInput,
   type SchedulingMutation,
-} from "../mission/mission-scheduling-repository.contract.js";
+} from "../mission/prd-mission-repository.contract.js";
 
 if (!dockerAvailable()) throw new Error("DockerUnavailable: PostgreSQL Mission scheduling contract requires Docker.");
 
@@ -41,27 +41,28 @@ describe("PostgreSQL Mission scheduling provider", () => {
     await container?.stop();
   });
 
-  missionSchedulingRepositoryContract("PostgreSQL", {
+  prdMissionRepositorySchedulingContract("PostgreSQL", {
     async createHarness(): Promise<MissionSchedulingHarness> {
       const pendingMutations = new Map<string, SchedulingMutation>();
       const start = (input: MissionSchedulingStartInput, afterLoad?: () => Promise<void>) => provider.withTenant(input.tenantId ?? "tenant-a", async ({ db }) => {
         const tenantId = input.tenantId ?? "tenant-a";
-        const persisted = new PostgresMissionSchedulingRepository(db, tenantId, input.failAfterWrite);
+        const persisted = new PostgresPrdMissionRepository(db, tenantId, input.failAfterWrite);
         const key = `${tenantId}:${input.name}`;
-        const repository: MissionSchedulingRepository = {
-          replay: (command) => persisted.replay(command),
-          async loadMission(missionId) {
-            const snapshot = await persisted.loadMission(missionId);
-            const mutation = pendingMutations.get(key);
-            if (mutation !== undefined) {
-              pendingMutations.delete(key);
-              await applyMutation(db, tenantId, input.name, mutation);
-            }
-            await afterLoad?.();
-            return snapshot;
+        const repository = new Proxy(persisted, {
+          get(target, property, receiver) {
+            if (property !== "loadMissionForScheduling") return Reflect.get(target, property, receiver);
+            return async (missionId: string) => {
+              const snapshot = await target.loadMissionForScheduling(missionId);
+              const mutation = pendingMutations.get(key);
+              if (mutation !== undefined) {
+                pendingMutations.delete(key);
+                await applyMutation(db, tenantId, input.name, mutation);
+              }
+              await afterLoad?.();
+              return snapshot;
+            };
           },
-          schedule: (scheduleInput) => persisted.schedule(scheduleInput),
-        };
+        }) as PrdMissionRepository;
         return startWithRepository(repository, input);
       });
       return {
@@ -100,6 +101,14 @@ describe("PostgreSQL Mission scheduling provider", () => {
           }
         },
         state: (name, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => readState(db, tenantId, name)),
+        pendingDispatches: (limit, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => new PostgresPrdMissionRepository(db, tenantId).pendingDispatches(limit)),
+        markDispatchAccepted: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a").markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion)),
+        mutateLogicalJobCapabilities: (name, capabilities, tenantId = "tenant-a") => provider.withTenant(tenantId, async ({ db }) => { await db.updateTable("execution_jobs").set({ required_capabilities_json: JSON.stringify(capabilities) }).where("tenant_id", "=", tenantId).where("job_id", "=", schedulingFixture(name).logicalJobId).execute(); }),
+        async overlapAccept(inputs) {
+          const [first, second] = await Promise.allSettled(inputs.map((input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a").markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion))));
+          if (first === undefined || second === undefined) throw new Error("Both PostgreSQL acceptance writers must return a result");
+          return [first, second];
+        },
         async restart() {
           await provider.close();
           provider = createPostgresRuntime(serverConfig);
@@ -110,7 +119,7 @@ describe("PostgreSQL Mission scheduling provider", () => {
   });
 });
 
-function startWithRepository(repository: MissionSchedulingRepository, input: MissionSchedulingStartInput) {
+function startWithRepository(repository: PrdMissionRepository, input: MissionSchedulingStartInput) {
   return new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({
     missionId: schedulingFixture(input.name).missionId,
     expectedVersion: input.expectedVersion ?? 1,

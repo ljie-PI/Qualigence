@@ -68,6 +68,20 @@ describe("shared relational schema catalog", () => {
     ]);
   });
 
+  it("gives the Mission dispatch outbox durable CAS and acceptance columns", async () => {
+    const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      expect(await tableColumns(runtime, "mission_dispatch_outbox")).toEqual([
+        "attempt_id", "mission_id", "runner_id", "runner_job_id", "run_id",
+        "idempotency_key", "required_capabilities_json", "accepted_job_json",
+        "status", "version", "accepted_at", "acceptance_receipt_json", "created_at",
+      ]);
+      expect(await indexSql(runtime, "mission_dispatch_outbox_pending")).toMatch(
+        /mission_dispatch_outbox"?\s*\(\s*"?status"?\s*,\s*"?created_at"?\s*,\s*"?attempt_id"?\s*\)/is,
+      );
+    } finally { await runtime.close(); }
+  });
+
   it("adds the migration-007 Local intake authority", async () => {
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
     try {

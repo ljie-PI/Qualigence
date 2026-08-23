@@ -303,7 +303,7 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
         targetVersion: 1,
         targetSnapshotHash: "target-web-hash",
         supportedStepKinds: ["navigate", "click", "verify"],
-        capabilities: ["web.navigate", "web.click", "web.assert"],
+        capabilities: ["target:web-playwright"],
       };
 
       // 2. Model produces a proposal ONLY — no ids, no persistence.

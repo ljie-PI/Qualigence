@@ -3,7 +3,7 @@ import type { Clock } from "@qualigence/shared-kernel";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 import type { IntentStep, TestCase } from "../domain/test-plan-revision.js";
 import type { ExecutionJobStatus, MissionStatus } from "../domain/test-mission.js";
-import type { MissionDispatchDescriptor } from "./prd-mission-repository.js";
+import type { MissionDispatchDescriptor, PrdMissionRepository } from "./prd-mission-repository.js";
 
 export interface StartMissionCommand {
   readonly missionId: string;
@@ -109,7 +109,10 @@ export type MissionSchedulingErrorCode =
   | "PlanVersionConflict"
   | "PlanHashConflict"
   | "PlanStatusConflict"
-  | "MissionTargetUnsupported";
+  | "MissionTargetUnsupported"
+  | "MissionDispatchNotFound"
+  | "MissionDispatchVersionConflict"
+  | "MissionDispatchReceiptConflict";
 
 export class MissionSchedulingError extends Error {
   constructor(
@@ -120,12 +123,6 @@ export class MissionSchedulingError extends Error {
     super(`${code}: ${message}`);
     this.name = "MissionSchedulingError";
   }
-}
-
-export interface MissionSchedulingRepository {
-  replay(command: StartMissionCommand): Promise<ScheduledMission | undefined>;
-  loadMission(missionId: string): Promise<SchedulingMission | undefined>;
-  schedule(input: ScheduleMissionInput): Promise<ScheduledMission>;
 }
 
 export interface MissionSchedulingIds {
@@ -150,16 +147,21 @@ function expectedClaimIds(testCase: TestCase): readonly [string, ...string[]] {
 
 export class MissionSchedulingService {
   constructor(
-    private readonly repository: MissionSchedulingRepository,
+    private readonly repository: PrdMissionRepository,
     private readonly ids: MissionSchedulingIds,
     private readonly clock: Clock,
   ) {}
 
   async start(command: StartMissionCommand): Promise<ScheduledMission> {
-    const replay = await this.repository.replay(command);
+    const replayMissionSchedule = this.repository.replayMissionSchedule;
+    if (replayMissionSchedule === undefined) throw new Error("PrdMissionRepository does not support Mission scheduling.");
+    const replay = await replayMissionSchedule.call(this.repository, command);
     if (replay !== undefined) return replay;
 
-    const mission = await this.repository.loadMission(command.missionId);
+    const loadMissionForScheduling = this.repository.loadMissionForScheduling;
+    const scheduleMission = this.repository.scheduleMission;
+    if (loadMissionForScheduling === undefined || scheduleMission === undefined) throw new Error("PrdMissionRepository does not support Mission scheduling.");
+    const mission = await loadMissionForScheduling.call(this.repository, command.missionId);
     if (mission === undefined) {
       throw new MissionSchedulingError("MissionNotFound", "Mission was not found");
     }
@@ -174,7 +176,7 @@ export class MissionSchedulingService {
       );
     }
 
-    return this.repository.schedule({
+    return scheduleMission.call(this.repository, {
       command,
       mission,
       scheduledAt: this.clock.now(),

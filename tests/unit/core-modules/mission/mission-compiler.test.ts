@@ -12,6 +12,7 @@ import type {
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
 import { sha256Hex } from "@qualigence/context-intake";
+import { capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
@@ -21,7 +22,7 @@ const webTarget: TargetCapabilitySummary = {
   targetVersion: 1,
   targetSnapshotHash: "target-hash",
   supportedStepKinds: ["navigate", "click", "verify"],
-  capabilities: ["web.navigate", "web.click", "web.assert"],
+  capabilities: ["target:web-playwright"],
 };
 
 function mission(overrides: Partial<TestMission> = {}): TestMission {
@@ -106,10 +107,22 @@ describe("MissionCompiler", () => {
     expect(job.testCaseSnapshot.sourceRefs[0]?.revision).toBe(plan.prdRevision);
     expect(job.status).toBe("queued");
     expect(job.requiredCapabilities).toEqual([
-      "web.assert",
-      "web.click",
-      "web.navigate",
+      "action:click",
+      "action:navigate",
+      "model:structured-output",
+      "target:web-playwright",
     ]);
+    expect(negotiateCapabilities(capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["navigate", "click"],
+    }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
+    expect(negotiateCapabilities(capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["click"],
+    }), job.requiredCapabilities)).toEqual({
+      outcome: "rejected",
+      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:navigate"] },
+    });
     expect(result.value.projectId).toBe("p");
     expect(Object.isFrozen(job.testCaseSnapshot)).toBe(true);
     expect(Object.isFrozen(result.value)).toBe(true);
@@ -161,6 +174,17 @@ describe("MissionCompiler", () => {
       mission(),
       webTarget,
     );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "TargetCapabilityMismatch" },
+    });
+  });
+
+  it("rejects a target that has no Runner protocol target token", () => {
+    const result = compiler.compile(approved(), mission(), {
+      ...webTarget,
+      capabilities: ["web.click"],
+    });
     expect(result).toMatchObject({
       ok: false,
       error: { code: "TargetCapabilityMismatch" },

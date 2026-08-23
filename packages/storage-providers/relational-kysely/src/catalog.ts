@@ -1285,7 +1285,7 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
   },
   {
     name: "mission_dispatch_outbox", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,
-    columns: [t("attempt_id"), t("mission_id"), t("runner_id"), t("runner_job_id"), t("run_id"), t("idempotency_key"), t("required_capabilities_json"), t("accepted_job_json"), t("status"), i("version"), t("created_at")],
+    columns: [t("attempt_id"), t("mission_id"), t("runner_id"), t("runner_job_id"), t("run_id"), t("idempotency_key"), t("required_capabilities_json"), t("accepted_job_json"), t("status"), i("version"), t("accepted_at", false), t("acceptance_receipt_json", false), t("created_at")],
     primaryKey: ["attempt_id"],
     uniques: [
       { name: "mission_dispatch_outbox_runner_job_unique", columns: ["runner_job_id"] },
@@ -1293,8 +1293,12 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "mission_dispatch_outbox_command_job_unique", columns: ["idempotency_key", "runner_job_id"] },
     ],
     foreignKeys: [{ columns: ["attempt_id"], references: { table: "mission_job_attempts", columns: ["attempt_id"] } }],
-    checks: [{ name: "mission_dispatch_outbox_status_check", predicate: "status IN ('pending', 'accepted', 'blocked')" }],
-    partialIndexes: [{ name: "mission_dispatch_outbox_pending", columns: ["created_at", "attempt_id"], predicate: "status = 'pending'" }],
+    checks: [
+      { name: "mission_dispatch_outbox_status_check", predicate: "status IN ('pending', 'accepted', 'blocked')" },
+      { name: "mission_dispatch_outbox_version_check", predicate: "version > 0" },
+      { name: "mission_dispatch_outbox_acceptance_check", predicate: "(status = 'accepted' AND accepted_at IS NOT NULL AND acceptance_receipt_json IS NOT NULL) OR (status <> 'accepted' AND accepted_at IS NULL AND acceptance_receipt_json IS NULL)" },
+    ],
+    partialIndexes: [{ name: "mission_dispatch_outbox_pending", columns: ["status", "created_at", "attempt_id"], predicate: "status = 'pending'" }],
   },
   {
     name: "mission_dispatch_wakeups", tenantOwned: true, hasNativeTenantColumn: false, workerAccessible: false,

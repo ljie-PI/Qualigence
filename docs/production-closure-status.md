@@ -41,8 +41,9 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 21 CI/release convergence | partial | missing | blocked | Remaining tickets 32-34; four quarantines, required CI, minimal images, SBOM/provenance/manifest incomplete |
 | Task 22 status/Graph freeze | partial | missing | blocked | Remaining ticket 35; serialized release/native/migration evidence absent, so Graph remains `candidate` |
 
-Current relational schema is version 9. Migrations 001-009 are immutable;
-remaining allocations are 010 (Intelligence leases/Result inbox),
+Current branch relational schema is version 9. Migrations 001-008 are immutable;
+unmerged migration 009 remains owned by Ticket 04; remaining allocations after
+merge are 010 (Intelligence leases/Result inbox),
 011 (Intelligence wakeups/dispositions), 012
 (Artifact upload authority), and 013 (Evidence lifecycle). No other migration is
 reserved without a reviewed plan amendment.
@@ -54,11 +55,15 @@ production_wiring: present
 verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 pull_request: pending
-review_fix_product_head: `7c5cc19427b91e280287e4ef9df169b26c2ed013`
+final_core_blocker_head: PR #85 head containing this status entry
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
   dispatch delivery remains Ticket 05.
+- `PrdMissionRepository` is the single Mission persistence seam: its existing
+  intake methods are preserved and its SQLite/PostgreSQL implementations now own
+  atomic scheduling, bounded stable pending-outbox reads, and expected-version
+  idempotent acceptance. The parallel scheduling repository was removed.
 - Additive migration 009 owns the Mission scheduling head, complete idempotency
   command, logical attempt, Runner `AcceptedExecutionJob`, Run, immutable
   Mission/Test Plan/Target/TestCase/project/Runner/policy provenance, dispatch
@@ -75,13 +80,22 @@ review_fix_product_head: `7c5cc19427b91e280287e4ef9df169b26c2ed013`
   Target revision before any allocator or write; it never derives the expected
   Plan hash from the current row. The shared SQLite/PostgreSQL contract includes
   a pre-load stale Plan mutation with zero writes.
+- Migration 009 records outbox `status`, `version`, nullable `accepted_at`, and
+  the exact token-free acceptance receipt under consistency checks and the
+  tenant/status/created/attempt pending index. The provider contract proves
+  bounded stable pending selection, exact replay after restart, stale-version
+  rejection, and one concurrent acceptance winner.
+- Compiled and outbox requirements use Runner Protocol negotiation tokens:
+  `target:web-playwright`, action tokens derived from Plan steps, and
+  `model:structured-output`. Contract evidence accepts a matching
+  `capabilities()` set, reports the missing token for a mismatch, and proves the
+  outbox snapshot is unchanged when the logical Job row changes.
 - Focused Gate
   `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts`
-  passed 4 files / 61 tests with Docker PostgreSQL and explicit Git OpenSSL.
-  Storage conformance passed 1 file / 9 tests and the Docker PostgreSQL runtime
-  provider passed 1 file / 12 tests. Final root typecheck and diff-check results
-  are recorded by the exact review-fix head. External E2E was not run before
-  fresh review.
+  passed 4 files / 71 tests with Docker PostgreSQL and explicit Git OpenSSL.
+  Full storage conformance plus SQLite/PostgreSQL provider contracts passed 15
+  files / 141 tests. Root typecheck passed; final diff-check is recorded by the
+  final core-blocker commit. Per instruction, no E2E was run.
 
 ### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
 

@@ -3,7 +3,7 @@ import type { Clock } from "@qualigence/shared-kernel";
 import {
   MissionSchedulingService,
   type MissionSchedulingIds,
-  type MissionSchedulingRepository,
+  type PrdMissionRepository,
   type ScheduledMission,
 } from "@qualigence/mission";
 
@@ -11,7 +11,7 @@ export class MissionDispatchService {
   private readonly scheduling: MissionSchedulingService;
 
   constructor(
-    repository: MissionSchedulingRepository,
+    repository: PrdMissionRepository,
     clock: Clock,
     ids: MissionSchedulingIds = {
       allocateAttemptId: randomUUID,

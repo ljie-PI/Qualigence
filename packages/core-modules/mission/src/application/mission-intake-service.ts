@@ -149,7 +149,13 @@ export class MissionIntakeService {
       executionPolicy: approvedPolicy(target, this.clock.now(), maximumWallClockMs),
       status: "approved",
     };
-    const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, supportedStepKinds: supportedKinds(target), capabilities: [] });
+    const compiled = this.compiler.compile(plan, mission, {
+      targetId: target.targetId,
+      targetVersion: target.version,
+      targetSnapshotHash: target.snapshotHash,
+      supportedStepKinds: supportedKinds(target),
+      capabilities: [target.configuration.kind === "web" ? "target:web-playwright" : "target:desktop-windows-uia"],
+    });
     if (!compiled.ok) throw new MissionIntakeError("MissionCompilationFailed", compiled.error.message);
     const targetUrl = target.configuration.kind === "web" ? target.configuration.startUrl : "https://desktop.invalid/";
     const saved = await this.missions.saveCompiledMission({

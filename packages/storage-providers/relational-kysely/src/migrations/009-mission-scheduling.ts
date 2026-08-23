@@ -101,8 +101,12 @@ export const migration009: Migration = {
       .addColumn("accepted_job_json", "text", (column) => column.notNull())
       .addColumn("status", "text", (column) => column.notNull())
       .addColumn("version", "integer", (column) => column.notNull())
+      .addColumn("accepted_at", "text")
+      .addColumn("acceptance_receipt_json", "text")
       .addColumn("created_at", "text", (column) => column.notNull())
       .addCheckConstraint("mission_dispatch_outbox_status_check", sql`status IN ('pending', 'accepted', 'blocked')`)
+      .addCheckConstraint("mission_dispatch_outbox_version_check", sql`version > 0`)
+      .addCheckConstraint("mission_dispatch_outbox_acceptance_check", sql`(status = 'accepted' AND accepted_at IS NOT NULL AND acceptance_receipt_json IS NOT NULL) OR (status <> 'accepted' AND accepted_at IS NULL AND acceptance_receipt_json IS NULL)`)
       .execute();
     await db.schema.createIndex("mission_dispatch_outbox_pending").on("mission_dispatch_outbox").columns(["status", "created_at", "attempt_id"]).execute();
 
