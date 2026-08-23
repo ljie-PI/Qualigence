@@ -8,6 +8,7 @@ import {
   ExecutionPermit,
   ExecutionRuntime,
   type AnyProposedAction,
+  type AnyResolvedAction,
   type ProposedAction,
 } from "@qualigence/runner-kernel";
 import { InMemoryTraceStore, TraceIngestor } from "@qualigence/evidence";
@@ -94,8 +95,14 @@ describe("Playwright resolve + execute against real Chromium", () => {
           <button class="twin">Twin</button>
           <button class="twin">Twin</button>
           <a id="leave" href="${cross.origin}/">Leave site</a>
+          <a href="/next">Continue to next page</a>
+          <a href="/next" onpointerdown="this.href='${cross.origin}/'">Cross after dispatch</a>
           <span style="position:relative;display:inline-block">
             <button id="blocked">Blocked action</button>
+            <span style="position:absolute;inset:0"></span>
+          </span>
+          <span style="position:relative;display:inline-block">
+            <a href="/next">Blocked link</a>
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
@@ -194,6 +201,77 @@ describe("Playwright resolve + execute against real Chromium", () => {
     return { trackedSession: tracked, navigate };
   }
 
+  async function runTwoClickPlan(
+    firstName: string,
+    overrides: Partial<WebSessionOptions> = {},
+  ) {
+    const { observer, resolver, executor } = await wire(overrides);
+    const observations: ObservationGraph[] = [];
+    const resolvedActions: AnyResolvedAction[] = [];
+    let oldDescriptorInvalidatedBeforeNextCapture = false;
+    let decisions = 0;
+    const traces = new InMemoryTraceStore();
+    const runtime = new ExecutionRuntime({
+      observer: {
+        capture: async (acceptedJob) => {
+          if (observations.length === 1) {
+            oldDescriptorInvalidatedBeforeNextCapture = !session.hasGraph(observations[0]!.graphId);
+          }
+          const observation = await observer.capture(acceptedJob);
+          observations.push(observation);
+          return observation;
+        },
+      },
+      decisionProvider: {
+        decide: async (context) => {
+          decisions += 1;
+          if (context.step?.kind !== "click") throw new Error("Expected a click step.");
+          const name = context.step.target.name;
+          if (name === undefined) throw new Error("Expected a named click target.");
+          return click(nodeNamed(context.observation, name).id);
+        },
+      },
+      resolver: {
+        resolve: async (action, graph) => {
+          const resolved = await resolver.resolve(action, graph);
+          resolvedActions.push(resolved);
+          return resolved;
+        },
+      },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: executor,
+      verifier: { verify: async () => ({ status: "passed", summary: "ok", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+    });
+    const runId = `run-link-${firstName.toLowerCase().replaceAll(" ", "-")}`;
+    const result = await runtime.run({
+      ...job,
+      jobId: `job-link-${firstName.toLowerCase().replaceAll(" ", "-")}`,
+      runId,
+      target: { kind: "web", url: fixture.url },
+      plan: {
+        missionId: "mission-link-navigation",
+        missionRevision: 1,
+        testCaseId: `case-link-${firstName.toLowerCase().replaceAll(" ", "-")}`,
+        steps: [
+          { stepIndex: 0, kind: "click", target: { role: "link", name: firstName, purpose: "navigate" } },
+          { stepIndex: 1, kind: "click", target: { role: "button", name: "Next action", purpose: "continue" } },
+          { stepIndex: 2, kind: "verify", claimIds: ["claim-link-navigation"] },
+        ],
+        expectedClaimIds: ["claim-link-navigation"],
+        budget: { maximumStepsPerJob: 3, maximumWallClockMs: 15_000, maximumModelTokens: 100 },
+      },
+    });
+    return {
+      decisions,
+      observations,
+      oldDescriptorInvalidatedBeforeNextCapture,
+      resolvedActions,
+      result,
+      trace: traces.eventsFor(runId),
+    };
+  }
+
   it("resolves to a de-identified token and performs a same-origin click", async () => {
     const { observer, resolver, executor } = await wire();
 
@@ -230,6 +308,54 @@ describe("Playwright resolve + execute against real Chromium", () => {
       after,
     );
     expect(await executor.execute(nextAction, allowedPermit())).toEqual({ status: "ok" });
+  });
+
+  it("continues a bounded plan after a same-origin link advances navigation generation", async () => {
+    const result = await runTwoClickPlan("Continue to next page");
+
+    expect(result.result).toMatchObject({ status: "passed" });
+    expect(result.oldDescriptorInvalidatedBeforeNextCapture).toBe(true);
+    await expect(new PlaywrightActionExecutor(session).execute(
+      result.resolvedActions[0]!,
+      allowedPermit(),
+    )).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    expect(result.observations[1]?.url).toBe(`${fixture.origin}/next`);
+    expect(result.trace.filter((event) => event.stage === "action_executed")).toEqual([
+      expect.objectContaining({ stepIndex: 0, payload: { status: "ok" } }),
+      expect.objectContaining({ stepIndex: 1, payload: { status: "ok" } }),
+    ]);
+    expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    await expect(session.withPage(async (page) => page.locator("body").getAttribute("data-clicked")))
+      .resolves.toBe("true");
+  });
+
+  it("terminalizes a cross-origin link navigation as unknown without a later step", async () => {
+    const result = await runTwoClickPlan("Cross after dispatch");
+
+    expect(result.result).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    expect(result.decisions).toBe(1);
+    expect(result.observations).toHaveLength(1);
+    expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(result.trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      stepIndex: 0,
+      payload: { status: "error", errorCode: "ActionOutcomeUnknown" },
+    });
+  });
+
+  it("keeps a rejected link dispatch unknown without retrying or starting a later step", async () => {
+    const result = await runTwoClickPlan("Blocked link", { actionTimeoutMs: 1_200 });
+
+    expect(result.result).toMatchObject({ status: "error", errorCode: "ActionOutcomeUnknown" });
+    expect(result.decisions).toBe(1);
+    expect(result.observations).toHaveLength(1);
+    expect(result.trace.filter((event) => event.stage === "action_executed")).toEqual([
+      expect.objectContaining({
+        stepIndex: 0,
+        payload: { status: "failed", errorCode: "ActionOutcomeUnknown" },
+      }),
+    ]);
+    expect(result.trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 
   it("rejects an unknown node without clicking", async () => {

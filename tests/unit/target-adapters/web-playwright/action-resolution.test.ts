@@ -482,6 +482,82 @@ describe("PlaywrightActionExecutor value resolution", () => {
     },
   );
 
+  it.each(["click", "input", "select", "scroll"] as const)(
+    "accepts successful %s dispatch when a handler advances navigation generation on the target origin",
+    async (kind) => {
+      const graphId = "run-1:observation:1";
+      const nodeId = "n-0-abcd1234";
+      const mainFrame = {};
+      let currentUrl = "https://example.test/";
+      let frameNavigated: ((frame: object) => void) | undefined;
+      const dispatch = vi.fn(async () => {
+        currentUrl = "https://example.test/next";
+        frameNavigated?.(mainFrame);
+      });
+      const page = {
+        goto: vi.fn(async () => undefined),
+        url: () => currentUrl,
+        mainFrame: () => mainFrame,
+        on: vi.fn((event: string, listener: (frame: object) => void) => {
+          if (event === "framenavigated") frameNavigated = listener;
+        }),
+        getByRole: () => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          getAttribute: async () => null,
+          click: dispatch,
+          fill: dispatch,
+          selectOption: dispatch,
+          evaluate: dispatch,
+        }),
+        close: vi.fn(async () => undefined),
+      };
+      const context = {
+        newPage: vi.fn(async () => page),
+        setDefaultTimeout: vi.fn(),
+        setDefaultNavigationTimeout: vi.fn(),
+        close: vi.fn(async () => undefined),
+      };
+      const browser = {
+        newContext: vi.fn(async () => context),
+        close: vi.fn(async () => undefined),
+      };
+      const session = new PlaywrightBrowserSession(options(), {
+        launch: vi.fn(async () => browser),
+      } as unknown as BrowserLauncher);
+      await session.start();
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+        artifacts: [],
+      });
+      const target = { nodeId, selector: actionToken(graphId, nodeId) };
+      const action = kind === "input" || kind === "select"
+        ? { targetKind: "web", kind, target, graphId, valueRef: "profile.value" }
+        : kind === "scroll"
+          ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
+          : { targetKind: "web", kind, target, graphId };
+      bindResolved(session, action);
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "private-value" });
+
+      try {
+        await expect(executor.execute(
+          action as never,
+          ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" }),
+        )).resolves.toEqual({ status: "ok" });
+        expect(session.currentNavigationGeneration).toBe(1);
+        expect(session.hasGraph(graphId)).toBe(false);
+        await expect(executor.execute(
+          action as never,
+          ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" }),
+        )).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+        expect(dispatch).toHaveBeenCalledOnce();
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it("executes approved navigation and page scroll then invalidates old descriptors", async () => {
     const graphId = "run-1:observation:1";
     const session = new PlaywrightBrowserSession(options(), noopLauncher);

@@ -43,6 +43,7 @@ const EMAIL = "ticket19-private@example.test";
 const COUNTRY = "ticket19-private-country";
 const roots: string[] = [];
 let fixture: FixtureServer | undefined;
+let crossFixture: FixtureServer | undefined;
 let modelServer: Server | undefined;
 let spool: SqliteRunnerSpool | undefined;
 
@@ -50,6 +51,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await spool?.close();
   await fixture?.close();
+  await crossFixture?.close();
   if (modelServer !== undefined) {
     modelServer.closeAllConnections();
     modelServer.close();
@@ -57,15 +59,16 @@ afterEach(async () => {
   }
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   fixture = undefined;
+  crossFixture = undefined;
   modelServer = undefined;
   spool = undefined;
 });
 
 describe("bounded multi-step production Web Runtime", () => {
-  it("executes navigate -> input -> select -> click -> scroll -> verify with indexed redacted Trace", async () => {
+  it("executes same-origin link -> input -> select -> click -> scroll -> verify with fresh indexed observations", async () => {
     fixture = await startFixtureServer({
-      "/": htmlDocument("<p>Start page</p>", "Start"),
-      "/form": htmlDocument(`
+      "/": htmlDocument("<a href='/next'>Continue</a>", "Start"),
+      "/next": htmlDocument(`
         <label>Email <input aria-label="Email" /></label>
         <label>Country
           <select aria-label="Country">
@@ -219,8 +222,14 @@ describe("bounded multi-step production Web Runtime", () => {
       5, 5, 5,
     ]);
     expect(trace.filter((event) => event.stage === "decision").map((event) => event.payload.kind)).toEqual([
-      "navigate", "input", "select", "click", "scroll",
+      "click", "input", "select", "click", "scroll",
     ]);
+    expect(trace.find((event) => event.stage === "action_executed" && event.stepIndex === 0))
+      .toMatchObject({ payload: { status: "ok" } });
+    const observations = trace.filter((event) => event.stage === "observation");
+    expect(observations[0]).toMatchObject({ stepIndex: 0, payload: { url: fixture.url } });
+    expect(observations[1]).toMatchObject({ stepIndex: 1, payload: { url: `${fixture.origin}/next` } });
+    expect(observations[1]?.payload.graphId).not.toBe(observations[0]?.payload.graphId);
     expect(finalObservation(trace).nodes.some((node) => node.text === "Completed")).toBe(true);
     expect(modelRequests).toHaveLength(6);
 
@@ -269,6 +278,34 @@ describe("bounded multi-step Chromium failure classifications", () => {
       allowedOrigins: (origin: string) => [origin, "https://other.test"],
       expectedStatus: "blocked",
       errorCode: "OriginViolation",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "cross-origin link after dispatch",
+      html: (crossOrigin: string) => `<a aria-label="Leave" href="/next" onpointerdown="this.href='${crossOrigin}/'">Leave</a>`,
+      routes: { "/next": "<p>Same-origin fallback</p>" },
+      steps: [
+        { stepIndex: 0, kind: "click", target: { role: "link", name: "Leave", purpose: "leave" } },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("click", "Leave"),
+      expectedStatus: "error",
+      errorCode: "ActionOutcomeUnknown",
+      failureStepIndex: 0,
+      expectedDecisions: 1,
+    },
+    {
+      name: "rejected link dispatch",
+      html: '<span style="position:relative;display:inline-block"><a aria-label="Continue" href="/next">Continue</a><span style="position:absolute;inset:0"></span></span>',
+      routes: { "/next": "<p>Later page</p>" },
+      steps: [
+        { stepIndex: 0, kind: "click", target: { role: "link", name: "Continue", purpose: "continue" } },
+        { stepIndex: 1, kind: "verify", claimIds: ["claim-later"] },
+      ],
+      decide: nodeDecision("click", "Continue"),
+      expectedStatus: "error",
+      errorCode: "ActionOutcomeUnknown",
       failureStepIndex: 0,
       expectedDecisions: 1,
     },
@@ -380,7 +417,7 @@ type PlanSteps = readonly [ExecutionPlanStep, ...ExecutionPlanStep[]];
 
 interface BrowserFailureCase {
   readonly name: string;
-  readonly html: string;
+  readonly html: string | ((crossOrigin: string) => string);
   readonly routes?: Readonly<Record<string, string>>;
   readonly steps: PlanSteps;
   readonly decide: (context: AgentContext) => Promise<AnyProposedAction>;
@@ -401,8 +438,14 @@ interface BrowserFailureCase {
 }
 
 async function runBrowserFailure(testCase: BrowserFailureCase) {
+  if (typeof testCase.html === "function") {
+    crossFixture = await startFixtureServer({ "/": htmlDocument("<p>Other origin</p>", "Other") });
+  }
+  const body = typeof testCase.html === "function"
+    ? testCase.html(crossFixture!.origin)
+    : testCase.html;
   fixture = await startFixtureServer({
-    "/": htmlDocument(testCase.html, testCase.name),
+    "/": htmlDocument(body, testCase.name),
     ...(testCase.routes ?? {}),
   });
   const root = await mkdtemp(join(tmpdir(), "qualigence-ticket19-failure-"));
@@ -556,7 +599,7 @@ async function stepDecision(context: AgentContext): Promise<AnyProposedAction> {
 
 function offer(): ExecutionJobOffer {
   const steps = [
-    { stepIndex: 0, kind: "navigate", path: "/form" },
+    { stepIndex: 0, kind: "click", target: { role: "link", name: "Continue", purpose: "open the form" } },
     { stepIndex: 1, kind: "input", target: { role: "textbox", name: "Email", purpose: "enter email" }, valueRef: "profile.email" },
     { stepIndex: 2, kind: "select", target: { role: "combobox", name: "Country", purpose: "choose country" }, valueRef: "profile.country" },
     { stepIndex: 3, kind: "click", target: { role: "button", name: "Submit", purpose: "submit form" } },

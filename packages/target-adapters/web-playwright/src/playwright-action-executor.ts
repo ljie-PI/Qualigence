@@ -137,7 +137,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           }
           throw error;
         }
-        return hasTargetOriginAtGeneration(page, this.session, navigationGeneration)
+        return hasTargetOrigin(page, this.session)
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
@@ -362,7 +362,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         throw error;
       }
 
-      return hasTargetOriginAtGeneration(page, this.session, navigationGeneration)
+      return hasTargetOrigin(page, this.session)
         ? { status: "ok" }
         : { status: "failed", errorCode: "ActionOutcomeUnknown" };
     });
@@ -447,12 +447,4 @@ function navigationGenerationFailure(
   } catch {
     return { status: "failed", errorCode: "OriginViolation" };
   }
-}
-
-function hasTargetOriginAtGeneration(
-  page: { url(): string },
-  session: PlaywrightBrowserSession,
-  navigationGeneration: number,
-): boolean {
-  return navigationGenerationFailure(page, session, navigationGeneration) === undefined;
 }
