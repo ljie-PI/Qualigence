@@ -277,7 +277,8 @@ describe("LeasedJobExecutor", () => {
           },
         },
         actionExecutor: {
-          execute: async () => {
+          execute: async (_action, permit, signal) => {
+            permit.assertAuthorizedForDispatch(signal);
             executed += 1;
             return { status: "ok" };
           },
@@ -359,7 +360,8 @@ describe("LeasedJobExecutor", () => {
           },
         },
         actionExecutor: {
-          execute: async () => {
+          execute: async (_action, permit, signal) => {
+            permit.assertAuthorizedForDispatch(signal);
             executed += 1;
             return { status: "ok" };
           },
@@ -376,6 +378,69 @@ describe("LeasedJobExecutor", () => {
     expect(executor.mayStartNextAction()).toBe(false);
   });
 
+  it("denies dispatch when the lease expires during asynchronous action preflight", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    let markPreflightStarted: (() => void) | undefined;
+    let releasePreflight: (() => void) | undefined;
+    const preflightStarted = new Promise<void>((resolve) => { markPreflightStarted = resolve; });
+    const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const sideEffect = vi.fn();
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      actionExecutor: {
+        execute: async (_action, permit, signal) => {
+          markPreflightStarted?.();
+          await preflight;
+          signal?.throwIfAborted();
+          permit.assertAuthorizedForDispatch();
+          sideEffect();
+          return { status: "ok" };
+        },
+      },
+    }));
+
+    const execution = executor.execute(offer([]), new FakeSession());
+    await preflightStarted;
+    state.monotonic = 56_000;
+    releasePreflight?.();
+    const result = await execution;
+
+    expect(result.completion).toMatchObject({ status: "blocked", errorCode: "LeaseExpired" });
+    expect(sideEffect).not.toHaveBeenCalled();
+  });
+
+  it("denies dispatch when the caller cancels during asynchronous action preflight", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const abort = new AbortController();
+    let markPreflightStarted: (() => void) | undefined;
+    let releasePreflight: (() => void) | undefined;
+    const preflightStarted = new Promise<void>((resolve) => { markPreflightStarted = resolve; });
+    const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const sideEffect = vi.fn();
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      actionExecutor: {
+        execute: async (_action, permit, signal) => {
+          markPreflightStarted?.();
+          await preflight;
+          signal?.throwIfAborted();
+          permit.assertAuthorizedForDispatch();
+          sideEffect();
+          return { status: "ok" };
+        },
+      },
+    }));
+    const cancelled = new Error("runner stopping");
+
+    const execution = executor.execute(offer([]), new FakeSession(), abort.signal);
+    await preflightStarted;
+    abort.abort(cancelled);
+    releasePreflight?.();
+
+    await expect(execution).rejects.toBe(cancelled);
+    expect(sideEffect).not.toHaveBeenCalled();
+  });
+
   it("propagates caller abort through a dispatched action and completes it as unknown once", async () => {
     const spool = await newSpool();
     const state = { monotonic: 1_000, wall: 100_000 };
@@ -383,8 +448,9 @@ describe("LeasedJobExecutor", () => {
     let receivedSignal: AbortSignal | undefined;
     let markDispatched: (() => void) | undefined;
     const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
-    const action = vi.fn(async (_resolved, _permit, signal?: AbortSignal) => {
+    const action = vi.fn(async (_resolved, permit, signal?: AbortSignal) => {
       receivedSignal = signal;
+      permit.assertAuthorizedForDispatch(signal);
       markDispatched?.();
       return new Promise<never>((_resolve, reject) => {
         signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
@@ -415,7 +481,8 @@ describe("LeasedJobExecutor", () => {
     const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
       renewalDelay: delay,
       actionExecutor: {
-        execute: async (_action, _permit, signal) => {
+        execute: async (_action, permit, signal) => {
+          permit.assertAuthorizedForDispatch(signal);
           markDispatched?.();
           return new Promise<never>((_resolve, reject) => {
             signal?.addEventListener("abort", () => reject(signal.reason), { once: true });

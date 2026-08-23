@@ -30,6 +30,13 @@ Spool/upload lifecycle, exactly-once completion after ACK, cleanup after partial
 startup, and fail-closed Trace append/drain behavior. Capability/policy denial
 and connection/reconnect behavior remain unchanged.
 
+Ticket 19 dispatch-authority formal-blocker amendment (approved 2026-08-23):
+`tests/unit/runner/lease-renewal-controller.test.ts` is added to the complete
+approved scope and focused Gate as a required lifecycle caller test only. It may
+change only to prove that renewal failure closes the current action-authorization
+window and prevents dispatch after asynchronous action preflight. No other
+Runner renewal behavior transfers into Ticket 19.
+
 This section is the current capability index. Detailed entries below are an
 append-only evidence history; their historical `pending`, `not_run`, branch,
 environment, and future-work statements are not current status when this table
@@ -394,10 +401,12 @@ review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded
 final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
 core_blocker_fix_base: `81e7442c9fa679a74e106d20da44cded119802b2`
 core_blocker_fix_commit: same commit as this ledger entry
+dispatch_authority_fix_base: `6e53f6803def62003cf9febd63d7bbbc324a26ad`
+dispatch_authority_fix_commit: same commit as this ledger entry
 implementation_head: same commit as this ledger entry
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
-branch_commit_count: 12 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 13 commits ahead of `origin/main`, including this status commit
 pull_request: pending
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -512,6 +521,24 @@ pull_request: pending
   with 1 pre-existing Task 21 skip. Root `corepack pnpm typecheck` and
   `git diff --check` passed. No E2E was run; fresh exact-base review is required
   before rerunning Chromium acceptance.
+- Dispatch-authority remediation adds the adapter-neutral
+  `ActionAuthorizationWindow` to each policy-minted `ExecutionPermit`. The
+  production accepted-lease lifecycle supplies its current `LeaseWindow` and
+  cancellation state through `ExecutionRuntime`; Playwright checks it
+  synchronously after asynchronous preflight and immediately before `goto`,
+  `click`, `fill`, `selectOption`, or scroll dispatch. Renewal failure, lease
+  expiry, and caller stop/cancel during preflight therefore invoke no side
+  effect. Once dispatch is marked, rejection, timeout, page crash, unreadable
+  post-action state, or any non-exact post-action origin returns the
+  non-replayable `ActionOutcomeUnknown` error; pre-dispatch origin mismatch
+  remains blocked as `OriginViolation`.
+- Production Runner capability coverage proves `action:navigate`,
+  `action:click`, and `action:scroll` always negotiate, while `action:input` and
+  `action:select` negotiate only with a healthy value provider. TDD RED was 15
+  failures across the Playwright and lifecycle caller seams. The amended Ticket
+  19 Gate passed 13 files / 253 tests with 1 pre-existing Task 21 skip. Root
+  `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run; fresh
+  exact-base review is required before Chromium acceptance.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 

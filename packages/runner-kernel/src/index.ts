@@ -15,6 +15,7 @@ export {
 
 export type {
   ActionExecutor,
+  ActionAuthorizationWindow,
   ActionOutcome,
   ActionResolver,
   AgentContext,

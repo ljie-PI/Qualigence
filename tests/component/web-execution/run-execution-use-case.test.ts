@@ -177,7 +177,7 @@ interface HarnessOptions {
   readonly policyGate: RunnerPolicyGate;
   readonly verifier: Verifier;
   readonly withArtifacts?: boolean;
-  readonly executeAction?: () => Promise<{ readonly status: "ok" | "failed"; readonly errorCode?: string }>;
+  readonly executeAction?: import("@qualigence/runner-kernel").ActionExecutor["execute"];
 }
 
 interface Harness {
@@ -293,7 +293,10 @@ function unknownActionOutcomeHarness(): Harness {
     makeObserver: () => scriptedObserver(twoGraphs()),
     policyGate: new AllowAllRunnerPolicyGate(),
     verifier: passedVerifier,
-    executeAction: async () => { throw new Error("connection lost after dispatch"); },
+    executeAction: async (_action, permit, signal) => {
+      permit.assertAuthorizedForDispatch(signal);
+      throw new Error("connection lost after dispatch");
+    },
   });
 }
 

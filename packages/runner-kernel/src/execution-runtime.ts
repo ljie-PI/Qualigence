@@ -249,6 +249,11 @@ export interface ActionExecutor {
   execute(action: ResolvedAction, permit: ExecutionPermit, signal?: AbortSignal): Promise<ActionOutcome>;
 }
 
+/** Synchronous authority checked by an executor at the side-effect boundary. */
+export interface ActionAuthorizationWindow {
+  assertActionAuthorized(): void;
+}
+
 export interface Verifier {
   verify(context: VerificationContext): Promise<VerificationResult>;
 }
@@ -281,6 +286,7 @@ export interface ExecutionRuntimeDependencies<TKind extends ProposedActionKind =
   readonly resolver: ActionResolver<TKind>;
   readonly policyGate: RunnerPolicyGate;
   readonly actionExecutor: ActionExecutor;
+  readonly actionAuthorizationWindow?: ActionAuthorizationWindow;
   readonly verifier: Verifier;
   readonly traceRecorder: TraceRecorder;
   readonly budget?: ExecutionBudget;
@@ -294,18 +300,38 @@ const DEFAULT_TERMINAL_RECORDING_TIMEOUT_MS = 5_000;
 
 export class ExecutionPermit {
   readonly [executionPermitBrand] = true;
+  private dispatched = false;
 
   private constructor(
     readonly reason: string,
     readonly descriptor?: ExecutionPermitDescriptor,
+    private readonly authorizationWindow?: ActionAuthorizationWindow,
   ) {}
 
-  static fromAllowedDecision(decision: PolicyDecision): ExecutionPermit {
+  static fromAllowedDecision(
+    decision: PolicyDecision,
+    authorizationWindow?: ActionAuthorizationWindow,
+  ): ExecutionPermit {
     if (decision.status !== "allowed") {
       throw new Error("ExecutionPermit requires an allowed policy decision.");
     }
 
-    return new ExecutionPermit(decision.reason, decision.descriptor);
+    return new ExecutionPermit(decision.reason, decision.descriptor, authorizationWindow);
+  }
+
+  /**
+   * Recheck authority synchronously, then mark the exact point after which an
+   * executor must invoke its side effect without awaiting anything else.
+   */
+  assertAuthorizedForDispatch(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+    this.authorizationWindow?.assertActionAuthorized();
+    signal?.throwIfAborted();
+    this.dispatched = true;
+  }
+
+  get dispatchStarted(): boolean {
+    return this.dispatched;
   }
 }
 
@@ -484,27 +510,22 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
 
     await this.recordStage(job.runId, traceIndex, "policy_authorized", toAuthorizedPolicyTracePayload(policyDecision));
     this.budget.maximumOutputTokens(job.runId);
-    const permit = ExecutionPermit.fromAllowedDecision(policyDecision);
+    const permit = ExecutionPermit.fromAllowedDecision(
+      policyDecision,
+      this.dependencies.actionAuthorizationWindow,
+    );
     let outcome: ActionOutcome;
-    let actionDispatchStarted = false;
     try {
-      outcome = await this.withinWallClock(job.runId, (operationSignal) => {
-        actionDispatchStarted = true;
-        return this.dependencies.actionExecutor.execute(action, permit, operationSignal);
-      }, signal);
+      outcome = await this.withinWallClock(job.runId, (operationSignal) =>
+        this.dependencies.actionExecutor.execute(action, permit, operationSignal), signal);
     } catch (error) {
-      if (error instanceof ExecutionBlockedError) throw error;
-      if (
-        error instanceof ExecutionTargetError &&
-        error.errorCode !== "ActionInfrastructureFailure"
-      ) throw error;
-      if (!actionDispatchStarted) throw error;
-      throw new ActionOutcomeUnknownError();
+      if (permit.dispatchStarted) throw new ActionOutcomeUnknownError();
+      throw error;
     }
     await this.recordStage(job.runId, traceIndex, "action_executed", toActionOutcomeTracePayload(outcome));
     if (outcome.status === "failed") {
-      if (outcome.errorCode === "ActionOutcomeUnknown") {
-        return { completion: this.errorCompletion(job, outcome.errorCode) };
+      if (permit.dispatchStarted || outcome.errorCode === "ActionOutcomeUnknown") {
+        return { completion: this.errorCompletion(job, "ActionOutcomeUnknown") };
       }
       return {
         completion: this.blockedCompletion(job, outcome.errorCode ?? "ActionFailed"),

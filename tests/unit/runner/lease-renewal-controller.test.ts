@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   ExecutionCompletion,
   ExecutionEventAck,
@@ -8,9 +8,13 @@ import type {
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import {
+  ExecutionPermit,
+} from "@qualigence/runner-kernel";
+import {
   LeaseRenewalController,
   type RenewalDelay,
 } from "../../../apps/runner/src/lease-renewal-controller.js";
+import { AcceptedLeaseLifecycle } from "../../../apps/runner/src/job-executor.js";
 import { LeaseWindow } from "../../../apps/runner/src/lease-window.js";
 
 const INITIAL_LEASE: ExecutionJobLease = {
@@ -287,6 +291,63 @@ describe("LeaseRenewalController", () => {
     });
     expect(session.closeCalls).toBe(1);
     expect(controller.currentLease()).toEqual(INITIAL_LEASE);
+  });
+});
+
+describe("AcceptedLeaseLifecycle action authorization", () => {
+  it("denies dispatch when renewal fails during asynchronous action preflight", async () => {
+    const session = new FakeSession();
+    const renewalFailure = new Error("LeaseLost");
+    session.renewError = renewalFailure;
+    const delay = new ManualDelay();
+    const lifecycle = new AcceptedLeaseLifecycle(
+      {
+        offerId: "offer-1",
+        job: {
+          jobId: INITIAL_LEASE.jobId,
+          runId: INITIAL_LEASE.runId,
+          projectId: "project-test",
+          target: { kind: "web", url: "https://example.test/" },
+          objective: "click",
+          policy: {
+            policyId: "policy-1",
+            environment: "isolated_test",
+            allowedOrigins: ["https://example.test"],
+            allowedActionKinds: ["click"],
+            maximumRisk: "Normal",
+            explorationAllowed: false,
+            issuedAt: "2026-08-23T00:00:00.000Z",
+            expiresAt: "2026-08-23T00:01:00.000Z",
+          },
+        },
+        requiredCapabilities: [],
+        leaseDurationMs: 60_000,
+      },
+      session,
+      INITIAL_LEASE,
+      undefined,
+      { renewalDelay: delay },
+    );
+    const permit = ExecutionPermit.fromAllowedDecision(
+      { status: "allowed", reason: "test" },
+      lifecycle,
+    );
+    let releasePreflight: (() => void) | undefined;
+    const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const sideEffect = vi.fn();
+    const action = (async () => {
+      await preflight;
+      permit.assertAuthorizedForDispatch();
+      sideEffect();
+    })();
+
+    delay.release();
+    await viWaitFor(() => expect(lifecycle.signal.aborted).toBe(true));
+    releasePreflight?.();
+
+    await expect(action).rejects.toBe(renewalFailure);
+    expect(sideEffect).not.toHaveBeenCalled();
+    await expect(lifecycle.dispose()).resolves.toBeUndefined();
   });
 });
 

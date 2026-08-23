@@ -232,9 +232,13 @@ describe("ExecutionRuntime", () => {
             : { status: "allowed", reason: "allowed" },
         },
         actionExecutor: {
-          execute: async (_action, _permit, signal) => hangingStage === "action"
-            ? never(signal)
-            : { status: "ok" },
+          execute: async (_action, permit, signal) => {
+            if (hangingStage === "action") {
+              permit.assertAuthorizedForDispatch(signal);
+              return never(signal);
+            }
+            return { status: "ok" };
+          },
         },
         verifier: {
           verify: async (context) => hangingStage === "verifier"
@@ -741,7 +745,7 @@ describe("ExecutionRuntime", () => {
       decisionProvider: { decide: async () => { decisions += 1; return { kind: "click", target: { nodeId: "node-1" }, reason: "continue" }; } },
       resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
       policyGate: new AllowAllRunnerPolicyGate(),
-      actionExecutor: { execute: async () => { attempts += 1; throw new Error("connection lost after dispatch"); } },
+      actionExecutor: { execute: async (_action, permit, signal) => { attempts += 1; permit.assertAuthorizedForDispatch(signal); throw new Error("connection lost after dispatch"); } },
       verifier: { verify: async () => { throw new Error("verification must not run"); } },
       traceRecorder,
     });
@@ -803,7 +807,7 @@ describe("ExecutionRuntime", () => {
       decisionProvider: { decide: async () => { decisions += 1; return proposal as never; } },
       resolver: { resolve: async () => resolved as never },
       policyGate: new AllowAllRunnerPolicyGate(),
-      actionExecutor: { execute: async () => { attempts += 1; throw new Error("generic Playwright rejection"); } },
+      actionExecutor: { execute: async (_action, permit, signal) => { attempts += 1; permit.assertAuthorizedForDispatch(signal); throw new Error("generic Playwright rejection"); } },
       verifier: { verify: async () => { throw new Error("later verification must not run"); } },
       traceRecorder,
     });
@@ -851,6 +855,30 @@ describe("ExecutionRuntime", () => {
     expect(traceRecorder.eventsFor("run-objective").filter((event) => event.stage === "run_completed")).toHaveLength(1);
   });
 
+  it("maps a timeout reported after dispatch to unknown outcome", async () => {
+    const traceRecorder = new InMemoryTraceRecorder();
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
+      resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionExecutor: {
+        execute: async (_action, permit, signal) => {
+          permit.assertAuthorizedForDispatch(signal);
+          return { status: "failed", errorCode: "ActionTimedOut" };
+        },
+      },
+      verifier: { verify: async () => { throw new Error("verification must not run"); } },
+      traceRecorder,
+      ...objectiveOnlyBudget,
+    });
+
+    await expect(runtime.run(objectiveJob())).resolves.toMatchObject({
+      status: "error",
+      errorCode: "ActionOutcomeUnknown",
+    });
+  });
+
   it("maps an expected executor target rejection but treats infrastructure loss after dispatch as unknown", async () => {
     const run = async (error: ExecutionTargetError) => {
       const traceRecorder = new InMemoryTraceRecorder();
@@ -859,7 +887,12 @@ describe("ExecutionRuntime", () => {
         decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
         resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
         policyGate: new AllowAllRunnerPolicyGate(),
-        actionExecutor: { execute: async () => { throw error; } },
+        actionExecutor: { execute: async (_action, permit, signal) => {
+          if (error.errorCode === "ActionInfrastructureFailure") {
+            permit.assertAuthorizedForDispatch(signal);
+          }
+          throw error;
+        } },
         verifier: { verify: async () => { throw new Error("verification must not run"); } },
         traceRecorder,
         ...objectiveOnlyBudget,

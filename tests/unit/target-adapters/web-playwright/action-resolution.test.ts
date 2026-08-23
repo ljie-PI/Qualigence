@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationGraph } from "@qualigence/runner-protocol";
-import { ExecutionPermit, type ProposedAction } from "@qualigence/runner-kernel";
+import {
+  ExecutionBlockedError,
+  ExecutionPermit,
+  type ActionAuthorizationWindow,
+  type ProposedAction,
+} from "@qualigence/runner-kernel";
 import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
@@ -200,7 +205,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(goto).not.toHaveBeenCalled();
   });
 
-  it("retains OriginViolation when page.goto reaches another origin before throwing", async () => {
+  it("returns unknown outcome when page.goto reaches another origin before throwing", async () => {
     let currentUrl = "https://example.test/";
     const goto = vi.fn(async () => {
       currentUrl = "https://other.test/checkout";
@@ -214,7 +219,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       targetKind: "web",
       kind: "navigate",
       url: "https://example.test/checkout",
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
     expect(goto).toHaveBeenCalledOnce();
   });
 
@@ -309,7 +314,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(click).not.toHaveBeenCalled();
   });
 
-  it("retains OriginViolation when an element action crosses origin before throwing", async () => {
+  it("returns unknown outcome when an element action crosses origin before throwing", async () => {
     const graphId = "run-1:observation:1";
     const nodeId = "n-0-abcd1234";
     let currentUrl = "https://example.test/";
@@ -338,8 +343,125 @@ describe("PlaywrightActionExecutor value resolution", () => {
       kind: "click",
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
-    }, permit)).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
   });
+
+  it.each(["navigate", "click", "input", "select", "scroll"] as const)(
+    "rechecks action authority after asynchronous %s preflight and before dispatch",
+    async (kind) => {
+      const graphId = "run-1:observation:1";
+      const nodeId = "n-0-abcd1234";
+      const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Add" };
+      const session = new PlaywrightBrowserSession(options(), noopLauncher);
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, descriptor]]),
+        artifacts: [],
+      });
+      let releasePreflight: (() => void) | undefined;
+      let markPreflightStarted: (() => void) | undefined;
+      const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+      const preflightStarted = new Promise<void>((resolve) => { markPreflightStarted = resolve; });
+      const sideEffect = vi.fn(async () => undefined);
+      const page = {
+        goto: sideEffect,
+        evaluate: sideEffect,
+        url: () => "https://example.test/",
+        getByRole: () => ({
+          count: async () => {
+            markPreflightStarted?.();
+            await preflight;
+            return 1;
+          },
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          getAttribute: async () => null,
+          click: sideEffect,
+          fill: sideEffect,
+          selectOption: sideEffect,
+          evaluate: sideEffect,
+        }),
+      };
+      session.withPage = async (operation) => {
+        if (kind === "navigate") {
+          markPreflightStarted?.();
+          await preflight;
+        }
+        return operation(page as never);
+      };
+      let authorized = true;
+      const authorizationWindow: ActionAuthorizationWindow = {
+        assertActionAuthorized: () => {
+          if (!authorized) throw new ExecutionBlockedError("LeaseExpired");
+        },
+      };
+      const dispatchPermit = ExecutionPermit.fromAllowedDecision(
+        { status: "allowed", reason: "test" },
+        authorizationWindow,
+      );
+      const target = { nodeId, selector: actionToken(graphId, nodeId) };
+      const action = kind === "navigate"
+        ? { targetKind: "web", kind, url: "https://example.test/next" }
+        : kind === "input" || kind === "select"
+          ? { targetKind: "web", kind, target, graphId, valueRef: "profile.value" }
+          : kind === "scroll"
+            ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
+            : { targetKind: "web", kind, target, graphId };
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "private-value" });
+
+      const execution = executor.execute(action as never, dispatchPermit);
+      await preflightStarted;
+      authorized = false;
+      releasePreflight?.();
+
+      await expect(execution).rejects.toMatchObject({ errorCode: "LeaseExpired" });
+      expect(sideEffect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["navigate", "click", "input", "select", "scroll"] as const)(
+    "maps a successful %s dispatch followed by a cross-origin redirect to unknown outcome",
+    async (kind) => {
+      const graphId = "run-1:observation:1";
+      const nodeId = "n-0-abcd1234";
+      let currentUrl = "https://example.test/";
+      const dispatch = vi.fn(async () => { currentUrl = "https://other.test/"; });
+      const session = new PlaywrightBrowserSession(options(), noopLauncher);
+      session.registerObservation(graphId, {
+        descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+        artifacts: [],
+      });
+      session.withPage = async (operation) => operation({
+        goto: dispatch,
+        evaluate: dispatch,
+        url: () => currentUrl,
+        getByRole: () => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          getAttribute: async () => null,
+          click: dispatch,
+          fill: dispatch,
+          selectOption: dispatch,
+          evaluate: dispatch,
+        }),
+      } as never);
+      const target = { nodeId, selector: actionToken(graphId, nodeId) };
+      const action = kind === "navigate"
+        ? { targetKind: "web", kind, url: "https://example.test/next" }
+        : kind === "input" || kind === "select"
+          ? { targetKind: "web", kind, target, graphId, valueRef: "profile.value" }
+          : kind === "scroll"
+            ? { targetKind: "web", kind, target, graphId, direction: "down", amount: "small" }
+            : { targetKind: "web", kind, target, graphId };
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => "private-value" });
+
+      await expect(executor.execute(action as never, permit)).resolves.toEqual({
+        status: "failed",
+        errorCode: "ActionOutcomeUnknown",
+      });
+      expect(dispatch).toHaveBeenCalledOnce();
+    },
+  );
 
   it("executes approved navigation and page scroll then invalidates old descriptors", async () => {
     const graphId = "run-1:observation:1";
@@ -588,6 +710,40 @@ describe("PlaywrightActionExecutor value resolution", () => {
       target: { nodeId, selector: actionToken(graphId, nodeId) },
       graphId,
     }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+  });
+
+  it("maps an unreadable post-dispatch page origin to unknown outcome", async () => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    let dispatched = false;
+    const click = vi.fn(async () => { dispatched = true; });
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click,
+      }),
+      url: () => {
+        if (dispatched) throw new Error("page closed");
+        return "https://example.test/";
+      },
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    expect(click).toHaveBeenCalledOnce();
   });
 
   it("keeps disabled-target rejection blocked before click dispatch", async () => {

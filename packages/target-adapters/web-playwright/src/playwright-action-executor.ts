@@ -62,23 +62,19 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (!isSafeTargetUrl(action.url, this.session)) {
           return { status: "failed", errorCode: "OriginViolation" };
         }
-        let dispatched = false;
         try {
-          dispatched = true;
+          permit.assertAuthorizedForDispatch(signal);
           await page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: this.session.navigationTimeoutMs,
           });
         } catch (error) {
-          if (targetOriginState(page, this.session) === "violation") {
-            return { status: "failed", errorCode: "OriginViolation" };
+          if (permit.dispatchStarted) {
+            return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           }
-          if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
-          signal?.throwIfAborted();
-          return { status: "failed", errorCode: "ActionFailed" };
+          throw error;
         }
         const originState = targetOriginState(page, this.session);
-        if (originState === "violation") return { status: "failed", errorCode: "OriginViolation" };
         return originState === "safe"
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
@@ -94,9 +90,8 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         if (guardFailure !== undefined) return guardFailure;
         this.session.invalidateObservations();
         const distance = action.amount === "page" ? 1 : 0.25;
-        let dispatched = false;
         try {
-          dispatched = true;
+          permit.assertAuthorizedForDispatch(signal);
           await page.evaluate(
             ({ direction, distance }) => {
               const horizontal = direction === "left" || direction === "right";
@@ -110,17 +105,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             { direction: action.direction, distance },
           );
         } catch (error) {
-          if (targetOriginState(page, this.session) === "violation") {
-            return { status: "failed", errorCode: "OriginViolation" };
+          if (permit.dispatchStarted) {
+            return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           }
-          if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
-          signal?.throwIfAborted();
-          return { status: "failed", errorCode: "ActionFailed" };
+          throw error;
         }
         const originState = targetOriginState(page, this.session);
-        if (originState === "violation") {
-          return { status: "failed", errorCode: "OriginViolation" };
-        }
         return originState === "safe"
           ? { status: "ok" }
           : { status: "failed", errorCode: "ActionOutcomeUnknown" };
@@ -190,7 +180,6 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         }
       }
 
-      let dispatched = false;
       try {
         if (action.kind === "input" || action.kind === "select") {
           if (this.valueProvider === undefined) {
@@ -213,10 +202,10 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
           if (action.kind === "input") {
-            dispatched = true;
+            permit.assertAuthorizedForDispatch(signal);
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
           } else {
-            dispatched = true;
+            permit.assertAuthorizedForDispatch(signal);
             await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
           }
         } else if (action.kind === "click") {
@@ -228,7 +217,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           );
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
-          dispatched = true;
+          permit.assertAuthorizedForDispatch(signal);
           await locator.click({ timeout: this.session.actionTimeoutMs });
         } else if (action.kind === "scroll") {
           const guardFailure = this.guardElementAction(
@@ -240,7 +229,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           if (guardFailure !== undefined) return guardFailure;
           this.session.invalidateObservations();
           const distance = action.amount === "page" ? 1 : 0.25;
-          dispatched = true;
+          permit.assertAuthorizedForDispatch(signal);
           await locator.evaluate((element, options) => {
             element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
             const horizontal = options.direction === "left" || options.direction === "right";
@@ -258,18 +247,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }
       } catch (error) {
-        if (targetOriginState(page, this.session) === "violation") {
-          return { status: "failed", errorCode: "OriginViolation" };
+        if (permit.dispatchStarted) {
+          return { status: "failed", errorCode: "ActionOutcomeUnknown" };
         }
-        if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
-        signal?.throwIfAborted();
-        return { status: "failed", errorCode: "ActionFailed" };
+        throw error;
       }
 
       const originState = targetOriginState(page, this.session);
-      if (originState === "violation") {
-        return { status: "failed", errorCode: "OriginViolation" };
-      }
       return originState === "safe"
         ? { status: "ok" }
         : { status: "failed", errorCode: "ActionOutcomeUnknown" };

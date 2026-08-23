@@ -9,13 +9,12 @@ import {
   ExecutionBlockedError,
   ExecutionRuntime,
   TerminalTracePersistenceError,
+  type ActionAuthorizationWindow,
   type ActionExecutor,
   type ActionResolver,
   type ExecutionDecisionProvider,
   type ExecutionBudget,
-  type ExecutionPermit,
   type Observer,
-  type ResolvedAction,
   type RunnerPolicyGate,
   type Verifier,
 } from "@qualigence/runner-kernel";
@@ -84,7 +83,7 @@ function defaultClocks(): LeaseWindowClocks {
 }
 
 /** One authoritative lease window spanning accepted-Job startup and execution. */
-export class AcceptedLeaseLifecycle {
+export class AcceptedLeaseLifecycle implements ActionAuthorizationWindow {
   readonly window: LeaseWindow;
   readonly signal: AbortSignal;
   private readonly controller: LeaseRenewalController;
@@ -133,6 +132,10 @@ export class AcceptedLeaseLifecycle {
 
   mayStartAction(): boolean {
     return !this.signal.aborted && this.window.mayStartAction();
+  }
+
+  assertActionAuthorized(): void {
+    this.assertActive();
   }
 
   async duringLease<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -244,24 +247,13 @@ export class LeasedJobExecutor {
     this.currentWindow = window;
     const guardedSignal = lifecycle.signal;
 
-    const guardedExecutor: ActionExecutor = {
-      execute: async (action: ResolvedAction, permit: ExecutionPermit, runtimeSignal?: AbortSignal) => {
-        const actionSignal = runtimeSignal === undefined
-          ? guardedSignal
-          : AbortSignal.any([guardedSignal, runtimeSignal]);
-        if (actionSignal.aborted || !lifecycle.mayStartAction()) {
-          throw new ExecutionBlockedError("LeaseExpired");
-        }
-        return this.deps.actionExecutor.execute(action, permit, actionSignal);
-      },
-    };
-
     const runtime = new ExecutionRuntime({
       observer: this.deps.observer,
       decisionProvider: this.deps.decisionProvider,
       resolver: this.deps.resolver,
       policyGate: this.deps.policyGate,
-      actionExecutor: guardedExecutor,
+      actionExecutor: this.deps.actionExecutor,
+      actionAuthorizationWindow: lifecycle,
       verifier: this.deps.verifier,
       traceRecorder: new SpoolingTraceRecorder(this.deps.spool),
       ...(this.deps.budget === undefined ? {} : { budget: this.deps.budget }),

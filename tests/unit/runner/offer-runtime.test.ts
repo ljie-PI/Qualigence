@@ -6,6 +6,10 @@ import type {
   RunnerCapabilities,
   TraceEvent,
 } from "@qualigence/runner-protocol";
+import {
+  advertisedCapabilityTokens,
+  negotiateCapabilities,
+} from "@qualigence/runner-protocol";
 import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import { WebTargetError } from "@qualigence/web-playwright";
@@ -181,6 +185,30 @@ describe("RunnerOfferRuntime", () => {
 
   it("advertises no value-backed actions without a healthy provider", () => {
     expect(runnerCapabilities().actionKinds).toEqual(["navigate", "click", "scroll"]);
+  });
+
+  it("advertises and negotiates every healthy production Web action path", () => {
+    const withoutValues = runnerCapabilities();
+    const withValues = runnerCapabilities({ resolve: async () => "private-value" });
+
+    expect([...advertisedCapabilityTokens(withoutValues)]).toEqual(expect.arrayContaining([
+      "action:navigate",
+      "action:click",
+      "action:scroll",
+    ]));
+    expect(negotiateCapabilities(withoutValues, ["action:navigate", "action:scroll"])).toEqual({
+      outcome: "accepted",
+    });
+    expect(negotiateCapabilities(withoutValues, ["action:input", "action:select"])).toMatchObject({
+      outcome: "rejected",
+    });
+    expect(negotiateCapabilities(withValues, [
+      "action:navigate",
+      "action:click",
+      "action:input",
+      "action:select",
+      "action:scroll",
+    ])).toEqual({ outcome: "accepted" });
   });
 
   it("preserves capability denial before lease acceptance and target startup", async () => {
