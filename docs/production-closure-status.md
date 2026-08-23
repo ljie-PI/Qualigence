@@ -56,7 +56,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Tickets 03-04 Target/Test Plan intake and atomic Mission scheduling are implemented; Ticket 04 is pending its dedicated PR, and tickets 05-06 still own dispatch delivery and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | focused Gate and post-review Chromium acceptance passed | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 same-origin action-navigation product head is `3d77fd3c91b5113089145ccf9282618cea448d49` |
+| Task 16 bounded Web execution | complete | present | focused Gate passed; fresh review required before Chromium E2E rerun | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 dispatch-bounce product head is `c220079e1ff2eaa46b3ecb77c6ffd0165fc70eff` |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -455,6 +455,7 @@ final_action_origin_product_head: `f4d15a47609e715e1367a1b4a2c299fb76277469`
 final_per_read_origin_product_head: `c6ae8df0cd45771bdfca97aa7b4c7db12d270094`
 final_navigation_generation_product_head: `42985b803dae09d34327a326c393615a12d19ab7`
 final_same_origin_action_navigation_product_head: `3d77fd3c91b5113089145ccf9282618cea448d49`
+final_dispatch_bounce_product_head: `c220079e1ff2eaa46b3ecb77c6ffd0165fc70eff`
 final_status_commit: same commit as this ledger entry
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
@@ -466,7 +467,7 @@ dispatch_authority_fix_commit: same commit as this ledger entry
 implementation_head: `3d77fd3c91b5113089145ccf9282618cea448d49`
 reviewed_head: `49c97362565fdf38bbd8228a1485fcf886ae74b7`
 chromium_e2e_head: `49c97362565fdf38bbd8228a1485fcf886ae74b7`
-branch_commit_count: 36 commits ahead of `origin/main`, including this status commit
+branch_commit_count: 38 commits ahead of `origin/main`, including this status commit
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
@@ -709,6 +710,25 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
   `14bcf76cc686244775a127c86cfaa2b19e4ad4a2` reported no Critical or Important
   findings. The post-review Chromium acceptance then passed 1 file / 10 tests
   without skips at that reviewed head.
+- Final dispatch-bounce remediation tracks a session-private monotonic
+  cross-origin navigation count relative to the immutable Job target origin.
+  Every main-frame navigation still advances navigation generation and clears
+  descriptor authority; only unreadable or non-target origins advance the new
+  count. The Playwright executor snapshots that count in the permit immediately
+  before dispatch after all prechecks, then reports success only when the final
+  URL is exact target-origin and the count is unchanged. A dispatched
+  A-to-B-to-A transition is therefore `ActionOutcomeUnknown`; a later fresh
+  same-origin dispatch is not globally poisoned.
+- TDD RED proved the missing session count and the incorrect successful outcome
+  after a deterministic A-to-B-to-A click. Unit coverage now includes the exact
+  event sequence, startup A-to-B-to-A rejection, unchanged same-origin
+  navigation, fresh-observation reuse, and permit snapshot values. The affected
+  non-E2E Web set passed 7 files / 183 tests with 1 pre-existing Task 21 skip;
+  the real Chromium component case passed with final URL back on A, no next
+  step, and exactly one terminal. The exact Ticket 19 non-E2E Gate passed 13
+  files / 292 tests with 1 pre-existing Task 21 skip; root
+  `corepack pnpm typecheck` and `git diff --check` passed. No post-review E2E was
+  run.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
