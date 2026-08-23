@@ -216,6 +216,7 @@ export class PlaywrightBrowserSession {
   }
 
   artifactsFor(graphId: string): readonly CapturedArtifact[] {
+    if (this.page !== undefined) this.assertPageTargetOrigin(this.page);
     const observation = this.observations.get(graphId);
     if (!observation) {
       throw new WebTargetError(
@@ -223,6 +224,7 @@ export class PlaywrightBrowserSession {
         `No observation registered for graph ${graphId}.`,
       );
     }
+    if (this.page !== undefined) this.assertPageTargetOrigin(this.page);
     return observation.artifacts;
   }
 
