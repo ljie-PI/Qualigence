@@ -1,3 +1,5 @@
+import { createServer, type RequestListener, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   PlaywrightBrowserSession,
@@ -21,7 +23,12 @@ function baseOptions(
   };
 }
 
-function fakeLauncher(): { launcher: BrowserLauncher; launch: ReturnType<typeof vi.fn>; closed: () => boolean } {
+function fakeLauncher(): {
+  launcher: BrowserLauncher;
+  launch: ReturnType<typeof vi.fn>;
+  page: { goto: ReturnType<typeof vi.fn>; url(): string };
+  closed: () => boolean;
+} {
   let browserClosed = false;
   const page = {
     goto: vi.fn(async () => null),
@@ -46,7 +53,23 @@ function fakeLauncher(): { launcher: BrowserLauncher; launch: ReturnType<typeof 
   return {
     launcher: { launch } as unknown as BrowserLauncher,
     launch,
+    page,
     closed: () => browserClosed,
+  };
+}
+
+async function startServer(handler: RequestListener): Promise<{
+  readonly origin: string;
+  close(): Promise<void>;
+}> {
+  const server: Server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error === undefined ? resolve() : reject(error));
+    }),
   };
 }
 
@@ -114,6 +137,67 @@ describe("PlaywrightBrowserSession", () => {
     await expect(session.start()).rejects.toMatchObject({
       code: "BrowserLaunchFailed",
     });
+  });
+
+  it.each([
+    ["ordinary", new Error("net::ERR_CONNECTION_RESET"), "NavigationFailed"],
+    ["timeout", new Error("page.goto: Timeout 5000ms exceeded"), "NavigationTimedOut"],
+  ] as const)("classifies an %s page.goto rejection after dispatch as %s", async (_name, failure, code) => {
+    const { launcher, page } = fakeLauncher();
+    page.goto.mockRejectedValueOnce(failure);
+    const session = new PlaywrightBrowserSession(baseOptions(), launcher);
+
+    await expect(session.start()).rejects.toMatchObject({ code });
+    expect(page.goto).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a cross-origin initial redirect after page.goto resolves", async () => {
+    const destination = await startServer((_request, response) => {
+      response.end("destination");
+    });
+    const source = await startServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("location", `${destination.origin}/final`);
+      response.end();
+    });
+    const session = new PlaywrightBrowserSession(baseOptions({
+      url: `${source.origin}/redirect`,
+      allowedOrigins: [source.origin, destination.origin],
+    }));
+
+    try {
+      await expect(session.start()).rejects.toMatchObject({ code: "OriginViolation" });
+    } finally {
+      await session.close();
+      await source.close();
+      await destination.close();
+    }
+  });
+
+  it("allows an initial redirect that remains on the configured target origin", async () => {
+    let origin = "";
+    const server = await startServer((request, response) => {
+      if (request.url === "/redirect") {
+        response.statusCode = 302;
+        response.setHeader("location", `${origin}/final`);
+        response.end();
+        return;
+      }
+      response.end("same origin");
+    });
+    origin = server.origin;
+    const session = new PlaywrightBrowserSession(baseOptions({
+      url: `${origin}/redirect`,
+      allowedOrigins: [origin],
+    }));
+
+    try {
+      await expect(session.start()).resolves.toBeUndefined();
+      await expect(session.withPage(async (page) => page.url())).resolves.toBe(`${origin}/final`);
+    } finally {
+      await session.close();
+      await server.close();
+    }
   });
 
   it("closes acquired browser resources without waiting for aborted startup", async () => {

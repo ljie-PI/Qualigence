@@ -248,6 +248,12 @@ export class PlaywrightBrowserSession {
         waitUntil: "domcontentloaded",
         timeout: this.options.navigationTimeoutMs,
       });
+      if (!this.isTargetOrigin(page.url())) {
+        throw new WebTargetError(
+          "OriginViolation",
+          "Initial navigation left the configured target origin.",
+        );
+      }
       signal?.throwIfAborted();
     } catch (error) {
       await this.disposeResources();

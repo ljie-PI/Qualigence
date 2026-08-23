@@ -1,3 +1,5 @@
+import { createServer, type RequestListener, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutionEventBatch,
@@ -64,21 +66,36 @@ vi.mock("../../../apps/runner/src/job-executor.js", async () => {
       _session: unknown,
       signal?: AbortSignal,
       lifecycle?: {
-        finish(): Promise<ExecutionJobLease>;
+        currentLease(): ExecutionJobLease;
+        duringLease<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>;
+        finish(completion?: unknown): Promise<ExecutionJobLease>;
         mayStartAction(): boolean;
       },
+      finalize?: (context: {
+        readonly completion: { readonly jobId: string; readonly runId: string; readonly status: "passed" };
+        readonly signal: AbortSignal;
+        currentLease(): ExecutionJobLease;
+      }) => Promise<void>,
     ) {
       executedOffers.push(offer);
       executionSignals.push(signal);
       executionLifecycles.push(lifecycle);
       executionWindowStates.push(lifecycle?.mayStartAction() ?? false);
       if (executorFailure !== undefined) throw executorFailure;
+      const completion = { jobId: "job-staging", runId: "run-staging", status: "passed" as const };
+      if (lifecycle !== undefined && finalize !== undefined) {
+        await lifecycle.duringLease((finalizationSignal) => finalize({
+          completion,
+          signal: finalizationSignal,
+          currentLease: () => lifecycle.currentLease(),
+        }));
+      }
       const lease = lifecycle === undefined
         ? { jobId: "job-staging", runId: "run-staging", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" }
-        : await lifecycle.finish();
+        : await lifecycle.finish(completion);
       return {
         lease,
-        completion: { jobId: "job-staging", runId: "run-staging", status: "passed" as const },
+        completion,
       };
     }
     },
@@ -167,6 +184,21 @@ class ManualDelay {
   }
 }
 
+async function startServer(handler: RequestListener): Promise<{
+  readonly origin: string;
+  close(): Promise<void>;
+}> {
+  const server: Server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error === undefined ? resolve() : reject(error));
+    }),
+  };
+}
+
 describe("RunnerOfferRuntime", () => {
   function config() {
     return { headed: false, navigationTimeoutMs: 1_000, actionTimeoutMs: 1_000, model: { baseUrl: "https://models.test", apiKey: "secret", modelName: "test" } } as never;
@@ -234,6 +266,59 @@ describe("RunnerOfferRuntime", () => {
     expect(createTarget).not.toHaveBeenCalled();
     expect(modelConstructions).toEqual([]);
   });
+
+  it.each(["input", "select"] as const)(
+    "rejects a forged %s Plan without a value provider before lease acceptance",
+    async (kind) => {
+      const createTarget = vi.fn();
+      const session = {
+        accept: vi.fn(),
+        complete: vi.fn(),
+      };
+      const runtime = new RunnerOfferRuntime({
+        createTarget,
+        session: session as never,
+        spool: {} as never,
+        config: config(),
+      });
+      const step = {
+        stepIndex: 0,
+        kind,
+        target: { purpose: `${kind} a value` },
+        valueRef: `profile.${kind}`,
+      };
+
+      await expect(runtime.run({
+        ...admittedOffer(),
+        job: {
+          ...admittedOffer().job,
+          policy: {
+            ...admittedOffer().job.policy,
+            allowedActionKinds: [kind],
+            maximumRisk: "ExternalSideEffect",
+          },
+          plan: {
+            missionId: "mission-forged",
+            missionRevision: 1,
+            testCaseId: `case-${kind}`,
+            steps: [step],
+            expectedClaimIds: ["claim-1"],
+            budget: {
+              maximumStepsPerJob: 1,
+              maximumWallClockMs: 1_000,
+              maximumModelTokens: 1_000,
+            },
+          },
+        },
+        requiredCapabilities: [],
+      })).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+      expect(session.accept).not.toHaveBeenCalled();
+      expect(session.complete).not.toHaveBeenCalled();
+      expect(createTarget).not.toHaveBeenCalled();
+      expect(modelConstructions).toEqual([]);
+    },
+  );
 
   it("does not construct or start a target when lease acceptance fails", async () => {
     const failure = new Error("lease unavailable");
@@ -316,7 +401,6 @@ describe("RunnerOfferRuntime", () => {
 
   it.each([
     ["malformed", [{ stepIndex: 1, kind: "navigate", path: "/checkout" }]],
-    ["unsupported", [{ stepIndex: 0, kind: "script", source: "alert(1)" }]],
     ["policy-incompatible", [{ stepIndex: 0, kind: "navigate", path: "/checkout" }]],
   ])("blocks a %s plan before target construction", async (_name, steps) => {
     const createTarget = vi.fn();
@@ -343,6 +427,36 @@ describe("RunnerOfferRuntime", () => {
 
     expect(createTarget).not.toHaveBeenCalled();
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ status: "blocked" }));
+  });
+
+  it("rejects an unsupported Plan action as a capability mismatch before acceptance", async () => {
+    const createTarget = vi.fn();
+    const session = { accept: vi.fn(), complete: vi.fn() };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run({
+      ...admittedOffer(),
+      job: {
+        ...admittedOffer().job,
+        plan: {
+          missionId: "mission-1",
+          missionRevision: 1,
+          testCaseId: "case-1",
+          steps: [{ stepIndex: 0, kind: "script", source: "alert(1)" }],
+          expectedClaimIds: ["claim-1"],
+          budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 },
+        },
+      },
+    } as never)).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+    expect(session.accept).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(createTarget).not.toHaveBeenCalled();
   });
 
   it("passes only staging policy origins to an admitted target", async () => {
@@ -474,7 +588,132 @@ describe("RunnerOfferRuntime", () => {
     expect(target.close).toHaveBeenCalledOnce();
   });
 
-  it("aborts and terminalizes lease expiry during target startup without executing a model", async () => {
+  it("renews while terminal Trace ACK is delayed beyond the original lease and completes with the latest token", async () => {
+    const state = { monotonic: 0, wall: 100_000 };
+    const delay = new ManualDelay();
+    let releaseAck: ((ack: { readonly batchId: string; readonly runId: string; readonly nextExpectedSequenceNumber: number }) => void) | undefined;
+    let submittedBatch: ExecutionEventBatch | undefined;
+    const target = {
+      start: vi.fn(async () => { throw new WebTargetError("NavigationFailed"); }),
+      capture: vi.fn(),
+      resolve: vi.fn(),
+      execute: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const renewedLease = { ...STARTUP_LEASE, leaseToken: "renewed-during-drain", leaseEpoch: 2 };
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(async () => renewedLease),
+      submit: vi.fn((batch: ExecutionEventBatch) => {
+        submittedBatch = batch;
+        return new Promise((resolve) => { releaseAck = resolve; });
+      }),
+      complete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget: vi.fn(() => target) as never,
+      session: session as never,
+      spool: recordingSpool().spool,
+      config: config(),
+      leaseLifecycle: {
+        clocks: { monotonicNow: () => state.monotonic, wallNow: () => state.wall },
+        actionDeadlineSafetyMarginMs: 0,
+        renewalDelay: delay,
+      },
+    });
+
+    const running = runtime.run(admittedOffer());
+    await waitFor(() => expect(session.submit).toHaveBeenCalledOnce());
+    state.monotonic = 10_000;
+    delay.release();
+    await waitFor(() => expect(session.renew).toHaveBeenCalledWith(STARTUP_LEASE));
+    state.monotonic = 31_000;
+    const batch = submittedBatch!;
+    releaseAck?.({
+      batchId: batch.batchId,
+      runId: batch.runId,
+      nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+    });
+    await running;
+
+    expect(session.complete).toHaveBeenCalledWith(
+      renewedLease,
+      expect.objectContaining({ status: "error", errorCode: "NavigationFailed" }),
+    );
+    delay.release();
+    await Promise.resolve();
+    expect(session.renew).toHaveBeenCalledOnce();
+  });
+
+  it.each(["renewal failure", "expiry"] as const)(
+    "aborts a delayed terminal Trace drain and does not complete on %s",
+    async (failureMode) => {
+      const state = { monotonic: 0, wall: 100_000 };
+      const renewalFailure = failureMode === "renewal failure" ? new Error("LeaseLost") : undefined;
+      const delay = new ManualDelay();
+      let releaseAck: ((ack: { readonly batchId: string; readonly runId: string; readonly nextExpectedSequenceNumber: number }) => void) | undefined;
+      let submittedBatch: ExecutionEventBatch | undefined;
+      const target = {
+        start: vi.fn(async () => { throw new WebTargetError("NavigationFailed"); }),
+        capture: vi.fn(),
+        resolve: vi.fn(),
+        execute: vi.fn(),
+        close: vi.fn(async () => undefined),
+      };
+      const { spool, acknowledge } = recordingSpool();
+      const session = {
+        accept: vi.fn(async () => STARTUP_LEASE),
+        renew: vi.fn(async () => {
+          if (renewalFailure !== undefined) throw renewalFailure;
+          return STARTUP_LEASE;
+        }),
+        submit: vi.fn((batch: ExecutionEventBatch) => {
+          submittedBatch = batch;
+          return new Promise((resolve) => { releaseAck = resolve; });
+        }),
+        complete: vi.fn(),
+        close: vi.fn(async () => undefined),
+        welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+      };
+      const runtime = new RunnerOfferRuntime({
+        createTarget: vi.fn(() => target) as never,
+        session: session as never,
+        spool,
+        config: config(),
+        leaseLifecycle: {
+          clocks: { monotonicNow: () => state.monotonic, wallNow: () => state.wall },
+          actionDeadlineSafetyMarginMs: 0,
+          renewalDelay: delay,
+        },
+      });
+
+      const running = runtime.run(admittedOffer());
+      await waitFor(() => expect(session.submit).toHaveBeenCalledOnce());
+      if (failureMode === "expiry") state.monotonic = 30_000;
+      delay.release();
+      if (renewalFailure === undefined) {
+        await expect(running).rejects.toMatchObject({ code: "LeaseExpired" });
+        expect(session.renew).not.toHaveBeenCalled();
+      } else {
+        await expect(running).rejects.toBe(renewalFailure);
+      }
+
+      expect(session.complete).not.toHaveBeenCalled();
+      expect(target.close).toHaveBeenCalledOnce();
+      const batch = submittedBatch!;
+      releaseAck?.({
+        batchId: batch.batchId,
+        runId: batch.runId,
+        nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+      });
+      await Promise.resolve();
+      expect(acknowledge).not.toHaveBeenCalled();
+    },
+  );
+
+  it("aborts target startup without terminal completion when the lease expires", async () => {
     const state = { monotonic: 0, wall: 100_000 };
     const delay = new ManualDelay();
     let startupSignal: AbortSignal | undefined;
@@ -522,7 +761,7 @@ describe("RunnerOfferRuntime", () => {
     await started;
     state.monotonic = 30_000;
     delay.release();
-    await running;
+    await expect(running).rejects.toMatchObject({ code: "LeaseExpired" });
 
     expect(delay.waits).toEqual([10_000]);
     expect(startupSignal?.aborted).toBe(true);
@@ -531,15 +770,68 @@ describe("RunnerOfferRuntime", () => {
     expect(executedOffers).toEqual([]);
     expect(target.capture).not.toHaveBeenCalled();
     expect(target.execute).not.toHaveBeenCalled();
+    expect(appended).toEqual([]);
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(target.close).toHaveBeenCalledOnce();
+  });
+
+  it("blocks a cross-origin initial redirect before observation or model construction", async () => {
+    const destination = await startServer((_request, response) => {
+      response.end("destination");
+    });
+    const source = await startServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("location", `${destination.origin}/final`);
+      response.end();
+    });
+    const offer = admittedOffer();
+    const redirectedOffer: ExecutionJobOffer = {
+      ...offer,
+      job: {
+        ...offer.job,
+        target: { kind: "web", url: `${source.origin}/redirect` },
+        policy: {
+          ...offer.job.policy,
+          allowedOrigins: [source.origin, destination.origin],
+        },
+      },
+    };
+    const { spool, appended } = recordingSpool();
+    const session = {
+      accept: vi.fn(async () => STARTUP_LEASE),
+      renew: vi.fn(),
+      submit: vi.fn(async (batch: ExecutionEventBatch) => ({
+        batchId: batch.batchId,
+        runId: batch.runId,
+        nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+      })),
+      complete: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      welcome: { traceBatchMaximumEvents: 10, traceBatchMaximumBytes: 10_000 },
+    };
+    const runtime = new RunnerOfferRuntime({
+      session: session as never,
+      spool,
+      config: config(),
+    });
+
+    try {
+      await runtime.run(redirectedOffer);
+    } finally {
+      await source.close();
+      await destination.close();
+    }
+
+    expect(executedOffers).toEqual([]);
+    expect(modelConstructions).toEqual([]);
     expect(appended.at(-1)).toMatchObject({
       stage: "run_completed",
-      payload: { status: "blocked", errorCode: "LeaseExpired" },
+      payload: { status: "blocked", errorCode: "OriginViolation" },
     });
     expect(session.complete).toHaveBeenCalledWith(
       STARTUP_LEASE,
-      expect.objectContaining({ status: "blocked", errorCode: "LeaseExpired" }),
+      expect.objectContaining({ status: "blocked", errorCode: "OriginViolation" }),
     );
-    expect(target.close).toHaveBeenCalledOnce();
   });
 
   it("aborts target startup and does not complete when lease renewal fails", async () => {

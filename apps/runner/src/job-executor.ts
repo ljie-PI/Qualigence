@@ -4,7 +4,7 @@ import type {
   ExecutionJobOffer,
   RunnerCapabilities,
 } from "@qualigence/runner-protocol";
-import { negotiateCapabilities } from "@qualigence/runner-protocol";
+import { advertisedCapabilityTokens, capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
 import {
   ExecutionBlockedError,
   ExecutionRuntime,
@@ -59,6 +59,14 @@ export interface LeasedJobResult {
   readonly window: LeaseWindow;
 }
 
+export interface AcceptedLeaseFinalization {
+  readonly completion: ExecutionCompletion;
+  readonly signal: AbortSignal;
+  currentLease(): ExecutionJobLease;
+}
+
+export type AcceptedLeaseFinalizer = (finalization: AcceptedLeaseFinalization) => Promise<void>;
+
 type RenewalResult =
   | { readonly status: "fulfilled" }
   | { readonly status: "rejected"; readonly error: unknown };
@@ -67,7 +75,16 @@ export function assertOfferCapabilities(
   offer: ExecutionJobOffer,
   runnerCapabilities: RunnerCapabilities,
 ): void {
-  const negotiation = negotiateCapabilities(runnerCapabilities, offer.requiredCapabilities);
+  const planActionKinds = offer.job.plan?.steps.flatMap((step) =>
+    step.kind === "verify" ? [] : [step.kind]) ?? [];
+  const planActionCapabilities = advertisedCapabilityTokens(capabilities({
+    actionKinds: planActionKinds,
+    model: { structuredOutput: false },
+  }));
+  const negotiation = negotiateCapabilities(
+    runnerCapabilities,
+    [...new Set([...offer.requiredCapabilities, ...planActionCapabilities])],
+  );
   if (negotiation.outcome === "rejected") {
     throw new RunnerAppError("CapabilityMismatch", "runner cannot satisfy the offer's requirements", {
       details: { missingCapabilities: negotiation.rejection.missingCapabilities },
@@ -135,11 +152,11 @@ export class AcceptedLeaseLifecycle implements ActionAuthorizationWindow {
   }
 
   assertActionAuthorized(): void {
-    this.assertActive();
+    this.assertActionActive();
   }
 
   async duringLease<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    this.assertActive();
+    this.assertLeaseActive();
     const operationResult = Promise.resolve().then(() => operation(this.signal));
     const renewalFailure = this.renewal.then((result) => {
       if (result.status === "rejected") throw result.error;
@@ -157,7 +174,7 @@ export class AcceptedLeaseLifecycle implements ActionAuthorizationWindow {
     } finally {
       this.signal.removeEventListener("abort", abortOperation);
     }
-    this.assertActive();
+    this.assertLeaseActive();
     return value;
   }
 
@@ -184,7 +201,17 @@ export class AcceptedLeaseLifecycle implements ActionAuthorizationWindow {
     await this.renewal;
   }
 
-  private assertActive(): void {
+  private assertLeaseActive(): void {
+    if (this.signal.aborted) throw this.signal.reason;
+    if (this.window.hasExpired()) {
+      const error = new ExecutionBlockedError("LeaseExpired");
+      this.window.close();
+      this.executionAbort.abort(error);
+      throw error;
+    }
+  }
+
+  private assertActionActive(): void {
     if (this.signal.aborted) throw this.signal.reason;
     if (!this.window.mayStartAction()) {
       const error = new ExecutionBlockedError("LeaseExpired");
@@ -230,6 +257,7 @@ export class LeasedJobExecutor {
     session: RunnerSession,
     signal?: AbortSignal,
     acceptedLifecycle?: AcceptedLeaseLifecycle,
+    finalize?: AcceptedLeaseFinalizer,
   ): Promise<LeasedJobResult> {
     assertOfferCapabilities(offer, this.deps.capabilities);
     const lifecycle = acceptedLifecycle ?? new AcceptedLeaseLifecycle(
@@ -271,9 +299,18 @@ export class LeasedJobExecutor {
     );
     let lease: ExecutionJobLease;
     try {
-      lease = await lifecycle.finish(
-        runtimeResult.status === "fulfilled" ? runtimeResult.completion : undefined,
-      );
+      if (runtimeResult.status === "rejected") {
+        if (acceptedLifecycle === undefined) await lifecycle.finish();
+        throw runtimeResult.error;
+      }
+      if (finalize !== undefined) {
+        await lifecycle.duringLease((finalizationSignal) => finalize({
+          completion: runtimeResult.completion,
+          signal: finalizationSignal,
+          currentLease: () => lifecycle.currentLease(),
+        }));
+      }
+      lease = await lifecycle.finish(runtimeResult.completion);
     } catch (renewalError) {
       if (
         runtimeResult.status === "rejected" &&
@@ -281,9 +318,9 @@ export class LeasedJobExecutor {
       ) {
         throw runtimeResult.error;
       }
+      if (acceptedLifecycle === undefined) await lifecycle.dispose();
       throw renewalError;
     }
-    if (runtimeResult.status === "rejected") throw runtimeResult.error;
     return { lease, completion: runtimeResult.completion, window };
   }
 }

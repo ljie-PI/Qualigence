@@ -15,6 +15,8 @@ export { TraceUploadPump } from "./trace-upload-pump.js";
 export type { TraceBatchSubmitter, TraceUploadPumpResult } from "./trace-upload-pump.js";
 export { AcceptedLeaseLifecycle, LeasedJobExecutor } from "./job-executor.js";
 export type {
+  AcceptedLeaseFinalization,
+  AcceptedLeaseFinalizer,
   AcceptedLeaseLifecycleOptions,
   LeasedJobExecutorDependencies,
   LeasedJobResult,

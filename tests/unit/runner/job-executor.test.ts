@@ -254,6 +254,84 @@ describe("LeasedJobExecutor", () => {
     expect(session.renewCalls).toBe(1);
   });
 
+  it("keeps renewal active through post-execution finalization and then stops", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let markFinalizing: (() => void) | undefined;
+    let releaseFinalization: (() => void) | undefined;
+    const finalizing = new Promise<void>((resolve) => { markFinalizing = resolve; });
+    const finalization = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+    let finalizationLease: ExecutionJobLease | undefined;
+    let currentFinalizationLease: (() => ExecutionJobLease) | undefined;
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      renewalDelay: delay,
+    }));
+    const session = new FakeSession();
+    session.renewedLease = { ...LEASE, leaseToken: "renewed-during-finalization" };
+
+    const execution = executor.execute(
+      offer([]),
+      session,
+      undefined,
+      undefined,
+      async ({ currentLease }) => {
+        currentFinalizationLease = currentLease;
+        markFinalizing?.();
+        await finalization;
+        finalizationLease = currentLease();
+      },
+    );
+    await finalizing;
+    delay.release();
+    await waitFor(() => expect(session.renewCalls).toBe(1));
+    await waitFor(() => expect(currentFinalizationLease?.().leaseToken).toBe("renewed-during-finalization"));
+    releaseFinalization?.();
+    const result = await execution;
+
+    expect(finalizationLease?.leaseToken).toBe("renewed-during-finalization");
+    expect(result.lease.leaseToken).toBe("renewed-during-finalization");
+    delay.release();
+    await Promise.resolve();
+    expect(session.renewCalls).toBe(1);
+  });
+
+  it("aborts post-execution finalization when renewal fails", async () => {
+    const spool = await newSpool();
+    const state = { monotonic: 1_000, wall: 100_000 };
+    const delay = new ManualDelay();
+    let markFinalizing: (() => void) | undefined;
+    const finalizing = new Promise<void>((resolve) => { markFinalizing = resolve; });
+    let finalizationSignal: AbortSignal | undefined;
+    const executor = new LeasedJobExecutor(baseDependencies(spool, state, {
+      renewalDelay: delay,
+    }));
+    const session = new FakeSession();
+    const renewalFailure = new Error("LeaseLost");
+    session.renew = async () => {
+      session.renewCalls += 1;
+      throw renewalFailure;
+    };
+
+    const execution = executor.execute(
+      offer([]),
+      session,
+      undefined,
+      undefined,
+      async ({ signal }) => {
+        finalizationSignal = signal;
+        markFinalizing?.();
+        return new Promise<never>(() => undefined);
+      },
+    );
+    await finalizing;
+    delay.release();
+
+    await expect(execution).rejects.toBe(renewalFailure);
+    expect(finalizationSignal?.aborted).toBe(true);
+    expect(executor.mayStartNextAction()).toBe(false);
+  });
+
   it("blocks every new action and preserves the renew error after renewal fails", async () => {
     const spool = await newSpool();
     const state = { monotonic: 1_000, wall: 100_000 };
