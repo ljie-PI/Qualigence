@@ -63,7 +63,7 @@ pull_request: pending
   outbox, and atomic dispatch wakeup. Migrations 001-008 remain unchanged.
 - The shared SQLite/PostgreSQL contract proves semantic replay without allocator
   calls, stable different-command conflicts, stale Mission/Plan revision/hash/
-  status/version rejection without writes, failure rollback after each of ten
+  status/version rejection without writes, failure rollback after each of nine
   writes, concurrent writers, process restart, tenant isolation, forced RLS, and
   immutable lineage.
 - Focused Gate
