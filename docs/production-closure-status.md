@@ -448,7 +448,7 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
 
 component: complete
 production_wiring: present
-verification: focused Gate passed; fresh review pending
+verification: passed; pending dedicated PR merge
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
 final_blocker_fix_base: `ff91aa64beba11e5099add96ee6d8d0fa35333a7`
@@ -460,7 +460,7 @@ implementation_head: same commit as this ledger entry
 reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
 branch_commit_count: 13 commits ahead of `origin/main`, including this status commit
-pull_request: pending
+pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
   select, scroll, and verify steps sequentially. Every planned Trace stage,
@@ -592,6 +592,9 @@ pull_request: pending
   19 Gate passed 13 files / 253 tests with 1 pre-existing Task 21 skip. Root
   `corepack pnpm typecheck` and `git diff --check` passed. No E2E was run; fresh
   exact-base review is required before Chromium acceptance.
+- Final branch verification after merging current `main` passed 14 files / 260
+  tests with one existing Task 21 skip, including 8 real Chromium E2E cases.
+  Root build, typecheck, diff check, and scoped Standards/Spec review passed.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
