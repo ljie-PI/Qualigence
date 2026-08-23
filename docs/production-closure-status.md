@@ -54,9 +54,8 @@ component: complete
 production_wiring: present
 verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
-pull_request: pending
-final_core_blocker_product_head: `f99af6dba9b096c6ad9b5f2233dd8a6252cdb1a9`
-final_review: passed against merge-base `de2b77369801785696b57b5dfacfd230bc0ea3d3`; no Critical or Important findings
+final_core_blocker_product_head: `b13ed8d6dac37581c2b6cf0a03e10811ea4fd040`
+final_review: pending fresh exact-base review after the remaining blocker fixes
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
@@ -87,16 +86,17 @@ final_review: passed against merge-base `de2b77369801785696b57b5dfacfd230bc0ea3d
   bounded stable pending selection, exact replay after restart, stale-version
   rejection, and one concurrent acceptance winner.
 - Compiled and outbox requirements use Runner Protocol negotiation tokens:
-  `target:web-playwright`, action tokens derived from Plan steps, and
-  `model:structured-output`. Contract evidence accepts a matching
-  `capabilities()` set, reports the missing token for a mismatch, and proves the
-  outbox snapshot is unchanged when the logical Job row changes.
+  `target:web-playwright`, `action:navigate`, action tokens derived from Plan
+  steps, and `model:structured-output`. Contract evidence rejects a real Runner
+  capability set without navigate, accepts the future full Web action set, and
+  proves the outbox snapshot is unchanged when the logical Job row changes.
 - Focused Gate
   `corepack pnpm vitest run tests/contract/mission tests/contract/sqlite/prd-mission-store.test.ts tests/contract/postgres/prd-mission-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/prd-planning/prd-to-run.test.ts`
   passed 4 files / 71 tests with Docker PostgreSQL and explicit Git OpenSSL.
   Full storage conformance plus SQLite/PostgreSQL provider contracts passed 15
-  files / 141 tests. Root typecheck passed; final diff-check is recorded by the
-  final core-blocker commit. Per instruction, no E2E was run.
+  files / 141 tests. The affected Mission/execution/storage suite passed 7 files
+  / 51 tests. Root typecheck and diff check passed. Per instruction, no E2E was
+  run.
 
 ### Ticket 03 - Versioned Target and Test Plan product paths (2026-08-21)
 
