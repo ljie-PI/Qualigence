@@ -75,7 +75,7 @@ reserved without a reviewed plan amendment.
 
 component: complete
 production_wiring: present
-verification: passed; pending dedicated PR merge
+verification: core workflow passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 final_core_blocker_product_head: `b13ed8d6dac37581c2b6cf0a03e10811ea4fd040`
 final_review: product behavior clean; pending scope-only exact-head confirmation
@@ -692,6 +692,11 @@ pull_request: `https://github.com/ljie-PI/Qualigence/pull/86`
   acceptance then passed 1 file / 8 tests at reviewed head
   `215e47acfef80f877c5795298fa091d93e96255d`; this final evidence update is
   status-only.
+- Scope decision: advanced browser-normalization redaction for CR/LF-transformed
+  secret values is deferred with the closed Ticket 39-45 hardening chain. It is
+  not counted as evidence for this ticket. Ticket 19 verifies the primary
+  immutable multi-step execution, policy/budget/lease, re-observation,
+  input/select, terminal Trace, and no-retry uncertain-action workflow.
 - Same-origin action-navigation regression remediation keeps every pre-dispatch
   exact-origin and observation-generation guard unchanged. After a dispatched
   Playwright promise resolves, click/input/select/scroll now require only a
