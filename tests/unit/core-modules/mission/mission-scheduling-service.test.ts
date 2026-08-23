@@ -5,6 +5,7 @@ import {
   type SchedulingMission,
   type ScheduledMission,
 } from "@qualigence/mission";
+import { PrdMissionRepositoryTestStub } from "../../../helpers/prd-mission-repository.js";
 
 const scheduled: ScheduledMission = {
   missionId: "mission-1",
@@ -87,9 +88,9 @@ const mission: SchedulingMission = {
 
 describe("MissionSchedulingService", () => {
   it("returns a semantic replay without invoking any identity allocator", async () => {
-    const repository = {
+    const repository = Object.assign(new PrdMissionRepositoryTestStub(), {
       replayMissionSchedule: vi.fn(async () => scheduled),
-    } as unknown as PrdMissionRepository;
+    });
     const allocateAttemptId = vi.fn(() => "unused-attempt");
     const allocateRunnerJobId = vi.fn(() => "unused-job");
     const allocateRunId = vi.fn(() => "unused-run");
@@ -106,17 +107,17 @@ describe("MissionSchedulingService", () => {
   });
 
   it("constructs the immutable Runner Job at the application seam", async () => {
-    type ScheduleMission = NonNullable<PrdMissionRepository["scheduleMission"]>;
+    type ScheduleMission = PrdMissionRepository["scheduleMission"];
     let scheduledInput: Parameters<ScheduleMission>[0] | undefined;
     const scheduleMission = vi.fn(async (input: Parameters<ScheduleMission>[0]) => {
       scheduledInput = input;
       return scheduled;
     });
-    const repository = {
+    const repository = Object.assign(new PrdMissionRepositoryTestStub(), {
       replayMissionSchedule: vi.fn(async () => undefined),
       loadMissionForScheduling: vi.fn(async () => mission),
       scheduleMission,
-    } as unknown as PrdMissionRepository;
+    });
     const service = new MissionSchedulingService(repository, {
       allocateAttemptId: () => "attempt-1",
       allocateRunnerJobId: () => "runner-job-1",

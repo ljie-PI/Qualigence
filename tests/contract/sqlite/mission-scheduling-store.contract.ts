@@ -53,7 +53,7 @@ prdMissionRepositorySchedulingContract("SQLite", {
               return snapshot;
             };
           },
-        }) as PrdMissionRepository;
+        });
         return startWithRepository(repository, input);
       },
       async mutate(name, mutation, tenantId) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   approveTestPlan,
+  capabilityForStep,
   canonicalJson,
   createDraftTestPlan,
   MissionCompiler,
@@ -108,23 +109,35 @@ describe("MissionCompiler", () => {
     expect(job.status).toBe("queued");
     expect(job.requiredCapabilities).toEqual([
       "action:click",
+      "action:navigate",
       "model:structured-output",
       "target:web-playwright",
     ]);
     expect(negotiateCapabilities(capabilities({
       targetAdapters: ["web-playwright"],
       actionKinds: ["click"],
-    }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
-    expect(negotiateCapabilities(capabilities({
-      targetAdapters: ["web-playwright"],
-      actionKinds: [],
     }), job.requiredCapabilities)).toEqual({
       outcome: "rejected",
-      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:click"] },
+      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:navigate"] },
     });
+    expect(negotiateCapabilities(capabilities({
+      targetAdapters: ["web-playwright"],
+      actionKinds: ["navigate", "click", "input", "select", "scroll"],
+    }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
     expect(result.value.projectId).toBe("p");
     expect(Object.isFrozen(job.testCaseSnapshot)).toBe(true);
     expect(Object.isFrozen(result.value)).toBe(true);
+  });
+
+  it.each([
+    ["navigate", "action:navigate"],
+    ["click", "action:click"],
+    ["input", "action:input"],
+    ["select", "action:select"],
+    ["scroll", "action:scroll"],
+    ["verify", "model:structured-output"],
+  ] as const)("maps %s to the capability consumed by Runner negotiation", async (kind, capability) => {
+    expect(capabilityForStep(kind)).toBe(capability);
   });
 
   it("produces a byte-identical snapshot for identical inputs", () => {

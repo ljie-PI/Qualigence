@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import type { Kysely, SqlBool } from "kysely";
 import { sql } from "kysely";
 import type { Database } from "../schema.js";
 import type { Migration } from "../migrations.js";
@@ -108,7 +108,8 @@ export const migration009: Migration = {
       .addCheckConstraint("mission_dispatch_outbox_version_check", sql`version > 0`)
       .addCheckConstraint("mission_dispatch_outbox_acceptance_check", sql`(status = 'accepted' AND accepted_at IS NOT NULL AND acceptance_receipt_json IS NOT NULL) OR (status <> 'accepted' AND accepted_at IS NULL AND acceptance_receipt_json IS NULL)`)
       .execute();
-    await db.schema.createIndex("mission_dispatch_outbox_pending").on("mission_dispatch_outbox").columns(["status", "created_at", "attempt_id"]).execute();
+    await db.schema.createIndex("mission_dispatch_outbox_command_job_unique").unique().on("mission_dispatch_outbox").columns(["idempotency_key", "runner_job_id"]).execute();
+    await db.schema.createIndex("mission_dispatch_outbox_pending").on("mission_dispatch_outbox").columns(["status", "created_at", "attempt_id"]).where(sql<SqlBool>`status = 'pending'`).execute();
 
     await db.schema
       .createTable("mission_dispatch_wakeups")

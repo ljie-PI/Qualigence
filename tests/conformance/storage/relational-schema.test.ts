@@ -76,8 +76,15 @@ describe("shared relational schema catalog", () => {
         "idempotency_key", "required_capabilities_json", "accepted_job_json",
         "status", "version", "accepted_at", "acceptance_receipt_json", "created_at",
       ]);
-      expect(await indexSql(runtime, "mission_dispatch_outbox_pending")).toMatch(
-        /mission_dispatch_outbox"?\s*\(\s*"?status"?\s*,\s*"?created_at"?\s*,\s*"?attempt_id"?\s*\)/is,
+      expect(await indexColumns(runtime, "mission_dispatch_outbox_command_job_unique")).toEqual([
+        "idempotency_key", "runner_job_id",
+      ]);
+      expect(await indexIsUnique(runtime, "mission_dispatch_outbox_command_job_unique")).toBe(true);
+      expect(await indexColumns(runtime, "mission_dispatch_outbox_pending")).toEqual([
+        "status", "created_at", "attempt_id",
+      ]);
+      expect(normalizeSql(await indexSql(runtime, "mission_dispatch_outbox_pending"))).toBe(
+        'create index "mission_dispatch_outbox_pending" on "mission_dispatch_outbox" ("status", "created_at", "attempt_id") where status = \'pending\'',
       );
     } finally { await runtime.close(); }
   });
@@ -188,6 +195,15 @@ interface SqliteColumnInfo {
   readonly name: string;
 }
 
+interface SqliteIndexInfo {
+  readonly name: string;
+}
+
+interface SqliteIndexList {
+  readonly name: string;
+  readonly unique: number;
+}
+
 async function tableColumns(
   runtime: SqliteRuntime,
   table: string,
@@ -220,4 +236,18 @@ async function indexSql(runtime: SqliteRuntime, name: string): Promise<string> {
     .executeTakeFirst();
   expect(row?.sql, `index ${name}`).toEqual(expect.any(String));
   return row?.sql ?? "";
+}
+
+async function indexColumns(runtime: SqliteRuntime, name: string): Promise<readonly string[]> {
+  const result = await sql<SqliteIndexInfo>`PRAGMA index_info(${sql.raw(name)})`.execute(runtime.db);
+  return result.rows.map((row) => row.name);
+}
+
+async function indexIsUnique(runtime: SqliteRuntime, name: string): Promise<boolean> {
+  const result = await sql<SqliteIndexList>`PRAGMA index_list(mission_dispatch_outbox)`.execute(runtime.db);
+  return result.rows.find((row) => row.name === name)?.unique === 1;
+}
+
+function normalizeSql(statement: string): string {
+  return statement.replace(/\s+/g, " ").trim().toLowerCase();
 }

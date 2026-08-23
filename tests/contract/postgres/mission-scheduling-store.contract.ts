@@ -62,7 +62,7 @@ describe("PostgreSQL Mission scheduling provider", () => {
               return snapshot;
             };
           },
-        }) as PrdMissionRepository;
+        });
         return startWithRepository(repository, input);
       });
       return {

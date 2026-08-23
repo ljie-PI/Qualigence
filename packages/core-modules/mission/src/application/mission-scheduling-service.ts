@@ -153,15 +153,10 @@ export class MissionSchedulingService {
   ) {}
 
   async start(command: StartMissionCommand): Promise<ScheduledMission> {
-    const replayMissionSchedule = this.repository.replayMissionSchedule;
-    if (replayMissionSchedule === undefined) throw new Error("PrdMissionRepository does not support Mission scheduling.");
-    const replay = await replayMissionSchedule.call(this.repository, command);
+    const replay = await this.repository.replayMissionSchedule(command);
     if (replay !== undefined) return replay;
 
-    const loadMissionForScheduling = this.repository.loadMissionForScheduling;
-    const scheduleMission = this.repository.scheduleMission;
-    if (loadMissionForScheduling === undefined || scheduleMission === undefined) throw new Error("PrdMissionRepository does not support Mission scheduling.");
-    const mission = await loadMissionForScheduling.call(this.repository, command.missionId);
+    const mission = await this.repository.loadMissionForScheduling(command.missionId);
     if (mission === undefined) {
       throw new MissionSchedulingError("MissionNotFound", "Mission was not found");
     }
@@ -176,7 +171,7 @@ export class MissionSchedulingService {
       );
     }
 
-    return scheduleMission.call(this.repository, {
+    return this.repository.scheduleMission({
       command,
       mission,
       scheduledAt: this.clock.now(),

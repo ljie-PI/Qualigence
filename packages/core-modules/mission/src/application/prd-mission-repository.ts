@@ -186,11 +186,11 @@ export interface PrdMissionRepository {
   loadMissionExecution(
     missionId: string,
   ): Promise<MissionExecutionRecord | undefined>;
-  replayMissionSchedule?(command: StartMissionCommand): Promise<ScheduledMission | undefined>;
-  loadMissionForScheduling?(missionId: string): Promise<MissionSchedulingSnapshot | undefined>;
-  scheduleMission?(input: ScheduleMissionInput): Promise<ScheduledMission>;
-  pendingDispatches?(limit: number): Promise<readonly PendingMissionDispatch[]>;
-  markDispatchAccepted?(
+  replayMissionSchedule(command: StartMissionCommand): Promise<ScheduledMission | undefined>;
+  loadMissionForScheduling(missionId: string): Promise<MissionSchedulingSnapshot | undefined>;
+  scheduleMission(input: ScheduleMissionInput): Promise<ScheduledMission>;
+  pendingDispatches(limit: number): Promise<readonly PendingMissionDispatch[]>;
+  markDispatchAccepted(
     attemptId: string,
     receipt: MissionDispatchAcceptanceReceipt,
     expectedVersion: number,

@@ -81,14 +81,18 @@ export interface CompiledMission {
 }
 
 /** Map an intent step kind to the runner capability it requires. */
-export function capabilityForStep(kind: IntentStep["kind"]): string {
+export function capabilityForStep(kind: IntentStep["kind"] | "select" | "scroll"): string {
   switch (kind) {
     case "navigate":
-      return "target:web-playwright";
+      return "action:navigate";
     case "click":
       return "action:click";
     case "input":
       return "action:input";
+    case "select":
+      return "action:select";
+    case "scroll":
+      return "action:scroll";
     case "verify":
       return "model:structured-output";
   }
