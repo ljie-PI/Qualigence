@@ -113,6 +113,7 @@ export class PlaywrightBrowserSession {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private operation: Promise<unknown> = Promise.resolve();
+  private navigationGeneration = 0;
   private observationOrdinal = 0;
   private latestGraph: string | undefined;
   private readonly observations = new Map<string, StoredObservation>();
@@ -152,7 +153,10 @@ export class PlaywrightBrowserSession {
     }
   }
 
-  assertPageTargetOrigin(page: Pick<Page, "url">): string {
+  assertPageTargetOrigin(
+    page: Pick<Page, "url">,
+    expectedNavigationGeneration?: number,
+  ): string {
     let currentUrl: string;
     try {
       currentUrl = page.url();
@@ -168,7 +172,33 @@ export class PlaywrightBrowserSession {
         "The current page left the configured target origin.",
       );
     }
+    if (
+      expectedNavigationGeneration !== undefined &&
+      this.navigationGeneration !== expectedNavigationGeneration
+    ) {
+      throw new WebTargetError(
+        "OriginViolation",
+        "The page navigated while its target origin was being verified.",
+      );
+    }
     return currentUrl;
+  }
+
+  async readOnExpectedOrigin<T>(
+    page: Pick<Page, "url">,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    const navigationGeneration = this.navigationGeneration;
+    this.assertPageTargetOrigin(page, navigationGeneration);
+    let value: T;
+    try {
+      value = await read();
+    } catch (error) {
+      this.assertPageTargetOrigin(page, navigationGeneration);
+      throw error;
+    }
+    this.assertPageTargetOrigin(page, navigationGeneration);
+    return value;
   }
 
   get latestGraphId(): string | undefined {
@@ -285,6 +315,9 @@ export class PlaywrightBrowserSession {
 
       const page = await context.newPage();
       this.page = page;
+      page.on("framenavigated", () => {
+        this.navigationGeneration += 1;
+      });
       signal?.throwIfAborted();
 
       await page.goto(this.configuredTargetUrl, {

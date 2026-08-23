@@ -34,6 +34,7 @@ function fakeLauncher(): {
   const page = {
     goto: vi.fn(async () => null),
     url: () => "https://example.test/",
+    on: vi.fn(),
     close: vi.fn(async () => undefined),
     setDefaultTimeout: vi.fn(),
     setDefaultNavigationTimeout: vi.fn(),

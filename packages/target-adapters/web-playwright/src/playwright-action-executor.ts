@@ -140,17 +140,24 @@ export class PlaywrightActionExecutor implements ActionExecutor {
       const originFailure = targetOriginFailure(page, this.session);
       if (originFailure !== undefined) return originFailure;
       const locator = locatorFor(page, descriptor);
+      const readOnExpectedOrigin = <T>(read: () => Promise<T>): Promise<T> =>
+        this.session.readOnExpectedOrigin(page, read);
 
       let count: number;
       let visible: boolean;
       let enabled: boolean;
       let href: string | null;
       try {
-        count = await locator.count();
-        visible = count === 1 && await locator.isVisible();
-        enabled = visible && await locator.isEnabled();
-        href = enabled ? await locator.getAttribute("href") : null;
-      } catch {
+        count = await readOnExpectedOrigin(() => locator.count());
+        visible = count === 1 && await readOnExpectedOrigin(() => locator.isVisible());
+        enabled = visible && await readOnExpectedOrigin(() => locator.isEnabled());
+        href = enabled
+          ? await readOnExpectedOrigin(() => locator.getAttribute("href"))
+          : null;
+      } catch (error) {
+        if (error instanceof WebTargetError && error.code === "OriginViolation") {
+          return { status: "failed", errorCode: "OriginViolation" };
+        }
         const readOriginFailure = targetOriginFailure(page, this.session);
         if (readOriginFailure !== undefined) return readOriginFailure;
         signal?.throwIfAborted();

@@ -139,6 +139,42 @@ describe("Playwright resolve + execute against real Chromium", () => {
     };
   }
 
+  async function startTrackedFakeSession(
+    locatorFactory: (navigate: (url: string) => void) => object,
+  ): Promise<PlaywrightBrowserSession> {
+    let currentUrl = fixture.url;
+    let frameNavigated: (() => void) | undefined;
+    const navigate = (url: string): void => {
+      currentUrl = url;
+      frameNavigated?.();
+    };
+    const locator = locatorFactory(navigate);
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => currentUrl,
+      on: vi.fn((event: string, listener: () => void) => {
+        if (event === "framenavigated") frameNavigated = listener;
+      }),
+      getByRole: () => locator,
+      close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page),
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const browser = {
+      newContext: vi.fn(async () => context),
+      close: vi.fn(async () => undefined),
+    };
+    const tracked = new PlaywrightBrowserSession(options(), {
+      launch: vi.fn(async () => browser),
+    } as unknown as BrowserLauncher);
+    await tracked.start();
+    return tracked;
+  }
+
   it("resolves to a de-identified token and performs a same-origin click", async () => {
     const { observer, resolver, executor } = await wire();
 
@@ -378,6 +414,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       currentUrl = cross.url;
       return 1;
     });
+    const isVisible = vi.fn(async () => true);
+    const isEnabled = vi.fn(async () => true);
+    const getAttribute = vi.fn(async () => null);
+    const clickEffect = vi.fn(async () => undefined);
     const policyGate = { authorize: vi.fn(async () => ({ status: "allowed", reason: "not reached" } as const)) };
     session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
     session.registerObservation(graphId, {
@@ -388,10 +428,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
       url: () => currentUrl,
       getByRole: () => ({
         count,
-        isVisible: async () => true,
-        isEnabled: async () => true,
-        getAttribute: async () => null,
-        click: vi.fn(),
+        isVisible,
+        isEnabled,
+        getAttribute,
+        click: clickEffect,
       }),
     } as never);
     const traces = new InMemoryTraceStore();
@@ -417,10 +457,84 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const trace = traces.eventsFor("run-raced-resolver-origin");
     expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
     expect(count).toHaveBeenCalledOnce();
+    expect(isVisible).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(clickEffect).not.toHaveBeenCalled();
     expect(policyGate.authorize).not.toHaveBeenCalled();
     expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(0);
     expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
     expect(JSON.stringify(trace)).not.toContain(cross.origin);
+  });
+
+  it("discards a resolution when its locator read navigates away and back", async () => {
+    const graphId = "run-bounced-resolver-origin:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    const isVisible = vi.fn(async () => true);
+    const isEnabled = vi.fn(async () => true);
+    const getAttribute = vi.fn(async () => null);
+    const clickEffect = vi.fn(async () => undefined);
+    const count = vi.fn(async () => 1);
+    session = await startTrackedFakeSession((navigate) => ({
+      count: count.mockImplementation(async () => {
+        navigate(cross.url);
+        navigate(fixture.url);
+        return 1;
+      }),
+      isVisible,
+      isEnabled,
+      getAttribute,
+      click: clickEffect,
+    }));
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    const traces = new InMemoryTraceStore();
+    const policyGate = { authorize: vi.fn(async () => ({ status: "allowed", reason: "not reached" } as const)) };
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => graph },
+      decisionProvider: { decide: async () => click(nodeId) },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate,
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-bounced-resolver-origin",
+      runId: "run-bounced-resolver-origin",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-bounced-resolver-origin");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(count).toHaveBeenCalledOnce();
+    expect(isVisible).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(clickEffect).not.toHaveBeenCalled();
+    expect(policyGate.authorize).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(0);
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
   });
 
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
@@ -667,8 +781,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     },
   );
 
-  it("blocks when the page redirects during executor preflight before authorization or dispatch", async () => {
-    const graphId = "run-raced-executor-origin:observation:1";
+  it("stops executor preflight when the count read redirects", async () => {
+    const graphId = "run-count-redirect:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
     const graph: ObservationGraph = {
@@ -678,8 +792,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     };
     let currentUrl = fixture.url;
     let countCalls = 0;
+    const isVisible = vi.fn(async () => true);
+    const isEnabled = vi.fn(async () => true);
+    const getAttribute = vi.fn(async () => null);
     const clickEffect = vi.fn(async () => undefined);
-    const authorizationWindow = { assertActionAuthorized: vi.fn() };
     session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
     session.registerObservation(graphId, {
       descriptors: new Map([[nodeId, descriptor]]),
@@ -693,9 +809,82 @@ describe("Playwright resolve + execute against real Chromium", () => {
           if (countCalls === 2) currentUrl = cross.url;
           return 1;
         },
-        isVisible: async () => true,
-        isEnabled: async () => true,
-        getAttribute: async () => null,
+        isVisible,
+        isEnabled,
+        getAttribute,
+        click: clickEffect,
+      }),
+    } as never);
+    const traces = new InMemoryTraceStore();
+    const authorizationWindow = { assertActionAuthorized: vi.fn() };
+    const runtime = new ExecutionRuntime({
+      observer: { capture: async () => graph },
+      decisionProvider: { decide: async () => click(nodeId) },
+      resolver: new PlaywrightActionResolver(session),
+      policyGate: new AllowAllRunnerPolicyGate(),
+      actionAuthorizationWindow: authorizationWindow,
+      actionExecutor: new PlaywrightActionExecutor(session),
+      verifier: { verify: async () => ({ status: "passed", summary: "not reached", claims: [] }) },
+      traceRecorder: new InMemoryProtocolTraceRecorder(new TraceIngestor(traces)),
+      objectiveOnlyMaximumWallClockMs: 5_000,
+      objectiveOnlyMaximumModelTokens: 100,
+    });
+
+    const result = await runtime.run({
+      ...job,
+      jobId: "job-count-redirect",
+      runId: "run-count-redirect",
+      target: { kind: "web", url: fixture.url },
+    });
+
+    const trace = traces.eventsFor("run-count-redirect");
+    expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
+    expect(countCalls).toBe(2);
+    expect(isVisible).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(getAttribute).not.toHaveBeenCalled();
+    expect(authorizationWindow.assertActionAuthorized).not.toHaveBeenCalled();
+    expect(clickEffect).not.toHaveBeenCalled();
+    expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
+  });
+
+  it("stops executor preflight when the visibility read redirects", async () => {
+    const graphId = "run-raced-executor-origin:observation:1";
+    const nodeId = "n-0-safe-control";
+    const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
+    const graph: ObservationGraph = {
+      graphId,
+      url: fixture.url,
+      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
+    };
+    let currentUrl = fixture.url;
+    let countCalls = 0;
+    const isEnabled = vi.fn(async () => true);
+    const getAttribute = vi.fn(async () => null);
+    const clickEffect = vi.fn(async () => undefined);
+    const authorizationWindow = { assertActionAuthorized: vi.fn() };
+    session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, descriptor]]),
+      artifacts: [],
+    });
+    session.withPage = async (operation) => operation({
+      url: () => currentUrl,
+      getByRole: () => ({
+        count: async () => {
+          countCalls += 1;
+          return 1;
+        },
+        isVisible: async () => {
+          currentUrl = cross.url;
+          return true;
+        },
+        isEnabled,
+        getAttribute,
         click: clickEffect,
       }),
     } as never);
@@ -723,9 +912,16 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const trace = traces.eventsFor("run-raced-executor-origin");
     expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
     expect(trace.filter((event) => event.stage === "action_resolved")).toHaveLength(1);
+    expect(countCalls).toBe(2);
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(getAttribute).not.toHaveBeenCalled();
     expect(authorizationWindow.assertActionAuthorized).not.toHaveBeenCalled();
     expect(clickEffect).not.toHaveBeenCalled();
     expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
+    expect(trace.at(-1)).toMatchObject({
+      stage: "run_completed",
+      payload: { status: "blocked", errorCode: "OriginViolation" },
+    });
     expect(JSON.stringify(trace)).not.toContain(cross.origin);
   });
 

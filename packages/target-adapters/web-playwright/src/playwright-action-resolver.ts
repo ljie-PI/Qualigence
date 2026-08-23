@@ -84,15 +84,10 @@ export class PlaywrightActionResolver implements ActionResolver {
     }
 
     return this.session.withPage(async (page) => {
-      this.session.assertPageTargetOrigin(page);
-      let count: number;
-      try {
-        count = await locatorFor(page, descriptor).count();
-      } catch (error) {
-        this.session.assertPageTargetOrigin(page);
-        throw error;
-      }
-      this.session.assertPageTargetOrigin(page);
+      const readOnExpectedOrigin = <T>(read: () => Promise<T>): Promise<T> =>
+        this.session.readOnExpectedOrigin(page, read);
+      const locator = locatorFor(page, descriptor);
+      const count = await readOnExpectedOrigin(() => locator.count());
 
       if (count === 0) {
         throw new WebTargetError(

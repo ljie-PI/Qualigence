@@ -172,6 +172,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     const page = {
       goto: vi.fn(async () => undefined),
       url: () => currentUrl,
+      on: vi.fn(),
       evaluate: vi.fn(async () => [{ role: "button", name: "Add to cart" }]),
       title: vi.fn(async () => "Facade"),
       screenshot: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
