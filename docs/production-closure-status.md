@@ -55,7 +55,7 @@ production_wiring: present
 verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 final_core_blocker_product_head: `b13ed8d6dac37581c2b6cf0a03e10811ea4fd040`
-final_review: pending fresh exact-base review after the remaining blocker fixes
+final_review: product behavior clean; pending scope-only exact-head confirmation
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
@@ -74,6 +74,9 @@ final_review: pending fresh exact-base review after the remaining blocker fixes
   writes, deterministic true-overlap same-key/same-command and
   same-key/different-command races, stale different-key/version conflict, process
   restart, tenant isolation, forced RLS, and one atomic immutable lineage.
+- Scope includes the shared test repository helper and MissionExecutionUseCase
+  caller test solely because Ticket 04 made the existing scheduling methods
+  required on `PrdMissionRepository`; no production behavior was added there.
 - Mission creation now pins the approved Test Plan ID/revision/hash and Target
   revision/hash in the immutable compiled Mission and dispatch binding. Mission
   start compares those values with the authoritative current Plan row/head and
@@ -1654,3 +1657,6 @@ files / 177 tests with `C:\Program Files\Git\usr\bin` on PATH for component
 mTLS. `corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner-kernel/execution-runtime.test.ts tests/e2e/cli-web-cart.test.ts`
 passed 3 files / 14 tests. `corepack pnpm typecheck` and `git diff --check`
 passed. Docker-backed PostgreSQL contract cases ran with no skips.
+- Final scope review includes exactly the shared test repository helper and
+  MissionExecutionUseCase caller test required by the now-mandatory existing
+  `PrdMissionRepository` scheduling methods. No production scope changed.
