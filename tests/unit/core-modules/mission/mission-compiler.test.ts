@@ -11,12 +11,15 @@ import type {
   TestPlanRevision,
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
+import { sha256Hex } from "@qualigence/context-intake";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
 
 const webTarget: TargetCapabilitySummary = {
   targetId: "target-web",
+  targetVersion: 1,
+  targetSnapshotHash: "target-hash",
   supportedStepKinds: ["navigate", "click", "verify"],
   capabilities: ["web.navigate", "web.click", "web.assert"],
 };

@@ -19,6 +19,8 @@ export type MissionStatus =
 /** A target's advertised capability surface, used to gate compilation. */
 export interface TargetCapabilitySummary {
   readonly targetId: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
   readonly supportedStepKinds: readonly IntentStep["kind"][];
   readonly capabilities: readonly string[];
 }
@@ -67,7 +69,12 @@ export interface CompiledMission {
   readonly missionId: string;
   readonly missionRevision: number;
   readonly projectId: string;
+  readonly planId: string;
+  readonly planVersion: number;
+  readonly planSnapshotHash: string;
   readonly targetId: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
   readonly executionPolicy: ApprovedExecutionPolicy;
   readonly jobs: readonly [ExecutionJob, ...ExecutionJob[]];
   readonly compiledHash: string;

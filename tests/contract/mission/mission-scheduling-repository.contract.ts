@@ -36,9 +36,29 @@ export interface MissionSchedulingHarness {
     readonly failAfterWrite?: number;
   }): Promise<ScheduledMission>;
   mutate(name: string, mutation: SchedulingMutation, tenantId?: string): Promise<void>;
+  mutateBeforeStart(name: string, mutation: SchedulingMutation, tenantId?: string): Promise<void>;
+  overlap(inputs: readonly [MissionSchedulingOverlapInput, MissionSchedulingOverlapInput]): Promise<readonly [MissionSchedulingOverlapResult, MissionSchedulingOverlapResult]>;
   state(name: string, tenantId?: string): Promise<SchedulingState>;
   restart(): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface MissionSchedulingStartInput {
+  readonly name: string;
+  readonly tenantId?: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion?: number;
+  readonly ids: MissionSchedulingIds;
+  readonly failAfterWrite?: number;
+}
+
+export interface MissionSchedulingOverlapInput extends Omit<MissionSchedulingStartInput, "ids"> {
+  readonly allocatorSuffix: string;
+}
+
+export interface MissionSchedulingOverlapResult {
+  readonly outcome: PromiseSettledResult<ScheduledMission>;
+  readonly allocations: number;
 }
 
 export interface MissionSchedulingContractAdapter {
@@ -74,9 +94,10 @@ export function schedulingFixture(name: string): MissionSchedulingFixture {
   const plan = { planId, projectId: `project-${name}`, prdId: `prd-${name}`, prdRevision: 1, version: 2, status: "approved", expectedClaims: [claim], testCases: [testCase], approval: { reviewerId: "reviewer-1", approvedAt: NOW, idempotencyKey: `approve-${name}` } };
   const policy = { policyId: `policy-${name}`, environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: NOW, expiresAt: "2026-08-22T00:01:00.000Z" };
   const compiledJob = { jobId: logicalJobId, missionId, missionRevision: 1, testCaseId: testCase.id, testCaseSnapshot: testCase, targetId, requiredCapabilities: ["web.click"], budget: { maximumStepsPerJob: 10, maximumWallClockMs: 60_000, maximumModelTokens: 1_000 }, status: "queued", idempotencyKey: `${missionId}:1:${testCase.id}`, snapshotHash: hash(JSON.stringify(testCase)) };
-  const compiled = { missionId, missionRevision: 1, projectId: `project-${name}`, targetId, executionPolicy: policy, jobs: [compiledJob], compiledHash: hash(JSON.stringify({ missionId, name })) };
-  const dispatch = { targetUrl: "https://example.test/", modelProfileId: "default", headed: false, navigationTimeoutMs: 30_000, actionTimeoutMs: 10_000, binding: { targetId, targetVersion: 1, targetSnapshotHash: `target-hash-${name}`, runnerId: `runner-${name}`, planVersion: 2, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } } };
-  return { missionId, planId, targetId, logicalJobId, planJson: JSON.stringify(plan), planHash: hash(JSON.stringify(plan)), compiledJson: JSON.stringify(compiled), compiledHash: compiled.compiledHash, dispatchJson: JSON.stringify(dispatch), jobSnapshotJson: JSON.stringify(testCase), jobSnapshotHash: compiledJob.snapshotHash, sourceRefsJson: JSON.stringify(sourceRefs), requiredCapabilitiesJson: JSON.stringify(compiledJob.requiredCapabilities) };
+  const planHash = hash(JSON.stringify(plan));
+  const compiled = { missionId, missionRevision: 1, projectId: `project-${name}`, planId, planVersion: 2, planSnapshotHash: planHash, targetId, targetVersion: 1, targetSnapshotHash: `target-hash-${name}`, executionPolicy: policy, jobs: [compiledJob], compiledHash: hash(JSON.stringify({ missionId, name })) };
+  const dispatch = { targetUrl: "https://example.test/", modelProfileId: "default", headed: false, navigationTimeoutMs: 30_000, actionTimeoutMs: 10_000, binding: { targetId, targetVersion: 1, targetSnapshotHash: `target-hash-${name}`, runnerId: `runner-${name}`, planVersion: 2, planSnapshotHash: planHash, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } } };
+  return { missionId, planId, targetId, logicalJobId, planJson: JSON.stringify(plan), planHash, compiledJson: JSON.stringify(compiled), compiledHash: compiled.compiledHash, dispatchJson: JSON.stringify(dispatch), jobSnapshotJson: JSON.stringify(testCase), jobSnapshotHash: compiledJob.snapshotHash, sourceRefsJson: JSON.stringify(sourceRefs), requiredCapabilitiesJson: JSON.stringify(compiledJob.requiredCapabilities) };
 }
 
 export function missionSchedulingRepositoryContract(name: string, adapter: MissionSchedulingContractAdapter): void {
@@ -109,6 +130,16 @@ export function missionSchedulingRepositoryContract(name: string, adapter: Missi
       } finally { await harness.close(); }
     });
 
+    it("rejects a Test Plan changed before Mission pre-load without allocating or writing", async () => {
+      const harness = await adapter.createHarness();
+      try {
+        await harness.seed("preload-plan-hash");
+        await harness.mutateBeforeStart("preload-plan-hash", "plan_hash");
+        await expect(harness.start({ name: "preload-plan-hash", idempotencyKey: "start-preload-plan-hash", ids: throwingIds() })).rejects.toMatchObject({ code: "PlanHashConflict" });
+        expect(await harness.state("preload-plan-hash")).toMatchObject({ missionStatus: "approved", missionVersion: 1, commands: 0, runs: 0, attempts: 0, runnerJobs: 0, provenance: 0, outbox: 0, wakeups: 0 });
+      } finally { await harness.close(); }
+    });
+
     it.each([
       ["mission_revision", "MissionRevisionConflict"], ["mission_hash", "MissionHashConflict"],
       ["mission_status", "MissionStatusConflict"], ["mission_version", "MissionVersionConflict"],
@@ -136,19 +167,60 @@ export function missionSchedulingRepositoryContract(name: string, adapter: Missi
       } finally { await harness.close(); }
     });
 
-    it("allocates identities once under concurrent semantic replay", async () => {
+    it("overlaps same-key same-command writers and replays the winner without a second allocation", async () => {
       const harness = await adapter.createHarness();
       try {
-        await harness.seed("concurrent");
-        let allocations = 0;
-        const allocatingIds: MissionSchedulingIds = { allocateAttemptId: () => `attempt-${++allocations}`, allocateRunnerJobId: () => `runner-job-${++allocations}`, allocateRunId: () => `run-${++allocations}` };
-        const [first, second] = await Promise.all([
-          harness.start({ name: "concurrent", idempotencyKey: "same-command", ids: allocatingIds }),
-          new Promise((resolve) => setTimeout(resolve, 25)).then(() => harness.start({ name: "concurrent", idempotencyKey: "same-command", ids: allocatingIds })),
+        await harness.seed("same-command");
+        const results = await harness.overlap([
+          { name: "same-command", idempotencyKey: "same-command-overlap-key", allocatorSuffix: "first" },
+          { name: "same-command", idempotencyKey: "same-command-overlap-key", allocatorSuffix: "second" },
         ]);
-        expect(second).toEqual(first);
-        expect(allocations).toBe(3);
-        expect(await harness.state("concurrent")).toMatchObject({ commands: 1, runs: 1, attempts: 1, outbox: 1, wakeups: 1 });
+        const outcomes = results.map(({ outcome }) => outcome);
+        expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
+        const values = outcomes.flatMap((outcome) => outcome.status === "fulfilled" ? [outcome.value] : []);
+        expect(values[1]).toEqual(values[0]);
+        expect(results.map(({ allocations }) => allocations).sort()).toEqual([0, 3]);
+        expect(await harness.state("same-command")).toMatchObject({ missionStatus: "running", missionVersion: 2, commands: 1, runs: 1, attempts: 1, runnerJobs: 1, provenance: 1, outbox: 1, wakeups: 1 });
+      } finally { await harness.close(); }
+    });
+
+    it("overlaps same-key different-command writers and binds the key to one atomic winner", async () => {
+      const harness = await adapter.createHarness();
+      try {
+        await harness.seed("different-command-a");
+        await harness.seed("different-command-b");
+        const results = await harness.overlap([
+          { name: "different-command-a", idempotencyKey: "shared-key", allocatorSuffix: "different-a" },
+          { name: "different-command-b", idempotencyKey: "shared-key", allocatorSuffix: "different-b" },
+        ]);
+        const outcomes = results.map(({ outcome }) => outcome);
+        expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+        expect(outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason)).toEqual([
+          expect.objectContaining({ code: "IdempotencyConflict", actualVersion: 2 }),
+        ]);
+        expect(results.map(({ allocations }) => allocations).sort()).toEqual([0, 3]);
+        const states = await Promise.all([harness.state("different-command-a"), harness.state("different-command-b")]);
+        expect(states.map((state) => state.missionStatus).sort()).toEqual(["approved", "running"]);
+        for (const field of ["commands", "runs", "attempts", "runnerJobs", "provenance", "outbox", "wakeups"] as const) {
+          expect(states.reduce((sum, state) => sum + state[field], 0), field).toBe(1);
+        }
+      } finally { await harness.close(); }
+    });
+
+    it("overlaps different-key writers and returns a stable stale-version conflict with one atomic state", async () => {
+      const harness = await adapter.createHarness();
+      try {
+        await harness.seed("different-key");
+        const results = await harness.overlap([
+          { name: "different-key", idempotencyKey: "key-a", allocatorSuffix: "first-key" },
+          { name: "different-key", idempotencyKey: "key-b", allocatorSuffix: "second-key" },
+        ]);
+        const outcomes = results.map(({ outcome }) => outcome);
+        expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+        expect(outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason)).toEqual([
+          expect.objectContaining({ code: "MissionVersionConflict", actualVersion: 2 }),
+        ]);
+        expect(await harness.state("different-key")).toMatchObject({ missionStatus: "running", missionVersion: 2, commands: 1, runs: 1, attempts: 1, runnerJobs: 1, provenance: 1, outbox: 1, wakeups: 1 });
       } finally { await harness.close(); }
     });
 

@@ -26,10 +26,12 @@ const mission: SchedulingMission = {
   compiledHash: "compiled-hash",
   projectId: "project-1",
   planId: "plan-1",
+  planVersion: 2,
   planSnapshotHash: "plan-hash",
-  planSnapshotJson: "{}",
   prdId: "prd-1",
   prdRevision: 1,
+  targetVersion: 3,
+  targetSnapshotHash: "target-hash",
   status: "approved",
   dispatch: {
     targetUrl: "https://example.test/",
@@ -43,6 +45,7 @@ const mission: SchedulingMission = {
       targetSnapshotHash: "target-hash",
       runnerId: "runner-1",
       planVersion: 2,
+      planSnapshotHash: "plan-hash",
       configuration: {
         kind: "web",
         startUrl: "https://example.test/",

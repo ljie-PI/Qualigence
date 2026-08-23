@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ProjectTargetRepository, TargetRevision } from "@qualigence/project-target";
-import { MissionCompiler } from "./mission-compiler.js";
+import { MissionCompiler, testPlanSnapshotHash } from "./mission-compiler.js";
 import type { DispatchableMission, PrdMissionRepository } from "./prd-mission-repository.js";
 import type { TestPlanRepository } from "./test-plan-repository.js";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
@@ -138,6 +138,7 @@ export class MissionIntakeService {
     const [firstTestCaseId, ...restTestCaseIds] = testCaseIds;
     if (firstTestCaseId === undefined) throw new MissionIntakeError("MissionCompilationFailed", "approved Test Plan has no test cases");
     const maximumWallClockMs = 60_000;
+    const planHash = testPlanSnapshotHash(plan);
     const mission: TestMission = {
       missionId: id,
       projectId: command.projectId,
@@ -148,7 +149,7 @@ export class MissionIntakeService {
       executionPolicy: approvedPolicy(target, this.clock.now(), maximumWallClockMs),
       status: "approved",
     };
-    const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, supportedStepKinds: supportedKinds(target), capabilities: [] });
+    const compiled = this.compiler.compile(plan, mission, { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, supportedStepKinds: supportedKinds(target), capabilities: [] });
     if (!compiled.ok) throw new MissionIntakeError("MissionCompilationFailed", compiled.error.message);
     const targetUrl = target.configuration.kind === "web" ? target.configuration.startUrl : "https://desktop.invalid/";
     const saved = await this.missions.saveCompiledMission({
@@ -163,7 +164,7 @@ export class MissionIntakeService {
         headed: target.configuration.kind === "desktop",
         navigationTimeoutMs: 30_000,
         actionTimeoutMs: 10_000,
-        binding: { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, runnerId: target.runnerId, planVersion: plan.version, configuration: target.configuration },
+        binding: { targetId: target.targetId, targetVersion: target.version, targetSnapshotHash: target.snapshotHash, runnerId: target.runnerId, planVersion: plan.version, planSnapshotHash: planHash, configuration: target.configuration },
       },
       stopOnBlockedTestCase: true,
     });

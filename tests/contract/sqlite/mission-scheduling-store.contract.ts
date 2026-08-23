@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import {
   MissionSchedulingService,
   type MissionSchedulingRepository,
@@ -12,6 +13,7 @@ import {
   missionSchedulingRepositoryContract,
   schedulingFixture,
   type MissionSchedulingHarness,
+  type MissionSchedulingStartInput,
   type SchedulingMutation,
 } from "../mission/mission-scheduling-repository.contract.js";
 
@@ -34,9 +36,7 @@ missionSchedulingRepositoryContract("SQLite", {
         await seed(await runtime(tenantId), name);
       },
       async start(input) {
-        const primary = await runtime(input.tenantId);
-        const concurrent = await SqliteRuntime.open({ filename: join(directory, `${input.tenantId ?? "local"}.db`), busyTimeoutMs: 5_000 });
-        const database = primary;
+        const database = await runtime(input.tenantId);
         const persisted = new SqliteMissionSchedulingRepository(database, input.failAfterWrite);
         const key = `${input.tenantId ?? "local"}:${input.name}`;
         const repository: MissionSchedulingRepository = {
@@ -52,22 +52,34 @@ missionSchedulingRepositoryContract("SQLite", {
           },
           schedule: (scheduleInput) => persisted.schedule(scheduleInput),
         };
-        try {
-          return await new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({ missionId: schedulingFixture(input.name).missionId, expectedVersion: input.expectedVersion ?? 1, idempotencyKey: input.idempotencyKey });
-        } catch (error) {
-          // If the shared primary is already inside BEGIN IMMEDIATE, retry this
-          // caller on its own connection so SQLite exercises true two-writer serialization.
-          if (error instanceof Error && error.message.includes("within a transaction")) {
-            const retryStore = new SqliteMissionSchedulingRepository(concurrent, input.failAfterWrite);
-            return await new MissionSchedulingService(retryStore, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({ missionId: schedulingFixture(input.name).missionId, expectedVersion: input.expectedVersion ?? 1, idempotencyKey: input.idempotencyKey });
-          }
-          throw error;
-        } finally {
-          await concurrent.close();
-        }
+        return startWithRepository(repository, input);
       },
       async mutate(name, mutation, tenantId) {
         pendingMutations.set(`${tenantId ?? "local"}:${name}`, mutation);
+      },
+      async mutateBeforeStart(name, mutation, tenantId) {
+        await applyMutation(await runtime(tenantId), name, mutation);
+      },
+      async overlap(inputs) {
+        const workers = inputs.map((input) => new Worker(new URL("./mission-scheduling-worker.mjs", import.meta.url), {
+          workerData: {
+            filename: join(directory, `${input.tenantId ?? "local"}.db`),
+            name: input.name,
+            idempotencyKey: input.idempotencyKey,
+            expectedVersion: input.expectedVersion ?? 1,
+            allocatorSuffix: input.allocatorSuffix,
+          },
+        }));
+        try {
+          await Promise.all(workers.map(waitForLoaded));
+          const results = workers.map(waitForResult);
+          workers.forEach((worker) => worker.postMessage("release"));
+          const [first, second] = await Promise.all(results);
+          if (first === undefined || second === undefined) throw new Error("Both SQLite scheduling workers must return a result");
+          return [first, second];
+        } finally {
+          await Promise.all(workers.map((worker) => worker.terminate()));
+        }
       },
       async state(name, tenantId) {
         return readState(await runtime(tenantId), name);
@@ -85,6 +97,28 @@ missionSchedulingRepositoryContract("SQLite", {
     };
   },
 });
+
+function startWithRepository(repository: MissionSchedulingRepository, input: MissionSchedulingStartInput) {
+  return new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({
+    missionId: schedulingFixture(input.name).missionId,
+    expectedVersion: input.expectedVersion ?? 1,
+    idempotencyKey: input.idempotencyKey,
+  });
+}
+
+function waitForLoaded(worker: Worker): Promise<void> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", (message: { type?: string }) => message.type === "loaded" ? resolve() : reject(new Error(`Unexpected worker message: ${JSON.stringify(message)}`)));
+    worker.once("error", reject);
+  });
+}
+
+function waitForResult(worker: Worker): Promise<Awaited<ReturnType<MissionSchedulingHarness["overlap"]>>[number]> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+}
 
 async function seed(runtime: SqliteRuntime, name: string): Promise<void> {
   const fixture = schedulingFixture(name);

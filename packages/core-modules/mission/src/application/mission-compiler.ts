@@ -34,6 +34,10 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
+export function testPlanSnapshotHash(plan: TestPlanRevision): string {
+  return sha256Hex(JSON.stringify(plan));
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const nested of Object.values(value as Record<string, unknown>)) {
@@ -168,7 +172,12 @@ export class MissionCompiler {
         missionId: mission.missionId,
         missionRevision: mission.revision,
         projectId: mission.projectId,
+        planId: plan.planId,
+        planVersion: plan.version,
+        planSnapshotHash: testPlanSnapshotHash(plan),
         targetId: mission.targetId,
+        targetVersion: target.targetVersion,
+        targetSnapshotHash: target.targetSnapshotHash,
         jobs: jobs.map((job) => ({
           jobId: job.jobId,
           testCaseId: job.testCaseId,
@@ -187,7 +196,12 @@ export class MissionCompiler {
         missionId: mission.missionId,
         missionRevision: mission.revision,
         projectId: mission.projectId,
+        planId: plan.planId,
+        planVersion: plan.version,
+        planSnapshotHash: testPlanSnapshotHash(plan),
         targetId: mission.targetId,
+        targetVersion: target.targetVersion,
+        targetSnapshotHash: target.targetSnapshotHash,
         executionPolicy: deepFreeze(structuredClone(mission.executionPolicy)),
         jobs: [firstJob, ...restJobs],
         compiledHash,

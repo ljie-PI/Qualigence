@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import type {
   CompiledMission,
@@ -30,7 +29,7 @@ export class PostgresPrdMissionRepository implements PrdMissionRepository {
 
   async saveCompiledMission(input: SaveCompiledMissionInput): Promise<DispatchableMission> {
     const mission = input.mission;
-    if (mission.projectId !== input.projectId) throw new Error("Compiled Mission project provenance does not match its persistence scope.");
+    assertMissionProvenance(input);
     const inserted = await this.db.insertInto("missions").values({ tenant_id: this.tenantId, mission_id: mission.missionId, revision: mission.missionRevision, project_id: input.projectId, plan_id: input.planId, prd_id: input.prdId, prd_revision: input.prdRevision, target_id: mission.targetId, compiled_hash: mission.compiledHash, status: "approved", dispatch_json: JSON.stringify(input.dispatch), stop_on_blocked: input.stopOnBlockedTestCase ? 1 : 0 }).onConflict((oc) => oc.columns(["tenant_id", "mission_id", "revision"]).doNothing()).executeTakeFirst();
     if (Number(inserted.numInsertedOrUpdatedRows) !== 1) {
       const winner = await this.loadMissionForDispatch(mission.missionId);
@@ -69,9 +68,8 @@ export class PostgresPrdMissionRepository implements PrdMissionRepository {
     const compiled = JSON.parse(compiledRow.compiled_json) as CompiledMission;
     const jobs = await this.db.selectFrom("execution_jobs").selectAll().where("tenant_id", "=", this.tenantId).where("mission_id", "=", missionId).where("mission_revision", "=", mission.revision).orderBy("job_id").execute();
     const dispatch = JSON.parse(mission.dispatch_json) as MissionDispatchDescriptor;
-    const plan = dispatch.binding === undefined ? undefined : await this.db.selectFrom("test_plan_version_revisions").select("plan_json").where("tenant_id", "=", this.tenantId).where("plan_id", "=", mission.plan_id).where("version", "=", dispatch.binding.planVersion).executeTakeFirst();
     const head = await this.db.selectFrom("mission_scheduling_heads").selectAll().where("tenant_id", "=", this.tenantId).where("mission_id", "=", missionId).executeTakeFirst();
-    return { missionId, missionRevision: mission.revision, missionVersion: head?.version ?? 1, compiledHash: mission.compiled_hash, projectId: mission.project_id, planId: mission.plan_id, planSnapshotHash: plan === undefined ? "" : createHash("sha256").update(plan.plan_json).digest("hex"), planSnapshotJson: plan?.plan_json ?? "", prdId: mission.prd_id, prdRevision: mission.prd_revision, status: mission.status as MissionStatus, dispatch, executionPolicy: compiled.executionPolicy, stopOnBlockedTestCase: mission.stop_on_blocked === 1, jobs: jobs.map((job) => { const compiledJob = compiled.jobs.find((candidate) => candidate.jobId === job.job_id); if (compiledJob === undefined) throw new Error(`Missing compiled Job ${job.job_id}.`); return { jobId: job.job_id, testCaseId: job.test_case_id, objective: job.objective, requiredCapabilities: JSON.parse(job.required_capabilities_json) as string[], status: job.status as ExecutionJobStatus, sourceRefs: JSON.parse(job.source_refs_json) as PrdSourceRef[], snapshotHash: job.snapshot_hash, snapshot: JSON.parse(job.snapshot_json) as TestCase, budget: compiledJob.budget }; }) };
+    return { missionId, missionRevision: mission.revision, missionVersion: head?.version ?? 1, compiledHash: mission.compiled_hash, projectId: mission.project_id, planId: mission.plan_id, planVersion: compiled.planVersion, planSnapshotHash: compiled.planSnapshotHash, prdId: mission.prd_id, prdRevision: mission.prd_revision, targetVersion: compiled.targetVersion, targetSnapshotHash: compiled.targetSnapshotHash, status: mission.status as MissionStatus, dispatch, executionPolicy: compiled.executionPolicy, stopOnBlockedTestCase: mission.stop_on_blocked === 1, jobs: jobs.map((job) => { const compiledJob = compiled.jobs.find((candidate) => candidate.jobId === job.job_id); if (compiledJob === undefined) throw new Error(`Missing compiled Job ${job.job_id}.`); return { jobId: job.job_id, testCaseId: job.test_case_id, objective: job.objective, requiredCapabilities: JSON.parse(job.required_capabilities_json) as string[], status: job.status as ExecutionJobStatus, sourceRefs: JSON.parse(job.source_refs_json) as PrdSourceRef[], snapshotHash: job.snapshot_hash, snapshot: JSON.parse(job.snapshot_json) as TestCase, budget: compiledJob.budget }; }) };
   }
 
   async recordJobAttempt(attempt: JobAttemptRecord): Promise<void> { await this.db.insertInto("execution_job_attempts").values({ tenant_id: this.tenantId, attempt_id: attempt.attemptId, job_id: attempt.jobId, mission_id: attempt.missionId, run_id: attempt.runId, status: attempt.status, error_code: attempt.errorCode ?? null, created_at: attempt.createdAt }).onConflict((oc) => oc.columns(["tenant_id", "attempt_id"]).doNothing()).execute(); }
@@ -81,5 +79,21 @@ export class PostgresPrdMissionRepository implements PrdMissionRepository {
     const mission = await this.loadMissionForDispatch(missionId);
     if (mission === undefined) return undefined;
     return { missionId, missionRevision: mission.missionRevision, projectId: mission.projectId, planId: mission.planId, prdId: mission.prdId, prdRevision: mission.prdRevision, status: mission.status, jobs: mission.jobs.map((job) => ({ jobId: job.jobId, testCaseId: job.testCaseId, status: job.status, sourceRefs: job.sourceRefs, attempts: [] })) };
+  }
+}
+
+function assertMissionProvenance(input: SaveCompiledMissionInput): void {
+  const binding = input.dispatch.binding;
+  if (
+    input.mission.projectId !== input.projectId ||
+    input.mission.planId !== input.planId ||
+    binding === undefined ||
+    input.mission.targetId !== binding.targetId ||
+    input.mission.planVersion !== binding.planVersion ||
+    input.mission.planSnapshotHash !== binding.planSnapshotHash ||
+    input.mission.targetVersion !== binding.targetVersion ||
+    input.mission.targetSnapshotHash !== binding.targetSnapshotHash
+  ) {
+    throw new Error("Compiled Mission provenance does not match its persistence scope.");
   }
 }

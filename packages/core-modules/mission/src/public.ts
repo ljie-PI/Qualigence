@@ -31,6 +31,7 @@ export type {
 export {
   canonicalJson,
   MissionCompiler,
+  testPlanSnapshotHash,
 } from "./application/mission-compiler.js";
 
 export {

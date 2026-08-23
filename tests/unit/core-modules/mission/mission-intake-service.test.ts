@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { approveTestPlan, createDraftTestPlan, MissionIntakeService, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { createTargetRevision, type ProjectTargetRepository } from "@qualigence/project-target";
@@ -29,6 +30,15 @@ describe("MissionIntakeService policy issuance", () => {
 
     await service.create({ projectId: "project-1", targetId: "target-1", targetVersion: 1, targetSnapshotHash: target.snapshotHash, planId: approved.value.planId, planVersion: 2, idempotencyKey: "mission-create" });
 
+    const approvedPlanHash = createHash("sha256").update(JSON.stringify(approved.value)).digest("hex");
+    expect(saved?.mission).toMatchObject({
+      planId: approved.value.planId,
+      planVersion: approved.value.version,
+      planSnapshotHash: approvedPlanHash,
+      targetVersion: target.version,
+      targetSnapshotHash: target.snapshotHash,
+    });
+    expect(saved?.dispatch.binding).toMatchObject({ planSnapshotHash: approvedPlanHash });
     expect(saved?.mission.executionPolicy).toMatchObject({ issuedAt: now, expiresAt: "2026-08-21T12:01:00.000Z" });
     const job = saved?.mission.jobs[0];
     expect(DeterministicRunnerPolicyGate.admitJob({

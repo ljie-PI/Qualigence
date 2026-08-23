@@ -1,7 +1,9 @@
-import { afterAll, beforeAll, describe } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
+import { Client } from "pg";
 import {
   MissionSchedulingService,
   type MissionSchedulingRepository,
+  type ScheduledMission,
 } from "@qualigence/mission";
 import {
   createPostgresRuntime,
@@ -14,6 +16,8 @@ import {
   missionSchedulingRepositoryContract,
   schedulingFixture,
   type MissionSchedulingHarness,
+  type MissionSchedulingOverlapResult,
+  type MissionSchedulingStartInput,
   type SchedulingMutation,
 } from "../mission/mission-scheduling-repository.contract.js";
 
@@ -40,28 +44,61 @@ describe("PostgreSQL Mission scheduling provider", () => {
   missionSchedulingRepositoryContract("PostgreSQL", {
     async createHarness(): Promise<MissionSchedulingHarness> {
       const pendingMutations = new Map<string, SchedulingMutation>();
+      const start = (input: MissionSchedulingStartInput, afterLoad?: () => Promise<void>) => provider.withTenant(input.tenantId ?? "tenant-a", async ({ db }) => {
+        const tenantId = input.tenantId ?? "tenant-a";
+        const persisted = new PostgresMissionSchedulingRepository(db, tenantId, input.failAfterWrite);
+        const key = `${tenantId}:${input.name}`;
+        const repository: MissionSchedulingRepository = {
+          replay: (command) => persisted.replay(command),
+          async loadMission(missionId) {
+            const snapshot = await persisted.loadMission(missionId);
+            const mutation = pendingMutations.get(key);
+            if (mutation !== undefined) {
+              pendingMutations.delete(key);
+              await applyMutation(db, tenantId, input.name, mutation);
+            }
+            await afterLoad?.();
+            return snapshot;
+          },
+          schedule: (scheduleInput) => persisted.schedule(scheduleInput),
+        };
+        return startWithRepository(repository, input);
+      });
       return {
         seed: (name, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => seed(db, tenantId, name)),
-        start: (input) => provider.withTenant(input.tenantId ?? "tenant-a", async ({ db }) => {
-          const tenantId = input.tenantId ?? "tenant-a";
-          const persisted = new PostgresMissionSchedulingRepository(db, tenantId, input.failAfterWrite);
-          const key = `${tenantId}:${input.name}`;
-          const repository: MissionSchedulingRepository = {
-            replay: (command) => persisted.replay(command),
-            async loadMission(missionId) {
-              const snapshot = await persisted.loadMission(missionId);
-              const mutation = pendingMutations.get(key);
-              if (mutation !== undefined) {
-                pendingMutations.delete(key);
-                await applyMutation(db, tenantId, input.name, mutation);
-              }
-              return snapshot;
-            },
-            schedule: (scheduleInput) => persisted.schedule(scheduleInput),
-          };
-          return new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({ missionId: schedulingFixture(input.name).missionId, expectedVersion: input.expectedVersion ?? 1, idempotencyKey: input.idempotencyKey });
-        }),
+        start,
         async mutate(name, mutation, tenantId = "tenant-a") { pendingMutations.set(`${tenantId}:${name}`, mutation); },
+        mutateBeforeStart: (name, mutation, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => applyMutation(db, tenantId, name, mutation)),
+        async overlap(inputs) {
+          const blocker = new Client({ host: container.host, port: container.port, database: container.database, user: container.superuser, password: container.password });
+          const lockId = 742_004;
+          const loaded = inputs.map(() => deferred<void>());
+          const release = deferred<void>();
+          const counters = inputs.map(({ allocatorSuffix }) => countingIds(allocatorSuffix));
+          const operations: Promise<PromiseSettledResult<ScheduledMission>>[] = [];
+          await blocker.connect();
+          try {
+            await installMissionUpdateBarrier(blocker, lockId);
+            operations.push(...inputs.map((input, index) => settle(start({ ...input, ids: counters[index]!.ids }, async () => {
+              loaded[index]!.resolve();
+              await release.promise;
+            }))));
+            await Promise.all(loaded.map(({ promise }) => promise));
+            release.resolve();
+            const waits = await waitForConcurrentMissionWriters(blocker, 2);
+            expect(waits).toEqual(expect.arrayContaining(["advisory"]));
+            await blocker.query("select pg_advisory_unlock($1)", [lockId]);
+            const outcomes = await Promise.all(operations);
+            return outcomes.map((outcome, index): MissionSchedulingOverlapResult => ({ outcome, allocations: counters[index]!.count() })) as [MissionSchedulingOverlapResult, MissionSchedulingOverlapResult];
+          } finally {
+            release.resolve();
+            await blocker.query("select pg_advisory_unlock_all()").catch(() => undefined);
+            await Promise.allSettled(operations);
+            await blocker.query("drop trigger if exists block_mission_start_update on missions").catch(() => undefined);
+            await blocker.query("drop function if exists block_mission_start_update()").catch(() => undefined);
+            await blocker.end();
+          }
+        },
         state: (name, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => readState(db, tenantId, name)),
         async restart() {
           await provider.close();
@@ -72,6 +109,70 @@ describe("PostgreSQL Mission scheduling provider", () => {
     },
   });
 });
+
+function startWithRepository(repository: MissionSchedulingRepository, input: MissionSchedulingStartInput) {
+  return new MissionSchedulingService(repository, input.ids, { now: () => "2026-08-22T00:00:00.000Z" }).start({
+    missionId: schedulingFixture(input.name).missionId,
+    expectedVersion: input.expectedVersion ?? 1,
+    idempotencyKey: input.idempotencyKey,
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  try { return { status: "fulfilled", value: await promise }; }
+  catch (reason) { return { status: "rejected", reason }; }
+}
+
+function countingIds(suffix: string) {
+  let count = 0;
+  return {
+    ids: {
+      allocateAttemptId: () => `attempt-${suffix}-${++count}`,
+      allocateRunnerJobId: () => `runner-job-${suffix}-${++count}`,
+      allocateRunId: () => `run-${suffix}-${++count}`,
+    },
+    count: () => count,
+  };
+}
+
+async function installMissionUpdateBarrier(client: Client, lockId: number): Promise<void> {
+  await client.query("drop trigger if exists block_mission_start_update on missions");
+  await client.query(`
+    create or replace function block_mission_start_update()
+    returns trigger as $$
+    begin
+      perform pg_advisory_xact_lock(${lockId});
+      return new;
+    end;
+    $$ language plpgsql
+  `);
+  await client.query(`
+    create trigger block_mission_start_update
+    before update on missions
+    for each row execute function block_mission_start_update()
+  `);
+  await client.query("select pg_advisory_lock($1)", [lockId]);
+}
+
+async function waitForConcurrentMissionWriters(client: Client, expected: number): Promise<readonly string[]> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await client.query<{ wait_event: string }>(`
+      select wait_event
+      from pg_stat_activity
+      where usename = 'mission_server'
+        and wait_event_type = 'Lock'
+    `);
+    if (result.rows.length >= expected) return result.rows.map(({ wait_event }) => wait_event);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${expected} concurrent Mission writers`);
+}
 
 type Db = Parameters<Parameters<TenantTransactionProvider["withTenant"]>[1]>[0]["db"];
 

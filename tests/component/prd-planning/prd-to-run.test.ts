@@ -300,6 +300,8 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
 
       const target: TargetCapabilitySummary & PlannerTargetSummary = {
         targetId: "target-web",
+        targetVersion: 1,
+        targetSnapshotHash: "target-web-hash",
         supportedStepKinds: ["navigate", "click", "verify"],
         capabilities: ["web.navigate", "web.click", "web.assert"],
       };
@@ -375,6 +377,15 @@ describe("PRD → intake → plan → mission → execution (component)", () => 
           headed: false,
           navigationTimeoutMs: 20_000,
           actionTimeoutMs: 15_000,
+          binding: {
+            targetId: target.targetId,
+            targetVersion: target.targetVersion,
+            targetSnapshotHash: target.targetSnapshotHash,
+            runnerId: "runner-1",
+            planVersion: approved.value.version,
+            planSnapshotHash: sha256Hex(JSON.stringify(approved.value)),
+            configuration: { kind: "web", startUrl: fixture.url, allowedOrigins: [fixture.origin], browser: "chromium" },
+          },
         },
         stopOnBlockedTestCase: true,
       });

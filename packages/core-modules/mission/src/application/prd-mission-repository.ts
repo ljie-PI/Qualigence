@@ -30,6 +30,7 @@ export interface MissionDispatchDescriptor {
     readonly targetSnapshotHash: string;
     readonly runnerId: string;
     readonly planVersion: number;
+    readonly planSnapshotHash: string;
     readonly configuration: TargetConfiguration;
   };
 }
@@ -75,8 +76,10 @@ export interface DispatchableMission {
 export interface MissionSchedulingSnapshot extends DispatchableMission {
   readonly missionVersion: number;
   readonly compiledHash: string;
+  readonly planVersion: number;
   readonly planSnapshotHash: string;
-  readonly planSnapshotJson: string;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
   readonly jobs: readonly (DispatchableJob & {
     readonly snapshotHash: string;
     readonly budget: {

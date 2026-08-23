@@ -80,10 +80,12 @@ export interface SchedulingMission {
   readonly compiledHash: string;
   readonly projectId: string;
   readonly planId: string;
+  readonly planVersion: number;
   readonly planSnapshotHash: string;
-  readonly planSnapshotJson: string;
   readonly prdId: string;
   readonly prdRevision: number;
+  readonly targetVersion: number;
+  readonly targetSnapshotHash: string;
   readonly status: MissionStatus;
   readonly dispatch: MissionDispatchDescriptor;
   readonly executionPolicy: ApprovedExecutionPolicy;
