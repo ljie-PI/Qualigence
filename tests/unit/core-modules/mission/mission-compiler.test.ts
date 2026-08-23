@@ -108,20 +108,19 @@ describe("MissionCompiler", () => {
     expect(job.status).toBe("queued");
     expect(job.requiredCapabilities).toEqual([
       "action:click",
-      "action:navigate",
       "model:structured-output",
       "target:web-playwright",
     ]);
     expect(negotiateCapabilities(capabilities({
       targetAdapters: ["web-playwright"],
-      actionKinds: ["navigate", "click"],
+      actionKinds: ["click"],
     }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
     expect(negotiateCapabilities(capabilities({
       targetAdapters: ["web-playwright"],
-      actionKinds: ["click"],
+      actionKinds: [],
     }), job.requiredCapabilities)).toEqual({
       outcome: "rejected",
-      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:navigate"] },
+      rejection: { code: "CapabilityMismatch", missingCapabilities: ["action:click"] },
     });
     expect(result.value.projectId).toBe("p");
     expect(Object.isFrozen(job.testCaseSnapshot)).toBe(true);

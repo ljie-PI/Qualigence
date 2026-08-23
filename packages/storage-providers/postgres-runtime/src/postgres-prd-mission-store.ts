@@ -267,7 +267,7 @@ function assertReceiptIdentity(row: MissionDispatchRow, receipt: MissionDispatch
 
 function acceptedDispatchReplay(row: MissionDispatchRow, receipt: MissionDispatchAcceptanceReceipt, expectedVersion: number): AcceptedMissionDispatch | undefined {
   if (row.status !== "accepted") return undefined;
-  if (row.version !== expectedVersion + 1 || row.acceptance_receipt_json !== JSON.stringify(receipt)) throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission dispatch was accepted with another receipt", row.version);
+  if (row.version !== expectedVersion + 1 || row.accepted_at !== receipt.acceptedAt || row.acceptance_receipt_json !== JSON.stringify(receipt)) throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission dispatch was accepted with another receipt", row.version);
   return acceptedDispatch(row, receipt);
 }
 
