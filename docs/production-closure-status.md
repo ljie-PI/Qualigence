@@ -39,7 +39,7 @@ in `docs/superpowers/plans/2026-08-16-production-closure-temporary.md`.
 | Task 12 Self-hosted product/scheduling | partial | partial | blocked | Ticket 03 Target/Test Plan intake is implemented pending its dedicated PR; tickets 04-06 still own Mission scheduling/dispatch and Skill paths |
 | Task 13 durable Intelligence processing | partial | missing | blocked | Remaining tickets 07-08; production durable lease/wakeup/result loop incomplete |
 | Task 14 Self-hosted Runner/data plane | partial | missing | blocked | Remaining tickets 09-15; tenant application, Run/Trace/Artifact, Evidence, operations, and acceptance incomplete |
-| Task 16 bounded Web execution | complete | present | pending PR | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 review and Chromium acceptance remain pending |
+| Task 16 bounded Web execution | complete | present | passed; pending PR | Tickets 16-19 implement the immutable contract, budgets, production valueRef resolution, and bounded indexed Runtime; Ticket 19 focused Gate, exact-base review, and Chromium acceptance pass |
 | LS-09 exploration/Reference benchmark closure | partial | partial | blocked | Remaining tickets 20-21; release evidence does not yet use the configured Reference Model Profile end to end |
 | Task 17 Observation Graph v1 live migration | partial | missing | blocked | Remaining tickets 22-25; Graph v1 remains `candidate` and live legacy use remains |
 | Task 18 Desktop Runner path | partial | missing | blocked | Remaining tickets 26-28; production TypeScript Companion path incomplete |
@@ -374,13 +374,18 @@ remediation_pull_request: `https://github.com/ljie-PI/Qualigence/pull/73`
   remediation Standards/Spec review reported no blocking findings; PR #73
   remains pending merge into the parent Ticket 17 branch.
 
-### Ticket 19 - Bounded multi-step Web Runtime (2026-08-22)
+### Ticket 19 - Bounded multi-step Web Runtime (2026-08-23)
 
 component: complete
 production_wiring: present
-verification: pending dedicated PR, scoped review, and Chromium acceptance
+verification: passed; pending dedicated PR merge
 review_fix_base: `31f6737a479a9a9c2deae30ba5acf4cd160ad7b9`
 review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded runtime review blockers`)
+implementation_head: `683b0b74450157a2d358a965a095c3445bf8a912`
+reviewed_head: `683b0b74450157a2d358a965a095c3445bf8a912`
+chromium_e2e_head: `683b0b74450157a2d358a965a095c3445bf8a912`
+branch_commit_count: 7 commits ahead of `origin/main`, including this status commit
+pull_request: pending
 
 - `ExecutionRuntime.run` executes immutable indexed navigate, click, input,
   select, scroll, and verify steps sequentially. Every planned Trace stage,
@@ -417,8 +422,7 @@ review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded
   file-backed values through navigate -> input -> select -> click -> scroll ->
   verify, checks ordered indexed Trace, terminal uniqueness, final state, and
   plaintext absence from model requests, logs, submitted/pre-ACK Trace, and raw
-  spool bytes. Per authority, it was not run before scoped review. No full suite
-  or implementation review was run.
+  spool bytes. Per authority, it was not run before scoped review.
 - Formal core-review remediation makes terminal Trace emission a single
   Runtime-owned operation outside the already-expired execution budget, bounded
   by an independent five-second recorder timeout. Failure returns deterministic
@@ -438,8 +442,12 @@ review_fix_commit: same commit as this ledger entry (`fix(runner): close bounded
   to the action call. The formal-review focused Gate passed 10 files / 157 tests
   with 1 pre-existing Task 21 skip; the added core caller file passed 9 tests.
   Root `corepack pnpm typecheck` and `git diff --check` passed. The Chromium
-  acceptance now contains 1 success plus 7 required failure variants and remains
-  deliberately not run until the fresh exact-base review is clean.
+  acceptance contains 1 success plus 7 required failure variants.
+- Fresh exact-base Standards and Spec review of head `683b0b7` against merge
+  base `de2b773` reported no Critical or Important findings. Post-review real
+  Chromium acceptance passed 1 file / 8 tests without skips, with every failure
+  variant asserting no later step, exactly one terminal, and its stable
+  completion classification. The dedicated PR remains pending.
 
 ### Ticket 18 - Safe valueRef input (2026-08-21)
 
