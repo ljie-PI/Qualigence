@@ -70,16 +70,18 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             timeout: this.session.navigationTimeoutMs,
           });
         } catch (error) {
-          if (!isSafeTargetUrl(page.url(), this.session)) {
+          if (targetOriginState(page, this.session) === "violation") {
             return { status: "failed", errorCode: "OriginViolation" };
           }
           if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           signal?.throwIfAborted();
           return { status: "failed", errorCode: "ActionFailed" };
         }
-        return isSafeTargetUrl(page.url(), this.session)
+        const originState = targetOriginState(page, this.session);
+        if (originState === "violation") return { status: "failed", errorCode: "OriginViolation" };
+        return originState === "safe"
           ? { status: "ok" }
-          : { status: "failed", errorCode: "OriginViolation" };
+          : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
     }
     if (action.kind === "scroll" && action.target === undefined) {
@@ -108,17 +110,20 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             { direction: action.direction, distance },
           );
         } catch (error) {
-          if (!isSafeTargetUrl(page.url(), this.session)) {
+          if (targetOriginState(page, this.session) === "violation") {
             return { status: "failed", errorCode: "OriginViolation" };
           }
           if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
           signal?.throwIfAborted();
           return { status: "failed", errorCode: "ActionFailed" };
         }
-        if (!isSafeTargetUrl(page.url(), this.session)) {
+        const originState = targetOriginState(page, this.session);
+        if (originState === "violation") {
           return { status: "failed", errorCode: "OriginViolation" };
         }
-        return { status: "ok" };
+        return originState === "safe"
+          ? { status: "ok" }
+          : { status: "failed", errorCode: "ActionOutcomeUnknown" };
       });
     }
     const actionTarget = action.target;
@@ -154,7 +159,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         enabled = visible && await locator.isEnabled();
         href = enabled ? await locator.getAttribute("href") : null;
       } catch {
-        if (!isSafeTargetUrl(page.url(), this.session)) {
+        if (targetOriginState(page, this.session) === "violation") {
           return { status: "failed", errorCode: "OriginViolation" };
         }
         signal?.throwIfAborted();
@@ -253,7 +258,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           return { status: "failed", errorCode: "UnsupportedAction" };
         }
       } catch (error) {
-        if (!isSafeTargetUrl(page.url(), this.session)) {
+        if (targetOriginState(page, this.session) === "violation") {
           return { status: "failed", errorCode: "OriginViolation" };
         }
         if (dispatched) return { status: "failed", errorCode: "ActionOutcomeUnknown" };
@@ -261,11 +266,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         return { status: "failed", errorCode: "ActionFailed" };
       }
 
-      if (!isSafeTargetUrl(page.url(), this.session)) {
+      const originState = targetOriginState(page, this.session);
+      if (originState === "violation") {
         return { status: "failed", errorCode: "OriginViolation" };
       }
-
-      return { status: "ok" };
+      return originState === "safe"
+        ? { status: "ok" }
+        : { status: "failed", errorCode: "ActionOutcomeUnknown" };
     });
   }
 
@@ -300,5 +307,16 @@ function isSafeTargetUrl(url: string, session: PlaywrightBrowserSession): boolea
     return parsed.username === "" && parsed.password === "" && session.isTargetOrigin(parsed.href);
   } catch {
     return false;
+  }
+}
+
+function targetOriginState(
+  page: { url(): string },
+  session: PlaywrightBrowserSession,
+): "safe" | "violation" | "unknown" {
+  try {
+    return isSafeTargetUrl(page.url(), session) ? "safe" : "violation";
+  } catch {
+    return "unknown";
   }
 }

@@ -555,6 +555,41 @@ describe("PlaywrightActionExecutor value resolution", () => {
     expect(invoked).toHaveBeenCalledOnce();
   });
 
+  it("maps a page crash that also makes URL inspection fail to unknown outcome", async () => {
+    const graphId = "run-1:observation:1";
+    const nodeId = "n-0-abcd1234";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([[nodeId, { kind: "role", role: "button", name: "Add" }]]),
+      artifacts: [],
+    });
+    let crashed = false;
+    session.withPage = async (operation) => operation({
+      getByRole: () => ({
+        count: async () => 1,
+        isVisible: async () => true,
+        isEnabled: async () => true,
+        getAttribute: async () => null,
+        click: async () => {
+          crashed = true;
+          throw new Error("page crashed");
+        },
+      }),
+      url: () => {
+        if (crashed) throw new Error("page closed");
+        return "https://example.test/";
+      },
+    } as never);
+    const executor = new PlaywrightActionExecutor(session);
+
+    await expect(executor.execute({
+      targetKind: "web",
+      kind: "click",
+      target: { nodeId, selector: actionToken(graphId, nodeId) },
+      graphId,
+    }, permit)).resolves.toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+  });
+
   it("keeps disabled-target rejection blocked before click dispatch", async () => {
     const graphId = "run-1:observation:1";
     const nodeId = "n-0-abcd1234";
