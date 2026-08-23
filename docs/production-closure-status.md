@@ -53,7 +53,7 @@ component: complete
 production_wiring: present
 verification: passed; pending dedicated PR
 pull_request: pending
-review_fix_product_head: `7c5cc19a4e38c8566758db8ff1f7bc7b63b29fdc`
+review_fix_product_head: `7c5cc19427b91e280287e4ef9df169b26c2ed013`
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
