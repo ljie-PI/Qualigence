@@ -55,7 +55,8 @@ production_wiring: present
 verification: passed; pending dedicated PR merge
 pull_request: `https://github.com/ljie-PI/Qualigence/pull/85`
 pull_request: pending
-final_core_blocker_head: PR #85 head containing this status entry
+final_core_blocker_product_head: `f99af6dba9b096c6ad9b5f2233dd8a6252cdb1a9`
+final_review: passed against merge-base `de2b77369801785696b57b5dfacfd230bc0ea3d3`; no Critical or Important findings
 
 - `POST /v1/missions/:missionId/start` now calls the provider-neutral Mission
   scheduling application seam. No network operation occurs in its transaction;
