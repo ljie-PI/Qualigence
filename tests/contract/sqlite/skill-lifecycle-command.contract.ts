@@ -183,11 +183,16 @@ export function skillLifecycleCommandContract(provider: SkillStoreContractProvid
       try {
         await harness.withStore((store) => seedVerifiedSkill(store, harness.signer));
         await expect(harness.withFailingStore(3, (store) => new SkillLifecycleService({ repository: store, signer: harness.signer }).deprecate({ operation: "deprecate", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "deprecate-fail", reason: "injected failure", actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" }))).rejects.toThrow("InjectedSkillLifecycleFailureAfterWrite:3");
+        await expect(harness.withFailingStore(3, (store) => new SkillLifecycleService({ repository: store, signer: harness.signer }).promote({ operation: "promote", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "promote-command-fail", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:06:00.000Z" }))).rejects.toThrow("InjectedSkillLifecycleFailureAfterWrite:3");
+        await expect(harness.withFailingStore(4, (store) => new SkillLifecycleService({ repository: store, signer: harness.signer }).promote({ operation: "promote", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "promote-audit-fail", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:07:00.000Z" }))).rejects.toThrow("InjectedSkillLifecycleFailureAfterWrite:4");
 
         await harness.withStore(async (store) => {
           expect(await store.latestVersion("skill-contract")).toMatchObject({ version: 3, state: "verified" });
           expect(await store.lifecycleAuditEvents("skill-contract")).toHaveLength(0);
           expect(await store.isRevoked("skill-contract", 4)).toBe(false);
+          expect(await store.replayLifecycleCommand("deprecate-fail", skillLifecycleCommandHash({ operation: "deprecate", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "deprecate-fail", reason: "injected failure", actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" }))).toEqual({ status: "not_found" });
+          expect(await store.replayLifecycleCommand("promote-command-fail", skillLifecycleCommandHash({ operation: "promote", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "promote-command-fail", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:06:00.000Z" }))).toEqual({ status: "not_found" });
+          expect(await store.replayLifecycleCommand("promote-audit-fail", skillLifecycleCommandHash({ operation: "promote", skillId: "skill-contract", expectedVersion: 3, idempotencyKey: "promote-audit-fail", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-1", tenantId: harness.tenantId, roles: ["tester"] }, occurredAt: "2026-08-01T00:07:00.000Z" }))).toEqual({ status: "not_found" });
         });
       } finally {
         await harness.close();
