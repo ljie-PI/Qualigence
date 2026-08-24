@@ -193,6 +193,13 @@ describe("canonical observation JSON and hash", () => {
         graph({ evidenceRefs: [null as unknown as string] }),
       ),
     ).toThrow("ObservationSchemaInvalid");
+    expect(() =>
+      validateObservationGraphV1(
+        graph({
+          nodes: [node({ relations: [null as unknown as ObservationNodeV1["relations"][number]] })],
+        }),
+      ),
+    ).toThrow("ObservationSchemaInvalid");
   });
 
   it("normalises strings to NFC before hashing", () => {
@@ -323,6 +330,29 @@ describe("canonical observation JSON and hash", () => {
           },
         }),
         { allowedWebQueryKeys: ["ref"] },
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+  });
+
+  it("rejects web/v1 payloads hidden under another extension key", () => {
+    expect(() =>
+      validateObservationGraphV1(
+        graph({
+          extensions: {
+            "custom/v1": {
+              type: WEB_EXTENSION_V1_TYPE,
+              version: "1.0",
+              payload: {
+                origin: "https://example.test",
+                pathname: "/checkout",
+                title: "Checkout",
+                viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+                query: { token: "secret-token" },
+              },
+            },
+          },
+        }),
+        { allowedWebQueryKeys: ["token"] },
       ),
     ).toThrow("ObservationSchemaInvalid");
   });

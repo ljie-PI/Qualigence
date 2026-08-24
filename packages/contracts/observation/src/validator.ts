@@ -201,6 +201,7 @@ function validateNode(node: ObservationNodeV1, options: ValidateOptions): void {
 
   assertArray(node.relations, `node ${node.id} relations`);
   for (const relation of node.relations) {
+    assertObject(relation, `node ${node.id} relation`);
     assertNoUnknownFields(relation, ["type", "targetNodeId"], "relation");
     if (!RELATION_TYPES.has(relation.type)) {
       throw observationError(
@@ -276,6 +277,12 @@ function validateExtensions(
     assertObject(extension, `extension ${key}`);
     assertNoUnknownFields(extension, ["type", "version", "setSemantics", "payload"], "extension");
     assertNonEmptyString(extension.type, `extension ${key} type`);
+    if (extension.type !== key) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `extension key "${key}" must match extension type "${extension.type}".`,
+      );
+    }
     assertNonEmptyString(extension.version, `extension ${key} version`);
     assertObject(extension.payload, `extension ${key} payload`);
     validateSetSemantics(extension, `extension ${key} setSemantics`);
