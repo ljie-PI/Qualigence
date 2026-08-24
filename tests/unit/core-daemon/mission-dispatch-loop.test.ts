@@ -38,6 +38,16 @@ function dispatch(overrides: Partial<PendingMissionDispatch> = {}): PendingMissi
 function missionJob(overrides: Partial<PendingMissionDispatch["job"]> = {}): PendingMissionDispatch["job"] {
   return {
     ...webJob({ jobId: "runner-job-1", runId: "run-1", projectId: "project-1" }),
+    policy: {
+      policyId: "policy-test",
+      environment: "isolated_test",
+      allowedOrigins: ["https://shop.example.test"],
+      allowedActionKinds: ["click"],
+      maximumRisk: "Normal",
+      explorationAllowed: false,
+      issuedAt: "2026-08-24T00:00:00.000Z",
+      expiresAt: "2026-08-24T00:01:00.000Z",
+    },
     plan: {
       missionId: "mission-1",
       missionRevision: 1,
@@ -361,6 +371,30 @@ describe("MissionDispatchLoop", () => {
     await expect(loop.runOnce()).resolves.toMatchObject({ blocked: 1, results: [{ outcome: "blocked", reason: "policy_invalid" }] });
     expect(offered).toBe(false);
     expect(repository.rows[0]?.status).toBe("blocked");
+  });
+
+  it("blocks an expired execution policy before offer using the loop clock", async () => {
+    const repository = new MissionDispatchRepositoryFake();
+    repository.rows = [dispatch({
+      job: missionJob({
+        policy: {
+          policyId: "policy-expired",
+          environment: "isolated_test",
+          allowedOrigins: ["https://shop.example.test"],
+          allowedActionKinds: ["click"],
+          maximumRisk: "Normal",
+          explorationAllowed: false,
+          issuedAt: "2026-08-23T00:00:00.000Z",
+          expiresAt: "2026-08-23T00:01:00.000Z",
+        },
+      }),
+    })];
+    const { loop, runners } = makeLoop({ repository });
+    let offered = false;
+    runners.connection = connection({ offer: async (job) => { offered = true; return leaseFor(job); } });
+
+    await expect(loop.runOnce()).resolves.toMatchObject({ blocked: 1, results: [{ outcome: "blocked", reason: "policy_invalid", details: { error: "Execution policy is expired." } }] });
+    expect(offered).toBe(false);
   });
 
   it("reconciles an existing lease to the canonical already_active receipt instead of minting a second lease", async () => {

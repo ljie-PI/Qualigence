@@ -368,8 +368,8 @@ describe("Core runner protocol production composition", () => {
         allowedActionKinds: ["click"],
         maximumRisk: "Normal",
         explorationAllowed: false,
-        issuedAt: "2026-08-18T00:00:00.000Z",
-        expiresAt: "2026-08-18T00:01:00.000Z",
+        issuedAt: "2026-08-24T00:00:00.000Z",
+        expiresAt: "2026-08-24T00:01:00.000Z",
       },
       plan: {
         missionId: "mission-bound",

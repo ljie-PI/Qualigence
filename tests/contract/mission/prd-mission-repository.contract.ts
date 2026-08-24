@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
 import type {
   AcceptedMissionDispatch,
+  BlockedMissionDispatch,
   MissionDispatchAcceptanceReceipt,
   MissionSchedulingIds,
   PendingMissionDispatch,
@@ -52,8 +53,15 @@ export interface MissionSchedulingHarness {
     readonly expectedVersion: number;
     readonly tenantId?: string;
   }): Promise<AcceptedMissionDispatch>;
+  markDispatchBlocked(input: {
+    readonly attemptId: string;
+    readonly expectedVersion: number;
+    readonly tenantId?: string;
+    readonly failAfterWrite?: number;
+  }): Promise<BlockedMissionDispatch>;
   mutateLogicalJobCapabilities(name: string, capabilities: readonly string[], tenantId?: string): Promise<void>;
   overlapAccept(inputs: readonly [MissionDispatchAcceptInput, MissionDispatchAcceptInput]): Promise<readonly [PromiseSettledResult<AcceptedMissionDispatch>, PromiseSettledResult<AcceptedMissionDispatch>]>;
+  overlapDispatchTerminals(inputs: readonly [MissionDispatchTerminalInput, MissionDispatchTerminalInput]): Promise<readonly [PromiseSettledResult<AcceptedMissionDispatch | BlockedMissionDispatch>, PromiseSettledResult<AcceptedMissionDispatch | BlockedMissionDispatch>]>;
   state(name: string, tenantId?: string): Promise<SchedulingState>;
   restart(): Promise<void>;
   close(): Promise<void>;
@@ -83,6 +91,10 @@ export interface MissionDispatchAcceptInput {
   readonly expectedVersion: number;
   readonly tenantId?: string;
 }
+
+export type MissionDispatchTerminalInput =
+  | ({ readonly operation: "accept" } & MissionDispatchAcceptInput)
+  | { readonly operation: "block"; readonly attemptId: string; readonly expectedVersion: number; readonly tenantId?: string };
 
 export interface MissionSchedulingContractAdapter {
   createHarness(): Promise<MissionSchedulingHarness>;
@@ -248,6 +260,68 @@ export function prdMissionRepositorySchedulingContract(name: string, adapter: Mi
         expect(outcomes.filter(({ status }) => status === "rejected").map((outcome) => outcome.status === "rejected" ? outcome.reason : undefined)).toEqual([
           expect.objectContaining({ code: "MissionDispatchReceiptConflict", actualVersion: 2 }),
         ]);
+      } finally { await harness.close(); }
+    });
+
+    it("blocks a pending dispatch durably, replays after restart, and removes it from pending", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-block-replay";
+      try {
+        await harness.seed("block-replay", tenantId);
+        await harness.start({ name: "block-replay", tenantId, idempotencyKey: "start-block-replay", ids: ids("block-replay") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+
+        const blocked = await harness.markDispatchBlocked({ attemptId: pending.attemptId, expectedVersion: pending.version, tenantId });
+        expect(blocked).toMatchObject({ status: "blocked", version: 2, attemptId: pending.attemptId, runnerJobId: pending.runnerJobId, runId: pending.runId });
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([]);
+        await harness.restart();
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([]);
+        await expect(harness.markDispatchBlocked({ attemptId: pending.attemptId, expectedVersion: pending.version, tenantId })).resolves.toEqual(blocked);
+      } finally { await harness.close(); }
+    });
+
+    it("rejects stale block without changing the pending dispatch", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-block-stale";
+      try {
+        await harness.seed("block-stale", tenantId);
+        await harness.start({ name: "block-stale", tenantId, idempotencyKey: "start-block-stale", ids: ids("block-stale") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        await expect(harness.markDispatchBlocked({ attemptId: pending.attemptId, expectedVersion: 0, tenantId })).rejects.toMatchObject({ code: "MissionDispatchVersionConflict", actualVersion: 1 });
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([pending]);
+      } finally { await harness.close(); }
+    });
+
+    it("allows only one accepted-or-blocked terminal winner for a dispatch", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-terminal-race";
+      try {
+        await harness.seed("terminal-race", tenantId);
+        await harness.start({ name: "terminal-race", tenantId, idempotencyKey: "start-terminal-race", ids: ids("terminal-race") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        const outcomes = await harness.overlapDispatchTerminals([
+          { operation: "accept", attemptId: pending.attemptId, receipt: receiptFor(pending, "accepted"), expectedVersion: pending.version, tenantId },
+          { operation: "block", attemptId: pending.attemptId, expectedVersion: pending.version, tenantId },
+        ]);
+
+        expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+        expect(outcomes.filter(({ status }) => status === "rejected").map((outcome) => outcome.status === "rejected" ? outcome.reason : undefined)).toEqual([
+          expect.objectContaining({ code: expect.stringMatching(/MissionDispatch(Version|Receipt)Conflict/), actualVersion: 2 }),
+        ]);
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([]);
+      } finally { await harness.close(); }
+    });
+
+    it("rolls back a blocked dispatch when terminal attempt persistence fails", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-block-rollback";
+      try {
+        await harness.seed("block-rollback", tenantId);
+        await harness.start({ name: "block-rollback", tenantId, idempotencyKey: "start-block-rollback", ids: ids("block-rollback") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+
+        await expect(harness.markDispatchBlocked({ attemptId: pending.attemptId, expectedVersion: pending.version, tenantId, failAfterWrite: 2 })).rejects.toThrow("InjectedFailureAfterWrite:2");
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([pending]);
       } finally { await harness.close(); }
     });
 

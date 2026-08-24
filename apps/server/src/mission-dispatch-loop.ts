@@ -229,6 +229,9 @@ export class MissionDispatchLoop {
     }
     try {
       validateApprovedExecutionPolicy(job.policy, job.plan?.budget.maximumWallClockMs ?? 0);
+      if (Date.parse(job.policy.expiresAt) <= nowMs) {
+        throw new Error("Execution policy is expired.");
+      }
     } catch (error) {
       return this.block(dispatch, "policy_invalid", { error: errorMessage(error) });
     }
@@ -290,16 +293,6 @@ export class MissionDispatchLoop {
       return this.block(dispatch, "lease_lost");
     }
     return this.accept(dispatch, "already_active");
-  }
-
-  private async matchingExistingLease(dispatch: PendingMissionDispatch, job: AcceptedExecutionJob): Promise<boolean> {
-    const lease = await this.leases.lease(dispatch.runId);
-    return lease !== undefined &&
-      lease.lostAt === undefined &&
-      lease.job.jobId === dispatch.runnerJobId &&
-      lease.job.runId === dispatch.runId &&
-      lease.owner.runnerId === dispatch.runnerId &&
-      canonicalPayloadHash(lease.job) === canonicalPayloadHash(job);
   }
 
   private async authorizeConnection(

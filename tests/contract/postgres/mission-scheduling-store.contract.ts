@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect } from "vitest";
 import { Client } from "pg";
 import {
+  type AcceptedMissionDispatch,
+  type BlockedMissionDispatch,
   MissionSchedulingService,
   type PrdMissionRepository,
   type ScheduledMission,
@@ -103,10 +105,22 @@ describe("PostgreSQL Mission scheduling provider", () => {
         state: (name, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => readState(db, tenantId, name)),
         pendingDispatches: (limit, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => new PostgresPrdMissionRepository(db, tenantId).pendingDispatches(limit)),
         markDispatchAccepted: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a").markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion)),
+        markDispatchBlocked: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a", input.failAfterWrite).markDispatchBlocked(input.attemptId, input.expectedVersion)),
         mutateLogicalJobCapabilities: (name, capabilities, tenantId = "tenant-a") => provider.withTenant(tenantId, async ({ db }) => { await db.updateTable("execution_jobs").set({ required_capabilities_json: JSON.stringify(capabilities) }).where("tenant_id", "=", tenantId).where("job_id", "=", schedulingFixture(name).logicalJobId).execute(); }),
         async overlapAccept(inputs) {
           const [first, second] = await Promise.allSettled(inputs.map((input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a").markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion))));
           if (first === undefined || second === undefined) throw new Error("Both PostgreSQL acceptance writers must return a result");
+          return [first, second];
+        },
+        async overlapDispatchTerminals(inputs) {
+          const operations: Array<Promise<AcceptedMissionDispatch | BlockedMissionDispatch>> = inputs.map((input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }): Promise<AcceptedMissionDispatch | BlockedMissionDispatch> => {
+            const store = new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a");
+            return input.operation === "accept"
+              ? store.markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion)
+              : store.markDispatchBlocked(input.attemptId, input.expectedVersion);
+          }));
+          const [first, second] = await Promise.allSettled(operations);
+          if (first === undefined || second === undefined) throw new Error("Both PostgreSQL terminal writers must return a result");
           return [first, second];
         },
         async restart() {
