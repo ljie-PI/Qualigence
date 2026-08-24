@@ -35,8 +35,11 @@ const SENSITIVITIES: ReadonlySet<string> = new Set([
   "secret",
 ]);
 
-const WEB_ORIGIN_PATTERN = /^(?:http:\/\/(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::[0-9]+)?|https:\/\/(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::[0-9]+)?)$/;
-const WEB_PATHNAME_PATTERN = /^(?!\/\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*%2[eE])\/[^?#]*$/;
+const PORT_PATTERN = "(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])";
+const WEB_ORIGIN_PATTERN = new RegExp(
+  `^(?:http://(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::${PORT_PATTERN})?|https://(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::${PORT_PATTERN})?)$`,
+);
+const WEB_PATHNAME_PATTERN = /^(?!\/\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*%2[eE])\/(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*$/;
 
 /**
  * An evidence resolver used to confirm every `evidenceRefs` entry points at a

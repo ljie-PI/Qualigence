@@ -375,25 +375,51 @@ describe("canonical observation JSON and hash", () => {
   });
 
   it("rejects noncanonical web/v1 pathnames", () => {
-    expect(() =>
-      validateObservationGraphV1(
-        graph({
-          extensions: {
-            [WEB_EXTENSION_V1_TYPE]: {
-              type: WEB_EXTENSION_V1_TYPE,
-              version: "1.0",
-              payload: {
-                origin: "https://example.test",
-                pathname: "/a/../checkout",
-                title: "Checkout",
-                viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
-                query: {},
+    for (const pathname of ["/a/../checkout", "/%zz"] as const) {
+      expect(() =>
+        validateObservationGraphV1(
+          graph({
+            extensions: {
+              [WEB_EXTENSION_V1_TYPE]: {
+                type: WEB_EXTENSION_V1_TYPE,
+                version: "1.0",
+                payload: {
+                  origin: "https://example.test",
+                  pathname,
+                  title: "Checkout",
+                  viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+                  query: {},
+                },
               },
             },
-          },
-        }),
-      ),
-    ).toThrow("ObservationSchemaInvalid");
+          }),
+        ),
+      ).toThrow("ObservationSchemaInvalid");
+    }
+  });
+
+  it("rejects noncanonical web/v1 origins", () => {
+    for (const origin of ["https://example.test:443", "http://example.test:0"] as const) {
+      expect(() =>
+        validateObservationGraphV1(
+          graph({
+            extensions: {
+              [WEB_EXTENSION_V1_TYPE]: {
+                type: WEB_EXTENSION_V1_TYPE,
+                version: "1.0",
+                payload: {
+                  origin,
+                  pathname: "/checkout",
+                  title: "Checkout",
+                  viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+                  query: {},
+                },
+              },
+            },
+          }),
+        ),
+      ).toThrow("ObservationSchemaInvalid");
+    }
   });
 
   it("rejects invalid web/v1 viewport bounds", () => {
