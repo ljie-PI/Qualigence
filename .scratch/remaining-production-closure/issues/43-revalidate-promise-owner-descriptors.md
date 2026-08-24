@@ -18,7 +18,7 @@ The fixed registry limit is 256 distinct owner objects per browser session. Regi
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

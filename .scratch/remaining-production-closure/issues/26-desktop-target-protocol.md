@@ -15,7 +15,7 @@ This ticket owns the Desktop protocol phase: the additive Web/Desktop `TargetRef
 - Extend `TargetRef` from Web-only to `WebTargetRef | DesktopTargetRef`, where Desktop carries the complete validated `AppTarget` as structured protobuf fields, never arbitrary JSON. Map target ID, platform, launch executable/argv/workdir, process image/children, window selector, reset command/argv/timeout, and shutdown policy losslessly.
 - Parse exactly one target kind. Reject absent, malformed, unknown, or multiple kinds and any silently defaulted/dropped Desktop field before queue/offer. Preserve existing Web bytes, admission, and round trips.
 - Preserve immutable product provenance already carried outside `TargetRef`: project, approved Target revision/snapshot hash, policy, plan, and explicit Runner binding must remain unchanged through Mission scheduling and Runner admission.
-- Existing Mission scheduling currently rejects Desktop and constructs a Web-only `AcceptedExecutionJob` in `packages/core-modules/mission/src/application/mission-scheduling-service.ts`, which is outside this ticket's approved scope. Therefore this ticket may prove domain/public Target creation and lossless protocol mapping, but the acceptance item "Public Target/Mission producer can create an authorized Desktop Job" is blocked by scope unless authority is amended to include the producer/caller files or that acceptance is explicitly transferred. Do not silently edit the producer or mark that item complete.
+- Mission scheduling's Desktop `AcceptedExecutionJob` construction is in scope for this ticket through the exact Mission scheduling service and unit tests listed below. This ticket must remove the current Web-only rejection for authorized Desktop targets at the application seam and preserve every immutable Target/provenance field losslessly into the Runner Protocol job. Server routes, Runner runtime composition, and Desktop execution remain out of scope.
 - This ticket has no migration allocation and may not change package manifests, protobuf generated output outside listed source, Mission storage, Public API routes, or Runner composition.
 
 ## Affected context paths
@@ -27,15 +27,16 @@ This ticket owns the Desktop protocol phase: the additive Web/Desktop `TargetRef
 This is the complete edit scope.
 
 - `packages/{core-modules/project-target,contracts/desktop,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`
+- `packages/core-modules/mission/src/application/mission-scheduling-service.ts`
 - `packages/contracts/runner-protocol/proto`
-- `tests/{type,contract/desktop,unit/core-modules/project-target,conformance/runner-protocol}`
+- `tests/{type,contract/desktop,unit/core-modules/project-target,unit/core-modules/mission,conformance/runner-protocol}`
 - `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md`
 
 ## Post-review acceptance ownership
 
-N/A. This ticket and the umbrella spec assign no external/component E2E or additive acceptance file to ticket 26. Post-review verification is ticket/PR evidence that the focused Gate covers domain validation, protobuf schema, mappers, and Web/Desktop round trips. The current Mission producer scope conflict above must be resolved before the third TODO can be checked; it is not permission to borrow ticket 28's E2E.
+N/A. This ticket and the umbrella spec assign no external/component E2E or additive acceptance file to ticket 26. Post-review verification is ticket/PR evidence that the focused Gate covers domain validation, Mission scheduling construction, protobuf schema, mappers, and Web/Desktop round trips. It is not permission to borrow ticket 28's E2E.
 
-Files outside **Allowed Files**, including `packages/core-modules/mission`, `packages/core-application`, `apps/server`, `apps/runner`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them.
+Files outside **Allowed Files**, including any `packages/core-modules/mission` file not listed above, `packages/core-application`, `apps/server`, `apps/runner`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them.
 
 ## Authority
 
@@ -45,17 +46,17 @@ Resolve conflicts in this order: security/public contracts, architecture and con
 - Context authority: all ownership, seams, dependency direction, invariants, and verification surfaces in **Affected context paths**.
 - Umbrella authority: `.scratch/remaining-production-closure/spec.md` user stories 43 and 45 and existing product provenance stories 3-6; Implementation Decisions on Desktop input/identity boundaries; Testing Decisions on protobuf/mappers/round trip/malformed oneof and complete matrices.
 - Tracked predecessor authority: `.scratch/remaining-production-closure/issues/25-contract-legacy-graph-candidate.md` and its merged GitHub PR/check evidence establish the candidate Graph and capability behavior inherited here.
-- Current public contracts and tests: `packages/core-modules/project-target/src/domain/{target-revision,app-target}.ts`; `packages/contracts/desktop/src/{app-target,companion-ipc,index}.ts`; `packages/contracts/runner-protocol/src/{index,messages,capabilities}.ts`; `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`; `packages/protocol-adapters/grpc-runner-protocol/src/{mappers,wire-codec}.ts`; and the type/Desktop/project-target/protocol tests named here. The current Mission producer in `packages/core-modules/mission/src/application/mission-scheduling-service.ts` is a current public caller but read-only/out of scope.
+- Current public contracts and tests: `packages/core-modules/project-target/src/domain/{target-revision,app-target}.ts`; `packages/core-modules/mission/src/application/mission-scheduling-service.ts`; `packages/contracts/desktop/src/{app-target,companion-ipc,index}.ts`; `packages/contracts/runner-protocol/src/{index,messages,capabilities}.ts`; `packages/contracts/runner-protocol/proto/qualigence/runner/v1/runner.proto`; `packages/protocol-adapters/grpc-runner-protocol/src/{mappers,wire-codec}.ts`; and the type/Desktop/project-target/mission/protocol tests named here.
 - Ticket-local and GitHub evidence: this ticket's `## Comments` and `## Answer`, merged predecessor and final ticket PRs, required checks, reviewed-head and merge-commit bindings, and any deferred advanced-hardening Issues in `ljie-PI/Qualigence` are the durable execution evidence.
 
-## Authority ambiguity
+## Authority decisions
 
-The TODO requires the Public Target/Mission producer to create an authorized Desktop Job, while the current producer rejects Desktop and is outside **Allowed Files**. An explicit maintainer scope decision must add its exact domain/caller/test paths or transfer that acceptance before this ticket can resolve. The unchecked TODO and current `ready-for-agent` status are preserved; neither is evidence that the conflict is solved.
+The Public Target/Mission producer acceptance is resolved by adding the exact Mission scheduling service and unit-test scope above. Ticket 26 owns the application-seam Desktop job construction and protocol mapping only; ticket 28 owns Runner runtime execution and component/E2E proof.
 
 ## Execution protocol
 
-- Start after ticket 25 resolves, from the latest merged predecessor. Record exact base SHA, matrix pointer, planned Gate, and this producer-scope ambiguity under `## Comments`, citing the predecessor's merged PR and merge commit as current execution-base evidence.
-- Before production edits, obtain the maintainer scope/ownership decision for the blocked Mission-producer acceptance if the ticket is expected to satisfy all four TODOs. If not resolved, set `needs-info` when execution reaches that blocker; do not edit out of scope or check the TODO.
+- Start after ticket 25 resolves, from the latest merged predecessor. Record exact base SHA, matrix pointer, planned Gate, and the Mission-scheduling scope decision under `## Comments`, citing the predecessor's merged PR and merge commit as current execution-base evidence.
+- Keep Mission producer edits limited to `mission-scheduling-service.ts` and its unit tests. If authorized Desktop Job construction requires repositories, Server routes, Runner runtime, package manifests, or component/E2E tests, stop for a new scope decision rather than widening this ticket.
 - Use Node.js 24 and Corepack pnpm exactly `11.7.0`; frozen install in a fresh worktree. Do not change dependencies/lockfile.
 - Begin with failing type/protobuf/mapper/conformance tests. During implementation/review fixes run only the focused Gate, root typecheck, and diff check. Preserve strict TypeScript, exact protobuf field presence, immutable provenance, Web compatibility, and explicit capability/validation errors.
 - Do not skip required tests. Preserve unrelated changes and stop before editing outside **Allowed Files**.
@@ -64,12 +65,12 @@ The TODO requires the Public Target/Mission producer to create an authorized Des
 - Stop after five rounds. A remaining core blocker sets this original ticket to `needs-info`, blocks dependents, and requests a maintainer scope/ownership decision. Do not create recursive local remediation tickets.
 - Non-Critical advanced hardening is deferred to one GitHub Issue in `ljie-PI/Qualigence` with source ticket/branch/PR, fixed/reviewed heads, severity/risk, authority, affected files/Gates, and acceptance. Do not implement or add as dependency unless promoted.
 - No product E2E is owned by this ticket. After clean review, record the exact N/A acceptance rationale and focused contract evidence. Any code/test change still requires focused Gate and fresh complete-matrix review.
-- Create one non-draft PR only after focused Gate, typecheck, diff check, clean review, N/A acceptance evidence, and final ticket evidence are clean and the producer-scope blocker is either amended/resolved or explicitly leaves this ticket `needs-info`. A final ticket-evidence-only commit may follow only with byte-identical code/test diff. Keep `claimed` until merge; then record PR/SHA under `## Answer`, resolve, and clean branch/worktree.
+- Create one non-draft PR only after focused Gate, typecheck, diff check, clean review, N/A acceptance evidence, and final ticket evidence are clean. A final ticket-evidence-only commit may follow only with byte-identical code/test diff. Keep `claimed` until merge; then record PR/SHA under `## Answer`, resolve, and clean branch/worktree.
 
 ## Focused non-E2E Gate
 
 ```text
-corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/conformance/runner-protocol
+corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol
 corepack pnpm typecheck
 git diff --check
 ```
@@ -91,7 +92,7 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
 | Project, policy, plan, Target revision/hash, or Runner binding is absent/altered | `not_started` | Stable policy/provenance parse conflict; no offer | No accepted Job | No inferred/default authority; producer must supply exact values | Type/conformance rejection and field round-trip assertions |
 | Runner lacks Desktop/Graph/extension capability | `not_started` | `CapabilityMismatch` before Job payload | No offer payload/action state | Retry only with compatible bound Runner; no Web fallback | Missing capability evidence |
 | Web target is presented as Desktop or Desktop as Web | `not_started` | Stable discriminant/oneof error | No accepted Job | Correct kind and retry; never reinterpret | Cross-kind negative tests |
-| Mission producer attempts authorized Desktop Job creation | `not_started` | Current producer returns `MissionTargetUnsupported`; intended success is blocked by out-of-scope producer | Existing Mission remains unchanged | Requires an explicit maintainer scope/ownership decision, not retry through mapper | Explicit blocked/N/A evidence and unchanged unchecked TODO |
+| Mission producer attempts authorized Desktop Job creation | `not_started` until pure construction | Authorized Desktop `AcceptedExecutionJob` is constructed with lossless AppTarget fields; execution remains ticket 28 | Existing Mission scheduling persistence remains authoritative; no Desktop process launches | Replay follows existing Mission idempotency; malformed Desktop input remains rejected | Mission scheduling unit evidence and protocol round trip |
 | Timeout/cancel before or after dispatch | `not_started` | N/A: this ticket's domain parsing/mapping is synchronous and owns no transport session or process dispatch | N/A | Pure operation may repeat | N/A reason recorded in review |
 | Unknown outcome | `not_started` | N/A: no side-effect dispatch in this ticket | N/A | Pure operation may repeat | N/A reason recorded in review |
 | Idempotent replay of same DTO/wire bytes | `not_started` | Same parsed/mapped value | N/A | Unlimited deterministic replay | Round-trip/property evidence |

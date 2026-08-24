@@ -2,7 +2,7 @@
 
 **What to build:** Give Intelligence Workers durable owner-bound renewable leases and an idempotent Result inbox while preserving proposal-only Worker authority.
 
-**Blocked by:** 05 — Dispatch Mission work to its bound Runner; 06 — Deliver Skill version management loop.
+**Blocked by:** 05 — Dispatch Mission work to its bound Runner; 06 — Deliver Skill version management loop; 20 — Restore exploration seed, checkpoint, and recovery budget schema migration `011`.
 
 **Status:** ready-for-agent
 
@@ -19,7 +19,7 @@
 
 ## Migration
 
-Migration 010 only: durable Intelligence leases/Result inbox. Migrations 001-009 and 011 onward are immutable/out of scope for this ticket.
+Migration 012 only: durable Intelligence leases/Result inbox. Migrations 001-011 are immutable when this ticket starts, and migrations 013 onward are reserved for later tickets/out of scope for this ticket.
 
 ## Affected contexts
 

@@ -18,7 +18,7 @@ Promise calls consume the inherited Ticket 41 registration limits: 1,024 per sen
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

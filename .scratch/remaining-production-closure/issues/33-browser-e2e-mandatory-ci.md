@@ -12,7 +12,7 @@ Ticket 32 owns the four quarantine fixes; ticket 34 owns release image/SBOM/prov
 
 ## Migration
 
-No relational migration is allocated; migrations 001-013 and persisted product data are unchanged. CI adoption is additive: use Node 24, Corepack pnpm 11.7.0, frozen install, pinned Rust toolchain, and lock-hash caches. Missing Docker, Chromium, OpenSSL, Cargo, Windows, or signed native evidence must exit non-zero with a stable block code; it cannot become a skip or optional success.
+No relational migration is allocated; existing and allocated closure migrations and persisted product data are unchanged. CI adoption is additive: use Node 24, Corepack pnpm 11.7.0, frozen install, pinned Rust toolchain, and lock-hash caches. Missing Docker, Chromium, OpenSSL, Cargo, Windows, or signed native evidence must exit non-zero with a stable block code; it cannot become a skip or optional success.
 
 ## Affected contexts
 

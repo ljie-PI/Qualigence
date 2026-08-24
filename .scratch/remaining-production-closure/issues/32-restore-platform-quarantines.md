@@ -12,7 +12,7 @@ This ticket owns exactly the four temporary Windows cases identified by the quar
 
 ## Migration
 
-No relational migration is allocated; migrations 001-013 are unchanged. Remove each adjacent `TODO(Task 21): remove this Windows quarantine` and its `it.skipIf` only after that exact case is green on Windows and Linux. No replacement skip, platform no-op, timing-only assertion, broad process scan, or weakened file-permission assertion is allowed.
+No relational migration is allocated; existing and allocated closure migrations are unchanged. Remove each adjacent `TODO(Task 21): remove this Windows quarantine` and its `it.skipIf` only after that exact case is green on Windows and Linux. No replacement skip, platform no-op, timing-only assertion, broad process scan, or weakened file-permission assertion is allowed.
 
 ## Affected contexts
 

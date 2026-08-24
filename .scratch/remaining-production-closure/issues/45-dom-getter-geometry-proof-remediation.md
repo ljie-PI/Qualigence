@@ -22,7 +22,7 @@ Ticket 44 is assumed complete: immutable Promise owner snapshots and captured Pr
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

@@ -12,7 +12,7 @@ Tickets 26 and 27 own the Desktop Target protocol and TypeScript Companion clien
 
 ## Migration
 
-No relational migration is allocated. Migrations 001-013 and historical Observation payloads are immutable in this ticket. This is an in-place production-composition migration from the Web-only constructor to `TargetRuntimeFactory`; no compatibility fallback or synthetic Desktop production path is permitted.
+No relational migration is allocated. Existing and allocated closure migrations and historical Observation payloads are immutable in this ticket. This is an in-place production-composition migration from the Web-only constructor to `TargetRuntimeFactory`; no compatibility fallback or synthetic Desktop production path is permitted.
 
 ## Affected contexts
 

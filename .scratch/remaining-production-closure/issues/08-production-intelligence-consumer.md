@@ -19,7 +19,7 @@
 
 ## Migration
 
-Migration 011 only: tenant wakeups/dispositions. Migrations 001-010 and 012 onward are immutable/out of scope for this ticket.
+Migration 013 only: tenant wakeups/dispositions. Migrations 001-012 are immutable when this ticket starts, and migrations 014 onward are reserved for later tickets/out of scope for this ticket.
 
 ## Affected contexts
 

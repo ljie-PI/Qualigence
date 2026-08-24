@@ -12,7 +12,7 @@ This ticket owns the pinned Rust toolchain, native Windows Named Pipe identity, 
 
 ## Migration
 
-No relational migration is allocated; migrations 001-013 are unchanged. The native migration replaces only the Windows `NamedPipePeer` error seam. Portable framing/security state machines remain valid and no alternate identity system, insecure compatibility listener, or non-Windows completion claim is introduced.
+No relational migration is allocated; existing and allocated closure migrations are unchanged. The native migration replaces only the Windows `NamedPipePeer` error seam. Portable framing/security state machines remain valid and no alternate identity system, insecure compatibility listener, or non-Windows completion claim is introduced.
 
 ## Affected contexts
 

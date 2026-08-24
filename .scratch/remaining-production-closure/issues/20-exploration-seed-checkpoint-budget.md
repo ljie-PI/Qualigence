@@ -2,7 +2,7 @@
 
 **What to build:** Make exploration replay its seed Skill, checkpoint after safe progress, resume after crash, and enforce state/recovery/model budgets.
 
-**Blocked by:** 19 — Complete bounded multi-step Web Runtime.
+**Blocked by:** 19 — Complete bounded multi-step Web Runtime; 06 — Deliver Skill version management loop schema migration `010`.
 
 **Status:** ready-for-agent
 
@@ -15,7 +15,11 @@ This ticket owns the remaining deterministic Exploration Controller, Verified Sk
 - Replace the controller's fixed one-visit cap with `ExplorationPolicy.maximumStateVisits`, execute every configured Verified seed Skill before novel exploration, and consume `maximumRecoveries` only for deterministic environment recovery.
 - Persist each last-safe `ExplorationCheckpoint` and its budget snapshot atomically through the current SQLite benchmark store boundary. Resume the same attempt from that checkpoint after process restart; do not repeat an acknowledged action or infer success for an unknown action outcome.
 - Use the established model-usage seam and actual usage. Missing usage under a finite budget is `ModelUsageUnavailable`, not zero; exhaustion stops before another model call or action.
-- Migration 004 and all migrations 001-013 are immutable. This ticket has no migration allocation and may use the existing exploration/benchmark tables only; a required schema change is outside scope and requires an explicit maintainer scope decision before implementation.
+- This ticket owns one additive exploration progress migration, allocated after ticket 06's Skill lifecycle migration. Migrations 001-010 are immutable once 06 merges; do not edit historical migration files. Use `011-exploration-attempt-progress` at the implementation base. If another merged ticket has already claimed `011`, stop and update this ticket's allocation before coding.
+- Keep `exploration_checkpoints` as append-only safe checkpoint history, but do not rely on the terminal `benchmark_attempts` append path for live resume state. Add a dedicated live-attempt progress table that can be written before the terminal benchmark attempt exists and that records the current side-effect boundary.
+- Required live progress shape: `exploration_attempt_progress` with primary key `attempt_id`; `run_id`; stable source/policy/seed binding hashes; `phase` (`seed_replay`, `exploring`, `action_in_flight`, or `terminal`); `seed_cursor_json`; `last_safe_step`; nullable `last_safe_graph_fingerprint`; complete remaining-budget `remaining_json`; nullable `in_flight_action_json`; nullable `terminal_reason`; integer `version` for CAS; `created_at`; and `updated_at`.
+- Persist seed replay progress and each last-safe checkpoint through the SQLite benchmark store boundary in an immediate transaction. Before dispatching an action to the Target, atomically CAS the progress row to `action_in_flight` with the action digest/payload required for terminal evidence. Only after the action outcome is known safe may the controller advance `last_safe_step`, clear `in_flight_action_json`, append the checkpoint history row, and update the remaining budget.
+- On restart, load the progress row by `attempt_id` and verify the run/source/policy/seed bindings before continuing. If bindings conflict, reject without mutation. If the phase is `action_in_flight`, terminate with `ActionOutcomeUnknown`/`error` and never automatically replay that action. If the phase is `seed_replay` or `exploring`, resume from the recorded seed cursor, last-safe graph fingerprint, and remaining-budget snapshot without repeating acknowledged seed or action work.
 - Preserve pre-v1 observation compatibility until tickets 22-25 migrate and contract the live Graph. Do not pull the Reference Model runner or Graph v1 migration into this ticket.
 
 ## Affected context paths
@@ -24,9 +28,13 @@ This ticket owns the remaining deterministic Exploration Controller, Verified Sk
 
 ## Allowed Files
 
-This is the complete edit scope. Brace notation expands only the literal listed paths; no package manifest, migration, model-provider, Skill replay, or Graph contract file is implied.
+This is the complete edit scope. Brace notation expands only the literal listed paths; no package manifest, unallocated migration, model-provider, Skill replay, or Graph contract file is implied.
 
 - `packages/{runner-components/exploration,core-modules/mission,storage-providers/sqlite-runtime}/src`
+- `packages/storage-providers/relational-kysely/src/migrations/011-exploration-attempt-progress.ts` (new; or the updated allocated migration file if this ticket is explicitly re-sequenced before implementation)
+- `packages/storage-providers/relational-kysely/src/migrations.ts`
+- `packages/storage-providers/relational-kysely/src/schema.ts`
+- `packages/storage-providers/relational-kysely/src/catalog.ts`
 - `tests/{unit/runner-components/exploration,replay/exploration,contract/sqlite}`
 - `.scratch/remaining-production-closure/issues/20-exploration-seed-checkpoint-budget.md`
 - Post-review acceptance only: `tests/e2e/exploration/restart-resume.test.ts`
