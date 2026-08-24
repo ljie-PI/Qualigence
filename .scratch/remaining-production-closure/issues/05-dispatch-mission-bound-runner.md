@@ -19,6 +19,8 @@
 
 This ticket owns an injectable, startable dispatch loop over existing Mission dispatch outbox and Runner-control seams. The loop may be constructed and exercised directly by tests. Server process boot wiring, Self-hosted gRPC listener composition, tenant-bound Runner registry, and durable `next_attempt`/claim schema are not owned by this ticket; tickets 09 and 12 compose those production paths. Offline bound Runner handling therefore leaves the existing outbox row durably `pending` and applies bounded loop-local backoff without adding schema.
 
+Authority update: the durable block scope expansion approved during implementation is limited to the concrete dispatch-loop repository contract used by this ticket and SQLite/PostgreSQL Mission store behavior. `PrdMissionRepository.markDispatchBlocked` may remain optional for broader mission repository consumers that do not participate in the dispatch loop; ticket 05 acceptance is satisfied when the dispatch loop requires a repository with `markDispatchBlocked`, SQLite/PostgreSQL provider contracts prove the method, and post-review acceptance proves exact bound Runner, offline pending readback, and capability-mismatch blocked readback. Making the method mandatory for every existing mission repository test double is not required for this ticket.
+
 ## Migration
 
 None. This ticket may not add or modify a schema migration.
