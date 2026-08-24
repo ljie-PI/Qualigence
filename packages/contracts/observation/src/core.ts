@@ -92,6 +92,26 @@ export interface VersionedExtension {
   readonly payload: Readonly<Record<string, ObservationJsonValue>>;
 }
 
+export interface WebViewportV1 extends Readonly<Record<string, ObservationJsonValue>> {
+  readonly width: number;
+  readonly height: number;
+  readonly devicePixelRatio: number;
+}
+
+export interface WebExtensionV1Payload extends Readonly<Record<string, ObservationJsonValue>> {
+  readonly origin: string;
+  readonly pathname: string;
+  readonly title: string;
+  readonly viewport: WebViewportV1;
+  readonly query: Readonly<Record<string, "[redacted]">>;
+}
+
+export interface WebExtensionV1 extends VersionedExtension {
+  readonly type: "web/v1";
+  readonly version: string;
+  readonly payload: WebExtensionV1Payload;
+}
+
 /** A single observed node in a v1 Graph. */
 export interface ObservationNodeV1 {
   readonly id: string;
@@ -117,6 +137,7 @@ export interface ObservationGraphV1 {
   readonly rootNodeIds: readonly string[];
   readonly nodes: readonly ObservationNodeV1[];
   readonly evidenceRefs: readonly string[];
+  readonly extensions?: Readonly<Record<string, VersionedExtension>>;
 }
 
 /**
@@ -158,4 +179,5 @@ export const CANONICAL_GRAPH_FIELDS: readonly string[] = [
   "rootNodeIds",
   "nodes",
   "evidenceRefs",
+  "extensions",
 ];

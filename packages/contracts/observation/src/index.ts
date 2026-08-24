@@ -8,6 +8,9 @@ export type {
   ObservationBounds,
   ObservationSensitivity,
   VersionedExtension,
+  WebViewportV1,
+  WebExtensionV1Payload,
+  WebExtensionV1,
   ObservationNodeV1,
   ObservationGraphV1,
   PreV1AssetMetadata,
@@ -22,10 +25,15 @@ export {
 
 export {
   ObservationError,
+  OBSERVATION_GRAPH_V1_CAPABILITY,
+  WEB_EXTENSION_V1_TYPE,
+  WEB_EXTENSION_V1_REDACTION_MARKER,
   observationError,
   parseExtensionKey,
   requireExtensionMajor,
+  requireGraphExtensionMajor,
   findExtensionMajor,
+  findGraphExtensionMajor,
 } from "./extensions.js";
 
 export type {
@@ -35,7 +43,10 @@ export type {
 
 export {
   canonicalObservationJson,
+  canonicalObservationGraphJson,
+  canonicalizeObservationGraph,
   canonicalObservationHash,
+  isObservationGraphV1,
 } from "./canonical.js";
 
 export {

@@ -38,6 +38,14 @@
     "evidenceRefs": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*/v[0-9]+$" },
+      "additionalProperties": { "$ref": "#/$defs/extension" },
+      "properties": {
+        "web/v1": { "$ref": "#/$defs/webExtensionV1" }
+      }
     }
   },
   "$defs": {
@@ -108,6 +116,39 @@
         "type": { "type": "string", "minLength": 1 },
         "version": { "type": "string", "minLength": 1 },
         "payload": { "type": "object" }
+      }
+    },
+    "webExtensionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version", "payload"],
+      "properties": {
+        "type": { "const": "web/v1" },
+        "version": { "type": "string", "minLength": 1 },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "pathname", "title", "viewport", "query"],
+          "properties": {
+            "origin": { "type": "string", "pattern": "^https?://[^/?#]+$" },
+            "pathname": { "type": "string", "pattern": "^/[^?#]*$" },
+            "title": { "type": "string" },
+            "viewport": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["width", "height", "devicePixelRatio"],
+              "properties": {
+                "width": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "height": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "devicePixelRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 16 }
+              }
+            },
+            "query": {
+              "type": "object",
+              "additionalProperties": { "const": "[redacted]" }
+            }
+          }
+        }
       }
     }
   }

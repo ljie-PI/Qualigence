@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Complete bounded multi-step Web Runtime.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -106,3 +106,7 @@ Run a real Chromium Web capture through the additive candidate-contract acceptan
 - [ ] `web/v1` carries origin/path/title/viewport and only policy-allowlisted query keys with redacted values; fragment is omitted.
 - [ ] Extension arrays declare set semantics explicitly; unspecified arrays preserve order.
 - [ ] Legacy and v1 contracts coexist without ambiguous hashes.
+
+## Comments
+
+Start evidence: claimed on branch `closure-22-graph-v1-web-extension` at base SHA `6f930940b490b11dc0345f6393f811e272c06a21`. Behavior matrix applies as frozen above; this is pure contract validation/canonicalization/capability vocabulary work with no durable side-effect boundary. Planned focused Gates: `corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts`, `corepack pnpm typecheck`, and `git diff --check`. Predecessor ticket 19 evidence: PR `https://github.com/ljie-PI/Qualigence/pull/86`, merge commit `4ec4ebd5df46dc8ba2f658dd90065f20c9daf130`, final focused Gate/post-review Chromium acceptance/build/typecheck/diff check/scoped review passed per ticket 19.

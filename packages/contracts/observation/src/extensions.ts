@@ -1,4 +1,8 @@
-import type { ObservationNodeV1, VersionedExtension } from "./core.js";
+import type { ObservationGraphV1, ObservationNodeV1, VersionedExtension } from "./core.js";
+
+export const OBSERVATION_GRAPH_V1_CAPABILITY = "observation-graph/v1" as const;
+export const WEB_EXTENSION_V1_TYPE = "web/v1" as const;
+export const WEB_EXTENSION_V1_REDACTION_MARKER = "[redacted]" as const;
 
 /** Error codes for the observation contract layer. */
 export type ObservationErrorCode =
@@ -66,13 +70,30 @@ export function requireExtensionMajor(
   name: string,
   major: number,
 ): VersionedExtension {
+  return requireExtensionMajorFromMap(node.extensions, name, major, `Node "${node.id}"`);
+}
+
+export function requireGraphExtensionMajor(
+  graph: ObservationGraphV1,
+  name: string,
+  major: number,
+): VersionedExtension {
+  return requireExtensionMajorFromMap(graph.extensions ?? {}, name, major, `Graph "${graph.graphId}"`);
+}
+
+function requireExtensionMajorFromMap(
+  extensions: Readonly<Record<string, VersionedExtension>>,
+  name: string,
+  major: number,
+  where: string,
+): VersionedExtension {
   const key = `${name}/v${major}`;
-  const extension = node.extensions[key];
+  const extension = extensions[key];
   if (extension !== undefined) {
     return extension;
   }
 
-  const otherMajors = Object.keys(node.extensions)
+  const otherMajors = Object.keys(extensions)
     .map((candidate) => parseExtensionKey(candidate))
     .filter(
       (parsed): parsed is ParsedExtensionKey =>
@@ -83,7 +104,7 @@ export function requireExtensionMajor(
   if (otherMajors.length > 0) {
     throw observationError(
       "ExtensionVersionUnsupported",
-      `Node "${node.id}" carries extension "${name}" at major(s) ${otherMajors
+      `${where} carries extension "${name}" at major(s) ${otherMajors
         .sort((a, b) => a - b)
         .join(", ")} but consumer requires major ${major}.`,
     );
@@ -91,7 +112,7 @@ export function requireExtensionMajor(
 
   throw observationError(
     "ExtensionVersionUnsupported",
-    `Node "${node.id}" does not carry required extension "${name}/v${major}".`,
+    `${where} does not carry required extension "${name}/v${major}".`,
   );
 }
 
@@ -102,4 +123,12 @@ export function findExtensionMajor(
   major: number,
 ): VersionedExtension | undefined {
   return node.extensions[`${name}/v${major}`];
+}
+
+export function findGraphExtensionMajor(
+  graph: ObservationGraphV1,
+  name: string,
+  major: number,
+): VersionedExtension | undefined {
+  return graph.extensions?.[`${name}/v${major}`];
 }

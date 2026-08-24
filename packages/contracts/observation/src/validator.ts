@@ -7,10 +7,16 @@ import {
   type ObservationGraphV1,
   type ObservationNodeV1,
   type ObservationRelationType,
+  type ObservationRelationV1,
   type VersionedExtension,
 } from "./core.js";
-import { canonicalObservationJson } from "./canonical.js";
-import { observationError, parseExtensionKey } from "./extensions.js";
+import { canonicalObservationGraphJson, canonicalObservationJson } from "./canonical.js";
+import {
+  WEB_EXTENSION_V1_REDACTION_MARKER,
+  WEB_EXTENSION_V1_TYPE,
+  observationError,
+  parseExtensionKey,
+} from "./extensions.js";
 
 const RELATION_TYPES: ReadonlySet<ObservationRelationType> = new Set([
   "child",
@@ -37,6 +43,7 @@ export type EvidenceResolver = (ref: string) => boolean;
 
 export interface ValidateOptions {
   readonly evidenceResolver?: EvidenceResolver;
+  readonly allowedWebQueryKeys?: readonly string[];
 }
 
 /**
@@ -79,8 +86,13 @@ export function validateObservationGraphV1(
   assertArray(graph.nodes, "nodes");
   assertArray(graph.rootNodeIds, "rootNodeIds");
   assertArray(graph.evidenceRefs, "evidenceRefs");
+  const graphExtensions = graph.extensions ?? {};
+  validateExtensions("graph", graphExtensions, options, true);
+  assertUniqueCanonicalStringKeys(graph.rootNodeIds, "graph rootNodeIds");
+  assertUniqueCanonicalStringKeys(graph.evidenceRefs, "graph evidenceRefs");
 
   const nodeIds = new Set<string>();
+  const normalizedNodeIds = new Map<string, string>();
   for (const node of graph.nodes) {
     validateNode(node, options);
     if (nodeIds.has(node.id)) {
@@ -89,7 +101,16 @@ export function validateObservationGraphV1(
         `Duplicate node id "${node.id}".`,
       );
     }
+    const normalizedNodeId = node.id.normalize("NFC");
+    const existingNodeId = normalizedNodeIds.get(normalizedNodeId);
+    if (existingNodeId !== undefined && existingNodeId !== node.id) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `Node id "${node.id}" has the same canonical key as "${existingNodeId}" but is not byte-identical.`,
+      );
+    }
     nodeIds.add(node.id);
+    normalizedNodeIds.set(normalizedNodeId, node.id);
   }
 
   if (graph.rootNodeIds.length === 0) {
@@ -109,6 +130,7 @@ export function validateObservationGraphV1(
   }
 
   for (const node of graph.nodes) {
+    assertUniqueRelationKeys(node.id, node.relations);
     for (const relation of node.relations) {
       if (!nodeIds.has(relation.targetNodeId)) {
         throw observationError(
@@ -191,7 +213,7 @@ function validateNode(node: ObservationNodeV1, options: ValidateOptions): void {
   assertNonEmptyString(node.source.sourceKind, "source.sourceKind");
 
   assertArray(node.evidenceRefs, `node ${node.id} evidenceRefs`);
-  validateExtensions(node.id, node.extensions);
+  validateExtensions(`node ${node.id}`, node.extensions, options, false);
   void options;
 }
 
@@ -234,15 +256,17 @@ function validateBounds(nodeId: string, bounds: ObservationBounds): void {
 }
 
 function validateExtensions(
-  nodeId: string,
+  where: string,
   extensions: Readonly<Record<string, VersionedExtension>>,
+  options: ValidateOptions,
+  allowGraphExtensions: boolean,
 ): void {
-  assertObject(extensions, `node ${nodeId} extensions`);
+  assertObject(extensions, `${where} extensions`);
   for (const [key, extension] of Object.entries(extensions)) {
     if (parseExtensionKey(key) === undefined) {
       throw observationError(
         "ObservationSchemaInvalid",
-        `node ${nodeId} extension key "${key}" must match "<name>/v<major>".`,
+        `${where} extension key "${key}" must match "<name>/v<major>".`,
       );
     }
     assertObject(extension, `extension ${key}`);
@@ -250,6 +274,144 @@ function validateExtensions(
     assertNonEmptyString(extension.type, `extension ${key} type`);
     assertNonEmptyString(extension.version, `extension ${key} version`);
     assertObject(extension.payload, `extension ${key} payload`);
+    if (key === WEB_EXTENSION_V1_TYPE) {
+      if (!allowGraphExtensions) {
+        throw observationError(
+          "ObservationSchemaInvalid",
+          "web/v1 is a graph-level extension and must not be attached to a node.",
+        );
+      }
+      validateWebExtensionV1(extension, options);
+    }
+  }
+}
+
+function validateWebExtensionV1(extension: VersionedExtension, options: ValidateOptions): void {
+  if (extension.type !== WEB_EXTENSION_V1_TYPE) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      `web/v1 extension type must be "${WEB_EXTENSION_V1_TYPE}".`,
+    );
+  }
+  const payload = extension.payload;
+  assertNoUnknownFields(payload, ["origin", "pathname", "title", "viewport", "query"], "web/v1 payload");
+  assertWebOrigin(payload.origin);
+  assertPathname(payload.pathname);
+  if (typeof payload.title !== "string") {
+    throw observationError("ObservationSchemaInvalid", "web/v1 title must be a string.");
+  }
+  assertObject(payload.viewport, "web/v1 viewport");
+  const viewport = payload.viewport as Record<string, unknown>;
+  assertNoUnknownFields(viewport, ["width", "height", "devicePixelRatio"], "web/v1 viewport");
+  assertViewportInteger(viewport.width, "web/v1 viewport.width", 32768);
+  assertViewportInteger(viewport.height, "web/v1 viewport.height", 32768);
+  assertViewportNumber(viewport.devicePixelRatio, "web/v1 viewport.devicePixelRatio", 16);
+
+  assertObject(payload.query, "web/v1 query");
+  const query = payload.query as Record<string, unknown>;
+  const allowedKeys = new Set(options.allowedWebQueryKeys ?? []);
+  for (const [key, value] of Object.entries(query)) {
+    if (key.length === 0 || key !== key.normalize("NFC")) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        "web/v1 query keys must be non-empty NFC-normalized strings.",
+      );
+    }
+    if (!allowedKeys.has(key)) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `web/v1 query key "${key}" is not allowlisted by target policy.`,
+      );
+    }
+    if (value !== WEB_EXTENSION_V1_REDACTION_MARKER) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `web/v1 query value for "${key}" must be "${WEB_EXTENSION_V1_REDACTION_MARKER}".`,
+      );
+    }
+  }
+}
+
+function assertWebOrigin(value: unknown): void {
+  const origin = nonEmptyString(value, "web/v1 origin");
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw observationError("ObservationSchemaInvalid", "web/v1 origin must be a canonical URL origin.");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.origin !== origin
+  ) {
+    throw observationError("ObservationSchemaInvalid", "web/v1 origin must be a canonical URL origin.");
+  }
+}
+
+function assertPathname(value: unknown): void {
+  const pathname = nonEmptyString(value, "web/v1 pathname");
+  if (!pathname.startsWith("/") || pathname.includes("?") || pathname.includes("#")) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      "web/v1 pathname must be a path only and must omit query and fragment.",
+    );
+  }
+}
+
+function assertViewportInteger(value: unknown, where: string, max: number): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > max) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      `${where} must be a positive safe integer no greater than ${max}.`,
+    );
+  }
+}
+
+function assertViewportNumber(value: unknown, where: string, max: number): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > max) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      `${where} must be finite, positive, and no greater than ${max}.`,
+    );
+  }
+}
+
+function assertUniqueCanonicalStringKeys(values: readonly string[], where: string): void {
+  const byNormalized = new Map<string, string>();
+  for (const value of values) {
+    const normalized = value.normalize("NFC");
+    const existing = byNormalized.get(normalized);
+    if (existing !== undefined && existing !== value) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `${where} entry "${value}" has the same canonical key as "${existing}" but is not byte-identical.`,
+      );
+    }
+    byNormalized.set(normalized, value);
+  }
+}
+
+function assertUniqueRelationKeys(
+  nodeId: string,
+  relations: readonly ObservationRelationV1[],
+): void {
+  const byNormalized = new Map<string, string>();
+  for (const relation of relations) {
+    const rawKey = `${relation.type}\u0000${relation.targetNodeId}`;
+    const normalized = rawKey.normalize("NFC");
+    const existing = byNormalized.get(normalized);
+    if (existing !== undefined && existing !== rawKey) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `node ${nodeId} relation key "${rawKey}" has the same canonical key as "${existing}" but is not byte-identical.`,
+      );
+    }
+    byNormalized.set(normalized, rawKey);
   }
 }
 
@@ -284,7 +446,7 @@ export function observationGraphHash(
 ): string {
   validateObservationGraphV1(graph, options);
   return createHash("sha256")
-    .update(canonicalObservationJson(graph), "utf8")
+    .update(canonicalObservationGraphJson(graph), "utf8")
     .digest("hex");
 }
 
@@ -304,6 +466,13 @@ function assertNonEmptyString(value: unknown, where: string): void {
   if (typeof value !== "string" || value.length === 0) {
     throw observationError("ObservationSchemaInvalid", `${where} must be a non-empty string.`);
   }
+}
+
+function nonEmptyString(value: unknown, where: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw observationError("ObservationSchemaInvalid", `${where} must be a non-empty string.`);
+  }
+  return value;
 }
 
 function assertNoUnknownFields(

@@ -4,12 +4,20 @@ import {
   ObservationError,
   parseExtensionKey,
   requireExtensionMajor,
+  requireGraphExtensionMajor,
   findExtensionMajor,
   validateObservationGraphV1,
   observationGraphHash,
   type ObservationGraphV1,
   type ObservationNodeV1,
 } from "@qualigence/observation-contracts";
+import {
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+  advertisedCapabilityTokens,
+  capabilities,
+} from "@qualigence/runner-protocol";
 
 function nodeWith(
   extensions: ObservationNodeV1["extensions"],
@@ -36,6 +44,7 @@ function graphWith(node: ObservationNodeV1): ObservationGraphV1 {
     rootNodeIds: [node.id],
     nodes: [node],
     evidenceRefs: [],
+    extensions: {},
   };
 }
 
@@ -92,5 +101,39 @@ describe("extension compatibility", () => {
     expect(() => validateObservationGraphV1(graphWith(node))).toThrow(
       "ObservationSchemaInvalid",
     );
+  });
+
+  it("resolves graph-level extension majors independently from node extensions", () => {
+    const graph = {
+      ...graphWith(nodeWith({})),
+      extensions: {
+        "web/v1": {
+          type: "web/v1",
+          version: "1.0",
+          payload: {
+            origin: "https://example.test",
+            pathname: "/",
+            title: "Example",
+            viewport: { width: 1024, height: 768, devicePixelRatio: 1 },
+            query: {},
+          },
+        },
+      },
+    } as const;
+
+    expect(validateObservationGraphV1(graph).extensions?.["web/v1"]?.type).toBe("web/v1");
+    expect(requireGraphExtensionMajor(graph, "web", 1).type).toBe("web/v1");
+    expect(() => requireGraphExtensionMajor(graph, "web", 2)).toThrow(ObservationError);
+  });
+
+  it("advertises the graph v1 and web/v1 observation capability tokens", () => {
+    const tokens = advertisedCapabilityTokens(
+      capabilities({
+        observationExtensions: ["observation-graph/v1", WEB_OBSERVATION_EXTENSION_V1_CAPABILITY],
+      }),
+    );
+
+    expect(tokens.has(OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN)).toBe(true);
+    expect(tokens.has(WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN)).toBe(true);
   });
 });

@@ -61,6 +61,7 @@ function baseGraph(): ObservationGraphV1 {
     rootNodeIds: ["a"],
     nodes,
     evidenceRefs: ["artifact://root"],
+    extensions: {},
   };
 }
 
@@ -106,5 +107,85 @@ describe("observation graph properties", () => {
         expect(ids.has(relation.targetNodeId)).toBe(true);
       }
     }
+  });
+
+  it("hash is invariant under semantic-set permutations", () => {
+    const graph = {
+      ...baseGraph(),
+      rootNodeIds: ["b", "a"],
+      nodes: [
+        { ...baseNode("b"), relations: [{ type: "controls", targetNodeId: "c" } as const] },
+        {
+          ...baseNode("a"),
+          relations: [
+            { type: "owns", targetNodeId: "b" } as const,
+            { type: "child", targetNodeId: "b" } as const,
+          ],
+        },
+        baseNode("c"),
+      ],
+      evidenceRefs: ["artifact://z", "artifact://root"],
+    } satisfies ObservationGraphV1;
+
+    const permuted = {
+      ...graph,
+      rootNodeIds: ["a", "b"],
+      nodes: [
+        {
+          ...baseNode("a"),
+          relations: [
+            { type: "child", targetNodeId: "b" } as const,
+            { type: "owns", targetNodeId: "b" } as const,
+          ],
+        },
+        baseNode("c"),
+        { ...baseNode("b"), relations: [{ type: "controls", targetNodeId: "c" } as const] },
+      ],
+      evidenceRefs: ["artifact://root", "artifact://z"],
+    } satisfies ObservationGraphV1;
+
+    expect(observationGraphHash(permuted)).toBe(observationGraphHash(graph));
+  });
+
+  it("hash remains sensitive to business-order arrays", () => {
+    const graph = {
+      ...baseGraph(),
+      nodes: [
+        {
+          ...baseNode("a"),
+          evidenceRefs: ["artifact://first", "artifact://second"],
+        },
+        baseNode("b"),
+        baseNode("c"),
+      ],
+      extensions: {
+        "custom/v1": {
+          type: "custom/v1",
+          version: "1.0",
+          payload: { steps: ["first", "second"] },
+        },
+      },
+    } satisfies ObservationGraphV1;
+
+    const reordered = {
+      ...graph,
+      nodes: [
+        {
+          ...baseNode("a"),
+          evidenceRefs: ["artifact://second", "artifact://first"],
+        },
+        baseNode("b"),
+        baseNode("c"),
+      ],
+      extensions: {
+        "custom/v1": {
+          type: "custom/v1",
+          version: "1.0",
+          payload: { steps: ["second", "first"] },
+        },
+      },
+    } satisfies ObservationGraphV1;
+
+    expect(observationGraphHash(reordered)).not.toBe(observationGraphHash(graph));
   });
 });

@@ -1,17 +1,113 @@
 import { createHash } from "node:crypto";
+import type {
+  ObservationGraphV1,
+  ObservationJsonValue,
+  ObservationNodeV1,
+  ObservationRelationV1,
+  VersionedExtension,
+} from "./core.js";
+import { OBSERVATION_GRAPH_V1_VERSION } from "./core.js";
 import { observationError } from "./extensions.js";
 /**
  * Deterministic canonical JSON for an Observation Graph:
  *  - object keys are emitted in sorted order (insertion order is irrelevant),
- *  - array order is preserved (it is semantically meaningful),
+ *  - business array order is preserved,
+ *  - Observation Graph semantic sets are sorted by stable NFC-normalised keys,
  *  - strings are NFC-normalised UTF-8,
  *  - non-finite numbers (NaN/Infinity) are rejected.
  *
- * This is the exact byte sequence that feeds {@link observationGraphHash}; two
- * graphs that differ only by key insertion order hash identically.
+ * Generic JSON callers preserve array order. Observation Graph callers use
+ * `canonicalObservationGraphJson` so set-order changes cannot affect hashes.
  */
 export function canonicalObservationJson(value: unknown): string {
   return encode(value);
+}
+
+export function canonicalObservationGraphJson(graph: ObservationGraphV1): string {
+  return encode(canonicalizeObservationGraph(graph));
+}
+
+export function canonicalizeObservationGraph(graph: ObservationGraphV1): ObservationGraphV1 {
+  return {
+    ...graph,
+    rootNodeIds: sortStringSet(graph.rootNodeIds),
+    nodes: sortNodes(graph.nodes),
+    evidenceRefs: sortStringSet(graph.evidenceRefs),
+    extensions: canonicalizeExtensions(graph.extensions ?? {}),
+  };
+}
+
+function sortNodes(nodes: readonly ObservationNodeV1[]): readonly ObservationNodeV1[] {
+  return sortByKey(nodes, (node) => node.id).map((node) => ({
+    ...node,
+    relations: sortRelations(node.relations),
+    extensions: canonicalizeExtensions(node.extensions),
+  }));
+}
+
+function sortRelations(
+  relations: readonly ObservationRelationV1[],
+): readonly ObservationRelationV1[] {
+  return sortByKey(relations, (relation) => `${relation.type}\u0000${relation.targetNodeId}`);
+}
+
+function sortStringSet(items: readonly string[]): readonly string[] {
+  return sortByKey(items, (item) => item);
+}
+
+function sortByKey<T>(items: readonly T[], keyOf: (item: T) => string): readonly T[] {
+  return [...items].sort((left, right) => {
+    const leftKey = keyOf(left).normalize("NFC");
+    const rightKey = keyOf(right).normalize("NFC");
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+function canonicalizeExtensions(
+  extensions: Readonly<Record<string, VersionedExtension>>,
+): Readonly<Record<string, VersionedExtension>> {
+  const out: Record<string, VersionedExtension> = {};
+  for (const [key, extension] of Object.entries(extensions)) {
+    out[key] = {
+      ...extension,
+      payload: canonicalizeExtensionPayload(key, extension.payload),
+    };
+  }
+  return out;
+}
+
+function canonicalizeExtensionPayload(
+  key: string,
+  payload: Readonly<Record<string, ObservationJsonValue>>,
+): Readonly<Record<string, ObservationJsonValue>> {
+  if (key !== "web/v1") {
+    return payload;
+  }
+  const query = payload.query;
+  if (query === null || typeof query !== "object" || Array.isArray(query)) {
+    return payload;
+  }
+  return {
+    ...payload,
+    query: sortRecordByNormalizedKey(query as Readonly<Record<string, ObservationJsonValue>>),
+  };
+}
+
+function sortRecordByNormalizedKey(
+  value: Readonly<Record<string, ObservationJsonValue>>,
+): Readonly<Record<string, ObservationJsonValue>> {
+  const out: Record<string, ObservationJsonValue> = {};
+  for (const key of Object.keys(value).sort((a, b) => {
+    const left = a.normalize("NFC");
+    const right = b.normalize("NFC");
+    return left < right ? -1 : left > right ? 1 : 0;
+  })) {
+    const item = value[key];
+    if (item !== undefined) {
+      out[key] = item;
+    }
+  }
+  return out;
 }
 
 function encode(value: unknown): string {
@@ -57,6 +153,23 @@ function encode(value: unknown): string {
  */
 export function canonicalObservationHash(value: unknown): string {
   return createHash("sha256")
-    .update(canonicalObservationJson(value), "utf8")
+    .update(
+      isObservationGraphV1(value)
+        ? canonicalObservationGraphJson(value)
+        : canonicalObservationJson(value),
+      "utf8",
+    )
     .digest("hex");
+}
+
+export function isObservationGraphV1(value: unknown): value is ObservationGraphV1 {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { readonly schema?: { readonly epoch?: unknown; readonly version?: unknown } }).schema
+      ?.epoch === "v1" &&
+    (value as { readonly schema?: { readonly epoch?: unknown; readonly version?: unknown } }).schema
+      ?.version === OBSERVATION_GRAPH_V1_VERSION
+  );
 }
