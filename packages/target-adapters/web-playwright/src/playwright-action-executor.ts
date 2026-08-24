@@ -299,13 +299,6 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-            await this.markSensitiveTarget(locator, sensitiveEvidence.markerId);
-            const markedGenerationFailure = navigationGenerationFailure(
-              page,
-              this.session,
-              navigationGeneration,
-            );
-            if (markedGenerationFailure !== undefined) return markedGenerationFailure;
             this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             await locator.fill(value, { timeout: this.session.actionTimeoutMs });
@@ -317,13 +310,6 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
-            await this.markSensitiveTarget(locator, sensitiveEvidence.markerId);
-            const markedGenerationFailure = navigationGenerationFailure(
-              page,
-              this.session,
-              navigationGeneration,
-            );
-            if (markedGenerationFailure !== undefined) return markedGenerationFailure;
             this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
@@ -394,19 +380,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
     });
   }
 
-  private async markSensitiveTarget(locator: Locator, markerId: string): Promise<void> {
-    try {
-      await markSensitiveTarget(locator, markerId);
-    } catch {
-      throw new WebTargetError("SensitiveEvidenceUnavailable");
-    }
-  }
-
   private async completeInputSensitiveEvidence(
     locator: Locator,
     prepared: PreparedSensitiveEvidenceRecord,
   ): Promise<void> {
     try {
+      await markSensitiveTarget(locator, prepared.markerId);
       const observed = await readInputSensitiveForms(locator);
       if (!observed.sensitiveTargetIds.includes(prepared.markerId)) {
         this.session.markSensitiveEvidenceUnavailable();
@@ -423,6 +402,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
     prepared: PreparedSensitiveEvidenceRecord,
   ): Promise<void> {
     try {
+      await markSensitiveTarget(locator, prepared.markerId);
       const observed = await readSelectSensitiveForms(locator);
       if (!observed.sensitiveTargetIds.includes(prepared.markerId)) {
         this.session.markSensitiveEvidenceUnavailable();
