@@ -56,7 +56,7 @@ describe("Graph v1 canonical Web extension acceptance", () => {
     });
 
     expect(() => validateObservationGraphV1(graph, { allowedWebQueryKeys: ["ref"] })).not.toThrow();
-    expect(await schemaAcceptsGraph(graph)).toBe(true);
+    expect(await schemaAcceptsGraph(graph)).toEqual([]);
     expect(JSON.stringify(graph)).not.toContain("secret");
     expect(JSON.stringify(graph)).not.toContain("fragment");
 
@@ -86,24 +86,86 @@ async function startPage(): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function schemaAcceptsGraph(graph: ObservationGraphV1): Promise<boolean> {
-  const schema = JSON.parse(await readFile(schemaPath, "utf8")) as {
-    properties: { extensions: { properties: Record<string, unknown> } };
-    $defs: { webExtensionV1: { properties: { payload: { properties: Record<string, unknown> } } } };
-  };
-  const web = graph.extensions?.[WEB_EXTENSION_V1_TYPE]?.payload as WebPayload | undefined;
-  if (web === undefined) return false;
-  const payload = schema.$defs.webExtensionV1.properties.payload.properties as {
-    readonly origin?: { readonly pattern?: string };
-    readonly pathname?: { readonly pattern?: string };
-  };
-  return new RegExp(payload.origin?.pattern ?? "a^").test(web.origin) &&
-    new RegExp(payload.pathname?.pattern ?? "a^").test(web.pathname) &&
-    Number.isSafeInteger(web.viewport.width) && web.viewport.width >= 1 && web.viewport.width <= 32768 &&
-    Number.isSafeInteger(web.viewport.height) && web.viewport.height >= 1 && web.viewport.height <= 32768 &&
-    Number.isFinite(web.viewport.devicePixelRatio) && web.viewport.devicePixelRatio > 0 && web.viewport.devicePixelRatio <= 16 &&
-    Object.values(web.query).every((value) => value === WEB_EXTENSION_V1_REDACTION_MARKER) &&
-    schema.properties.extensions.properties[WEB_EXTENSION_V1_TYPE] !== undefined;
+async function schemaAcceptsGraph(graph: ObservationGraphV1): Promise<readonly string[]> {
+  const schema = JSON.parse(await readFile(schemaPath, "utf8")) as JsonSchema;
+  return validateSchema(graph, schema, schema, "graph");
+}
+
+type JsonSchema = Readonly<Record<string, unknown>> & { readonly $defs?: Readonly<Record<string, JsonSchema>> };
+
+function validateSchema(value: unknown, schema: JsonSchema, root: JsonSchema, path: string): string[] {
+  const ref = schema.$ref;
+  if (typeof ref === "string") {
+    const resolved = resolveRef(ref, root);
+    return resolved === undefined ? [`${path}: unresolved ref ${ref}`] : validateSchema(value, resolved, root, path);
+  }
+  const errors: string[] = [];
+  const notSchema = schema.not;
+  if (isSchema(notSchema) && validateSchema(value, notSchema, root, path).length === 0) {
+    errors.push(`${path}: matched forbidden schema`);
+  }
+  const type = schema.type;
+  if (type !== undefined && !matchesType(value, type)) errors.push(`${path}: expected ${String(type)}`);
+  if (schema.const !== undefined && value !== schema.const) errors.push(`${path}: expected const ${String(schema.const)}`);
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value as never)) errors.push(`${path}: not in enum`);
+  if (typeof value === "string") {
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) errors.push(`${path}: too short`);
+    if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(value)) errors.push(`${path}: pattern mismatch`);
+  }
+  if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${path}: below minimum`);
+    if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${path}: above maximum`);
+    if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) errors.push(`${path}: below exclusiveMinimum`);
+  }
+  if (Array.isArray(value) && isSchema(schema.items)) {
+    value.forEach((item, index) => errors.push(...validateSchema(item, schema.items as JsonSchema, root, `${path}[${index}]`)));
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Readonly<Record<string, unknown>>;
+    const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
+    for (const key of required) if (!(key in record)) errors.push(`${path}.${key}: missing required`);
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    for (const [key, item] of Object.entries(record)) {
+      const propertySchema = properties[key];
+      if (propertySchema === false) {
+        errors.push(`${path}.${key}: forbidden property`);
+      } else if (isSchema(propertySchema)) {
+        errors.push(...validateSchema(item, propertySchema, root, `${path}.${key}`));
+      } else if (schema.additionalProperties === false) {
+        errors.push(`${path}.${key}: additional property`);
+      } else if (isSchema(schema.additionalProperties)) {
+        errors.push(...validateSchema(item, schema.additionalProperties, root, `${path}.${key}`));
+      }
+    }
+  }
+  return errors;
+}
+
+function resolveRef(ref: string, root: JsonSchema): JsonSchema | undefined {
+  if (!ref.startsWith("#/$defs/")) return undefined;
+  return root.$defs?.[ref.slice("#/$defs/".length)];
+}
+
+function matchesType(value: unknown, type: unknown): boolean {
+  if (Array.isArray(type)) return type.some((item) => matchesType(value, item));
+  switch (type) {
+    case "object": return value !== null && typeof value === "object" && !Array.isArray(value);
+    case "array": return Array.isArray(value);
+    case "string": return typeof value === "string";
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    case "integer": return Number.isInteger(value);
+    case "boolean": return typeof value === "boolean";
+    case "null": return value === null;
+    default: return true;
+  }
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSchema(value: unknown): value is JsonSchema {
+  return isRecord(value);
 }
 
 interface WebViewport extends Readonly<Record<string, ObservationJsonValue>> {
