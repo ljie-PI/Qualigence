@@ -248,6 +248,7 @@ export type PublicApiErrorCode =
   | "Forbidden"
   | "NotFound"
   | "VersionConflict"
+  | "IdempotencyConflict"
   | "IdempotencyKeyRequired"
   | "ValidationFailed"
   | "EnrollmentTokenInvalid"
@@ -331,6 +332,11 @@ export interface ResolveReviewTaskBody {
 
 export interface PromoteSkillBody {
   readonly expectedVersion: number;
+}
+
+export interface DeprecateSkillBody {
+  readonly expectedVersion: number;
+  readonly reason: string;
 }
 
 export interface CreateRunnerEnrollmentBody {

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
-import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
+import { PostgresSkillStore, type PostgresConnectionConfig } from "@qualigence/postgres-runtime";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES } from "@qualigence/skill";
+import type { ProcedureSkillVersion, SignedSkillBundle, SkillEvaluation } from "@qualigence/skill";
+import type { RecordingSession } from "@qualigence/recording";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { generateRunnerCsr } from "../../helpers/runner-identity-pki.js";
@@ -12,6 +15,18 @@ if (!dockerAvailable()) {
 }
 
 const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+
+const recording: RecordingSession = {
+  recordingId: "api-skill-rec",
+  projectId: "api-skill-project",
+  targetId: "api-skill-target",
+  targetVersion: "2026.08.01",
+  observationSchemaEpoch: "pre-v1",
+  startedAt: "2026-08-01T00:00:00.000Z",
+  completedAt: "2026-08-01T00:01:00.000Z",
+  steps: [{ ordinal: 1, beforeGraphRef: "graph-a", intent: { kind: "click", target: { purpose: "save" } }, resolvedNode: { role: "button", name: "Save", purpose: "save", sourceNodeId: "node-save" }, outcome: { status: "ok" }, afterGraphRef: "graph-b", checkpoint: { requiredClaims: ["saved"], stateFingerprint: "fp" } }],
+  sourceTraceRefs: ["run-api-skill"],
+};
 
 async function seedProject(
   admin: PostgresConnectionConfig,
@@ -68,6 +83,46 @@ async function readReviewTask(
   } finally {
     await client.end();
   }
+}
+
+function skillVersion(skillId: string, version: number, state: ProcedureSkillVersion["state"], recordingId = recording.recordingId): ProcedureSkillVersion {
+  const base: ProcedureSkillVersion = {
+    skillId,
+    version,
+    state,
+    projectId: "api-skill-project",
+    targetScope: { targetId: "api-skill-target", allowedOrigins: ["https://example.test"] },
+    parameters: [],
+    steps: [{ stepId: "step-1", intent: { kind: "click", target: { purpose: "save" } }, preconditions: [], checkpoint: [{ kind: "claim_satisfied", claimId: "saved" }], recovery: "stop", sourceNodeId: "node-save" }],
+    sourceRecordingIds: [recordingId],
+    observationSchemaEpoch: "pre-v1",
+    locatorSchemaVersion: "semantic-locator/v1",
+    compilerVersion: "skill-compiler/v1",
+    contentSha256: "will-be-overwritten",
+  };
+  return { ...base, contentSha256: bundlePayloadContentSha256(base) };
+}
+
+async function seedVerifiedSkill(fx: ServerFixture, input: { tenantId: string; skillId: string }): Promise<void> {
+  await fx.provider.withTenant(input.tenantId, async ({ db }) => {
+    const store = new PostgresSkillStore(db, input.tenantId);
+    await store.saveRecording({ ...recording, recordingId: `${input.skillId}-rec` });
+    await store.saveSkillVersion({ version: skillVersion(input.skillId, 1, "draft", `${input.skillId}-rec`), expectedVersion: 0, sourceRecording: { ...recording, recordingId: `${input.skillId}-rec` } });
+    await store.saveSkillVersion({ version: skillVersion(input.skillId, 2, "candidate", `${input.skillId}-rec`), expectedVersion: 1, sourceRecording: { ...recording, recordingId: `${input.skillId}-rec` } });
+    const verified = skillVersion(input.skillId, 3, "verified", `${input.skillId}-rec`);
+    await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: { ...recording, recordingId: `${input.skillId}-rec` } });
+    const evaluation: SkillEvaluation = { evaluationId: `${input.skillId}-eval`, skillId: input.skillId, skillVersion: 3, oracles: passingOracles(), outcome: "passed", signatureValid: true, createdAt: "2026-08-01T00:02:00.000Z" };
+    const bundle: SignedSkillBundle = await fx.skillSigner.sign({ bundleId: `${input.skillId}-bundle`, skillId: input.skillId, skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: fx.skillSigner.keyId, signatureAlgorithm: "Ed25519", issuedAt: "2026-08-01T00:03:00.000Z", payload: verified });
+    await store.saveEvaluation(evaluation);
+    await store.saveBundle(bundle);
+  });
+}
+
+function passingOracles(): SkillEvaluation["oracles"] {
+  return [
+    { oracle: REQUIRED_REPLAY_ORACLES[0] as string, status: "passed" },
+    ...REQUIRED_REPLAY_ORACLES.slice(1).map((oracle) => ({ oracle, status: "passed" as const })),
+  ];
 }
 
 describe("Public API v1 contract", () => {
@@ -302,6 +357,80 @@ describe("Public API v1 contract", () => {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("Skill lifecycle", () => {
+    it("lists Skill versions and promotes/deprecates with expected-version idempotency", async () => {
+      await seedVerifiedSkill(fx, { tenantId: "tenant-a", skillId: "api-skill" });
+      const token = fx.token("tenant-a", ["tester"]);
+      const headers = (key: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key });
+
+      const list = await fetch(url("/v1/skills"), { headers: { authorization: `Bearer ${token}` } });
+      expect(list.status).toBe(200);
+      expect(await list.json()).toMatchObject({ items: [{ skillId: "api-skill", version: 3, state: "verified", signatureStatus: "valid", evaluationStatus: "passed" }] });
+
+      const promote = await fetch(url("/v1/skills/api-skill/promote"), { method: "POST", headers: headers("api-skill-promote"), body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(promote.status).toBe(200);
+      const promoted = await promote.json() as { resource: { version: number; state: string } };
+      expect(promoted.resource).toMatchObject({ version: 4, state: "promoted" });
+
+      const replay = await fetch(url("/v1/skills/api-skill/promote"), { method: "POST", headers: headers("api-skill-promote"), body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({ resource: promoted.resource });
+
+      const idempotencyConflict = await fetch(url("/v1/skills/api-skill/deprecate"), { method: "POST", headers: headers("api-skill-promote"), body: JSON.stringify({ expectedVersion: 4, reason: "different intent" }) });
+      expect(idempotencyConflict.status).toBe(409);
+      expect(await idempotencyConflict.json()).toMatchObject({ code: "IdempotencyConflict" });
+
+      const stale = await fetch(url("/v1/skills/api-skill/promote"), { method: "POST", headers: headers("api-skill-promote-stale"), body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 4 } });
+
+      const deprecate = await fetch(url("/v1/skills/api-skill/deprecate"), { method: "POST", headers: headers("api-skill-deprecate"), body: JSON.stringify({ expectedVersion: 4, reason: "superseded" }) });
+      expect(deprecate.status).toBe(200);
+      expect(await deprecate.json()).toMatchObject({ resource: { version: 5, state: "deprecated", signatureStatus: "revoked" } });
+    });
+
+    it("does not create idempotency success for validation or auth failures", async () => {
+      await seedVerifiedSkill(fx, { tenantId: "tenant-a", skillId: "api-skill-reject" });
+      const viewer = fx.token("tenant-a", ["viewer"]);
+      const rejected = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-reject-key" }, body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(rejected.status).toBe(403);
+      const tester = fx.token("tenant-a", ["tester"]);
+      const missingKey = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(missingKey.status).toBe(400);
+      expect(await missingKey.json()).toMatchObject({ code: "IdempotencyKeyRequired" });
+      const invalidBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-invalid-body" }, body: JSON.stringify({ expectedVersion: 0 }) });
+      expect(invalidBody.status).toBe(422);
+      expect(await invalidBody.json()).toMatchObject({ code: "ValidationFailed" });
+      const nullBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-null-body" }, body: "null" });
+      expect(nullBody.status).toBe(422);
+      expect(await nullBody.json()).toMatchObject({ code: "ValidationFailed" });
+      const missingBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, [IDEMPOTENCY_KEY_HEADER]: "api-skill-missing-body" } });
+      expect(missingBody.status).toBe(422);
+      expect(await missingBody.json()).toMatchObject({ code: "ValidationFailed" });
+      await fx.provider.withTenant("tenant-a", async ({ db }) => {
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-reject-key").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-invalid-body").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-null-body").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-missing-body").execute()).toHaveLength(0);
+      });
+      const retry = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-null-body" }, body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ resource: { version: 4, state: "promoted" } });
+    });
+
+    it("returns one success and one version conflict for concurrent two-writer promotion", async () => {
+      await seedVerifiedSkill(fx, { tenantId: "tenant-a", skillId: "api-skill-race" });
+      const token = fx.token("tenant-a", ["tester"]);
+      const send = (key: string) => fetch(url("/v1/skills/api-skill-race/promote"), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key }, body: JSON.stringify({ expectedVersion: 3 }) });
+
+      const responses = await Promise.all([send("api-skill-race-a"), send("api-skill-race-b")]);
+      const statuses = responses.map((response) => response.status).sort();
+      expect(statuses).toEqual([200, 409]);
+      const conflict = responses.find((response) => response.status === 409);
+      expect(await conflict?.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 4 } });
     });
   });
 

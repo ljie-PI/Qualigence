@@ -13,8 +13,10 @@
     { "path": "../../packages/auth/runner-mtls" },
     { "path": "../../packages/contracts/public-api" },
     { "path": "../../packages/contracts/runner-protocol" },
+    { "path": "../../packages/storage-providers/kms-local" },
     { "path": "../../packages/core-modules/runner-identity" },
     { "path": "../../packages/core-modules/review" },
+    { "path": "../../packages/core-modules/skill" },
     { "path": "../../packages/shared-kernel" },
     { "path": "../../packages/storage-providers/postgres-runtime" },
     { "path": "../../packages/storage-providers/relational-kysely" }

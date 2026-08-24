@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
+import { PostgresSkillStore, type PostgresConnectionConfig } from "@qualigence/postgres-runtime";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES } from "@qualigence/skill";
+import type { ProcedureSkillVersion, SignedSkillBundle, SkillEvaluation } from "@qualigence/skill";
+import type { RecordingSession } from "@qualigence/recording";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
@@ -36,6 +39,58 @@ async function seedInvestigationAndTask(
   } finally {
     await client.end();
   }
+}
+
+const skillRecording: RecordingSession = {
+  recordingId: "flow-skill-rec",
+  projectId: "flow-project",
+  targetId: "flow-target",
+  targetVersion: "1",
+  observationSchemaEpoch: "pre-v1",
+  startedAt: "2026-08-01T00:00:00.000Z",
+  completedAt: "2026-08-01T00:01:00.000Z",
+  steps: [{ ordinal: 1, beforeGraphRef: "graph-a", intent: { kind: "click", target: { purpose: "login" } }, resolvedNode: { role: "button", name: "Login", purpose: "login", sourceNodeId: "node-login" }, outcome: { status: "ok" }, afterGraphRef: "graph-b", checkpoint: { requiredClaims: ["login"], stateFingerprint: "fp" } }],
+  sourceTraceRefs: ["run-flow-skill"],
+};
+
+function flowSkillVersion(version: number, state: ProcedureSkillVersion["state"]): ProcedureSkillVersion {
+  const base: ProcedureSkillVersion = {
+    skillId: "flow-skill",
+    version,
+    state,
+    projectId: "flow-project",
+    targetScope: { targetId: "flow-target", allowedOrigins: ["https://example.test"] },
+    parameters: [],
+    steps: [{ stepId: "step-1", intent: { kind: "click", target: { purpose: "login" } }, preconditions: [], checkpoint: [{ kind: "claim_satisfied", claimId: "login" }], recovery: "stop", sourceNodeId: "node-login" }],
+    sourceRecordingIds: [skillRecording.recordingId],
+    observationSchemaEpoch: "pre-v1",
+    locatorSchemaVersion: "semantic-locator/v1",
+    compilerVersion: "skill-compiler/v1",
+    contentSha256: "will-be-overwritten",
+  };
+  return { ...base, contentSha256: bundlePayloadContentSha256(base) };
+}
+
+async function seedVerifiedSkill(fx: ServerFixture): Promise<void> {
+  await fx.provider.withTenant("tenant-a", async ({ db }) => {
+    const store = new PostgresSkillStore(db, "tenant-a");
+    await store.saveRecording(skillRecording);
+    await store.saveSkillVersion({ version: flowSkillVersion(1, "draft"), expectedVersion: 0, sourceRecording: skillRecording });
+    await store.saveSkillVersion({ version: flowSkillVersion(2, "candidate"), expectedVersion: 1, sourceRecording: skillRecording });
+    const verified = flowSkillVersion(3, "verified");
+    await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: skillRecording });
+    const evaluation: SkillEvaluation = { evaluationId: "flow-skill-eval", skillId: "flow-skill", skillVersion: 3, oracles: passingOracles(), outcome: "passed", signatureValid: true, createdAt: "2026-08-01T00:02:00.000Z" };
+    const bundle: SignedSkillBundle = await fx.skillSigner.sign({ bundleId: "flow-skill-bundle", skillId: "flow-skill", skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: fx.skillSigner.keyId, signatureAlgorithm: "Ed25519", issuedAt: "2026-08-01T00:03:00.000Z", payload: verified });
+    await store.saveEvaluation(evaluation);
+    await store.saveBundle(bundle);
+  });
+}
+
+function passingOracles(): SkillEvaluation["oracles"] {
+  return [
+    { oracle: REQUIRED_REPLAY_ORACLES[0] as string, status: "passed" },
+    ...REQUIRED_REPLAY_ORACLES.slice(1).map((oracle) => ({ oracle, status: "passed" as const })),
+  ];
 }
 
 /**
@@ -77,7 +132,7 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     await fx?.stop();
   });
 
-  it("runs the full Project → Target → Test Plan → Mission → Investigation → Review journey", async () => {
+  it("runs the full Project → Target → Test Plan → Mission → Skill → Investigation → Review journey", async () => {
     // 1. Login as an admin (satisfies tester + reviewer via role hierarchy).
     login("tenant-a", ["admin"]);
     expect(store.isAuthenticated()).toBe(true);
@@ -134,7 +189,21 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     const investigation = await client.getInvestigation("flow-case");
     expect(investigation.status).toBe("needs_human");
 
-    // 5. Claim then resolve the Review task with idempotency + expectedVersion.
+    // 5. Inspect Skill versions, exercise promotion conflict, then deprecate.
+    await seedVerifiedSkill(fx);
+    const skill = await client.getSkill("flow-skill");
+    expect(skill).toMatchObject({ skillId: "flow-skill", version: 3, state: "verified", signatureStatus: "valid", evaluationStatus: "passed" });
+    const history = await client.listSkillVersions("flow-skill");
+    expect(history.items.map((item) => item.version)).toEqual([1, 2, 3]);
+    const promoted = await client.promoteSkill("flow-skill", { expectedVersion: skill.version }, { idempotencyKey: "flow-skill-promote" });
+    expect(promoted.resource).toMatchObject({ version: 4, state: "promoted" });
+    const promoteConflict = await client.promoteSkill("flow-skill", { expectedVersion: skill.version }, { idempotencyKey: "flow-skill-promote-stale" }).catch((error: unknown) => error);
+    expect(promoteConflict).toBeInstanceOf(ApiClientError);
+    expect(promoteConflict).toMatchObject({ code: "VersionConflict", details: { actualVersion: 4 } });
+    const deprecated = await client.deprecateSkill("flow-skill", { expectedVersion: promoted.resource.version, reason: "superseded" }, { idempotencyKey: "flow-skill-deprecate" });
+    expect(deprecated.resource).toMatchObject({ version: 5, state: "deprecated", signatureStatus: "revoked" });
+
+    // 6. Claim then resolve the Review task with idempotency + expectedVersion.
     const claimed = await client.claimReviewTask(
       "flow-task",
       { expectedVersion: 1, reviewerId: "reviewer-flow" },
@@ -153,23 +222,18 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     );
     expect(resolved.resource.status).toBe("resolved");
 
-    // 6. Logout clears the in-memory token — subsequent calls are unauthorized.
+    // 7. Logout clears the in-memory token — subsequent calls are unauthorized.
     store.clear();
     const error = await client.listProjects().catch((e: unknown) => e);
     expect(isApiErrorCode(error, "Unauthorized")).toBe(true);
   });
 
-  it("documents that Run/Skill routes remain owned by later tickets (NotFound)", async () => {
+  it("documents that Run routes remain owned by later tickets (NotFound)", async () => {
     // The DTOs exist and the client targets the frozen contract paths, but the
     // PR-21 Server does not yet register these routes. The Console degrades to a
     // typed NotFound rather than a broken page — no fabricated data.
     login("tenant-a", ["viewer"]);
-    for (const call of [
-      () => client.listRuns(),
-      () => client.listSkills(),
-    ]) {
-      const error = await call().catch((e: unknown) => e);
-      expect(isApiErrorCode(error, "NotFound")).toBe(true);
-    }
+    const error = await client.listRuns().catch((e: unknown) => e);
+    expect(isApiErrorCode(error, "NotFound")).toBe(true);
   });
 });

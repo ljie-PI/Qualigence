@@ -216,6 +216,31 @@ export interface SkillRevocationsTable {
   revoked_at: string;
 }
 
+export interface SkillLifecycleCommandsTable {
+  idempotency_key: string;
+  command_hash: string;
+  command_type: string;
+  skill_id: string;
+  expected_version: number;
+  result_version: number;
+  result_json: string;
+  created_at: string;
+}
+
+export interface SkillLifecycleAuditEventsTable {
+  audit_id: string;
+  skill_id: string;
+  skill_version: number;
+  operation: string;
+  decision: string;
+  actor_id: string;
+  actor_tenant_id: string;
+  actor_roles_json: string;
+  reason: string;
+  metadata_json: string;
+  created_at: string;
+}
+
 export interface BenchmarkRunsTable {
   run_id: string;
   benchmark_version: string;
@@ -687,6 +712,8 @@ export interface Database {
   skill_evaluations: SkillEvaluationsTable;
   skill_bundles: SkillBundlesTable;
   skill_revocations: SkillRevocationsTable;
+  skill_lifecycle_commands: SkillLifecycleCommandsTable;
+  skill_lifecycle_audit_events: SkillLifecycleAuditEventsTable;
   benchmark_runs: BenchmarkRunsTable;
   benchmark_attempts: BenchmarkAttemptsTable;
   exploration_checkpoints: ExplorationCheckpointsTable;

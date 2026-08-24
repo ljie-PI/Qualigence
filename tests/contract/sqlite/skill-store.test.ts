@@ -9,6 +9,7 @@ import type {
   SkillEvaluation,
 } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
+import { skillLifecycleCommandContract, TrustingSkillSigner } from "./skill-lifecycle-command.contract.js";
 
 const recording: RecordingSession = {
   recordingId: "rec-1",
@@ -202,4 +203,21 @@ describe("SqliteSkillStore", () => {
     expect(blob).not.toContain("PRIVATE KEY");
     expect(blob).not.toContain("BEGIN EC");
   });
+});
+
+skillLifecycleCommandContract({
+  async open() {
+    const dir = await mkdtemp(join(process.cwd(), ".tmp-skill-lifecycle-contract-"));
+    const runtime = await SqliteRuntime.open({ filename: join(dir, "qualigence.db"), busyTimeoutMs: 5_000 });
+    return {
+      signer: new TrustingSkillSigner(),
+      tenantId: "local",
+      withStore: (operation) => operation(new SqliteSkillStore(runtime)),
+      withFailingStore: (failAfterLifecycleWrite, operation) => operation(new SqliteSkillStore(runtime, { failAfterLifecycleWrite })),
+      async close() {
+        await runtime.close();
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  },
 });

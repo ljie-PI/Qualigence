@@ -468,6 +468,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../packages/core-modules/context-intake
+      '@qualigence/kms-local':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/kms-local
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
@@ -501,6 +504,9 @@ importers:
       '@qualigence/shared-kernel':
         specifier: workspace:*
         version: link:../../packages/shared-kernel
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/skill
       fastify:
         specifier: 5.11.0
         version: 5.11.0
@@ -975,6 +981,9 @@ importers:
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../contracts/runner-protocol
+      '@qualigence/skill':
+        specifier: workspace:*
+        version: link:../../core-modules/skill
       kysely:
         specifier: 0.28.17
         version: 0.28.17

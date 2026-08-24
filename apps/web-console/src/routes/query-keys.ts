@@ -20,6 +20,7 @@ export const queryKeys = {
   run: (tenantId: string, runId: string) => ["tenant", tenantId, "runs", runId] as const,
   skills: (tenantId: string) => ["tenant", tenantId, "skills"] as const,
   skill: (tenantId: string, skillId: string) => ["tenant", tenantId, "skills", skillId] as const,
+  skillVersions: (tenantId: string, skillId: string) => ["tenant", tenantId, "skills", skillId, "versions"] as const,
   investigations: (tenantId: string) => ["tenant", tenantId, "investigations"] as const,
   investigation: (tenantId: string, caseId: string) =>
     ["tenant", tenantId, "investigations", caseId] as const,

@@ -1,5 +1,8 @@
 import type { RecordedStep, RecordingSession } from "@qualigence/recording";
 import type {
+  CommitSkillLifecycleCommandInput,
+  SkillLifecycleAuditEvent,
+  SkillLifecycleReplayResult,
   ProcedureSkillVersion,
   SaveSkillVersionInput,
   SignedSkillBundle,
@@ -13,6 +16,16 @@ import { skillError } from "@qualigence/skill";
 import type { SqliteRuntime } from "./database.js";
 import { runInImmediateTransaction } from "./transaction.js";
 
+interface SkillLifecycleCommandRow {
+  readonly command_hash: string;
+  readonly result_json: string;
+  readonly result_version: number;
+}
+
+interface LifecycleFailureOptions {
+  readonly failAfterLifecycleWrite?: number;
+}
+
 /**
  * SQLite-backed implementation of the LS-08 {@link SkillRepository}. It persists
  * immutable Recordings, versioned Skill snapshots, replay evaluations and signed
@@ -22,7 +35,12 @@ import { runInImmediateTransaction } from "./transaction.js";
  * stored — a signing private key never touches the database.
  */
 export class SqliteSkillStore implements SkillRepository {
-  constructor(private readonly runtime: SqliteRuntime) {}
+  private lifecycleWrites = 0;
+
+  constructor(
+    private readonly runtime: SqliteRuntime,
+    private readonly failureOptions: LifecycleFailureOptions = {},
+  ) {}
 
   async saveRecording(recording: RecordingSession): Promise<void> {
     await runInImmediateTransaction(this.runtime, async () => {
@@ -202,6 +220,35 @@ export class SqliteSkillStore implements SkillRepository {
     );
   }
 
+  async versions(skillId: string): Promise<readonly ProcedureSkillVersion[]> {
+    const rows = await this.runtime.db
+      .selectFrom("skill_versions")
+      .select("content_json")
+      .where("skill_id", "=", skillId)
+      .orderBy("version", "asc")
+      .execute();
+    return rows.map(
+      (row) => JSON.parse(row.content_json) as ProcedureSkillVersion,
+    );
+  }
+
+  async latestVersions(): Promise<readonly ProcedureSkillVersion[]> {
+    const rows = await this.runtime.db
+      .selectFrom("skills")
+      .innerJoin("skill_versions", (join) =>
+        join
+          .onRef("skill_versions.skill_id", "=", "skills.skill_id")
+          .onRef("skill_versions.version", "=", "skills.current_version"),
+      )
+      .select("skill_versions.content_json")
+      .orderBy("skills.updated_at", "desc")
+      .orderBy("skills.skill_id", "asc")
+      .execute();
+    return rows.map(
+      (row) => JSON.parse(row.content_json) as ProcedureSkillVersion,
+    );
+  }
+
   async saveEvaluation(evaluation: SkillEvaluation): Promise<void> {
     await runInImmediateTransaction(this.runtime, async () => {
       await this.runtime.db
@@ -307,5 +354,164 @@ export class SqliteSkillStore implements SkillRepository {
       .where("skill_version", "=", version)
       .executeTakeFirst();
     return row !== undefined;
+  }
+
+  async replayLifecycleCommand(
+    idempotencyKey: string,
+    commandHash: string,
+  ): Promise<SkillLifecycleReplayResult> {
+    return runInImmediateTransaction(this.runtime, async () => {
+      return this.readLifecycleReplay(idempotencyKey, commandHash);
+    });
+  }
+
+  async commitLifecycleCommand(
+    input: CommitSkillLifecycleCommandInput,
+  ): Promise<ProcedureSkillVersion> {
+    this.lifecycleWrites = 0;
+    return runInImmediateTransaction(this.runtime, async () => {
+      const replay = await this.readLifecycleReplay(input.command.idempotencyKey, input.commandHash);
+      if (replay.status === "replayed") return replay.result;
+      if (replay.status === "conflict") {
+        throw skillError("SkillIdempotencyConflict", "idempotency key is bound to another Skill lifecycle command", { actualVersion: replay.resultVersion });
+      }
+      await this.persistLifecycleResult(input);
+      return input.result;
+    });
+  }
+
+  async lifecycleAuditEvents(
+    skillId: string,
+  ): Promise<readonly SkillLifecycleAuditEvent[]> {
+    const rows = await this.runtime.db
+      .selectFrom("skill_lifecycle_audit_events")
+      .selectAll()
+      .where("skill_id", "=", skillId)
+      .orderBy("created_at", "asc")
+      .execute();
+    return rows.map((row) => ({
+      auditId: row.audit_id,
+      skillId: row.skill_id,
+      skillVersion: row.skill_version,
+      operation: row.operation as SkillLifecycleAuditEvent["operation"],
+      decision: row.decision as SkillLifecycleAuditEvent["decision"],
+      actor: {
+        actorId: row.actor_id,
+        tenantId: row.actor_tenant_id,
+        roles: JSON.parse(row.actor_roles_json) as readonly string[],
+      },
+      reason: row.reason,
+      metadata: JSON.parse(row.metadata_json) as Readonly<Record<string, unknown>>,
+      createdAt: row.created_at,
+    }));
+  }
+
+  private async persistLifecycleResult(
+    input: CommitSkillLifecycleCommandInput,
+  ): Promise<void> {
+    const db = this.runtime.db;
+    const { command, commandHash, previousVersion, result, audit, revocation } = input;
+    const updated = await db
+      .updateTable("skills")
+      .set({
+        current_version: result.version,
+        current_state: result.state,
+        updated_at: command.occurredAt,
+      })
+      .where("skill_id", "=", command.skillId)
+      .where("current_version", "=", command.expectedVersion)
+      .executeTakeFirst();
+    await this.afterLifecycleWrite();
+    if (Number(updated.numUpdatedRows) !== 1) {
+      const actual = await db
+        .selectFrom("skills")
+        .select("current_version")
+        .where("skill_id", "=", command.skillId)
+        .executeTakeFirst();
+      throw skillError("SkillVersionConflict", "Skill version changed during lifecycle command.", { actualVersion: actual?.current_version });
+    }
+
+    await db
+      .insertInto("skill_versions")
+      .values({
+        skill_id: result.skillId,
+        version: result.version,
+        state: result.state,
+        project_id: result.projectId,
+        source_recording_id: result.sourceRecordingIds[0],
+        content_sha256: result.contentSha256,
+        content_json: JSON.stringify(result),
+        created_at: command.occurredAt,
+      })
+      .execute();
+    await this.afterLifecycleWrite();
+
+    if (revocation !== undefined) {
+      await db
+        .insertInto("skill_revocations")
+        .values({
+          revocation_id: revocation.revocationId,
+          skill_id: revocation.skillId,
+          skill_version: revocation.skillVersion,
+          reason: revocation.reason,
+          revoked_at: revocation.revokedAt,
+        })
+        .execute();
+      await this.afterLifecycleWrite();
+    }
+
+    await db
+      .insertInto("skill_lifecycle_commands")
+      .values({
+        idempotency_key: command.idempotencyKey,
+        command_hash: commandHash,
+        command_type: command.operation,
+        skill_id: command.skillId,
+        expected_version: command.expectedVersion,
+        result_version: result.version,
+        result_json: JSON.stringify(result),
+        created_at: command.occurredAt,
+      })
+      .execute();
+    await this.afterLifecycleWrite();
+
+    await db
+      .insertInto("skill_lifecycle_audit_events")
+      .values({
+        audit_id: audit.auditId,
+        skill_id: audit.skillId,
+        skill_version: audit.skillVersion,
+        operation: audit.operation,
+        decision: audit.decision,
+        actor_id: audit.actor.actorId,
+        actor_tenant_id: audit.actor.tenantId,
+        actor_roles_json: JSON.stringify([...audit.actor.roles].sort()),
+        reason: audit.reason,
+        metadata_json: JSON.stringify({ fromVersion: previousVersion.version, fromState: previousVersion.state, ...audit.metadata }),
+        created_at: audit.createdAt,
+      })
+      .execute();
+    await this.afterLifecycleWrite();
+  }
+
+  private async readLifecycleReplay(
+    idempotencyKey: string,
+    commandHash: string,
+  ): Promise<SkillLifecycleReplayResult> {
+    const replay = await this.runtime.db
+      .selectFrom("skill_lifecycle_commands")
+      .select(["command_hash", "result_json", "result_version"])
+      .where("idempotency_key", "=", idempotencyKey)
+      .executeTakeFirst() as SkillLifecycleCommandRow | undefined;
+    if (replay === undefined) return { status: "not_found" };
+    if (replay.command_hash !== commandHash) return { status: "conflict", resultVersion: replay.result_version };
+    return { status: "replayed", result: JSON.parse(replay.result_json) as ProcedureSkillVersion };
+  }
+
+  private async afterLifecycleWrite(): Promise<void> {
+    this.lifecycleWrites += 1;
+    if (this.lifecycleWrites === this.failureOptions.failAfterLifecycleWrite) {
+      throw new Error(`InjectedSkillLifecycleFailureAfterWrite:${this.lifecycleWrites}`);
+    }
   }
 }

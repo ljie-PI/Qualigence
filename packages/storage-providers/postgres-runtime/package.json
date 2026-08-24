@@ -18,6 +18,7 @@
     "@qualigence/review": "workspace:*",
     "@qualigence/runner-control": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
+    "@qualigence/skill": "workspace:*",
     "kysely": "0.28.17",
     "pg": "8.13.1"
   },

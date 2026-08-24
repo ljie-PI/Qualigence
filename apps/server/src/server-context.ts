@@ -17,8 +17,9 @@ import type {
   PostgresDatabase,
   TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
-import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
+import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresSkillStore, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
+import type { SkillRepository, SkillSigner } from "@qualigence/skill";
 import { ProjectTargetService, type ProjectTargetRepository } from "@qualigence/project-target";
 import { MissionIntakeService, TestPlanService, type MissionSchedulingIds, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { MissionDispatchService } from "./mission-dispatch-service.js";
@@ -52,6 +53,8 @@ export interface ServerDeps {
   readonly projectTargetRepository?: (stores: TenantStores, tenantId: string) => ProjectTargetRepository;
   readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
   readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
+  readonly skillRepository?: (stores: TenantStores, tenantId: string) => SkillRepository;
+  readonly skillSigner?: SkillSigner;
   readonly missionSchedulingIds?: MissionSchedulingIds;
 }
 
@@ -81,6 +84,10 @@ export function missionDispatchService(deps: ServerDeps, stores: TenantStores, t
   return deps.missionSchedulingIds === undefined
     ? new MissionDispatchService(repository, deps.clock)
     : new MissionDispatchService(repository, deps.clock, deps.missionSchedulingIds);
+}
+
+export function skills(deps: ServerDeps, stores: TenantStores, tenantId: string): SkillRepository {
+  return deps.skillRepository?.(stores, tenantId) ?? new PostgresSkillStore(stores.db, tenantId);
 }
 
 /** Authenticate a human caller from the OIDC bearer token. Fails closed (401). */
