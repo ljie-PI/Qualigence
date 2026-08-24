@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { DeprecateSkillBody, PromoteSkillBody, SkillVersionDto } from "@qualigence/public-api";
-import { REQUIRED_REPLAY_ORACLES, SkillError, type ProcedureSkillVersion, type SkillRepository } from "@qualigence/skill";
+import { REQUIRED_REPLAY_ORACLES, SkillError, SkillLifecycleService, type ProcedureSkillVersion, type SkillRepository } from "@qualigence/skill";
 import { authenticateOidc, requireIdempotencyKey, requireRole, skills, withTenant, type ServerDeps } from "../server-context.js";
 import { commandEnvelope, listEnvelope } from "../envelopes.js";
-import { newCorrelationId, notFound, validationFailed, versionConflict } from "../errors.js";
+import { ApiError, newCorrelationId, notFound, validationFailed, versionConflict } from "../errors.js";
 
 export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get("/v1/skills", async (request, reply) => {
@@ -48,7 +48,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
-        const version = await repository.applyLifecycleCommand({
+        const version = await new SkillLifecycleService(repository).promote({
           operation: "promote",
           skillId: request.params.skillId,
           expectedVersion,
@@ -76,7 +76,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
-        const version = await repository.applyLifecycleCommand({
+        const version = await new SkillLifecycleService(repository).deprecate({
           operation: "deprecate",
           skillId: request.params.skillId,
           expectedVersion,
@@ -130,8 +130,11 @@ function expectedVersionFrom(body: Partial<PromoteSkillBody>): number {
 function rethrowSkillError(error: unknown, expectedVersion: number): never {
   if (!(error instanceof SkillError)) throw error;
   if (error.code === "SkillNotFound") throw notFound("Skill not found");
-  if (error.code === "SkillVersionConflict" || error.code === "SkillIdempotencyConflict" || error.code === "SkillAlreadyDeprecated" || error.code === "SkillStateReversal" || error.code === "SkillNotVerified") {
-    throw versionConflict({ expectedVersion, ...error.details }, error.code === "SkillIdempotencyConflict" ? "idempotency key is bound to another Skill lifecycle command" : error.code);
+  if (error.code === "SkillIdempotencyConflict") {
+    throw new ApiError(409, "IdempotencyConflict", "idempotency key is bound to another Skill lifecycle command", { expectedVersion, ...error.details });
+  }
+  if (error.code === "SkillVersionConflict" || error.code === "SkillAlreadyDeprecated" || error.code === "SkillStateReversal" || error.code === "SkillNotVerified") {
+    throw versionConflict({ expectedVersion, ...error.details }, error.code);
   }
   throw validationFailed(error.code);
 }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresSkillStore, createPostgresRuntime, provisionPostgres, type TenantTransactionProvider } from "@qualigence/postgres-runtime";
-import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES } from "@qualigence/skill";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, SkillLifecycleService } from "@qualigence/skill";
 import type { ProcedureSkillVersion, SignedSkillBundle, SkillEvaluation, SkillLifecycleCommand } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
@@ -59,17 +59,18 @@ describe("PostgresSkillStore", () => {
       await seedVerified(store);
 
       const command: SkillLifecycleCommand = { operation: "promote", skillId: "skill-pg", expectedVersion: 3, idempotencyKey: "pg-promote", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-1", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" };
-      const promoted = await store.applyLifecycleCommand(command);
-      const replay = await store.applyLifecycleCommand(command);
+      const service = new SkillLifecycleService(store);
+      const promoted = await service.promote(command);
+      const replay = await service.promote(command);
       expect(promoted).toMatchObject({ version: 4, state: "promoted" });
       expect(replay).toEqual(promoted);
-      await expect(store.applyLifecycleCommand({ ...command, operation: "deprecate", expectedVersion: 4, reason: "different" })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
+      await expect(service.deprecate({ ...command, operation: "deprecate", expectedVersion: 4, reason: "different" })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
       expect(await store.lifecycleAuditEvents("skill-pg")).toHaveLength(1);
     });
 
     await expect(provider.withTenant("tenant-a", async ({ db }) => {
       const failing = new PostgresSkillStore(db, "tenant-a", { failAfterLifecycleWrite: 2 });
-      await failing.applyLifecycleCommand({ operation: "deprecate", skillId: "skill-pg", expectedVersion: 4, idempotencyKey: "pg-fail", reason: "injected", actor: { actorId: "tester-1", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:06:00.000Z" });
+      await new SkillLifecycleService(failing).deprecate({ operation: "deprecate", skillId: "skill-pg", expectedVersion: 4, idempotencyKey: "pg-fail", reason: "injected", actor: { actorId: "tester-1", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:06:00.000Z" });
     })).rejects.toThrow("InjectedSkillLifecycleFailureAfterWrite:2");
 
     await provider.withTenant("tenant-a", async ({ db }) => {
@@ -80,7 +81,7 @@ describe("PostgresSkillStore", () => {
 
     await provider.withTenant("tenant-a", async ({ db }) => {
       const store = new PostgresSkillStore(db, "tenant-a");
-      const deprecated = await store.applyLifecycleCommand({ operation: "deprecate", skillId: "skill-pg", expectedVersion: 4, idempotencyKey: "pg-deprecate", reason: "superseded", actor: { actorId: "tester-1", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:07:00.000Z" });
+      const deprecated = await new SkillLifecycleService(store).deprecate({ operation: "deprecate", skillId: "skill-pg", expectedVersion: 4, idempotencyKey: "pg-deprecate", reason: "superseded", actor: { actorId: "tester-1", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:07:00.000Z" });
       expect(deprecated).toMatchObject({ version: 5, state: "deprecated" });
       expect(await store.isRevoked("skill-pg", 5)).toBe(true);
     });
@@ -95,6 +96,26 @@ describe("PostgresSkillStore", () => {
     await provider.withTenant("tenant-b", async ({ db }) => {
       const store = new PostgresSkillStore(db, "tenant-b");
       expect(await store.latestVersion("tenant-secret")).toBeUndefined();
+    });
+  });
+
+  it("allows only one winner when two lifecycle writers race on the same expected version", async () => {
+    await provider.withTenant("tenant-race", async ({ db }) => {
+      await seedVerified(new PostgresSkillStore(db, "tenant-race", {}));
+    });
+
+    const results = await Promise.allSettled([
+      provider.withTenant("tenant-race", async ({ db }) => new SkillLifecycleService(new PostgresSkillStore(db, "tenant-race")).promote({ operation: "promote", skillId: "skill-pg", expectedVersion: 3, idempotencyKey: "pg-race-promote", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester-a", tenantId: "tenant-race", roles: ["tester"] }, occurredAt: "2026-08-01T00:08:00.000Z" })),
+      provider.withTenant("tenant-race", async ({ db }) => new SkillLifecycleService(new PostgresSkillStore(db, "tenant-race")).deprecate({ operation: "deprecate", skillId: "skill-pg", expectedVersion: 3, idempotencyKey: "pg-race-deprecate", reason: "race loser", actor: { actorId: "tester-b", tenantId: "tenant-race", roles: ["tester"] }, occurredAt: "2026-08-01T00:08:00.000Z" })),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "SkillVersionConflict" } });
+    await provider.withTenant("tenant-race", async ({ db }) => {
+      const store = new PostgresSkillStore(db, "tenant-race");
+      expect((await store.latestVersion("skill-pg"))?.version).toBe(4);
+      expect(await store.lifecycleAuditEvents("skill-pg")).toHaveLength(1);
     });
   });
 });

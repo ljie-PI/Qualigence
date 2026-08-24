@@ -379,6 +379,10 @@ describe("Public API v1 contract", () => {
       expect(replay.status).toBe(200);
       expect(await replay.json()).toMatchObject({ resource: promoted.resource });
 
+      const idempotencyConflict = await fetch(url("/v1/skills/api-skill/deprecate"), { method: "POST", headers: headers("api-skill-promote"), body: JSON.stringify({ expectedVersion: 4, reason: "different intent" }) });
+      expect(idempotencyConflict.status).toBe(409);
+      expect(await idempotencyConflict.json()).toMatchObject({ code: "IdempotencyConflict" });
+
       const stale = await fetch(url("/v1/skills/api-skill/promote"), { method: "POST", headers: headers("api-skill-promote-stale"), body: JSON.stringify({ expectedVersion: 3 }) });
       expect(stale.status).toBe(409);
       expect(await stale.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 4 } });
@@ -396,6 +400,18 @@ describe("Public API v1 contract", () => {
       await fx.provider.withTenant("tenant-a", async ({ db }) => {
         expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-reject-key").execute()).toHaveLength(0);
       });
+    });
+
+    it("returns one success and one version conflict for concurrent two-writer promotion", async () => {
+      await seedVerifiedSkill(fx, { tenantId: "tenant-a", skillId: "api-skill-race" });
+      const token = fx.token("tenant-a", ["tester"]);
+      const send = (key: string) => fetch(url("/v1/skills/api-skill-race/promote"), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: key }, body: JSON.stringify({ expectedVersion: 3 }) });
+
+      const responses = await Promise.all([send("api-skill-race-a"), send("api-skill-race-b")]);
+      const statuses = responses.map((response) => response.status).sort();
+      expect(statuses).toEqual([200, 409]);
+      const conflict = responses.find((response) => response.status === 409);
+      expect(await conflict?.json()).toMatchObject({ code: "VersionConflict", details: { actualVersion: 4 } });
     });
   });
 

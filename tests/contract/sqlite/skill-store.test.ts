@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRuntime, SqliteSkillStore } from "@qualigence/sqlite-runtime";
-import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, SkillError } from "@qualigence/skill";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, SkillError, SkillLifecycleService } from "@qualigence/skill";
 import type {
   ProcedureSkillVersion,
   SignedSkillBundle,
@@ -200,8 +200,9 @@ describe("SqliteSkillStore", () => {
       occurredAt: "2026-08-01T00:05:00.000Z",
     };
 
-    const promoted = await store.applyLifecycleCommand(command);
-    const replay = await store.applyLifecycleCommand(command);
+    const service = new SkillLifecycleService(store);
+    const promoted = await service.promote(command);
+    const replay = await service.promote(command);
 
     expect(promoted).toMatchObject({ skillId: "skill-1", version: 4, state: "promoted" });
     expect(replay).toEqual(promoted);
@@ -214,7 +215,8 @@ describe("SqliteSkillStore", () => {
 
   it("conflicts when an idempotency key is reused for a different lifecycle command", async () => {
     await seedVerified(store);
-    await store.applyLifecycleCommand({
+    const service = new SkillLifecycleService(store);
+    await service.promote({
       operation: "promote",
       skillId: "skill-1",
       expectedVersion: 3,
@@ -224,7 +226,7 @@ describe("SqliteSkillStore", () => {
       occurredAt: "2026-08-01T00:05:00.000Z",
     });
 
-    await expect(store.applyLifecycleCommand({
+    await expect(service.deprecate({
       operation: "deprecate",
       skillId: "skill-1",
       expectedVersion: 4,
@@ -234,6 +236,32 @@ describe("SqliteSkillStore", () => {
       occurredAt: "2026-08-01T00:06:00.000Z",
     })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
     expect(await store.latestVersion("skill-1")).toMatchObject({ version: 4, state: "promoted" });
+    expect(await store.lifecycleAuditEvents("skill-1")).toHaveLength(1);
+  });
+
+  it("rejects a second stale writer after one lifecycle command wins", async () => {
+    await seedVerified(store);
+    const service = new SkillLifecycleService(store);
+
+    await service.promote({
+      operation: "promote",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "race-promote-a",
+      requiredOracles: REQUIRED_REPLAY_ORACLES,
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    });
+    await expect(service.deprecate({
+      operation: "deprecate",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "race-deprecate-b",
+      reason: "race loser",
+      actor: { actorId: "tester-2", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    })).rejects.toMatchObject({ code: "SkillVersionConflict" });
+    expect((await store.latestVersion("skill-1"))?.version).toBe(4);
     expect(await store.lifecycleAuditEvents("skill-1")).toHaveLength(1);
   });
 
@@ -252,17 +280,18 @@ describe("SqliteSkillStore", () => {
       actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
       occurredAt: "2026-08-01T00:05:00.000Z",
     };
-    await expect(store.applyLifecycleCommand(command)).rejects.toMatchObject({ code: "SkillVerificationFailed" });
+    const service = new SkillLifecycleService(store);
+    await expect(service.promote(command)).rejects.toMatchObject({ code: "SkillVerificationFailed" });
     expect(await runtime.db.selectFrom("skill_lifecycle_commands").selectAll().execute()).toHaveLength(0);
 
     await store.saveEvaluation(evaluationAt(3));
     await store.saveBundle(bundleAt(versionAt(3, "verified")));
-    await expect(store.applyLifecycleCommand(command)).resolves.toMatchObject({ version: 4, state: "promoted" });
+    await expect(service.promote(command)).resolves.toMatchObject({ version: 4, state: "promoted" });
   });
 
   it("deprecates through the domain lifecycle and revocation evidence", async () => {
     await seedVerified(store);
-    const deprecated = await store.applyLifecycleCommand({
+    const deprecated = await new SkillLifecycleService(store).deprecate({
       operation: "deprecate",
       skillId: "skill-1",
       expectedVersion: 3,
@@ -281,7 +310,7 @@ describe("SqliteSkillStore", () => {
     await seedVerified(store);
     const failing = new SqliteSkillStore(runtime, { failAfterLifecycleWrite: 3 });
 
-    await expect(failing.applyLifecycleCommand({
+    await expect(new SkillLifecycleService(failing).deprecate({
       operation: "deprecate",
       skillId: "skill-1",
       expectedVersion: 3,

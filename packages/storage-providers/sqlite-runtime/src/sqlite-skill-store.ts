@@ -1,7 +1,8 @@
 import type { RecordedStep, RecordingSession } from "@qualigence/recording";
 import type {
+  CommitSkillLifecycleCommandInput,
   SkillLifecycleAuditEvent,
-  SkillLifecycleCommand,
+  SkillLifecycleReplayResult,
   ProcedureSkillVersion,
   SaveSkillVersionInput,
   SignedSkillBundle,
@@ -11,7 +12,7 @@ import type {
   SkillRevocation,
   SkillState,
 } from "@qualigence/skill";
-import { canonicalJson, sha256Hex, skillError, SkillPromotionPolicy, TestSkill } from "@qualigence/skill";
+import { skillError } from "@qualigence/skill";
 import type { SqliteRuntime } from "./database.js";
 import { runInImmediateTransaction } from "./transaction.js";
 
@@ -355,72 +356,27 @@ export class SqliteSkillStore implements SkillRepository {
     return row !== undefined;
   }
 
-  async applyLifecycleCommand(
-    command: SkillLifecycleCommand,
+  async replayLifecycleCommand(
+    idempotencyKey: string,
+    commandHash: string,
+  ): Promise<SkillLifecycleReplayResult> {
+    return runInImmediateTransaction(this.runtime, async () => {
+      return this.readLifecycleReplay(idempotencyKey, commandHash);
+    });
+  }
+
+  async commitLifecycleCommand(
+    input: CommitSkillLifecycleCommandInput,
   ): Promise<ProcedureSkillVersion> {
-    const commandHash = skillLifecycleCommandHash(command);
     this.lifecycleWrites = 0;
     return runInImmediateTransaction(this.runtime, async () => {
-      const replay = await this.runtime.db
-        .selectFrom("skill_lifecycle_commands")
-        .select(["command_hash", "result_json", "result_version"])
-        .where("idempotency_key", "=", command.idempotencyKey)
-        .executeTakeFirst() as SkillLifecycleCommandRow | undefined;
-      if (replay !== undefined) {
-        if (replay.command_hash !== commandHash) {
-          throw skillError(
-            "SkillIdempotencyConflict",
-            "idempotency key is bound to another Skill lifecycle command",
-            { actualVersion: replay.result_version },
-          );
-        }
-        return JSON.parse(replay.result_json) as ProcedureSkillVersion;
+      const replay = await this.readLifecycleReplay(input.command.idempotencyKey, input.commandHash);
+      if (replay.status === "replayed") return replay.result;
+      if (replay.status === "conflict") {
+        throw skillError("SkillIdempotencyConflict", "idempotency key is bound to another Skill lifecycle command", { actualVersion: replay.resultVersion });
       }
-
-      const current = await this.latestVersion(command.skillId);
-      if (current === undefined) {
-        throw skillError("SkillNotFound", `Skill ${command.skillId} was not found.`);
-      }
-      if (current.version !== command.expectedVersion) {
-        throw skillError(
-          "SkillVersionConflict",
-          `Skill ${command.skillId} expected version ${String(command.expectedVersion)} but stored version is ${String(current.version)}.`,
-          { actualVersion: current.version },
-        );
-      }
-
-      let next: ProcedureSkillVersion;
-      let reason: string;
-      const aggregate = TestSkill.fromVersion(current);
-      if (command.operation === "promote") {
-        const evaluation = await this.latestEvaluation(current.skillId, current.version);
-        const bundle = await this.bundle(current.skillId, current.version);
-        if (evaluation === undefined) {
-          throw skillError("SkillVerificationFailed", "A Skill cannot be promoted without a completed evaluation.");
-        }
-        if (bundle === undefined || !bundleMatchesVersion(bundle, current)) {
-          throw skillError("SkillBundleMissing", "A Skill cannot be promoted without its signed Bundle.");
-        }
-        const decision = new SkillPromotionPolicy().evaluate({
-          version: current,
-          evaluation,
-          signatureVerification: evaluation.signatureValid ? { status: "valid" } : { status: "invalid", code: "SkillSignatureInvalid", message: "The latest evaluation did not confirm a valid signature." },
-          requiredOracles: command.requiredOracles,
-        });
-        if (decision.status === "rejected") {
-          throw skillError(decision.code, decision.message);
-        }
-        aggregate.promote({ expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey });
-        next = aggregate.snapshot();
-        reason = "promotion policy approved";
-      } else {
-        aggregate.deprecate({ expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey, reason: command.reason });
-        next = aggregate.snapshot();
-        reason = command.reason;
-      }
-
-      await this.persistLifecycleResult(command, commandHash, current, next, reason);
-      return next;
+      await this.persistLifecycleResult(input);
+      return input.result;
     });
   }
 
@@ -450,23 +406,16 @@ export class SqliteSkillStore implements SkillRepository {
     }));
   }
 
-  private async latestEvaluation(skillId: string, version: number): Promise<SkillEvaluation | undefined> {
-    return (await this.evaluations(skillId, version)).at(-1);
-  }
-
   private async persistLifecycleResult(
-    command: SkillLifecycleCommand,
-    commandHash: string,
-    current: ProcedureSkillVersion,
-    next: ProcedureSkillVersion,
-    reason: string,
+    input: CommitSkillLifecycleCommandInput,
   ): Promise<void> {
     const db = this.runtime.db;
+    const { command, commandHash, previousVersion, result, audit, revocation } = input;
     const updated = await db
       .updateTable("skills")
       .set({
-        current_version: next.version,
-        current_state: next.state,
+        current_version: result.version,
+        current_state: result.state,
         updated_at: command.occurredAt,
       })
       .where("skill_id", "=", command.skillId)
@@ -485,27 +434,27 @@ export class SqliteSkillStore implements SkillRepository {
     await db
       .insertInto("skill_versions")
       .values({
-        skill_id: next.skillId,
-        version: next.version,
-        state: next.state,
-        project_id: next.projectId,
-        source_recording_id: next.sourceRecordingIds[0],
-        content_sha256: next.contentSha256,
-        content_json: JSON.stringify(next),
+        skill_id: result.skillId,
+        version: result.version,
+        state: result.state,
+        project_id: result.projectId,
+        source_recording_id: result.sourceRecordingIds[0],
+        content_sha256: result.contentSha256,
+        content_json: JSON.stringify(result),
         created_at: command.occurredAt,
       })
       .execute();
     await this.afterLifecycleWrite();
 
-    if (command.operation === "deprecate") {
+    if (revocation !== undefined) {
       await db
         .insertInto("skill_revocations")
         .values({
-          revocation_id: `${command.idempotencyKey}:revocation`,
-          skill_id: next.skillId,
-          skill_version: next.version,
-          reason,
-          revoked_at: command.occurredAt,
+          revocation_id: revocation.revocationId,
+          skill_id: revocation.skillId,
+          skill_version: revocation.skillVersion,
+          reason: revocation.reason,
+          revoked_at: revocation.revokedAt,
         })
         .execute();
       await this.afterLifecycleWrite();
@@ -519,8 +468,8 @@ export class SqliteSkillStore implements SkillRepository {
         command_type: command.operation,
         skill_id: command.skillId,
         expected_version: command.expectedVersion,
-        result_version: next.version,
-        result_json: JSON.stringify(next),
+        result_version: result.version,
+        result_json: JSON.stringify(result),
         created_at: command.occurredAt,
       })
       .execute();
@@ -529,20 +478,34 @@ export class SqliteSkillStore implements SkillRepository {
     await db
       .insertInto("skill_lifecycle_audit_events")
       .values({
-        audit_id: `${command.idempotencyKey}:audit`,
-        skill_id: next.skillId,
-        skill_version: next.version,
-        operation: command.operation,
-        decision: "allowed",
-        actor_id: command.actor.actorId,
-        actor_tenant_id: command.actor.tenantId,
-        actor_roles_json: JSON.stringify([...command.actor.roles].sort()),
-        reason,
-        metadata_json: JSON.stringify({ fromVersion: current.version, fromState: current.state, toState: next.state }),
-        created_at: command.occurredAt,
+        audit_id: audit.auditId,
+        skill_id: audit.skillId,
+        skill_version: audit.skillVersion,
+        operation: audit.operation,
+        decision: audit.decision,
+        actor_id: audit.actor.actorId,
+        actor_tenant_id: audit.actor.tenantId,
+        actor_roles_json: JSON.stringify([...audit.actor.roles].sort()),
+        reason: audit.reason,
+        metadata_json: JSON.stringify({ fromVersion: previousVersion.version, fromState: previousVersion.state, ...audit.metadata }),
+        created_at: audit.createdAt,
       })
       .execute();
     await this.afterLifecycleWrite();
+  }
+
+  private async readLifecycleReplay(
+    idempotencyKey: string,
+    commandHash: string,
+  ): Promise<SkillLifecycleReplayResult> {
+    const replay = await this.runtime.db
+      .selectFrom("skill_lifecycle_commands")
+      .select(["command_hash", "result_json", "result_version"])
+      .where("idempotency_key", "=", idempotencyKey)
+      .executeTakeFirst() as SkillLifecycleCommandRow | undefined;
+    if (replay === undefined) return { status: "not_found" };
+    if (replay.command_hash !== commandHash) return { status: "conflict", resultVersion: replay.result_version };
+    return { status: "replayed", result: JSON.parse(replay.result_json) as ProcedureSkillVersion };
   }
 
   private async afterLifecycleWrite(): Promise<void> {
@@ -551,23 +514,4 @@ export class SqliteSkillStore implements SkillRepository {
       throw new Error(`InjectedSkillLifecycleFailureAfterWrite:${this.lifecycleWrites}`);
     }
   }
-}
-
-function skillLifecycleCommandHash(command: SkillLifecycleCommand): string {
-  return sha256Hex(canonicalJson({
-    operation: command.operation,
-    skillId: command.skillId,
-    expectedVersion: command.expectedVersion,
-    ...(command.operation === "promote" ? { requiredOracles: [...command.requiredOracles].sort() } : { reason: command.reason }),
-    actor: { actorId: command.actor.actorId, tenantId: command.actor.tenantId, roles: [...command.actor.roles].sort() },
-  }));
-}
-
-function bundleMatchesVersion(bundle: SignedSkillBundle, version: ProcedureSkillVersion): boolean {
-  return bundle.manifest.skillId === version.skillId &&
-    bundle.manifest.skillVersion === version.version &&
-    bundle.manifest.contentSha256 === version.contentSha256 &&
-    bundle.payload.skillId === version.skillId &&
-    bundle.payload.version === version.version &&
-    bundle.payload.contentSha256 === version.contentSha256;
 }

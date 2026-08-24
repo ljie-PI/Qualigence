@@ -248,6 +248,7 @@ export type PublicApiErrorCode =
   | "Forbidden"
   | "NotFound"
   | "VersionConflict"
+  | "IdempotencyConflict"
   | "IdempotencyKeyRequired"
   | "ValidationFailed"
   | "EnrollmentTokenInvalid"

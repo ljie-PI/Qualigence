@@ -60,12 +60,14 @@ export type {
 } from "./ports/skill-signer.js";
 
 export type {
+  CommitSkillLifecycleCommandInput,
   SaveSkillVersionInput,
   SkillLifecycleActorContext,
   SkillLifecycleAuditEvent,
   SkillLifecycleCommand,
   SkillLifecycleCommandBase,
   SkillLifecycleOperation,
+  SkillLifecycleReplayResult,
   SkillRepository,
   SkillRevocation,
 } from "./ports/skill-repository.js";
@@ -85,6 +87,11 @@ export {
 export type { SkillCompilerErrorCode } from "./application/skill-compiler.js";
 
 export { SkillPromotionPolicy } from "./application/skill-promotion-policy.js";
+
+export {
+  SkillLifecycleService,
+  skillLifecycleCommandHash,
+} from "./application/skill-lifecycle-service.js";
 
 export type {
   PromotionDecision,

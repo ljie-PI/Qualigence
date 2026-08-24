@@ -48,6 +48,20 @@ export interface SkillLifecycleAuditEvent {
   readonly createdAt: string;
 }
 
+export type SkillLifecycleReplayResult =
+  | { readonly status: "not_found" }
+  | { readonly status: "replayed"; readonly result: ProcedureSkillVersion }
+  | { readonly status: "conflict"; readonly resultVersion: number };
+
+export interface CommitSkillLifecycleCommandInput {
+  readonly command: SkillLifecycleCommand;
+  readonly commandHash: string;
+  readonly previousVersion: ProcedureSkillVersion;
+  readonly result: ProcedureSkillVersion;
+  readonly audit: SkillLifecycleAuditEvent;
+  readonly revocation?: SkillRevocation;
+}
+
 /** A revocation entry appended when a Skill version must no longer be dispatched. */
 export interface SkillRevocation {
   readonly revocationId: string;
@@ -101,8 +115,12 @@ export interface SkillRepository {
   revoke(revocation: SkillRevocation): Promise<void>;
   isRevoked(skillId: string, version: number): Promise<boolean>;
 
-  applyLifecycleCommand(
-    command: SkillLifecycleCommand,
+  replayLifecycleCommand(
+    idempotencyKey: string,
+    commandHash: string,
+  ): Promise<SkillLifecycleReplayResult>;
+  commitLifecycleCommand(
+    input: CommitSkillLifecycleCommandInput,
   ): Promise<ProcedureSkillVersion>;
   lifecycleAuditEvents(
     skillId: string,
