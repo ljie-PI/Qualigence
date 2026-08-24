@@ -4,7 +4,7 @@
 
 **Blocked by:** 18 - Deliver safe valueRef input (resolved).
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -106,3 +106,12 @@ The real Chromium case must execute separate immutable input and select Jobs wit
 - [ ] Unrelated equal text remains unchanged; no global `replaceAll`-style document/evidence redaction remains in this path.
 - [ ] Existing Ticket 18 value-provider, capability, dispatch, and exact-source acceptance remains green without being re-claimed.
 - [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+### start — 2026-08-24
+
+- Fixed base: `992804b95183973b5f0ddd76f32c676808fc2ac3` (`main`, includes PR #93 merge `992804b`).
+- Predecessor merge evidence: Ticket 18 is `resolved` with PR #75 merge commit `de2b77369801785696b57b5dfacfd230bc0ea3d3` recorded in `.scratch/remaining-production-closure/issues/18-safe-valueref-input.md` and present in current history.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable for input/select browser-normalized sensitive evidence; no rows are marked N/A for implementation planning.
+- Planned Gates: `corepack pnpm vitest run tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts`, then `corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains deferred per ticket protocol.

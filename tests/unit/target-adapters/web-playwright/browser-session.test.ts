@@ -367,6 +367,78 @@ describe("PlaywrightBrowserSession", () => {
     });
   });
 
+  it("redacts only registered sensitive target fields", () => {
+    const session = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    const prepared = session.prepareSensitiveEvidenceRecord({
+      navigationGeneration: session.currentNavigationGeneration,
+      nodeId: "n-sensitive",
+      sourceValue: "line-one\r\nline-two\r\n",
+    });
+    session.completeSensitiveEvidenceRecord(prepared, ["line-one\nline-two\n"]);
+
+    expect(session.redactSensitiveTargetField(
+      [prepared.markerId],
+      "line-one\r\nline-two\r\n",
+    )).toBe("[redacted]");
+    expect(session.redactSensitiveTargetField(
+      [prepared.markerId],
+      "line-one\nline-two\n",
+    )).toBe("[redacted]");
+    expect(session.redactSensitiveTargetField(undefined, "line-one\nline-two\n"))
+      .toBe("line-one\nline-two\n");
+    expect(session.redactSensitiveTargetField([prepared.markerId], "Email"))
+      .toBe("Email");
+  });
+
+  it("fails sensitive evidence closed on record, form, and byte limits", () => {
+    const session = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    const complete = (nodeId: string, sourceValue: string): void => {
+      const prepared = session.prepareSensitiveEvidenceRecord({
+        navigationGeneration: session.currentNavigationGeneration,
+        nodeId,
+        sourceValue,
+      });
+      session.completeSensitiveEvidenceRecord(prepared, [sourceValue]);
+    };
+
+    for (let index = 0; index < 100; index += 1) {
+      complete(`n-${index}`, `value-${index}`);
+    }
+    expect(() => session.prepareSensitiveEvidenceRecord({
+      navigationGeneration: session.currentNavigationGeneration,
+      nodeId: "n-overflow",
+      sourceValue: "value-overflow",
+    })).toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+
+    const oversized = "x".repeat((64 * 1024) + 1);
+    const sourceOversizedSession = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    expect(() => sourceOversizedSession.prepareSensitiveEvidenceRecord({
+      navigationGeneration: sourceOversizedSession.currentNavigationGeneration,
+      nodeId: "n-oversized-source",
+      sourceValue: oversized,
+    })).toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+
+    const formOverflowSession = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    const formOverflow = formOverflowSession.prepareSensitiveEvidenceRecord({
+      navigationGeneration: formOverflowSession.currentNavigationGeneration,
+      nodeId: "n-form-overflow",
+      sourceValue: "a",
+    });
+    formOverflowSession.completeSensitiveEvidenceRecord(formOverflow, ["b", "c", "d", "e"]);
+    expect(() => formOverflowSession.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+
+    const formOversizedSession = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    const formOversized = formOversizedSession.prepareSensitiveEvidenceRecord({
+      navigationGeneration: formOversizedSession.currentNavigationGeneration,
+      nodeId: "n-form-oversized",
+      sourceValue: "a",
+    });
+    formOversizedSession.completeSensitiveEvidenceRecord(formOversized, [oversized]);
+    expect(() => formOversizedSession.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+  });
+
   it("exposes origin helpers used by the executor allowlist", () => {
     expect(normalizeOrigin("https://example.test/a/b?x=1")).toBe("https://example.test");
     expect(normalizeOrigin("https://EXAMPLE.TEST:443/a")).toBe("https://example.test");

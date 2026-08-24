@@ -32,6 +32,26 @@ function allowedPermit(): ExecutionPermit {
   });
 }
 
+function sensitiveTargetEvaluate(value = "private-value") {
+  let markerId = "";
+  return vi.fn(async (_callback: unknown, argument: unknown) => {
+    if (
+      typeof argument === "object" &&
+      argument !== null &&
+      "markerId" in argument
+    ) {
+      markerId = String(argument.markerId);
+      return undefined;
+    }
+    return {
+      sensitiveTargetIds: [markerId],
+      value,
+      selectedOptionValue: value,
+      selectedOptionText: value,
+    };
+  });
+}
+
 function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "component test" };
 }
@@ -113,10 +133,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
+          <label>Notes <textarea aria-label="Notes"></textarea></label>
           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
           <p data-qualigence-observe id="values"></p>
+          <p data-qualigence-observe id="notes-copy"></p>
           <script>
             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('textarea').addEventListener('input', event => document.getElementById('notes-copy').textContent = event.target.value);
             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
           </script>
         `,
@@ -454,7 +477,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
   });
 
-  it("executes input and select through valueRefs without returning plaintext", async () => {
+  it("redacts input and select target fields without global equal-text replacement", async () => {
     const values = new Map([
       ["customer.email", "private@example.test"],
       ["customer.country", "private-country-code"],
@@ -480,19 +503,41 @@ describe("Playwright resolve + execute against real Chromium", () => {
 
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
-    const serializedPublicValues = JSON.stringify([
-      inputAction,
-      inputOutcome,
-      afterInput,
-      selectAction,
-      selectOutcome,
-      await observer.capture(job),
-    ]);
-    expect(serializedPublicValues).not.toContain("private@example.test");
-    expect(serializedPublicValues).not.toContain("private-country-code");
+    const afterSelect = await observer.capture(job);
+
+    expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome]))
+      .not.toContain("private@example.test");
+    expect(nodeNamed(afterInput, "Email").value).toBe("[redacted]");
+    expect(afterInput.nodes.some((node) => node.text === "private@example.test")).toBe(true);
+    expect(nodeNamed(afterSelect, "Email").value).toBe("[redacted]");
+    expect(nodeNamed(afterSelect, "Country")).toMatchObject({
+      text: "[redacted]",
+      value: "[redacted]",
+    });
+    expect(afterSelect.nodes.some((node) => node.text === "private@example.test:private-country-code"))
+      .toBe(true);
   });
 
-  it("redacts input plaintext from the complete Trace and verifier context", async () => {
+  it("registers browser-normalized textarea newline forms against only the authorized target", async () => {
+    const source = "line-one\r\nline-two\r\n";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => source,
+    });
+    const before = await observer.capture(job);
+
+    const action = await resolver.resolve(valued("input", nodeNamed(before, "Notes").id, "notes.body"), before);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+
+    expect(nodeNamed(after, "Notes").value).toBe("[redacted]");
+    expect(after.nodes.some((node) => node.text === "line-one line-two")).toBe(true);
+  });
+
+  it("redacts input target fields from Trace and verifier context without global equal-text replacement", async () => {
     const secret = "trace-secret@example.test";
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -526,10 +571,16 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
 
     await expect(runtime.run(job)).resolves.toMatchObject({ status: "passed" });
-    const serializedTrace = JSON.stringify(traces.eventsFor(job.runId));
-    expect(serializedTrace).not.toContain(secret);
-    expect(serializedVerifierContext).not.toContain(secret);
-    expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
+    const events = traces.eventsFor(job.runId);
+    const nonObservationTrace = JSON.stringify(events.filter((event) => event.stage !== "observation"));
+    expect(nonObservationTrace).not.toContain(secret);
+    const observations = events.filter((event) => event.stage === "observation");
+    expect(observations).toHaveLength(2);
+    const after = observations.at(-1)?.payload as ObservationGraph;
+    expect(nodeNamed(after, "Email").value).toBe("[redacted]");
+    expect(after.nodes.some((node) => node.text === secret)).toBe(true);
+    const verifierContext = JSON.parse(serializedVerifierContext) as { readonly after: ObservationGraph };
+    expect(nodeNamed(verifierContext.after, "Email").value).toBe("[redacted]");
   });
 
   it("blocks a redirect after the model decision before resolver locator reads", async () => {
@@ -1373,7 +1424,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
           click: sideEffect,
           fill: sideEffect,
           selectOption: sideEffect,
-          evaluate: sideEffect,
+          evaluate: kind === "scroll" ? sideEffect : sensitiveTargetEvaluate(),
         }),
       } as never);
       const proposed = elementAction(kind, nodeId);
