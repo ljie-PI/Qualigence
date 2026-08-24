@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
+import {
+  WEB_EXTENSION_V1_REDACTION_MARKER,
+  WEB_EXTENSION_V1_TYPE,
+  observationGraphHash,
+  validateObservationGraphV1,
+  type AcceptedExecutionJob,
+  type ObservationGraphV1,
+} from "@qualigence/runner-protocol";
 import {
   PlaywrightBrowserSession,
   PlaywrightObserver,
@@ -35,12 +42,13 @@ describe("PlaywrightObserver against real Chromium", () => {
 
   function options(): WebSessionOptions {
     return {
-      url: fixture.url,
+      url: `${fixture.url}?ref=abc&token=secret#frag`,
       expectedOrigin: fixture.origin,
       headed: false,
       navigationTimeoutMs: 15_000,
       actionTimeoutMs: 10_000,
       allowedOrigins: [fixture.origin],
+      allowedWebQueryKeys: ["ref"],
     };
   }
 
@@ -53,37 +61,64 @@ describe("PlaywrightObserver against real Chromium", () => {
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://placeholder.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
   };
 
-  it("captures a semantic graph with stable, unique node ids and no leaked selectors", async () => {
+  it("captures a validated Graph v1 with web/v1 metadata and no leaked selectors or query values", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
 
-    const graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } }) as ObservationGraphV1;
 
     expect(graph.graphId).toBe("run-observe:observation:1");
-    expect(graph.url).toBe(fixture.url);
+    expect(() => validateObservationGraphV1(graph, { allowedWebQueryKeys: ["ref"] })).not.toThrow();
+    expect(observationGraphHash(graph, { allowedWebQueryKeys: ["ref"] })).toMatch(/^[0-9a-f]{64}$/);
+    expect(graph.target).toEqual({ kind: "web", targetId: fixture.origin });
+    expect(graph.rootNodeIds).toEqual(["n-000000-document"]);
+    expect(graph.evidenceRefs).toEqual(["1-observation.json", "1.png"]);
+    expect(graph.extensions?.[WEB_EXTENSION_V1_TYPE]).toMatchObject({
+      type: WEB_EXTENSION_V1_TYPE,
+      payload: {
+        origin: fixture.origin,
+        pathname: "/",
+        title: "Storefront",
+        query: { ref: WEB_EXTENSION_V1_REDACTION_MARKER },
+      },
+    });
 
     const ids = graph.nodes.map((node) => node.id);
     expect(new Set(ids).size).toBe(ids.length);
+    expect(graph.nodes[0]).toMatchObject({
+      id: "n-000000-document",
+      role: "document",
+      source: { adapterId: "web-playwright", sourceKind: "document" },
+      sensitivity: "public",
+    });
 
     const addButton = graph.nodes.find(
       (node) => node.role === "button" && node.name === "Add to cart",
     );
-    expect(addButton).toBeDefined();
+    expect(addButton).toMatchObject({
+      source: { adapterId: "web-playwright", sourceKind: "dom" },
+      state: { disabled: false },
+      sensitivity: "public",
+    });
 
-    const total = graph.nodes.find((node) => node.text?.includes("Cart total"));
+    const total = graph.nodes.find((node) => node.name?.includes("Cart total"));
     expect(total).toBeDefined();
 
-    const disabled = graph.nodes.find((node) => node.disabled === true);
+    const disabled = graph.nodes.find((node) => node.state.disabled === true);
     expect(disabled).toMatchObject({ name: "Checkout" });
 
     const password = graph.nodes.find((node) => node.name === "Password");
     expect(password).toBeDefined();
+    expect(password).not.toHaveProperty("value");
 
     const serialized = JSON.stringify(graph);
     expect(serialized).not.toContain("hunter2");
     expect(serialized).not.toContain("#add");
     expect(serialized).not.toContain("data-qualigence-node");
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("abc");
+    expect(serialized).not.toContain("frag");
     expect(serialized.toLowerCase()).not.toContain("xpath");
     for (const node of graph.nodes) {
       expect(node).not.toHaveProperty("selector");
@@ -104,7 +139,10 @@ describe("PlaywrightObserver against real Chromium", () => {
   it("discards a capture when the page crosses origin during DOM collection", async () => {
     const otherOrigin = "https://other.test";
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => [{ role: "button", name: "Private account" }]);
+    const evaluate = vi.fn(async () => ({
+      candidates: [{ role: "button", name: "Private account" }],
+      viewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    }));
     const title = vi.fn(async () => "Private account");
     const screenshot = vi.fn(async () => new TextEncoder().encode("private screenshot"));
     session = new PlaywrightBrowserSession(options());
@@ -144,7 +182,10 @@ describe("PlaywrightObserver against real Chromium", () => {
       on: vi.fn((event: string, listener: (frame: object) => void) => {
         if (event === "framenavigated") frameNavigated = listener;
       }),
-      evaluate: vi.fn(async () => [{ role: "button", name: "Matching control" }]),
+      evaluate: vi.fn(async () => ({
+        candidates: [{ role: "button", name: "Matching control" }],
+        viewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      })),
       title: vi.fn(async () => "Matching page"),
       screenshot: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
       close: vi.fn(async () => undefined),
@@ -203,7 +244,10 @@ describe("PlaywrightObserver against real Chromium", () => {
 
   it("allows a delayed path change on the configured target origin", async () => {
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => [{ role: "button", name: "Continue" }]);
+    const evaluate = vi.fn(async () => ({
+      candidates: [{ role: "button", name: "Continue" }],
+      viewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    }));
     const title = vi.fn(async () => "Same origin");
     const screenshot = vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
     session = new PlaywrightBrowserSession(options());
@@ -222,12 +266,16 @@ describe("PlaywrightObserver against real Chromium", () => {
     const graph = await observer.capture({
       ...job,
       target: { kind: "web", url: fixture.url },
-    });
+    }) as ObservationGraphV1;
 
-    expect(graph.url).toBe(`${fixture.origin}/after`);
-    expect(graph.nodes).toEqual([
+    expect(graph.extensions?.[WEB_EXTENSION_V1_TYPE]?.payload).toMatchObject({
+      origin: fixture.origin,
+      pathname: "/after",
+      title: "Same origin",
+    });
+    expect(graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "button", name: "Continue" }),
-    ]);
+    ]));
     expect(session.artifactsFor(graph.graphId)).toHaveLength(2);
   });
 });

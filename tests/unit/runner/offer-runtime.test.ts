@@ -9,6 +9,8 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import {
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   advertisedCapabilityTokens,
   negotiateCapabilities,
 } from "@qualigence/runner-protocol";
@@ -227,8 +229,16 @@ describe("RunnerOfferRuntime", () => {
       "action:navigate",
       "action:click",
       "action:scroll",
+      OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+      WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
     ]));
-    expect(negotiateCapabilities(withoutValues, ["action:navigate", "action:scroll"])).toEqual({
+    expect(withoutValues.observationExtensions).toEqual(["observation-graph/v1", "web/v1"]);
+    expect(negotiateCapabilities(withoutValues, [
+      "action:navigate",
+      "action:scroll",
+      OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+      WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+    ])).toEqual({
       outcome: "accepted",
     });
     expect(negotiateCapabilities(withoutValues, ["action:input", "action:select"])).toMatchObject({
@@ -260,6 +270,35 @@ describe("RunnerOfferRuntime", () => {
       ...admittedOffer(),
       requiredCapabilities: ["unsupported:capability"],
     })).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+    expect(session.accept).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+  });
+
+  it("rejects incompatible Graph and web extension majors before lease acceptance", async () => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(),
+      complete: vi.fn(),
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run({
+      ...admittedOffer(),
+      requiredCapabilities: ["observation:observation-graph/v2", "observation:web/v2"],
+    })).rejects.toMatchObject({
+      code: "CapabilityMismatch",
+      details: {
+        missingCapabilities: ["observation:observation-graph/v2", "observation:web/v2"],
+      },
+    });
 
     expect(session.accept).not.toHaveBeenCalled();
     expect(session.complete).not.toHaveBeenCalled();

@@ -35,6 +35,7 @@ interface ObservationNodeLike {
   readonly role?: string;
   readonly name?: string;
   readonly text?: string | null;
+  readonly value?: string | null;
 }
 
 interface ObservationGraphLike {
@@ -52,11 +53,13 @@ function findButton(graph: ObservationGraphLike): ObservationNodeLike {
   return node;
 }
 
+function visibleNodeText(node: ObservationNodeLike): string {
+  return node.text ?? node.name ?? node.value ?? "";
+}
+
 function findTotal(graph: ObservationGraphLike): ObservationNodeLike {
   const node = graph.nodes.find(
-    (candidate) =>
-      typeof candidate.text === "string" &&
-      candidate.text.includes("Cart total"),
+    (candidate) => visibleNodeText(candidate).includes("Cart total"),
   );
   if (node === undefined) {
     throw new Error("Mock model server found no cart-total node.");
@@ -131,12 +134,12 @@ async function startMockModelServer(): Promise<MockModelServer> {
                 expected: {
                   graphId: context.before!.graphId,
                   nodeId: before.id,
-                  text: before.text,
+                  text: visibleNodeText(before),
                 },
                 observed: {
                   graphId: context.after!.graphId,
                   nodeId: after.id,
-                  text: after.text,
+                  text: visibleNodeText(after),
                 },
               },
             ],

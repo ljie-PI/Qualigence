@@ -1,5 +1,8 @@
 import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-protocol";
-import { capabilities } from "@qualigence/runner-protocol";
+import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  capabilities,
+} from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import {
@@ -37,7 +40,16 @@ export class RunnerOfferRuntime {
 
   async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider);
-    assertOfferCapabilities(offer, currentCapabilities);
+    const offerWithLiveObservationRequirements = {
+      ...offer,
+      requiredCapabilities: [
+        ...new Set([
+          ...offer.requiredCapabilities,
+          ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+        ]),
+      ],
+    };
+    assertOfferCapabilities(offerWithLiveObservationRequirements, currentCapabilities);
     const admission = DeterministicRunnerPolicyGate.admitJob(offer.job);
     if (admission.status === "denied") {
       const lease = await this.options.session.accept(offer.offerId);
@@ -174,6 +186,7 @@ export class RunnerOfferRuntime {
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {
   return capabilities({
     targetAdapters: ["web-playwright"],
+    observationExtensions: ["observation-graph/v1", "web/v1"],
     actionKinds: valueProvider === undefined
       ? ["navigate", "click", "scroll"]
       : ["navigate", "click", "input", "select", "scroll"],

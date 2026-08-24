@@ -4,7 +4,7 @@
 
 **Blocked by:** 22 — Expand Graph v1 and web/v1 extension.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -104,3 +104,12 @@ Run Chromium through the production producer and Graph/extension capability nego
 - [ ] Trace transports v1 losslessly and rejects incompatible majors.
 - [ ] Runner advertises and negotiates Graph/extension capabilities before work.
 - [ ] Real Chromium capture passes shared schema and canonical hash tests after clean review.
+
+## Comments
+
+### start — 2026-08-24
+
+- Fixed base: `0238c9cddebed3c4903df2e376d6377483b3ca28` (`main`, includes PR #95 merge `0238c9c`).
+- Predecessor merge evidence: Ticket 22 is `resolved` with PR #90 merge commit `7ef31db708612ddc5c020e6e2bb2758d763fba85` recorded in `.scratch/remaining-production-closure/issues/22-expand-graph-v1-web-extension.md` and present in current history. Ticket 39 target-bound browser-normalized redaction is present through PR #94 merge commit `8fd56808dea9fc8b202e0d4833a0e8f5606e6001` and docs PR #95 merge `0238c9cddebed3c4903df2e376d6377483b3ca28`.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable to live Web producer capture, Runtime observation Trace emission, protocol transport, capability advertisement/negotiation, and fail-closed admission; no rows are marked N/A for implementation planning.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/unit/runner/offer-runtime.test.ts tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.

@@ -8,10 +8,10 @@ export * from "./messages.js";
  *
  * The v1 Graph lives in `@qualigence/observation-contracts`, which is the single
  * source of truth. Runner Protocol re-exports it for a compatibility cycle so
- * consumers have one canonical import surface. This is purely additive: the
- * existing pre-v1 {@link ObservationGraph}/{@link ObservationNode} types below
- * are unchanged and remain the shape the live runtime uses until a later PR
- * (LS-13) migrates consumers over.
+ * consumers have one canonical import surface. Live Web producers now emit this
+ * candidate v1 shape while the existing pre-v1 {@link ObservationGraph}/
+ * {@link ObservationNode} types below are kept as historical asset DTOs for the
+ * later inventory/contraction tickets.
  */
 export type {
   ObservationJsonValue,
@@ -45,6 +45,8 @@ export {
   requireGraphExtensionMajor,
   findExtensionMajor,
   findGraphExtensionMajor,
+  validateObservationGraphV1,
+  observationGraphHash,
 } from "@qualigence/observation-contracts";
 
 /**

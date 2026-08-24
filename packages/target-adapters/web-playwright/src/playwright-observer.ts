@@ -1,6 +1,8 @@
 import type {
   AcceptedExecutionJob,
   ObservationGraph,
+  ObservationGraphV1,
+  WebViewportV1,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
 import type { PlaywrightBrowserSession } from "./browser-session.js";
@@ -61,9 +63,14 @@ interface BrowserObservationCandidate extends ObservationCandidate {
   readonly sensitiveTargetIds?: readonly string[];
 }
 
-function collectCandidates(
+interface BrowserObservationCapture {
+  readonly candidates: readonly BrowserObservationCandidate[];
+  readonly viewport: WebViewportV1;
+}
+
+function collectPageObservation(
   sensitiveTargetIdsProperty: string,
-): BrowserObservationCandidate[] {
+): BrowserObservationCapture {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
       return true;
@@ -224,7 +231,7 @@ function collectCandidates(
       (element as HTMLButtonElement).disabled === true ||
       element.getAttribute("aria-disabled") === "true";
 
-    const candidate: ObservationCandidate = {
+    const candidate: BrowserObservationCandidate = {
       role,
       ...(name !== "" ? { name } : {}),
       ...(text !== undefined ? { text } : {}),
@@ -235,12 +242,19 @@ function collectCandidates(
     candidates.push(candidate);
   }
 
-  return candidates;
+  return {
+    candidates,
+    viewport: {
+      width: Math.max(1, Math.trunc(window.innerWidth)),
+      height: Math.max(1, Math.trunc(window.innerHeight)),
+      devicePixelRatio: window.devicePixelRatio,
+    },
+  };
 }
 
 function buildArtifacts(
   ordinal: number,
-  graph: ObservationGraph,
+  graph: ObservationGraphV1,
   screenshot: Uint8Array,
 ): CapturedArtifact[] {
   const json = new TextEncoder().encode(JSON.stringify(graph));
@@ -275,14 +289,14 @@ export class PlaywrightObserver implements Observer {
       const captured = await readPageValue(
         assertCaptureAuthority,
         async () => (await page.evaluate(
-          collectCandidates,
+          collectPageObservation,
           SENSITIVE_TARGET_IDS_PROPERTY,
-        )) as BrowserObservationCandidate[],
+        )) as BrowserObservationCapture,
       );
       await this.hooks.afterDomCollection?.();
       assertCaptureAuthority();
       this.session.assertSensitiveEvidenceAvailable();
-      const raw = captured.map((candidate) => ({
+      const raw = captured.candidates.map((candidate) => ({
         role: candidate.role,
         ...(candidate.name === undefined ? {} : {
           name: this.session.redactSensitiveTargetField(
@@ -303,6 +317,9 @@ export class PlaywrightObserver implements Observer {
           ),
         }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
+        ...(candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0
+          ? { sensitive: true }
+          : {}),
       }));
       const url = this.session.assertPageTargetOrigin(page, navigationGeneration);
       const title = await readPageValue(
@@ -316,22 +333,26 @@ export class PlaywrightObserver implements Observer {
         job.runId,
         ordinal,
         raw,
-        { url, ...(title !== "" ? { title } : {}) },
+        {
+          url,
+          targetId: new URL(this.session.targetUrl).origin,
+          title,
+          capturedAt: new Date().toISOString(),
+          viewport: captured.viewport,
+          allowedQueryKeys: this.session.allowedWebQueryKeys,
+          evidenceRefs: artifactNames,
+        },
       );
       assertCaptureAuthority();
-      const graphWithRefs: ObservationGraph = {
-        ...graph,
-        artifactRefs: artifactNames,
-      };
 
       const screenshot = await captureScreenshot(page, assertCaptureAuthority);
       assertCaptureAuthority();
-      const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
-      this.session.registerCapturedObservation(page, graphWithRefs.graphId, {
+      const artifacts = buildArtifacts(ordinal, graph, screenshot);
+      this.session.registerCapturedObservation(page, graph.graphId, {
         descriptors,
         artifacts,
       }, navigationGeneration);
-      return graphWithRefs;
+      return graph;
     });
   }
 }
