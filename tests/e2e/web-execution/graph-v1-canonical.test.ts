@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { PlaywrightBrowserSession } from "@qualigence/web-playwright/internal";
+import { PlaywrightBrowserSession, WebTargetError } from "@qualigence/web-playwright/internal";
 import { describe, expect, it, afterEach } from "vitest";
 import {
   OBSERVATION_GRAPH_V1_SCHEMA,
@@ -33,11 +33,14 @@ afterEach(async () => {
 describe("Graph v1 canonical Web extension acceptance", () => {
   it("captures real Chromium web inputs into a privacy-safe canonical web/v1 graph", async () => {
     const origin = await startPage();
+    session = new PlaywrightBrowserSession({ url: `${origin}/checkout?token=secret&ref=campaign#fragment`, expectedOrigin: origin, headed: false, navigationTimeoutMs: 15_000, actionTimeoutMs: 10_000, allowedOrigins: [origin] });
     try {
-      session = new PlaywrightBrowserSession({ url: `${origin}/checkout?token=secret&ref=campaign#fragment`, expectedOrigin: origin, headed: false, navigationTimeoutMs: 15_000, actionTimeoutMs: 10_000, allowedOrigins: [origin] });
       await session.start();
     } catch (error) {
-      throw new Error("ChromiumUnavailable", { cause: error });
+      if (error instanceof WebTargetError && error.code === "BrowserLaunchFailed") {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
     }
     const input = await session.withPage(async (page) => ({ url: page.url(), title: await page.title(), viewport: page.viewportSize(), devicePixelRatio: await page.evaluate("window.devicePixelRatio") as number }));
     const url = new URL(input.url);
@@ -60,7 +63,7 @@ describe("Graph v1 canonical Web extension acceptance", () => {
     const reorderedSets = webGraph(graph.extensions![WEB_EXTENSION_V1_TYPE]!.payload as never, {
       rootNodeIds: ["checkout", "root"],
       evidenceRefs: ["artifact://z", "artifact://a"],
-      nodes: [graph.nodes[1]!, { ...graph.nodes[0]!, relations: [{ type: "child", targetNodeId: "checkout" }] }],
+      nodes: [graph.nodes[1]!, { ...graph.nodes[0]!, relations: [{ type: "owns", targetNodeId: "checkout" }, { type: "child", targetNodeId: "checkout" }] }],
     });
     expect(observationGraphHash(reorderedSets, { allowedWebQueryKeys: ["ref"] })).toBe(observationGraphHash(graph, { allowedWebQueryKeys: ["ref"] }));
 
@@ -133,7 +136,7 @@ function webGraph(
         role: "document",
         name: web.title,
         state: {},
-        relations: [{ type: "child", targetNodeId: "checkout" }],
+        relations: [{ type: "child", targetNodeId: "checkout" }, { type: "owns", targetNodeId: "checkout" }],
         source: { adapterId: "chromium-acceptance", sourceKind: "browser" },
         confidence: 1,
         sensitivity: "public",
