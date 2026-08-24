@@ -36,9 +36,7 @@ export class SkillLifecycleService {
   }
 
   private async apply(command: SkillLifecycleCommand): Promise<ProcedureSkillVersion> {
-    if (command.abortSignal?.aborted === true) {
-      throw skillError("SkillCommandAborted", "Skill lifecycle command was aborted before dispatch.");
-    }
+    throwIfAborted(command.abortSignal);
     const commandHash = skillLifecycleCommandHash(command);
     const replay = await this.repository.replayLifecycleCommand(command.idempotencyKey, commandHash);
     if (replay.status === "replayed") return replay.result;
@@ -61,7 +59,7 @@ export class SkillLifecycleService {
       const bundle = await this.repository.bundle(current.skillId, current.version);
       if (evaluation === undefined) throw skillError("SkillVerificationFailed", "A Skill cannot be promoted without a completed evaluation.");
       if (bundle === undefined || !bundleMatchesVersion(bundle, current)) throw skillError("SkillBundleMissing", "A Skill cannot be promoted without its signed Bundle.");
-      const signatureVerification = await this.signatureVerification(current, bundle);
+      const signatureVerification = await this.signatureVerification(current, bundle, command.occurredAt);
       const decision = new SkillPromotionPolicy().evaluate({
         version: current,
         evaluation,
@@ -77,6 +75,8 @@ export class SkillLifecycleService {
       result = aggregate.snapshot();
       reason = command.reason;
     }
+
+    throwIfAborted(command.abortSignal);
 
     return this.repository.commitLifecycleCommand({
       command,
@@ -134,7 +134,11 @@ export class SkillLifecycleService {
     return undefined;
   }
 
-  private async signatureVerification(version: ProcedureSkillVersion, bundle: NonNullable<Awaited<ReturnType<SkillRepository["bundle"]>>>): Promise<SkillSignatureVerification> {
+  private async signatureVerification(
+    version: ProcedureSkillVersion,
+    bundle: NonNullable<Awaited<ReturnType<SkillRepository["bundle"]>>>,
+    now: string,
+  ): Promise<SkillSignatureVerification> {
     if (!version.targetScope.allowedOrigins.every((origin) => typeof origin === "string")) {
       return { status: "invalid", code: "SkillTargetMismatch", message: "Skill target scope is invalid." };
     }
@@ -144,8 +148,14 @@ export class SkillLifecycleService {
     return this.signer.verify(bundle, {
       projectId: version.projectId,
       targetId: version.targetScope.targetId,
-      now: new Date().toISOString(),
+      now,
     });
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw skillError("SkillCommandAborted", "Skill lifecycle command was aborted before dispatch.");
   }
 }
 

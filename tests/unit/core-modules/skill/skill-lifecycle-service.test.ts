@@ -55,6 +55,21 @@ describe("SkillLifecycleService", () => {
 
     await expect(service.promote(command)).resolves.toMatchObject({ version: 4, state: "promoted" });
   });
+
+  it("fails before repository mutation when cancelled after validation and before commit", async () => {
+    const repository = new MemorySkillRepository();
+    await repository.seedVerified();
+    const controller = new AbortController();
+    const signer = new AbortingSkillSigner(controller);
+    const service = new SkillLifecycleService({ repository, signer });
+    const command = { operation: "promote" as const, skillId: "skill-core", expectedVersion: 3, idempotencyKey: "cancel-after-validation", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z", abortSignal: controller.signal };
+
+    await expect(service.promote(command)).rejects.toMatchObject({ code: "SkillCommandAborted" });
+    expect(repository.replayCalls).toBe(1);
+    expect(repository.commits).toHaveLength(0);
+
+    await expect(service.promote({ operation: command.operation, skillId: command.skillId, expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey, requiredOracles: command.requiredOracles, actor: command.actor, occurredAt: command.occurredAt })).resolves.toMatchObject({ version: 4, state: "promoted" });
+  });
 });
 
 class MemorySkillRepository implements SkillRepository {
@@ -114,6 +129,17 @@ class TrustingSkillSigner implements SkillSigner {
   }
 
   async verify() {
+    return { status: "valid" as const };
+  }
+}
+
+class AbortingSkillSigner extends TrustingSkillSigner {
+  constructor(private readonly controller: AbortController) {
+    super();
+  }
+
+  override async verify() {
+    this.controller.abort();
     return { status: "valid" as const };
   }
 }

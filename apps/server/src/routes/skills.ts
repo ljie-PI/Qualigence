@@ -45,7 +45,8 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const idempotencyKey = requireIdempotencyKey(request);
     const body = bodyObject(request.body);
     const expectedVersion = expectedVersionFrom(body);
-    if (request.raw.aborted) throw validationFailed("request was aborted before dispatch");
+    const abortSignal = requestAbortSignal(request.raw);
+    if (abortSignal.aborted) throw validationFailed("request was aborted before dispatch");
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
@@ -58,6 +59,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
           requiredOracles: REQUIRED_REPLAY_ORACLES,
           actor: { actorId: principal.subject, tenantId: principal.tenantId, roles: principal.roles },
           occurredAt: deps.clock.now(),
+          abortSignal,
         });
         return toDto(await service.versionView(version));
       } catch (error) {
@@ -77,7 +79,8 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
       throw validationFailed("reason is required");
     }
     const reason = body.reason;
-    if (request.raw.aborted) throw validationFailed("request was aborted before dispatch");
+    const abortSignal = requestAbortSignal(request.raw);
+    if (abortSignal.aborted) throw validationFailed("request was aborted before dispatch");
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
@@ -90,6 +93,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
           reason,
           actor: { actorId: principal.subject, tenantId: principal.tenantId, roles: principal.roles },
           occurredAt: deps.clock.now(),
+          abortSignal,
         });
         return toDto(await service.versionView(version));
       } catch (error) {
@@ -98,6 +102,13 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     });
     return reply.send(commandEnvelope(dto, dto.version, newCorrelationId()));
   });
+}
+
+function requestAbortSignal(raw: { readonly aborted: boolean; once(event: "aborted", listener: () => void): unknown }): AbortSignal {
+  if (raw.aborted) return AbortSignal.abort();
+  const controller = new AbortController();
+  raw.once("aborted", () => controller.abort());
+  return controller.signal;
 }
 
 function toDto(view: SkillVersionView): SkillVersionDto {
