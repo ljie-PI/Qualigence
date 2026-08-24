@@ -125,6 +125,11 @@ function validateSchema(value: unknown, schema: JsonSchema, root: JsonSchema, pa
     const required = Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === "string") : [];
     for (const key of required) if (!(key in record)) errors.push(`${path}.${key}: missing required`);
     const properties = isRecord(schema.properties) ? schema.properties : {};
+    if (isSchema(schema.propertyNames)) {
+      for (const key of Object.keys(record)) {
+        errors.push(...validateSchema(key, schema.propertyNames, root, `${path}.${key}<name>`));
+      }
+    }
     for (const [key, item] of Object.entries(record)) {
       const propertySchema = properties[key];
       if (propertySchema === false) {
