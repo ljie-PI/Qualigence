@@ -18,7 +18,7 @@ Ticket 43 is assumed complete: bounded enumerable owner discovery and immediate 
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

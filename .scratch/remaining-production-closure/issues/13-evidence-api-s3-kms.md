@@ -19,7 +19,7 @@
 
 ## Migration
 
-Migration 013 only: Evidence lifecycle. Migrations 001-012 are immutable and no later migration is authorized by this ticket.
+Migration 015 only: Evidence lifecycle. Migrations 001-014 are immutable when this ticket starts and no later migration is authorized by this ticket.
 
 ## Affected contexts
 

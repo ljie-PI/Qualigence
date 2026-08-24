@@ -17,6 +17,8 @@
 
 `.scratch/remaining-production-closure/spec.md` and this ticket track the bound-Runner dispatch slice.
 
+This ticket owns an injectable, startable dispatch loop over existing Mission dispatch outbox and Runner-control seams. The loop may be constructed and exercised directly by tests. Server process boot wiring, Self-hosted gRPC listener composition, tenant-bound Runner registry, and durable `next_attempt`/claim schema are not owned by this ticket; tickets 09 and 12 compose those production paths. Offline bound Runner handling therefore leaves the existing outbox row durably `pending` and applies bounded loop-local backoff without adding schema.
+
 ## Migration
 
 None. This ticket may not add or modify a schema migration.

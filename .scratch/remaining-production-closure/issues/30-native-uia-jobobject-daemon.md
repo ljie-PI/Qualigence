@@ -12,7 +12,7 @@ This ticket owns native UIA capture/action, Job Object application lifecycle, da
 
 ## Migration
 
-No relational migration is allocated; migrations 001-013 are unchanged. Replace the `WindowsUiaCapture` and `WindowsDesktopProcessHost` error-only seams in place. Portable state-machine and synthetic tests remain supporting contract evidence, never a native-completion fallback.
+No relational migration is allocated; existing and allocated closure migrations are unchanged. Replace the `WindowsUiaCapture` and `WindowsDesktopProcessHost` error-only seams in place. Portable state-machine and synthetic tests remain supporting contract evidence, never a native-completion fallback.
 
 ## Affected contexts
 

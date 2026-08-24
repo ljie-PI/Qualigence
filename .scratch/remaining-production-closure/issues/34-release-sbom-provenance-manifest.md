@@ -12,7 +12,7 @@ Ticket 33 owns mandatory CI/Gate artifacts; this ticket owns deploy-only image c
 
 ## Migration
 
-No relational schema migration is allocated; migrations 001-013 are unchanged. Packaging migrates application, Worker, and Admin runtime images from workspace/source copying to isolated `corepack pnpm deploy --prod` roots. `pnpm-workspace.yaml` and `pnpm-lock.yaml` may change only to enable `injectWorkspacePackages: true` and synchronize that packaging shape with Corepack pnpm 11.7.0; no dependency upgrade is in scope. Release Compose migrates from mutable tags to explicit image name plus `sha256:` digest.
+No relational schema migration is allocated; existing and allocated closure migrations are unchanged. Packaging migrates application, Worker, and Admin runtime images from workspace/source copying to isolated `corepack pnpm deploy --prod` roots. `pnpm-workspace.yaml` and `pnpm-lock.yaml` may change only to enable `injectWorkspacePackages: true` and synchronize that packaging shape with Corepack pnpm 11.7.0; no dependency upgrade is in scope. Release Compose migrates from mutable tags to explicit image name plus `sha256:` digest.
 
 ## Affected contexts
 

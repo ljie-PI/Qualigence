@@ -18,7 +18,7 @@ The fixed additions are at most 128 observed shadow roots per session, 1,024 tim
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

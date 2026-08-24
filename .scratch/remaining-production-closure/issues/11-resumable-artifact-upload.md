@@ -19,7 +19,7 @@
 
 ## Migration
 
-Migration 012 only: Artifact manifests/chunks/ACK state. Migrations 001-011 and 013 onward are immutable/out of scope for this ticket.
+Migration 014 only: Artifact manifests/chunks/ACK state. Migrations 001-013 are immutable when this ticket starts, and migration 015 onward is reserved for later tickets/out of scope for this ticket.
 
 ## Affected contexts
 

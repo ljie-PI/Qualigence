@@ -45,15 +45,17 @@ Resolve conflicts in this order: applicable security/public-contract invariants,
 - Current public contracts and tests: `packages/contracts/observation/src/{core,extensions,canonical,validator,index}.ts`, `packages/contracts/observation/schemas/observation-graph-v1.schema.json`, the v1 re-export/capability surface in `packages/contracts/runner-protocol/src/{index,capabilities}.ts`, and the conformance/property tests named here. `ObservationGraphV1`, validation, canonical bytes/hash, required-extension-major behavior, and stable errors are public compatibility boundaries.
 - Ticket-local and GitHub evidence: this ticket's `## Comments` and `## Answer`, merged predecessor and final ticket PRs, required checks, reviewed-head and merge-commit bindings, and any deferred advanced-hardening Issues in `ljie-PI/Qualigence` are the durable execution evidence.
 
-## Authority ambiguities
+## Authority decisions
 
-- Current authority requires one fixed redaction marker but does not name its literal value, and requires a bounded viewport without freezing its exact DTO fields/ranges. Before implementation, record a reviewed contract choice for those literals/shapes in this ticket or obtain a maintainer decision; do not let each producer invent its own representation.
-- The allocated real-Chromium acceptance precedes ticket 23's live Web producer scope. If the existing adapter cannot exercise the additive contract without production edits, stop for a scope/ownership decision. Do not edit ticket 23 files implicitly or count a synthetic Graph as the required capture.
+- The fixed `web/v1` query-value redaction marker is `[redacted]`, matching the existing log/adapter sentinel. Allowlisted query keys are retained with this exact value only; raw query values and fragments are never represented.
+- The `web/v1` extension is Graph-level, not node-level. Add a Graph `extensions` map alongside existing node extensions. The typed `web/v1` payload is `{ origin, pathname, title, viewport, query }`, where `viewport` is `{ width, height, devicePixelRatio }`, `width` and `height` are finite positive safe integers in CSS pixels no greater than `32768`, and `devicePixelRatio` is finite, positive, and no greater than `16`.
+- Capability vocabulary is `observation:observation-graph/v1` for the core Graph major and `observation:web/v1` for the Web extension major, matching the existing `advertisedCapabilityTokens` `observation:${extension}` convention. Ticket 22 defines the vocabulary and contract; ticket 23 owns live producer advertisement and admission.
+- The allocated real-Chromium acceptance may exercise the pure additive contract with browser-observed origin/path/title/viewport/query inputs and no production Web adapter edits. If acceptance cannot satisfy the ticket without editing the Web adapter reserved for ticket 23, stop for a scope/ownership decision. Do not edit ticket 23 files implicitly or count a synthetic Graph with invented browser values as the required capture.
 
 ## Execution protocol
 
 - This ticket is the execution entrypoint for the expand phase. Start after blockers resolve from the latest merged predecessor and record exact base SHA, matrix applicability, and planned Gates under `## Comments`, citing the predecessor's merged PR and merge commit as current execution-base evidence.
-- Resolve and record the exact `web/v1` redaction-marker/viewport contract before production edits. This is a public hash contract and cannot remain an adapter-local implementation choice.
+- Preserve the `web/v1` redaction-marker, viewport, Graph-level extension, and capability-token decisions above. These are public hash/capability contracts and cannot become adapter-local implementation choices.
 - Use Node.js 24 and Corepack pnpm exactly `11.7.0`; install frozen in a fresh worktree. Do not change the lockfile or dependencies.
 - Start with failing conformance/property tests. During edits/review fixes run only the focused non-E2E Gate, root typecheck, and diff check. Preserve strict TypeScript, a single Graph truth, stable errors, unknown-minor round trip, unsupported-major rejection, and redaction before serialization.
 - No required Gate may skip. Chromium absence in acceptance is `ChromiumUnavailable`, not evidence. Preserve unrelated changes and stop before any file outside **Allowed Files**.

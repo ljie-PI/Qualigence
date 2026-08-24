@@ -18,7 +18,7 @@ Reflected Graph fields use Ticket 39's `[redacted]`; every screenshot pixel insi
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

@@ -18,7 +18,7 @@ The fixed Graph redaction marker is the existing literal `[redacted]`. The fixed
 
 ## Migration
 
-None; migrations 001-013 are immutable.
+None; existing and allocated closure migrations are immutable to this ticket.
 
 ## Affected contexts
 

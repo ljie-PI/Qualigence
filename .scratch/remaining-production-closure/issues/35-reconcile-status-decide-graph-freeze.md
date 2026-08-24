@@ -12,7 +12,7 @@ This ticket owns final closure reconciliation and the deterministic Graph freeze
 
 ## Migration
 
-No relational migration is allocated; migrations 001-013 and historical pre-v1 payloads remain immutable. The evidence migration is additive and deterministic:
+No relational migration is allocated; existing and allocated closure migrations and historical pre-v1 payloads remain immutable. The evidence migration is additive and deterministic:
 
 - Read every tracked closure ticket under `.scratch/remaining-production-closure/issues/*.md`; require the canonical 01-35 dependency graph to be resolved by merged PR evidence and classify every later remediation/hardening record by current status, parent ticket, merge evidence, and blocking/non-blocking authority.
 - Resolve each ticket's PR URL, reviewed code head, remote head, merge commit, Gate/E2E evidence, and any deferred non-blocking GitHub Issue; unresolved or contradictory state becomes an explicit blocker.

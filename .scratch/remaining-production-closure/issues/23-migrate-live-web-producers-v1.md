@@ -15,7 +15,7 @@ This ticket owns the producer migration phase. It changes Playwright capture, li
 - Change Playwright observation building/capture to emit validated `ObservationGraphV1` with deterministic roots, nodes, relations, source, state, sensitivity, evidence refs, target/capturedAt, and typed privacy-safe `web/v1`. Keep locator/DOM descriptors private to the adapter and keyed by node ID. Migrate the adapter-local Playwright action resolver to consume that v1 Graph/private descriptor generation so this producer slice remains usable; ticket 24 still owns model, exploration, evidence, benchmark, migration, and replay consumers.
 - Change the live Runner `Observer`/Runtime observation and observation Trace producer/transport to v1 without defining a legacy/v1 union at the live port. Preserve lossless Trace mapping and stable action descriptor invalidation.
 - Advertise `observation:observation-graph/v1` and `observation:web/v1` only when the producer supports them. Require/validate compatible Graph and extension majors before Job payload admission; no silent downgrade to legacy Graph.
-- Production Runner capability construction currently lives in `apps/runner/src/offer-runtime.ts`, outside this ticket's approved Files. The third TODO and post-review negotiation acceptance therefore require an explicit maintainer scope decision adding the exact production caller/tests or transferring ownership. Do not edit `apps/runner` implicitly or check the TODO from contract-only advertisement.
+- Production Runner capability construction is in scope for this ticket only through `apps/runner/src/offer-runtime.ts` and its unit test. The ticket must advertise `observation:observation-graph/v1` and `observation:web/v1` from the real Runner capability construction when the producer supports them; contract-only tokens are not production wiring.
 - Preserve historical pre-v1 decoding outside live producers for ticket 25. Do not migrate model/exploration/evidence/benchmark/migration/replay consumers in this ticket.
 - This ticket has no persistence migration allocation and may not edit migrations, status/checklists outside this ticket, or protocol protobuf files not listed in scope.
 
@@ -28,11 +28,13 @@ This ticket owns the producer migration phase. It changes Playwright capture, li
 This is the complete edit scope.
 
 - `packages/{target-adapters/web-playwright,runner-kernel,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`
+- `apps/runner/src/offer-runtime.ts`
 - `tests/{unit/target-adapters/web-playwright,component/web-execution,conformance/runner-protocol,conformance/observation}`
+- `tests/unit/runner/offer-runtime.test.ts`
 - `.scratch/remaining-production-closure/issues/23-migrate-live-web-producers-v1.md`
 - Post-review acceptance only: `tests/e2e/web-execution/graph-v1-producer.test.ts`
 
-No app composition, protobuf schema, consumer package, migration package, package manifest, lockfile, or unlisted test root is allowed.
+No app composition outside the exact Runner capability file above, protobuf schema, consumer package, migration package, package manifest, lockfile, or unlisted test root is allowed.
 
 ## Authority
 
@@ -45,16 +47,16 @@ Resolve conflicts in this order: applicable security/public contracts, architect
 - Current public contracts and tests: `packages/contracts/observation/src/*` (consume, do not edit); `packages/contracts/runner-protocol/src/{index,capabilities}.ts`; `packages/runner-kernel/src/execution-runtime.ts` (`Observer`, `AgentContext`, `TraceRecorder`); `packages/target-adapters/web-playwright/src/{observation-builder,playwright-observer,playwright-web-target-adapter}.ts`; gRPC `mappers.ts`/`wire-codec.ts` under the allowed adapter source; and the producer/protocol/conformance tests named here.
 - Ticket-local and GitHub evidence: this ticket's `## Comments` and `## Answer`, merged predecessor and final ticket PRs, required checks, reviewed-head and merge-commit bindings, and any deferred advanced-hardening Issues in `ljie-PI/Qualigence` are the durable execution evidence.
 
-## Authority ambiguity
+## Authority decisions
 
-The authority requires explicit Graph-major and extension-major negotiation but does not freeze exact capability token strings, and production capability construction is in out-of-scope `apps/runner/src/offer-runtime.ts`. Before implementation, freeze token vocabulary compatibly with the existing `advertisedCapabilityTokens` public contract and approve the exact production caller/tests, or transfer that acceptance explicitly. Contract-only tokens are not production wiring.
+Ticket 22 freezes the capability tokens as `observation:observation-graph/v1` and `observation:web/v1`. This ticket owns live producer use of those tokens and production Runner capability construction in `apps/runner/src/offer-runtime.ts` only. It does not own unrelated app composition, package manifests, or new Runner startup wiring.
 
 ## Execution protocol
 
 - This ticket is the execution entrypoint for producer migration. Start after blockers resolve from the latest merged predecessor; record exact base SHA, matrix pointer, and planned Gates under `## Comments`, citing the predecessor's merged PR and merge commit as current execution-base evidence.
 - Use Node.js 24 and Corepack pnpm exactly `11.7.0`; install frozen in a fresh worktree. Do not change dependencies/lockfile.
 - Begin with failing producer/protocol tests. During implementation/review fixes run only the focused Gate, root typecheck, and diff check. Preserve strict TypeScript, private locator provenance, stale-descriptor rejection, append-only ordered Trace, durable-ack semantics, and no raw secrets/query values.
-- Before claiming production capability negotiation, obtain the maintainer scope/ownership decision for `apps/runner/src/offer-runtime.ts` and its exact caller tests. If unresolved when execution reaches that acceptance, set this ticket to `needs-info`; do not widen scope or claim contract capability tokens as production wiring.
+- Before claiming production capability negotiation, prove `apps/runner/src/offer-runtime.ts` advertises the ticket-22 tokens through the existing `advertisedCapabilityTokens` path. Do not widen scope beyond the exact Runner capability file/test above.
 - Do not skip a required Gate. `ChromiumUnavailable` is an explicit acceptance block. Preserve unrelated changes and stop before editing outside **Allowed Files**.
 - Record start, optional actual blocker, review rounds, Gate/acceptance results, and final PR evidence under `## Comments`; summarize resolution under `## Answer`. Commit before each exact-head whole-diff, complete-matrix Standards/Spec review; record round, reviewed head, core findings, and row-level `pass | finding | N/A` under `## Comments`.
 - Critical always blocks. Important blocks only for explicit acceptance, applicable architecture/security, public/persisted contract, required Gate, or primary correctness/data integrity. Fix core findings and rerun affected non-E2E tests plus fresh complete-matrix review.
@@ -66,7 +68,7 @@ The authority requires explicit Graph-major and extension-major negotiation but 
 ## Focused non-E2E Gate
 
 ```text
-corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation
+corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/unit/runner/offer-runtime.test.ts tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation
 corepack pnpm typecheck
 git diff --check
 ```

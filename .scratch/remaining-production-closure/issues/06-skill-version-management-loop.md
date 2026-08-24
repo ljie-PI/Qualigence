@@ -8,9 +8,9 @@
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
-- [ ] PostgreSQL persistence has behavioral parity with the existing Skill repository contract.
+- [ ] SQLite and PostgreSQL persistence have behavioral parity with the Skill lifecycle command contract and existing Skill repository reads.
 - [ ] Promotion requires valid signature and completed evaluation; deprecation follows domain transition rules.
-- [ ] Mutations use expected-version/idempotency and cannot update state through SQL shortcuts.
+- [ ] Mutations use expected-version, durable idempotency, and atomic audit; they cannot update state through SQL shortcuts.
 - [ ] Clean-review Console/API E2E proves version read, promotion conflict, and deprecation.
 
 ## Tracked scope
@@ -19,7 +19,20 @@
 
 ## Migration
 
-None. Use the existing Skill schema; this ticket may not add or modify a schema migration.
+This ticket owns one new additive Skill lifecycle migration because the existing migration-003 Skill tables do not persist mutation idempotency, command replay results, or lifecycle audit. Migrations 001-009 remain immutable; do not edit historical migration files. Use the next sequential migration at the implementation base, currently `010-skill-lifecycle-commands`.
+
+The migration must keep `skills` as the aggregate head. Do not encode command history with `last_*` fields on `skills`; a Skill can receive multiple commands and replays. Add dedicated tables for lifecycle command idempotency and audit evidence.
+
+Required persistent command shape:
+
+- `skill_lifecycle_commands`: primary key `idempotency_key`; stable `command_hash`; `command_type` (`promote` or `deprecate`); `skill_id`; `expected_version`; committed `result_version`; safe `result_json`; `created_at`.
+- `skill_lifecycle_audit_events`: primary key `audit_id`; `skill_id`; `skill_version`; `operation` (`promote` or `deprecate`); `decision` (`allowed` or `rejected`); safe actor/tenant/role context available at the application seam; safe reason/metadata; `created_at`.
+
+The mutation transaction must reserve/check the idempotency key, run the domain transition and policy checks, persist the updated Skill head/version (and deprecation evidence where applicable), write the command result, and write the audit event atomically. A replay with the same key and command hash returns the stored result without re-running transition effects. Reusing the same key with different command data returns an idempotency conflict and leaves the original command/result unchanged. If aggregate, command, or audit persistence fails, the whole transaction rolls back and no success is reported.
+
+Rejected validation or authorization must not create an idempotency success record. Rejection audit may be emitted only if it preserves the zero-mutation invariant and does not make a corrected retry with the same key impossible.
+
+Schema sequencing: this ticket claims migration `010` ahead of ticket 20's allocated exploration progress migration `011`; tickets 07, 08, 11, and 13 follow as migrations `012`-`015`. Ticket 20 must not claim or merge its schema migration before this ticket merges, and all tickets must serialize changes to shared relational schema/catalog files. If another merged ticket has already claimed `010` at the implementation base, stop and update the global migration allocation before coding.
 
 ## Affected contexts
 
@@ -41,6 +54,10 @@ None. Use the existing Skill schema; this ticket may not add or modify a schema 
 - `packages/storage-providers/postgres-runtime/src/**`
 - `packages/storage-providers/postgres-runtime/package.json`
 - `packages/storage-providers/postgres-runtime/tsconfig.json`
+- `packages/storage-providers/relational-kysely/src/migrations/010-skill-lifecycle-commands.ts` (new; or the next sequential migration file if `010` is already claimed at implementation base)
+- `packages/storage-providers/relational-kysely/src/migrations.ts`
+- `packages/storage-providers/relational-kysely/src/schema.ts`
+- `packages/storage-providers/relational-kysely/src/catalog.ts`
 - `apps/server/src/routes/skills.ts`
 - `apps/server/src/server.ts`
 - `apps/server/src/server-context.ts`
@@ -84,8 +101,8 @@ The rendered workflow must prove version read, promotion conflict, and deprecati
 | Scenario/precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
 |---|---|---|---|---|---|
 | Authorized version read | not_started | Versioned Skill DTO | No mutation | Safe to repeat | HTTP DTO and provider parity evidence |
-| Valid evaluated, signed Skill is promoted | started | Promoted Skill version DTO | Domain transition, version, idempotency record, and audit commit atomically | Exact replay returns the original result | Public response, aggregate version, and audit evidence |
-| Valid promoted Skill is deprecated | started | Deprecated Skill version DTO | Domain deprecation transition commits through the repository | Exact replay is idempotent | Public response and persisted lifecycle state |
+| Valid evaluated, signed Skill is promoted | started | Promoted Skill version DTO | Domain transition, version, `skill_lifecycle_commands` result, and lifecycle audit commit atomically | Exact replay returns the original stored result without re-running transition effects | Public response, aggregate version, idempotency row, and audit evidence |
+| Valid promoted Skill is deprecated | started | Deprecated Skill version DTO | Domain deprecation transition, deprecation evidence, `skill_lifecycle_commands` result, and lifecycle audit commit atomically | Exact replay returns the original stored result without appending another transition/audit effect | Public response, persisted lifecycle state, idempotency row, and audit evidence |
 | Authentication, role, tenant, signature, or evaluation validation fails | not_started | Stable authorization/validation error | No Skill mutation or idempotency success | Retry only with corrected authority/input | Error envelope and zero-write assertion |
 | Expected version is stale or two writers race | not_started | Stable conflict with actual version | Winning transition only | Refresh and issue a new command; stale replay remains conflict | Concurrent provider/API evidence |
 | Same idempotency key and same command is replayed | started | Original response | Original transition remains singular | Return the recorded result without re-running transition effects | Stable response/version evidence |
