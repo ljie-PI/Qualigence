@@ -123,7 +123,8 @@
           "items": { "type": "string", "pattern": "^/.+" }
         },
         "payload": { "type": "object" }
-      }
+      },
+      "not": { "properties": { "type": { "const": "web/v1" } }, "required": ["type"] }
     },
     "webExtensionV1": {
       "type": "object",
@@ -141,8 +142,8 @@
           "additionalProperties": false,
           "required": ["origin", "pathname", "title", "viewport", "query"],
           "properties": {
-            "origin": { "type": "string", "pattern": "^(?:http://(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::[0-9]+)?|https://(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::[0-9]+)?)$" },
-            "pathname": { "type": "string", "pattern": "^(?!//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*%2[eE])/[^?#]*$" },
+            "origin": { "type": "string", "pattern": "^(?:http://(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|https://(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?)$" },
+            "pathname": { "type": "string", "pattern": "^(?!//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*%2[eE])/(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*$" },
             "title": { "type": "string" },
             "viewport": {
               "type": "object",
