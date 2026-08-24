@@ -162,6 +162,12 @@ export interface AcceptedMissionDispatch
   readonly receipt: MissionDispatchAcceptanceReceipt;
 }
 
+export interface BlockedMissionDispatch
+  extends Omit<PendingMissionDispatch, "status"> {
+  readonly status: "blocked";
+  readonly version: number;
+}
+
 /**
  * Persistence boundary for the PRD → Mission bridge. It never runs a model or a
  * browser; it only stores immutable PRD/plan/mission snapshots and records
@@ -195,4 +201,8 @@ export interface PrdMissionRepository {
     receipt: MissionDispatchAcceptanceReceipt,
     expectedVersion: number,
   ): Promise<AcceptedMissionDispatch>;
+  markDispatchBlocked?(
+    attemptId: string,
+    expectedVersion: number,
+  ): Promise<BlockedMissionDispatch>;
 }

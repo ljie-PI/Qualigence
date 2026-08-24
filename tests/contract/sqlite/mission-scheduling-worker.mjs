@@ -6,11 +6,13 @@ if (parentPort === null) throw new Error("Mission scheduling worker requires a p
 
 const runtime = await SqliteRuntime.open({ filename: workerData.filename, busyTimeoutMs: 5_000 });
 const persisted = new SqlitePrdMissionStore(runtime);
-if (workerData.operation === "accept") {
+if (workerData.operation === "accept" || workerData.operation === "block") {
   parentPort.postMessage({ type: "loaded" });
   await new Promise((resolve) => parentPort.once("message", resolve));
   try {
-    const value = await persisted.markDispatchAccepted(workerData.attemptId, workerData.receipt, workerData.expectedVersion);
+    const value = workerData.operation === "accept"
+      ? await persisted.markDispatchAccepted(workerData.attemptId, workerData.receipt, workerData.expectedVersion)
+      : await persisted.markDispatchBlocked(workerData.attemptId, workerData.expectedVersion);
     parentPort.postMessage({ outcome: { status: "fulfilled", value } });
   } catch (error) {
     parentPort.postMessage({

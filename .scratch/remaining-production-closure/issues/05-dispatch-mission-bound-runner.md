@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Atomically schedule Mission, Run, and dispatch outbox.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -18,6 +18,8 @@
 `.scratch/remaining-production-closure/spec.md` and this ticket track the bound-Runner dispatch slice.
 
 This ticket owns an injectable, startable dispatch loop over existing Mission dispatch outbox and Runner-control seams. The loop may be constructed and exercised directly by tests. Server process boot wiring, Self-hosted gRPC listener composition, tenant-bound Runner registry, and durable `next_attempt`/claim schema are not owned by this ticket; tickets 09 and 12 compose those production paths. Offline bound Runner handling therefore leaves the existing outbox row durably `pending` and applies bounded loop-local backoff without adding schema.
+
+Authority update: the durable block scope expansion approved during implementation is limited to the concrete dispatch-loop repository contract used by this ticket and SQLite/PostgreSQL Mission store behavior. `PrdMissionRepository.markDispatchBlocked` may remain optional for broader mission repository consumers that do not participate in the dispatch loop; ticket 05 acceptance is satisfied when the dispatch loop requires a repository with `markDispatchBlocked`, SQLite/PostgreSQL provider contracts prove the method, and post-review acceptance proves exact bound Runner, offline pending readback, and capability-mismatch blocked readback. Making the method mandatory for every existing mission repository test double is not required for this ticket.
 
 ## Migration
 
@@ -42,9 +44,17 @@ None. This ticket may not add or modify a schema migration.
 - `packages/core-modules/runner-control/src/**`
 - `packages/core-modules/runner-control/package.json`
 - `packages/core-modules/runner-control/tsconfig.json`
+- `packages/core-modules/mission/src/application/prd-mission-repository.ts` (approved scope expansion: durable blocked-dispatch repository contract only)
+- `packages/core-modules/mission/src/public.ts` (approved scope expansion: durable blocked-dispatch type export only)
+- `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts` (approved scope expansion: durable blocked-dispatch implementation only)
+- `packages/storage-providers/postgres-runtime/src/postgres-prd-mission-store.ts` (approved scope expansion: durable blocked-dispatch implementation only)
 - `pnpm-lock.yaml`
 - `tests/unit/core-daemon/**`
 - `tests/contract/runner-control/**`
+- `tests/contract/mission/prd-mission-repository.contract.ts` (approved scope expansion: provider-neutral dispatch terminal evidence only)
+- `tests/contract/sqlite/mission-scheduling-store.contract.ts` (approved scope expansion: dispatch terminal harness only)
+- `tests/contract/postgres/mission-scheduling-store.contract.ts` (approved scope expansion: dispatch terminal harness only)
+- `tests/contract/sqlite/mission-scheduling-worker.mjs` (approved scope expansion: dispatch terminal race worker only)
 - `tests/component/core-runner/**`
 - `.scratch/remaining-production-closure/issues/05-dispatch-mission-bound-runner.md` (`## Comments`/`## Answer` evidence plus GitHub PR/check/artifact references only)
 - Post-review acceptance only: `tests/e2e/self-hosted/bound-runner-dispatch.test.ts`
@@ -88,3 +98,12 @@ The cases must exercise the exact bound Runner, an offline bound Runner, and a c
 - The affected context documents listed above, especially Core-only lifecycle authority, bound leases, durable ownership, and readiness invariants.
 - `packages/core-modules/runner-control/src/runner-control-store.ts` and `packages/core-modules/runner-control/src/runner-protocol-application.ts`.
 - `packages/core-application/src/runner/execution-job-service.ts` and the unchanged shared contracts under `tests/contract/runner-control/**`.
+
+## Comments
+
+- start: base SHA `6f930940b490b11dc0345f6393f811e272c06a21`; behavior matrix applies in full because dispatch is stateful, side-effecting, retry-sensitive, and lease/receipt terminal-state sensitive; planned Gates: `corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, `git diff --check`.
+- final: Reviewed code/test head `39065c564e0899f194fc6133d41cb98671a95491` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate and acceptance: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/e2e/self-hosted/bound-runner-dispatch.test.ts`, `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, and `git diff --check` passed.
+
+## Answer
+
+Implemented a bounded Mission dispatch loop that offers scheduled work only to the explicit authenticated bound Runner, leaves offline work pending with loop-local backoff, durably blocks deterministic mismatch outcomes through Mission store terminal state, reconciles accepted leases after uncertain outcomes, and proves exact/offline/capability acceptance with SQLite store readback.

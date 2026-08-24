@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import {
   type AcceptedMissionDispatch,
+  type BlockedMissionDispatch,
   MissionSchedulingService,
   type PrdMissionRepository,
 } from "@qualigence/mission";
@@ -90,7 +91,10 @@ prdMissionRepositorySchedulingContract("SQLite", {
         return new SqlitePrdMissionStore(await runtime(tenantId)).pendingDispatches(limit);
       },
       async markDispatchAccepted(input) {
-        return new SqlitePrdMissionStore(await runtime(input.tenantId)).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion);
+        return new SqlitePrdMissionStore(await runtime(input.tenantId), input.failAfterWrite).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion);
+      },
+      async markDispatchBlocked(input) {
+        return new SqlitePrdMissionStore(await runtime(input.tenantId), input.failAfterWrite).markDispatchBlocked(input.attemptId, input.expectedVersion);
       },
       async mutateLogicalJobCapabilities(name, capabilities, tenantId) {
         await (await runtime(tenantId)).db.updateTable("execution_jobs").set({ required_capabilities_json: JSON.stringify(capabilities) }).where("job_id", "=", schedulingFixture(name).logicalJobId).execute();
@@ -111,6 +115,27 @@ prdMissionRepositorySchedulingContract("SQLite", {
           workers.forEach((worker) => worker.postMessage("release"));
           const [first, second] = await Promise.all(results);
           if (first === undefined || second === undefined) throw new Error("Both SQLite acceptance workers must return a result");
+          return [first.outcome, second.outcome];
+        } finally {
+          await Promise.all(workers.map((worker) => worker.terminate()));
+        }
+      },
+      async overlapDispatchTerminals(inputs) {
+        const workers = inputs.map((input) => new Worker(new URL("./mission-scheduling-worker.mjs", import.meta.url), {
+          workerData: {
+            operation: input.operation,
+            filename: join(directory, `${input.tenantId ?? "local"}.db`),
+            attemptId: input.attemptId,
+            ...(input.operation === "accept" ? { receipt: input.receipt } : {}),
+            expectedVersion: input.expectedVersion,
+          },
+        }));
+        try {
+          await Promise.all(workers.map(waitForLoaded));
+          const results = workers.map(waitForTerminalResult);
+          workers.forEach((worker) => worker.postMessage("release"));
+          const [first, second] = await Promise.all(results);
+          if (first === undefined || second === undefined) throw new Error("Both SQLite terminal workers must return a result");
           return [first.outcome, second.outcome];
         } finally {
           await Promise.all(workers.map((worker) => worker.terminate()));
@@ -153,6 +178,13 @@ function waitForResult(worker: Worker): Promise<Awaited<ReturnType<MissionSchedu
 }
 
 function waitForAcceptanceResult(worker: Worker): Promise<{ readonly outcome: PromiseSettledResult<AcceptedMissionDispatch> }> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+}
+
+function waitForTerminalResult(worker: Worker): Promise<{ readonly outcome: PromiseSettledResult<AcceptedMissionDispatch | BlockedMissionDispatch> }> {
   return new Promise((resolve, reject) => {
     worker.once("message", resolve);
     worker.once("error", reject);
