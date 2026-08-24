@@ -42,9 +42,17 @@ None. This ticket may not add or modify a schema migration.
 - `packages/core-modules/runner-control/src/**`
 - `packages/core-modules/runner-control/package.json`
 - `packages/core-modules/runner-control/tsconfig.json`
+- `packages/core-modules/mission/src/application/prd-mission-repository.ts` (approved scope expansion: durable blocked-dispatch repository contract only)
+- `packages/core-modules/mission/src/public.ts` (approved scope expansion: durable blocked-dispatch type export only)
+- `packages/storage-providers/sqlite-runtime/src/sqlite-prd-mission-store.ts` (approved scope expansion: durable blocked-dispatch implementation only)
+- `packages/storage-providers/postgres-runtime/src/postgres-prd-mission-store.ts` (approved scope expansion: durable blocked-dispatch implementation only)
 - `pnpm-lock.yaml`
 - `tests/unit/core-daemon/**`
 - `tests/contract/runner-control/**`
+- `tests/contract/mission/prd-mission-repository.contract.ts` (approved scope expansion: provider-neutral dispatch terminal evidence only)
+- `tests/contract/sqlite/mission-scheduling-store.contract.ts` (approved scope expansion: dispatch terminal harness only)
+- `tests/contract/postgres/mission-scheduling-store.contract.ts` (approved scope expansion: dispatch terminal harness only)
+- `tests/contract/sqlite/mission-scheduling-worker.mjs` (approved scope expansion: dispatch terminal race worker only)
 - `tests/component/core-runner/**`
 - `.scratch/remaining-production-closure/issues/05-dispatch-mission-bound-runner.md` (`## Comments`/`## Answer` evidence plus GitHub PR/check/artifact references only)
 - Post-review acceptance only: `tests/e2e/self-hosted/bound-runner-dispatch.test.ts`
