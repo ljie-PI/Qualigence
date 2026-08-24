@@ -8,11 +8,16 @@ import type {
   ExecutionPlanStep,
   FindingEnvelope,
   ObservationGraph,
+  ObservationGraphV1,
   ResolvedActionTracePayload,
   ResolvedDesktopAction,
   RunId,
   TraceEvent,
   VerificationTracePayload,
+} from "@qualigence/runner-protocol";
+import {
+  requireGraphExtensionMajor,
+  validateObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import {
   DeterministicExecutionBudget,
@@ -552,8 +557,9 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     stepIndex?: number,
     signal?: AbortSignal,
   ): Promise<ObservationGraph> {
-    const observation = await this.withinWallClock(job.runId, (operationSignal) =>
+    const captured = await this.withinWallClock(job.runId, (operationSignal) =>
       this.dependencies.observer.capture(job, operationSignal), signal);
+    const observation = validateLiveObservationGraph(captured);
     await this.recordStage(job.runId, stepIndex, "observation", observation);
     return observation;
   }
@@ -798,6 +804,22 @@ function assertDecisionMatchesStep(
   ) {
     throw new ExecutionBlockedError("PlanStepMismatch");
   }
+}
+
+function validateLiveObservationGraph(graph: ObservationGraph): ObservationGraphV1 {
+  const candidate = graph as unknown as ObservationGraphV1;
+  const webQueryKeys = candidate.extensions?.["web/v1"]?.payload.query;
+  const allowedWebQueryKeys = webQueryKeys !== undefined &&
+    webQueryKeys !== null &&
+    typeof webQueryKeys === "object" &&
+    !Array.isArray(webQueryKeys)
+    ? Object.keys(webQueryKeys)
+    : [];
+  validateObservationGraphV1(candidate, { allowedWebQueryKeys });
+  if (candidate.target.kind === "web") {
+    requireGraphExtensionMajor(candidate, "web", 1);
+  }
+  return candidate;
 }
 
 function findingFromVerification(

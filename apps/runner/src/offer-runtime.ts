@@ -20,6 +20,7 @@ import {
 import type { RunnerConfig } from "./config.js";
 import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
+import { RunnerAppError } from "./errors.js";
 
 export interface RunnerOfferRuntimeOptions {
   readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome">;
@@ -40,6 +41,7 @@ export class RunnerOfferRuntime {
 
   async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider);
+    assertWebObservationV1Requirements(offer);
     const offerWithLiveObservationRequirements = {
       ...offer,
       requiredCapabilities: [
@@ -181,6 +183,16 @@ export class RunnerOfferRuntime {
     signal.throwIfAborted();
     await this.options.session.complete(lifecycle.currentLease(), completion);
   }
+}
+
+function assertWebObservationV1Requirements(offer: ExecutionJobOffer): void {
+  if (offer.job.target.kind !== "web") return;
+  const required = new Set(offer.requiredCapabilities);
+  const missing = WEB_OBSERVATION_V1_CAPABILITY_TOKENS.filter((token) => !required.has(token));
+  if (missing.length === 0) return;
+  throw new RunnerAppError("CapabilityMismatch", "web offers must require Observation Graph v1 and web/v1 capabilities", {
+    details: { missingCapabilities: missing },
+  });
 }
 
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {

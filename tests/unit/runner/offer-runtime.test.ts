@@ -18,6 +18,11 @@ import type { RunnerPolicyGate } from "@qualigence/runner-kernel";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import { WebTargetError } from "@qualigence/web-playwright";
 
+const REQUIRED_OBSERVATION_CAPABILITIES = [
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+] as const;
+
 const executorGates: RunnerPolicyGate[] = [];
 const executorCapabilities: RunnerCapabilities[] = [];
 const executedOffers: unknown[] = [];
@@ -133,7 +138,7 @@ function admittedOffer(): ExecutionJobOffer {
         expiresAt: "2099-08-18T00:01:00.000Z",
       },
     },
-    requiredCapabilities: [],
+    requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES,
     leaseDurationMs: 30_000,
   };
 }
@@ -277,6 +282,30 @@ describe("RunnerOfferRuntime", () => {
     expect(modelConstructions).toEqual([]);
   });
 
+  it("rejects missing Graph and web extension majors before lease acceptance", async () => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(),
+      complete: vi.fn(),
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run({
+      ...admittedOffer(),
+      requiredCapabilities: [],
+    })).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+    expect(session.accept).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+  });
+
   it("rejects incompatible Graph and web extension majors before lease acceptance", async () => {
     const createTarget = vi.fn();
     const session = {
@@ -293,12 +322,7 @@ describe("RunnerOfferRuntime", () => {
     await expect(runtime.run({
       ...admittedOffer(),
       requiredCapabilities: ["observation:observation-graph/v2", "observation:web/v2"],
-    })).rejects.toMatchObject({
-      code: "CapabilityMismatch",
-      details: {
-        missingCapabilities: ["observation:observation-graph/v2", "observation:web/v2"],
-      },
-    });
+    })).rejects.toMatchObject({ code: "CapabilityMismatch" });
 
     expect(session.accept).not.toHaveBeenCalled();
     expect(session.complete).not.toHaveBeenCalled();
@@ -349,7 +373,7 @@ describe("RunnerOfferRuntime", () => {
             },
           },
         },
-        requiredCapabilities: [],
+        requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES,
       })).rejects.toMatchObject({ code: "CapabilityMismatch" });
 
       expect(session.accept).not.toHaveBeenCalled();
@@ -406,7 +430,7 @@ describe("RunnerOfferRuntime", () => {
         target: { kind: "web", url: "https://example.test/" },
         objective: "must block",
       },
-      requiredCapabilities: [],
+      requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES,
       leaseDurationMs: 30_000,
     } as never);
 
@@ -432,7 +456,7 @@ describe("RunnerOfferRuntime", () => {
       job: {
         jobId: "job-1", runId: "run-1", projectId: "project-test", target: { kind: "web", url: "https://evil.test/" }, objective: "must block",
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },
-      }, requiredCapabilities: [], leaseDurationMs: 30_000,
+      }, requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES, leaseDurationMs: 30_000,
     });
     expect(createTarget).not.toHaveBeenCalled();
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ errorCode: "PolicyDenied" }));
@@ -460,7 +484,7 @@ describe("RunnerOfferRuntime", () => {
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" },
         plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-1", steps, expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } },
       },
-      requiredCapabilities: [],
+      requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES,
       leaseDurationMs: 30_000,
     } as never);
 
@@ -506,7 +530,7 @@ describe("RunnerOfferRuntime", () => {
     const offer = {
       offerId: "offer-staging",
       job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "HTTPS://STAGING.example.test:443/" }, objective: "click", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" } },
-      requiredCapabilities: [], leaseDurationMs: 30_000,
+      requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES, leaseDurationMs: 30_000,
     };
     const session = {
       accept: vi.fn(async () => {
@@ -549,7 +573,7 @@ describe("RunnerOfferRuntime", () => {
     await runtime.run({
       offerId: "offer-input",
       job: { jobId: "job-staging", runId: "run-staging", projectId: "project-test", target: { kind: "web", url: "https://example.test/" }, objective: "input", policy: { policyId: "policy-input", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["input", "select"], maximumRisk: "ExternalSideEffect", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z" }, plan: { missionId: "mission-1", missionRevision: 1, testCaseId: "case-input", steps: [{ stepIndex: 0, kind: "input", target: { role: "textbox", purpose: "enter email" }, valueRef: "profile.email" }], expectedClaimIds: ["claim-1"], budget: { maximumStepsPerJob: 1, maximumWallClockMs: 1_000, maximumModelTokens: 1_000 } } },
-      requiredCapabilities: [], leaseDurationMs: 30_000,
+      requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES, leaseDurationMs: 30_000,
     } as never);
 
     expect(createTarget).toHaveBeenCalledWith(expect.objectContaining({ valueProvider }));
@@ -575,7 +599,7 @@ describe("RunnerOfferRuntime", () => {
     const offer = {
       offerId: "offer-1",
       job: offeredJob,
-      requiredCapabilities: ["action:input", "action:select"],
+      requiredCapabilities: ["action:input", "action:select", ...REQUIRED_OBSERVATION_CAPABILITIES],
       leaseDurationMs: 30_000,
     };
 
@@ -1166,7 +1190,7 @@ describe("RunnerOfferRuntime", () => {
     const createTarget = vi.fn();
     const session = { accept: vi.fn(async () => ({ jobId: "job-1", runId: "run-1", leaseToken: "token", leaseEpoch: 1, expiresAt: "2099-08-18T00:01:00.000Z" })), complete: vi.fn(async () => undefined) };
     const runtime = new RunnerOfferRuntime({ createTarget, session: session as never, spool: {} as never, config: {} as never });
-    await runtime.run({ offerId: "offer-1", job: { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://staging.example.test/" }, objective: "blocked", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z", ...override } }, requiredCapabilities: [], leaseDurationMs: 30_000 } as never);
+    await runtime.run({ offerId: "offer-1", job: { jobId: "job-1", runId: "run-1", target: { kind: "web", url: "https://staging.example.test/" }, objective: "blocked", policy: { policyId: "policy-staging", environment: "staging", allowedOrigins: ["https://staging.example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2099-08-18T00:00:00.000Z", expiresAt: "2099-08-18T00:01:00.000Z", ...override } }, requiredCapabilities: REQUIRED_OBSERVATION_CAPABILITIES, leaseDurationMs: 30_000 } as never);
     expect(createTarget).not.toHaveBeenCalled();
     expect(session.complete).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ errorCode: "PolicyMissing" }));
   });
