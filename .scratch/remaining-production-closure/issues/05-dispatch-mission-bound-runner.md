@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Atomically schedule Mission, Run, and dispatch outbox.
 
-**Status:** claimed
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -102,8 +102,12 @@ The cases must exercise the exact bound Runner, an offline bound Runner, and a c
 ## Comments
 
 - start: base SHA `6f930940b490b11dc0345f6393f811e272c06a21`; behavior matrix applies in full because dispatch is stateful, side-effecting, retry-sensitive, and lease/receipt terminal-state sensitive; planned Gates: `corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, `git diff --check`.
-- final: Reviewed code/test head `39065c564e0899f194fc6133d41cb98671a95491` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate and acceptance: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/e2e/self-hosted/bound-runner-dispatch.test.ts`, `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, and `git diff --check` passed.
+- final: Reviewed code/test head `39065c564e0899f194fc6133d41cb98671a95491` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate and acceptance: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/e2e/self-hosted/bound-runner-dispatch.test.ts`, `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, and `git diff --check` passed. PR `https://github.com/ljie-PI/Qualigence/pull/92` merged as `6f330c96ab8082461f3f35c354e38d945154f61a`.
 
 ## Answer
 
 Implemented a bounded Mission dispatch loop that offers scheduled work only to the explicit authenticated bound Runner, leaves offline work pending with loop-local backoff, durably blocks deterministic mismatch outcomes through Mission store terminal state, reconciles accepted leases after uncertain outcomes, and proves exact/offline/capability acceptance with SQLite store readback.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/92`
+
+Merge commit: `6f330c96ab8082461f3f35c354e38d945154f61a`
