@@ -2,10 +2,11 @@
  * Observation Graph v1 — the candidate cross-platform observation contract.
  *
  * This is a CANDIDATE contract. It is intentionally never marked `frozen` in
- * this package: the freeze transition only happens after LS-13 delivers the
- * Windows/UIA conformance evidence (see the M3 freeze gate). The types here are
- * the single source of truth for the Graph; `@qualigence/runner-protocol`
- * re-exports them for a compatibility cycle rather than declaring a second copy.
+ * this package: the freeze transition only happens after serialized migration,
+ * Web/Desktop schema, native Windows, manual, and release evidence all validate.
+ * The types here are the single source of truth for the Graph;
+ * `@qualigence/runner-protocol` re-exports them for a compatibility cycle rather
+ * than declaring a second copy.
  */
 
 /** A JSON value restricted to the deterministic, canonicalisable subset. */

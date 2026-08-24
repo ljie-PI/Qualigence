@@ -69,6 +69,19 @@ describe("Observation Graph v1 JSON Schema artifact", () => {
     const raw = await readFile(schemaPath, "utf8");
     expect(raw).toContain("candidate");
     expect(raw).not.toContain("frozen\"");
+    expect(raw).toContain("serialized migration, Web/Desktop schema, native Windows, manual, and release evidence");
+  });
+
+  it("keeps web/v1 schema constraints aligned with the validator", async () => {
+    const schema = JSON.parse(await readFile(schemaPath, "utf8")) as {
+      $defs: {
+        node: { properties: { extensions: { properties: Record<string, false> } } };
+        webExtensionV1: { properties: { payload: { properties: Record<string, { pattern?: string }> } } };
+      };
+    };
+    expect(schema.$defs.node.properties.extensions.properties["web/v1"]).toBe(false);
+    expect(schema.$defs.webExtensionV1.properties.payload.properties.origin?.pattern).toContain("?![^/?#]*@");
+    expect(schema.$defs.webExtensionV1.properties.payload.properties.pathname?.pattern).toContain("\\.\\.?");
   });
 
   it("matches a valid v1 payload structurally", () => {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://qualigence.dev/schemas/observation-graph-v1.schema.json",
   "title": "Observation Graph v1 (candidate)",
-  "description": "Candidate cross-platform Observation Graph contract. Status: candidate — NOT frozen until LS-13 Web/UIA conformance passes.",
+  "description": "Candidate cross-platform Observation Graph contract. Status: candidate; not frozen until serialized migration, Web/Desktop schema, native Windows, manual, and release evidence all validate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "graphId", "target", "capturedAt", "rootNodeIds", "nodes", "evidenceRefs"],
@@ -91,6 +91,9 @@
         "extensions": {
           "type": "object",
           "propertyNames": { "pattern": "^[a-z][a-z0-9-]*/v[0-9]+$" },
+          "properties": {
+            "web/v1": false
+          },
           "additionalProperties": { "$ref": "#/$defs/extension" }
         },
         "evidenceRefs": {
@@ -138,8 +141,8 @@
           "additionalProperties": false,
           "required": ["origin", "pathname", "title", "viewport", "query"],
           "properties": {
-            "origin": { "type": "string", "pattern": "^https?://[^/?#]+$" },
-            "pathname": { "type": "string", "pattern": "^/[^?#]*$" },
+            "origin": { "type": "string", "pattern": "^https?://(?![^/?#]*@)(?![^/?#]*:(?:80|443)$)[a-z0-9.-]+(?::[0-9]+)?$" },
+            "pathname": { "type": "string", "pattern": "^/(?!.*(?:^|/)\\.\\.?(?:/|$))[^?#]*$" },
             "title": { "type": "string" },
             "viewport": {
               "type": "object",
