@@ -2,11 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRuntime, SqliteSkillStore } from "@qualigence/sqlite-runtime";
-import { bundlePayloadContentSha256, SkillError } from "@qualigence/skill";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, SkillError } from "@qualigence/skill";
 import type {
   ProcedureSkillVersion,
   SignedSkillBundle,
   SkillEvaluation,
+  SkillLifecycleCommand,
 } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
 
@@ -187,6 +188,115 @@ describe("SqliteSkillStore", () => {
     expect(await store.isRevoked("skill-1", 3)).toBe(true);
   });
 
+  it("promotes through domain lifecycle with durable idempotency and audit", async () => {
+    await seedVerified(store);
+    const command: SkillLifecycleCommand = {
+      operation: "promote",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "promote-1",
+      requiredOracles: REQUIRED_REPLAY_ORACLES,
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    };
+
+    const promoted = await store.applyLifecycleCommand(command);
+    const replay = await store.applyLifecycleCommand(command);
+
+    expect(promoted).toMatchObject({ skillId: "skill-1", version: 4, state: "promoted" });
+    expect(replay).toEqual(promoted);
+    expect(await store.latestVersion("skill-1")).toEqual(promoted);
+    expect(await store.lifecycleAuditEvents("skill-1")).toHaveLength(1);
+    const commandRows = await runtime.db.selectFrom("skill_lifecycle_commands").selectAll().execute();
+    expect(commandRows).toHaveLength(1);
+    expect(commandRows[0]).toMatchObject({ command_type: "promote", result_version: 4 });
+  });
+
+  it("conflicts when an idempotency key is reused for a different lifecycle command", async () => {
+    await seedVerified(store);
+    await store.applyLifecycleCommand({
+      operation: "promote",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "same-key",
+      requiredOracles: REQUIRED_REPLAY_ORACLES,
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    });
+
+    await expect(store.applyLifecycleCommand({
+      operation: "deprecate",
+      skillId: "skill-1",
+      expectedVersion: 4,
+      idempotencyKey: "same-key",
+      reason: "superseded",
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:06:00.000Z",
+    })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
+    expect(await store.latestVersion("skill-1")).toMatchObject({ version: 4, state: "promoted" });
+    expect(await store.lifecycleAuditEvents("skill-1")).toHaveLength(1);
+  });
+
+  it("does not persist idempotency success when promotion validation fails", async () => {
+    await store.saveRecording(recording);
+    await store.saveSkillVersion({ version: versionAt(1, "draft"), expectedVersion: 0, sourceRecording: recording });
+    await store.saveSkillVersion({ version: versionAt(2, "candidate"), expectedVersion: 1, sourceRecording: recording });
+    await store.saveSkillVersion({ version: versionAt(3, "verified"), expectedVersion: 2, sourceRecording: recording });
+
+    const command: SkillLifecycleCommand = {
+      operation: "promote",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "promote-after-fix",
+      requiredOracles: REQUIRED_REPLAY_ORACLES,
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    };
+    await expect(store.applyLifecycleCommand(command)).rejects.toMatchObject({ code: "SkillVerificationFailed" });
+    expect(await runtime.db.selectFrom("skill_lifecycle_commands").selectAll().execute()).toHaveLength(0);
+
+    await store.saveEvaluation(evaluationAt(3));
+    await store.saveBundle(bundleAt(versionAt(3, "verified")));
+    await expect(store.applyLifecycleCommand(command)).resolves.toMatchObject({ version: 4, state: "promoted" });
+  });
+
+  it("deprecates through the domain lifecycle and revocation evidence", async () => {
+    await seedVerified(store);
+    const deprecated = await store.applyLifecycleCommand({
+      operation: "deprecate",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "deprecate-1",
+      reason: "unsafe locator",
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    });
+
+    expect(deprecated).toMatchObject({ version: 4, state: "deprecated" });
+    expect(await store.isRevoked("skill-1", 4)).toBe(true);
+    expect(await store.lifecycleAuditEvents("skill-1")).toMatchObject([{ operation: "deprecate", reason: "unsafe locator" }]);
+  });
+
+  it("rolls back aggregate, command, and audit writes on lifecycle persistence failure", async () => {
+    await seedVerified(store);
+    const failing = new SqliteSkillStore(runtime, { failAfterLifecycleWrite: 3 });
+
+    await expect(failing.applyLifecycleCommand({
+      operation: "deprecate",
+      skillId: "skill-1",
+      expectedVersion: 3,
+      idempotencyKey: "deprecate-fail",
+      reason: "injected failure",
+      actor: { actorId: "tester-1", tenantId: "local", roles: ["tester"] },
+      occurredAt: "2026-08-01T00:05:00.000Z",
+    })).rejects.toThrow("InjectedSkillLifecycleFailureAfterWrite:3");
+
+    expect(await store.latestVersion("skill-1")).toMatchObject({ version: 3, state: "verified" });
+    expect(await runtime.db.selectFrom("skill_lifecycle_commands").selectAll().execute()).toHaveLength(0);
+    expect(await store.lifecycleAuditEvents("skill-1")).toHaveLength(0);
+    expect(await store.isRevoked("skill-1", 4)).toBe(false);
+  });
+
   it("never persists a private key or plaintext secret in the database bytes", async () => {
     await store.saveRecording(recording);
     await store.saveSkillVersion({
@@ -203,3 +313,50 @@ describe("SqliteSkillStore", () => {
     expect(blob).not.toContain("BEGIN EC");
   });
 });
+
+function evaluationAt(version: number): SkillEvaluation {
+  return {
+    evaluationId: `eval-${version}`,
+    skillId: "skill-1",
+    skillVersion: version,
+    oracles: passingOracles(),
+    outcome: "passed",
+    signatureValid: true,
+    createdAt: "2026-08-01T00:02:00.000Z",
+  };
+}
+
+function passingOracles(): SkillEvaluation["oracles"] {
+  return [
+    { oracle: REQUIRED_REPLAY_ORACLES[0] as string, status: "passed" },
+    ...REQUIRED_REPLAY_ORACLES.slice(1).map((oracle) => ({ oracle, status: "passed" as const })),
+  ];
+}
+
+function bundleAt(version: ProcedureSkillVersion): SignedSkillBundle {
+  return {
+    manifest: {
+      bundleId: `bundle-${version.version}`,
+      skillId: version.skillId,
+      skillVersion: version.version,
+      schemaVersion: "skill-bundle/v1",
+      compilerVersion: version.compilerVersion,
+      contentSha256: version.contentSha256,
+      signerKeyId: "0123456789abcdef0123456789abcdef",
+      signatureAlgorithm: "Ed25519",
+      signatureBase64: "AAAA",
+      issuedAt: "2026-08-01T00:03:00.000Z",
+    },
+    payload: version,
+  };
+}
+
+async function seedVerified(store: SqliteSkillStore): Promise<void> {
+  await store.saveRecording(recording);
+  await store.saveSkillVersion({ version: versionAt(1, "draft"), expectedVersion: 0, sourceRecording: recording });
+  await store.saveSkillVersion({ version: versionAt(2, "candidate"), expectedVersion: 1, sourceRecording: recording });
+  const verified = versionAt(3, "verified");
+  await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: recording });
+  await store.saveEvaluation(evaluationAt(3));
+  await store.saveBundle(bundleAt(verified));
+}

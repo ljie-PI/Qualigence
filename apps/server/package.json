@@ -26,6 +26,7 @@
     "@qualigence/runner-mtls": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",
+    "@qualigence/skill": "workspace:*",
     "fastify": "5.11.0",
     "kysely": "0.28.17"
   }

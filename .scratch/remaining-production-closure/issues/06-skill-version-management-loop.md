@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Deliver versioned Target and Test Plan product paths.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -118,3 +118,7 @@ The rendered workflow must prove version read, promotion conflict, and deprecati
 - The affected context documents listed above, especially domain-owned transitions, role/tenant/idempotency checks, and SQLite/PostgreSQL provider parity.
 - `packages/core-modules/skill/src/public.ts` and `packages/core-modules/skill/src/ports/skill-repository.ts`.
 - `packages/contracts/public-api/src/v1.ts` and the public/provider contracts named by the focused Gate.
+
+## Comments
+
+- start: Claimed on branch `closure-06-skill-lifecycle` at base SHA `6f930940b490b11dc0345f6393f811e272c06a21`. Behavior matrix applicable: stateful Skill lifecycle mutations with idempotency, expected-version concurrency, audit, replay, rollback, and Public API/Console reads. Planned Gates: `corepack pnpm vitest run tests/unit/core-modules/skill tests/contract/sqlite/skill-store.test.ts tests/contract/postgres/skill-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`; `corepack pnpm typecheck`; `git diff --check`.

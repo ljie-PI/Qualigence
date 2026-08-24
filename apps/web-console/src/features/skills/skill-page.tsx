@@ -51,6 +51,12 @@ export function SkillDetailPage(props: { readonly skillId: string }): ReactNode 
     enabled: session !== undefined,
   });
 
+  const versions = useQuery({
+    queryKey: queryKeys.skillVersions(tenantId, props.skillId),
+    queryFn: () => api.listSkillVersions(props.skillId),
+    enabled: session !== undefined,
+  });
+
   const promote = useMutation({
     mutationFn: () =>
       api.promoteSkill(
@@ -61,11 +67,31 @@ export function SkillDetailPage(props: { readonly skillId: string }): ReactNode 
     onSuccess: (result) => {
       setError(undefined);
       queryClient.setQueryData(queryKeys.skill(tenantId, props.skillId), result.resource);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillVersions(tenantId, props.skillId) });
     },
     onError: (err: unknown) => setError(err instanceof Error ? err.message : "promotion failed"),
   });
 
+  const deprecate = useMutation({
+    mutationFn: () =>
+      api.deprecateSkill(
+        props.skillId,
+        {
+          expectedVersion: skill.data?.version ?? 0,
+          reason: "deprecated from Console",
+        },
+        { idempotencyKey: crypto.randomUUID() },
+      ),
+    onSuccess: (result) => {
+      setError(undefined);
+      queryClient.setQueryData(queryKeys.skill(tenantId, props.skillId), result.resource);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillVersions(tenantId, props.skillId) });
+    },
+    onError: (err: unknown) => setError(err instanceof Error ? err.message : "deprecation failed"),
+  });
+
   const canPromote = session?.roles.some((r) => r === "admin" || r === "tester") ?? false;
+  const canDeprecate = session?.roles.some((r) => r === "admin" || r === "tester") ?? false;
 
   return (
     <section>
@@ -90,11 +116,31 @@ export function SkillDetailPage(props: { readonly skillId: string }): ReactNode 
                 Promote (v{skill.data.version})
               </button>
             ) : null}
+            {canDeprecate && skill.data.state !== "deprecated" ? (
+              <button type="button" onClick={() => deprecate.mutate()} disabled={deprecate.isPending}>
+                Deprecate (v{skill.data.version})
+              </button>
+            ) : null}
             {error !== undefined ? (
               <p className="state state--error" role="alert">
                 {error}
               </p>
             ) : null}
+            <h2>Versions</h2>
+            <DataState
+              isLoading={versions.isLoading}
+              error={versions.error}
+              isEmpty={versions.data?.items.length === 0}
+              emptyLabel="No versions."
+            >
+              <ul className="resource-list">
+                {versions.data?.items.map((item) => (
+                  <li key={`${item.skillId}:${item.version}`}>
+                    v{item.version} <StatusBadge value={item.state} /> <span className="muted">{item.contentSha256}</span>
+                  </li>
+                ))}
+              </ul>
+            </DataState>
           </>
         ) : null}
       </DataState>

@@ -81,6 +81,27 @@ export class TestSkill {
     );
   }
 
+  static fromVersion(version: ProcedureSkillVersion): TestSkill {
+    return new TestSkill(
+      version.skillId,
+      version.projectId,
+      version.targetScope,
+      version.version,
+      version.state,
+      {
+        parameters: version.parameters,
+        steps: version.steps,
+        sourceRecordingIds: version.sourceRecordingIds,
+        observationSchemaEpoch: version.observationSchemaEpoch,
+        locatorSchemaVersion: version.locatorSchemaVersion,
+        compilerVersion: version.compilerVersion,
+        contentSha256: version.contentSha256,
+      },
+      undefined,
+      new Map(),
+    );
+  }
+
   get skillId(): string {
     return this.skillId_;
   }
@@ -211,6 +232,7 @@ export class TestSkill {
       throw skillError(
         "SkillVersionConflict",
         `Expected version ${expectedVersion} but skill ${this.skillId_} is at version ${this.version_}.`,
+        { actualVersion: this.version_ },
       );
     }
   }

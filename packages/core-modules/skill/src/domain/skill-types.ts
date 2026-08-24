@@ -120,24 +120,35 @@ export interface SkillEvaluation {
 
 export type SkillErrorCode =
   | "SkillVersionConflict"
+  | "SkillIdempotencyConflict"
+  | "SkillNotFound"
   | "SkillNotDraft"
   | "SkillNotCandidate"
   | "SkillNotVerified"
   | "SkillVerificationFailed"
   | "SkillSignatureInvalid"
+  | "SkillBundleMissing"
   | "SkillAlreadyDeprecated"
   | "SkillStateReversal";
 
 export class SkillError extends Error {
   readonly code: SkillErrorCode;
 
-  constructor(code: SkillErrorCode, message: string) {
+  constructor(
+    code: SkillErrorCode,
+    message: string,
+    readonly details: Readonly<Record<string, unknown>> = {},
+  ) {
     super(`${code}: ${message}`);
     this.name = "SkillError";
     this.code = code;
   }
 }
 
-export function skillError(code: SkillErrorCode, message: string): SkillError {
-  return new SkillError(code, message);
+export function skillError(
+  code: SkillErrorCode,
+  message: string,
+  details: Readonly<Record<string, unknown>> = {},
+): SkillError {
+  return new SkillError(code, message, details);
 }

@@ -6,6 +6,7 @@ import type {
   CreateProjectBody,
   CreateTargetBody,
   CreateTestPlanBody,
+  DeprecateSkillBody,
   ErrorEnvelope,
   IngestPrdBody,
   InvestigationDto,
@@ -196,6 +197,10 @@ export class PublicApiClient {
     return this.request<SkillVersionDto>(`/v1/skills/${encodeURIComponent(skillId)}`);
   }
 
+  async listSkillVersions(skillId: string): Promise<ListEnvelope<SkillVersionDto>> {
+    return this.request<ListEnvelope<SkillVersionDto>>(`/v1/skills/${encodeURIComponent(skillId)}/versions`);
+  }
+
   async promoteSkill(
     skillId: string,
     body: PromoteSkillBody,
@@ -203,6 +208,17 @@ export class PublicApiClient {
   ): Promise<CommandEnvelope<SkillVersionDto>> {
     return this.request<CommandEnvelope<SkillVersionDto>>(
       `/v1/skills/${encodeURIComponent(skillId)}/promote`,
+      { method: "POST", body, idempotencyKey: options.idempotencyKey },
+    );
+  }
+
+  async deprecateSkill(
+    skillId: string,
+    body: DeprecateSkillBody,
+    options: MutationOptions,
+  ): Promise<CommandEnvelope<SkillVersionDto>> {
+    return this.request<CommandEnvelope<SkillVersionDto>>(
+      `/v1/skills/${encodeURIComponent(skillId)}/deprecate`,
       { method: "POST", body, idempotencyKey: options.idempotencyKey },
     );
   }

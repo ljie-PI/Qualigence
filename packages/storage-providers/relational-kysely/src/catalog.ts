@@ -1306,6 +1306,59 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     primaryKey: ["wakeup_id"], uniques: [], foreignKeys: [],
     checks: [{ name: "mission_dispatch_wakeups_generation_check", predicate: "generation > 0" }],
   },
+  // ---- Migration 010: Skill lifecycle command idempotency + audit ------
+  {
+    name: "skill_lifecycle_commands",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("idempotency_key"),
+      t("command_hash"),
+      t("command_type"),
+      t("skill_id"),
+      i("expected_version"),
+      i("result_version"),
+      t("result_json"),
+      t("created_at"),
+    ],
+    primaryKey: ["idempotency_key"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["skill_id"], references: { table: "skills", columns: ["skill_id"] } },
+    ],
+    checks: [
+      { name: "skill_lifecycle_commands_type_check", predicate: "command_type IN ('promote', 'deprecate')" },
+    ],
+  },
+  {
+    name: "skill_lifecycle_audit_events",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("audit_id"),
+      t("skill_id"),
+      i("skill_version"),
+      t("operation"),
+      t("decision"),
+      t("actor_id"),
+      t("actor_tenant_id"),
+      t("actor_roles_json"),
+      t("reason"),
+      t("metadata_json"),
+      t("created_at"),
+    ],
+    primaryKey: ["audit_id"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["skill_id", "skill_version"], references: { table: "skill_versions", columns: ["skill_id", "version"] } },
+    ],
+    checks: [
+      { name: "skill_lifecycle_audit_events_operation_check", predicate: "operation IN ('promote', 'deprecate')" },
+      { name: "skill_lifecycle_audit_events_decision_check", predicate: "decision IN ('allowed', 'rejected')" },
+    ],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1317,7 +1370,8 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 6, name: "runner-control", tables: tablesFromTo("runner_sessions", "execution_completions") },
   { version: 7, name: "local-run-intake", tables: tablesFromTo("local_run_intakes", "local_run_intakes") },
   { version: 8, name: "target-test-plan-revisions", tables: tablesFromTo("project_targets", "test_plan_version_revisions") },
-  { version: 9, name: "mission-scheduling", tables: tablesFrom("mission_scheduling_heads") },
+  { version: 9, name: "mission-scheduling", tables: tablesFromTo("mission_scheduling_heads", "mission_dispatch_wakeups") },
+  { version: 10, name: "skill-lifecycle-commands", tables: tablesFrom("skill_lifecycle_commands") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

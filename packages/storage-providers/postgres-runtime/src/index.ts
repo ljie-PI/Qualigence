@@ -47,3 +47,4 @@ export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.
 export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";
 export { PostgresProjectTargetRepository, PostgresTestPlanRepository } from "./postgres-product-intake-store.js";
 export { PostgresPrdMissionRepository } from "./postgres-prd-mission-store.js";
+export { PostgresSkillStore } from "./postgres-skill-store.js";

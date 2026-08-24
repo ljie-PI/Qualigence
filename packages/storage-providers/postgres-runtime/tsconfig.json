@@ -13,6 +13,7 @@
   "references": [
     { "path": "../../core-modules/review" },
     { "path": "../../core-modules/runner-control" },
+    { "path": "../../core-modules/skill" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../relational-kysely" }
   ]

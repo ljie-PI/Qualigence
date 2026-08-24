@@ -333,6 +333,11 @@ export interface PromoteSkillBody {
   readonly expectedVersion: number;
 }
 
+export interface DeprecateSkillBody {
+  readonly expectedVersion: number;
+  readonly reason: string;
+}
+
 export interface CreateRunnerEnrollmentBody {
   readonly runnerId: string;
   readonly projectIds: readonly string[];

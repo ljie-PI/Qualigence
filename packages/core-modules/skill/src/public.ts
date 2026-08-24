@@ -61,6 +61,11 @@ export type {
 
 export type {
   SaveSkillVersionInput,
+  SkillLifecycleActorContext,
+  SkillLifecycleAuditEvent,
+  SkillLifecycleCommand,
+  SkillLifecycleCommandBase,
+  SkillLifecycleOperation,
   SkillRepository,
   SkillRevocation,
 } from "./ports/skill-repository.js";

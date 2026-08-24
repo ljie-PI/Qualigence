@@ -6,6 +6,48 @@ import type {
   SkillState,
 } from "../domain/skill-types.js";
 
+export type SkillLifecycleOperation = "promote" | "deprecate";
+
+export interface SkillLifecycleActorContext {
+  readonly actorId: string;
+  readonly tenantId: string;
+  readonly roles: readonly string[];
+}
+
+export interface SkillLifecycleCommandBase {
+  readonly skillId: string;
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly actor: SkillLifecycleActorContext;
+  readonly occurredAt: string;
+}
+
+export interface PromoteSkillLifecycleCommand extends SkillLifecycleCommandBase {
+  readonly operation: "promote";
+  readonly requiredOracles: readonly string[];
+}
+
+export interface DeprecateSkillLifecycleCommand extends SkillLifecycleCommandBase {
+  readonly operation: "deprecate";
+  readonly reason: string;
+}
+
+export type SkillLifecycleCommand =
+  | PromoteSkillLifecycleCommand
+  | DeprecateSkillLifecycleCommand;
+
+export interface SkillLifecycleAuditEvent {
+  readonly auditId: string;
+  readonly skillId: string;
+  readonly skillVersion: number;
+  readonly operation: SkillLifecycleOperation;
+  readonly decision: "allowed" | "rejected";
+  readonly actor: SkillLifecycleActorContext;
+  readonly reason: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+}
+
 /** A revocation entry appended when a Skill version must no longer be dispatched. */
 export interface SkillRevocation {
   readonly revocationId: string;
@@ -41,6 +83,8 @@ export interface SkillRepository {
     skillId: string,
     state: SkillState,
   ): Promise<readonly ProcedureSkillVersion[]>;
+  versions(skillId: string): Promise<readonly ProcedureSkillVersion[]>;
+  latestVersions(): Promise<readonly ProcedureSkillVersion[]>;
 
   saveEvaluation(evaluation: SkillEvaluation): Promise<void>;
   evaluations(
@@ -56,4 +100,11 @@ export interface SkillRepository {
 
   revoke(revocation: SkillRevocation): Promise<void>;
   isRevoked(skillId: string, version: number): Promise<boolean>;
+
+  applyLifecycleCommand(
+    command: SkillLifecycleCommand,
+  ): Promise<ProcedureSkillVersion>;
+  lifecycleAuditEvents(
+    skillId: string,
+  ): Promise<readonly SkillLifecycleAuditEvent[]>;
 }
