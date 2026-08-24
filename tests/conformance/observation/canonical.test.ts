@@ -165,6 +165,19 @@ describe("canonical observation JSON and hash", () => {
     ).toThrow("ObservationSchemaInvalid");
   });
 
+  it("returns a stable observation error for malformed semantic-set entries", () => {
+    expect(() =>
+      validateObservationGraphV1(
+        graph({ rootNodeIds: [42 as unknown as string] }),
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+    expect(() =>
+      validateObservationGraphV1(
+        graph({ evidenceRefs: [null as unknown as string] }),
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+  });
+
   it("normalises strings to NFC before hashing", () => {
     const composed = "é"; // U+00E9
     const decomposed = "e\u0301"; // e + combining acute

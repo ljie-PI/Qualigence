@@ -415,6 +415,7 @@ function assertViewportNumber(value: unknown, where: string, max: number): void 
 function assertUniqueCanonicalStringKeys(values: readonly string[], where: string): void {
   const byNormalized = new Map<string, string>();
   for (const value of values) {
+    assertNonEmptyString(value, where);
     const normalized = value.normalize("NFC");
     const existing = byNormalized.get(normalized);
     if (existing !== undefined && existing !== value) {
