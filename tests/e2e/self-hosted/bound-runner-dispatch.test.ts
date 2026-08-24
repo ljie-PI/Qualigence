@@ -74,11 +74,23 @@ describe("Self-hosted bound Runner dispatch acceptance", () => {
   }, 60_000);
 
   it("leaves an offline bound Runner durably pending", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-e2e-offline-runner-"));
+    const daemon = await startCoreDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      dataDir,
+      leaseDurationMs: 30_000,
+      tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+    });
+    cleanups.push(async () => {
+      await daemon.shutdown();
+      await rm(dataDir, { recursive: true, force: true });
+    });
     const row = dispatch();
     const loop = new MissionDispatchLoop({
       tenantId: "tenant-a",
       repository: repositoryFor(row),
-      runners: { connectionFor: async () => undefined },
+      runners: { connectionFor: async ({ runnerId }) => daemon.server.connection(runnerId) === undefined ? undefined : connectionFor(row, [WEB_TARGET_TOKEN]) },
       leases: { lease: async () => undefined },
       clock: { now: () => "2026-08-24T00:00:01.000Z" },
     });
@@ -88,12 +100,28 @@ describe("Self-hosted bound Runner dispatch acceptance", () => {
   });
 
   it("durably blocks a capability-mismatched bound Runner without selecting another Runner", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-e2e-capability-runner-"));
+    const daemon = await startCoreDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      dataDir,
+      leaseDurationMs: 30_000,
+      tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+    });
+    const client = makeTestClient(pki, daemon.port, pki.clientFor("runner-bound"));
+    cleanups.push(async () => {
+      await client.close();
+      await daemon.shutdown();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    await client.connect(makeHello("runner-bound"));
+    await daemon.server.waitForConnection("runner-bound");
     const row = dispatch({ requiredCapabilities: [WEB_TARGET_TOKEN, UNSUPPORTED_TOKEN] });
     const blocked: string[] = [];
     const loop = new MissionDispatchLoop({
       tenantId: "tenant-a",
       repository: repositoryFor(row, blocked),
-      runners: { connectionFor: async () => connectionFor(row, [WEB_TARGET_TOKEN]) },
+      runners: { connectionFor: async ({ runnerId }) => daemon.server.connection(runnerId) === undefined ? undefined : connectionFor(row, [WEB_TARGET_TOKEN]) },
       leases: { lease: async () => undefined },
       clock: { now: () => "2026-08-24T00:00:01.000Z" },
     });
