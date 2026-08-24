@@ -229,15 +229,16 @@ export class MissionDispatchLoop {
     }
     try {
       validateApprovedExecutionPolicy(job.policy, job.plan?.budget.maximumWallClockMs ?? 0);
-      if (Date.parse(job.policy.expiresAt) <= nowMs) {
-        throw new Error("Execution policy is expired.");
-      }
     } catch (error) {
       return this.block(dispatch, "policy_invalid", { error: errorMessage(error) });
     }
 
     const existing = await this.acceptExistingLease(dispatch, job);
     if (existing !== undefined) return existing;
+
+    if (Date.parse(job.policy.expiresAt) <= nowMs) {
+      return this.block(dispatch, "policy_invalid", { error: "Execution policy is expired." });
+    }
 
     const connection = await this.runners.connectionFor({ tenantId: this.tenantId, runnerId: dispatch.runnerId });
     if (connection === undefined) {

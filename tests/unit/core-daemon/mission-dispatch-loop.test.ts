@@ -419,6 +419,35 @@ describe("MissionDispatchLoop", () => {
     expect(repository.acceptCalls).toHaveLength(1);
   });
 
+  it("replays an accepted lease as already_active even after policy expiry", async () => {
+    const repository = new MissionDispatchRepositoryFake();
+    const expiredJob = missionJob({
+      policy: {
+        policyId: "policy-expired-after-accept",
+        environment: "isolated_test",
+        allowedOrigins: ["https://shop.example.test"],
+        allowedActionKinds: ["click"],
+        maximumRisk: "Normal",
+        explorationAllowed: false,
+        issuedAt: "2026-08-23T00:00:00.000Z",
+        expiresAt: "2026-08-23T00:01:00.000Z",
+      },
+    });
+    const row = dispatch({ job: expiredJob });
+    repository.rows = [row];
+    const leases = new LeaseReaderFake();
+    leases.leaseRecord = { job: row.job, owner: { runnerId: "runner-1" } };
+    const { loop, runners } = makeLoop({ repository, leases });
+    let offered = false;
+    runners.connection = connection({ offer: async (job) => { offered = true; return leaseFor(job); } });
+
+    const result = await loop.runOnce();
+
+    expect(result.results[0]).toMatchObject({ outcome: "accepted", receipt: { status: "already_active", jobId: "runner-job-1", runId: "run-1", acceptedAt: row.createdAt } });
+    expect(repository.blockCalls).toHaveLength(0);
+    expect(offered).toBe(false);
+  });
+
   it("reconciles a persisted lease after an uncertain offer failure before applying retry backoff", async () => {
     const repository = new MissionDispatchRepositoryFake();
     const row = dispatch();
