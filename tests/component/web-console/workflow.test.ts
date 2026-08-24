@@ -80,7 +80,7 @@ async function seedVerifiedSkill(fx: ServerFixture): Promise<void> {
     const verified = flowSkillVersion(3, "verified");
     await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: skillRecording });
     const evaluation: SkillEvaluation = { evaluationId: "flow-skill-eval", skillId: "flow-skill", skillVersion: 3, oracles: passingOracles(), outcome: "passed", signatureValid: true, createdAt: "2026-08-01T00:02:00.000Z" };
-    const bundle: SignedSkillBundle = { manifest: { bundleId: "flow-skill-bundle", skillId: "flow-skill", skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: "0123456789abcdef0123456789abcdef", signatureAlgorithm: "Ed25519", signatureBase64: "AAAA", issuedAt: "2026-08-01T00:03:00.000Z" }, payload: verified };
+    const bundle: SignedSkillBundle = await fx.skillSigner.sign({ bundleId: "flow-skill-bundle", skillId: "flow-skill", skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: fx.skillSigner.keyId, signatureAlgorithm: "Ed25519", issuedAt: "2026-08-01T00:03:00.000Z", payload: verified });
     await store.saveEvaluation(evaluation);
     await store.saveBundle(bundle);
   });

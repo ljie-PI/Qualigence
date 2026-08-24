@@ -112,7 +112,7 @@ async function seedVerifiedSkill(fx: ServerFixture, input: { tenantId: string; s
     const verified = skillVersion(input.skillId, 3, "verified", `${input.skillId}-rec`);
     await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: { ...recording, recordingId: `${input.skillId}-rec` } });
     const evaluation: SkillEvaluation = { evaluationId: `${input.skillId}-eval`, skillId: input.skillId, skillVersion: 3, oracles: passingOracles(), outcome: "passed", signatureValid: true, createdAt: "2026-08-01T00:02:00.000Z" };
-    const bundle: SignedSkillBundle = { manifest: { bundleId: `${input.skillId}-bundle`, skillId: input.skillId, skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: "0123456789abcdef0123456789abcdef", signatureAlgorithm: "Ed25519", signatureBase64: "AAAA", issuedAt: "2026-08-01T00:03:00.000Z" }, payload: verified };
+    const bundle: SignedSkillBundle = await fx.skillSigner.sign({ bundleId: `${input.skillId}-bundle`, skillId: input.skillId, skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: fx.skillSigner.keyId, signatureAlgorithm: "Ed25519", issuedAt: "2026-08-01T00:03:00.000Z", payload: verified });
     await store.saveEvaluation(evaluation);
     await store.saveBundle(bundle);
   });
@@ -397,8 +397,16 @@ describe("Public API v1 contract", () => {
       const viewer = fx.token("tenant-a", ["viewer"]);
       const rejected = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${viewer}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-reject-key" }, body: JSON.stringify({ expectedVersion: 3 }) });
       expect(rejected.status).toBe(403);
+      const tester = fx.token("tenant-a", ["tester"]);
+      const missingKey = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(missingKey.status).toBe(400);
+      expect(await missingKey.json()).toMatchObject({ code: "IdempotencyKeyRequired" });
+      const invalidBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-invalid-body" }, body: JSON.stringify({ expectedVersion: 0 }) });
+      expect(invalidBody.status).toBe(422);
+      expect(await invalidBody.json()).toMatchObject({ code: "ValidationFailed" });
       await fx.provider.withTenant("tenant-a", async ({ db }) => {
         expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-reject-key").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-invalid-body").execute()).toHaveLength(0);
       });
     });
 

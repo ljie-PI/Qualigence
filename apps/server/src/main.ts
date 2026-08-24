@@ -13,6 +13,7 @@ import {
   createPostgresRuntime,
   PostgresReviewTaskRepository,
 } from "@qualigence/postgres-runtime";
+import { LocalSkillSigner } from "@qualigence/kms-local";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import type { Clock } from "@qualigence/shared-kernel";
 import { loadServerConfig } from "./config.js";
@@ -68,6 +69,7 @@ export async function main(
     issuer,
     caCertificatePem: config.runnerCa.certificatePem,
     clock: systemClock,
+    skillSigner: LocalSkillSigner.open(config.skillSigningDataDir ?? ".qualigence-server/skill-signing"),
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),

@@ -8,10 +8,22 @@ import type {
   SkillLifecycleOperation,
   SkillRepository,
 } from "../ports/skill-repository.js";
+import type { SkillSigner, SkillSignatureVerification } from "../ports/skill-signer.js";
 import { SkillPromotionPolicy } from "./skill-promotion-policy.js";
 
+export interface SkillLifecycleServiceDependencies {
+  readonly repository: SkillRepository;
+  readonly signer?: SkillSigner | undefined;
+}
+
 export class SkillLifecycleService {
-  constructor(private readonly repository: SkillRepository) {}
+  private readonly repository: SkillRepository;
+  private readonly signer: SkillSigner | undefined;
+
+  constructor(deps: SkillLifecycleServiceDependencies) {
+    this.repository = deps.repository;
+    this.signer = deps.signer;
+  }
 
   async promote(
     command: Extract<SkillLifecycleCommand, { operation: "promote" }>,
@@ -46,10 +58,11 @@ export class SkillLifecycleService {
       const bundle = await this.repository.bundle(current.skillId, current.version);
       if (evaluation === undefined) throw skillError("SkillVerificationFailed", "A Skill cannot be promoted without a completed evaluation.");
       if (bundle === undefined || !bundleMatchesVersion(bundle, current)) throw skillError("SkillBundleMissing", "A Skill cannot be promoted without its signed Bundle.");
+      const signatureVerification = await this.signatureVerification(current, bundle);
       const decision = new SkillPromotionPolicy().evaluate({
         version: current,
         evaluation,
-        signatureVerification: evaluation.signatureValid ? { status: "valid" } : { status: "invalid", code: "SkillSignatureInvalid", message: "The latest evaluation did not confirm a valid signature." },
+        signatureVerification,
         requiredOracles: command.requiredOracles,
       });
       if (decision.status === "rejected") throw skillError(decision.code, decision.message);
@@ -83,6 +96,63 @@ export class SkillLifecycleService {
         : {}),
     });
   }
+
+  async versionView(version: ProcedureSkillVersion): Promise<SkillVersionView> {
+    const signedVersion = await this.signedEvaluatedVersion(version);
+    const latestEvaluation = signedVersion === undefined ? undefined : (await this.repository.evaluations(version.skillId, signedVersion.version)).at(-1);
+    const bundle = signedVersion === undefined ? undefined : await this.repository.bundle(version.skillId, signedVersion.version);
+    const revoked = await this.repository.isRevoked(version.skillId, version.version);
+    return {
+      skillId: version.skillId,
+      version: version.version,
+      state: version.state,
+      contentSha256: version.contentSha256,
+      signatureStatus: revoked ? "revoked" : signedVersion !== undefined && bundleMatchesVersion(bundle, signedVersion) && latestEvaluation?.signatureValid === true ? "valid" : "invalid",
+      evaluationStatus: latestEvaluation === undefined ? "pending" : latestEvaluation.outcome,
+    };
+  }
+
+  async latestViews(): Promise<readonly SkillVersionView[]> {
+    return Promise.all((await this.repository.latestVersions()).map((version) => this.versionView(version)));
+  }
+
+  async versionViews(skillId: string): Promise<readonly SkillVersionView[]> {
+    return Promise.all((await this.repository.versions(skillId)).map((version) => this.versionView(version)));
+  }
+
+  private async signedEvaluatedVersion(version: ProcedureSkillVersion): Promise<ProcedureSkillVersion | undefined> {
+    const lineage = await this.repository.versions(version.skillId);
+    for (const candidate of [...lineage].reverse()) {
+      if (candidate.version > version.version || candidate.contentSha256 !== version.contentSha256) continue;
+      const evaluation = (await this.repository.evaluations(candidate.skillId, candidate.version)).at(-1);
+      const bundle = await this.repository.bundle(candidate.skillId, candidate.version);
+      if (evaluation?.signatureValid === true && bundleMatchesVersion(bundle, candidate)) return candidate;
+    }
+    return undefined;
+  }
+
+  private async signatureVerification(version: ProcedureSkillVersion, bundle: NonNullable<Awaited<ReturnType<SkillRepository["bundle"]>>>): Promise<SkillSignatureVerification> {
+    if (!version.targetScope.allowedOrigins.every((origin) => typeof origin === "string")) {
+      return { status: "invalid", code: "SkillTargetMismatch", message: "Skill target scope is invalid." };
+    }
+    if (this.signer === undefined) {
+      return { status: "invalid", code: "SkillSignatureInvalid", message: "No Skill signature verifier is configured." };
+    }
+    return this.signer.verify(bundle, {
+      projectId: version.projectId,
+      targetId: version.targetScope.targetId,
+      now: new Date().toISOString(),
+    });
+  }
+}
+
+export interface SkillVersionView {
+  readonly skillId: string;
+  readonly version: number;
+  readonly state: ProcedureSkillVersion["state"];
+  readonly contentSha256: string;
+  readonly signatureStatus: "valid" | "invalid" | "revoked";
+  readonly evaluationStatus: "pending" | "passed" | "failed";
 }
 
 export function skillLifecycleCommandHash(command: SkillLifecycleCommand): string {

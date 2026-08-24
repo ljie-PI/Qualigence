@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, SkillLifecycleService } from "@qualigence/skill";
-import type { CommitSkillLifecycleCommandInput, ProcedureSkillVersion, SignedSkillBundle, SkillEvaluation, SkillLifecycleReplayResult, SkillRepository, SkillRevocation } from "@qualigence/skill";
+import type { CommitSkillLifecycleCommandInput, ProcedureSkillVersion, SignedSkillBundle, SkillEvaluation, SkillLifecycleReplayResult, SkillRepository, SkillRevocation, SkillSigner } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
 
 const recording: RecordingSession = {
@@ -19,7 +19,7 @@ describe("SkillLifecycleService", () => {
   it("orchestrates promotion policy before atomic persistence", async () => {
     const repository = new MemorySkillRepository();
     await repository.seedVerified();
-    const result = await new SkillLifecycleService(repository).promote({ operation: "promote", skillId: "skill-core", expectedVersion: 3, idempotencyKey: "promote-core", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" });
+    const result = await new SkillLifecycleService({ repository, signer: new TrustingSkillSigner() }).promote({ operation: "promote", skillId: "skill-core", expectedVersion: 3, idempotencyKey: "promote-core", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" });
 
     expect(result).toMatchObject({ version: 4, state: "promoted" });
     expect(repository.commits).toHaveLength(1);
@@ -28,7 +28,17 @@ describe("SkillLifecycleService", () => {
 
   it("rejects reused idempotency keys before re-running transitions", async () => {
     const repository = new MemorySkillRepository({ replay: { status: "conflict", resultVersion: 4 } });
-    await expect(new SkillLifecycleService(repository).promote({ operation: "promote", skillId: "skill-core", expectedVersion: 3, idempotencyKey: "reuse", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
+    await expect(new SkillLifecycleService({ repository, signer: new TrustingSkillSigner() }).promote({ operation: "promote", skillId: "skill-core", expectedVersion: 3, idempotencyKey: "reuse", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" })).rejects.toMatchObject({ code: "SkillIdempotencyConflict" });
+    expect(repository.commits).toHaveLength(0);
+  });
+
+  it("uses the configured signer verification rather than trusting stored evaluation signature flags", async () => {
+    const repository = new MemorySkillRepository();
+    await repository.seedVerified();
+    const signer = new RejectingSkillSigner();
+
+    await expect(new SkillLifecycleService({ repository, signer }).promote({ operation: "promote", skillId: "skill-core", expectedVersion: 3, idempotencyKey: "promote-bad-signature", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" })).rejects.toMatchObject({ code: "SkillSignatureInvalid" });
+    expect(signer.verifyCalls).toBe(1);
     expect(repository.commits).toHaveLength(0);
   });
 });
@@ -63,6 +73,34 @@ class MemorySkillRepository implements SkillRepository {
   async replayLifecycleCommand(): Promise<SkillLifecycleReplayResult> { return this.replay; }
   async commitLifecycleCommand(input: CommitSkillLifecycleCommandInput): Promise<ProcedureSkillVersion> { this.commits.push(input); this.current = input.result; return input.result; }
   async lifecycleAuditEvents(): Promise<readonly []> { return []; }
+}
+
+class RejectingSkillSigner implements SkillSigner {
+  readonly keyId = "rejecting-key";
+  verifyCalls = 0;
+
+  async sign(bundle: Omit<SignedSkillBundle["manifest"], "signatureBase64"> & { readonly payload: ProcedureSkillVersion }): Promise<SignedSkillBundle> {
+    const { payload, ...manifest } = bundle;
+    return { manifest: { ...manifest, signatureBase64: "bad" }, payload };
+  }
+
+  async verify() {
+    this.verifyCalls += 1;
+    return { status: "invalid" as const, code: "SkillSignatureInvalid" as const, message: "bad signature" };
+  }
+}
+
+class TrustingSkillSigner implements SkillSigner {
+  readonly keyId = "trusted-key";
+
+  async sign(bundle: Omit<SignedSkillBundle["manifest"], "signatureBase64"> & { readonly payload: ProcedureSkillVersion }): Promise<SignedSkillBundle> {
+    const { payload, ...manifest } = bundle;
+    return { manifest: { ...manifest, signatureBase64: "trusted" }, payload };
+  }
+
+  async verify() {
+    return { status: "valid" as const };
+  }
 }
 
 function versionAt(version: number, state: ProcedureSkillVersion["state"]): ProcedureSkillVersion {

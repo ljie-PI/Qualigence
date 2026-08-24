@@ -19,7 +19,7 @@ import type {
 } from "@qualigence/postgres-runtime";
 import { PostgresPrdMissionRepository, PostgresProjectTargetRepository, PostgresSkillStore, PostgresTestPlanRepository } from "@qualigence/postgres-runtime";
 import type { ReviewTaskRepository } from "@qualigence/review";
-import type { SkillRepository } from "@qualigence/skill";
+import type { SkillRepository, SkillSigner } from "@qualigence/skill";
 import { ProjectTargetService, type ProjectTargetRepository } from "@qualigence/project-target";
 import { MissionIntakeService, TestPlanService, type MissionSchedulingIds, type PrdMissionRepository, type TestPlanRepository } from "@qualigence/mission";
 import { MissionDispatchService } from "./mission-dispatch-service.js";
@@ -54,6 +54,7 @@ export interface ServerDeps {
   readonly testPlanRepository?: (stores: TenantStores, tenantId: string) => TestPlanRepository;
   readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
   readonly skillRepository?: (stores: TenantStores, tenantId: string) => SkillRepository;
+  readonly skillSigner?: SkillSigner;
   readonly missionSchedulingIds?: MissionSchedulingIds;
 }
 

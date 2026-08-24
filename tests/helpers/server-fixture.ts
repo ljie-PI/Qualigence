@@ -6,7 +6,9 @@ import {
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
+import { LocalSkillSigner } from "@qualigence/kms-local";
 import type { Clock } from "@qualigence/shared-kernel";
+import type { SkillSigner } from "@qualigence/skill";
 import {
   bootstrapServerDatabase,
   buildServer,
@@ -36,6 +38,7 @@ export interface ServerFixture {
   readonly ca: PemPair;
   readonly provider: TenantTransactionProvider;
   readonly container: StartedPostgres;
+  readonly skillSigner: SkillSigner;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
   stop(): Promise<void>;
@@ -97,6 +100,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caCertificatePem: ca.certPem,
     caPrivateKeyPem: ca.keyPem,
   });
+  const skillSigner = LocalSkillSigner.generate();
 
   const deps: ServerDeps = {
     provider,
@@ -105,6 +109,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     issuer,
     caCertificatePem: ca.certPem,
     clock: fixedClock,
+    skillSigner,
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
@@ -146,6 +151,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     ca,
     provider,
     container,
+    skillSigner,
     token,
     async stop() {
       await app.close();

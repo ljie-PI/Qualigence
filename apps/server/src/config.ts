@@ -19,6 +19,7 @@ export interface ServerConfig {
     readonly certificatePem: string;
     readonly privateKeyPem: string;
   };
+  readonly skillSigningDataDir?: string;
 }
 
 function required(name: string, env: NodeJS.ProcessEnv): string {
@@ -64,5 +65,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       certificatePem: fileContents("SERVER_RUNNER_CA_CERT_FILE", env),
       privateKeyPem: fileContents("SERVER_RUNNER_CA_KEY_FILE", env),
     },
+    ...(env.SERVER_SKILL_SIGNING_DATA_DIR === undefined
+      ? {}
+      : { skillSigningDataDir: env.SERVER_SKILL_SIGNING_DATA_DIR }),
   };
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { DeprecateSkillBody, PromoteSkillBody, SkillVersionDto } from "@qualigence/public-api";
-import { REQUIRED_REPLAY_ORACLES, SkillError, SkillLifecycleService, type ProcedureSkillVersion, type SkillRepository } from "@qualigence/skill";
+import { REQUIRED_REPLAY_ORACLES, SkillError, SkillLifecycleService, type SkillVersionView } from "@qualigence/skill";
 import { authenticateOidc, requireIdempotencyKey, requireRole, skills, withTenant, type ServerDeps } from "../server-context.js";
 import { commandEnvelope, listEnvelope } from "../envelopes.js";
 import { ApiError, newCorrelationId, notFound, validationFailed, versionConflict } from "../errors.js";
@@ -11,7 +11,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     requireRole(deps, principal, "viewer");
     const items = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
-      return Promise.all((await repository.latestVersions()).map((version) => toDto(repository, version)));
+      return Promise.all((await new SkillLifecycleService({ repository, signer: deps.skillSigner }).latestViews()).map(toDto));
     });
     return reply.send(listEnvelope(items, deps.clock.now()));
   });
@@ -22,7 +22,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       const version = await repository.latestVersion(request.params.skillId);
-      return version === undefined ? undefined : toDto(repository, version);
+      return version === undefined ? undefined : toDto(await new SkillLifecycleService({ repository, signer: deps.skillSigner }).versionView(version));
     });
     if (dto === undefined) throw notFound("Skill not found");
     return reply.send(dto);
@@ -33,8 +33,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     requireRole(deps, principal, "viewer");
     const items = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
-      const versions = await repository.versions(request.params.skillId);
-      return Promise.all(versions.map((version) => toDto(repository, version)));
+      return Promise.all((await new SkillLifecycleService({ repository, signer: deps.skillSigner }).versionViews(request.params.skillId)).map(toDto));
     });
     if (items.length === 0) throw notFound("Skill not found");
     return reply.send(listEnvelope(items, deps.clock.now()));
@@ -48,7 +47,8 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
-        const version = await new SkillLifecycleService(repository).promote({
+        const service = new SkillLifecycleService({ repository, signer: deps.skillSigner });
+        const version = await service.promote({
           operation: "promote",
           skillId: request.params.skillId,
           expectedVersion,
@@ -57,7 +57,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
           actor: { actorId: principal.subject, tenantId: principal.tenantId, roles: principal.roles },
           occurredAt: deps.clock.now(),
         });
-        return toDto(repository, version);
+        return toDto(await service.versionView(version));
       } catch (error) {
         return rethrowSkillError(error, expectedVersion);
       }
@@ -76,7 +76,8 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
-        const version = await new SkillLifecycleService(repository).deprecate({
+        const service = new SkillLifecycleService({ repository, signer: deps.skillSigner });
+        const version = await service.deprecate({
           operation: "deprecate",
           skillId: request.params.skillId,
           expectedVersion,
@@ -85,7 +86,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
           actor: { actorId: principal.subject, tenantId: principal.tenantId, roles: principal.roles },
           occurredAt: deps.clock.now(),
         });
-        return toDto(repository, version);
+        return toDto(await service.versionView(version));
       } catch (error) {
         return rethrowSkillError(error, expectedVersion);
       }
@@ -94,30 +95,15 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
   });
 }
 
-async function toDto(repository: SkillRepository, version: ProcedureSkillVersion): Promise<SkillVersionDto> {
-  const signedVersion = await signedEvaluatedVersion(repository, version);
-  const latestEvaluation = signedVersion === undefined ? undefined : (await repository.evaluations(version.skillId, signedVersion.version)).at(-1);
-  const bundle = signedVersion === undefined ? undefined : await repository.bundle(version.skillId, signedVersion.version);
-  const revoked = await repository.isRevoked(version.skillId, version.version);
+function toDto(view: SkillVersionView): SkillVersionDto {
   return {
-    skillId: version.skillId,
-    version: version.version,
-    state: version.state,
-    contentSha256: version.contentSha256,
-    signatureStatus: revoked ? "revoked" : signedVersion !== undefined && bundleMatchesVersion(bundle, signedVersion) && latestEvaluation?.signatureValid === true ? "valid" : "invalid",
-    evaluationStatus: latestEvaluation === undefined ? "pending" : latestEvaluation.outcome,
+    skillId: view.skillId,
+    version: view.version,
+    state: view.state,
+    contentSha256: view.contentSha256,
+    signatureStatus: view.signatureStatus,
+    evaluationStatus: view.evaluationStatus,
   };
-}
-
-async function signedEvaluatedVersion(repository: SkillRepository, version: ProcedureSkillVersion): Promise<ProcedureSkillVersion | undefined> {
-  const lineage = await repository.versions(version.skillId);
-  for (const candidate of [...lineage].reverse()) {
-    if (candidate.version > version.version || candidate.contentSha256 !== version.contentSha256) continue;
-    const evaluation = (await repository.evaluations(candidate.skillId, candidate.version)).at(-1);
-    const bundle = await repository.bundle(candidate.skillId, candidate.version);
-    if (evaluation?.signatureValid === true && bundleMatchesVersion(bundle, candidate)) return candidate;
-  }
-  return undefined;
 }
 
 function expectedVersionFrom(body: Partial<PromoteSkillBody>): number {
@@ -137,14 +123,4 @@ function rethrowSkillError(error: unknown, expectedVersion: number): never {
     throw versionConflict({ expectedVersion, ...error.details }, error.code);
   }
   throw validationFailed(error.code);
-}
-
-function bundleMatchesVersion(bundle: Awaited<ReturnType<SkillRepository["bundle"]>>, version: ProcedureSkillVersion): boolean {
-  return bundle !== undefined &&
-    bundle.manifest.skillId === version.skillId &&
-    bundle.manifest.skillVersion === version.version &&
-    bundle.manifest.contentSha256 === version.contentSha256 &&
-    bundle.payload.skillId === version.skillId &&
-    bundle.payload.version === version.version &&
-    bundle.payload.contentSha256 === version.contentSha256;
 }

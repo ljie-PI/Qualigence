@@ -94,6 +94,11 @@ export {
 } from "./application/skill-lifecycle-service.js";
 
 export type {
+  SkillLifecycleServiceDependencies,
+  SkillVersionView,
+} from "./application/skill-lifecycle-service.js";
+
+export type {
   PromotionDecision,
   PromotionPolicyInput,
   PromotionRejectionCode,

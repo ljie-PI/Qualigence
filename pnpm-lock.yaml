@@ -468,6 +468,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../packages/core-modules/context-intake
+      '@qualigence/kms-local':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/kms-local
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
