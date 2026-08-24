@@ -23,10 +23,15 @@ export type {
   ExplorationJob,
   ExplorationPolicyDecision,
   ExplorationPolicyGate,
+  ExplorationProgressStore,
+  ExplorationProgressUpdate,
+  ExplorationProgressUpdateResult,
   ExplorationProposal,
   ExplorationResult,
+  ExplorationSeedReplayPort,
   ExplorationTarget,
   GroundedExplorationAction,
+  NewExplorationAttemptProgress,
 } from "./exploration-controller.js";
 
 export { RegressionJobRunner } from "./regression-job.js";

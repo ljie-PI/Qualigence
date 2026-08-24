@@ -6,17 +6,31 @@ import {
   type ExplorationContext,
   type ExplorationJob,
   type ExplorationPolicyGate,
+  type ExplorationProgressStore,
+  type ExplorationProgressUpdate,
+  type ExplorationProgressUpdateResult,
   type ExplorationProposal,
+  type ExplorationSeedReplayPort,
   type ExplorationTarget,
   type GroundedExplorationAction,
   type MonotonicClock,
+  type NewExplorationAttemptProgress,
+  type RegressionJobResult,
+  type RegressionSeed,
 } from "@qualigence/exploration";
 import type {
   ActionRiskLevel,
+  ExplorationAttemptProgress,
+  ExplorationCheckpoint,
   ExplorationDecision,
   ExplorationPolicy,
   ProposedExplorationAction,
 } from "@qualigence/mission";
+import type {
+  ProcedureSkillVersion,
+  SkillVerificationScope,
+  SignedSkillBundle,
+} from "@qualigence/skill";
 import type { ObservationGraph } from "@qualigence/runner-protocol";
 
 class FakeClock implements MonotonicClock {
@@ -108,6 +122,120 @@ class DenyingPolicyGate implements ExplorationPolicyGate {
   }
 }
 
+class RecoveringTarget extends ScriptedTarget {
+  failuresBeforeRecovery = 1;
+  recoveries = 0;
+
+  override async capture(): Promise<ObservationGraph> {
+    if (this.failuresBeforeRecovery > 0) {
+      this.failuresBeforeRecovery -= 1;
+      throw new Error("environment unavailable");
+    }
+    return super.capture();
+  }
+
+  async recover(): Promise<void> {
+    this.recoveries += 1;
+  }
+}
+
+class InMemoryProgressStore implements ExplorationProgressStore {
+  private progress = new Map<string, ExplorationAttemptProgress>();
+  private checkpoints = new Map<string, ExplorationCheckpoint[]>();
+  private sequence = 0;
+
+  async loadAttemptProgress(attemptId: string): Promise<ExplorationAttemptProgress | undefined> {
+    return this.progress.get(attemptId);
+  }
+
+  async initializeAttemptProgress(input: NewExplorationAttemptProgress): Promise<ExplorationAttemptProgress> {
+    const existing = this.progress.get(input.attemptId);
+    if (existing !== undefined) return existing;
+    const now = this.now();
+    const created: ExplorationAttemptProgress = {
+      ...input,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.progress.set(input.attemptId, created);
+    return created;
+  }
+
+  async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    const current = this.progress.get(update.attemptId);
+    if (current === undefined || current.version !== update.expectedVersion) {
+      return { status: "conflict", current };
+    }
+    if (update.checkpoint !== undefined) {
+      const existing = this.checkpoints.get(update.attemptId) ?? [];
+      this.checkpoints.set(update.attemptId, [...existing, update.checkpoint]);
+    }
+    const next: ExplorationAttemptProgress = {
+      attemptId: current.attemptId,
+      runId: current.runId,
+      sourceBindingHash: current.sourceBindingHash,
+      policyBindingHash: current.policyBindingHash,
+      seedBindingHash: current.seedBindingHash,
+      phase: update.phase,
+      seedCursor: update.seedCursor,
+      lastSafeStep: update.lastSafeStep,
+      ...(update.lastSafeGraphFingerprint === undefined ? {} : { lastSafeGraphFingerprint: update.lastSafeGraphFingerprint }),
+      remaining: update.remaining,
+      ...(update.inFlightAction === undefined ? {} : { inFlightAction: update.inFlightAction }),
+      ...(update.terminalReason === undefined ? {} : { terminalReason: update.terminalReason }),
+      version: current.version + 1,
+      createdAt: current.createdAt,
+      updatedAt: this.now(),
+    };
+    this.progress.set(update.attemptId, next);
+    return { status: "updated", progress: next };
+  }
+
+  async liveCheckpointsForAttempt(attemptId: string): Promise<readonly ExplorationCheckpoint[]> {
+    return this.checkpoints.get(attemptId) ?? [];
+  }
+
+  private now(): string {
+    this.sequence += 1;
+    return `2026-08-01T00:00:${this.sequence.toString().padStart(2, "0")}.000Z`;
+  }
+}
+
+class CrashAfterSafeCheckpointStore extends InMemoryProgressStore {
+  override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    const result = await super.compareAndSetAttemptProgress(update);
+    if (update.checkpoint !== undefined) {
+      throw new Error("process crashed after checkpoint commit");
+    }
+    return result;
+  }
+}
+
+class CrashAfterInFlightStore extends InMemoryProgressStore {
+  override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    const result = await super.compareAndSetAttemptProgress(update);
+    if (update.phase === "action_in_flight") {
+      throw new Error("process crashed with action in flight");
+    }
+    return result;
+  }
+}
+
+class RecordingSeedReplay implements ExplorationSeedReplayPort {
+  readonly ids: string[] = [];
+
+  async replay(seed: RegressionSeed): Promise<RegressionJobResult> {
+    this.ids.push(seed.plan.skillBundleId);
+    return {
+      skillBundleId: seed.plan.skillBundleId,
+      repetitionsRun: 1,
+      attempts: [{ status: "passed" }],
+      status: "passed",
+    };
+  }
+}
+
 class RiskClassifier implements ExplorationActionClassifier {
   constructor(private readonly level: ActionRiskLevel) {}
   classify(): ActionRiskLevel {
@@ -124,6 +252,63 @@ const clickAdd: ProposedExplorationAction = {
   nodeId: "node-add",
   reason: "click add to cart",
 };
+
+const seedScope: SkillVerificationScope = {
+  projectId: "proj-1",
+  targetId: "web-cart",
+  origin: "https://shop.example",
+};
+
+function seed(skillBundleId: string, state: ProcedureSkillVersion["state"] = "verified"): RegressionSeed {
+  const payload: ProcedureSkillVersion = {
+    skillId: `skill-${skillBundleId}`,
+    version: 1,
+    state,
+    projectId: "proj-1",
+    targetScope: { targetId: "web-cart", allowedOrigins: ["https://shop.example"] },
+    parameters: [],
+    steps: [
+      {
+        stepId: "step-1",
+        intent: { kind: "click", target: { purpose: "add to cart" } },
+        preconditions: [],
+        checkpoint: [{ kind: "url_path", path: "/cart" }],
+        recovery: "stop",
+        sourceNodeId: "node-add",
+      },
+    ],
+    sourceRecordingIds: ["rec-1"],
+    observationSchemaEpoch: "pre-v1",
+    locatorSchemaVersion: "semantic-locator/v1",
+    compilerVersion: "skill-compiler/v1",
+    contentSha256: `sha-${skillBundleId}`,
+  };
+  const bundle: SignedSkillBundle = {
+    manifest: {
+      bundleId: skillBundleId,
+      skillId: payload.skillId,
+      skillVersion: payload.version,
+      schemaVersion: "skill-bundle/v1",
+      compilerVersion: payload.compilerVersion,
+      contentSha256: payload.contentSha256,
+      signerKeyId: "0123456789abcdef0123456789abcdef",
+      signatureAlgorithm: "Ed25519",
+      signatureBase64: "AAAA",
+      issuedAt: "2026-08-01T00:00:00.000Z",
+    },
+    payload,
+  };
+  return {
+    plan: {
+      skillBundleId,
+      targetVersion: "2026.08.01",
+      repetitions: 1,
+      stopOnFirstFailure: true,
+    },
+    bundle,
+    scope: seedScope,
+  };
+}
 
 describe("ExplorationController", () => {
   it("refuses to explore a production environment", async () => {
@@ -216,7 +401,7 @@ describe("ExplorationController", () => {
     expect(target.executedActions()).toHaveLength(0);
   });
 
-  it("never revisits a fingerprinted state within the same session", async () => {
+  it("never revisits a fingerprinted state beyond the policy limit", async () => {
     // The target always reports the same state, so the second observation is a revisit.
     const target = new ScriptedTarget([fixedGraph(), fixedGraph(), fixedGraph()]);
     const controller = new ExplorationController({
@@ -225,7 +410,7 @@ describe("ExplorationController", () => {
       clock: new FakeClock(),
     });
 
-    const result = await controller.run(job());
+    const result = await controller.run(job({ policy: policy({ maximumStateVisits: 1 }) }));
 
     expect(result.terminalReason).toBe("state_repeated");
     // Exactly one action executed on the novel state; the revisit is refused.
@@ -269,5 +454,133 @@ describe("ExplorationController", () => {
 
     expect(agent.contexts[0]?.remainingBudget.remainingSteps).toBe(7);
     expect(agent.contexts[0]?.allowedActionKinds).toContain("click");
+  });
+
+  it("executes configured verified seed skills before novel exploration", async () => {
+    const target = new ScriptedTarget([fixedGraph()]);
+    const agent = new ScriptedAgent(() => ({ status: "stop", reason: "done" }));
+    const seedReplay = new RecordingSeedReplay();
+    const controller = new ExplorationController({
+      target,
+      agent,
+      seedReplay,
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job({
+      policy: policy({ seedSkillBundleIds: ["bundle-a", "bundle-b"] }),
+      seedSkills: [seed("bundle-a"), seed("bundle-b")],
+    }));
+
+    expect(seedReplay.ids).toEqual(["bundle-a", "bundle-b"]);
+    expect(agent.contexts).toHaveLength(1);
+    expect(result.seedReplays.map((replay) => replay.skillBundleId)).toEqual(["bundle-a", "bundle-b"]);
+    expect(result.terminalReason).toBe("objective_satisfied");
+  });
+
+  it("resumes from durable progress without replaying acknowledged safe work", async () => {
+    const crashingStore = new CrashAfterSafeCheckpointStore();
+    const firstTarget = new ScriptedTarget([distinctGraph(), distinctGraph()]);
+    const firstAgent = new ScriptedAgent((context) =>
+      act({ kind: "click", nodeId: context.graph.nodes[0]?.id ?? "missing", reason: "first" }),
+    );
+    const first = new ExplorationController({
+      target: firstTarget,
+      agent: firstAgent,
+      progressStore: crashingStore,
+      clock: new FakeClock(),
+    });
+
+    await expect(first.run(job({ attemptId: "attempt-resume" }))).rejects.toThrow(/checkpoint commit/);
+    expect(firstTarget.executedActions()).toHaveLength(1);
+
+    const resumedTarget = new ScriptedTarget([distinctGraph()]);
+    const resumedAgent = new ScriptedAgent(() => ({ status: "stop", reason: "done" }));
+    const resumed = new ExplorationController({
+      target: resumedTarget,
+      agent: resumedAgent,
+      progressStore: crashingStore,
+      clock: new FakeClock(),
+    });
+
+    const resumedResult = await resumed.run(job({ attemptId: "attempt-resume" }));
+
+    expect(resumedResult.terminalReason).toBe("objective_satisfied");
+    expect(resumedResult.stepsExecuted).toBe(1);
+    expect(resumedTarget.executedActions()).toHaveLength(0);
+    expect(resumedAgent.contexts[0]?.remainingBudget.remainingSteps).toBe(6);
+  });
+
+  it("uses the policy maximum state visits instead of a hard-coded one-visit cap", async () => {
+    const target = new ScriptedTarget([fixedGraph(), fixedGraph(), fixedGraph()]);
+    const controller = new ExplorationController({
+      target,
+      agent: new ScriptedAgent(() => act(clickAdd)),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job({ policy: policy({ maximumSteps: 2, maximumStateVisits: 2 }) }));
+
+    expect(target.executedActions()).toHaveLength(2);
+    expect(result.terminalReason).toBe("state_repeated");
+  });
+
+  it("spends recovery budget only for deterministic environment recovery", async () => {
+    const target = new RecoveringTarget([fixedGraph()]);
+    const controller = new ExplorationController({
+      target,
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job({ policy: policy({ maximumRecoveries: 1 }) }));
+
+    expect(result.terminalReason).toBe("objective_satisfied");
+    expect(target.recoveries).toBe(1);
+  });
+
+  it("fails closed when finite model usage is unavailable", async () => {
+    const target = new ScriptedTarget([fixedGraph()]);
+    const controller = new ExplorationController({
+      target,
+      agent: { async nextAction() { return { decision: act(clickAdd) }; } },
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job());
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("ModelUsageUnavailable");
+    expect(target.executedActions()).toHaveLength(0);
+  });
+
+  it("persists action_in_flight and refuses automatic replay after an unknown action outcome", async () => {
+    const store = new CrashAfterInFlightStore();
+    const firstTarget = new ScriptedTarget([fixedGraph()]);
+    const first = new ExplorationController({
+      target: firstTarget,
+      agent: new ScriptedAgent(() => act(clickAdd)),
+      progressStore: store,
+      clock: new FakeClock(),
+    });
+
+    await expect(first.run(job({ attemptId: "attempt-unknown" }))).rejects.toThrow(/in flight/);
+    expect(firstTarget.executedActions()).toHaveLength(0);
+    expect((await store.loadAttemptProgress("attempt-unknown"))?.phase).toBe("action_in_flight");
+
+    const secondTarget = new ScriptedTarget([fixedGraph()]);
+    const second = new ExplorationController({
+      target: secondTarget,
+      agent: new ScriptedAgent(() => act(clickAdd)),
+      progressStore: store,
+      clock: new FakeClock(),
+    });
+
+    const secondResult = await second.run(job({ attemptId: "attempt-unknown" }));
+
+    expect(secondResult.terminalReason).toBe("error");
+    expect(secondResult.errorCode).toBe("ActionOutcomeUnknown");
+    expect(secondTarget.executedActions()).toHaveLength(0);
+    expect((await store.loadAttemptProgress("attempt-unknown"))?.phase).toBe("terminal");
   });
 });

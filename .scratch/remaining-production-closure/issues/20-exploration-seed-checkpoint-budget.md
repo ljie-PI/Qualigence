@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Complete bounded multi-step Web Runtime; 06 — Deliver Skill version management loop schema migration `010`.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -81,6 +81,10 @@ corepack pnpm vitest run tests/e2e/exploration/restart-resume.test.ts
 ```
 
 Interrupt the process after acknowledged safe progress and resume from the last atomically persisted checkpoint. The resumed run must preserve seed completion and all remaining budgets and must not replay an acknowledged or unknown-outcome action. No in-process restart substitute or skip satisfies acceptance.
+
+## Comments
+
+- start — Claimed for isolated implementation on branch `ticket-20-exploration-seed-checkpoint-budget` from base SHA `992804b95183973b5f0ddd76f32c676808fc2ac3` (current main including PR #93 as supplied by worktree). Matrix applicability: applicable; all rows in the Behavior Matrix below govern this stateful, side-effecting, retry/restart-sensitive workflow. Planned focused Gates: `corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts`, `corepack pnpm typecheck`, and `git diff --check`. Post-review E2E/PR/merge are intentionally out of scope for this worker run.
 
 ## Behavior Matrix
 

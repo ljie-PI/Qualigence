@@ -48,7 +48,11 @@ export type {
 
 export type {
   BenchmarkRunRecord,
+  ExplorationAttemptProgressUpdate,
+  ExplorationAttemptProgressUpdateResult,
+  NewExplorationAttemptProgressRecord,
   PersistedAttempt,
+  SqliteBenchmarkStoreOptions,
 } from "./sqlite-benchmark-store.js";
 
 export {

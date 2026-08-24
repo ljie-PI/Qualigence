@@ -210,6 +210,42 @@ export interface ExplorationBudgetSnapshot {
   readonly remainingRecoveries: number;
 }
 
+export type ExplorationProgressPhase =
+  | "seed_replay"
+  | "exploring"
+  | "action_in_flight"
+  | "terminal";
+
+export interface ExplorationSeedCursor {
+  readonly nextSeedIndex: number;
+  readonly completedSeedSkillBundleIds: readonly string[];
+}
+
+export interface ExplorationInFlightAction {
+  readonly step: number;
+  readonly actionDigest: string;
+  readonly actionJson: string;
+}
+
+/** The live durable resume state for one exploration attempt. */
+export interface ExplorationAttemptProgress {
+  readonly attemptId: string;
+  readonly runId: string;
+  readonly sourceBindingHash: string;
+  readonly policyBindingHash: string;
+  readonly seedBindingHash: string;
+  readonly phase: ExplorationProgressPhase;
+  readonly seedCursor: ExplorationSeedCursor;
+  readonly lastSafeStep: number;
+  readonly lastSafeGraphFingerprint?: string | undefined;
+  readonly remaining: ExplorationBudgetSnapshot;
+  readonly inFlightAction?: ExplorationInFlightAction | undefined;
+  readonly terminalReason?: ExplorationTerminalReason | undefined;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 /** The frozen set of reasons an exploration session terminates. */
 export type ExplorationTerminalReason =
   | "objective_satisfied"

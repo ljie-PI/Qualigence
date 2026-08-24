@@ -1359,6 +1359,71 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "skill_lifecycle_audit_events_decision_check", predicate: "decision IN ('allowed', 'rejected')" },
     ],
   },
+  // ---- Migration 011: live exploration progress -----------------------
+  {
+    name: "exploration_attempt_progress",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("attempt_id"),
+      t("run_id"),
+      t("source_binding_hash"),
+      t("policy_binding_hash"),
+      t("seed_binding_hash"),
+      t("phase"),
+      t("seed_cursor_json"),
+      i("last_safe_step"),
+      t("last_safe_graph_fingerprint", false),
+      t("remaining_json"),
+      t("in_flight_action_json", false),
+      t("terminal_reason", false),
+      i("version"),
+      t("created_at"),
+      t("updated_at"),
+    ],
+    primaryKey: ["attempt_id"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["run_id"], references: { table: "benchmark_runs", columns: ["run_id"] } },
+    ],
+    checks: [
+      {
+        name: "exploration_attempt_progress_phase_check",
+        predicate: "phase IN ('seed_replay', 'exploring', 'action_in_flight', 'terminal')",
+      },
+      {
+        name: "exploration_attempt_progress_terminal_check",
+        predicate: "terminal_reason IS NULL OR terminal_reason IN ('objective_satisfied', 'no_safe_action', 'state_repeated', 'budget_exhausted', 'policy_denied', 'plan_diverged', 'finding_created', 'error')",
+      },
+      { name: "exploration_attempt_progress_version_check", predicate: "version >= 1" },
+    ],
+  },
+  {
+    name: "exploration_live_checkpoints",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("attempt_id"),
+      i("step"),
+      t("graph_fingerprint"),
+      t("remaining_json"),
+      t("terminal_reason", false),
+      t("created_at"),
+    ],
+    primaryKey: ["attempt_id", "step"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["attempt_id"], references: { table: "exploration_attempt_progress", columns: ["attempt_id"] } },
+    ],
+    checks: [
+      {
+        name: "exploration_live_checkpoints_terminal_check",
+        predicate: "terminal_reason IS NULL OR terminal_reason IN ('objective_satisfied', 'no_safe_action', 'state_repeated', 'budget_exhausted', 'policy_denied', 'plan_diverged', 'finding_created', 'error')",
+      },
+    ],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1371,7 +1436,8 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 7, name: "local-run-intake", tables: tablesFromTo("local_run_intakes", "local_run_intakes") },
   { version: 8, name: "target-test-plan-revisions", tables: tablesFromTo("project_targets", "test_plan_version_revisions") },
   { version: 9, name: "mission-scheduling", tables: tablesFromTo("mission_scheduling_heads", "mission_dispatch_wakeups") },
-  { version: 10, name: "skill-lifecycle-commands", tables: tablesFrom("skill_lifecycle_commands") },
+  { version: 10, name: "skill-lifecycle-commands", tables: tablesFromTo("skill_lifecycle_commands", "skill_lifecycle_audit_events") },
+  { version: 11, name: "exploration-attempt-progress", tables: tablesFromTo("exploration_attempt_progress", "exploration_live_checkpoints") },
 ];
 
 function tablesThrough(last: string): readonly string[] {
