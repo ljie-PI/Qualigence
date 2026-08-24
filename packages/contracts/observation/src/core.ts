@@ -89,6 +89,8 @@ export type ObservationSensitivity =
 export interface VersionedExtension {
   readonly type: string;
   readonly version: string;
+  /** JSON Pointer paths under `payload` whose arrays are semantic sets. */
+  readonly setSemantics?: readonly string[];
   readonly payload: Readonly<Record<string, ObservationJsonValue>>;
 }
 

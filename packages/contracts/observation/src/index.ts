@@ -46,7 +46,6 @@ export {
   canonicalObservationGraphJson,
   canonicalizeObservationGraph,
   canonicalObservationHash,
-  isObservationGraphV1,
 } from "./canonical.js";
 
 export {

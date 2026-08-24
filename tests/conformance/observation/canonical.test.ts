@@ -3,6 +3,7 @@ import {
   OBSERVATION_GRAPH_V1_SCHEMA,
   WEB_EXTENSION_V1_REDACTION_MARKER,
   WEB_EXTENSION_V1_TYPE,
+  canonicalObservationHash,
   canonicalObservationJson,
   observationGraphHash,
   validateObservationGraphV1,
@@ -107,6 +108,48 @@ describe("canonical observation JSON and hash", () => {
       },
     });
     expect(observationGraphHash(g1)).not.toBe(observationGraphHash(g2));
+  });
+
+  it("sorts extension arrays only when the extension explicitly declares set semantics", () => {
+    const ordered = graph({
+      extensions: {
+        "custom/v1": {
+          type: "custom/v1",
+          version: "1.0",
+          setSemantics: ["/tags"],
+          payload: { tags: ["z", "a"], steps: ["first", "second"] },
+        },
+      },
+    });
+    const reorderedSet = graph({
+      extensions: {
+        "custom/v1": {
+          type: "custom/v1",
+          version: "1.0",
+          setSemantics: ["/tags"],
+          payload: { tags: ["a", "z"], steps: ["first", "second"] },
+        },
+      },
+    });
+    const reorderedBusiness = graph({
+      extensions: {
+        "custom/v1": {
+          type: "custom/v1",
+          version: "1.0",
+          setSemantics: ["/tags"],
+          payload: { tags: ["a", "z"], steps: ["second", "first"] },
+        },
+      },
+    });
+
+    expect(observationGraphHash(ordered)).toBe(observationGraphHash(reorderedSet));
+    expect(observationGraphHash(ordered)).not.toBe(observationGraphHash(reorderedBusiness));
+  });
+
+  it("keeps generic canonical hash array order-sensitive", () => {
+    expect(canonicalObservationHash({ values: ["z", "a"] })).not.toBe(
+      canonicalObservationHash({ values: ["a", "z"] }),
+    );
   });
 
   it("rejects non-identical entries with equal normalized semantic keys", () => {
@@ -250,6 +293,28 @@ describe("canonical observation JSON and hash", () => {
           },
         }),
         { allowedWebQueryKeys: ["ref"] },
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+  });
+
+  it("rejects noncanonical web/v1 pathnames", () => {
+    expect(() =>
+      validateObservationGraphV1(
+        graph({
+          extensions: {
+            [WEB_EXTENSION_V1_TYPE]: {
+              type: WEB_EXTENSION_V1_TYPE,
+              version: "1.0",
+              payload: {
+                origin: "https://example.test",
+                pathname: "/a/../checkout",
+                title: "Checkout",
+                viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+                query: {},
+              },
+            },
+          },
+        }),
       ),
     ).toThrow("ObservationSchemaInvalid");
   });

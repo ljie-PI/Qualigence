@@ -115,6 +115,10 @@
       "properties": {
         "type": { "type": "string", "minLength": 1 },
         "version": { "type": "string", "minLength": 1 },
+        "setSemantics": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/.+" }
+        },
         "payload": { "type": "object" }
       }
     },
@@ -125,6 +129,10 @@
       "properties": {
         "type": { "const": "web/v1" },
         "version": { "type": "string", "minLength": 1 },
+        "setSemantics": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/.+" }
+        },
         "payload": {
           "type": "object",
           "additionalProperties": false,

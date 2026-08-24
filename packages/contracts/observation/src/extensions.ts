@@ -4,6 +4,13 @@ export const OBSERVATION_GRAPH_V1_CAPABILITY = "observation-graph/v1" as const;
 export const WEB_EXTENSION_V1_TYPE = "web/v1" as const;
 export const WEB_EXTENSION_V1_REDACTION_MARKER = "[redacted]" as const;
 
+export function observationRelationSemanticKey(relation: {
+  readonly type: string;
+  readonly targetNodeId: string;
+}): string {
+  return `${relation.type}\u0000${relation.targetNodeId}`;
+}
+
 /** Error codes for the observation contract layer. */
 export type ObservationErrorCode =
   | "ObservationSchemaInvalid"

@@ -15,6 +15,7 @@ import {
   WEB_EXTENSION_V1_REDACTION_MARKER,
   WEB_EXTENSION_V1_TYPE,
   observationError,
+  observationRelationSemanticKey,
   parseExtensionKey,
 } from "./extensions.js";
 
@@ -270,9 +271,10 @@ function validateExtensions(
       );
     }
     assertObject(extension, `extension ${key}`);
-    assertNoUnknownFields(extension, ["type", "version", "payload"], "extension");
+    assertNoUnknownFields(extension, ["type", "version", "setSemantics", "payload"], "extension");
     assertNonEmptyString(extension.type, `extension ${key} type`);
     assertNonEmptyString(extension.version, `extension ${key} version`);
+    validateSetSemantics(extension.setSemantics, `extension ${key} setSemantics`);
     assertObject(extension.payload, `extension ${key} payload`);
     if (key === WEB_EXTENSION_V1_TYPE) {
       if (!allowGraphExtensions) {
@@ -355,11 +357,40 @@ function assertWebOrigin(value: unknown): void {
 
 function assertPathname(value: unknown): void {
   const pathname = nonEmptyString(value, "web/v1 pathname");
-  if (!pathname.startsWith("/") || pathname.includes("?") || pathname.includes("#")) {
+  let canonical: string;
+  try {
+    canonical = new URL(pathname, "https://qualigence.invalid").pathname;
+  } catch {
     throw observationError(
       "ObservationSchemaInvalid",
-      "web/v1 pathname must be a path only and must omit query and fragment.",
+      "web/v1 pathname must be a canonical path only and must omit query and fragment.",
     );
+  }
+  if (
+    !pathname.startsWith("/") ||
+    pathname.includes("?") ||
+    pathname.includes("#") ||
+    pathname !== canonical
+  ) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      "web/v1 pathname must be a canonical path only and must omit query and fragment.",
+    );
+  }
+}
+
+function validateSetSemantics(value: unknown, where: string): void {
+  if (value === undefined) {
+    return;
+  }
+  assertArray(value, where);
+  for (const pointer of value as readonly unknown[]) {
+    if (typeof pointer !== "string" || !pointer.startsWith("/") || pointer.length === 1) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `${where} entries must be non-root JSON Pointer payload paths.`,
+      );
+    }
   }
 }
 
@@ -402,7 +433,7 @@ function assertUniqueRelationKeys(
 ): void {
   const byNormalized = new Map<string, string>();
   for (const relation of relations) {
-    const rawKey = `${relation.type}\u0000${relation.targetNodeId}`;
+    const rawKey = observationRelationSemanticKey(relation);
     const normalized = rawKey.normalize("NFC");
     const existing = byNormalized.get(normalized);
     if (existing !== undefined && existing !== rawKey) {

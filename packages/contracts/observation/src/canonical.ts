@@ -6,8 +6,11 @@ import type {
   ObservationRelationV1,
   VersionedExtension,
 } from "./core.js";
-import { OBSERVATION_GRAPH_V1_VERSION } from "./core.js";
-import { observationError } from "./extensions.js";
+import {
+  WEB_EXTENSION_V1_TYPE,
+  observationError,
+  observationRelationSemanticKey,
+} from "./extensions.js";
 /**
  * Deterministic canonical JSON for an Observation Graph:
  *  - object keys are emitted in sorted order (insertion order is irrelevant),
@@ -48,7 +51,7 @@ function sortNodes(nodes: readonly ObservationNodeV1[]): readonly ObservationNod
 function sortRelations(
   relations: readonly ObservationRelationV1[],
 ): readonly ObservationRelationV1[] {
-  return sortByKey(relations, (relation) => `${relation.type}\u0000${relation.targetNodeId}`);
+  return sortByKey(relations, observationRelationSemanticKey);
 }
 
 function sortStringSet(items: readonly string[]): readonly string[] {
@@ -70,17 +73,20 @@ function canonicalizeExtensions(
   for (const [key, extension] of Object.entries(extensions)) {
     out[key] = {
       ...extension,
-      payload: canonicalizeExtensionPayload(key, extension.payload),
+      payload: canonicalizeExtensionPayload(extension),
     };
   }
   return out;
 }
 
 function canonicalizeExtensionPayload(
-  key: string,
-  payload: Readonly<Record<string, ObservationJsonValue>>,
+  extension: VersionedExtension,
 ): Readonly<Record<string, ObservationJsonValue>> {
-  if (key !== "web/v1") {
+  let payload = extension.payload;
+  for (const pointer of extension.setSemantics ?? []) {
+    payload = sortExtensionSetAtPath(payload, pointer);
+  }
+  if (extension.type !== WEB_EXTENSION_V1_TYPE) {
     return payload;
   }
   const query = payload.query;
@@ -91,6 +97,59 @@ function canonicalizeExtensionPayload(
     ...payload,
     query: sortRecordByNormalizedKey(query as Readonly<Record<string, ObservationJsonValue>>),
   };
+}
+
+function sortExtensionSetAtPath(
+  payload: Readonly<Record<string, ObservationJsonValue>>,
+  pointer: string,
+): Readonly<Record<string, ObservationJsonValue>> {
+  const path = parseJsonPointer(pointer);
+  if (path.length === 0) {
+    return payload;
+  }
+  const sorted = sortAtPath(payload, path);
+  return sorted === undefined ? payload : sorted as Readonly<Record<string, ObservationJsonValue>>;
+}
+
+function sortAtPath(
+  value: ObservationJsonValue,
+  path: readonly string[],
+): ObservationJsonValue | undefined {
+  if (path.length === 0) {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    return sortByKey(value, (item) => canonicalObservationJson(item)) as readonly ObservationJsonValue[];
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const [head, ...tail] = path;
+  if (head === undefined || !(head in value)) {
+    return undefined;
+  }
+  const child = (value as Readonly<Record<string, ObservationJsonValue>>)[head];
+  if (child === undefined) {
+    return undefined;
+  }
+  const sortedChild = sortAtPath(child, tail);
+  if (sortedChild === undefined) {
+    return undefined;
+  }
+  return {
+    ...value,
+    [head]: sortedChild,
+  };
+}
+
+function parseJsonPointer(pointer: string): readonly string[] {
+  if (!pointer.startsWith("/")) {
+    return [];
+  }
+  return pointer
+    .slice(1)
+    .split("/")
+    .map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
 }
 
 function sortRecordByNormalizedKey(
@@ -153,23 +212,6 @@ function encode(value: unknown): string {
  */
 export function canonicalObservationHash(value: unknown): string {
   return createHash("sha256")
-    .update(
-      isObservationGraphV1(value)
-        ? canonicalObservationGraphJson(value)
-        : canonicalObservationJson(value),
-      "utf8",
-    )
+    .update(canonicalObservationJson(value), "utf8")
     .digest("hex");
-}
-
-export function isObservationGraphV1(value: unknown): value is ObservationGraphV1 {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    (value as { readonly schema?: { readonly epoch?: unknown; readonly version?: unknown } }).schema
-      ?.epoch === "v1" &&
-    (value as { readonly schema?: { readonly epoch?: unknown; readonly version?: unknown } }).schema
-      ?.version === OBSERVATION_GRAPH_V1_VERSION
-  );
 }
