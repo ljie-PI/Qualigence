@@ -4,6 +4,7 @@ import type {
   AnyResolvedAction,
   ResolvedAction,
 } from "@qualigence/runner-kernel";
+import type { Locator } from "playwright";
 import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
@@ -12,6 +13,10 @@ import {
 import { locatorFor } from "./action-locator.js";
 import { isActionToken } from "./action-token.js";
 import type { LocatorDescriptor } from "./types.js";
+import {
+  SENSITIVE_TARGET_IDS_PROPERTY,
+  type PreparedSensitiveEvidenceRecord,
+} from "./sensitive-evidence-authority.js";
 
 export interface ActionValueProvider {
   resolve(valueRef: string): Promise<string>;
@@ -274,7 +279,6 @@ export class PlaywrightActionExecutor implements ActionExecutor {
           );
           if (valueGenerationFailure !== undefined) return valueGenerationFailure;
           signal?.throwIfAborted();
-          this.session.registerSensitiveValue(value);
           const guardFailure = this.guardElementAction(
             page,
             action.graphId,
@@ -283,7 +287,11 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             navigationGeneration,
           );
           if (guardFailure !== undefined) return guardFailure;
-          this.session.invalidateObservations();
+          const sensitiveEvidence = this.session.prepareSensitiveEvidenceRecord({
+            navigationGeneration,
+            nodeId: actionTarget.nodeId,
+            sourceValue: value,
+          });
           if (action.kind === "input") {
             const dispatchGenerationFailure = navigationGenerationFailure(
               page,
@@ -291,8 +299,15 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
+            this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
-            await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+            try {
+              await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+              await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+            } catch (error) {
+              this.session.markSensitiveEvidenceUnavailable();
+              throw error;
+            }
           } else {
             const dispatchGenerationFailure = navigationGenerationFailure(
               page,
@@ -300,8 +315,15 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               navigationGeneration,
             );
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
+            this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
-            await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+            try {
+              await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+              await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+            } catch (error) {
+              this.session.markSensitiveEvidenceUnavailable();
+              throw error;
+            }
           }
         } else if (action.kind === "click") {
           const guardFailure = this.guardElementAction(
@@ -366,6 +388,44 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         ? { status: "ok" }
         : { status: "failed", errorCode: "ActionOutcomeUnknown" };
     });
+  }
+
+  private async completeInputSensitiveEvidence(
+    locator: Locator,
+    prepared: PreparedSensitiveEvidenceRecord,
+  ): Promise<void> {
+    try {
+      await markSensitiveTarget(locator, prepared.markerId);
+      const observed = await readInputSensitiveForms(locator);
+      if (!observed.sensitiveTargetIds.includes(prepared.markerId)) {
+        this.session.markSensitiveEvidenceUnavailable();
+        return;
+      }
+      this.session.completeSensitiveEvidenceRecord(prepared, [observed.value]);
+    } catch {
+      this.session.markSensitiveEvidenceUnavailable();
+    }
+  }
+
+  private async completeSelectSensitiveEvidence(
+    locator: Locator,
+    prepared: PreparedSensitiveEvidenceRecord,
+  ): Promise<void> {
+    try {
+      await markSensitiveTarget(locator, prepared.markerId);
+      const observed = await readSelectSensitiveForms(locator);
+      if (!observed.sensitiveTargetIds.includes(prepared.markerId)) {
+        this.session.markSensitiveEvidenceUnavailable();
+        return;
+      }
+      this.session.completeSensitiveEvidenceRecord(prepared, [
+        observed.value,
+        observed.selectedOptionValue,
+        observed.selectedOptionText,
+      ]);
+    } catch {
+      this.session.markSensitiveEvidenceUnavailable();
+    }
   }
 
   private guardPageAction(
@@ -463,4 +523,72 @@ function navigationGenerationFailure(
   } catch {
     return { status: "failed", errorCode: "OriginViolation" };
   }
+}
+
+async function markSensitiveTarget(
+  locator: Locator,
+  markerId: string,
+): Promise<void> {
+  await locator.evaluate(
+    (element, input) => {
+      const host = element as unknown as Element & Record<string, unknown>;
+      const current = host[input.property];
+      if (Array.isArray(current)) {
+        if (!current.includes(input.markerId)) current.push(input.markerId);
+        return;
+      }
+      Object.defineProperty(host, input.property, {
+        configurable: true,
+        enumerable: false,
+        value: [input.markerId],
+        writable: true,
+      });
+    },
+    { property: SENSITIVE_TARGET_IDS_PROPERTY, markerId },
+  );
+}
+
+interface InputSensitiveForms {
+  readonly sensitiveTargetIds: readonly string[];
+  readonly value: string;
+}
+
+interface SelectSensitiveForms extends InputSensitiveForms {
+  readonly selectedOptionValue: string;
+  readonly selectedOptionText: string;
+}
+
+async function readInputSensitiveForms(locator: Locator): Promise<InputSensitiveForms> {
+  return locator.evaluate((element, property) => {
+    const ids = (element as unknown as Element & Record<string, unknown>)[property];
+    const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
+      ? ids
+      : [];
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      throw new Error("Sensitive target is not an input field.");
+    }
+    return { sensitiveTargetIds, value: element.value };
+  }, SENSITIVE_TARGET_IDS_PROPERTY);
+}
+
+async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensitiveForms> {
+  return locator.evaluate((element, property) => {
+    const ids = (element as unknown as Element & Record<string, unknown>)[property];
+    const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
+      ? ids
+      : [];
+    if (!(element instanceof HTMLSelectElement)) {
+      throw new Error("Sensitive target is not a select field.");
+    }
+    const selectedOption = element.selectedOptions.item(0);
+    if (selectedOption === null) {
+      throw new Error("Sensitive select target has no selected option.");
+    }
+    return {
+      sensitiveTargetIds,
+      value: element.value,
+      selectedOptionValue: selectedOption.value,
+      selectedOptionText: selectedOption.text,
+    };
+  }, SENSITIVE_TARGET_IDS_PROPERTY);
 }

@@ -32,6 +32,26 @@ function options(): WebSessionOptions {
 const noopLauncher = { launch: vi.fn() } as unknown as BrowserLauncher;
 const permit = ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" });
 
+function sensitiveTargetEvaluate(value = "private-value") {
+  let markerId = "";
+  return vi.fn(async (_callback: unknown, argument: unknown) => {
+    if (
+      typeof argument === "object" &&
+      argument !== null &&
+      "markerId" in argument
+    ) {
+      markerId = String(argument.markerId);
+      return undefined;
+    }
+    return {
+      sensitiveTargetIds: [markerId],
+      value,
+      selectedOptionValue: value,
+      selectedOptionText: value,
+    };
+  });
+}
+
 function bindResolved<TAction extends object>(
   session: PlaywrightBrowserSession,
   action: TAction,
@@ -395,7 +415,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
           click: sideEffect,
           fill: sideEffect,
           selectOption: sideEffect,
-          evaluate: sideEffect,
+          evaluate: kind === "scroll" ? sideEffect : sensitiveTargetEvaluate(),
         }),
       };
       session.withPage = async (operation) => {
@@ -460,7 +480,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
           click: dispatch,
           fill: dispatch,
           selectOption: dispatch,
-          evaluate: dispatch,
+          evaluate: kind === "scroll" ? dispatch : sensitiveTargetEvaluate(),
         }),
       } as never);
       const target = { nodeId, selector: actionToken(graphId, nodeId) };
@@ -609,7 +629,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
           click: dispatch,
           fill: dispatch,
           selectOption: dispatch,
-          evaluate: dispatch,
+          evaluate: kind === "scroll" ? dispatch : sensitiveTargetEvaluate(),
         }),
         close: vi.fn(async () => undefined),
       };
@@ -748,6 +768,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
       getAttribute: async () => null,
       fill: async (value: string) => { calls.push(`fill:${value}`); },
       selectOption: async (value: string) => { calls.push(`selectOption:${value}`); },
+      evaluate: sensitiveTargetEvaluate("plaintext-secret"),
     };
     session.withPage = async (operation) => operation({
       getByRole: () => locator,
@@ -768,6 +789,44 @@ describe("PlaywrightActionExecutor value resolution", () => {
 
     await expect(executor.execute(bindResolved(session, action), permit)).resolves.toEqual({ status: "ok" });
     expect(calls).toEqual(["resolve:customer.email", `${method}:plaintext-secret`]);
+  });
+
+  it("fails evidence availability when post-dispatch target identity cannot be proven", async () => {
+    const graphId = "run-1:observation:1";
+    const session = new PlaywrightBrowserSession(options(), noopLauncher);
+    session.registerObservation(graphId, {
+      descriptors: new Map([["n-0-abcd1234", { kind: "role", role: "textbox", name: "Email" }]]),
+      artifacts: [],
+    });
+    const locator = {
+      count: async () => 1,
+      isVisible: async () => true,
+      isEnabled: async () => true,
+      getAttribute: async () => null,
+      fill: async () => undefined,
+      evaluate: vi.fn(async (_callback: unknown, argument: unknown) => {
+        if (typeof argument === "object" && argument !== null && "markerId" in argument) {
+          return undefined;
+        }
+        return { sensitiveTargetIds: [], value: "plaintext-secret" };
+      }),
+    };
+    session.withPage = async (operation) => operation({
+      getByRole: () => locator,
+      url: () => "https://example.test/",
+    } as never);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => "plaintext-secret" });
+
+    await expect(executor.execute(bindResolved(session, {
+      targetKind: "web",
+      kind: "input",
+      target: { nodeId: "n-0-abcd1234", selector: actionToken(graphId, "n-0-abcd1234") },
+      graphId,
+      valueRef: "customer.email",
+    }), ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" }))).resolves.toEqual({ status: "ok" });
+    expect(() => session.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+    expect(JSON.stringify(locator.evaluate.mock.calls)).not.toContain("plaintext-secret");
   });
 
   it("returns a stable code without plaintext when the provider cannot resolve a valueRef", async () => {
@@ -823,6 +882,8 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.email",
     }), permit);
     expect(failure).toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    expect(() => session.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
     expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
   });
 
@@ -1012,6 +1073,7 @@ describe("PlaywrightActionExecutor value resolution", () => {
     ["TargetNotVisible", "blocked"],
     ["TargetDisabled", "blocked"],
     ["ActionValueUnavailable", "blocked"],
+    ["SensitiveEvidenceUnavailable", "error"],
     ["UnsupportedAction", "blocked"],
     ["ConcurrentSessionOperation", "error"],
     ["SessionClosed", "error"],

@@ -19,8 +19,11 @@ import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "../../component/web-execution/fixtures.js";
 
-const INPUT_VALUE = "e2e-private@example.test";
+const INPUT_VALUE = "alpha\nbeta\r\ngamma\n";
+const INPUT_BROWSER_VALUE = "alpha\nbeta\ngamma\n";
+const INPUT_EQUAL_TEXT = "alpha beta gamma";
 const SELECT_VALUE = "e2e-private-country-code";
+const SELECT_TEXT = "Private Choice";
 const roots: string[] = [];
 let fixture: FixtureServer | undefined;
 let modelServer: Server | undefined;
@@ -45,19 +48,20 @@ describe("production valueRef browser execution", () => {
   it("runs immutable input/select Plan jobs through RunnerOfferRuntime without plaintext leakage", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
-        <label>Email <input aria-label="Email" /></label>
+        <label>Notes <textarea aria-label="Notes"></textarea></label>
         <label>Country
           <select aria-label="Country">
             <option value="">Choose a country</option>
-            <option value="${SELECT_VALUE}">Canada</option>
+            <option value="${SELECT_VALUE}">${SELECT_TEXT}</option>
           </select>
         </label>
+        <p data-qualigence-observe id="equal-text">${INPUT_EQUAL_TEXT}</p>
         <p data-qualigence-observe id="status">Waiting</p>
         <script>
-          const email = document.querySelector('input');
+          const notes = document.querySelector('textarea');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
-          email.addEventListener('input', () => { status.textContent = 'Email ready'; });
+          notes.addEventListener('input', () => { status.textContent = 'Notes ready'; });
           country.addEventListener('change', () => { status.textContent = 'Country ready'; });
         </script>
       `, "ValueRef acceptance"),
@@ -177,7 +181,7 @@ describe("production valueRef browser execution", () => {
     });
 
     try {
-      await runtime.run(offer("input", "profile.email", "Email", "textbox"));
+      await runtime.run(offer("input", "profile.email", "Notes", "textbox"));
       await runtime.run(offer("select", "profile.country", "Country", "combobox"));
     } catch (error) {
       if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
@@ -199,18 +203,40 @@ describe("production valueRef browser execution", () => {
       .toMatchObject({ kind: "input", valueRef: "profile.email" });
     expect(trace.find((event) => event.runId === "run-select" && event.stage === "decision")?.payload)
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
-    expect(finalObservation(trace, "run-input").nodes.some((node) => node.text === "Email ready")).toBe(true);
-    expect(finalObservation(trace, "run-select").nodes.some((node) => node.text === "Country ready")).toBe(true);
+    const inputObservation = finalObservation(trace, "run-input");
+    const selectObservation = finalObservation(trace, "run-select");
+    expect(inputObservation.nodes.some((node) => node.text === "Notes ready")).toBe(true);
+    expect(selectObservation.nodes.some((node) => node.text === "Country ready")).toBe(true);
+    expect(inputObservation.nodes.some((node) => node.text === INPUT_EQUAL_TEXT)).toBe(true);
+    expect(targetNode(inputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(targetNode(selectObservation, "combobox", "Country")).toMatchObject({
+      text: "[redacted]",
+      value: "[redacted]",
+    });
+
+    const preAckInputObservation = finalObservation(spooledEvents, "run-input");
+    const preAckSelectObservation = finalObservation(spooledEvents, "run-select");
+    expect(preAckInputObservation.nodes.some((node) => node.text === INPUT_EQUAL_TEXT)).toBe(true);
+    expect(targetNode(preAckInputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(targetNode(preAckSelectObservation, "combobox", "Country")).toMatchObject({
+      text: "[redacted]",
+      value: "[redacted]",
+    });
 
     await spool.close();
     spool = undefined;
-    const spoolBytes = await readFile(spoolFile);
-    const serializedSecuritySurface = Buffer.concat([
-      Buffer.from(JSON.stringify({ trace, spool: spooledEvents, completions, logs, modelRequests }), "utf8"),
-      spoolBytes,
-    ]).toString("utf8");
-    expect(serializedSecuritySurface).not.toContain(INPUT_VALUE);
-    expect(serializedSecuritySurface).not.toContain(SELECT_VALUE);
+    const spoolText = (await readFile(spoolFile)).toString("utf8");
+    expect(JSON.stringify(logs)).not.toContain(INPUT_VALUE);
+    expect(JSON.stringify(logs)).not.toContain(INPUT_BROWSER_VALUE);
+    expect(JSON.stringify(logs)).not.toContain(SELECT_VALUE);
+    expect(JSON.stringify(logs)).not.toContain(SELECT_TEXT);
+    expect(spoolText).toContain("[redacted]");
+    expect(spoolText).toContain(INPUT_EQUAL_TEXT);
+    expect(spoolText).not.toContain(`\"value\":${JSON.stringify(INPUT_VALUE)}`);
+    expect(spoolText).not.toContain(`\"value\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
+    expect(spoolText).not.toContain(`\"value\":${JSON.stringify(SELECT_VALUE)}`);
+    expect(spoolText).not.toContain(`\"text\":${JSON.stringify(SELECT_TEXT)}`);
+    expect(spoolText).not.toContain(`\"name\":${JSON.stringify(SELECT_TEXT)}`);
   }, 60_000);
 });
 
@@ -277,6 +303,12 @@ function finalObservation(
   const event = trace.filter((candidate) => candidate.runId === runId && candidate.stage === "observation").at(-1);
   if (event?.stage !== "observation") throw new Error(`Missing final observation for ${runId}.`);
   return event.payload;
+}
+
+function targetNode(graph: ObservationGraph, role: string, name: string): ObservationGraph["nodes"][number] {
+  const node = graph.nodes.find((candidate) => candidate.role === role && candidate.name === name);
+  if (node === undefined) throw new Error(`Missing ${role} ${name} node.`);
+  return node;
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {

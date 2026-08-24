@@ -1,6 +1,10 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
+import {
+  SensitiveEvidenceAuthority,
+  type PreparedSensitiveEvidenceRecord,
+} from "./sensitive-evidence-authority.js";
 
 export type WebTargetErrorCode =
   | "BrowserLaunchFailed"
@@ -16,6 +20,7 @@ export type WebTargetErrorCode =
   | "TargetNotVisible"
   | "TargetDisabled"
   | "ActionValueUnavailable"
+  | "SensitiveEvidenceUnavailable"
   | "UnsupportedAction"
   | "ConcurrentSessionOperation"
   | "SessionClosed";
@@ -43,6 +48,7 @@ function completionStatus(code: WebTargetErrorCode): ExecutionTargetErrorStatus 
     case "ActionValueUnavailable":
     case "UnsupportedAction":
       return "blocked";
+    case "SensitiveEvidenceUnavailable":
     case "BrowserLaunchFailed":
     case "NavigationFailed":
     case "NavigationTimedOut":
@@ -57,6 +63,13 @@ function completionStatus(code: WebTargetErrorCode): ExecutionTargetErrorStatus 
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled WebTargetError code: ${String(value)}`);
+}
+
+function sensitiveEvidenceUnavailable(): WebTargetError {
+  return new WebTargetError(
+    "SensitiveEvidenceUnavailable",
+    "Sensitive target evidence could not be proven.",
+  );
 }
 
 export interface WebSessionOptions {
@@ -124,7 +137,9 @@ export class PlaywrightBrowserSession {
   private readonly observations = new Map<string, RegisteredObservation>();
   private readonly observationGenerations = new Map<string, number>();
   private readonly resolvedActionGenerations = new WeakMap<object, number>();
-  private readonly sensitiveValues = new Set<string>();
+  private readonly sensitiveEvidence = new SensitiveEvidenceAuthority();
+  private sensitiveDispatchOrdinal = 0;
+  private sensitiveEvidenceUnavailable = false;
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
 
@@ -333,16 +348,52 @@ export class PlaywrightBrowserSession {
     return observation.artifacts;
   }
 
-  registerSensitiveValue(value: string): void {
-    if (value !== "") this.sensitiveValues.add(value);
+  prepareSensitiveEvidenceRecord(input: {
+    readonly navigationGeneration: number;
+    readonly nodeId: string;
+    readonly sourceValue: string;
+  }): PreparedSensitiveEvidenceRecord {
+    this.assertNavigationGeneration(input.navigationGeneration);
+    const dispatchOrdinal = this.nextSensitiveDispatchOrdinal();
+    const result = this.sensitiveEvidence.prepare({
+      navigationGeneration: input.navigationGeneration,
+      dispatchOrdinal,
+      nodeId: input.nodeId,
+      sourceValue: input.sourceValue,
+    });
+    if (result.status === "failed" || result.value === undefined) {
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
   }
 
-  redactSensitiveText(value: string): string {
-    let redacted = value;
-    for (const sensitive of [...this.sensitiveValues].sort((left, right) => right.length - left.length)) {
-      redacted = redacted.replaceAll(sensitive, "[redacted]");
+  completeSensitiveEvidenceRecord(
+    prepared: PreparedSensitiveEvidenceRecord,
+    observedForms: readonly string[],
+  ): void {
+    this.assertNavigationGeneration(prepared.navigationGeneration);
+    const result = this.sensitiveEvidence.complete(prepared, observedForms);
+    if (result.status === "failed") {
+      this.markSensitiveEvidenceUnavailable();
     }
-    return redacted;
+  }
+
+  markSensitiveEvidenceUnavailable(): void {
+    this.sensitiveEvidenceUnavailable = true;
+  }
+
+  assertSensitiveEvidenceAvailable(): void {
+    if (this.sensitiveEvidenceUnavailable) {
+      throw sensitiveEvidenceUnavailable();
+    }
+  }
+
+  redactSensitiveTargetField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+  ): string {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.redactField(sensitiveTargetIds, value);
   }
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -480,6 +531,11 @@ export class PlaywrightBrowserSession {
     }
   }
 
+  private nextSensitiveDispatchOrdinal(): number {
+    this.sensitiveDispatchOrdinal += 1;
+    return this.sensitiveDispatchOrdinal;
+  }
+
   private assertNavigationGeneration(expectedNavigationGeneration: number): void {
     if (this.navigationGeneration !== expectedNavigationGeneration) {
       throw new WebTargetError(
@@ -587,6 +643,9 @@ export class PlaywrightBrowserSession {
     if (context) {
       await context.close().catch(record);
     }
+    this.sensitiveEvidence.clear();
+    this.sensitiveEvidenceUnavailable = false;
+
     const browser = this.browser;
     this.browser = undefined;
     if (browser) {

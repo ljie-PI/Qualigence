@@ -10,6 +10,7 @@ import {
 } from "./observation-builder.js";
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
+import { SENSITIVE_TARGET_IDS_PROPERTY } from "./sensitive-evidence-authority.js";
 
 export interface PlaywrightObserverHooks {
   readonly afterDomCollection?: () => void | Promise<void>;
@@ -56,7 +57,13 @@ async function readPageValue<T>(
  * Executed inside the page. Collects semantic candidates in DOM order without
  * exposing any selector to the caller. Password field values are never read.
  */
-function collectCandidates(): ObservationCandidate[] {
+interface BrowserObservationCandidate extends ObservationCandidate {
+  readonly sensitiveTargetIds?: readonly string[];
+}
+
+function collectCandidates(
+  sensitiveTargetIdsProperty: string,
+): BrowserObservationCandidate[] {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
       return true;
@@ -158,10 +165,18 @@ function collectCandidates(): ObservationCandidate[] {
     return "";
   }
 
+  function readSensitiveTargetIds(element: Element): readonly string[] {
+    const value = (element as unknown as Element & Record<string, unknown>)[sensitiveTargetIdsProperty];
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      return [];
+    }
+    return value;
+  }
+
   const selector =
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
   const elements = Array.from(document.querySelectorAll(selector));
-  const candidates: ObservationCandidate[] = [];
+  const candidates: BrowserObservationCandidate[] = [];
 
   for (const element of elements) {
     if (!isVisible(element)) {
@@ -170,6 +185,8 @@ function collectCandidates(): ObservationCandidate[] {
     const role = roleOf(element);
     const name = accessibleName(element).trim();
 
+    const sensitiveTargetIds = readSensitiveTargetIds(element);
+    const isSensitiveTarget = sensitiveTargetIds.length > 0;
     const isFormField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement;
@@ -179,6 +196,8 @@ function collectCandidates(): ObservationCandidate[] {
       if (type !== "password" && element.value !== "") {
         value = element.value;
       }
+    } else if (isSensitiveTarget && element instanceof HTMLSelectElement && element.value !== "") {
+      value = element.value;
     }
 
     const interactive =
@@ -194,6 +213,11 @@ function collectCandidates(): ObservationCandidate[] {
       if (content.trim() !== "") {
         text = content;
       }
+    } else if (isSensitiveTarget && element instanceof HTMLSelectElement) {
+      const selectedText = element.selectedOptions.item(0)?.text ?? "";
+      if (selectedText.trim() !== "") {
+        text = selectedText;
+      }
     }
 
     const disabled =
@@ -206,6 +230,7 @@ function collectCandidates(): ObservationCandidate[] {
       ...(text !== undefined ? { text } : {}),
       ...(value !== undefined ? { value } : {}),
       ...(disabled ? { disabled: true } : {}),
+      ...(sensitiveTargetIds.length > 0 ? { sensitiveTargetIds } : {}),
     };
     candidates.push(candidate);
   }
@@ -246,26 +271,44 @@ export class PlaywrightObserver implements Observer {
       const assertCaptureAuthority = (): void => {
         this.session.assertPageTargetOrigin(page, navigationGeneration);
       };
+      this.session.assertSensitiveEvidenceAvailable();
       const captured = await readPageValue(
         assertCaptureAuthority,
-        async () => (await page.evaluate(collectCandidates)) as ObservationCandidate[],
+        async () => (await page.evaluate(
+          collectCandidates,
+          SENSITIVE_TARGET_IDS_PROPERTY,
+        )) as BrowserObservationCandidate[],
       );
       await this.hooks.afterDomCollection?.();
       assertCaptureAuthority();
+      this.session.assertSensitiveEvidenceAvailable();
       const raw = captured.map((candidate) => ({
         role: candidate.role,
-        ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
-        ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
-        ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+        ...(candidate.name === undefined ? {} : {
+          name: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.name,
+          ),
+        }),
+        ...(candidate.text === undefined ? {} : {
+          text: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.text,
+          ),
+        }),
+        ...(candidate.value === undefined ? {} : {
+          value: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.value,
+          ),
+        }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
       }));
-      const url = this.session.redactSensitiveText(
-        this.session.assertPageTargetOrigin(page, navigationGeneration),
-      );
-      const title = this.session.redactSensitiveText(await readPageValue(
+      const url = this.session.assertPageTargetOrigin(page, navigationGeneration);
+      const title = await readPageValue(
         assertCaptureAuthority,
         () => page.title(),
-      ));
+      );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       assertCaptureAuthority();
