@@ -60,6 +60,7 @@ export type {
   DispatchableJob,
   DispatchableMission,
   AcceptedMissionDispatch,
+  BlockedMissionDispatch,
   JobAttemptRecord,
   JobAttemptStatus,
   MissionDispatchAcceptanceReceipt,

@@ -1,9 +1,11 @@
 import type {
   AcceptedMissionDispatch,
+  BlockedMissionDispatch,
   MissionDispatchAcceptanceReceipt,
   PendingMissionDispatch,
   PrdMissionRepository,
 } from "@qualigence/mission";
+import { validateApprovedExecutionPolicy } from "@qualigence/mission";
 import {
   canonicalPayloadHash,
   parseExecutionJob,
@@ -58,6 +60,10 @@ export type MissionDispatchBlockedReason =
 export type MissionDispatchPendingReason =
   | "runner_offline"
   | "runner_unavailable"
+  | "acceptance_persistence_failed"
+  | "block_persistence_failed"
+  | "cancelled"
+  | "deadline_exceeded"
   | "backing_off";
 
 export type MissionDispatchResult =
@@ -76,10 +82,10 @@ export type MissionDispatchResult =
     }
   | {
       readonly outcome: "blocked";
+      readonly dispatch: BlockedMissionDispatch;
       readonly attemptId: string;
       readonly runnerId: string;
       readonly reason: MissionDispatchBlockedReason;
-      readonly retryAfterMs: number;
       readonly details?: Readonly<Record<string, unknown>>;
     };
 
@@ -94,10 +100,14 @@ export interface MissionDispatchCycleResult {
 
 export interface MissionDispatchLoopOptions {
   readonly tenantId: string;
-  readonly repository: Pick<PrdMissionRepository, "pendingDispatches" | "markDispatchAccepted">;
+  readonly repository: Pick<PrdMissionRepository, "pendingDispatches" | "markDispatchAccepted"> & {
+    readonly markDispatchBlocked: NonNullable<PrdMissionRepository["markDispatchBlocked"]>;
+  };
   readonly runners: MissionDispatchRunnerDirectory;
   readonly leases: MissionDispatchLeaseReader;
   readonly clock: Clock;
+  readonly signal?: AbortSignal;
+  readonly deadlineAt?: string;
   readonly batchSize?: number;
   readonly intervalMs?: number;
   readonly initialBackoffMs?: number;
@@ -122,6 +132,8 @@ export class MissionDispatchLoop {
   private readonly runners: MissionDispatchRunnerDirectory;
   private readonly leases: MissionDispatchLeaseReader;
   private readonly clock: Clock;
+  private readonly signal: AbortSignal | undefined;
+  private readonly deadlineAtMs: number | undefined;
   private readonly batchSize: number;
   private readonly intervalMs: number;
   private readonly initialBackoffMs: number;
@@ -139,6 +151,8 @@ export class MissionDispatchLoop {
     this.runners = options.runners;
     this.leases = options.leases;
     this.clock = options.clock;
+    this.signal = options.signal;
+    this.deadlineAtMs = options.deadlineAt === undefined ? undefined : parseDeadline(options.deadlineAt);
     this.batchSize = boundedPositive(options.batchSize ?? DEFAULT_BATCH_SIZE, "batchSize", 256);
     this.intervalMs = boundedPositive(options.intervalMs ?? DEFAULT_INTERVAL_MS, "intervalMs", 60_000);
     this.initialBackoffMs = boundedPositive(options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS, "initialBackoffMs", 60_000);
@@ -169,6 +183,11 @@ export class MissionDispatchLoop {
     const dispatches = await this.repository.pendingDispatches(this.batchSize);
     const results: MissionDispatchResult[] = [];
     for (const dispatch of dispatches) {
+      const stopped = this.preOfferStopped(dispatch);
+      if (stopped !== undefined) {
+        results.push(stopped);
+        continue;
+      }
       results.push(await this.dispatch(dispatch));
     }
     return {
@@ -208,6 +227,11 @@ export class MissionDispatchLoop {
     if (job.jobId !== dispatch.runnerJobId || job.runId !== dispatch.runId) {
       return this.block(dispatch, "lease_identity_mismatch");
     }
+    try {
+      validateApprovedExecutionPolicy(job.policy, job.plan?.budget.maximumWallClockMs ?? 0);
+    } catch (error) {
+      return this.block(dispatch, "policy_invalid", { error: errorMessage(error) });
+    }
 
     const existing = await this.acceptExistingLease(dispatch, job);
     if (existing !== undefined) return existing;
@@ -217,8 +241,10 @@ export class MissionDispatchLoop {
       return this.defer(dispatch, "runner_offline");
     }
 
-    const authorization = this.authorizeConnection(dispatch, job, connection);
+    const authorization = await this.authorizeConnection(dispatch, job, connection);
     if (authorization !== undefined) return authorization;
+    const stopped = this.preOfferStopped(dispatch);
+    if (stopped !== undefined) return stopped;
 
     try {
       const lease = await connection.offer(job, dispatch.requiredCapabilities);
@@ -227,7 +253,7 @@ export class MissionDispatchLoop {
       }
       return this.accept(dispatch, "accepted", lease);
     } catch (error) {
-      const reconciled = await this.acceptExistingLease(dispatch, job);
+      const reconciled = await this.acceptExistingLease(dispatch, job).catch(() => undefined);
       if (reconciled !== undefined) return reconciled;
       const code = errorCode(error);
       if (code === "CapabilityMismatch") {
@@ -266,11 +292,21 @@ export class MissionDispatchLoop {
     return this.accept(dispatch, "already_active");
   }
 
-  private authorizeConnection(
+  private async matchingExistingLease(dispatch: PendingMissionDispatch, job: AcceptedExecutionJob): Promise<boolean> {
+    const lease = await this.leases.lease(dispatch.runId);
+    return lease !== undefined &&
+      lease.lostAt === undefined &&
+      lease.job.jobId === dispatch.runnerJobId &&
+      lease.job.runId === dispatch.runId &&
+      lease.owner.runnerId === dispatch.runnerId &&
+      canonicalPayloadHash(lease.job) === canonicalPayloadHash(job);
+  }
+
+  private async authorizeConnection(
     dispatch: PendingMissionDispatch,
     job: AcceptedExecutionJob,
     connection: MissionDispatchRunnerConnection,
-  ): MissionDispatchResult | undefined {
+  ): Promise<MissionDispatchResult | undefined> {
     const runner = connection.authenticatedRunner;
     if (runner.runnerId !== dispatch.runnerId) {
       return this.block(dispatch, "runner_binding_mismatch", { authenticatedRunnerId: runner.runnerId });
@@ -301,27 +337,69 @@ export class MissionDispatchLoop {
       // Derived from the durable outbox row so crash replay uses the same CAS receipt.
       acceptedAt: dispatch.createdAt,
     };
-    const accepted = await this.repository.markDispatchAccepted(dispatch.attemptId, receipt, dispatch.version);
+    let accepted: AcceptedMissionDispatch;
+    try {
+      accepted = await this.repository.markDispatchAccepted(dispatch.attemptId, receipt, dispatch.version);
+    } catch {
+      return this.acceptancePersistenceFailed(dispatch);
+    }
     this.backoff.delete(dispatch.attemptId);
     return lease === undefined
       ? { outcome: "accepted", dispatch: accepted, receipt: accepted.receipt }
       : { outcome: "accepted", dispatch: accepted, receipt: accepted.receipt, lease };
   }
 
-  private block(
+  private async block(
     dispatch: PendingMissionDispatch,
     reason: MissionDispatchBlockedReason,
     details?: Readonly<Record<string, unknown>>,
-  ): MissionDispatchResult {
-    const retryAfterMs = this.recordBackoff(dispatch.attemptId);
-    return details === undefined
-      ? { outcome: "blocked", attemptId: dispatch.attemptId, runnerId: dispatch.runnerId, reason, retryAfterMs }
-      : { outcome: "blocked", attemptId: dispatch.attemptId, runnerId: dispatch.runnerId, reason, retryAfterMs, details };
+  ): Promise<MissionDispatchResult> {
+    try {
+      const blocked = await this.repository.markDispatchBlocked(dispatch.attemptId, dispatch.version);
+      this.backoff.delete(dispatch.attemptId);
+      return details === undefined
+        ? { outcome: "blocked", dispatch: blocked, attemptId: dispatch.attemptId, runnerId: dispatch.runnerId, reason }
+        : { outcome: "blocked", dispatch: blocked, attemptId: dispatch.attemptId, runnerId: dispatch.runnerId, reason, details };
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === "MissionDispatchVersionConflict" || code === "MissionDispatchReceiptConflict") {
+        const job = await this.safeParseJob(dispatch);
+        if (job !== undefined) {
+          const accepted = await this.acceptExistingLease(dispatch, job).catch(() => undefined);
+          if (accepted !== undefined) return accepted;
+        }
+      }
+      return this.defer(dispatch, "block_persistence_failed");
+    }
   }
 
-  private defer(dispatch: PendingMissionDispatch, reason: Exclude<MissionDispatchPendingReason, "backing_off">): MissionDispatchResult {
+  private preOfferStopped(dispatch: PendingMissionDispatch): MissionDispatchResult | undefined {
+    if (this.signal?.aborted === true) {
+      return pending(dispatch, "cancelled", 0);
+    }
+    if (this.deadlineAtMs !== undefined && this.nowMs() >= this.deadlineAtMs) {
+      const retryAfterMs = this.recordBackoff(dispatch.attemptId);
+      return pending(dispatch, "deadline_exceeded", retryAfterMs);
+    }
+    return undefined;
+  }
+
+  private async safeParseJob(dispatch: PendingMissionDispatch): Promise<AcceptedExecutionJob | undefined> {
+    try {
+      return parseExecutionJob(dispatch.job);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private defer(dispatch: PendingMissionDispatch, reason: Exclude<MissionDispatchPendingReason, "backing_off" | "cancelled">): MissionDispatchResult {
     const retryAfterMs = this.recordBackoff(dispatch.attemptId);
     return pending(dispatch, reason, retryAfterMs);
+  }
+
+  private acceptancePersistenceFailed(dispatch: PendingMissionDispatch): MissionDispatchResult {
+    const retryAfterMs = this.recordBackoff(dispatch.attemptId);
+    return pending(dispatch, "acceptance_persistence_failed", retryAfterMs);
   }
 
   private recordBackoff(attemptId: string): number {
@@ -361,6 +439,18 @@ function errorDetails(error: unknown): Readonly<Record<string, unknown>> | undef
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function parseDeadline(value: string): number {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) {
+    throw new Error("deadlineAt must be a canonical ISO instant");
+  }
+  return milliseconds;
 }
 
 function nonEmpty(value: string, name: string): string {

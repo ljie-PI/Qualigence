@@ -4,6 +4,7 @@ import { canonicalPayloadHash, parseExecutionJob } from "@qualigence/runner-prot
 import type {
   AcceptedMissionDispatch,
   AcceptedMissionExecutionJob,
+  BlockedMissionDispatch,
   CompiledMission,
   DispatchableMission,
   ExecutionJobStatus,
@@ -150,17 +151,37 @@ export class PostgresPrdMissionRepository implements PrdMissionRepository {
     if (current.status !== "pending" || current.version !== expectedVersion) throw new MissionSchedulingError("MissionDispatchVersionConflict", "Mission dispatch version is stale", current.version);
 
     const receiptJson = JSON.stringify(receipt);
-    const updated = await this.db.updateTable("mission_dispatch_outbox").set({ status: "accepted", version: expectedVersion + 1, accepted_at: receipt.acceptedAt, acceptance_receipt_json: receiptJson })
-      .where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending").where("version", "=", expectedVersion).executeTakeFirst();
+    const updated = await this.write(this.db.updateTable("mission_dispatch_outbox").set({ status: "accepted", version: expectedVersion + 1, accepted_at: receipt.acceptedAt, acceptance_receipt_json: receiptJson })
+      .where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending").where("version", "=", expectedVersion).executeTakeFirst());
     if (Number(updated.numUpdatedRows) !== 1) {
       const winner = await this.db.selectFrom("mission_dispatch_outbox").selectAll().where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).executeTakeFirstOrThrow();
       const winnerReplay = acceptedDispatchReplay(winner, receipt, expectedVersion);
       if (winnerReplay !== undefined) return winnerReplay;
       throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission dispatch was accepted with another receipt", winner.version);
     }
-    const attempt = await this.db.updateTable("mission_job_attempts").set({ status: "accepted" }).where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending_dispatch").executeTakeFirst();
+    const attempt = await this.write(this.db.updateTable("mission_job_attempts").set({ status: "accepted" }).where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending_dispatch").executeTakeFirst());
     if (Number(attempt.numUpdatedRows) !== 1) throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission attempt cannot be accepted", expectedVersion + 1);
     return acceptedDispatch({ ...current, status: "accepted", version: expectedVersion + 1, accepted_at: receipt.acceptedAt, acceptance_receipt_json: receiptJson }, receipt);
+  }
+
+  async markDispatchBlocked(attemptId: string, expectedVersion: number): Promise<BlockedMissionDispatch> {
+    const current = await this.db.selectFrom("mission_dispatch_outbox").selectAll().where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).executeTakeFirst();
+    if (current === undefined) throw new MissionSchedulingError("MissionDispatchNotFound", "Mission dispatch was not found");
+    const replay = blockedDispatchReplay(current, expectedVersion);
+    if (replay !== undefined) return replay;
+    if (current.status !== "pending" || current.version !== expectedVersion) throw new MissionSchedulingError("MissionDispatchVersionConflict", "Mission dispatch version is stale", current.version);
+
+    const updated = await this.write(this.db.updateTable("mission_dispatch_outbox").set({ status: "blocked", version: expectedVersion + 1 })
+      .where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending").where("version", "=", expectedVersion).executeTakeFirst());
+    if (Number(updated.numUpdatedRows) !== 1) {
+      const winner = await this.db.selectFrom("mission_dispatch_outbox").selectAll().where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).executeTakeFirstOrThrow();
+      const winnerReplay = blockedDispatchReplay(winner, expectedVersion);
+      if (winnerReplay !== undefined) return winnerReplay;
+      throw new MissionSchedulingError("MissionDispatchVersionConflict", "Mission dispatch version is stale", winner.version);
+    }
+    const attempt = await this.write(this.db.updateTable("mission_job_attempts").set({ status: "blocked" }).where("tenant_id", "=", this.tenantId).where("attempt_id", "=", attemptId).where("status", "=", "pending_dispatch").executeTakeFirst());
+    if (Number(attempt.numUpdatedRows) !== 1) throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission attempt cannot be blocked", expectedVersion + 1);
+    return blockedDispatch({ ...current, status: "blocked", version: expectedVersion + 1 });
   }
 
   private async write<T>(operation: Promise<T>, conflictMissionId?: string): Promise<T> {
@@ -247,6 +268,10 @@ function acceptedDispatch(row: MissionDispatchRow, receipt: MissionDispatchAccep
   return { ...dispatchBase(row), status: "accepted", version: row.version, acceptedAt: row.accepted_at, receipt, createdAt: row.created_at };
 }
 
+function blockedDispatch(row: MissionDispatchRow): BlockedMissionDispatch {
+  return { ...dispatchBase(row), status: "blocked", version: row.version, createdAt: row.created_at };
+}
+
 function dispatchBase(row: MissionDispatchRow) {
   const requiredCapabilities = JSON.parse(row.required_capabilities_json) as unknown;
   if (!Array.isArray(requiredCapabilities) || requiredCapabilities.some((value) => typeof value !== "string" || value.length === 0)) throw new Error("Invalid persisted Mission dispatch capabilities.");
@@ -269,6 +294,12 @@ function acceptedDispatchReplay(row: MissionDispatchRow, receipt: MissionDispatc
   if (row.status !== "accepted") return undefined;
   if (row.version !== expectedVersion + 1 || row.accepted_at !== receipt.acceptedAt || row.acceptance_receipt_json !== JSON.stringify(receipt)) throw new MissionSchedulingError("MissionDispatchReceiptConflict", "Mission dispatch was accepted with another receipt", row.version);
   return acceptedDispatch(row, receipt);
+}
+
+function blockedDispatchReplay(row: MissionDispatchRow, expectedVersion: number): BlockedMissionDispatch | undefined {
+  if (row.status !== "blocked") return undefined;
+  if (row.version !== expectedVersion + 1) throw new MissionSchedulingError("MissionDispatchVersionConflict", "Mission dispatch version is stale", row.version);
+  return blockedDispatch(row);
 }
 
 function boundedDispatchLimit(limit: number): void {

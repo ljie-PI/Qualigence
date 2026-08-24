@@ -401,6 +401,9 @@ describe("Core runner protocol production composition", () => {
           accepted.push({ attemptId, receipt, expectedVersion });
           return { ...pending, status: "accepted" as const, version: expectedVersion + 1, acceptedAt: receipt.acceptedAt, receipt };
         },
+        markDispatchBlocked: async () => {
+          throw new Error("unexpected durable block");
+        },
       },
       runners: {
         connectionFor: ({ tenantId, runnerId }) => {
