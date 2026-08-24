@@ -57,6 +57,7 @@ describe("Graph v1 canonical Web extension acceptance", () => {
 
     expect(() => validateObservationGraphV1(graph, { allowedWebQueryKeys: ["ref"] })).not.toThrow();
     expect(await schemaAcceptsGraph(graph)).toEqual([]);
+    expect(await schemaAcceptsGraph(webGraph({ ...graph.extensions![WEB_EXTENSION_V1_TYPE]!.payload as WebPayload, query: { "": WEB_EXTENSION_V1_REDACTION_MARKER } }))).toContain("graph.extensions.web/v1.payload.query.<name>: too short");
     expect(JSON.stringify(graph)).not.toContain("secret");
     expect(JSON.stringify(graph)).not.toContain("fragment");
 
