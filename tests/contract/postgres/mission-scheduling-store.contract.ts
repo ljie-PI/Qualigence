@@ -104,7 +104,7 @@ describe("PostgreSQL Mission scheduling provider", () => {
         },
         state: (name, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => readState(db, tenantId, name)),
         pendingDispatches: (limit, tenantId = "tenant-a") => provider.withTenant(tenantId, ({ db }) => new PostgresPrdMissionRepository(db, tenantId).pendingDispatches(limit)),
-        markDispatchAccepted: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a").markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion)),
+        markDispatchAccepted: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a", input.failAfterWrite).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion)),
         markDispatchBlocked: (input) => provider.withTenant(input.tenantId ?? "tenant-a", ({ db }) => new PostgresPrdMissionRepository(db, input.tenantId ?? "tenant-a", input.failAfterWrite).markDispatchBlocked(input.attemptId, input.expectedVersion)),
         mutateLogicalJobCapabilities: (name, capabilities, tenantId = "tenant-a") => provider.withTenant(tenantId, async ({ db }) => { await db.updateTable("execution_jobs").set({ required_capabilities_json: JSON.stringify(capabilities) }).where("tenant_id", "=", tenantId).where("job_id", "=", schedulingFixture(name).logicalJobId).execute(); }),
         async overlapAccept(inputs) {

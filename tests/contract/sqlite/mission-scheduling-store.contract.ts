@@ -91,7 +91,7 @@ prdMissionRepositorySchedulingContract("SQLite", {
         return new SqlitePrdMissionStore(await runtime(tenantId)).pendingDispatches(limit);
       },
       async markDispatchAccepted(input) {
-        return new SqlitePrdMissionStore(await runtime(input.tenantId)).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion);
+        return new SqlitePrdMissionStore(await runtime(input.tenantId), input.failAfterWrite).markDispatchAccepted(input.attemptId, input.receipt, input.expectedVersion);
       },
       async markDispatchBlocked(input) {
         return new SqlitePrdMissionStore(await runtime(input.tenantId), input.failAfterWrite).markDispatchBlocked(input.attemptId, input.expectedVersion);

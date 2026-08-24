@@ -52,6 +52,7 @@ export interface MissionSchedulingHarness {
     readonly receipt: MissionDispatchAcceptanceReceipt;
     readonly expectedVersion: number;
     readonly tenantId?: string;
+    readonly failAfterWrite?: number;
   }): Promise<AcceptedMissionDispatch>;
   markDispatchBlocked(input: {
     readonly attemptId: string;
@@ -90,6 +91,7 @@ export interface MissionDispatchAcceptInput {
   readonly receipt: MissionDispatchAcceptanceReceipt;
   readonly expectedVersion: number;
   readonly tenantId?: string;
+  readonly failAfterWrite?: number;
 }
 
 export type MissionDispatchTerminalInput =
@@ -201,6 +203,21 @@ export function prdMissionRepositorySchedulingContract(name: string, adapter: Mi
         await harness.restart();
         await expect(harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt, expectedVersion: pending.version, tenantId })).resolves.toEqual(accepted);
         await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([]);
+      } finally { await harness.close(); }
+    });
+
+    it("rolls back an accepted dispatch when terminal attempt persistence fails", async () => {
+      const harness = await adapter.createHarness();
+      const tenantId = "tenant-accept-rollback";
+      try {
+        await harness.seed("accept-rollback", tenantId);
+        await harness.start({ name: "accept-rollback", tenantId, idempotencyKey: "start-accept-rollback", ids: ids("accept-rollback") });
+        const pending = (await harness.pendingDispatches(1, tenantId))[0]!;
+        const receipt = receiptFor(pending, "accepted");
+
+        await expect(harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt, expectedVersion: pending.version, tenantId, failAfterWrite: 2 })).rejects.toThrow("InjectedFailureAfterWrite:2");
+        await expect(harness.pendingDispatches(1, tenantId)).resolves.toEqual([pending]);
+        await expect(harness.markDispatchAccepted({ attemptId: pending.attemptId, receipt, expectedVersion: pending.version, tenantId })).resolves.toMatchObject({ status: "accepted", version: 2, receipt });
       } finally { await harness.close(); }
     });
 
