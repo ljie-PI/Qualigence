@@ -9,13 +9,11 @@ import { cleanup, render, screen, waitFor, within } from "../../../apps/web-cons
 // @ts-expect-error the root test project does not own the Console's user-event types
 import userEvent from "../../../apps/web-console/node_modules/@testing-library/user-event/dist/esm/index.js";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
-import { ApiClientError } from "../../../apps/web-console/src/api/errors.js";
 // @ts-expect-error the root test project does not compile Console JSX
 import { ConsoleServicesProvider } from "../../../apps/web-console/src/auth/session-context.js";
 import { MemoryTokenStore } from "../../../apps/web-console/src/auth/memory-token-store.js";
 // @ts-expect-error the root test project does not compile Console JSX
 import { router } from "../../../apps/web-console/src/routes/router.js";
-import { queryKeys } from "../../../apps/web-console/src/routes/query-keys.js";
 import { PostgresSkillStore } from "@qualigence/postgres-runtime";
 import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, type ProcedureSkillVersion, type SkillEvaluation, type SignedSkillBundle } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
@@ -36,6 +34,7 @@ describe("rendered Web Console Skill lifecycle acceptance", () => {
   beforeAll(async () => {
     fx = await setupServerFixture();
     await seedVerifiedSkill(fx, "skill-e2e");
+    await seedVerifiedSkill(fx, "skill-e2e-deprecate");
     const tokens = new MemoryTokenStore();
     tokens.set({ subject: "skill-tester", tenantId: "tenant-a", roles: ["tester"], accessToken: fx.token("tenant-a", ["tester"]), expiresAtMs: Date.now() + 3_600_000 });
     client = new PublicApiClient({ baseUrl: fx.baseUrl, accessToken: () => tokens.accessToken() });
@@ -61,9 +60,10 @@ describe("rendered Web Console Skill lifecycle acceptance", () => {
     await user.click(screen.getByRole("button", { name: "Promote (v3)" }));
     expect((await screen.findByRole("alert")).textContent).toContain("VersionConflict");
 
-    queryClient.setQueryData(queryKeys.skill("tenant-a", "skill-e2e"), await client.getSkill("skill-e2e"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Deprecate (v4)" })).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: "Deprecate (v4)" }));
+    await router.navigate({ to: "/skills/$skillId", params: { skillId: "skill-e2e-deprecate" } });
+    expect(await screen.findByRole("heading", { name: "Skill skill-e2e-deprecate" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Deprecate (v3)" })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Deprecate (v3)" }));
     await waitFor(() => expect(screen.getAllByText("deprecated").length).toBeGreaterThan(0));
     expect(screen.getByText("revoked")).toBeTruthy();
   }, 60_000);
