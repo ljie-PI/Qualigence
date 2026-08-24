@@ -163,6 +163,23 @@ describe("canonical observation JSON and hash", () => {
     ).toThrow("ObservationSchemaInvalid");
   });
 
+  it("rejects non-identical entries with equal normalized setSemantics keys", () => {
+    expect(() =>
+      validateObservationGraphV1(
+        graph({
+          extensions: {
+            "custom/v1": {
+              type: "custom/v1",
+              version: "1.0",
+              setSemantics: ["/tags"],
+              payload: { tags: ["é", "e\u0301"] },
+            },
+          },
+        }),
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+  });
+
   it("keeps generic canonical hash array order-sensitive", () => {
     expect(canonicalObservationHash({ values: ["z", "a"] })).not.toBe(
       canonicalObservationHash({ values: ["a", "z"] }),

@@ -403,30 +403,77 @@ function validateSetSemantics(extension: VersionedExtension, where: string): voi
         `${where} entries must be non-root JSON Pointer payload paths.`,
       );
     }
-    if (!extensionSetPathTargetsArray(extension.payload, pointer)) {
+    const setArray = extensionSetArrayAtPath(extension.payload, pointer);
+    if (setArray === undefined) {
       throw observationError(
         "ObservationSchemaInvalid",
         `${where} entry "${pointer}" must resolve to a payload array.`,
       );
     }
+    assertUniqueCanonicalJsonKeys(setArray, `${where} entry "${pointer}"`);
   }
 }
 
-function extensionSetPathTargetsArray(
+function extensionSetArrayAtPath(
   payload: Readonly<Record<string, unknown>>,
   pointer: string,
-): boolean {
+): readonly unknown[] | undefined {
   let current: unknown = payload;
   for (const part of pointer
     .slice(1)
     .split("/")
     .map((item) => item.replaceAll("~1", "/").replaceAll("~0", "~"))) {
     if (current === null || typeof current !== "object" || Array.isArray(current)) {
-      return false;
+      return undefined;
     }
     current = (current as Readonly<Record<string, unknown>>)[part];
   }
-  return Array.isArray(current);
+  return Array.isArray(current) ? current : undefined;
+}
+
+function assertUniqueCanonicalJsonKeys(values: readonly unknown[], where: string): void {
+  const byNormalized = new Map<string, string>();
+  for (const value of values) {
+    const key = canonicalObservationJson(value);
+    const raw = rawCanonicalJson(value);
+    const normalized = key.normalize("NFC");
+    const existing = byNormalized.get(normalized);
+    if (existing !== undefined && existing !== raw) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `${where} has entries with the same canonical key but non-byte-identical JSON.`,
+      );
+    }
+    byNormalized.set(normalized, raw);
+  }
+}
+
+function rawCanonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `Non-finite number is not valid observation JSON: ${String(value)}.`,
+      );
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) return `[${value.map((item) => rawCanonicalJson(item)).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${rawCanonicalJson(record[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  throw observationError(
+    "ObservationSchemaInvalid",
+    `Unsupported value in observation JSON: ${typeof value}.`,
+  );
 }
 
 function assertViewportInteger(value: unknown, where: string, max: number): void {
