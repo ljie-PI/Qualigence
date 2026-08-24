@@ -43,7 +43,9 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const principal = await authenticateOidc(deps, request);
     requireRole(deps, principal, "tester");
     const idempotencyKey = requireIdempotencyKey(request);
-    const expectedVersion = expectedVersionFrom(request.body);
+    const body = bodyObject(request.body);
+    const expectedVersion = expectedVersionFrom(body);
+    if (request.raw.aborted) throw validationFailed("request was aborted before dispatch");
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
@@ -69,10 +71,13 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
     const principal = await authenticateOidc(deps, request);
     requireRole(deps, principal, "tester");
     const idempotencyKey = requireIdempotencyKey(request);
-    const expectedVersion = expectedVersionFrom(request.body);
-    if (typeof request.body.reason !== "string" || request.body.reason.trim().length === 0) {
+    const body = bodyObject(request.body);
+    const expectedVersion = expectedVersionFrom(body);
+    if (typeof body.reason !== "string" || body.reason.trim().length === 0) {
       throw validationFailed("reason is required");
     }
+    const reason = body.reason;
+    if (request.raw.aborted) throw validationFailed("request was aborted before dispatch");
     const dto = await withTenant(deps, principal.tenantId, async (stores) => {
       const repository = skills(deps, stores, principal.tenantId);
       try {
@@ -82,7 +87,7 @@ export function registerSkillRoutes(app: FastifyInstance, deps: ServerDeps): voi
           skillId: request.params.skillId,
           expectedVersion,
           idempotencyKey,
-          reason: request.body.reason as string,
+          reason,
           actor: { actorId: principal.subject, tenantId: principal.tenantId, roles: principal.roles },
           occurredAt: deps.clock.now(),
         });
@@ -106,6 +111,13 @@ function toDto(view: SkillVersionView): SkillVersionDto {
   };
 }
 
+function bodyObject(body: unknown): Partial<PromoteSkillBody & DeprecateSkillBody> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw validationFailed("request body is required");
+  }
+  return body as Partial<PromoteSkillBody & DeprecateSkillBody>;
+}
+
 function expectedVersionFrom(body: Partial<PromoteSkillBody>): number {
   if (typeof body.expectedVersion !== "number" || !Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 1) {
     throw validationFailed("expectedVersion is required");
@@ -122,5 +134,6 @@ function rethrowSkillError(error: unknown, expectedVersion: number): never {
   if (error.code === "SkillVersionConflict" || error.code === "SkillAlreadyDeprecated" || error.code === "SkillStateReversal" || error.code === "SkillNotVerified") {
     throw versionConflict({ expectedVersion, ...error.details }, error.code);
   }
+  if (error.code === "SkillCommandAborted") throw validationFailed("request was aborted before dispatch");
   throw validationFailed(error.code);
 }

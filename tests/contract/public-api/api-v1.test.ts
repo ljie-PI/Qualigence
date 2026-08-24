@@ -404,10 +404,21 @@ describe("Public API v1 contract", () => {
       const invalidBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-invalid-body" }, body: JSON.stringify({ expectedVersion: 0 }) });
       expect(invalidBody.status).toBe(422);
       expect(await invalidBody.json()).toMatchObject({ code: "ValidationFailed" });
+      const nullBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-null-body" }, body: "null" });
+      expect(nullBody.status).toBe(422);
+      expect(await nullBody.json()).toMatchObject({ code: "ValidationFailed" });
+      const missingBody = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, [IDEMPOTENCY_KEY_HEADER]: "api-skill-missing-body" } });
+      expect(missingBody.status).toBe(422);
+      expect(await missingBody.json()).toMatchObject({ code: "ValidationFailed" });
       await fx.provider.withTenant("tenant-a", async ({ db }) => {
         expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-reject-key").execute()).toHaveLength(0);
         expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-invalid-body").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-null-body").execute()).toHaveLength(0);
+        expect(await db.selectFrom("skill_lifecycle_commands").selectAll().where("idempotency_key", "=", "api-skill-missing-body").execute()).toHaveLength(0);
       });
+      const retry = await fetch(url("/v1/skills/api-skill-reject/promote"), { method: "POST", headers: { authorization: `Bearer ${tester}`, "content-type": "application/json", [IDEMPOTENCY_KEY_HEADER]: "api-skill-null-body" }, body: JSON.stringify({ expectedVersion: 3 }) });
+      expect(retry.status).toBe(200);
+      expect(await retry.json()).toMatchObject({ resource: { version: 4, state: "promoted" } });
     });
 
     it("returns one success and one version conflict for concurrent two-writer promotion", async () => {

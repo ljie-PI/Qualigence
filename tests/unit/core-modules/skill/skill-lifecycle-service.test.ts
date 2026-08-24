@@ -41,10 +41,25 @@ describe("SkillLifecycleService", () => {
     expect(signer.verifyCalls).toBe(1);
     expect(repository.commits).toHaveLength(0);
   });
+
+  it("fails before repository mutation when the command is already aborted and retry with same key can succeed", async () => {
+    const repository = new MemorySkillRepository();
+    await repository.seedVerified();
+    const service = new SkillLifecycleService({ repository, signer: new TrustingSkillSigner() });
+    const aborted = AbortSignal.abort();
+    const command = { operation: "promote" as const, skillId: "skill-core", expectedVersion: 3, idempotencyKey: "aborted-command", requiredOracles: REQUIRED_REPLAY_ORACLES, actor: { actorId: "tester", tenantId: "tenant-a", roles: ["tester"] }, occurredAt: "2026-08-01T00:05:00.000Z" };
+
+    await expect(service.promote({ ...command, abortSignal: aborted })).rejects.toMatchObject({ code: "SkillCommandAborted" });
+    expect(repository.replayCalls).toBe(0);
+    expect(repository.commits).toHaveLength(0);
+
+    await expect(service.promote(command)).resolves.toMatchObject({ version: 4, state: "promoted" });
+  });
 });
 
 class MemorySkillRepository implements SkillRepository {
   readonly commits: CommitSkillLifecycleCommandInput[] = [];
+  replayCalls = 0;
   private current: ProcedureSkillVersion | undefined;
   private readonly replay: SkillLifecycleReplayResult;
 
@@ -70,7 +85,7 @@ class MemorySkillRepository implements SkillRepository {
   async bundle(): Promise<SignedSkillBundle | undefined> { return this.current === undefined ? undefined : bundleAt(this.current); }
   async revoke(): Promise<void> {}
   async isRevoked(): Promise<boolean> { return false; }
-  async replayLifecycleCommand(): Promise<SkillLifecycleReplayResult> { return this.replay; }
+  async replayLifecycleCommand(): Promise<SkillLifecycleReplayResult> { this.replayCalls += 1; return this.replay; }
   async commitLifecycleCommand(input: CommitSkillLifecycleCommandInput): Promise<ProcedureSkillVersion> { this.commits.push(input); this.current = input.result; return input.result; }
   async lifecycleAuditEvents(): Promise<readonly []> { return []; }
 }

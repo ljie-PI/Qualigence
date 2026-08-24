@@ -36,6 +36,9 @@ export class SkillLifecycleService {
   }
 
   private async apply(command: SkillLifecycleCommand): Promise<ProcedureSkillVersion> {
+    if (command.abortSignal?.aborted === true) {
+      throw skillError("SkillCommandAborted", "Skill lifecycle command was aborted before dispatch.");
+    }
     const commandHash = skillLifecycleCommandHash(command);
     const replay = await this.repository.replayLifecycleCommand(command.idempotencyKey, commandHash);
     if (replay.status === "replayed") return replay.result;

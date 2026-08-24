@@ -20,6 +20,7 @@ export interface SkillLifecycleCommandBase {
   readonly idempotencyKey: string;
   readonly actor: SkillLifecycleActorContext;
   readonly occurredAt: string;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface PromoteSkillLifecycleCommand extends SkillLifecycleCommandBase {

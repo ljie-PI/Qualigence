@@ -121,6 +121,7 @@ export interface SkillEvaluation {
 export type SkillErrorCode =
   | "SkillVersionConflict"
   | "SkillIdempotencyConflict"
+  | "SkillCommandAborted"
   | "SkillNotFound"
   | "SkillNotDraft"
   | "SkillNotCandidate"
