@@ -235,6 +235,8 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).not.toContain(`\"value\":${JSON.stringify(INPUT_VALUE)}`);
     expect(spoolText).not.toContain(`\"value\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
     expect(spoolText).not.toContain(`\"value\":${JSON.stringify(SELECT_VALUE)}`);
+    expect(spoolText).not.toContain(`\"text\":${JSON.stringify(SELECT_TEXT)}`);
+    expect(spoolText).not.toContain(`\"name\":${JSON.stringify(SELECT_TEXT)}`);
   }, 60_000);
 });
 

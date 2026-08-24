@@ -882,6 +882,8 @@ describe("PlaywrightActionExecutor value resolution", () => {
       valueRef: "customer.email",
     }), permit);
     expect(failure).toEqual({ status: "failed", errorCode: "ActionOutcomeUnknown" });
+    expect(() => session.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
     expect(JSON.stringify(failure, Object.getOwnPropertyNames(failure))).not.toContain("plaintext-secret");
   });
 

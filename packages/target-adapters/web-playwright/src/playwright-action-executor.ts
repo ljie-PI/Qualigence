@@ -301,8 +301,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
             this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
-            await locator.fill(value, { timeout: this.session.actionTimeoutMs });
-            await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+            try {
+              await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+              await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+            } catch (error) {
+              this.session.markSensitiveEvidenceUnavailable();
+              throw error;
+            }
           } else {
             const dispatchGenerationFailure = navigationGenerationFailure(
               page,
@@ -312,8 +317,13 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
             this.session.invalidateObservations();
             permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
-            await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
-            await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+            try {
+              await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+              await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+            } catch (error) {
+              this.session.markSensitiveEvidenceUnavailable();
+              throw error;
+            }
           }
         } else if (action.kind === "click") {
           const guardFailure = this.guardElementAction(

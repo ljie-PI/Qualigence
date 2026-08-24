@@ -386,6 +386,8 @@ describe("PlaywrightBrowserSession", () => {
     )).toBe("[redacted]");
     expect(session.redactSensitiveTargetField(undefined, "line-one\nline-two\n"))
       .toBe("line-one\nline-two\n");
+    expect(session.redactSensitiveTargetField([prepared.markerId], "Enter line-one\nline-two\n now"))
+      .toBe("[redacted]");
     expect(session.redactSensitiveTargetField([prepared.markerId], "Email"))
       .toBe("Email");
   });

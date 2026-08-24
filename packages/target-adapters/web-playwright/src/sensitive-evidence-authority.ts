@@ -106,7 +106,7 @@ export class SensitiveEvidenceAuthority {
     }
     for (const markerId of sensitiveTargetIds) {
       const record = this.records.get(markerId);
-      if (record !== undefined && record.forms.has(value)) {
+      if (record !== undefined && carriesSensitiveForm(value, record.forms)) {
         return REDACTED_SENSITIVE_TEXT;
       }
     }
@@ -120,4 +120,12 @@ export class SensitiveEvidenceAuthority {
 
 function isAllowedForm(value: string): boolean {
   return encoder.encode(value).byteLength <= MAX_FORM_BYTES;
+}
+
+function carriesSensitiveForm(value: string, forms: ReadonlySet<string>): boolean {
+  if (forms.has(value)) return true;
+  for (const form of forms) {
+    if (form !== "" && value.includes(form)) return true;
+  }
+  return false;
 }
