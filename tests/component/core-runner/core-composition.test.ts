@@ -4,12 +4,14 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { PendingMissionDispatch } from "@qualigence/mission";
 import { canonicalTraceEventHash } from "@qualigence/runner-protocol";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type { ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
 import * as coreDaemon from "@qualigence/core-daemon";
 import { startCoreDaemon } from "@qualigence/core-daemon";
 import { SqliteRunnerControlStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
+import { MissionDispatchLoop } from "../../../apps/server/src/mission-dispatch-loop.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient } from "../../helpers/grpc-harness.js";
@@ -334,6 +336,98 @@ describe("Core runner protocol production composition", () => {
     await expect(session.renew({ ...renewed, leaseToken: "wrong" })).rejects.toMatchObject({
       code: "LeaseLost",
     });
+  });
+
+  it("dispatches a Mission outbox row through the bound authenticated Runner only", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "qualigence-bound-dispatch-"));
+    const daemon = await startCoreDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      dataDir,
+      leaseDurationMs: 30_000,
+      tls: { ca: pki.ca, cert: pki.server.cert, key: pki.server.key },
+    });
+    const client = makeTestClient(pki, daemon.port, pki.clientFor("runner-1"));
+    cleanups.push(async () => {
+      await client.close();
+      await daemon.shutdown();
+      await rm(dataDir, { recursive: true, force: true });
+    });
+    const session = await client.connect(makeHello("runner-1"));
+    const boundConnection = await daemon.server.waitForConnection("runner-1");
+    const runnerJob: PendingMissionDispatch["job"] = {
+      jobId: "runner-job-bound",
+      runId: "run-bound",
+      projectId: "project-test",
+      target: { kind: "web", url: "https://shop.example.test/cart" },
+      objective: "add the item to the cart",
+      policy: {
+        policyId: "policy-test",
+        environment: "isolated_test",
+        allowedOrigins: ["https://shop.example.test"],
+        allowedActionKinds: ["click"],
+        maximumRisk: "Normal",
+        explorationAllowed: false,
+        issuedAt: "2026-08-18T00:00:00.000Z",
+        expiresAt: "2026-08-18T00:01:00.000Z",
+      },
+      plan: {
+        missionId: "mission-bound",
+        missionRevision: 1,
+        testCaseId: "case-bound",
+        steps: [{ kind: "click", target: { role: "button", name: "Add to cart", purpose: "add item" } }],
+        expectedClaimIds: ["claim-bound"],
+        budget: { maximumStepsPerJob: 1, maximumWallClockMs: 60_000, maximumModelTokens: 1_000 },
+      },
+    };
+    const pending: PendingMissionDispatch = {
+      attemptId: "attempt-bound",
+      missionId: "mission-bound",
+      runnerId: "runner-1",
+      runnerJobId: runnerJob.jobId,
+      runId: runnerJob.runId,
+      requiredCapabilities: [WEB_TARGET_TOKEN],
+      job: runnerJob,
+      status: "pending" as const,
+      version: 1,
+      createdAt: "2026-08-24T00:00:00.000Z",
+    };
+    const accepted: unknown[] = [];
+    const loop = new MissionDispatchLoop({
+      tenantId: "tenant-1",
+      repository: {
+        pendingDispatches: async () => [pending],
+        markDispatchAccepted: async (attemptId, receipt, expectedVersion) => {
+          accepted.push({ attemptId, receipt, expectedVersion });
+          return { ...pending, status: "accepted" as const, version: expectedVersion + 1, acceptedAt: receipt.acceptedAt, receipt };
+        },
+      },
+      runners: {
+        connectionFor: ({ tenantId, runnerId }) => {
+          expect(tenantId).toBe("tenant-1");
+          expect(runnerId).toBe("runner-1");
+          return {
+            authenticatedRunner: {
+              runnerId: boundConnection.authenticatedRunner.runnerId,
+              scope: { kind: "tenant" as const, tenantId: "tenant-1", projectIds: ["project-test"] },
+              capabilities: boundConnection.authenticatedRunner.capabilities,
+            },
+            offer: (job, requirements) => boundConnection.offer(job, requirements),
+          };
+        },
+      },
+      leases: { lease: async () => undefined },
+      clock: { now: () => "2026-08-24T00:00:01.000Z" },
+    });
+
+    const running = loop.runOnce();
+    const offer = await session.nextOffer(new AbortController().signal);
+    expect(offer.job).toEqual(runnerJob);
+    const lease = await session.accept(offer.offerId);
+    await expect(running).resolves.toMatchObject({ accepted: 1, pending: 0, blocked: 0 });
+    expect(accepted).toEqual([{ attemptId: "attempt-bound", expectedVersion: 1, receipt: { status: "accepted", jobId: runnerJob.jobId, runId: runnerJob.runId, acceptedAt: pending.createdAt } }]);
+    await expect(daemon.application.ownership.ownerOf(runnerJob.runId)).resolves.toEqual({ runnerId: "runner-1", sessionId: session.welcome.sessionId });
+    expect(lease.runId).toBe(runnerJob.runId);
   });
 
   it("isolates a same-sequence different-hash session and closes database then port", async () => {

@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Atomically schedule Mission, Run, and dispatch outbox.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -88,3 +88,7 @@ The cases must exercise the exact bound Runner, an offline bound Runner, and a c
 - The affected context documents listed above, especially Core-only lifecycle authority, bound leases, durable ownership, and readiness invariants.
 - `packages/core-modules/runner-control/src/runner-control-store.ts` and `packages/core-modules/runner-control/src/runner-protocol-application.ts`.
 - `packages/core-application/src/runner/execution-job-service.ts` and the unchanged shared contracts under `tests/contract/runner-control/**`.
+
+## Comments
+
+- start: base SHA `6f930940b490b11dc0345f6393f811e272c06a21`; behavior matrix applies in full because dispatch is stateful, side-effecting, retry-sensitive, and lease/receipt terminal-state sensitive; planned Gates: `corepack pnpm vitest run tests/contract/runner-control tests/unit/core-daemon tests/component/core-runner`, `corepack pnpm typecheck`, `git diff --check`.

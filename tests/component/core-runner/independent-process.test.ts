@@ -70,7 +70,10 @@ describe("core/runner independent-process integration", () => {
     const spool = await openMemorySpool();
     spools.push(spool);
     const executor = new LeasedJobExecutor(
-      deterministicRunnerDependencies(spool, { monotonic: 1_000, wall: 100_000 }),
+      deterministicRunnerDependencies(spool, { monotonic: 1_000, wall: 100_000 }, {
+        objectiveOnlyMaximumWallClockMs: 60_000,
+        objectiveOnlyMaximumModelTokens: 1_000,
+      }),
     );
 
     const offer = await session.nextOffer(new AbortController().signal);
