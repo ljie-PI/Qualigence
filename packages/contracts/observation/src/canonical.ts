@@ -105,10 +105,19 @@ function sortExtensionSetAtPath(
 ): Readonly<Record<string, ObservationJsonValue>> {
   const path = parseJsonPointer(pointer);
   if (path.length === 0) {
-    return payload;
+    throw observationError(
+      "ObservationSchemaInvalid",
+      `Extension setSemantics path "${pointer}" must be a non-root JSON Pointer.`,
+    );
   }
   const sorted = sortAtPath(payload, path);
-  return sorted === undefined ? payload : sorted as Readonly<Record<string, ObservationJsonValue>>;
+  if (sorted === undefined || sorted === null || typeof sorted !== "object" || Array.isArray(sorted)) {
+    throw observationError(
+      "ObservationSchemaInvalid",
+      `Extension setSemantics path "${pointer}" must resolve to a payload array.`,
+    );
+  }
+  return sorted as Readonly<Record<string, ObservationJsonValue>>;
 }
 
 function sortAtPath(

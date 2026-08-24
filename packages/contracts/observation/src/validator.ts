@@ -35,6 +35,9 @@ const SENSITIVITIES: ReadonlySet<string> = new Set([
   "secret",
 ]);
 
+const WEB_ORIGIN_PATTERN = /^(?:http:\/\/(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::[0-9]+)?|https:\/\/(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::[0-9]+)?)$/;
+const WEB_PATHNAME_PATTERN = /^(?!\/\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*%2[eE])\/[^?#]*$/;
+
 /**
  * An evidence resolver used to confirm every `evidenceRefs` entry points at a
  * registered, hash-valid Artifact. When omitted, evidence refs are only checked
@@ -274,8 +277,8 @@ function validateExtensions(
     assertNoUnknownFields(extension, ["type", "version", "setSemantics", "payload"], "extension");
     assertNonEmptyString(extension.type, `extension ${key} type`);
     assertNonEmptyString(extension.version, `extension ${key} version`);
-    validateSetSemantics(extension.setSemantics, `extension ${key} setSemantics`);
     assertObject(extension.payload, `extension ${key} payload`);
+    validateSetSemantics(extension, `extension ${key} setSemantics`);
     if (key === WEB_EXTENSION_V1_TYPE) {
       if (!allowGraphExtensions) {
         throw observationError(
@@ -349,7 +352,8 @@ function assertWebOrigin(value: unknown): void {
     parsed.pathname !== "/" ||
     parsed.search !== "" ||
     parsed.hash !== "" ||
-    parsed.origin !== origin
+    parsed.origin !== origin ||
+    !WEB_ORIGIN_PATTERN.test(origin)
   ) {
     throw observationError("ObservationSchemaInvalid", "web/v1 origin must be a canonical URL origin.");
   }
@@ -370,7 +374,8 @@ function assertPathname(value: unknown): void {
     !pathname.startsWith("/") ||
     pathname.includes("?") ||
     pathname.includes("#") ||
-    pathname !== canonical
+    pathname !== canonical ||
+    !WEB_PATHNAME_PATTERN.test(pathname)
   ) {
     throw observationError(
       "ObservationSchemaInvalid",
@@ -379,19 +384,42 @@ function assertPathname(value: unknown): void {
   }
 }
 
-function validateSetSemantics(value: unknown, where: string): void {
-  if (value === undefined) {
+function validateSetSemantics(extension: VersionedExtension, where: string): void {
+  if (extension.setSemantics === undefined) {
     return;
   }
-  assertArray(value, where);
-  for (const pointer of value as readonly unknown[]) {
+  assertArray(extension.setSemantics, where);
+  for (const pointer of extension.setSemantics as readonly unknown[]) {
     if (typeof pointer !== "string" || !pointer.startsWith("/") || pointer.length === 1) {
       throw observationError(
         "ObservationSchemaInvalid",
         `${where} entries must be non-root JSON Pointer payload paths.`,
       );
     }
+    if (!extensionSetPathTargetsArray(extension.payload, pointer)) {
+      throw observationError(
+        "ObservationSchemaInvalid",
+        `${where} entry "${pointer}" must resolve to a payload array.`,
+      );
+    }
   }
+}
+
+function extensionSetPathTargetsArray(
+  payload: Readonly<Record<string, unknown>>,
+  pointer: string,
+): boolean {
+  let current: unknown = payload;
+  for (const part of pointer
+    .slice(1)
+    .split("/")
+    .map((item) => item.replaceAll("~1", "/").replaceAll("~0", "~"))) {
+    if (current === null || typeof current !== "object" || Array.isArray(current)) {
+      return false;
+    }
+    current = (current as Readonly<Record<string, unknown>>)[part];
+  }
+  return Array.isArray(current);
 }
 
 function assertViewportInteger(value: unknown, where: string, max: number): void {

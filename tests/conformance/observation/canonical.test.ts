@@ -146,6 +146,23 @@ describe("canonical observation JSON and hash", () => {
     expect(observationGraphHash(ordered)).not.toBe(observationGraphHash(reorderedBusiness));
   });
 
+  it("rejects setSemantics paths that do not resolve to payload arrays", () => {
+    expect(() =>
+      validateObservationGraphV1(
+        graph({
+          extensions: {
+            "custom/v1": {
+              type: "custom/v1",
+              version: "1.0",
+              setSemantics: ["/title"],
+              payload: { title: "not-array" },
+            },
+          },
+        }),
+      ),
+    ).toThrow("ObservationSchemaInvalid");
+  });
+
   it("keeps generic canonical hash array order-sensitive", () => {
     expect(canonicalObservationHash({ values: ["z", "a"] })).not.toBe(
       canonicalObservationHash({ values: ["a", "z"] }),

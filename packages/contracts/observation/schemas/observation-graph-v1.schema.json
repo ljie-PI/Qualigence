@@ -141,8 +141,8 @@
           "additionalProperties": false,
           "required": ["origin", "pathname", "title", "viewport", "query"],
           "properties": {
-            "origin": { "type": "string", "pattern": "^https?://(?![^/?#]*@)(?![^/?#]*:(?:80|443)$)[a-z0-9.-]+(?::[0-9]+)?$" },
-            "pathname": { "type": "string", "pattern": "^/(?!.*(?:^|/)\\.\\.?(?:/|$))[^?#]*$" },
+            "origin": { "type": "string", "pattern": "^(?:http://(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::[0-9]+)?|https://(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::[0-9]+)?)$" },
+            "pathname": { "type": "string", "pattern": "^(?!//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*%2[eE])/[^?#]*$" },
             "title": { "type": "string" },
             "viewport": {
               "type": "object",
