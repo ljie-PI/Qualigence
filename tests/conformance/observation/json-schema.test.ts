@@ -69,6 +69,30 @@ describe("Observation Graph v1 JSON Schema artifact", () => {
     const raw = await readFile(schemaPath, "utf8");
     expect(raw).toContain("candidate");
     expect(raw).not.toContain("frozen\"");
+    expect(raw).toContain("serialized migration, Web/Desktop schema, native Windows, manual, and release evidence");
+  });
+
+  it("keeps web/v1 schema constraints aligned with the validator", async () => {
+    const schema = JSON.parse(await readFile(schemaPath, "utf8")) as {
+      $defs: {
+        node: { properties: { extensions: { properties: Record<string, false> } } };
+        extension: { not: { properties: { type: { const: string } } } };
+        webExtensionV1: { properties: { payload: { properties: Record<string, { pattern?: string }> } } };
+      };
+    };
+    expect(schema.$defs.node.properties.extensions.properties["web/v1"]).toBe(false);
+    expect(schema.$defs.extension.not.properties.type.const).toBe("web/v1");
+    const originPattern = new RegExp(schema.$defs.webExtensionV1.properties.payload.properties.origin?.pattern ?? "");
+    const pathnamePattern = new RegExp(schema.$defs.webExtensionV1.properties.payload.properties.pathname?.pattern ?? "");
+    expect(originPattern.test("https://example.test:444")).toBe(true);
+    expect(originPattern.test("https://user@example.test")).toBe(false);
+    expect(originPattern.test("https://example.test:443")).toBe(false);
+    expect(originPattern.test("https://example.test:99999")).toBe(false);
+    expect(pathnamePattern.test("/checkout/%7Euser")).toBe(true);
+    expect(pathnamePattern.test("//example.test/checkout")).toBe(false);
+    expect(pathnamePattern.test("/a/../checkout")).toBe(false);
+    expect(pathnamePattern.test("/has space")).toBe(false);
+    expect(pathnamePattern.test("/café")).toBe(false);
   });
 
   it("matches a valid v1 payload structurally", () => {

@@ -23,6 +23,9 @@ export type {
   ObservationBounds,
   ObservationSensitivity,
   VersionedExtension,
+  WebViewportV1,
+  WebExtensionV1Payload,
+  WebExtensionV1,
   ObservationNodeV1,
   ObservationGraphV1,
   PreV1AssetMetadata,
@@ -33,11 +36,15 @@ export type {
 export {
   OBSERVATION_GRAPH_V1_VERSION,
   OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  WEB_EXTENSION_V1_REDACTION_MARKER,
   ObservationError,
   observationError,
   parseExtensionKey,
   requireExtensionMajor,
+  requireGraphExtensionMajor,
   findExtensionMajor,
+  findGraphExtensionMajor,
 } from "@qualigence/observation-contracts";
 
 /**

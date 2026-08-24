@@ -2,10 +2,11 @@
  * Observation Graph v1 — the candidate cross-platform observation contract.
  *
  * This is a CANDIDATE contract. It is intentionally never marked `frozen` in
- * this package: the freeze transition only happens after LS-13 delivers the
- * Windows/UIA conformance evidence (see the M3 freeze gate). The types here are
- * the single source of truth for the Graph; `@qualigence/runner-protocol`
- * re-exports them for a compatibility cycle rather than declaring a second copy.
+ * this package: the freeze transition only happens after serialized migration,
+ * Web/Desktop schema, native Windows, manual, and release evidence all validate.
+ * The types here are the single source of truth for the Graph;
+ * `@qualigence/runner-protocol` re-exports them for a compatibility cycle rather
+ * than declaring a second copy.
  */
 
 /** A JSON value restricted to the deterministic, canonicalisable subset. */
@@ -89,7 +90,29 @@ export type ObservationSensitivity =
 export interface VersionedExtension {
   readonly type: string;
   readonly version: string;
+  /** JSON Pointer paths under `payload` whose arrays are semantic sets. */
+  readonly setSemantics?: readonly string[];
   readonly payload: Readonly<Record<string, ObservationJsonValue>>;
+}
+
+export interface WebViewportV1 extends Readonly<Record<string, ObservationJsonValue>> {
+  readonly width: number;
+  readonly height: number;
+  readonly devicePixelRatio: number;
+}
+
+export interface WebExtensionV1Payload extends Readonly<Record<string, ObservationJsonValue>> {
+  readonly origin: string;
+  readonly pathname: string;
+  readonly title: string;
+  readonly viewport: WebViewportV1;
+  readonly query: Readonly<Record<string, "[redacted]">>;
+}
+
+export interface WebExtensionV1 extends VersionedExtension {
+  readonly type: "web/v1";
+  readonly version: string;
+  readonly payload: WebExtensionV1Payload;
 }
 
 /** A single observed node in a v1 Graph. */
@@ -117,6 +140,7 @@ export interface ObservationGraphV1 {
   readonly rootNodeIds: readonly string[];
   readonly nodes: readonly ObservationNodeV1[];
   readonly evidenceRefs: readonly string[];
+  readonly extensions?: Readonly<Record<string, VersionedExtension>>;
 }
 
 /**
@@ -158,4 +182,5 @@ export const CANONICAL_GRAPH_FIELDS: readonly string[] = [
   "rootNodeIds",
   "nodes",
   "evidenceRefs",
+  "extensions",
 ];

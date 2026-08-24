@@ -26,6 +26,12 @@ export interface RunnerCapabilities {
 }
 
 export const DEFAULT_MAXIMUM_ARTIFACT_BYTES = 8 * 1024 * 1024;
+export const OBSERVATION_GRAPH_V1_CAPABILITY = "observation-graph/v1" as const;
+export const WEB_OBSERVATION_EXTENSION_V1_CAPABILITY = "web/v1" as const;
+export const OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN =
+  `observation:${OBSERVATION_GRAPH_V1_CAPABILITY}` as const;
+export const WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN =
+  `observation:${WEB_OBSERVATION_EXTENSION_V1_CAPABILITY}` as const;
 
 export interface RunnerCapabilitiesOverride {
   readonly operatingSystem?: RunnerOperatingSystem;

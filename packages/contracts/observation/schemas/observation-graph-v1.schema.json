@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://qualigence.dev/schemas/observation-graph-v1.schema.json",
   "title": "Observation Graph v1 (candidate)",
-  "description": "Candidate cross-platform Observation Graph contract. Status: candidate — NOT frozen until LS-13 Web/UIA conformance passes.",
+  "description": "Candidate cross-platform Observation Graph contract. Status: candidate; not frozen until serialized migration, Web/Desktop schema, native Windows, manual, and release evidence all validate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "graphId", "target", "capturedAt", "rootNodeIds", "nodes", "evidenceRefs"],
@@ -38,6 +38,14 @@
     "evidenceRefs": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*/v[0-9]+$" },
+      "additionalProperties": { "$ref": "#/$defs/extension" },
+      "properties": {
+        "web/v1": { "$ref": "#/$defs/webExtensionV1" }
+      }
     }
   },
   "$defs": {
@@ -83,6 +91,9 @@
         "extensions": {
           "type": "object",
           "propertyNames": { "pattern": "^[a-z][a-z0-9-]*/v[0-9]+$" },
+          "properties": {
+            "web/v1": false
+          },
           "additionalProperties": { "$ref": "#/$defs/extension" }
         },
         "evidenceRefs": {
@@ -107,7 +118,50 @@
       "properties": {
         "type": { "type": "string", "minLength": 1 },
         "version": { "type": "string", "minLength": 1 },
+        "setSemantics": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/.+" }
+        },
         "payload": { "type": "object" }
+      },
+      "not": { "properties": { "type": { "const": "web/v1" } }, "required": ["type"] }
+    },
+    "webExtensionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version", "payload"],
+      "properties": {
+        "type": { "const": "web/v1" },
+        "version": { "type": "string", "minLength": 1 },
+        "setSemantics": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/.+" }
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "pathname", "title", "viewport", "query"],
+          "properties": {
+            "origin": { "type": "string", "pattern": "^(?:http://(?![^/?#]*@)(?![^/?#]*:80$)[a-z0-9.-]+(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|https://(?![^/?#]*@)(?![^/?#]*:443$)[a-z0-9.-]+(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?)$" },
+            "pathname": { "type": "string", "pattern": "^(?!//)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*%2[eE])/(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*$" },
+            "title": { "type": "string" },
+            "viewport": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["width", "height", "devicePixelRatio"],
+              "properties": {
+                "width": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "height": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "devicePixelRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 16 }
+              }
+            },
+            "query": {
+              "type": "object",
+              "propertyNames": { "type": "string", "minLength": 1 },
+              "additionalProperties": { "const": "[redacted]" }
+            }
+          }
+        }
       }
     }
   }
