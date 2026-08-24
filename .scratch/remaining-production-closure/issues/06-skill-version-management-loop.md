@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Deliver versioned Target and Test Plan product paths.
 
-**Status:** claimed
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -122,8 +122,12 @@ The rendered workflow must prove version read, promotion conflict, and deprecati
 ## Comments
 
 - start: Claimed on branch `closure-06-skill-lifecycle` at base SHA `6f930940b490b11dc0345f6393f811e272c06a21`. Behavior matrix applicable: stateful Skill lifecycle mutations with idempotency, expected-version concurrency, audit, replay, rollback, and Public API/Console reads. Planned Gates: `corepack pnpm vitest run tests/unit/core-modules/skill tests/contract/sqlite/skill-store.test.ts tests/contract/postgres/skill-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`; `corepack pnpm typecheck`; `git diff --check`.
-- final: Reviewed code/test head `1d345c430449cb8016f97e2c358c229e233de876` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/unit/core-modules/skill tests/contract/sqlite/skill-store.test.ts tests/contract/postgres/skill-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`. Clean storage conformance: `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts`. Clean post-review acceptance: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/e2e/web-console/skill-lifecycle.test.ts`. `corepack pnpm typecheck` and `git diff --check` passed.
+- final: Reviewed code/test head `1d345c430449cb8016f97e2c358c229e233de876` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/unit/core-modules/skill tests/contract/sqlite/skill-store.test.ts tests/contract/postgres/skill-store.test.ts tests/contract/public-api/api-v1.test.ts tests/component/web-console/workflow.test.ts`. Clean storage conformance: `corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts`. Clean post-review acceptance: `OPENSSL_CONF='C:\Program Files\Git\usr\ssl\openssl.cnf' corepack pnpm vitest run tests/e2e/web-console/skill-lifecycle.test.ts`. `corepack pnpm typecheck` and `git diff --check` passed. PR `https://github.com/ljie-PI/Qualigence/pull/91` merged as `0334508d245981fb84f36e36368f9bbd08928062`.
 
 ## Answer
 
 Implemented Skill lifecycle version inspection, promotion, and deprecation through core Skill application service, Public API, Console, SQLite/PostgreSQL parity, migration `010-skill-lifecycle-commands`, durable idempotency/audit, command replay/conflict handling, signature/evaluation checks, rollback evidence, rendered Console acceptance, and storage conformance.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/91`
+
+Merge commit: `0334508d245981fb84f36e36368f9bbd08928062`
