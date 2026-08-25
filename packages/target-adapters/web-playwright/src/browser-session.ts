@@ -104,6 +104,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       schedulerRegistrations?: number;
       inSchedulerCallback?: boolean;
       poisoned?: boolean;
+      processSchedulerCallback?: () => void;
     };
     type SensitiveRuntimeState = {
       active?: SensitiveSchedulerEpoch | null;
@@ -134,15 +135,20 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     });
     Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
       const root = registry.originalAttachShadow.call(this, init);
+      const state = sensitiveState();
+      const active = state?.active;
+      if (init.mode === "closed" && state !== undefined && active !== undefined && active !== null) {
+        poison(state, active);
+      }
       if (!registry.roots.includes(root)) {
-        registry.roots.push(root);
-        if (registry.roots.length > input.maxShadowRoots) {
+        if (registry.roots.length >= input.maxShadowRoots) {
           registry.shadowRootOverflow = true;
-          const state = sensitiveState();
-          if (state !== undefined && state.active !== undefined && state.active !== null) {
-            poison(state, state.active);
+          if (state !== undefined && active !== undefined && active !== null) {
+            poison(state, active);
           }
+          return root;
         }
+        registry.roots.push(root);
       }
       return root;
     };
@@ -246,11 +252,25 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         try {
           return callback.apply(this, args);
         } finally {
+          processSchedulerCallbackEpoch(epoch);
           registry.originalQueueMicrotask.call(window, () => {
-            epoch.inSchedulerCallback = previous;
+            try {
+              processSchedulerCallbackEpoch(epoch);
+            } finally {
+              epoch.inSchedulerCallback = previous;
+            }
           });
         }
       } as T;
+    }
+
+    function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
+      try {
+        epoch.processSchedulerCallback?.();
+      } catch {
+        const state = sensitiveState();
+        if (state !== undefined) poison(state, epoch);
+      }
     }
 
     function poison(state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {

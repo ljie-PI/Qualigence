@@ -136,12 +136,20 @@ function retirePageSensitiveEvidence(stateProperty: string): boolean {
   const state = (window as unknown as Record<string, unknown>)[stateProperty] as {
     active?: unknown;
     poisoned?: boolean;
-    records?: unknown[];
+    records?: { readonly observer?: { disconnect(): void }; readonly schedulerRegistrations?: number }[];
   } | undefined;
   if (state === undefined) return false;
   if (state.active !== undefined && state.active !== null) return true;
   if (state.poisoned === true) return true;
-  state.records = [];
+  const retainedSchedulerRecords = [];
+  for (const record of state.records ?? []) {
+    if ((record.schedulerRegistrations ?? 0) > 0) {
+      retainedSchedulerRecords.push(record);
+      continue;
+    }
+    record.observer?.disconnect();
+  }
+  state.records = retainedSchedulerRecords;
   return false;
 }
 
@@ -403,33 +411,43 @@ function collectPageObservation(
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly shadowRootOverflow?: unknown;
     } | undefined;
-    return registry?.shadowRootOverflow === true || shadowRoots().length > input.maxShadowRoots;
+    if (registry?.shadowRootOverflow === true) return true;
+    shadowRoots();
+    return registry?.shadowRootOverflow === true;
   }
 
   function shadowRoots(): ShadowRoot[] {
     const roots = new Set<ShadowRoot>();
     const pending: ShadowRoot[] = [];
-    const addRoot = (root: ShadowRoot): void => {
-      if (roots.has(root)) return;
-      roots.add(root);
-      pending.push(root);
-    };
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly roots?: readonly unknown[];
+      shadowRootOverflow?: boolean;
     } | undefined;
+    const noteOverflow = (): void => {
+      if (registry !== undefined) registry.shadowRootOverflow = true;
+    };
+    const addRoot = (root: ShadowRoot): boolean => {
+      if (roots.has(root)) return true;
+      if (pending.length >= input.maxShadowRoots) {
+        noteOverflow();
+        return false;
+      }
+      roots.add(root);
+      pending.push(root);
+      return true;
+    };
     for (const root of registry?.roots ?? []) {
-      if (root instanceof ShadowRoot) addRoot(root);
+      if (root instanceof ShadowRoot && !addRoot(root)) return pending;
     }
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const shadowRoot = element.shadowRoot;
-      if (shadowRoot !== null) addRoot(shadowRoot);
+      if (shadowRoot !== null && !addRoot(shadowRoot)) return pending;
     }
     for (let index = 0; index < pending.length; index += 1) {
       const root = pending[index]!;
-      if (pending.length > input.maxShadowRoots) break;
       for (const element of Array.from(root.querySelectorAll("*"))) {
         const nestedShadowRoot = element.shadowRoot;
-        if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
+        if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
       }
     }
     return pending;

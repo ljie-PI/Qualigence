@@ -639,6 +639,7 @@ async function beginPageSensitiveActionEpoch(
       baseline: WeakMap<Element, ReadonlySet<string>>;
       shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
       observer: MutationObserver;
+      processSchedulerCallback?: () => void;
       targetCaptureListener: EventListener;
       documentBubbleListener: EventListener;
       hasDelegatedListener: boolean;
@@ -657,6 +658,7 @@ async function beginPageSensitiveActionEpoch(
       classifiedElements: Element[];
       schedulerRegistrations: number;
       poisoned: boolean;
+      observer?: MutationObserver;
     };
 
     const win = element.ownerDocument.defaultView;
@@ -681,14 +683,19 @@ async function beginPageSensitiveActionEpoch(
     const forms = reflectedCandidateForms(element, input.kind, input.sourceValue);
     const baseline = baselineSensitiveForms(element.ownerDocument, forms);
     const shadowBaseline = baselineShadowSensitiveForms(forms);
+    let epoch: BrowserSensitiveEpoch | undefined;
     const observer = new MutationObserver((records) => {
-      const active = state.active;
-      if (active === null || active === undefined) return;
+      const active = state.active === epoch
+        ? epoch
+        : epoch?.inSchedulerCallback === true
+          ? epoch
+          : undefined;
+      if (active === undefined) return;
       if (active.inTargetDispatch) {
         active.deferredRecords.push(...records);
         return;
       }
-      processMutationRecords(active, records, active.inSchedulerCallback);
+      processMutationRecords(active, records, active.inSchedulerCallback === true);
     });
     const noteTargetDispatch = (): void => {
       const active = state.active;
@@ -709,7 +716,7 @@ async function beginPageSensitiveActionEpoch(
     };
     markInstrumentationListener(noteTargetDispatch);
     markInstrumentationListener(finishTargetDispatch);
-    const epoch: BrowserSensitiveEpoch = {
+    const activeEpoch: BrowserSensitiveEpoch = {
       markerId: input.markerId,
       forms,
       mutationOrdinal: 0,
@@ -728,15 +735,27 @@ async function beginPageSensitiveActionEpoch(
       schedulerRegistrations: 0,
       poisoned: false,
     };
-    state.active = epoch;
-    classifyElement(element, epoch);
+    activeEpoch.processSchedulerCallback = () => {
+      if (shadowRootOverflow()) {
+        poison(activeEpoch);
+        return;
+      }
+      processCurrentSensitiveMatches(activeEpoch, true);
+      if (activeEpoch.poisoned) return;
+      const records = [...activeEpoch.deferredRecords, ...activeEpoch.observer.takeRecords()];
+      activeEpoch.deferredRecords = [];
+      processMutationRecords(activeEpoch, records, true);
+    };
+    epoch = activeEpoch;
+    state.active = activeEpoch;
+    classifyElement(element, activeEpoch);
     observeSensitiveMutations(observer, element.ownerDocument);
     for (const root of shadowRoots()) observeSensitiveMutations(observer, root);
-    element.addEventListener("input", epoch.targetCaptureListener, true);
-    element.addEventListener("change", epoch.targetCaptureListener, true);
-    element.ownerDocument.addEventListener("input", epoch.documentBubbleListener, false);
-    element.ownerDocument.addEventListener("change", epoch.documentBubbleListener, false);
-    return { status: state.poisoned || epoch.poisoned ? "failed" : "ok" };
+    element.addEventListener("input", activeEpoch.targetCaptureListener, true);
+    element.addEventListener("change", activeEpoch.targetCaptureListener, true);
+    element.ownerDocument.addEventListener("input", activeEpoch.documentBubbleListener, false);
+    element.ownerDocument.addEventListener("change", activeEpoch.documentBubbleListener, false);
+    return { status: "ok" };
 
     function observeSensitiveMutations(observerToUse: MutationObserver, target: Node): void {
       try {
@@ -962,6 +981,10 @@ async function beginPageSensitiveActionEpoch(
         return;
       }
       for (const record of applicationRecords) {
+        if (touchesUnprovableShadowRoot(record)) {
+          poison(epochToUpdate);
+          return;
+        }
         for (const candidate of mutationCandidateElements(record)) {
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
@@ -976,6 +999,14 @@ async function beginPageSensitiveActionEpoch(
           classifyElement(candidate, epochToUpdate);
         }
       }
+    }
+
+    function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
+      const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
+      return touchedNodes.some((node) => {
+        const root = node instanceof ShadowRoot ? node : node.getRootNode();
+        return root instanceof ShadowRoot && root.mode !== "open";
+      });
     }
 
     function mutationCandidateElements(record: MutationRecord): Element[] {
@@ -1152,26 +1183,36 @@ async function beginPageSensitiveActionEpoch(
     function shadowRoots(): ShadowRoot[] {
       const roots = new Set<ShadowRoot>();
       const pending: ShadowRoot[] = [];
-      const addRoot = (root: ShadowRoot): void => {
-        if (roots.has(root)) return;
-        roots.add(root);
-        pending.push(root);
-      };
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly roots?: readonly unknown[];
+        shadowRootOverflow?: boolean;
       } | undefined;
+      const noteOverflow = (): void => {
+        if (registry !== undefined) registry.shadowRootOverflow = true;
+        state.poisoned = true;
+      };
+      const addRoot = (root: ShadowRoot): boolean => {
+        if (roots.has(root)) return true;
+        if (pending.length >= input.maxShadowRoots) {
+          noteOverflow();
+          return false;
+        }
+        roots.add(root);
+        pending.push(root);
+        return true;
+      };
       for (const root of registry?.roots ?? []) {
-        if (root instanceof ShadowRoot) addRoot(root);
+        if (root instanceof ShadowRoot && !addRoot(root)) return pending;
       }
       for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
         const shadowRoot = candidate.shadowRoot;
-        if (shadowRoot !== null) addRoot(shadowRoot);
+        if (shadowRoot !== null && !addRoot(shadowRoot)) return pending;
       }
       for (let index = 0; index < pending.length; index += 1) {
         const root = pending[index]!;
         for (const candidate of Array.from(root.querySelectorAll("*"))) {
           const nestedShadowRoot = candidate.shadowRoot;
-          if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
+          if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
         }
       }
       return pending;
@@ -1194,7 +1235,9 @@ async function beginPageSensitiveActionEpoch(
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly shadowRootOverflow?: unknown;
       } | undefined;
-      return registry?.shadowRootOverflow === true || shadowRoots().length > input.maxShadowRoots;
+      if (registry?.shadowRootOverflow === true) return true;
+      shadowRoots();
+      return registry?.shadowRootOverflow === true;
     }
 
     function poison(epochToUpdate: BrowserSensitiveEpoch): void {
@@ -1253,6 +1296,7 @@ async function endPageSensitiveActionEpoch(
         classifiedElements?: Element[];
         schedulerRegistrations?: number;
         poisoned?: boolean;
+        observer?: MutationObserver;
       }[];
       poisoned: boolean;
       nextNodeOrdinal: number;
@@ -1279,7 +1323,8 @@ async function endPageSensitiveActionEpoch(
       );
     }
     active.inTargetDispatch = false;
-    active.observer.disconnect();
+    const retainSchedulerObserver = input.retainRecord && (active.schedulerRegistrations ?? 0) > 0;
+    if (!retainSchedulerObserver) active.observer.disconnect();
     element.removeEventListener("input", active.targetCaptureListener, true);
     element.removeEventListener("change", active.targetCaptureListener, true);
     element.ownerDocument.removeEventListener("input", active.documentBubbleListener, false);
@@ -1295,6 +1340,7 @@ async function endPageSensitiveActionEpoch(
         ...(active.classifiedElements === undefined ? {} : { classifiedElements: active.classifiedElements }),
         schedulerRegistrations: active.schedulerRegistrations ?? 0,
         poisoned: active.poisoned,
+        ...(retainSchedulerObserver ? { observer: active.observer } : {}),
       });
     } else {
       cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
@@ -1347,6 +1393,11 @@ async function endPageSensitiveActionEpoch(
         return;
       }
       for (const record of applicationRecords) {
+        if (touchesUnprovableShadowRoot(record)) {
+          epochToUpdate.poisoned = true;
+          stateToUpdate.poisoned = true;
+          return;
+        }
         for (const candidate of mutationCandidateElements(record)) {
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
@@ -1362,6 +1413,14 @@ async function endPageSensitiveActionEpoch(
           classifyElement(stateToUpdate, epochToUpdate, candidate);
         }
       }
+    }
+
+    function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
+      const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
+      return touchedNodes.some((node) => {
+        const root = node instanceof ShadowRoot ? node : node.getRootNode();
+        return root instanceof ShadowRoot && root.mode !== "open";
+      });
     }
 
     function mutationCandidateElements(record: MutationRecord): Element[] {

@@ -85,6 +85,40 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
           });
         </script>
       `, "Open Shadow Direct Text"),
+      "/delayed-scheduler": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 420px; height: 220px; }
+          #timer-host { position: absolute; left: 10px; top: 10px; width: 220px; height: 34px; }
+          #promise-host { position: absolute; left: 10px; top: 58px; width: 220px; height: 34px; }
+          label { display: block; margin-top: 130px; }
+        </style>
+        <div id="timer-host"></div>
+        <div id="promise-host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const timerShadow = document.getElementById('timer-host').attachShadow({ mode: 'open' });
+          timerShadow.innerHTML = '<span data-qualigence-observe id="timer-mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          const promiseShadow = document.getElementById('promise-host').attachShadow({ mode: 'open' });
+          promiseShadow.innerHTML = '<span data-qualigence-observe id="promise-mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          document.querySelector('input').addEventListener('input', event => {
+            const value = event.target.value;
+            window.callbackRuns = [];
+            const delayed = new Promise(resolve => {
+              setTimeout(() => {
+                window.callbackRuns.push('timer');
+                timerShadow.getElementById('timer-mirror').textContent = value;
+                resolve();
+              }, 75);
+            });
+            requestAnimationFrame(() => { window.callbackRuns.push('raf'); });
+            queueMicrotask(() => { window.callbackRuns.push('microtask'); });
+            delayed.then(() => {
+              window.callbackRuns.push('promise');
+              promiseShadow.getElementById('promise-mirror').textContent = value;
+            });
+          });
+        </script>
+      `, "Delayed Scheduler"),
       "/closed-shadow": htmlDocument(`
         <div id="host"></div>
         <label>Email <input aria-label="Email" /></label>
@@ -98,6 +132,19 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
           });
         </script>
       `, "Closed Shadow"),
+      "/closed-shadow-touched": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+          const mirror = document.createElement('span');
+          mirror.textContent = 'ordinary before sensitive epoch';
+          shadow.appendChild(mirror);
+          document.querySelector('input').addEventListener('input', () => {
+            mirror.textContent = 'opaque mutation without the registered form';
+          });
+        </script>
+      `, "Closed Shadow Touched"),
       "/epoch-overflow": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -116,6 +163,12 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
         <div id="roots"></div>
         <label>Email <input aria-label="Email" /></label>
         <script>
+          window.shadowObserveCount = 0;
+          const originalObserve = MutationObserver.prototype.observe;
+          MutationObserver.prototype.observe = function observe(target, options) {
+            if (target instanceof ShadowRoot) window.shadowObserveCount += 1;
+            return originalObserve.call(this, target, options);
+          };
           const roots = document.getElementById('roots');
           for (let index = 0; index < 129; index += 1) {
             roots.appendChild(document.createElement('span')).attachShadow({ mode: 'open' }).textContent = 'ordinary-' + index;
@@ -196,6 +249,34 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     expect((await samplePngPixels(session, png!.bytes, [[20, 20]]))[0]).toEqual([0, 0, 0, 255]);
   }, 60_000);
 
+  it("propagates below-bound sensitive scheduler state to delayed timer and Promise callbacks", async () => {
+    const { observer, resolver, executor } = await wire("/delayed-scheduler");
+    const url = `${fixture.origin}/delayed-scheduler`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reflect through delayed scheduler callbacks",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage((page) => page.waitForTimeout(125));
+    const after = await observer.capture({ ...job, target: { kind: "web", url } });
+
+    expect(after.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(after)).not.toContain(SECRET);
+    const callbackRuns = await session.withPage((page) => page.evaluate(() => (globalThis as unknown as { callbackRuns: string[] }).callbackRuns));
+    expect(callbackRuns).toEqual(expect.arrayContaining(["microtask", "raf", "timer", "promise"]));
+    expect(callbackRuns.indexOf("timer")).toBeLessThan(callbackRuns.indexOf("promise"));
+    const png = session.artifactsFor(after.graphId).find((artifact) => artifact.mediaType === "image/png");
+    expect(png).toBeDefined();
+    expect(await samplePngPixels(session, png!.bytes, [[20, 20], [20, 68]])).toEqual([
+      [0, 0, 0, 255],
+      [0, 0, 0, 255],
+    ]);
+  }, 60_000);
+
   it("masks an open shadow root host when direct shadow text reflects sensitive content", async () => {
     const { observer, resolver, executor } = await wire("/open-shadow-direct-text");
     const url = `${fixture.origin}/open-shadow-direct-text`;
@@ -233,9 +314,30 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails evidence closed when a sensitive epoch touches a closed root without a registered form", async () => {
+    const { observer, resolver, executor } = await wire("/closed-shadow-touched");
+    const url = `${fixture.origin}/closed-shadow-touched`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(JSON.stringify(before)).toContain("Email");
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "touch an opaque closed root",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+  }, 60_000);
+
   it("fails evidence closed when observed shadow-root discovery exceeds 128 roots", async () => {
     const { observer, resolver, executor } = await wire("/root-overflow");
     const url = `${fixture.origin}/root-overflow`;
+    await expect(session.withPage((page) => page.evaluate(() => {
+      const registry = (globalThis as unknown as { __qualigenceSensitiveShadowRoots: { roots: unknown[]; shadowRootOverflow: boolean } }).__qualigenceSensitiveShadowRoots;
+      return { retainedRoots: registry.roots.length, overflow: registry.shadowRootOverflow };
+    }))).resolves.toEqual({ retainedRoots: 128, overflow: true });
     const before = await observer.capture({ ...job, target: { kind: "web", url } });
     const action = await resolver.resolve({
       kind: "input",
@@ -247,6 +349,17 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
     await expect(session.withPage((page) => page.locator("#mirror").textContent()))
       .resolves.toBe(SECRET);
+    await expect(session.withPage((page) => page.evaluate(() => {
+      const global = globalThis as unknown as {
+        shadowObserveCount: number;
+        __qualigenceSensitiveShadowRoots: { roots: unknown[]; shadowRootOverflow: boolean };
+      };
+      return {
+        retainedRoots: global.__qualigenceSensitiveShadowRoots.roots.length,
+        overflow: global.__qualigenceSensitiveShadowRoots.shadowRootOverflow,
+        observedRoots: global.shadowObserveCount,
+      };
+    }))).resolves.toEqual({ retainedRoots: 128, overflow: true, observedRoots: 128 });
     await expect(observer.capture({ ...job, target: { kind: "web", url } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
   }, 60_000);
