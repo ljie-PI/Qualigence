@@ -35,7 +35,7 @@ describe("grpc runner protocol mutual TLS", () => {
     const session = await client.connect(makeHello("runner-1"));
     expect(session.welcome.selectedProtocolMajor).toBe(1);
     const connection = await server.waitForConnection("runner-1");
-    expect(connection.authenticatedRunner).toEqual({ runnerId: "runner-1", scope: { kind: "local" }, capabilities: ["target:web-playwright", "action:click", "model:structured-output"] });
+    expect(connection.authenticatedRunner).toEqual({ runnerId: "runner-1", scope: { kind: "local" }, capabilities: ["target:web-playwright", "observation:observation-graph/v1", "observation:web/v1", "action:click", "model:structured-output"] });
   });
 
   it("rejects a valid certificate whose identity differs from the claimed runnerId", async () => {

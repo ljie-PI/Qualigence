@@ -1,5 +1,8 @@
 import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-protocol";
-import { capabilities } from "@qualigence/runner-protocol";
+import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  capabilities,
+} from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import type { RunnerSpool } from "@qualigence/runner-spool";
 import {
@@ -17,6 +20,7 @@ import {
 import type { RunnerConfig } from "./config.js";
 import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
+import { RunnerAppError } from "./errors.js";
 
 export interface RunnerOfferRuntimeOptions {
   readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome">;
@@ -37,7 +41,17 @@ export class RunnerOfferRuntime {
 
   async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider);
-    assertOfferCapabilities(offer, currentCapabilities);
+    assertWebObservationV1Requirements(offer);
+    const offerWithLiveObservationRequirements = {
+      ...offer,
+      requiredCapabilities: [
+        ...new Set([
+          ...offer.requiredCapabilities,
+          ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+        ]),
+      ],
+    };
+    assertOfferCapabilities(offerWithLiveObservationRequirements, currentCapabilities);
     const admission = DeterministicRunnerPolicyGate.admitJob(offer.job);
     if (admission.status === "denied") {
       const lease = await this.options.session.accept(offer.offerId);
@@ -171,9 +185,20 @@ export class RunnerOfferRuntime {
   }
 }
 
+function assertWebObservationV1Requirements(offer: ExecutionJobOffer): void {
+  if (offer.job.target.kind !== "web") return;
+  const required = new Set(offer.requiredCapabilities);
+  const missing = WEB_OBSERVATION_V1_CAPABILITY_TOKENS.filter((token) => !required.has(token));
+  if (missing.length === 0) return;
+  throw new RunnerAppError("CapabilityMismatch", "web offers must require Observation Graph v1 and web/v1 capabilities", {
+    details: { missingCapabilities: missing },
+  });
+}
+
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {
   return capabilities({
     targetAdapters: ["web-playwright"],
+    observationExtensions: ["observation-graph/v1", "web/v1"],
     actionKinds: valueProvider === undefined
       ? ["navigate", "click", "scroll"]
       : ["navigate", "click", "input", "select", "scroll"],

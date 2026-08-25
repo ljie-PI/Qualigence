@@ -14,6 +14,7 @@ import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
 import {
   UNSUPPORTED_TOKEN,
+  WEB_GRAPH_V1_REQUIREMENTS,
   WEB_TARGET_TOKEN,
   deterministicRunnerDependencies,
   offerFor,
@@ -65,7 +66,7 @@ describe("core/runner independent-process integration", () => {
     expect(connection.authenticatedRunner.capabilities).toContain(WEB_TARGET_TOKEN);
 
     const job = webJob();
-    const leasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
 
     const spool = await openMemorySpool();
     spools.push(spool);

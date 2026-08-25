@@ -5,9 +5,11 @@ import type {
   ArtifactStore,
   ArtifactWriteRequest,
 } from "@qualigence/evidence";
-import type {
-  AcceptedExecutionJob,
-  ObservationGraph,
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  type AcceptedExecutionJob,
+  type ObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
 import {
@@ -26,8 +28,40 @@ const job: AcceptedExecutionJob = {
   policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["http://127.0.0.1:1"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
 };
 
-function graph(graphId: string): ObservationGraph {
-  return { graphId, nodes: [] };
+function graph(graphId: string): ObservationGraphV1 {
+  return {
+    schema: OBSERVATION_GRAPH_V1_SCHEMA,
+    graphId,
+    target: { kind: "web", targetId: "http://127.0.0.1:1" },
+    capturedAt: "2026-08-24T00:00:00.000Z",
+    rootNodeIds: ["root"],
+    nodes: [{
+      id: "root",
+      role: "document",
+      name: "Test page",
+      state: {},
+      relations: [],
+      source: { adapterId: "execution-application-test", sourceKind: "fixture" },
+      confidence: 1,
+      sensitivity: "public",
+      extensions: {},
+      evidenceRefs: [],
+    }],
+    evidenceRefs: [],
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: "http://127.0.0.1:1",
+          pathname: "/",
+          title: "Test page",
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  };
 }
 
 function manifestFor(request: ArtifactWriteRequest): ArtifactManifest {
@@ -94,7 +128,7 @@ function fakeSource(artifacts: readonly RawArtifact[]): ArtifactSource {
   return { captureArtifacts: async () => artifacts };
 }
 
-function innerObserver(result: ObservationGraph): Observer {
+function innerObserver(result: ObservationGraphV1): Observer {
   return { capture: async () => result };
 }
 
@@ -124,7 +158,7 @@ describe("ArtifactRecordingObserver", () => {
 
     const recorded = await observer.capture(job);
 
-    expect(recorded.artifactRefs).toEqual(["before-json", "before-png"]);
+    expect(recorded.evidenceRefs).toEqual(["before-json", "before-png"]);
     expect(artifacts.writes.map((w) => w.kind)).toEqual([
       "observation",
       "screenshot",

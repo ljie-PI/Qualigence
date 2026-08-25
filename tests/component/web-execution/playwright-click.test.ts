@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
-  ObservationNode,
+  ObservationGraphV1,
+  ObservationNodeV1,
 } from "@qualigence/runner-protocol";
 import {
   ExecutionPermit,
@@ -24,11 +24,32 @@ import {
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 function allowedPermit(): ExecutionPermit {
   return ExecutionPermit.fromAllowedDecision({
     status: "allowed",
     reason: "allowed by component test",
+  });
+}
+
+function sensitiveTargetEvaluate(value = "private-value") {
+  let markerId = "";
+  return vi.fn(async (_callback: unknown, argument: unknown) => {
+    if (
+      typeof argument === "object" &&
+      argument !== null &&
+      "markerId" in argument
+    ) {
+      markerId = String(argument.markerId);
+      return undefined;
+    }
+    return {
+      sensitiveTargetIds: [markerId],
+      value,
+      selectedOptionValue: value,
+      selectedOptionText: value,
+    };
   });
 }
 
@@ -62,7 +83,7 @@ function elementAction(kind: "click" | "input" | "select" | "scroll", nodeId: st
   }
 }
 
-function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
+function nodeNamed(graph: ObservationGraphV1, name: string): ObservationNodeV1 {
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (!node) {
     throw new Error(`No node named ${name} in graph ${graph.graphId}`);
@@ -113,10 +134,13 @@ describe("Playwright resolve + execute against real Chromium", () => {
             <span style="position:absolute;inset:0"></span>
           </span>
           <label>Email <input aria-label="Email" /></label>
+          <label>Notes <textarea aria-label="Notes"></textarea></label>
           <label>Country <select aria-label="Country"><option value="private-country-code">Canada</option><option value="us">United States</option></select></label>
           <p data-qualigence-observe id="values"></p>
+          <p data-qualigence-observe id="notes-copy"></p>
           <script>
             document.querySelector('input').addEventListener('input', event => document.getElementById('values').textContent = event.target.value);
+            document.querySelector('textarea').addEventListener('input', event => document.getElementById('notes-copy').textContent = event.target.value);
             document.querySelector('select').addEventListener('change', event => document.getElementById('values').textContent += ':' + event.target.value);
           </script>
         `,
@@ -217,7 +241,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     overrides: Partial<WebSessionOptions> = {},
   ) {
     const { observer, resolver, executor } = await wire(overrides);
-    const observations: ObservationGraph[] = [];
+    const observations: ObservationGraphV1[] = [];
     const resolvedActions: AnyResolvedAction[] = [];
     let oldDescriptorInvalidatedBeforeNextCapture = false;
     let decisions = 0;
@@ -299,8 +323,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(await executor.execute(action, allowedPermit())).toEqual({ status: "ok" });
 
     const after = await observer.capture(job);
-    const total = after.nodes.find((node) => node.text?.includes("Cart total"));
-    expect(total?.text).toContain("$19");
+    const total = after.nodes.find((node) => node.name?.includes("Cart total") || node.value?.includes("Cart total"));
+    expect(total?.name ?? total?.value).toContain("$19");
   });
 
   it("uses a fresh observation generation after planned navigation", async () => {
@@ -330,7 +354,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
       result.resolvedActions[0]!,
       allowedPermit(),
     )).resolves.toEqual({ status: "failed", errorCode: "OriginViolation" });
-    expect(result.observations[1]?.url).toBe(`${fixture.origin}/next`);
+    const observedWeb = result.observations[1]?.extensions?.["web/v1"]?.payload;
+    expect(`${observedWeb?.origin}${observedWeb?.pathname}`).toBe(`${fixture.origin}/next`);
     expect(result.trace.filter((event) => event.stage === "action_executed")).toEqual([
       expect.objectContaining({ stepIndex: 0, payload: { status: "ok" } }),
       expect.objectContaining({ stepIndex: 1, payload: { status: "ok" } }),
@@ -403,7 +428,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
   it("rejects a stale graph without clicking", async () => {
     const { observer, resolver } = await wire();
     const before = await observer.capture(job);
-    const staleGraph: ObservationGraph = { ...before, graphId: "run-click:observation:99" };
+    const staleGraph: ObservationGraphV1 = { ...before, graphId: "run-click:observation:99" };
     await expect(
       resolver.resolve(click(before.nodes[0]!.id), staleGraph),
     ).rejects.toMatchObject({ code: "StaleObservation" });
@@ -440,7 +465,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
 
     const after = await observer.capture(job);
-    expect(after.url).toBe(fixture.url);
+    const web = after.extensions?.["web/v1"]?.payload;
+    expect(`${web?.origin}${web?.pathname}`).toBe(fixture.url);
   });
 
   it("maps a dispatched click timeout to ActionOutcomeUnknown", async () => {
@@ -454,7 +480,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
   });
 
-  it("executes input and select through valueRefs without returning plaintext", async () => {
+  it("redacts input and select target fields without global equal-text replacement", async () => {
     const values = new Map([
       ["customer.email", "private@example.test"],
       ["customer.country", "private-country-code"],
@@ -480,19 +506,40 @@ describe("Playwright resolve + execute against real Chromium", () => {
 
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
-    const serializedPublicValues = JSON.stringify([
-      inputAction,
-      inputOutcome,
-      afterInput,
-      selectAction,
-      selectOutcome,
-      await observer.capture(job),
-    ]);
-    expect(serializedPublicValues).not.toContain("private@example.test");
-    expect(serializedPublicValues).not.toContain("private-country-code");
+    const afterSelect = await observer.capture(job);
+
+    expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome]))
+      .not.toContain("private@example.test");
+    expect(nodeNamed(afterInput, "Email").value).toBe("[redacted]");
+    expect(afterInput.nodes.some((node) => node.name === "private@example.test" || node.value === "private@example.test")).toBe(true);
+    expect(nodeNamed(afterSelect, "Email").value).toBe("[redacted]");
+    expect(nodeNamed(afterSelect, "Country")).toMatchObject({
+      value: "[redacted]",
+    });
+    expect(afterSelect.nodes.some((node) => node.name === "private@example.test:private-country-code" || node.value === "private@example.test:private-country-code"))
+      .toBe(true);
   });
 
-  it("redacts input plaintext from the complete Trace and verifier context", async () => {
+  it("registers browser-normalized textarea newline forms against only the authorized target", async () => {
+    const source = "line-one\r\nline-two\r\n";
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, {
+      resolve: async () => source,
+    });
+    const before = await observer.capture(job);
+
+    const action = await resolver.resolve(valued("input", nodeNamed(before, "Notes").id, "notes.body"), before);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const after = await observer.capture(job);
+
+    expect(nodeNamed(after, "Notes").value).toBe("[redacted]");
+    expect(after.nodes.some((node) => node.name === "line-one line-two" || node.value === "line-one line-two")).toBe(true);
+  });
+
+  it("redacts input target fields from Trace and verifier context without global equal-text replacement", async () => {
     const secret = "trace-secret@example.test";
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -526,21 +573,23 @@ describe("Playwright resolve + execute against real Chromium", () => {
     });
 
     await expect(runtime.run(job)).resolves.toMatchObject({ status: "passed" });
-    const serializedTrace = JSON.stringify(traces.eventsFor(job.runId));
-    expect(serializedTrace).not.toContain(secret);
-    expect(serializedVerifierContext).not.toContain(secret);
-    expect(traces.eventsFor(job.runId).filter((event) => event.stage === "observation")).toHaveLength(2);
+    const events = traces.eventsFor(job.runId);
+    const nonObservationTrace = JSON.stringify(events.filter((event) => event.stage !== "observation"));
+    expect(nonObservationTrace).not.toContain(secret);
+    const observations = events.filter((event) => event.stage === "observation");
+    expect(observations).toHaveLength(2);
+    const after = observations.at(-1)?.payload as ObservationGraphV1;
+    expect(nodeNamed(after, "Email").value).toBe("[redacted]");
+    expect(after.nodes.some((node) => node.name === secret || node.value === secret)).toBe(true);
+    const verifierContext = JSON.parse(serializedVerifierContext) as { readonly after: ObservationGraphV1 };
+    expect(nodeNamed(verifierContext.after, "Email").value).toBe("[redacted]");
   });
 
   it("blocks a redirect after the model decision before resolver locator reads", async () => {
     const graphId = "run-before-resolver-origin:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     let currentUrl = fixture.url;
     const locatorReads = {
       count: vi.fn(async () => 1),
@@ -601,11 +650,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-raced-resolver-origin:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     let currentUrl = fixture.url;
     const count = vi.fn(async () => {
       currentUrl = cross.url;
@@ -672,11 +717,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-bounced-resolver-origin:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     const isVisible = vi.fn(async () => true);
     const isEnabled = vi.fn(async () => true);
     const getAttribute = vi.fn(async () => null);
@@ -738,11 +779,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-pre-resolution-bounce:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     const count = vi.fn(async () => 1);
     const sideEffect = vi.fn(async () => undefined);
     const controlled = await startControllableTrackedFakeSession(() => ({
@@ -804,11 +841,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-pre-execution-bounce:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     const count = vi.fn(async () => 1);
     const isVisible = vi.fn(async () => true);
     const sideEffect = vi.fn(async () => undefined);
@@ -876,11 +909,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
         role: kind === "input" ? "textbox" : "combobox",
         name: "Safe control",
       };
-      const graph: ObservationGraph = {
-        graphId,
-        url: fixture.url,
-        nodes: [{ id: nodeId, role: descriptor.role, name: "Safe control", confidence: 1 }],
-      };
+      const graph = observationGraphV1(graphId, [{ id: nodeId, role: descriptor.role, name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
       let releaseValue: (() => void) | undefined;
       let markValueStarted: (() => void) | undefined;
       const valueRelease = new Promise<void>((resolve) => { releaseValue = resolve; });
@@ -957,9 +986,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
     const crossOriginContent = "private cross-origin account data";
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => currentUrl === fixture.url
-      ? [{ role: "button", name: "Continue" }]
-      : [{ role: "button", name: crossOriginContent }]);
+    const evaluate = vi.fn(async () => ({
+      candidates: currentUrl === fixture.url
+        ? [{ role: "button", name: "Continue" }]
+        : [{ role: "button", name: crossOriginContent }],
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+    }));
     const title = vi.fn(async () => currentUrl === fixture.url ? "Safe page" : crossOriginContent);
     const screenshot = vi.fn(async () => new TextEncoder().encode(
       currentUrl === fixture.url ? "safe screenshot" : crossOriginContent,
@@ -1054,7 +1086,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
     session.withPage = async (operation) => operation({
       url: () => currentUrl,
-      evaluate: async () => [{ role: "button", name: "Continue" }],
+      evaluate: async () => ({
+        candidates: [{ role: "button", name: "Continue" }],
+        viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+      }),
       title: async () => "Safe page",
       screenshot: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
       getByRole: () => ({
@@ -1129,11 +1164,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
         role: kind === "input" ? "textbox" : kind === "select" ? "combobox" : "button",
         name: "Matching control",
       };
-      const graph: ObservationGraph = {
-        graphId,
-        url: fixture.url,
-        nodes: [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }],
-      };
+      const graph = observationGraphV1(graphId, [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
       let currentUrl = fixture.url;
       let locatorReads = 0;
       const valueProvider = { resolve: vi.fn(async () => "private-value") };
@@ -1202,11 +1233,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-count-redirect:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     let currentUrl = fixture.url;
     let countCalls = 0;
     const isVisible = vi.fn(async () => true);
@@ -1273,11 +1300,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const graphId = "run-raced-executor-origin:observation:1";
     const nodeId = "n-0-safe-control";
     const descriptor: LocatorDescriptor = { kind: "role", role: "button", name: "Safe control" };
-    const graph: ObservationGraph = {
-      graphId,
-      url: fixture.url,
-      nodes: [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }],
-    };
+    const graph = observationGraphV1(graphId, [{ id: nodeId, role: "button", name: "Safe control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
     let currentUrl = fixture.url;
     let countCalls = 0;
     const isEnabled = vi.fn(async () => true);
@@ -1353,11 +1376,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
         role: kind === "input" ? "textbox" : kind === "select" ? "combobox" : "button",
         name: "Matching control",
       };
-      const graph: ObservationGraph = {
-        graphId,
-        url: fixture.url,
-        nodes: [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }],
-      };
+      const graph = observationGraphV1(graphId, [{ id: nodeId, role: descriptor.role, name: "Matching control", confidence: 1 }], { target: { kind: "web", targetId: fixture.origin } });
       session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
       session.registerObservation(graphId, {
         descriptors: new Map([[nodeId, descriptor]]),
@@ -1373,7 +1392,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
           click: sideEffect,
           fill: sideEffect,
           selectOption: sideEffect,
-          evaluate: sideEffect,
+          evaluate: kind === "scroll" ? sideEffect : sensitiveTargetEvaluate(),
         }),
       } as never);
       const proposed = elementAction(kind, nodeId);

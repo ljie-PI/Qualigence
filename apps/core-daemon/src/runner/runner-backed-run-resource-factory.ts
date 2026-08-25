@@ -11,7 +11,11 @@ import type {
   RunResourceScope,
 } from "@qualigence/execution-application";
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
-import { ExecutionPolicySnapshotError, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import {
+  ExecutionPolicySnapshotError,
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  parseExecutionPolicySnapshot,
+} from "@qualigence/runner-protocol";
 import type { AcceptedExecutionJob, ExecutionJobLease } from "@qualigence/runner-protocol";
 import { CoreApplicationError } from "@qualigence/core-application";
 
@@ -51,6 +55,10 @@ export interface RunnerBackedRunResourceFactoryOptions {
  * a transport type. Trace is recorded on the Core side through the
  * {@link TraceIngestor} into the Run's own {@link TraceStore}.
  */
+function webPlaywrightRequiredCapabilities(): readonly string[] {
+  return ["target:web-playwright", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS];
+}
+
 export class RunnerBackedRunResourceFactory implements RunResourceFactory {
   private readonly connection: RunnerConnectionPort;
   private readonly openStores: RunnerBackedRunResourceFactoryOptions["openStores"];
@@ -65,7 +73,7 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
       throw new Error("RunnerBackedRunResourceFactory does not accept policyGate; Runner owns policy admission.");
     }
     this.awaitCompletion = options.awaitCompletion;
-    this.requiredCapabilities = options.requiredCapabilities ?? ["target:web-playwright"];
+    this.requiredCapabilities = options.requiredCapabilities ?? webPlaywrightRequiredCapabilities();
     this.generateJobId = options.generateJobId ?? ((): string => randomBytes(16).toString("hex"));
   }
 

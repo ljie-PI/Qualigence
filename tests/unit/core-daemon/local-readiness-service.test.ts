@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
 import { LocalReadinessService } from "../../../apps/core-daemon/src/local/local-readiness-service.js";
 
 describe("LocalReadinessService", () => {
@@ -16,6 +17,8 @@ describe("LocalReadinessService", () => {
     await expect(service.internalReady()).resolves.toBe(true);
     await expect(service.ready()).resolves.toBe(false);
     connection = { authenticatedRunner: { runnerId: "runner-1", scope: { kind: "local" }, capabilities: ["target:web-playwright"] }, offer: async () => { throw new Error("unused"); }, cancel: async () => undefined };
+    await expect(service.ready()).resolves.toBe(false);
+    connection = { authenticatedRunner: { runnerId: "runner-1", scope: { kind: "local" }, capabilities: ["target:web-playwright", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS] }, offer: async () => { throw new Error("unused"); }, cancel: async () => undefined };
     await expect(service.ready()).resolves.toBe(true);
     service.quiesce();
     await expect(service.ready()).resolves.toBe(false);

@@ -18,6 +18,7 @@ import {
   type LeasedJobExecutorDependencies,
 } from "../../../apps/runner/src/job-executor.js";
 import { RunnerAppError } from "../../../apps/runner/src/errors.js";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 const LEASE: ExecutionJobLease = {
   jobId: "job-1",
@@ -122,8 +123,8 @@ function baseDependencies(
   overrides: Partial<LeasedJobExecutorDependencies> = {},
 ): LeasedJobExecutorDependencies {
   const observations = [
-    { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
-    { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+    observationGraphV1("graph-before", [{ id: "node-a", role: "button", name: "Login", confidence: 1 }]),
+    observationGraphV1("graph-after", [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }]),
   ];
   return {
     observer: { capture: async () => observations.shift()! },
@@ -223,8 +224,8 @@ describe("LeasedJobExecutor", () => {
       releaseObservation = resolve;
     });
     const observations = [
-      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
-      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+      observationGraphV1("graph-before", [{ id: "node-a", role: "button", name: "Login", confidence: 1 }]),
+      observationGraphV1("graph-after", [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }]),
     ];
     const executor = new LeasedJobExecutor(
       baseDependencies(spool, state, {
@@ -342,8 +343,8 @@ describe("LeasedJobExecutor", () => {
     });
     let executed = 0;
     const observations = [
-      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
-      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+      observationGraphV1("graph-before", [{ id: "node-a", role: "button", name: "Login", confidence: 1 }]),
+      observationGraphV1("graph-after", [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }]),
     ];
     const executor = new LeasedJobExecutor(
       baseDependencies(spool, state, {
@@ -389,8 +390,8 @@ describe("LeasedJobExecutor", () => {
       releaseObservation = resolve;
     });
     const observations = [
-      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
-      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+      observationGraphV1("graph-before", [{ id: "node-a", role: "button", name: "Login", confidence: 1 }]),
+      observationGraphV1("graph-after", [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }]),
     ];
     const executor = new LeasedJobExecutor(
       baseDependencies(spool, state, {
@@ -424,8 +425,8 @@ describe("LeasedJobExecutor", () => {
     const state = { monotonic: 1_000, wall: 100_000 };
     let executed = 0;
     const observations = [
-      { graphId: "graph-before", nodes: [{ id: "node-a", role: "button", name: "Login", confidence: 1 }] },
-      { graphId: "graph-after", nodes: [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }] },
+      observationGraphV1("graph-before", [{ id: "node-a", role: "button", name: "Login", confidence: 1 }]),
+      observationGraphV1("graph-after", [{ id: "node-b", role: "button", name: "Logout", confidence: 1 }]),
     ];
     const executor = new LeasedJobExecutor(
       baseDependencies(spool, state, {

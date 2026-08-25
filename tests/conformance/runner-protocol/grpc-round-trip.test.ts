@@ -1,5 +1,15 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { AcceptedExecutionJob, ExecutionEventBatch, TraceEvent } from "@qualigence/runner-protocol";
+import {
+  OBSERVATION_GRAPH_V1_CAPABILITY,
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+  type AcceptedExecutionJob,
+  type ExecutionEventBatch,
+  type TraceEvent,
+} from "@qualigence/runner-protocol";
 import { GrpcRunnerProtocolClient } from "@qualigence/grpc-runner-protocol";
 import type { GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
@@ -40,7 +50,62 @@ function traceEvent(runId: string, sequenceNumber: number): TraceEvent {
     stage: "observation",
     occurredAt: "2026-08-01T00:00:00.000Z",
     payloadHash: `${sequenceNumber}`.padStart(64, "0"),
-    payload: { graphId: `graph-${sequenceNumber}`, nodes: [] },
+    payload: {
+      schema: OBSERVATION_GRAPH_V1_SCHEMA,
+      graphId: `graph-${sequenceNumber}`,
+      target: { kind: "web", targetId: "https://example.test" },
+      capturedAt: "2026-08-01T00:00:00.000Z",
+      rootNodeIds: ["node-1"],
+      nodes: [
+        {
+          id: "node-1",
+          role: "document",
+          state: {},
+          relations: [],
+          source: { adapterId: "web-playwright", sourceKind: "document" },
+          confidence: 1,
+          sensitivity: "public",
+          extensions: {},
+          evidenceRefs: [],
+        },
+      ],
+      evidenceRefs: [],
+      extensions: {
+        [WEB_EXTENSION_V1_TYPE]: {
+          type: WEB_EXTENSION_V1_TYPE,
+          version: "1.0",
+          payload: {
+            origin: "https://example.test",
+            pathname: "/",
+            title: "Example",
+            viewport: { width: 1024, height: 768, devicePixelRatio: 1 },
+            query: {},
+          },
+        },
+      },
+    } as never,
+  };
+}
+
+function webV1Requirements(): readonly string[] {
+  return [
+    "target:web-playwright",
+    OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+    WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+  ];
+}
+
+function makeWebV1Hello(runnerId: string, options?: Parameters<typeof makeHello>[1]): ReturnType<typeof makeHello> {
+  const hello = makeHello(runnerId, options);
+  return {
+    ...hello,
+    capabilities: {
+      ...hello.capabilities,
+      observationExtensions: [
+        OBSERVATION_GRAPH_V1_CAPABILITY,
+        WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
+      ],
+    },
   };
 }
 
@@ -94,7 +159,7 @@ describe("grpc runner protocol handshake", () => {
     const client = makeTestClient(pki, port, pki.clientFor("runner-1"));
     track(server, client);
 
-    const session = await client.connect(makeHello("runner-1"));
+    const session = await client.connect(makeWebV1Hello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
 
     const job: AcceptedExecutionJob = {
@@ -105,12 +170,12 @@ describe("grpc runner protocol handshake", () => {
       objective: "add the item to the cart",
       policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     };
-    const leasePromise = connection.offer(job, ["target:web-playwright"]);
+    const leasePromise = connection.offer(job, webV1Requirements());
 
     const offer = await session.nextOffer(new AbortController().signal);
     expect(offer.job.jobId).toBe("job-1");
     expect(offer.job.projectId).toBe("project-1");
-    expect(offer.requiredCapabilities).toEqual(["target:web-playwright"]);
+    expect(offer.requiredCapabilities).toEqual(webV1Requirements());
 
     const clientLease = await session.accept(offer.offerId);
     const serverLease = await leasePromise;
@@ -217,7 +282,7 @@ describe("grpc runner protocol handshake", () => {
     });
     track(server, client);
 
-    const session = await client.connect(makeHello("runner-1"));
+    const session = await client.connect(makeWebV1Hello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
     const job: AcceptedExecutionJob = {
       jobId: "job-1",
@@ -227,7 +292,7 @@ describe("grpc runner protocol handshake", () => {
       objective: "add the item to the cart",
       policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
     };
-    const leasePromise = connection.offer(job, ["target:web-playwright"]);
+    const leasePromise = connection.offer(job, webV1Requirements());
     const offer = await session.nextOffer(new AbortController().signal);
     const lease = await session.accept(offer.offerId);
     await leasePromise;
@@ -382,7 +447,7 @@ describe("grpc runner protocol handshake", () => {
       await client.close();
       await server.shutdown();
     });
-    const session = await client.connect(makeHello("runner-1"));
+    const session = await client.connect(makeWebV1Hello("runner-1"));
     const connection = await server.waitForConnection("runner-1");
     const offering = connection.offer({
        jobId: "job-race",
@@ -391,7 +456,7 @@ describe("grpc runner protocol handshake", () => {
        target: { kind: "web", url: "https://example.test/" },
        objective: "race shutdown",
        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
-    }, []);
+    }, webV1Requirements());
     const submitting = session.submit(batch("run-1", 1, 1));
     void session.complete(
       {

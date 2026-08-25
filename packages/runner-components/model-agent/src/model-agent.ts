@@ -28,8 +28,8 @@ import type {
 } from "@qualigence/runner-kernel";
 import type {
   ExecutionPlanStep,
-  ObservationGraph,
-  ObservationNode,
+  ObservationGraphV1,
+  ObservationNodeV1,
   VerificationClaim,
 } from "@qualigence/runner-protocol";
 
@@ -474,8 +474,8 @@ function decisionInstruction(step: CurrentPlanActionStep): string {
 
 function validateClaims(
   claims: readonly VerificationClaim[],
-  before: ObservationGraph,
-  after: ObservationGraph,
+  before: ObservationGraphV1,
+  after: ObservationGraphV1,
 ): void {
   for (const [index, claim] of claims.entries()) {
     validateEvidenceValue(claim.expected, before, `claims[${index}].expected`);
@@ -485,7 +485,7 @@ function validateClaims(
 
 function validateEvidenceValue(
   value: VerificationClaim["expected"],
-  graph: ObservationGraph,
+  graph: ObservationGraphV1,
   path: string,
 ): void {
   const node = graph.graphId === value.graphId
@@ -500,8 +500,8 @@ function validateEvidenceValue(
   }
 }
 
-function normalizeText(node: ObservationNode): string {
-  return normalizeTextValue(node.text ?? "");
+function normalizeText(node: ObservationNodeV1): string {
+  return normalizeTextValue(node.name ?? node.value ?? "");
 }
 
 function normalizeTextValue(value: string): string {

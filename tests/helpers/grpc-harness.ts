@@ -266,7 +266,7 @@ export function makeHello(
     runnerId,
     runnerVersion: "0.1.0",
     supportedProtocolMajors: options.supportedProtocolMajors ?? [1],
-    capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+    capabilities: capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] }),
   };
   return options.resumeToken === undefined ? base : { ...base, resumeToken: options.resumeToken };
 }

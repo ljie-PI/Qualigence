@@ -4,7 +4,7 @@
 
 **Blocked by:** 22 — Expand Graph v1 and web/v1 extension.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -100,7 +100,34 @@ Run Chromium through the production producer and Graph/extension capability nego
 | Trace append/ack persistence fails after valid capture | `started` | Stable Trace/storage failure; Runtime cannot claim observation stage complete | No acknowledged observation event | Retry exact event under existing protocol; do not execute from unacknowledged Graph | Valid graph hash plus failed append/ack and zero subsequent action |
 | Terminal Trace persistence fails | `started` | Existing terminal persistence error; no successful completion claim | Terminal event/completion is not partially acknowledged | Retry exact terminal persistence; completion remains gated by Trace drain | Failed terminal append/ack and absent completion acknowledgement |
 
-- [ ] Web captures valid v1 nodes, relations, source, state, sensitivity, evidence refs, roots, and `web/v1`.
-- [ ] Trace transports v1 losslessly and rejects incompatible majors.
-- [ ] Runner advertises and negotiates Graph/extension capabilities before work.
-- [ ] Real Chromium capture passes shared schema and canonical hash tests after clean review.
+- [x] Web captures valid v1 nodes, relations, source, state, sensitivity, evidence refs, roots, and `web/v1`.
+- [x] Trace transports v1 losslessly and rejects incompatible majors.
+- [x] Runner advertises and negotiates Graph/extension capabilities before work.
+- [x] Real Chromium capture passes shared schema and canonical hash tests after clean review.
+
+## Comments
+
+### start — 2026-08-24
+
+- Fixed base: `0238c9cddebed3c4903df2e376d6377483b3ca28` (`main`, includes PR #95 merge `0238c9c`).
+- Predecessor merge evidence: Ticket 22 is `resolved` with PR #90 merge commit `7ef31db708612ddc5c020e6e2bb2758d763fba85` recorded in `.scratch/remaining-production-closure/issues/22-expand-graph-v1-web-extension.md` and present in current history. Ticket 39 target-bound browser-normalized redaction is present through PR #94 merge commit `8fd56808dea9fc8b202e0d4833a0e8f5606e6001` and docs PR #95 merge `0238c9cddebed3c4903df2e376d6377483b3ca28`.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable to live Web producer capture, Runtime observation Trace emission, protocol transport, capability advertisement/negotiation, and fail-closed admission; no rows are marked N/A for implementation planning.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/unit/runner/offer-runtime.test.ts tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+
+### expanded implementation update — 2026-08-25
+
+- Maintainer-approved scope expansion applied after prior review findings: merged current `main` (`3c6fef1`) into branch as `6eff60b`, preserving ticket 39 redaction and main docs.
+- Implemented live Runner `Observer`, `AgentContext`, `VerificationContext`, action resolver graph, and observation Trace typing as `ObservationGraphV1`; Runtime validates before `recordStage`, and `TraceEvent` observation payloads are v1.
+- Core/Local web offers now require `target:web-playwright`, `observation:observation-graph/v1`, and `observation:web/v1` at the producer side rather than relying on Runner-side silent augmentation. Direct `RunnerOfferRuntime` still rejects missing/incompatible v1 requirements before lease acceptance.
+- Added real Chromium producer/capability acceptance at `tests/e2e/web-execution/graph-v1-producer.test.ts` covering production Playwright capture, v1/web-v1 validation, trace transport round trip, and missing/incompatible capability rejection before lease acceptance.
+- Worker validation passed: focused gate (`15 files / 255 tests`), expanded regression gate (`6 files / 97 tests`), `CI=true corepack pnpm typecheck`, `git diff --check`, and producer E2E (`1 file / 2 tests`). Formal complete-matrix review and PR evidence remain pending; status intentionally stays `claimed`.
+- review round 1: reviewed head `aa13005e25b874de9cf358b5a3b994233539eee4`; Standards found an Important readiness/capability finding and a Minor duplicated capability-token smell; Spec found Important blockers for generic Core web offers, direct spool append validation, and a changed M1 regression.
+- final: reviewed code/test head `18d4c8869c462b3dd5b7af36c0c838af389723d1` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused Gate: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright tests/unit/runner/offer-runtime.test.ts tests/component/web-execution/playwright-observation.test.ts tests/conformance/runner-protocol tests/conformance/observation` passed with 15 files / 255 tests. Clean expanded regression Gates: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/execution-runtime.test.ts tests/component/core-runner tests/component/web-execution/local-run-composition-root.test.ts tests/e2e/self-hosted/bound-runner-dispatch.test.ts` passed with 6 files / 97 tests; `CI=true corepack pnpm vitest run tests/component/m1-web-walking-skeleton.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/unit/core-daemon/local-readiness-service.test.ts tests/unit/core-daemon/execution-job-service.test.ts tests/unit/runner/trace-upload-pump.test.ts` passed with 6 files / 62 tests / 1 skipped. Clean post-review acceptance: `CI=true corepack pnpm vitest run tests/e2e/web-execution/graph-v1-producer.test.ts` passed with 1 file / 2 tests. `CI=true corepack pnpm typecheck`, `git diff --check`, and `git diff --check 3c6fef1...HEAD` passed. PR `https://github.com/ljie-PI/Qualigence/pull/97` merged as `b7d08755b0223ec89e35b30a2ac795064a514951`.
+
+## Answer
+
+Implemented the expanded Ticket 23 live producer migration. Playwright live capture now emits validated candidate Graph v1 with graph-level `web/v1`, private adapter descriptors remain keyed by v1 node IDs, Runtime/Trace live observation seams use v1 and validate before durable append/spool, gRPC transport validates v1/web-v1 payloads and capability requirements, Core/Local/Self-hosted web offers require Graph/web v1 capabilities before Runner admission, and real Chromium producer acceptance proves v1 schema/canonical transport plus missing/incompatible capability rejection.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/97`
+
+Merge commit: `b7d08755b0223ec89e35b30a2ac795064a514951`

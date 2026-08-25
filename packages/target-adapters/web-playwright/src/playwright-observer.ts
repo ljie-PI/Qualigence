@@ -1,6 +1,7 @@
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
+  ObservationGraphV1,
+  WebViewportV1,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
 import type { PlaywrightBrowserSession } from "./browser-session.js";
@@ -10,6 +11,7 @@ import {
 } from "./observation-builder.js";
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
+import { SENSITIVE_TARGET_IDS_PROPERTY } from "./sensitive-evidence-authority.js";
 
 export interface PlaywrightObserverHooks {
   readonly afterDomCollection?: () => void | Promise<void>;
@@ -56,7 +58,18 @@ async function readPageValue<T>(
  * Executed inside the page. Collects semantic candidates in DOM order without
  * exposing any selector to the caller. Password field values are never read.
  */
-function collectCandidates(): ObservationCandidate[] {
+interface BrowserObservationCandidate extends ObservationCandidate {
+  readonly sensitiveTargetIds?: readonly string[];
+}
+
+interface BrowserObservationCapture {
+  readonly candidates: readonly BrowserObservationCandidate[];
+  readonly viewport: WebViewportV1;
+}
+
+function collectPageObservation(
+  sensitiveTargetIdsProperty: string,
+): BrowserObservationCapture {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
       return true;
@@ -158,10 +171,18 @@ function collectCandidates(): ObservationCandidate[] {
     return "";
   }
 
+  function readSensitiveTargetIds(element: Element): readonly string[] {
+    const value = (element as unknown as Element & Record<string, unknown>)[sensitiveTargetIdsProperty];
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      return [];
+    }
+    return value;
+  }
+
   const selector =
     "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
   const elements = Array.from(document.querySelectorAll(selector));
-  const candidates: ObservationCandidate[] = [];
+  const candidates: BrowserObservationCandidate[] = [];
 
   for (const element of elements) {
     if (!isVisible(element)) {
@@ -170,6 +191,8 @@ function collectCandidates(): ObservationCandidate[] {
     const role = roleOf(element);
     const name = accessibleName(element).trim();
 
+    const sensitiveTargetIds = readSensitiveTargetIds(element);
+    const isSensitiveTarget = sensitiveTargetIds.length > 0;
     const isFormField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement;
@@ -179,6 +202,8 @@ function collectCandidates(): ObservationCandidate[] {
       if (type !== "password" && element.value !== "") {
         value = element.value;
       }
+    } else if (isSensitiveTarget && element instanceof HTMLSelectElement && element.value !== "") {
+      value = element.value;
     }
 
     const interactive =
@@ -194,28 +219,41 @@ function collectCandidates(): ObservationCandidate[] {
       if (content.trim() !== "") {
         text = content;
       }
+    } else if (isSensitiveTarget && element instanceof HTMLSelectElement) {
+      const selectedText = element.selectedOptions.item(0)?.text ?? "";
+      if (selectedText.trim() !== "") {
+        text = selectedText;
+      }
     }
 
     const disabled =
       (element as HTMLButtonElement).disabled === true ||
       element.getAttribute("aria-disabled") === "true";
 
-    const candidate: ObservationCandidate = {
+    const candidate: BrowserObservationCandidate = {
       role,
       ...(name !== "" ? { name } : {}),
       ...(text !== undefined ? { text } : {}),
       ...(value !== undefined ? { value } : {}),
       ...(disabled ? { disabled: true } : {}),
+      ...(sensitiveTargetIds.length > 0 ? { sensitiveTargetIds } : {}),
     };
     candidates.push(candidate);
   }
 
-  return candidates;
+  return {
+    candidates,
+    viewport: {
+      width: Math.max(1, Math.trunc(window.innerWidth)),
+      height: Math.max(1, Math.trunc(window.innerHeight)),
+      devicePixelRatio: window.devicePixelRatio,
+    },
+  };
 }
 
 function buildArtifacts(
   ordinal: number,
-  graph: ObservationGraph,
+  graph: ObservationGraphV1,
   screenshot: Uint8Array,
 ): CapturedArtifact[] {
   const json = new TextEncoder().encode(JSON.stringify(graph));
@@ -239,33 +277,54 @@ export class PlaywrightObserver implements Observer {
     private readonly hooks: PlaywrightObserverHooks = {},
   ) {}
 
-  async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
+  async capture(job: AcceptedExecutionJob): Promise<ObservationGraphV1> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
       const navigationGeneration = this.session.currentNavigationGeneration;
       const assertCaptureAuthority = (): void => {
         this.session.assertPageTargetOrigin(page, navigationGeneration);
       };
+      this.session.assertSensitiveEvidenceAvailable();
       const captured = await readPageValue(
         assertCaptureAuthority,
-        async () => (await page.evaluate(collectCandidates)) as ObservationCandidate[],
+        async () => (await page.evaluate(
+          collectPageObservation,
+          SENSITIVE_TARGET_IDS_PROPERTY,
+        )) as BrowserObservationCapture,
       );
       await this.hooks.afterDomCollection?.();
       assertCaptureAuthority();
-      const raw = captured.map((candidate) => ({
+      this.session.assertSensitiveEvidenceAvailable();
+      const raw = captured.candidates.map((candidate) => ({
         role: candidate.role,
-        ...(candidate.name === undefined ? {} : { name: this.session.redactSensitiveText(candidate.name) }),
-        ...(candidate.text === undefined ? {} : { text: this.session.redactSensitiveText(candidate.text) }),
-        ...(candidate.value === undefined ? {} : { value: this.session.redactSensitiveText(candidate.value) }),
+        ...(candidate.name === undefined ? {} : {
+          name: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.name,
+          ),
+        }),
+        ...(candidate.text === undefined ? {} : {
+          text: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.text,
+          ),
+        }),
+        ...(candidate.value === undefined ? {} : {
+          value: this.session.redactSensitiveTargetField(
+            candidate.sensitiveTargetIds,
+            candidate.value,
+          ),
+        }),
         ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
+        ...(candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0
+          ? { sensitive: true }
+          : {}),
       }));
-      const url = this.session.redactSensitiveText(
-        this.session.assertPageTargetOrigin(page, navigationGeneration),
-      );
-      const title = this.session.redactSensitiveText(await readPageValue(
+      const url = this.session.assertPageTargetOrigin(page, navigationGeneration);
+      const title = await readPageValue(
         assertCaptureAuthority,
         () => page.title(),
-      ));
+      );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       assertCaptureAuthority();
@@ -273,22 +332,26 @@ export class PlaywrightObserver implements Observer {
         job.runId,
         ordinal,
         raw,
-        { url, ...(title !== "" ? { title } : {}) },
+        {
+          url,
+          targetId: new URL(this.session.targetUrl).origin,
+          title,
+          capturedAt: new Date().toISOString(),
+          viewport: captured.viewport,
+          allowedQueryKeys: this.session.allowedWebQueryKeys,
+          evidenceRefs: artifactNames,
+        },
       );
       assertCaptureAuthority();
-      const graphWithRefs: ObservationGraph = {
-        ...graph,
-        artifactRefs: artifactNames,
-      };
 
       const screenshot = await captureScreenshot(page, assertCaptureAuthority);
       assertCaptureAuthority();
-      const artifacts = buildArtifacts(ordinal, graphWithRefs, screenshot);
-      this.session.registerCapturedObservation(page, graphWithRefs.graphId, {
+      const artifacts = buildArtifacts(ordinal, graph, screenshot);
+      this.session.registerCapturedObservation(page, graph.graphId, {
         descriptors,
         artifacts,
       }, navigationGeneration);
-      return graphWithRefs;
+      return graph;
     });
   }
 }

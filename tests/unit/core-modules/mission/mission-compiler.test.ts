@@ -13,7 +13,11 @@ import type {
 } from "@qualigence/mission";
 import type { Clock } from "@qualigence/shared-kernel";
 import { sha256Hex } from "@qualigence/context-intake";
-import { capabilities, negotiateCapabilities } from "@qualigence/runner-protocol";
+import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  capabilities,
+  negotiateCapabilities,
+} from "@qualigence/runner-protocol";
 import { sequentialIds, validatedProposal } from "./fixtures.js";
 
 const fixedClock: Clock = { now: () => "2026-08-01T00:00:00.000Z" };
@@ -111,10 +115,12 @@ describe("MissionCompiler", () => {
       "action:click",
       "action:navigate",
       "model:structured-output",
+      ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
       "target:web-playwright",
     ]);
     expect(negotiateCapabilities(capabilities({
       targetAdapters: ["web-playwright"],
+      observationExtensions: ["observation-graph/v1", "web/v1"],
       actionKinds: ["click"],
     }), job.requiredCapabilities)).toEqual({
       outcome: "rejected",
@@ -122,6 +128,7 @@ describe("MissionCompiler", () => {
     });
     expect(negotiateCapabilities(capabilities({
       targetAdapters: ["web-playwright"],
+      observationExtensions: ["observation-graph/v1", "web/v1"],
       actionKinds: ["navigate", "click", "input", "select", "scroll"],
     }), job.requiredCapabilities)).toEqual({ outcome: "accepted" });
     expect(result.value.projectId).toBe("p");

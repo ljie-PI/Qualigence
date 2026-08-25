@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { capabilities } from "@qualigence/runner-protocol";
+import {
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+  capabilities,
+} from "@qualigence/runner-protocol";
 import type {
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -40,6 +46,44 @@ function wireRoundTrip<TDomain>(
   const bytes = encodeWireMessage(name, wire);
   const decoded = decodeWireMessage(name, bytes);
   return fromWire(decoded);
+}
+
+function graphV1(graphId: string) {
+  return {
+    schema: OBSERVATION_GRAPH_V1_SCHEMA,
+    graphId,
+    target: { kind: "web", targetId: "https://example.test" },
+    capturedAt: "2026-08-01T00:00:00.000Z",
+    rootNodeIds: ["node-1"],
+    nodes: [
+      {
+        id: "node-1",
+        role: "button",
+        name: "Add to cart",
+        state: { disabled: false },
+        relations: [],
+        source: { adapterId: "web-playwright", sourceKind: "dom" },
+        confidence: 0.9,
+        sensitivity: "public",
+        extensions: {},
+        evidenceRefs: [],
+      },
+    ],
+    evidenceRefs: [],
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: "https://example.test",
+          pathname: "/",
+          title: "Example",
+          viewport: { width: 1024, height: 768, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  } as const;
 }
 
 describe("grpc runner protocol mappers", () => {
@@ -166,7 +210,11 @@ describe("grpc runner protocol mappers", () => {
           budget: { maximumStepsPerJob: 6, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 },
         },
       },
-      requiredCapabilities: ["target:web-playwright"],
+      requiredCapabilities: [
+        "target:web-playwright",
+        OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+        WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+      ],
       leaseDurationMs: 30_000,
     };
     expect(wireRoundTrip("ExecutionJobOffer", offerToWire, offerFromWire, offer)).toEqual(offer);
@@ -198,7 +246,7 @@ describe("grpc runner protocol mappers", () => {
     expect(back.leaseToken).toBe(lease.leaseToken);
   });
 
-  it("round-trips an ExecutionEventBatch with trace events", () => {
+  it("round-trips an ExecutionEventBatch with Graph v1 trace events", () => {
     const event: TraceEvent = {
       protocolVersion: "runner-protocol/v1",
       schemaVersion: "trace-event/v1",
@@ -210,11 +258,7 @@ describe("grpc runner protocol mappers", () => {
       stage: "observation",
       occurredAt: "2026-08-01T00:00:00.000Z",
       payloadHash: "0".repeat(64),
-      payload: {
-        graphId: "graph-1",
-        url: "https://example.test/",
-        nodes: [{ id: "node-1", role: "button", name: "Add to cart", confidence: 0.9 }],
-      },
+      payload: graphV1("graph-1") as never,
     };
     const batch: ExecutionEventBatch = {
       batchId: "batch-1",
@@ -223,6 +267,56 @@ describe("grpc runner protocol mappers", () => {
       events: [event],
     };
     expect(wireRoundTrip("ExecutionEventBatch", eventBatchToWire, eventBatchFromWire, batch)).toEqual(batch);
+  });
+
+  it("rejects an observation Trace payload with an incompatible graph major", () => {
+    const event: TraceEvent = {
+      protocolVersion: "runner-protocol/v1",
+      schemaVersion: "trace-event/v1",
+      messageId: "run-attempt-1:1",
+      idempotencyKey: "run-attempt-1:1",
+      runId: "run-attempt-1",
+      sequenceNumber: 1,
+      stage: "observation",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      payloadHash: "0".repeat(64),
+      payload: {
+        ...graphV1("graph-unsupported"),
+        schema: { epoch: "v1", version: "observation-graph/v2" },
+      } as never,
+    };
+
+    expect(() => eventBatchToWire({
+      batchId: "batch-bad-graph",
+      runId: "run-attempt-1",
+      firstSequenceNumber: 1,
+      events: [event],
+    })).toThrow(expect.objectContaining({ code: "ProtocolViolation" }));
+  });
+
+  it("rejects a web observation Trace payload without a compatible web/v1 extension", () => {
+    const event: TraceEvent = {
+      protocolVersion: "runner-protocol/v1",
+      schemaVersion: "trace-event/v1",
+      messageId: "run-attempt-1:1",
+      idempotencyKey: "run-attempt-1:1",
+      runId: "run-attempt-1",
+      sequenceNumber: 1,
+      stage: "observation",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+      payloadHash: "0".repeat(64),
+      payload: {
+        ...graphV1("graph-missing-web"),
+        extensions: {},
+      } as never,
+    };
+
+    expect(() => eventBatchToWire({
+      batchId: "batch-missing-web",
+      runId: "run-attempt-1",
+      firstSequenceNumber: 1,
+      events: [event],
+    })).toThrow(expect.objectContaining({ code: "ProtocolViolation" }));
   });
 
   it("does not materialize a step index on legacy Trace events", () => {

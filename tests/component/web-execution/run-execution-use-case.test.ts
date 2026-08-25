@@ -10,7 +10,7 @@ import type {
 } from "@qualigence/evidence";
 import { InMemoryTraceStore, TraceIngestor } from "@qualigence/evidence";
 import type {
-  ObservationGraph,
+  ObservationGraphV1,
   RunId,
 } from "@qualigence/runner-protocol";
 import {
@@ -30,6 +30,7 @@ import {
   type RunExecutionRequest,
   type RunResourceFactory,
 } from "@qualigence/execution-application";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 function request(): RunExecutionRequest {
   return {
@@ -107,14 +108,11 @@ class InMemoryManifestStore implements ArtifactManifestStore {
   }
 }
 
-function graph(graphId: string, nodeId: string, text: string): ObservationGraph {
-  return {
-    graphId,
-    nodes: [{ id: nodeId, role: "button", name: nodeId, text, confidence: 1 }],
-  };
+function graph(graphId: string, nodeId: string, text: string): ObservationGraphV1 {
+  return observationGraphV1(graphId, [{ id: nodeId, role: "button", name: text, confidence: 1 }]);
 }
 
-function scriptedObserver(graphs: readonly ObservationGraph[]): Observer {
+function scriptedObserver(graphs: readonly ObservationGraphV1[]): Observer {
   const queue = [...graphs];
   return {
     async capture() {
@@ -244,7 +242,7 @@ function createHarness(options: HarnessOptions): Harness {
   return { useCase: new RunExecutionUseCaseImpl(factory), runs, traces, manifests, close };
 }
 
-function twoGraphs(): readonly ObservationGraph[] {
+function twoGraphs(): readonly ObservationGraphV1[] {
   return [
     graph("g-before", "n1", "Cart total: $0"),
     graph("g-after", "n2", "Cart total: $19"),

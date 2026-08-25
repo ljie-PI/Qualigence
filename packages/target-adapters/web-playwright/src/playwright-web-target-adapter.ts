@@ -1,6 +1,6 @@
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
+  ObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import type {
   ActionExecutor,
@@ -63,24 +63,24 @@ export class PlaywrightWebTargetAdapter
     await this.session.start(signal);
   }
 
-  async capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph> {
+  async capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraphV1> {
     signal?.throwIfAborted();
     return this.guard(() => this.observer.capture(job));
   }
 
   resolve(
     action: ProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
     signal?: AbortSignal,
   ): Promise<ResolvedWebAction>;
   resolve(
     action: AnyProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
     signal?: AbortSignal,
   ): Promise<AnyResolvedWebAction>;
   async resolve(
     action: AnyProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
     signal?: AbortSignal,
   ): Promise<AnyResolvedWebAction> {
     signal?.throwIfAborted();

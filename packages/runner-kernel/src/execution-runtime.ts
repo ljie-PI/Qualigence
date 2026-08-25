@@ -7,12 +7,16 @@ import type {
   ExecutionCompletion,
   ExecutionPlanStep,
   FindingEnvelope,
-  ObservationGraph,
+  ObservationGraphV1,
   ResolvedActionTracePayload,
   ResolvedDesktopAction,
   RunId,
   TraceEvent,
   VerificationTracePayload,
+} from "@qualigence/runner-protocol";
+import {
+  requireGraphExtensionMajor,
+  validateObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import {
   DeterministicExecutionBudget,
@@ -208,7 +212,7 @@ export class ExecutionTargetError extends Error {
 }
 
 export interface Observer {
-  capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraph>;
+  capture(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<ObservationGraphV1>;
 }
 
 export interface ExecutionDecisionProvider<TKind extends ProposedActionKind = "click"> {
@@ -217,7 +221,7 @@ export interface ExecutionDecisionProvider<TKind extends ProposedActionKind = "c
 
 export interface AgentContext {
   readonly job: AcceptedExecutionJob;
-  readonly observation: ObservationGraph;
+  readonly observation: ObservationGraphV1;
   readonly step?: ExecutionPlanStep;
   readonly stepIndex?: number;
   readonly budget?: ExecutionBudget;
@@ -227,7 +231,7 @@ export interface AgentContext {
 export interface ActionResolver<TKind extends ProposedActionKind = "click"> {
   resolve(
     action: ProposedAction<TKind>,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
     signal?: AbortSignal,
   ): Promise<ResolvedAction>;
 }
@@ -264,8 +268,8 @@ export interface Verifier {
 
 export interface VerificationContext {
   readonly job: AcceptedExecutionJob;
-  readonly before: ObservationGraph;
-  readonly after: ObservationGraph;
+  readonly before: ObservationGraphV1;
+  readonly after: ObservationGraphV1;
   readonly claimIds?: readonly string[];
   readonly stepIndex?: number;
   readonly action?: ResolvedAction;
@@ -411,7 +415,7 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
       return this.runObjectiveOnly(job, setCurrentStep, signal);
     }
 
-    let firstObservation: ObservationGraph | undefined;
+    let firstObservation: ObservationGraphV1 | undefined;
     let lastAction: ResolvedAction | undefined;
     let lastOutcome: ActionOutcome | undefined;
     let lastStepIndex = 0;
@@ -491,7 +495,7 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     job: AcceptedExecutionJob,
     step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }> | undefined,
     stepIndex: number,
-    observation: ObservationGraph,
+    observation: ObservationGraphV1,
     signal?: AbortSignal,
   ): Promise<
     | { readonly action: ResolvedAction; readonly outcome: ActionOutcome }
@@ -551,9 +555,10 @@ export class ExecutionRuntime<TKind extends ProposedActionKind = "click"> {
     job: AcceptedExecutionJob,
     stepIndex?: number,
     signal?: AbortSignal,
-  ): Promise<ObservationGraph> {
-    const observation = await this.withinWallClock(job.runId, (operationSignal) =>
+  ): Promise<ObservationGraphV1> {
+    const captured = await this.withinWallClock(job.runId, (operationSignal) =>
       this.dependencies.observer.capture(job, operationSignal), signal);
+    const observation = validateLiveObservationGraph(captured);
     await this.recordStage(job.runId, stepIndex, "observation", observation);
     return observation;
   }
@@ -800,19 +805,34 @@ function assertDecisionMatchesStep(
   }
 }
 
+function validateLiveObservationGraph(candidate: ObservationGraphV1): ObservationGraphV1 {
+  const webQueryKeys = candidate.extensions?.["web/v1"]?.payload.query;
+  const allowedWebQueryKeys = webQueryKeys !== undefined &&
+    webQueryKeys !== null &&
+    typeof webQueryKeys === "object" &&
+    !Array.isArray(webQueryKeys)
+    ? Object.keys(webQueryKeys)
+    : [];
+  validateObservationGraphV1(candidate, { allowedWebQueryKeys });
+  if (candidate.target.kind === "web") {
+    requireGraphExtensionMajor(candidate, "web", 1);
+  }
+  return candidate;
+}
+
 function findingFromVerification(
   runId: RunId,
   verification: Extract<VerificationResult, { status: "failed" }>,
-  before: ObservationGraph,
-  after: ObservationGraph,
+  before: ObservationGraphV1,
+  after: ObservationGraphV1,
 ): FindingEnvelope {
   const claimRefs = verification.claims.flatMap((claim) => [
     `${claim.expected.graphId}:${claim.expected.nodeId}`,
     `${claim.observed.graphId}:${claim.observed.nodeId}`,
   ]);
   const artifactRefs = [
-    ...(before.artifactRefs ?? []),
-    ...(after.artifactRefs ?? []),
+    ...before.evidenceRefs,
+    ...after.evidenceRefs,
   ];
   return {
     findingId: `${runId}:verification`,

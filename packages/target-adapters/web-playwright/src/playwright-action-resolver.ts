@@ -1,4 +1,4 @@
-import type { ObservationGraph } from "@qualigence/runner-protocol";
+import type { ObservationGraphV1 } from "@qualigence/runner-protocol";
 import type {
   ActionResolver,
   AnyProposedAction,
@@ -15,15 +15,15 @@ export class PlaywrightActionResolver implements ActionResolver {
 
   resolve(
     action: ProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
   ): Promise<ResolvedWebAction>;
   resolve(
     action: AnyProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
   ): Promise<AnyResolvedWebAction>;
   async resolve(
     action: AnyProposedAction,
-    graph: ObservationGraph,
+    graph: ObservationGraphV1,
   ): Promise<AnyResolvedWebAction> {
     if (action.kind === "window") {
       throw new WebTargetError("UnsupportedAction", "This action is not implemented by this Runtime.");

@@ -5,7 +5,10 @@ import {
   type SchedulingMission,
   type ScheduledMission,
 } from "@qualigence/mission";
+import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
 import { PrdMissionRepositoryTestStub } from "../../../helpers/prd-mission-repository.js";
+
+const WEB_JOB_CAPABILITIES = ["action:click", "model:structured-output", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS, "target:web-playwright"] as const;
 
 const scheduled: ScheduledMission = {
   missionId: "mission-1",
@@ -69,7 +72,7 @@ const mission: SchedulingMission = {
     jobId: "logical-job-1",
     testCaseId: "case-1",
     objective: "verify checkout",
-    requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"],
+    requiredCapabilities: WEB_JOB_CAPABILITIES,
     status: "queued",
     snapshotHash: "case-hash",
     snapshot: {
@@ -135,7 +138,7 @@ describe("MissionSchedulingService", () => {
         logicalJobId: "logical-job-1",
         attemptId: "attempt-1",
         runnerId: "runner-1",
-        requiredCapabilities: ["action:click", "model:structured-output", "target:web-playwright"],
+        requiredCapabilities: WEB_JOB_CAPABILITIES,
         job: expect.objectContaining({
           jobId: "runner-job-1",
           runId: "run-1",
