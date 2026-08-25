@@ -986,9 +986,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
     const crossOriginContent = "private cross-origin account data";
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => currentUrl === fixture.url
-      ? [{ role: "button", name: "Continue" }]
-      : [{ role: "button", name: crossOriginContent }]);
+    const evaluate = vi.fn(async () => ({
+      candidates: currentUrl === fixture.url
+        ? [{ role: "button", name: "Continue" }]
+        : [{ role: "button", name: crossOriginContent }],
+      viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+    }));
     const title = vi.fn(async () => currentUrl === fixture.url ? "Safe page" : crossOriginContent);
     const screenshot = vi.fn(async () => new TextEncoder().encode(
       currentUrl === fixture.url ? "safe screenshot" : crossOriginContent,
@@ -1083,7 +1086,10 @@ describe("Playwright resolve + execute against real Chromium", () => {
     session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
     session.withPage = async (operation) => operation({
       url: () => currentUrl,
-      evaluate: async () => [{ role: "button", name: "Continue" }],
+      evaluate: async () => ({
+        candidates: [{ role: "button", name: "Continue" }],
+        viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+      }),
       title: async () => "Safe page",
       screenshot: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
       getByRole: () => ({
