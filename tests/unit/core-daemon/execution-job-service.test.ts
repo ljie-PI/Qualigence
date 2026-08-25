@@ -52,7 +52,7 @@ function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
 }
 
 const owner1 = { runnerId: "runner-1", sessionId: "session-1" } as const;
-const webCaps = capabilities({ targetAdapters: ["web-playwright"] });
+const webCaps = capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] });
 
 describe("ExecutionJobService", () => {
   it.each([
@@ -95,7 +95,7 @@ describe("ExecutionJobService", () => {
       requiredCapabilities: ["target:web-playwright"],
     });
     expect(offer.job.jobId).toBe("job-run-1");
-    expect(offer.requiredCapabilities).toEqual(["target:web-playwright"]);
+    expect(offer.requiredCapabilities).toEqual(["target:web-playwright", "observation:observation-graph/v1", "observation:web/v1"]);
   });
 
   it("rejects an offer with an explicit CapabilityMismatch instead of silently downgrading", async () => {
@@ -171,7 +171,7 @@ function hello(runnerId: string, overrides: Partial<RunnerHello> = {}): RunnerHe
     runnerId,
     runnerVersion: "0.1.0",
     supportedProtocolMajors: [1],
-    capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+    capabilities: capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] }),
     ...overrides,
   };
 }

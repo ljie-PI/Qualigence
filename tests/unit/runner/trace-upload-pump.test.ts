@@ -4,6 +4,7 @@ import type {
   ExecutionEventBatch,
 } from "@qualigence/runner-protocol";
 import { SqliteRunnerSpool, type RunnerSpool } from "@qualigence/runner-spool";
+import type { TraceEventInput } from "@qualigence/runner-kernel";
 import { RunnerAppError } from "../../../apps/runner/src/errors.js";
 import { SpoolingTraceRecorder } from "../../../apps/runner/src/spooling-trace-recorder.js";
 import {
@@ -94,6 +95,19 @@ describe("TraceUploadPump", () => {
 
     expect(core.events).toHaveLength(1);
     expect(core.events[0]).toMatchObject({ stepIndex: 2, stage: "decision" });
+  });
+
+  it("rejects legacy observation payloads before they enter the spool", async () => {
+    const spool = await newSpool();
+    const recorder = new SpoolingTraceRecorder(spool);
+
+    await expect(recorder.append({
+      runId: RUN_ID,
+      stage: "observation",
+      payload: { graphId: "legacy-graph", nodes: [] },
+    } as unknown as TraceEventInput)).rejects.toThrow();
+
+    await expect(spool.usage()).resolves.toMatchObject({ events: 0 });
   });
 
   it("drains every spooled event to Core in order and clears the spool", async () => {

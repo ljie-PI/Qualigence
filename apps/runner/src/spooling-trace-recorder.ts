@@ -1,6 +1,9 @@
 import {
   canonicalTraceEventHash,
+  requireGraphExtensionMajor,
+  validateObservationGraphV1,
   type FindingEnvelope,
+  type ObservationGraphV1,
   type TraceEvent,
   type TraceEventHashInput,
 } from "@qualigence/runner-protocol";
@@ -26,7 +29,7 @@ export class SpoolingTraceRecorder implements TraceRecorder {
 
   async append(input: TraceEventInput): Promise<TraceEvent> {
     const sequenceNumber = this.nextSequenceByRun.get(input.runId) ?? 1;
-    const event = withHash(withEnvelope(input, sequenceNumber));
+    const event = withHash(withEnvelope(validateTraceInput(input), sequenceNumber));
     try {
       await this.spool.append(event);
     } catch (cause) {
@@ -43,6 +46,23 @@ export class SpoolingTraceRecorder implements TraceRecorder {
 /** The finding payload of a `finding`-stage trace event, for downstream reporting. */
 export function findingOf(event: TraceEvent): FindingEnvelope | undefined {
   return event.stage === "finding" ? event.payload : undefined;
+}
+
+function validateTraceInput(input: TraceEventInput): TraceEventInput {
+  if (input.stage !== "observation") return input;
+  const graph = input.payload as ObservationGraphV1;
+  const query = graph.extensions?.["web/v1"]?.payload.query;
+  const allowedWebQueryKeys = query !== undefined &&
+    query !== null &&
+    typeof query === "object" &&
+    !Array.isArray(query)
+    ? Object.keys(query)
+    : [];
+  validateObservationGraphV1(graph, { allowedWebQueryKeys });
+  if (graph.target.kind === "web") {
+    requireGraphExtensionMajor(graph, "web", 1);
+  }
+  return input;
 }
 
 function withEnvelope(input: TraceEventInput, sequenceNumber: number): TraceEventHashInput {

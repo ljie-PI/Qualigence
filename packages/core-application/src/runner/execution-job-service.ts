@@ -6,7 +6,7 @@ import type {
   ExecutionJobOffer,
   RunnerCapabilities,
 } from "@qualigence/runner-protocol";
-import { ExecutionPolicySnapshotError, negotiateCapabilities, parseExecutionJob } from "@qualigence/runner-protocol";
+import { ExecutionPolicySnapshotError, WEB_OBSERVATION_V1_CAPABILITY_TOKENS, negotiateCapabilities, parseExecutionJob } from "@qualigence/runner-protocol";
 import type { RunnerControlStore } from "@qualigence/runner-control";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
 import type { LeaseOwner, RunCompletionDisposition, RunOwnershipService } from "./run-ownership-service.js";
@@ -35,6 +35,14 @@ interface PendingOffer {
 }
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
+
+function requiredCapabilitiesFor(
+  job: AcceptedExecutionJob,
+  requested: readonly string[],
+): readonly string[] {
+  if (job.target.kind !== "web") return requested;
+  return [...new Set([...requested, ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS])];
+}
 
 /**
  * Owns the Offer/accept/renew/complete lifecycle on top of the authoritative
@@ -81,18 +89,19 @@ export class ExecutionJobService {
       }
       throw error;
     }
-    const negotiation = negotiateCapabilities(request.capabilities, request.requiredCapabilities);
+    const requiredCapabilities = requiredCapabilitiesFor(job, request.requiredCapabilities);
+    const negotiation = negotiateCapabilities(request.capabilities, requiredCapabilities);
     if (negotiation.outcome === "rejected") {
       throw new CoreApplicationError("CapabilityMismatch", "runner is missing required capabilities", {
         details: { missingCapabilities: negotiation.rejection.missingCapabilities },
       });
     }
-    const pendingOffer = await this.resolveRecovery({ ...request, job });
+    const pendingOffer = await this.resolveRecovery({ ...request, job, requiredCapabilities });
     const offerId = this.generateOfferId();
     const offer: ExecutionJobOffer = {
       offerId,
       job: pendingOffer.job,
-      requiredCapabilities: [...request.requiredCapabilities],
+      requiredCapabilities: [...requiredCapabilities],
       leaseDurationMs: this.leaseDurationMs,
     };
     this.offers.set(offerId, {
