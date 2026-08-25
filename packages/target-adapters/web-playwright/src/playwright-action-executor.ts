@@ -312,6 +312,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             try {
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "input", value);
               if (startedEpoch.status === "failed") {
+                await endPageSensitiveActionEpoch(
+                  locator,
+                  sensitiveEvidence,
+                  "input",
+                  false,
+                ).catch(() => undefined);
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
                 throw new WebTargetError(
                   "SensitiveEvidenceUnavailable",
@@ -357,6 +363,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             try {
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "select", value);
               if (startedEpoch.status === "failed") {
+                await endPageSensitiveActionEpoch(
+                  locator,
+                  sensitiveEvidence,
+                  "select",
+                  false,
+                ).catch(() => undefined);
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
                 throw new WebTargetError(
                   "SensitiveEvidenceUnavailable",
@@ -615,6 +627,7 @@ async function beginPageSensitiveActionEpoch(
       deferredRecords: MutationRecord[];
       classifiedNodes: Set<string>;
       classifiedRegions: Set<string>;
+      classifiedElements: Element[];
       baseline: WeakMap<Element, ReadonlySet<string>>;
       observer: MutationObserver;
       targetCaptureListener: EventListener;
@@ -684,6 +697,7 @@ async function beginPageSensitiveActionEpoch(
       deferredRecords: [],
       classifiedNodes: new Set<string>(),
       classifiedRegions: new Set<string>(),
+      classifiedElements: [],
       baseline,
       observer,
       targetCaptureListener: noteTargetDispatch,
@@ -964,6 +978,7 @@ async function beginPageSensitiveActionEpoch(
       const nodeKey = `${input.markerId}:${nodeIdentity(candidate)}`;
       if (!epochToUpdate.classifiedNodes.has(nodeKey)) {
         epochToUpdate.classifiedNodes.add(nodeKey);
+        epochToUpdate.classifiedElements.push(candidate);
         if (epochToUpdate.classifiedNodes.size > input.maxClassifiedNodes) {
           poison(epochToUpdate);
           return;
@@ -1113,6 +1128,7 @@ async function endPageSensitiveActionEpoch(
         deferredRecords: MutationRecord[];
         classifiedNodes: Set<string>;
         classifiedRegions: Set<string>;
+        classifiedElements?: Element[];
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
         poisoned: boolean;
@@ -1157,10 +1173,41 @@ async function endPageSensitiveActionEpoch(
         forms: active.forms,
         baseline: active.baseline,
       });
+    } else {
+      cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
     }
     const failed = input.retainRecord && (state.poisoned || active.poisoned);
     state.active = null;
     return { status: failed ? "failed" : "ok" };
+
+    function cleanupSensitiveMarkers(markerId: string, classifiedElements: readonly Element[]): void {
+      const candidates = new Set<Element>(classifiedElements);
+      candidates.add(element);
+      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+        const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
+        if (Array.isArray(ids) && ids.includes(markerId)) {
+          candidates.add(candidate);
+        }
+      }
+      for (const candidate of candidates) {
+        removeSensitiveMarker(candidate, markerId);
+      }
+    }
+
+    function removeSensitiveMarker(candidate: Element, markerId: string): void {
+      const host = candidate as unknown as Element & Record<string, unknown>;
+      const ids = host[input.targetIdsProperty];
+      if (!Array.isArray(ids)) {
+        return;
+      }
+      const remaining = ids.filter((id) => id !== markerId);
+      if (remaining.length === 0) {
+        delete host[input.targetIdsProperty];
+        candidate.removeAttribute(input.maskAttribute);
+        return;
+      }
+      host[input.targetIdsProperty] = remaining;
+    }
 
     function processMutationRecords(
       stateToUpdate: BrowserSensitiveState,
@@ -1318,6 +1365,9 @@ async function endPageSensitiveActionEpoch(
       const nodeKey = `${input.markerId}:${nodeIdentity(stateToUpdate, candidate)}`;
       if (!epochToUpdate.classifiedNodes.has(nodeKey)) {
         epochToUpdate.classifiedNodes.add(nodeKey);
+        if (epochToUpdate.classifiedElements !== undefined) {
+          epochToUpdate.classifiedElements.push(candidate);
+        }
         if (epochToUpdate.classifiedNodes.size > input.maxClassifiedNodes) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;

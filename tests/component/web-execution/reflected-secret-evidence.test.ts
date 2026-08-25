@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AcceptedExecutionJob, ObservationGraphV1 } from "@qualigence/runner-protocol";
-import { ExecutionPermit } from "@qualigence/runner-kernel";
+import { ExecutionBlockedError, ExecutionPermit } from "@qualigence/runner-kernel";
 import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
@@ -304,6 +304,40 @@ describe("Playwright reflected sensitive evidence", () => {
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
       `, "Late reflected secret"),
+      "/hidden-late-visible": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 360px; height: 220px; }
+          label { display: block; margin-top: 130px; }
+          #mirror, #equal {
+            position: absolute;
+            left: 10px;
+            width: 180px;
+            height: 32px;
+            color: white;
+            font: 16px sans-serif;
+          }
+          #mirror { top: 10px; background: rgb(250, 250, 250); display: none; }
+          #mirror.visible { display: block; }
+          #equal { top: 60px; background: rgb(123, 45, 67); }
+        </style>
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <div id="equal" data-qualigence-observe>${SAFE_EQUAL}</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            document.getElementById('mirror').textContent = event.target.value;
+          });
+        </script>
+      `, "Hidden late-visible reflected secret"),
+      "/select-safe": htmlDocument(`
+        <label>Choice
+          <select aria-label="Choice">
+            <option value="">Choose</option>
+            <option value="${SECRET}">${SECRET}</option>
+          </select>
+        </label>
+      `, "Select no dispatch"),
     });
   });
 
@@ -355,6 +389,50 @@ describe("Playwright reflected sensitive evidence", () => {
     expect(after.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
     expect(after.nodes.some((node) => node.name === SAFE_EQUAL || node.value === SAFE_EQUAL)).toBe(true);
 
+    const png = session.artifactsFor(after.graphId).find((artifact) => artifact.mediaType === "image/png");
+    expect(png).toBeDefined();
+    const pixels = await samplePngPixels(session, png!.bytes, [
+      [20, 20],
+      [20, 70],
+    ]);
+    expect(pixels[0]).toEqual([0, 0, 0, 255]);
+    expect(pixels[1]).toEqual([123, 45, 67, 255]);
+  }, 60_000);
+
+  it("masks a classified element hidden during DOM collection that becomes visible before screenshot", async () => {
+    session = new PlaywrightBrowserSession(options("/hidden-late-visible"));
+    await session.start();
+    let revealMirror = false;
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: async (page) => {
+        if (!revealMirror) return;
+        await page.evaluate(() => {
+          const browser = globalThis as unknown as {
+            readonly document: { getElementById(id: string): { readonly classList: { add(value: string): void } } | null };
+          };
+          const mirror = browser.document.getElementById("mirror");
+          if (mirror === null) throw new Error("Missing late-visible mirror.");
+          mirror.classList.add("visible");
+        });
+      },
+    });
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const url = `${fixture.origin}/hidden-late-visible`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const email = nodeNamed(before, "Email");
+
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: email.id },
+      valueRef: "customer.email",
+      reason: "reflect secret into hidden mirror",
+    }, before);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+
+    revealMirror = true;
+    const after = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(nodeNamed(after, "Email").value).toBe("[redacted]");
     const png = session.artifactsFor(after.graphId).find((artifact) => artifact.mediaType === "image/png");
     expect(png).toBeDefined();
     const pixels = await samplePngPixels(session, png!.bytes, [
@@ -499,6 +577,59 @@ describe("Playwright reflected sensitive evidence", () => {
       };
       return browser.document.querySelector("input")?.value ?? "missing";
     }))).resolves.toBe("");
+  }, 60_000);
+
+  it("cleans page-visible sensitive markers when permit authorization rejects after page epoch setup", async () => {
+    const { observer, resolver, executor } = await wire("/safe");
+    const url = `${fixture.origin}/safe`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reject after page-sensitive setup",
+    }, before);
+    const permit = ExecutionPermit.fromAllowedDecision(
+      { status: "allowed", reason: "component rejection test" },
+      { assertActionAuthorized: () => { throw new ExecutionBlockedError("LeaseExpired"); } },
+    );
+
+    await expect(executor.execute(action, permit))
+      .rejects.toMatchObject({ errorCode: "LeaseExpired" });
+    expect(permit.dispatchStarted).toBe(false);
+    expect(session.assertSensitiveEvidenceAvailable()).toBeUndefined();
+    await expect(pageSensitiveState(session, "input"))
+      .resolves.toEqual({ markedCount: 0, maskCount: 0, active: false, recordCount: 0, value: "" });
+
+    const after = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(nodeNamed(after, "Email").value).toBeUndefined();
+  }, 60_000);
+
+  it("cleans page-visible sensitive markers when an abort signal fires after page epoch setup", async () => {
+    const { observer, resolver, executor } = await wire("/select-safe");
+    const url = `${fixture.origin}/select-safe`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "select",
+      target: { nodeId: nodeNamed(before, "Choice").id },
+      valueRef: "customer.email",
+      reason: "abort after page-sensitive setup",
+    }, before);
+    const abort = new AbortController();
+    const permit = ExecutionPermit.fromAllowedDecision(
+      { status: "allowed", reason: "component abort test" },
+      { assertActionAuthorized: () => abort.abort(new Error("cancelled after setup")) },
+    );
+
+    await expect(executor.execute(action, permit, abort.signal))
+      .rejects.toThrow("cancelled after setup");
+    expect(permit.dispatchStarted).toBe(false);
+    expect(session.assertSensitiveEvidenceAvailable()).toBeUndefined();
+    await expect(pageSensitiveState(session, "select"))
+      .resolves.toEqual({ markedCount: 0, maskCount: 0, active: false, recordCount: 0, value: "" });
+
+    const after = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(nodeNamed(after, "Choice").value).toBeUndefined();
   }, 60_000);
 
   it("fails evidence closed for scheduler-adjacent reflected matching content", async () => {
@@ -705,6 +836,53 @@ function nodeNamed(graph: ObservationGraphV1, name: string): ObservationGraphV1[
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (node === undefined) throw new Error(`Missing node named ${name}`);
   return node;
+}
+
+async function pageSensitiveState(
+  session: PlaywrightBrowserSession,
+  selector: "input" | "select",
+): Promise<{
+  readonly markedCount: number;
+  readonly maskCount: number;
+  readonly active: boolean;
+  readonly recordCount: number;
+  readonly value: string;
+}> {
+  return session.withPage(async (page) => page.evaluate((targetSelector) => {
+    type InspectableElement = Record<string, unknown> & {
+      readonly hasAttribute: (name: string) => boolean;
+      readonly value?: unknown;
+    };
+    const browser = globalThis as unknown as {
+      readonly document: {
+        querySelectorAll(selector: string): Iterable<InspectableElement>;
+        querySelector(selector: string): InspectableElement | null;
+      };
+    };
+    const targetIdsProperty = "__qualigenceSensitiveTargetIds";
+    const maskAttribute = "data-qualigence-sensitive-mask";
+    const stateProperty = "__qualigenceSensitiveEvidenceState";
+    let markedCount = 0;
+    let maskCount = 0;
+    for (const element of Array.from(browser.document.querySelectorAll("*"))) {
+      const ids = element[targetIdsProperty];
+      if (Array.isArray(ids) && ids.length > 0) markedCount += 1;
+      if (element.hasAttribute(maskAttribute)) maskCount += 1;
+    }
+    const state = (globalThis as unknown as Record<string, {
+      readonly active?: unknown;
+      readonly records?: readonly unknown[];
+    } | undefined>)[stateProperty];
+    const field = browser.document.querySelector(targetSelector);
+    const value = typeof field?.value === "string" ? field.value : "missing";
+    return {
+      markedCount,
+      maskCount,
+      active: state?.active !== null && state?.active !== undefined,
+      recordCount: state?.records?.length ?? 0,
+      value,
+    };
+  }, selector));
 }
 
 async function samplePngPixels(

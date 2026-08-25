@@ -77,6 +77,7 @@ interface BrowserObservationCandidate extends ObservationCandidate {
 
 interface BrowserObservationCapture {
   readonly candidates: readonly BrowserObservationCandidate[];
+  readonly sensitiveMaskIds: readonly string[];
   readonly viewport: WebViewportV1;
   readonly title?: string;
   readonly titleSensitiveTargetIds?: readonly string[];
@@ -385,18 +386,21 @@ function collectPageObservation(
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = Array.from(document.querySelectorAll(selector));
   const candidates: BrowserObservationCandidate[] = [];
+  const sensitiveMaskIds = new Set<string>();
   const titleElement = document.querySelector("title");
 
   for (const element of elements) {
+    const sensitiveTargetIds = readSensitiveTargetIds(element);
+    const isSensitiveTarget = sensitiveTargetIds.length > 0;
+    const sensitiveMaskId = element.getAttribute(input.sensitiveMaskIdAttribute) ?? undefined;
+    if (isSensitiveTarget && sensitiveMaskId !== undefined) {
+      sensitiveMaskIds.add(sensitiveMaskId);
+    }
     if (!isVisible(element)) {
       continue;
     }
     const role = roleOf(element);
     const name = accessibleName(element).trim();
-
-    const sensitiveTargetIds = readSensitiveTargetIds(element);
-    const isSensitiveTarget = sensitiveTargetIds.length > 0;
-    const sensitiveMaskId = element.getAttribute(input.sensitiveMaskIdAttribute) ?? undefined;
     const isFormField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement;
@@ -448,6 +452,7 @@ function collectPageObservation(
 
   return {
     candidates,
+    sensitiveMaskIds: [...sensitiveMaskIds],
     viewport: {
       width: Math.max(1, Math.trunc(window.innerWidth)),
       height: Math.max(1, Math.trunc(window.innerHeight)),
@@ -559,10 +564,10 @@ export class PlaywrightObserver implements Observer {
       );
       assertCaptureAuthority();
 
-      const maskIds = [...new Set(captured.candidates
-        .filter((candidate) => candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0)
-        .map((candidate) => candidate.sensitiveMaskId)
-        .filter((maskId): maskId is string => maskId !== undefined && /^[A-Za-z0-9_-]+$/.test(maskId)))];
+      const maskIds = [...new Set([
+        ...(captured.sensitiveMaskIds ?? []),
+        ...(preScreenshotCheck.sensitiveMaskIds ?? []),
+      ].filter((maskId) => /^[A-Za-z0-9_-]+$/.test(maskId)))];
       const screenshot = await captureScreenshot(page, assertCaptureAuthority, maskIds);
       const postScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
       if (postScreenshotCheck.sensitiveEvidenceUnavailable) {
