@@ -83,7 +83,7 @@ Deferred to `46-centralized-llm-provider-acceptance.md` by maintainer decision: 
 ## Comments
 
 - start — Claimed for isolated implementation on branch `ticket-21-real-reference-model-benchmark` from base SHA `c55f377460033d9053085b5aface51b02ca12842` (current main with ticket 20 resolved via PR #99 merge commit `1995a946fc09b05425949cf53f2fe1f29a311731`, as supplied by the worktree). Matrix applicability: applicable; all rows in the Behavior Matrix below govern this stateful, side-effecting, retry/restart-sensitive release benchmark workflow. Planned focused Gates: `CI=true corepack pnpm vitest run tests/unit/benchmarking/detection tests/contract/sqlite/benchmark-store.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Post-review real Reference Model acceptance `CI=true corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts` is required only after review is clean and real configured provider credentials/network are available.
-- update — Maintainer explicitly changed closure authority for LLM-provider-backed acceptance: Ticket 21 may skip the external provider credential/network Gate, and all such validation is centralized in new Ticket 46. Search found current closure issue dependency on LLM provider env in Ticket 21 plus live smoke coverage in `tests/live/remote-model-smoke.test.ts`. Implementation/review remains code-complete; deterministic edit-time test-double reports remain forced to `profileStatus: unverified` / `gate.status: unverified`, and real Reference Model release evidence must be produced under Ticket 46 before final release claims.
+- update — Maintainer explicitly changed closure authority for LLM-provider-backed acceptance: Ticket 21 may skip the external provider credential/network Gate, and all such validation is centralized in new Ticket 46. Search found current closure issue dependency on LLM provider env in Ticket 21 plus live smoke coverage in `tests/live/remote-model-smoke.test.ts`. Implementation/review remains code-complete; deterministic edit-time test-double reports remain forced to `profileStatus: unverified` / `gate.status: unverified`, and real Reference Model release evidence must be produced under Ticket 46 before final release claims. PR `https://github.com/ljie-PI/Qualigence/pull/101` merged as `219532953a4eb0601b8471a8e510508dbd2c8647`.
 
 ## Behavior Matrix
 
@@ -109,3 +109,15 @@ Deferred to `46-centralized-llm-provider-acceptance.md` by maintainer decision: 
 - [ ] Profile, prompt, Skill, fixture, attempt, and Ground Truth hashes bind the report.
 - [ ] Crash/restart resumes attempts from durable checkpoints.
 - [ ] Only verified Reference Profile reports can pass release thresholds.
+
+## Answer
+
+Implemented the real Reference Model benchmark code path and closed Ticket 21 code/spec acceptance with external LLM-provider acceptance deferred to `46-centralized-llm-provider-acceptance.md` by maintainer decision. The release path now requires an explicit model-provider agent factory, forces deterministic ScenarioWalkAgent test-double runs to unverified provenance, prevalidates manifest/Ground Truth before provider or fixture effects, binds attempts/reports to canonical hashes, persists invocation evidence when a real provider is configured, resumes missing durable attempts, rejects conflicting/incomplete matrices, and enforces the frozen thresholds including P0 recall.
+
+Reviewed code head: `c6091d5cad8202342469b0d2f8d13df70149cf41`.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/101`
+
+Merge commit: `219532953a4eb0601b8471a8e510508dbd2c8647`
+
+Deferred external-provider validation: `46-centralized-llm-provider-acceptance.md`.
