@@ -22,8 +22,9 @@ const LEDGER_LOCK_POLL_MS = 10;
  * The ledger is content-keyed by `(assetId, sourceHash, migratorVersion)`, plus
  * Skill inventory content/version identity when present: a re-run with an
  * unchanged source finds the existing line and never re-projects, and a changed
- * source or Skill version becomes a new attempt. Historical source assets are
- * never touched — the ledger is a derived, additive record.
+ * source, Skill version, or actual Skill asset content becomes a new attempt.
+ * Historical source assets are never touched — the ledger is a derived,
+ * additive record.
  *
  * This is deliberately NOT wired into the shared multi-tenant relational schema:
  * the migration ledger is an operator artifact, not tenant-owned data, so it
@@ -132,7 +133,8 @@ function skillIdentityKeyParts(
 ): readonly string[] {
   if (
     identity.skillSourceHash === undefined &&
-    identity.skillVersion === undefined
+    identity.skillVersion === undefined &&
+    identity.skillAssetHash === undefined
   ) {
     return [];
   }
@@ -140,6 +142,7 @@ function skillIdentityKeyParts(
     "skill",
     identity.skillSourceHash ?? "",
     identity.skillVersion === undefined ? "" : String(identity.skillVersion),
+    identity.skillAssetHash ?? "",
   ];
 }
 

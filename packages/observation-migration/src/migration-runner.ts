@@ -34,6 +34,8 @@ export interface ObservationMigrationResult {
   readonly skillSourceHash?: string;
   /** Original pre-v1 Skill version when a Skill result is keyed by source Trace hash. */
   readonly skillVersion?: number;
+  /** Hash of the actual Skill inventory source bytes used to distinguish stale declared content hashes. */
+  readonly skillAssetHash?: string;
   readonly computedSkillSourceHash?: string;
   readonly locatorSchemaVersion?: string;
   readonly skillCompilerVersion?: string;
@@ -43,6 +45,7 @@ export interface ObservationMigrationResult {
 export interface ObservationMigrationLookupIdentity {
   readonly skillSourceHash?: string;
   readonly skillVersion?: number;
+  readonly skillAssetHash?: string;
 }
 
 /** A durable, append-only migration ledger entry. */
@@ -57,8 +60,9 @@ export interface StoredObservationMigration {
  * Observation results are keyed by `(assetId, sourceHash, migratorVersion)` so a
  * re-run with unchanged source returns the existing result, while a changed
  * source becomes a new attempt. Skill inventory results also include the
- * immutable Skill version/content hash because several Skill versions can share
- * one source Trace hash.
+ * immutable Skill version/content hash and actual Skill asset hash because
+ * several Skill versions or stale declared hashes can share one source Trace
+ * hash.
  */
 export interface ObservationMigrationStore {
   find(
@@ -293,7 +297,8 @@ function skillIdentityKeyParts(
 ): readonly string[] {
   if (
     identity.skillSourceHash === undefined &&
-    identity.skillVersion === undefined
+    identity.skillVersion === undefined &&
+    identity.skillAssetHash === undefined
   ) {
     return [];
   }
@@ -301,5 +306,6 @@ function skillIdentityKeyParts(
     "skill",
     identity.skillSourceHash ?? "",
     identity.skillVersion === undefined ? "" : String(identity.skillVersion),
+    identity.skillAssetHash ?? "",
   ];
 }

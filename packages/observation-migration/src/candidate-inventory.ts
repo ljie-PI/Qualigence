@@ -84,13 +84,29 @@ export class ObservationCandidateInventoryRunner {
     options: ObservationMigrationRunnerOptions,
   ): Promise<ObservationMigrationResult> {
     const migratorVersion = skillMigratorVersion(asset);
-    const sourceBinding = this.skillSourceBinding(asset, migratorVersion);
+    const skillAssetHash = hashSkillAssetContent(asset);
+    const lookupIdentity = skillLookupIdentity(asset, skillAssetHash);
+    const sourceBinding = this.skillSourceBinding(
+      asset,
+      migratorVersion,
+      skillAssetHash,
+    );
 
     if (sourceBinding.failure !== undefined) {
       if (options.dryRun !== true) {
         await this.store.append({ result: sourceBinding.failure });
       }
       return sourceBinding.failure;
+    }
+
+    const existing = await this.store.find(
+      asset.assetId,
+      sourceBinding.sourceHash,
+      migratorVersion,
+      lookupIdentity,
+    );
+    if (existing !== undefined) {
+      return existing.result;
     }
 
     const sourceVerification = this.skillRecompiler.verifySource(asset);
@@ -100,6 +116,7 @@ export class ObservationCandidateInventoryRunner {
         sourceVerification.outcome,
         migratorVersion,
         sourceBinding.projection,
+        skillAssetHash,
       );
       if (options.dryRun !== true) {
         await this.store.append({ result });
@@ -107,14 +124,14 @@ export class ObservationCandidateInventoryRunner {
       return result;
     }
 
-    const existing = await this.store.find(
+    const legacyExisting = await this.store.find(
       asset.assetId,
       sourceBinding.sourceHash,
       migratorVersion,
-      skillLookupIdentity(asset),
+      legacySkillLookupIdentity(asset),
     );
-    if (existing !== undefined) {
-      return existing.result;
+    if (legacyExisting !== undefined) {
+      return legacyExisting.result;
     }
 
     const outcome = await this.skillRecompiler.recompile(asset);
@@ -123,6 +140,7 @@ export class ObservationCandidateInventoryRunner {
       outcome,
       migratorVersion,
       sourceBinding.projection,
+      skillAssetHash,
     );
     if (options.dryRun !== true) {
       await this.store.append({
@@ -137,6 +155,7 @@ export class ObservationCandidateInventoryRunner {
   private skillSourceBinding(
     asset: PreV1SkillInventoryAsset,
     migratorVersion: string,
+    skillAssetHash: string,
   ):
     | {
         readonly sourceHash: string;
@@ -156,7 +175,7 @@ export class ObservationCandidateInventoryRunner {
       return {
         sourceHash,
         failure: {
-          ...baseSkillResult(asset, sourceHash, migratorVersion),
+          ...baseSkillResult(asset, sourceHash, migratorVersion, skillAssetHash),
           ...classifySkillSourceFailure(error),
           ...(expectedSourceHash === undefined ? {} : { expectedSourceHash }),
         },
@@ -214,9 +233,15 @@ function skillOutcomeToMigrationResult(
   outcome: RecompileOutcome,
   migratorVersion: string,
   sourceProjection: ProjectionRecord,
+  skillAssetHash: string,
 ): ObservationMigrationResult {
   return {
-    ...baseSkillResult(asset, sourceProjection.sourceHash, migratorVersion),
+    ...baseSkillResult(
+      asset,
+      sourceProjection.sourceHash,
+      migratorVersion,
+      skillAssetHash,
+    ),
     status: outcome.status,
     ...(outcome.candidate === undefined
       ? {}
@@ -233,6 +258,7 @@ function baseSkillResult(
   asset: PreV1SkillInventoryAsset,
   sourceHash: string,
   migratorVersion: string,
+  skillAssetHash: string,
 ): Omit<ObservationMigrationResult, "status"> {
   return {
     assetId: asset.assetId,
@@ -244,10 +270,26 @@ function baseSkillResult(
     skillCompilerVersion: asset.previous.compilerVersion,
     skillSourceHash: asset.previous.contentSha256,
     skillVersion: asset.previous.version,
+    skillAssetHash,
   };
 }
 
-function skillLookupIdentity(asset: PreV1SkillInventoryAsset): {
+function skillLookupIdentity(
+  asset: PreV1SkillInventoryAsset,
+  skillAssetHash: string,
+): {
+  readonly skillSourceHash: string;
+  readonly skillVersion: number;
+  readonly skillAssetHash: string;
+} {
+  return {
+    skillSourceHash: asset.previous.contentSha256,
+    skillVersion: asset.previous.version,
+    skillAssetHash,
+  };
+}
+
+function legacySkillLookupIdentity(asset: PreV1SkillInventoryAsset): {
   readonly skillSourceHash: string;
   readonly skillVersion: number;
 } {
@@ -255,6 +297,33 @@ function skillLookupIdentity(asset: PreV1SkillInventoryAsset): {
     skillSourceHash: asset.previous.contentSha256,
     skillVersion: asset.previous.version,
   };
+}
+
+function hashSkillAssetContent(asset: PreV1SkillInventoryAsset): string {
+  return createHash("sha256")
+    .update(
+      stableJson({
+        previous: asset.previous,
+        proposal: asset.proposal,
+        recording: asset.recording,
+      }),
+    )
+    .digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+    .join(",")}}`;
 }
 
 function classifySkillSourceFailure(error: unknown): {

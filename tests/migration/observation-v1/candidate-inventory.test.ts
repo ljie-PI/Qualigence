@@ -84,6 +84,7 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
     expect(skillResult?.migratorVersion).toBe(
       `observation-migrator/v1+${skill.previous.compilerVersion}`,
     );
+    expect(skillResult?.skillAssetHash).toHaveLength(64);
     expect(skillResult?.outputRef).toHaveLength(64);
     expect(skillResult?.outputRef).not.toBe(skill.previous.contentSha256);
 
@@ -288,6 +289,67 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
         skillVersion: skill.previous.version,
         computedSkillSourceHash: skill.previous.contentSha256,
       });
+
+      const stored = await new FileObservationMigrationStore(ledgerPath).list();
+      expect(stored).toHaveLength(2);
+      expect(stored.map((entry) => entry.result.status)).toEqual([
+        "migrated",
+        "failed",
+      ]);
+      expect(stored[1]?.result).toEqual(second.results[0]);
+      const raw = await readFile(ledgerPath, "utf8");
+      expect(raw.trim().split("\n")).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("durably appends changed Skill asset content with a stale declared content hash", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const root = await mkdtemp(join(tmpdir(), "obs-skill-content-drift-"));
+    const ledgerPath = join(root, "ledger.jsonl");
+    const store = new FileObservationMigrationStore(ledgerPath);
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(
+        new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
+      ),
+    );
+
+    try {
+      const first = await runner.run([skill], { now: NOW });
+      const changed = {
+        ...skill,
+        recording: { ...skill.recording, recordingId: "rec-m2-cart-stale-content" },
+      } satisfies PreV1SkillInventoryAsset;
+      const second = await runner.run([changed], { now: NOW });
+      const replay = await runner.run([changed], { now: NOW });
+
+      expect(first.results[0]).toMatchObject({
+        status: "migrated",
+        sourceHash: skill.declaredSourceHash,
+        skillSourceHash: skill.previous.contentSha256,
+        skillVersion: skill.previous.version,
+      });
+      expect(second.results[0]).toMatchObject({
+        assetId: skill.assetId,
+        assetKind: "skill",
+        sourceHash: first.results[0]?.sourceHash,
+        status: "failed",
+        reasonCode: "MigrationSourceChanged",
+        skillSourceHash: skill.previous.contentSha256,
+        skillVersion: skill.previous.version,
+      });
+      expect(changed.previous.contentSha256).toBe(skill.previous.contentSha256);
+      expect(second.results[0]?.computedSkillSourceHash).toHaveLength(64);
+      expect(second.results[0]?.computedSkillSourceHash).not.toBe(
+        skill.previous.contentSha256,
+      );
+      expect(second.results[0]?.skillAssetHash).toHaveLength(64);
+      expect(second.results[0]?.skillAssetHash).not.toBe(
+        first.results[0]?.skillAssetHash,
+      );
+      expect(replay.results).toEqual(second.results);
 
       const stored = await new FileObservationMigrationStore(ledgerPath).list();
       expect(stored).toHaveLength(2);
