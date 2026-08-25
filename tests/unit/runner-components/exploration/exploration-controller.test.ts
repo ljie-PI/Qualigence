@@ -226,6 +226,19 @@ class InMemoryProgressStore implements ExplorationProgressStore {
   }
 }
 
+class CrashAfterSeedCursorStore extends InMemoryProgressStore {
+  private crashed = false;
+
+  override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    const result = await super.compareAndSetAttemptProgress(update);
+    if (!this.crashed && update.seedCursor.nextSeedIndex > 0 && update.checkpoint === undefined) {
+      this.crashed = true;
+      throw new Error("process crashed after seed cursor commit");
+    }
+    return result;
+  }
+}
+
 class CrashAfterSafeCheckpointStore extends InMemoryProgressStore {
   private crashed = false;
 
@@ -514,6 +527,41 @@ describe("ExplorationController", () => {
     expect(result.terminalReason).toBe("objective_satisfied");
   });
 
+  it("resumes from durable seed cursor without replaying an acknowledged seed", async () => {
+    const store = new CrashAfterSeedCursorStore();
+    const firstSeedReplay = new RecordingSeedReplay();
+    const first = createController({
+      target: new ScriptedTarget([fixedGraph()]),
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      seedReplay: firstSeedReplay,
+      progressStore: store,
+    });
+
+    await expect(first.run(job({
+      attemptId: "attempt-seed-resume",
+      policy: policy({ seedSkillBundleIds: ["bundle-a"] }),
+      seedSkills: [seed("bundle-a")],
+    }))).rejects.toThrow(/seed cursor commit/);
+    expect(firstSeedReplay.ids).toEqual([]);
+
+    const resumedSeedReplay = new RecordingSeedReplay();
+    const resumed = createController({
+      target: new ScriptedTarget([fixedGraph()]),
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      seedReplay: resumedSeedReplay,
+      progressStore: store,
+    });
+
+    const result = await resumed.run(job({
+      attemptId: "attempt-seed-resume",
+      policy: policy({ seedSkillBundleIds: ["bundle-a"] }),
+      seedSkills: [seed("bundle-a")],
+    }));
+
+    expect(result.terminalReason).toBe("objective_satisfied");
+    expect(resumedSeedReplay.ids).toEqual([]);
+  });
+
   it("resumes from durable progress without replaying acknowledged safe work", async () => {
     const crashingStore = new CrashAfterSafeCheckpointStore();
     const firstTarget = new ScriptedTarget([distinctGraph(), distinctGraph()]);
@@ -577,9 +625,10 @@ describe("ExplorationController", () => {
 
   it("rejects out-of-origin observations before model actions dispatch", async () => {
     const target = new ScriptedTarget([graphAt("https://evil.example/product")]);
+    const agent = new ScriptedAgent(() => act(clickAdd));
     const controller = createController({
       target,
-      agent: new ScriptedAgent(() => act(clickAdd)),
+      agent,
       clock: new FakeClock(),
     });
 
@@ -587,6 +636,7 @@ describe("ExplorationController", () => {
 
     expect(result.terminalReason).toBe("policy_denied");
     expect(result.errorCode).toBe("OriginViolation");
+    expect(agent.contexts).toHaveLength(0);
     expect(target.executedActions()).toHaveLength(0);
   });
 

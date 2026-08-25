@@ -276,6 +276,10 @@ export class ExplorationController {
 
       const graph = capture.graph;
       const fingerprint = state.tracker.fingerprintOf(graph);
+      if (!isGraphOriginAllowed(graph, job.policy)) {
+        appendTerminalCheckpoint(state, fingerprint, "policy_denied");
+        return this.finish(state, "policy_denied", "OriginViolation");
+      }
       const visit = state.tracker.record(fingerprint);
       if (visit.status === "repeated") {
         const repeated = checkpoint(state.checkpoints.length + 1, fingerprint, state.budget.snapshot(), "state_repeated");
@@ -482,24 +486,25 @@ export class ExplorationController {
     for (let index = state.seedCursor.nextSeedIndex; index < seeds.length; index += 1) {
       const seed = seeds[index];
       if (seed === undefined) return this.finish(state, "no_safe_action", "SeedBindingConflict");
-      const result = await replay.replay(seed);
-      state.seedReplays.push(result);
-      if (result.status !== "passed") {
-        return this.finish(state, "plan_diverged", "SeedReplayFailed");
-      }
-      state.seedCursor = {
+      const nextSeedCursor = {
         nextSeedIndex: index + 1,
         completedSeedSkillBundleIds: [...state.seedCursor.completedSeedSkillBundleIds, seed.plan.skillBundleId],
       };
       const update = await this.updateProgress(state, {
         phase: index + 1 === seeds.length ? "exploring" : "seed_replay",
-        seedCursor: state.seedCursor,
+        seedCursor: nextSeedCursor,
         lastSafeStep: state.stepsExecuted,
         lastSafeGraphFingerprint: lastSafeFingerprint(state),
         remaining: state.budget.snapshot(),
       });
       if (update.status !== "updated") {
         return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
+      }
+      state.seedCursor = nextSeedCursor;
+      const result = await replay.replay(seed);
+      state.seedReplays.push(result);
+      if (result.status !== "passed") {
+        return this.finish(state, "plan_diverged", "SeedReplayFailed");
       }
     }
     return undefined;
