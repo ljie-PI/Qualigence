@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { ServerIntelligenceResultConsumer } from "@qualigence/core-application";
@@ -437,6 +438,176 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     ]);
   });
 
+  it("durably rejects malformed accepted inbox payloads without aggregate mutation", async () => {
+    const invalidResultPair = buildJobPair({
+      tenantId: "tenant-malformed-payload",
+      caseId: "case-malformed-result-json",
+      jobId: "job-malformed-result-json",
+      baseAggregateVersion: 0,
+    });
+    const invalidJobPair = buildJobPair({
+      tenantId: "tenant-malformed-payload",
+      caseId: "case-malformed-job-json",
+      jobId: "job-malformed-job-json",
+      baseAggregateVersion: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-malformed-payload",
+      caseId: "case-malformed-result-json",
+      version: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-malformed-payload",
+      caseId: "case-malformed-job-json",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, invalidResultPair.job);
+    await seedJob(fixture.adminConfig, invalidJobPair.job);
+
+    const q = queue();
+    try {
+      for (const pair of [invalidResultPair, invalidJobPair]) {
+        const leased = await q.lease({
+          workerId: "worker-a",
+          acceptedTypes: ["investigation.reproduction-planning"],
+          now: now(),
+          leaseDurationMs: 60_000,
+        });
+        expect(leased?.job.jobId).toBe(pair.job.jobId);
+        await q.append({
+          tenantId: "tenant-malformed-payload",
+          jobId: pair.job.jobId,
+          leaseToken: leased!.lease.leaseToken,
+          leaseAttempt: leased!.lease.attempt,
+          workerId: "worker-a",
+          baseAggregateVersion: 0,
+          result: pair.result,
+        });
+      }
+    } finally {
+      await q.close();
+    }
+
+    await readAdminRows(fixture.adminConfig,
+      `update intelligence_result_inbox
+          set result_json = '{not-valid-json'
+        where tenant_id = 'tenant-malformed-payload' and idempotency_key = $1`,
+      [invalidResultPair.result.idempotencyKey],
+    );
+    await readAdminRows(fixture.adminConfig,
+      `update intelligence_jobs
+          set job_json = '{"jobId":"job-malformed-job-json"}'
+        where tenant_id = 'tenant-malformed-payload' and job_id = $1`,
+      [invalidJobPair.job.jobId],
+    );
+
+    const consumer = new ServerIntelligenceResultConsumer(provider);
+    const summary = await consumer.consumeForTenant("tenant-malformed-payload");
+    expect(summary).toMatchObject({ processed: 2, rejected: 2, applied: 0, recompute: 0, hasMore: false });
+    expect(await readCaseVersion(fixture.adminConfig, "case-malformed-result-json")).toBe(0);
+    expect(await readCaseVersion(fixture.adminConfig, "case-malformed-job-json")).toBe(0);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select idempotency_key, status, code, reason, aggregate_id, new_version
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-malformed-payload'
+        order by idempotency_key`,
+    );
+    expect(dispositions.rows).toEqual([
+      {
+        idempotency_key: invalidJobPair.result.idempotencyKey,
+        status: "rejected",
+        code: "SchemaInvalid",
+        reason: "job_json must include a supported jobType.",
+        aggregate_id: null,
+        new_version: null,
+      },
+      {
+        idempotency_key: invalidResultPair.result.idempotencyKey,
+        status: "rejected",
+        code: "SchemaInvalid",
+        reason: "result_json is not valid JSON.",
+        aggregate_id: null,
+        new_version: null,
+      },
+    ]);
+
+    const retrySummary = await consumer.consumeForTenant("tenant-malformed-payload");
+    expect(retrySummary).toMatchObject({ processed: 0, rejected: 0, applied: 0, hasMore: false });
+  });
+
+  it("observes a concurrently recorded terminal disposition without overwriting it", async () => {
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-terminal-race",
+      caseId: "case-terminal-race",
+      jobId: "job-terminal-race",
+      baseAggregateVersion: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-terminal-race",
+      caseId: "case-terminal-race",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const q = queue();
+    try {
+      const leased = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.reproduction-planning"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-terminal-race",
+        jobId: job.jobId,
+        leaseToken: leased!.lease.leaseToken,
+        leaseAttempt: leased!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 0,
+        result,
+      });
+    } finally {
+      await q.close();
+    }
+
+    let recorded = false;
+    const racingConsumer = new ServerIntelligenceResultConsumer(provider, {
+      policy: {
+        allows() {
+          if (!recorded) {
+            recorded = true;
+            recordAppliedDispositionOutOfBand(fixture.adminConfig, {
+              tenantId: "tenant-terminal-race",
+              caseId: "case-terminal-race",
+              idempotencyKey: result.idempotencyKey,
+            });
+          }
+          return true;
+        },
+      },
+    });
+
+    const summary = await racingConsumer.consumeForTenant("tenant-terminal-race");
+    expect(summary).toMatchObject({ processed: 1, applied: 1, rejected: 0, recompute: 0 });
+    expect(await readCaseVersion(fixture.adminConfig, "case-terminal-race")).toBe(1);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select status, code, aggregate_id, new_version, summary, follow_up_job_id
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-terminal-race' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(dispositions.rows).toEqual([
+      {
+        status: "applied",
+        code: null,
+        aggregate_id: "case-terminal-race",
+        new_version: 1,
+        summary: "racing consumer already applied",
+        follow_up_job_id: null,
+      },
+    ]);
+  });
+
   it("aborts the production applier path before aggregate dispatch without a terminal disposition", async () => {
     const abort = new AbortController();
     const { job, result } = buildJobPair({
@@ -765,6 +936,60 @@ async function seedReproducingAttempt(
      values ($1, $2, $3, 1, 1, 'reproduced', $4, $5)`,
     [input.tenantId, input.attemptId, input.caseId, JSON.stringify(attempt), nowIso],
   );
+}
+
+function recordAppliedDispositionOutOfBand(
+  config: PostgresFixture["adminConfig"],
+  input: { readonly tenantId: string; readonly caseId: string; readonly idempotencyKey: string },
+): void {
+  const script = String.raw`
+    import pg from "pg";
+    const { Client } = pg;
+    const payload = JSON.parse(process.env.QG_DISPOSITION_PAYLOAD ?? "{}");
+    const client = new Client(payload.config);
+    const now = new Date().toISOString();
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "update investigation_cases " +
+          "set status = 'reproducing', version = 1, plan_revision = 2, updated_at = $3 " +
+          "where tenant_id = $1 and case_id = $2 and version = 0",
+        [payload.input.tenantId, payload.input.caseId, now],
+      );
+      await client.query(
+        "insert into intelligence_applied_results " +
+          "(tenant_id, idempotency_key, aggregate_type, aggregate_id, new_version, summary, created_at) " +
+          "values ($1, $2, 'investigation', $3, 1, 'racing consumer already applied', $4) " +
+          "on conflict (tenant_id, idempotency_key) do nothing",
+        [payload.input.tenantId, payload.input.idempotencyKey, payload.input.caseId, now],
+      );
+      await client.query(
+        "insert into intelligence_result_dispositions " +
+          "(tenant_id, idempotency_key, job_id, result_hash, status, code, reason, " +
+          "aggregate_type, aggregate_id, new_version, summary, follow_up_job_id, created_at) " +
+          "select tenant_id, idempotency_key, job_id, result_hash, 'applied', null, null, " +
+          "'investigation', $3, 1, 'racing consumer already applied', null, $4 " +
+          "from intelligence_result_inbox " +
+          "where tenant_id = $1 and idempotency_key = $2 " +
+          "on conflict (tenant_id, idempotency_key) do nothing",
+        [payload.input.tenantId, payload.input.idempotencyKey, payload.input.caseId, now],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      await client.end();
+    }
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: {
+      ...process.env,
+      QG_DISPOSITION_PAYLOAD: JSON.stringify({ config, input }),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 async function readAdminRows(

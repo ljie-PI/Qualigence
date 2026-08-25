@@ -229,21 +229,36 @@ export class ServerIntelligenceResultConsumer {
       const counts = { applied: 0, duplicate: 0, recompute: 0, rejected: 0 };
       for (const row of pending) {
         throwIfAborted(options.signal);
-        const job = JSON.parse(row.jobJson) as IntelligenceJob;
-        const result = JSON.parse(row.resultJson) as IntelligenceResult;
-        const outcome = await applyOrRejectDeterministically(applier, job, result, options.signal);
-        const followUpJobId = outcome.status === "recompute"
-          ? await createRecomputeFollowUp(intelligenceDb, tenantId, job, result, options.signal)
-          : null;
-        await dispositionRecorder.record({
+        const decoded = decodePendingPayload(row);
+        const outcome = decoded.ok
+          ? await applyOrRejectDeterministically(applier, decoded.job, decoded.result, options.signal)
+          : decoded.outcome;
+        const recorded = await dispositionRecorder.record({
           idempotencyKey: row.idempotencyKey,
           jobId: row.jobId,
           resultHash: row.resultHash,
           outcome,
-          followUpJobId,
+          followUpJobId: null,
         });
-        dispositions.push(outcome.status);
-        counts[outcome.status] += 1;
+        if (decoded.ok && outcome.status === "recompute" && recorded.inserted && recorded.status === "recompute") {
+          const followUpJobId = await createRecomputeFollowUp(
+            intelligenceDb,
+            tenantId,
+            decoded.job,
+            decoded.result,
+            options.signal,
+          );
+          if (followUpJobId !== null) {
+            await dispositionRecorder.attachFollowUpJob({
+              idempotencyKey: row.idempotencyKey,
+              jobId: row.jobId,
+              resultHash: row.resultHash,
+              followUpJobId,
+            });
+          }
+        }
+        dispositions.push(recorded.status);
+        counts[recorded.status] += 1;
       }
 
       const remaining = await pendingResultQuery(intelligenceDb, tenantId)
@@ -287,6 +302,181 @@ function pendingResultQuery(db: Transaction<IntelligenceDatabase>, tenantId: str
     .where("l.released_at", "is", null)
     .where("l.completed_at", "is not", null)
     .whereRef("j.base_aggregate_version", "=", "i.base_aggregate_version");
+}
+
+type PendingPayloadRow = {
+  readonly idempotencyKey: string;
+  readonly jobId: string;
+  readonly resultHash: string;
+  readonly jobJson: string;
+  readonly resultJson: string;
+};
+
+type PendingPayloadDecode =
+  | { readonly ok: true; readonly job: IntelligenceJob; readonly result: IntelligenceResult }
+  | { readonly ok: false; readonly outcome: Extract<ApplyResult, { readonly status: "rejected" }> };
+
+function decodePendingPayload(row: PendingPayloadRow): PendingPayloadDecode {
+  const parsedJob = parseJsonObject(row.jobJson, "job_json");
+  if (!parsedJob.ok) {
+    return malformedPendingPayload(parsedJob.reason);
+  }
+  const job = validateIntelligenceJobShape(parsedJob.value);
+  if (!job.ok) {
+    return malformedPendingPayload(`job_json ${job.reason}`);
+  }
+
+  const parsedResult = parseJsonObject(row.resultJson, "result_json");
+  if (!parsedResult.ok) {
+    return malformedPendingPayload(parsedResult.reason);
+  }
+  const result = validateIntelligenceResultShape(parsedResult.value);
+  if (!result.ok) {
+    return malformedPendingPayload(`result_json ${result.reason}`);
+  }
+
+  return { ok: true, job: job.value, result: result.value };
+}
+
+function malformedPendingPayload(reason: string): PendingPayloadDecode {
+  return {
+    ok: false,
+    outcome: {
+      status: "rejected",
+      code: "SchemaInvalid",
+      reason,
+    },
+  };
+}
+
+type ShapeValidation<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: string };
+
+function parseJsonObject(value: string, label: string): ShapeValidation<Record<string, unknown>> {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) {
+      return { ok: false, reason: `${label} must be a JSON object.` };
+    }
+    return { ok: true, value: parsed };
+  } catch {
+    return { ok: false, reason: `${label} is not valid JSON.` };
+  }
+}
+
+const INTELLIGENCE_JOB_TYPES = new Set([
+  "prd.planning",
+  "skill.induction",
+  "skill.evaluation",
+  "investigation.reproduction-planning",
+  "investigation.bug-analysis",
+]);
+
+const INTELLIGENCE_PRIORITIES = new Set(["low", "normal", "high"]);
+const INTELLIGENCE_TERMINAL_STATUSES = new Set(["succeeded", "blocked", "failed"]);
+
+function validateIntelligenceJobShape(value: Record<string, unknown>): ShapeValidation<IntelligenceJob> {
+  const aggregateRef = value.aggregateRef;
+  const budget = value.budget;
+  if (!isNonEmptyString(value.jobId)) {
+    return { ok: false, reason: "must include a string jobId." };
+  }
+  if (!isString(value.jobType) || !INTELLIGENCE_JOB_TYPES.has(value.jobType)) {
+    return { ok: false, reason: "must include a supported jobType." };
+  }
+  if (value.schemaVersion !== "intelligence-job/v1") {
+    return { ok: false, reason: "must use schemaVersion intelligence-job/v1." };
+  }
+  if (!isNonEmptyString(value.tenantId) || !isNonEmptyString(value.projectId)) {
+    return { ok: false, reason: "must include tenantId and projectId strings." };
+  }
+  if (!isRecord(aggregateRef) || !isNonEmptyString(aggregateRef.type) || !isNonEmptyString(aggregateRef.id)) {
+    return { ok: false, reason: "must include aggregateRef type and id strings." };
+  }
+  if (!isSafeNonNegativeInteger(value.baseAggregateVersion)) {
+    return { ok: false, reason: "must include a non-negative safe integer baseAggregateVersion." };
+  }
+  if (!isStringArray(value.inputRefs)) {
+    return { ok: false, reason: "must include an inputRefs string array." };
+  }
+  if (
+    !isNonEmptyString(value.modelProfileId) ||
+    !isString(value.dataPolicyId) ||
+    !isNonEmptyString(value.idempotencyKey) ||
+    !isString(value.causationId) ||
+    !isNonEmptyString(value.expectedResultSchema)
+  ) {
+    return { ok: false, reason: "must include model, policy, idempotency, causation, and result-schema strings." };
+  }
+  if (!isRecord(budget) ||
+    !isFiniteNonNegativeNumber(budget.maximumTokens) ||
+    !isFiniteNonNegativeNumber(budget.maximumCostMicros) ||
+    !isFiniteNonNegativeNumber(budget.timeoutMs)
+  ) {
+    return { ok: false, reason: "must include non-negative finite budget numbers." };
+  }
+  if (!isString(value.priority) || !INTELLIGENCE_PRIORITIES.has(value.priority)) {
+    return { ok: false, reason: "must include a supported priority." };
+  }
+  return { ok: true, value: value as unknown as IntelligenceJob };
+}
+
+function validateIntelligenceResultShape(value: Record<string, unknown>): ShapeValidation<IntelligenceResult> {
+  const usage = value.usage;
+  if (!isNonEmptyString(value.jobId)) {
+    return { ok: false, reason: "must include a string jobId." };
+  }
+  if (!isString(value.resultSchemaVersion)) {
+    return { ok: false, reason: "must include a string resultSchemaVersion." };
+  }
+  if (!Array.isArray(value.proposals) || !value.proposals.every(isRecord)) {
+    return { ok: false, reason: "must include a proposals object array." };
+  }
+  if (!isStringArray(value.evidenceRefs) || !isStringArray(value.provenance)) {
+    return { ok: false, reason: "must include evidenceRefs and provenance string arrays." };
+  }
+  if (!isFiniteNonNegativeNumber(value.confidence)) {
+    return { ok: false, reason: "must include a non-negative finite confidence." };
+  }
+  if (!isRecord(usage) ||
+    !isFiniteNonNegativeNumber(usage.inputTokens) ||
+    !isFiniteNonNegativeNumber(usage.outputTokens) ||
+    !isFiniteNonNegativeNumber(usage.costMicros)
+  ) {
+    return { ok: false, reason: "must include non-negative finite usage numbers." };
+  }
+  if (!isString(value.terminalStatus) || !INTELLIGENCE_TERMINAL_STATUSES.has(value.terminalStatus)) {
+    return { ok: false, reason: "must include a supported terminalStatus." };
+  }
+  if (!isNonEmptyString(value.idempotencyKey)) {
+    return { ok: false, reason: "must include a string idempotencyKey." };
+  }
+  return { ok: true, value: value as unknown as IntelligenceResult };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return isString(value) && value.trim().length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isString);
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isSafeNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === "number" && value >= 0;
 }
 
 class TransactionAppliedResultLedger implements AppliedResultLedger {
@@ -338,13 +528,25 @@ interface DispositionInput {
   readonly followUpJobId: string | null;
 }
 
+interface AttachFollowUpInput {
+  readonly idempotencyKey: string;
+  readonly jobId: string;
+  readonly resultHash: string;
+  readonly followUpJobId: string;
+}
+
+interface RecordedDisposition {
+  readonly inserted: boolean;
+  readonly status: ApplyResult["status"];
+}
+
 class TransactionResultDispositionRecorder {
   constructor(
     private readonly db: Transaction<IntelligenceDatabase>,
     private readonly tenantId: string,
   ) {}
 
-  async record(input: DispositionInput): Promise<void> {
+  async record(input: DispositionInput): Promise<RecordedDisposition> {
     const fields = dispositionFields(input.outcome);
     const recordedAt = new Date().toISOString();
     const values = {
@@ -362,21 +564,42 @@ class TransactionResultDispositionRecorder {
       follow_up_job_id: input.followUpJobId,
       created_at: recordedAt,
     };
-    await this.db
+    const inserted = await this.db
       .insertInto("intelligence_result_dispositions")
       .values(values)
-      .onConflict((oc) => oc.columns(["tenant_id", "idempotency_key"]).doUpdateSet({
-        status: values.status,
-        code: values.code,
-        reason: values.reason,
-        aggregate_type: values.aggregate_type,
-        aggregate_id: values.aggregate_id,
-        new_version: values.new_version,
-        summary: values.summary,
-        follow_up_job_id: values.follow_up_job_id,
-        created_at: values.created_at,
-      }))
+      .onConflict((oc) => oc.columns(["tenant_id", "idempotency_key"]).doNothing())
+      .returning("status")
+      .executeTakeFirst();
+    if (inserted !== undefined) {
+      return { inserted: true, status: asApplyStatus(inserted.status) };
+    }
+    return { inserted: false, status: await this.readExistingStatus(input.idempotencyKey) };
+  }
+
+  async attachFollowUpJob(input: AttachFollowUpInput): Promise<void> {
+    await this.db
+      .updateTable("intelligence_result_dispositions")
+      .set({ follow_up_job_id: input.followUpJobId })
+      .where("tenant_id", "=", this.tenantId)
+      .where("idempotency_key", "=", input.idempotencyKey)
+      .where("job_id", "=", input.jobId)
+      .where("result_hash", "=", input.resultHash)
+      .where("status", "=", "recompute")
+      .where("follow_up_job_id", "is", null)
       .execute();
+  }
+
+  private async readExistingStatus(idempotencyKey: string): Promise<ApplyResult["status"]> {
+    const existing = await this.db
+      .selectFrom("intelligence_result_dispositions")
+      .select("status")
+      .where("tenant_id", "=", this.tenantId)
+      .where("idempotency_key", "=", idempotencyKey)
+      .executeTakeFirst();
+    if (existing === undefined) {
+      throw new Error(`Disposition for ${idempotencyKey} conflicted but could not be read.`);
+    }
+    return asApplyStatus(existing.status);
   }
 }
 
@@ -480,6 +703,13 @@ function dispositionFields(outcome: ApplyResult): {
     case "rejected":
       return { code: outcome.code, reason: outcome.reason };
   }
+}
+
+function asApplyStatus(status: string): ApplyResult["status"] {
+  if (status === "applied" || status === "duplicate" || status === "recompute" || status === "rejected") {
+    return status;
+  }
+  throw new Error(`Unknown Intelligence Result disposition status ${status}.`);
 }
 
 class TransactionAggregateVersionReader implements AggregateVersionReader {
