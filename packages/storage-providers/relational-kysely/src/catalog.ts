@@ -50,6 +50,7 @@ export interface PartialIndexSpec {
   readonly columns: readonly string[];
   /** Raw, dialect-neutral SQL predicate; rows excluded from the index. */
   readonly predicate: string;
+  readonly unique?: boolean;
 }
 
 export interface RelationalTableSpec {
@@ -1424,6 +1425,71 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       },
     ],
   },
+  // ---- Migration 012: durable Intelligence leases and Result inbox -----
+  {
+    name: "intelligence_leases",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: true,
+    columns: [
+      t("tenant_id"),
+      t("job_id"),
+      i("attempt"),
+      t("worker_id"),
+      t("lease_token_hash"),
+      t("lease_started_at"),
+      t("expires_at"),
+      t("last_renewed_at", false),
+      i("renewal_count"),
+      t("released_at", false),
+      t("completed_at", false),
+    ],
+    primaryKey: ["tenant_id", "job_id", "attempt"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["job_id"], references: { table: "intelligence_jobs", columns: ["job_id"] } },
+    ],
+    checks: [
+      { name: "intelligence_leases_attempt_check", predicate: "attempt >= 1" },
+      { name: "intelligence_leases_renewal_count_check", predicate: "renewal_count >= 0" },
+    ],
+    partialIndexes: [
+      {
+        name: "intelligence_leases_live_unique",
+        columns: ["tenant_id", "job_id"],
+        predicate: "released_at IS NULL AND completed_at IS NULL",
+        unique: true,
+      },
+    ],
+  },
+  {
+    name: "intelligence_result_inbox",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: true,
+    columns: [
+      t("tenant_id"),
+      t("idempotency_key"),
+      t("job_id"),
+      t("worker_id"),
+      i("lease_attempt"),
+      t("lease_token_hash"),
+      t("lease_expires_at"),
+      i("base_aggregate_version"),
+      t("result_hash"),
+      t("result_json"),
+      t("accepted_at"),
+    ],
+    primaryKey: ["tenant_id", "idempotency_key"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["job_id"], references: { table: "intelligence_jobs", columns: ["job_id"] } },
+      { columns: ["tenant_id", "job_id", "lease_attempt"], references: { table: "intelligence_leases", columns: ["tenant_id", "job_id", "attempt"] } },
+    ],
+    checks: [
+      { name: "intelligence_result_inbox_lease_attempt_check", predicate: "lease_attempt >= 1" },
+    ],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1438,6 +1504,7 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 9, name: "mission-scheduling", tables: tablesFromTo("mission_scheduling_heads", "mission_dispatch_wakeups") },
   { version: 10, name: "skill-lifecycle-commands", tables: tablesFromTo("skill_lifecycle_commands", "skill_lifecycle_audit_events") },
   { version: 11, name: "exploration-attempt-progress", tables: tablesFromTo("exploration_attempt_progress", "exploration_live_checkpoints") },
+  { version: 12, name: "intelligence-leases-results", tables: tablesFromTo("intelligence_leases", "intelligence_result_inbox") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

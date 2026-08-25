@@ -397,6 +397,34 @@ export interface IntelligenceJobsTable {
   created_at: string;
 }
 
+export interface IntelligenceLeasesTable {
+  tenant_id: string;
+  job_id: string;
+  attempt: number;
+  worker_id: string;
+  lease_token_hash: string;
+  lease_started_at: string;
+  expires_at: string;
+  last_renewed_at: string | null;
+  renewal_count: number;
+  released_at: string | null;
+  completed_at: string | null;
+}
+
+export interface IntelligenceResultInboxTable {
+  tenant_id: string;
+  idempotency_key: string;
+  job_id: string;
+  worker_id: string;
+  lease_attempt: number;
+  lease_token_hash: string;
+  lease_expires_at: string;
+  base_aggregate_version: number;
+  result_hash: string;
+  result_json: string;
+  accepted_at: string;
+}
+
 export interface IntelligenceResultsTable {
   idempotency_key: string;
   job_id: string;
@@ -755,6 +783,8 @@ export interface Database {
   review_claims: ReviewClaimsTable;
   review_resolutions: ReviewResolutionsTable;
   intelligence_jobs: IntelligenceJobsTable;
+  intelligence_leases: IntelligenceLeasesTable;
+  intelligence_result_inbox: IntelligenceResultInboxTable;
   intelligence_results: IntelligenceResultsTable;
   intelligence_applied_results: IntelligenceAppliedResultsTable;
   evidence_encryption_profiles: EvidenceEncryptionProfilesTable;

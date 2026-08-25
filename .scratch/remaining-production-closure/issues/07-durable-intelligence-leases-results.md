@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Dispatch Mission work to its bound Runner; 06 — Deliver Skill version management loop; 20 — Restore exploration seed, checkpoint, and recovery budget schema migration `011`.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -89,3 +89,7 @@ Run against a real Worker/PostgreSQL path and prove lease, renewal, restart, and
 - The affected context documents listed above, especially proposal-only Worker authority, owner-bound leases, Result binding, RLS, and runtime-role separation.
 - `packages/core-application/src/intelligence/intelligence-queue-contracts.ts` and `packages/core-modules/intelligence/src/contracts.ts`.
 - The forced-RLS and tenant-isolation contracts under `tests/contract/postgres/**`.
+
+## Comments
+
+- start: base SHA `c55f377460033d9053085b5aface51b02ca12842`; behavior matrix applicable as recorded above for stateful/concurrent lease and Result inbox work; planned Gates: `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.

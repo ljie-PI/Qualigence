@@ -1,5 +1,6 @@
 import type { IntelligenceJobType } from "@qualigence/intelligence";
 import type {
+  IntelligenceJobLease,
   IntelligenceJobStore,
   IntelligenceResultInbox,
 } from "@qualigence/core-application";
@@ -32,6 +33,8 @@ export const systemClock: Clock = {
 };
 
 export type WorkerStepOutcome = "processed" | "idle" | "failed";
+
+const MINIMUM_RENEWAL_DELAY_MS = 1;
 
 export interface WorkerLoopConfig {
   readonly store: IntelligenceJobStore;
@@ -71,23 +74,69 @@ export class WorkerLoop {
     }
 
     const { job, lease } = leased;
+    const renewals = this.startRenewalLoop(lease);
     try {
       const result = await this.config.processor.process(job);
+      const currentLease = await renewals.stop();
       await this.config.inbox.append({
         tenantId: job.tenantId,
         jobId: job.jobId,
-        leaseToken: lease.leaseToken,
-        leaseAttempt: lease.attempt,
+        leaseToken: currentLease.leaseToken,
+        leaseAttempt: currentLease.attempt,
         workerId: this.config.workerId,
         baseAggregateVersion: job.baseAggregateVersion,
         result,
       });
       return "processed";
     } catch (error) {
+      await renewals.stop().catch(() => undefined);
       this.config.onError?.(error);
       await this.config.store.abandon(job.jobId);
       return "failed";
     }
+  }
+
+  private startRenewalLoop(initialLease: IntelligenceJobLease): {
+    stop(): Promise<IntelligenceJobLease>;
+  } {
+    const abort = new AbortController();
+    const delayMs = Math.max(
+      MINIMUM_RENEWAL_DELAY_MS,
+      Math.floor(this.config.leaseDurationMs / 3),
+    );
+    let currentLease = initialLease;
+    let renewalError: unknown;
+    const done = (async (): Promise<void> => {
+      while (!abort.signal.aborted) {
+        await this.clock.sleep(delayMs, abort.signal);
+        if (abort.signal.aborted) {
+          return;
+        }
+        try {
+          currentLease = await this.config.store.renew({
+            jobId: currentLease.jobId,
+            leaseToken: currentLease.leaseToken,
+            workerId: this.config.workerId,
+            now: this.clock.now(),
+            leaseDurationMs: this.config.leaseDurationMs,
+          });
+        } catch (error) {
+          renewalError = error;
+          return;
+        }
+      }
+    })();
+
+    return {
+      stop: async (): Promise<IntelligenceJobLease> => {
+        abort.abort();
+        await done;
+        if (renewalError !== undefined) {
+          throw renewalError;
+        }
+        return currentLease;
+      },
+    };
   }
 
   async run(signal: AbortSignal): Promise<void> {

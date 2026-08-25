@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
-import { PostgresIntelligenceQueue } from "@qualigence/core-application";
-import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
+import {
+  acquirePostgresOperationLock,
+  PostgresIntelligenceQueue,
+} from "@qualigence/postgres-runtime";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupPostgresFixture, type PostgresFixture } from "../../helpers/postgres-fixture.js";
 import { buildJobPair, seedInvestigationCase, seedJob } from "../../helpers/intelligence-fixtures.js";
@@ -61,8 +63,8 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
     }
   });
 
-  it("re-leases a job after the holding worker crashes (connection lost)", async () => {
-    const { job } = buildJobPair({
+  it("persists lease ownership and re-leases a job only after expiry", async () => {
+    const { job, result } = buildJobPair({
       tenantId: "tenant-a",
       caseId: "case-lease-2",
       jobId: "job-lease-2",
@@ -79,23 +81,71 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
     const leased = await crashing.lease({
       workerId: "worker-a",
       acceptedTypes,
-      now: now(),
+      now: "2026-08-25T00:00:00.000Z",
       leaseDurationMs: 60_000,
     });
     expect(leased?.job.jobId).toBe("job-lease-2");
+    expect(leased?.lease.attempt).toBe(1);
 
-    // Simulate a crash: dropping the pool releases the held row lock.
+    const admin = new Client(fixture.adminConfig);
+    await admin.connect();
+    try {
+      const leaseRows = await admin.query(
+        `select worker_id, attempt, lease_token_hash, expires_at, renewal_count, released_at, completed_at
+           from intelligence_leases
+          where tenant_id = 'tenant-a' and job_id = 'job-lease-2'`,
+      );
+      expect(leaseRows.rows).toHaveLength(1);
+      expect(leaseRows.rows[0]).toMatchObject({
+        worker_id: "worker-a",
+        attempt: 1,
+        expires_at: "2026-08-25T00:01:00.000Z",
+        renewal_count: 0,
+        released_at: null,
+        completed_at: null,
+      });
+      expect(leaseRows.rows[0].lease_token_hash).not.toBe(leased?.lease.leaseToken);
+    } finally {
+      await admin.end();
+    }
+
+    // Simulate a crash: the durable lease remains authoritative until expiry.
     await crashing.close();
+
+    const blocked = queue();
+    try {
+      const stillHeld = await blocked.lease({
+        workerId: "worker-b",
+        acceptedTypes,
+        now: "2026-08-25T00:00:30.000Z",
+        leaseDurationMs: 60_000,
+      });
+      expect(stillHeld).toBeUndefined();
+    } finally {
+      await blocked.close();
+    }
 
     const recovered = queue();
     try {
       const released = await recovered.lease({
         workerId: "worker-b",
         acceptedTypes,
-        now: now(),
+        now: "2026-08-25T00:01:01.000Z",
         leaseDurationMs: 60_000,
       });
       expect(released?.job.jobId).toBe("job-lease-2");
+      expect(released?.lease.attempt).toBe(2);
+      await expect(
+        recovered.append({
+          tenantId: "tenant-a",
+          jobId: job.jobId,
+          leaseToken: leased!.lease.leaseToken,
+          leaseAttempt: leased!.lease.attempt,
+          workerId: "worker-a",
+          baseAggregateVersion: 0,
+          result,
+        }),
+      ).rejects.toMatchObject({ code: "LeaseNotActive" });
     } finally {
       await recovered.close();
     }

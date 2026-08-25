@@ -2,10 +2,10 @@ import { InvestigationAgent } from "@qualigence/model-agent";
 import { pathToFileURL } from "node:url";
 import { ModelGateway } from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
-import { PostgresIntelligenceQueue } from "@qualigence/core-application";
 import {
   acquirePostgresOperationLock,
   assertPostgresSchemaCurrent,
+  PostgresIntelligenceQueue,
 } from "@qualigence/postgres-runtime";
 import type { IntelligenceJobType } from "@qualigence/intelligence";
 import { loadWorkerConfig } from "./config.js";

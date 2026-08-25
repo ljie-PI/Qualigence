@@ -28,9 +28,9 @@ function assertIdentifier(value: string, label: string): void {
  * context resolves to NULL and therefore returns zero rows / rejects writes —
  * it can never be caught and bypassed in application code.
  *
- * The Worker role is granted exclusively on the Intelligence Job tables so it
- * can lease jobs across tenants without ever reading or writing aggregate,
- * evidence or review data.
+ * The Worker role is granted exclusively on the Intelligence Job lease/Result
+ * tables so it can lease jobs across tenants without ever reading or writing
+ * aggregate, evidence or review data.
  */
 export async function applyRowLevelSecurity(
   db: Kysely<any>,
@@ -83,8 +83,8 @@ export async function applyRowLevelSecurity(
   }
 
   // The Worker may lease jobs through the constrained lock function and append
-  // results (select/insert). It receives no direct UPDATE authority over jobs.
-  // — and nothing else. Every other tenant table has no grant, so a worker read
+  // results (select/insert). It receives no direct UPDATE authority over jobs —
+  // and nothing else. Every other tenant table has no grant, so a worker read
   // fails closed with SQLSTATE 42501 before RLS is even consulted.
   if (selected === undefined || selected.has("intelligence_jobs")) {
     await sql`revoke update on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
@@ -100,7 +100,7 @@ export async function applyRowLevelSecurity(
           from public.intelligence_jobs j
          where j.job_type = any(accepted_types)
            and not exists (
-             select 1 from public.intelligence_results r where r.job_id = j.job_id
+             select 1 from public.intelligence_results r where r.tenant_id = j.tenant_id and r.job_id = j.job_id
            )
          order by j.created_at asc
          for update of j skip locked
@@ -110,8 +110,48 @@ export async function applyRowLevelSecurity(
     await sql`revoke all on function public.worker_lock_intelligence_job(text[]) from public`.execute(db);
     await sql`grant execute on function public.worker_lock_intelligence_job(text[]) to ${workerRole}`.execute(db);
   }
+  if (selected === undefined || selected.has("intelligence_leases")) {
+    await sql`grant select, insert, update on table ${sql.table("intelligence_leases")} to ${workerRole}`.execute(db);
+  }
+  if (selected === undefined || selected.has("intelligence_result_inbox")) {
+    await sql`grant select, insert on table ${sql.table("intelligence_result_inbox")} to ${workerRole}`.execute(db);
+  }
   if (selected === undefined || selected.has("intelligence_results")) {
     await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(db);
+  }
+  if (selected === undefined || (selected.has("intelligence_jobs") && selected.has("intelligence_leases"))) {
+    await sql`
+      create or replace function public.worker_lock_intelligence_job(accepted_types text[], checked_at text)
+      returns table (job_json text)
+      language sql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+        select j.job_json
+          from public.intelligence_jobs j
+         where j.job_type = any(accepted_types)
+           and not exists (
+             select 1
+               from public.intelligence_results r
+              where r.tenant_id = j.tenant_id
+                and r.job_id = j.job_id
+           )
+           and not exists (
+             select 1
+               from public.intelligence_leases l
+              where l.tenant_id = j.tenant_id
+                and l.job_id = j.job_id
+                and l.released_at is null
+                and l.completed_at is null
+                and l.expires_at > checked_at
+           )
+         order by j.created_at asc
+         for update of j skip locked
+         limit 1
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_lock_intelligence_job(text[], text) from public`.execute(db);
+    await sql`grant execute on function public.worker_lock_intelligence_job(text[], text) to ${workerRole}`.execute(db);
   }
 
   await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);

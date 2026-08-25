@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
-import {
-  PostgresIntelligenceQueue,
-  type IntelligenceJobStore,
-  type IntelligenceResultInbox,
-} from "@qualigence/core-application";
+import type { IntelligenceJobStore, IntelligenceResultInbox } from "@qualigence/core-application";
 import { WorkerLoop, type Clock } from "@qualigence/intelligence-worker";
-import { acquirePostgresOperationLock } from "@qualigence/postgres-runtime";
+import {
+  acquirePostgresOperationLock,
+  PostgresIntelligenceQueue,
+} from "@qualigence/postgres-runtime";
 import type { JobProcessor } from "@qualigence/intelligence-worker";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
 import { dockerAvailable } from "../../helpers/docker-container.js";
