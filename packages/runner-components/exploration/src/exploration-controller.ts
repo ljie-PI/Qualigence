@@ -478,6 +478,9 @@ export class ExplorationController {
   ): Promise<ExplorationResult | undefined> {
     const seeds = job.seedSkills ?? [];
     if (seeds.length === 0) return undefined;
+    if (state.seedCursor.inFlightSeedSkillBundleId !== undefined) {
+      return this.finish(state, "error", "SeedReplayOutcomeUnknown");
+    }
     const replay = this.deps.seedReplay;
     if (replay === undefined) {
       return this.finish(state, "no_safe_action", "MissingSeedReplayPort");
@@ -486,6 +489,27 @@ export class ExplorationController {
     for (let index = state.seedCursor.nextSeedIndex; index < seeds.length; index += 1) {
       const seed = seeds[index];
       if (seed === undefined) return this.finish(state, "no_safe_action", "SeedBindingConflict");
+      const inFlightSeedCursor = {
+        nextSeedIndex: state.seedCursor.nextSeedIndex,
+        completedSeedSkillBundleIds: state.seedCursor.completedSeedSkillBundleIds,
+        inFlightSeedSkillBundleId: seed.plan.skillBundleId,
+      };
+      const inFlightUpdate = await this.updateProgress(state, {
+        phase: "seed_replay",
+        seedCursor: inFlightSeedCursor,
+        lastSafeStep: state.stepsExecuted,
+        lastSafeGraphFingerprint: lastSafeFingerprint(state),
+        remaining: state.budget.snapshot(),
+      });
+      if (inFlightUpdate.status !== "updated") {
+        return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
+      }
+      state.seedCursor = inFlightSeedCursor;
+      const result = await replay.replay(seed);
+      state.seedReplays.push(result);
+      if (result.status !== "passed") {
+        return this.finish(state, "plan_diverged", "SeedReplayFailed");
+      }
       const nextSeedCursor = {
         nextSeedIndex: index + 1,
         completedSeedSkillBundleIds: [...state.seedCursor.completedSeedSkillBundleIds, seed.plan.skillBundleId],
@@ -501,11 +525,6 @@ export class ExplorationController {
         return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
       }
       state.seedCursor = nextSeedCursor;
-      const result = await replay.replay(seed);
-      state.seedReplays.push(result);
-      if (result.status !== "passed") {
-        return this.finish(state, "plan_diverged", "SeedReplayFailed");
-      }
     }
     return undefined;
   }

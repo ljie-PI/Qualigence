@@ -1,13 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  runBenchmark,
-  type BenchmarkStore,
-  type ScenarioDefinition,
-} from "@qualigence/benchmark-runner";
+import type { ScenarioDefinition } from "@qualigence/benchmark-runner";
 import {
   groundTruthSha256,
   manifestSha256,
@@ -83,83 +79,125 @@ const scenario: ScenarioDefinition = {
   ],
 };
 
-class CrashAfterSafeCheckpointStore implements BenchmarkStore {
-  private crashed = false;
-
-  constructor(private readonly delegate: SqliteBenchmarkStore) {}
-
-  saveRun: BenchmarkStore["saveRun"] = (run) => this.delegate.saveRun(run);
-  appendAttempt: BenchmarkStore["appendAttempt"] = (runId, attempt) => this.delegate.appendAttempt(runId, attempt);
-  attemptsForRun: BenchmarkStore["attemptsForRun"] = (runId) => this.delegate.attemptsForRun(runId);
-  saveReport: BenchmarkStore["saveReport"] = (runId, report) => this.delegate.saveReport(runId, report);
-  loadAttemptProgress: BenchmarkStore["loadAttemptProgress"] = (attemptId) => this.delegate.loadAttemptProgress(attemptId);
-  initializeAttemptProgress: BenchmarkStore["initializeAttemptProgress"] = (progress) => this.delegate.initializeAttemptProgress(progress);
-  liveCheckpointsForAttempt: BenchmarkStore["liveCheckpointsForAttempt"] = (attemptId) => this.delegate.liveCheckpointsForAttempt(attemptId);
-
-  compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = async (update) => {
-    const result = await this.delegate.compareAndSetAttemptProgress(update);
-    if (!this.crashed && update.checkpoint !== undefined && update.checkpoint.terminalReason === undefined) {
-      this.crashed = true;
-      throw new Error("simulated process interruption after acknowledged safe checkpoint");
-    }
-    return result;
-  };
-}
-
 describe("exploration restart/resume acceptance", () => {
-  it("resumes from the last durable safe checkpoint after reopening the process store", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "qualigence-exploration-resume-"));
+  it("resumes from the last durable safe checkpoint after a benchmark process exits", async () => {
+    const dir = await mkdtemp(join(process.cwd(), ".tmp-exploration-resume-"));
     const databaseFile = join(dir, "benchmark.db");
+    const scriptFile = join(dir, "restart-child.mjs");
     const runId = runIdFor(manifest, profile, groundTruth);
     const attemptId = `${runId}:checkout-bug:1`;
     try {
-      const firstRuntime = await SqliteRuntime.open({ filename: databaseFile, busyTimeoutMs: 5_000 });
+      await writeFile(scriptFile, childScript(), "utf8");
+
+      const interrupted = await runChild(scriptFile, databaseFile, "crash");
+      expect(interrupted.code).toBe(42);
+      expect(interrupted.stderr).toContain("simulated process interruption after acknowledged safe checkpoint");
+
+      let runtime = await SqliteRuntime.open({ filename: databaseFile, busyTimeoutMs: 5_000 });
       try {
-        const firstStore = new SqliteBenchmarkStore(firstRuntime);
-        await expect(runBenchmark({
-          manifest,
-          groundTruth,
-          scenarios: [scenario],
-          store: new CrashAfterSafeCheckpointStore(firstStore),
-          createdAt: "2026-08-01T00:00:00.000Z",
-        })).rejects.toThrow(/acknowledged safe checkpoint/);
-        expect(await firstStore.attemptsForRun(runId)).toEqual([]);
-        expect(await firstStore.liveCheckpointsForAttempt(attemptId)).toEqual([
+        const store = new SqliteBenchmarkStore(runtime);
+        expect(await store.attemptsForRun(runId)).toEqual([]);
+        expect(await store.liveCheckpointsForAttempt(attemptId)).toEqual([
           expect.objectContaining({ step: 1 }),
         ]);
       } finally {
-        await firstRuntime.close();
+        await runtime.close();
       }
 
-      const secondRuntime = await SqliteRuntime.open({ filename: databaseFile, busyTimeoutMs: 5_000 });
-      try {
-        const secondStore = new SqliteBenchmarkStore(secondRuntime);
-        const resumed = await runBenchmark({
-          manifest,
-          groundTruth,
-          scenarios: [scenario],
-          store: secondStore,
-          createdAt: "2026-08-01T00:00:00.000Z",
-        });
+      const resumed = await runChild(scriptFile, databaseFile, "resume");
+      expect(resumed).toMatchObject({ code: 0 });
+      expect(resumed.stdout).toContain("resume-ok");
 
-        expect(resumed.exitCode).toBe(0);
-        const progress = await secondStore.loadAttemptProgress(attemptId);
+      runtime = await SqliteRuntime.open({ filename: databaseFile, busyTimeoutMs: 5_000 });
+      try {
+        const store = new SqliteBenchmarkStore(runtime);
+        const progress = await store.loadAttemptProgress(attemptId);
         expect(progress).toMatchObject({
           phase: "terminal",
           terminalReason: "objective_satisfied",
           lastSafeStep: 1,
         });
-        await expect(secondStore.attemptsForRun(runId)).resolves.toEqual([
+        await expect(store.attemptsForRun(runId)).resolves.toEqual([
           expect.objectContaining({ attemptId, findings: [{ defectId: "bug-1", confidence: "high" }] }),
         ]);
       } finally {
-        await secondRuntime.close();
+        await runtime.close();
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 });
+
+function runChild(
+  scriptFile: string,
+  databaseFile: string,
+  mode: "crash" | "resume",
+): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptFile, databaseFile, mode], {
+      cwd: process.cwd(),
+      env: { ...process.env, CI: "true" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function childScript(): string {
+  return `
+import { runBenchmark } from ${JSON.stringify("@qualigence/benchmark-runner")};
+import { SqliteBenchmarkStore, SqliteRuntime } from ${JSON.stringify("@qualigence/sqlite-runtime")};
+const manifest = ${JSON.stringify(manifest)};
+const groundTruth = ${JSON.stringify(groundTruth)};
+const scenarios = ${JSON.stringify([scenario])};
+class CrashAfterSafeCheckpointStore {
+  crashed = false;
+  constructor(delegate) { this.delegate = delegate; }
+  saveRun(run) { return this.delegate.saveRun(run); }
+  appendAttempt(runId, attempt) { return this.delegate.appendAttempt(runId, attempt); }
+  attemptsForRun(runId) { return this.delegate.attemptsForRun(runId); }
+  saveReport(runId, report) { return this.delegate.saveReport(runId, report); }
+  loadAttemptProgress(attemptId) { return this.delegate.loadAttemptProgress(attemptId); }
+  initializeAttemptProgress(progress) { return this.delegate.initializeAttemptProgress(progress); }
+  liveCheckpointsForAttempt(attemptId) { return this.delegate.liveCheckpointsForAttempt(attemptId); }
+  async compareAndSetAttemptProgress(update) {
+    const result = await this.delegate.compareAndSetAttemptProgress(update);
+    if (!this.crashed && update.checkpoint !== undefined && update.checkpoint.terminalReason === undefined) {
+      this.crashed = true;
+      throw new Error("simulated process interruption after acknowledged safe checkpoint");
+    }
+    return result;
+  }
+}
+const [, , databaseFile, mode] = process.argv;
+const runtime = await SqliteRuntime.open({ filename: databaseFile, busyTimeoutMs: 5000 });
+try {
+  const store = new SqliteBenchmarkStore(runtime);
+  await runBenchmark({
+    manifest,
+    groundTruth,
+    scenarios,
+    store: mode === "crash" ? new CrashAfterSafeCheckpointStore(store) : store,
+    createdAt: "2026-08-01T00:00:00.000Z",
+  });
+  console.log(mode === "crash" ? "unexpected-success" : "resume-ok");
+  process.exitCode = mode === "crash" ? 1 : 0;
+} catch (error) {
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = mode === "crash" ? 42 : 1;
+} finally {
+  await runtime.close();
+}
+`;
+}
 
 function runIdFor(
   inputManifest: DetectionBenchmarkManifest,

@@ -226,6 +226,19 @@ class InMemoryProgressStore implements ExplorationProgressStore {
   }
 }
 
+class CrashAfterSeedInFlightStore extends InMemoryProgressStore {
+  private crashed = false;
+
+  override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    const result = await super.compareAndSetAttemptProgress(update);
+    if (!this.crashed && update.seedCursor.inFlightSeedSkillBundleId !== undefined) {
+      this.crashed = true;
+      throw new Error("process crashed with seed replay in flight");
+    }
+    return result;
+  }
+}
+
 class CrashAfterSeedCursorStore extends InMemoryProgressStore {
   private crashed = false;
 
@@ -527,6 +540,42 @@ describe("ExplorationController", () => {
     expect(result.terminalReason).toBe("objective_satisfied");
   });
 
+  it("terminates instead of replaying a seed whose outcome is unknown", async () => {
+    const store = new CrashAfterSeedInFlightStore();
+    const firstSeedReplay = new RecordingSeedReplay();
+    const first = createController({
+      target: new ScriptedTarget([fixedGraph()]),
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      seedReplay: firstSeedReplay,
+      progressStore: store,
+    });
+
+    await expect(first.run(job({
+      attemptId: "attempt-seed-in-flight",
+      policy: policy({ seedSkillBundleIds: ["bundle-a"] }),
+      seedSkills: [seed("bundle-a")],
+    }))).rejects.toThrow(/seed replay in flight/);
+    expect(firstSeedReplay.ids).toEqual([]);
+
+    const resumedSeedReplay = new RecordingSeedReplay();
+    const resumed = createController({
+      target: new ScriptedTarget([fixedGraph()]),
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      seedReplay: resumedSeedReplay,
+      progressStore: store,
+    });
+
+    const result = await resumed.run(job({
+      attemptId: "attempt-seed-in-flight",
+      policy: policy({ seedSkillBundleIds: ["bundle-a"] }),
+      seedSkills: [seed("bundle-a")],
+    }));
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("SeedReplayOutcomeUnknown");
+    expect(resumedSeedReplay.ids).toEqual([]);
+  });
+
   it("resumes from durable seed cursor without replaying an acknowledged seed", async () => {
     const store = new CrashAfterSeedCursorStore();
     const firstSeedReplay = new RecordingSeedReplay();
@@ -542,7 +591,7 @@ describe("ExplorationController", () => {
       policy: policy({ seedSkillBundleIds: ["bundle-a"] }),
       seedSkills: [seed("bundle-a")],
     }))).rejects.toThrow(/seed cursor commit/);
-    expect(firstSeedReplay.ids).toEqual([]);
+    expect(firstSeedReplay.ids).toEqual(["bundle-a"]);
 
     const resumedSeedReplay = new RecordingSeedReplay();
     const resumed = createController({

@@ -219,6 +219,7 @@ export type ExplorationProgressPhase =
 export interface ExplorationSeedCursor {
   readonly nextSeedIndex: number;
   readonly completedSeedSkillBundleIds: readonly string[];
+  readonly inFlightSeedSkillBundleId?: string | undefined;
 }
 
 export interface ExplorationInFlightAction {
