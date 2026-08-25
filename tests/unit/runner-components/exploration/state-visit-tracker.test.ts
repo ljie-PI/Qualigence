@@ -6,6 +6,7 @@ import {
 import {
   WEB_EXTENSION_V1_TYPE,
   type ObservationGraphV1,
+  type ObservationRelationV1,
 } from "@qualigence/runner-protocol";
 import { observationGraphV1, type ObservationGraphV1TestNode } from "../../../helpers/observation-graph-v1.js";
 
@@ -67,6 +68,23 @@ function graphWithSecretValueAndState(
   };
 }
 
+function graphWithRootRelations(
+  relations: readonly ObservationRelationV1[],
+  rootNodeIds: readonly string[] = ["graph-1:root"],
+  nodes: readonly ObservationGraphV1TestNode[] = [
+    { id: "node-1", role: "button", name: "Add to cart", confidence: 0.9 },
+    { id: "node-2", role: "spinbutton", name: "Quantity", value: "2", confidence: 0.8 },
+  ],
+): ObservationGraphV1 {
+  const base = graph({ nodes });
+  const rootId = base.rootNodeIds[0] ?? "graph-1:root";
+  return {
+    ...base,
+    rootNodeIds,
+    nodes: base.nodes.map((node) => (node.id === rootId ? { ...node, relations } : node)),
+  };
+}
+
 describe("fingerprintObservationGraph", () => {
   it("normalizes volatile graphId, node ids, timestamps and confidence to the same fingerprint", () => {
     const a = fingerprintObservationGraph(graph());
@@ -91,16 +109,46 @@ describe("fingerprintObservationGraph", () => {
   });
 
   it("is order-independent across graph semantic sets", () => {
-    const forward = fingerprintObservationGraph(graph());
+    const forward = fingerprintObservationGraph(
+      graphWithRootRelations(
+        [
+          { type: "controls", targetNodeId: "node-2" },
+          { type: "child", targetNodeId: "node-1" },
+        ],
+        ["graph-1:root", "node-2"],
+      ),
+    );
     const reversed = fingerprintObservationGraph(
-      graph({
-        nodes: [
+      graphWithRootRelations(
+        [
+          { type: "child", targetNodeId: "node-1" },
+          { type: "controls", targetNodeId: "node-2" },
+        ],
+        ["node-2", "graph-1:root"],
+        [
           { id: "node-2", role: "spinbutton", name: "Quantity", value: "2", confidence: 0.8 },
           { id: "node-1", role: "button", name: "Add to cart", confidence: 0.9 },
         ],
-      }),
+      ),
     );
     expect(forward).toBe(reversed);
+  });
+
+  it("produces a different fingerprint for relation-only changes", () => {
+    const childRelation = fingerprintObservationGraph(
+      graphWithRootRelations([
+        { type: "child", targetNodeId: "node-1" },
+        { type: "controls", targetNodeId: "node-2" },
+      ]),
+    );
+    const controlsRelation = fingerprintObservationGraph(
+      graphWithRootRelations([
+        { type: "controls", targetNodeId: "node-1" },
+        { type: "controls", targetNodeId: "node-2" },
+      ]),
+    );
+
+    expect(controlsRelation).not.toBe(childRelation);
   });
 
   it("produces a different fingerprint for a semantic or state change", () => {

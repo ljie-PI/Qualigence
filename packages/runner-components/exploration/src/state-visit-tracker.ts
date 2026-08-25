@@ -5,8 +5,8 @@ import { fingerprintObservationGraphV1 } from "./observation-v1-consumer.js";
  * A deterministic, canonical fingerprint of an Observation Graph v1 used to
  * detect revisited states. It validates the graph, reads URL/title semantics only
  * from the typed redacted web/v1 extension, and hashes a stable projection of v1
- * core fields while dropping volatile graph ids, timestamps, confidence, and
- * evidence refs.
+ * core fields and canonical relation semantics while dropping volatile graph ids,
+ * node ids, timestamps, confidence, and evidence refs.
  */
 export function fingerprintObservationGraph(graph: ObservationGraphV1): string {
   return fingerprintObservationGraphV1(graph);

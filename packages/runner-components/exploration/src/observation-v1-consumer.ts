@@ -6,6 +6,7 @@ import {
   type ObservationGraphV1,
   type ObservationJsonValue,
   type ObservationNodeV1,
+  type ObservationRelationV1,
   type VersionedExtension,
   type WebViewportV1,
 } from "@qualigence/runner-protocol";
@@ -44,13 +45,23 @@ export interface ObservationNodePromptView {
   readonly evidenceRefs: readonly string[];
 }
 
-interface ObservationNodeFingerprintView {
+interface ObservationNodeBaseFingerprintView {
   readonly role: string;
   readonly name: string;
   readonly value?: string;
   readonly state: Readonly<Record<string, boolean | string | number>>;
   readonly source: ObservationNodeV1["source"];
   readonly sensitivity: ObservationNodeV1["sensitivity"];
+}
+
+interface ObservationRelationFingerprintView {
+  readonly type: ObservationRelationV1["type"];
+  /** Stable semantic identity of the target node; raw volatile node IDs are not fingerprinted. */
+  readonly target: string;
+}
+
+interface ObservationNodeFingerprintView extends ObservationNodeBaseFingerprintView {
+  readonly relations: readonly ObservationRelationFingerprintView[];
 }
 
 /** Validate a live v1 Graph before any consumer derives prompts, fingerprints, or actions from it. */
@@ -120,9 +131,11 @@ export function observationGraphPromptView(graph: ObservationGraphV1): Observati
 export function fingerprintObservationGraphV1(graph: ObservationGraphV1): string {
   const validated = validateConsumerObservationGraph(graph);
   const web = requireWebV1Semantics(validated);
+  const nodeIdentityById = stableNodeIdentityById(validated.nodes);
   const nodes = [...validated.nodes]
-    .map((node) => nodeFingerprintView(node))
+    .map((node) => nodeFingerprintView(node, nodeIdentityById))
     .sort((left, right) => compareStrings(canonicalPayloadHash(left), canonicalPayloadHash(right)));
+  const rootNodes = sortStrings(validated.rootNodeIds.map((id) => nodeIdentityById.get(id) ?? id));
 
   return canonicalPayloadHash({
     web: {
@@ -132,6 +145,7 @@ export function fingerprintObservationGraphV1(graph: ObservationGraphV1): string
       queryKeys: web.queryKeys,
     },
     target: validated.target,
+    rootNodes,
     nodes,
   });
 }
@@ -158,7 +172,11 @@ function webSemanticsFromExtension(extension: VersionedExtension): WebV1Semantic
   };
 }
 
-function nodeFingerprintView(node: ObservationNodeV1): ObservationNodeFingerprintView {
+function stableNodeIdentityById(nodes: readonly ObservationNodeV1[]): ReadonlyMap<string, string> {
+  return new Map(nodes.map((node) => [node.id, canonicalPayloadHash(nodeBaseFingerprintView(node))]));
+}
+
+function nodeBaseFingerprintView(node: ObservationNodeV1): ObservationNodeBaseFingerprintView {
   return {
     role: normalizeText(node.role),
     name: normalizeText(node.name ?? ""),
@@ -166,6 +184,30 @@ function nodeFingerprintView(node: ObservationNodeV1): ObservationNodeFingerprin
     state: node.sensitivity === "secret" ? {} : normalizedState(node.state),
     source: node.source,
     sensitivity: node.sensitivity,
+  };
+}
+
+function nodeFingerprintView(
+  node: ObservationNodeV1,
+  nodeIdentityById: ReadonlyMap<string, string>,
+): ObservationNodeFingerprintView {
+  return {
+    ...nodeBaseFingerprintView(node),
+    relations: [...node.relations]
+      .map((relation) => relationFingerprintView(relation, nodeIdentityById))
+      .sort((left, right) =>
+        compareStrings(`${left.type}\u0000${left.target}`, `${right.type}\u0000${right.target}`),
+      ),
+  };
+}
+
+function relationFingerprintView(
+  relation: ObservationRelationV1,
+  nodeIdentityById: ReadonlyMap<string, string>,
+): ObservationRelationFingerprintView {
+  return {
+    type: relation.type,
+    target: nodeIdentityById.get(relation.targetNodeId) ?? relation.targetNodeId,
   };
 }
 
