@@ -456,6 +456,79 @@ describe("grpc runner protocol handshake", () => {
     expect(server.connection("runner-1")).toBeUndefined();
   });
 
+  it("fences a superseded connection from admitting or receiving offers after resume", async () => {
+    const application = new RecordingRunnerProtocolApplication(welcomeParameters());
+    let releaseCreateOffer!: () => void;
+    let resolveCreateOfferStarted!: () => void;
+    let createOfferAttempts = 0;
+    const createOfferStarted = new Promise<void>((resolve) => {
+      resolveCreateOfferStarted = resolve;
+    });
+    const createOfferBarrier = new Promise<void>((resolve) => {
+      releaseCreateOffer = resolve;
+    });
+    const createOffer = application.createOffer.bind(application);
+    application.createOffer = async (sessionId, job, requirements) => {
+      createOfferAttempts += 1;
+      if (job.runId === "run-stale") {
+        resolveCreateOfferStarted();
+        await createOfferBarrier;
+      }
+      return createOffer(sessionId, job, requirements);
+    };
+    const { server, port } = await startTestServer(pki, { application });
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, port, cert);
+    const client2 = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      releaseCreateOffer();
+      await client1.close();
+      await client2.close();
+      await server.shutdown();
+    });
+
+    const session1 = await client1.connect(makeWebV1Hello("runner-1"));
+    const staleConnection = await server.waitForConnection("runner-1");
+    const staleOffer = staleConnection.offer(webJob("run-stale", "project-1"), webV1Requirements());
+    staleOffer.catch(() => undefined);
+    await createOfferStarted;
+
+    const session2 = await client2.connect(
+      makeWebV1Hello("runner-1", { resumeToken: session1.welcome.resumeToken }),
+    );
+    expect(server.connectionGeneration("runner-1")).toBe(2);
+    const currentConnection = await server.waitForConnection("runner-1");
+    expect(currentConnection).not.toBe(staleConnection);
+
+    await expect(
+      staleConnection.offer(webJob("run-after-resume", "project-1"), webV1Requirements()),
+    ).rejects.toMatchObject({ code: "SessionClosed" });
+    expect(createOfferAttempts).toBe(1);
+
+    const staleOfferReadAbort = new AbortController();
+    const staleOfferReadTimeout = setTimeout(
+      () => staleOfferReadAbort.abort(new Error("stale connection did not receive an offer")),
+      250,
+    );
+    staleOfferReadTimeout.unref?.();
+    const staleOfferRead = session1.nextOffer(staleOfferReadAbort.signal);
+    releaseCreateOffer();
+    await expect(staleOffer).rejects.toMatchObject({ code: "SessionClosed" });
+    await expect(staleOfferRead).rejects.toBeDefined();
+    clearTimeout(staleOfferReadTimeout);
+
+    const currentLease = currentConnection.offer(webJob("run-current", "project-1"), webV1Requirements());
+    const currentOffer = await session2.nextOffer(new AbortController().signal);
+    expect(currentOffer.job.runId).toBe("run-current");
+    const accepted = await session2.accept(currentOffer.offerId);
+    await expect(currentLease).resolves.toMatchObject({
+      jobId: "job-run-current",
+      runId: "run-current",
+      leaseToken: accepted.leaseToken,
+    });
+    expect(createOfferAttempts).toBe(2);
+  });
+
   it("ignores a frame after the connection generation increments", async () => {
     let enteredHandle = 0;
     let releaseHandle!: () => void;

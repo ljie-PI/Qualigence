@@ -55,7 +55,9 @@ export class AsyncBlockingQueue<T> {
         deferred.reject(signal.reason ?? new Error("aborted"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
-      void deferred.promise.finally(() => signal.removeEventListener("abort", onAbort));
+      void deferred.promise
+        .finally(() => signal.removeEventListener("abort", onAbort))
+        .catch(() => undefined);
     }
     this.waiters.push(deferred);
     return deferred.promise;

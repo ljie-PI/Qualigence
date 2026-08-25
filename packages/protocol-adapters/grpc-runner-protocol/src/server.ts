@@ -303,6 +303,7 @@ export class GrpcRunnerProtocolServer {
       this.generations.set(key, generation);
       if (existing !== undefined) {
         this.releaseConnection(existing);
+        existing.dispose(new RunnerProtocolError("SessionClosed", "runner connection superseded"));
       }
 
       call.write({ correlation_id: frame.correlation_id, welcome: welcomeToWire(welcome) });
@@ -381,6 +382,13 @@ export class GrpcRunnerProtocolServer {
       this.generations.get(connectionKey({ kind: "local", runnerId: connectionKeyOrRunnerId }))
     ) === generation;
   }
+
+  isCurrentConnection(connection: ServerRunnerConnection): boolean {
+    return (
+      this.connections.get(connection.connectionKey) === connection &&
+      this.isCurrentGeneration(connection.connectionKey, connection.generation)
+    );
+  }
 }
 
 class ServerRunnerConnection implements RunnerConnectionPort {
@@ -410,14 +418,10 @@ class ServerRunnerConnection implements RunnerConnectionPort {
   get runnerId(): string { return this.identity.runnerId; }
 
   async offer(job: AcceptedExecutionJob, requirements: readonly string[]): Promise<ExecutionJobLease> {
-    if (this.disposed) {
-      return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection is closed"));
-    }
+    this.assertCurrent("runner connection is closed");
     this.authorizePayloadAdmission(job, requirements);
     const offer = await this.application.createOffer(this.sessionId, job, requirements);
-    if (this.disposed) {
-      return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection closed while creating offer"));
-    }
+    this.assertCurrent("runner connection closed while creating offer");
     const existing = this.pendingOffers.get(offer.offerId);
     if (existing !== undefined) return existing.promise;
     const deferred = createDeferred<ExecutionJobLease>();
@@ -427,6 +431,12 @@ class ServerRunnerConnection implements RunnerConnectionPort {
       offer: offerToWire(offer),
     });
     return deferred.promise;
+  }
+
+  private assertCurrent(message: string): void {
+    if (this.disposed || !this.server.isCurrentConnection(this)) {
+      throw new RunnerProtocolError("SessionClosed", message);
+    }
   }
 
   cancel(_jobId: string, reason: string): Promise<void> {
