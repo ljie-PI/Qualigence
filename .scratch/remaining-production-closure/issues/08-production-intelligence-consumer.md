@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Persist Intelligence Worker leases and Results.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -94,3 +94,7 @@ The process E2E must prove Server/Worker restart, retry, readiness, and orderly 
 - The affected context documents listed above, especially deterministic Server application, proposal-only Worker authority, durable dispositions, and tenant-scoped storage.
 - `packages/core-application/src/intelligence/server-result-consumer.ts`, `packages/core-application/src/intelligence/intelligence-queue-contracts.ts`, and `packages/core-modules/intelligence/src/contracts.ts`.
 - The Result inbox, wakeup-store, and Result applier tests named by the focused Gate.
+
+## Comments
+
+- start: base SHA `f34e7547c8208dd85425f64992553d4b8d290afc`; behavior matrix applicable as recorded above for stateful/concurrent Result consumption, tenant wakeup leasing/fencing, retry, shutdown, and terminal disposition persistence; planned Gates: `corepack pnpm vitest run tests/unit/core-modules/intelligence/result-applier.test.ts tests/component/intelligence-worker/result-inbox.test.ts tests/component/intelligence-worker/server-consumer-loop.test.ts tests/contract/postgres/intelligence-result-wakeup-store.test.ts`, `corepack pnpm typecheck`, and `git diff --check`.

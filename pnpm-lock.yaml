@@ -480,6 +480,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../packages/core-modules/context-intake
+      '@qualigence/core-application':
+        specifier: workspace:*
+        version: link:../../packages/core-application
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:../../packages/storage-providers/kms-local
@@ -627,6 +630,9 @@ importers:
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../core-modules/intelligence
+      '@qualigence/investigation':
+        specifier: workspace:*
+        version: link:../core-modules/investigation
       '@qualigence/runner-control':
         specifier: workspace:*
         version: link:../core-modules/runner-control

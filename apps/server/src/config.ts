@@ -8,6 +8,16 @@ export interface ServerConfig {
   readonly host: string;
   readonly port: number;
   readonly postgres: PostgresConnectionConfig;
+  readonly intelligenceResultConsumer: {
+    readonly enabled: boolean;
+    readonly consumerId: string;
+    readonly tenantBatchSize: number;
+    readonly resultBatchSize: number;
+    readonly leaseDurationMs: number;
+    readonly idleBackoffMs: number;
+    readonly errorBackoffMs: number;
+    readonly maximumBackoffMs: number;
+  };
   readonly oidc: {
     readonly issuer: string;
     readonly audience: string;
@@ -51,6 +61,16 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       password: env.SERVER_PG_PASSWORD_FILE
         ? readFileSync(env.SERVER_PG_PASSWORD_FILE, "utf8").trim()
         : required("SERVER_PG_PASSWORD", env),
+    },
+    intelligenceResultConsumer: {
+      enabled: env.SERVER_INTELLIGENCE_RESULT_CONSUMER_ENABLED !== "false",
+      consumerId: env.SERVER_INTELLIGENCE_RESULT_CONSUMER_ID ?? `server-${process.pid}`,
+      tenantBatchSize: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_TENANT_BATCH_SIZE ?? "16", 10),
+      resultBatchSize: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_BATCH_SIZE ?? "32", 10),
+      leaseDurationMs: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_LEASE_MS ?? "30000", 10),
+      idleBackoffMs: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_IDLE_BACKOFF_MS ?? "1000", 10),
+      errorBackoffMs: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_ERROR_BACKOFF_MS ?? "1000", 10),
+      maximumBackoffMs: Number.parseInt(env.SERVER_INTELLIGENCE_RESULT_MAXIMUM_BACKOFF_MS ?? "30000", 10),
     },
     oidc: {
       issuer: required("SERVER_OIDC_ISSUER", env),

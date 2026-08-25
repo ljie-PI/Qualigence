@@ -103,7 +103,15 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
         await admin.end();
       }
 
-      // A duplicate append of the same result is de-duplicated, not doubled.
+      const wakeupRows = await readAdminRows(fixture.adminConfig,
+        `select generation, status, lease_owner
+           from intelligence_result_wakeups
+          where tenant_id = 'tenant-a'`,
+      );
+      expect(wakeupRows.rows).toEqual([{ generation: 1, status: "pending", lease_owner: null }]);
+
+      // A duplicate append of the same result is de-duplicated, not doubled,
+      // and does not create another tenant wakeup generation.
       const second = await q.append({
         tenantId: "tenant-a",
         jobId: job.jobId,
@@ -114,6 +122,12 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
         result,
       });
       expect(second).toEqual({ disposition: "duplicate" });
+      const unchangedWakeupRows = await readAdminRows(fixture.adminConfig,
+        `select generation, status, lease_owner
+           from intelligence_result_wakeups
+          where tenant_id = 'tenant-a'`,
+      );
+      expect(unchangedWakeupRows.rows).toEqual([{ generation: 1, status: "pending", lease_owner: null }]);
     } finally {
       await q.close();
     }
@@ -123,6 +137,15 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     const summary = await consumer.consumeForTenant("tenant-a");
     expect(summary.applied).toBe(1);
     expect(await readCaseVersion(fixture.adminConfig, "case-inbox-1")).toBe(1);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select status, aggregate_type, aggregate_id, new_version
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-a' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(dispositions.rows).toEqual([
+      { status: "applied", aggregate_type: "investigation", aggregate_id: "case-inbox-1", new_version: 1 },
+    ]);
 
     // Re-consuming is idempotent: the result is applied exactly once.
     const again = await consumer.consumeForTenant("tenant-a");
@@ -260,6 +283,107 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     }
   });
 
+  it("durably records rejected and duplicate dispositions without unauthorized aggregate mutation", async () => {
+    const rejectedPair = buildJobPair({
+      tenantId: "tenant-disposition",
+      caseId: "case-rejected-disposition",
+      jobId: "job-rejected-disposition",
+      baseAggregateVersion: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-disposition",
+      caseId: "case-rejected-disposition",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, rejectedPair.job);
+
+    const duplicatePair = buildJobPair({
+      tenantId: "tenant-disposition",
+      caseId: "case-duplicate-disposition",
+      jobId: "job-duplicate-disposition",
+      baseAggregateVersion: 0,
+      idempotencyKey: "idem-duplicate-disposition",
+      jobType: "investigation.bug-analysis",
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-disposition",
+      caseId: "case-duplicate-disposition",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, duplicatePair.job);
+
+    const q = queue();
+    try {
+      const rejectedLease = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.reproduction-planning"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-disposition",
+        jobId: rejectedPair.job.jobId,
+        leaseToken: rejectedLease!.lease.leaseToken,
+        leaseAttempt: rejectedLease!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 0,
+        result: { ...rejectedPair.result, terminalStatus: "failed" },
+      });
+
+      const duplicateLease = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.bug-analysis"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-disposition",
+        jobId: duplicatePair.job.jobId,
+        leaseToken: duplicateLease!.lease.leaseToken,
+        leaseAttempt: duplicateLease!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 0,
+        result: duplicatePair.result,
+      });
+    } finally {
+      await q.close();
+    }
+
+    await readAdminRows(fixture.adminConfig,
+      `insert into intelligence_applied_results
+        (tenant_id, idempotency_key, aggregate_type, aggregate_id, new_version, summary, created_at)
+       values ('tenant-disposition', 'idem-duplicate-disposition', 'investigation', 'case-duplicate-disposition', 1, 'already applied', now()::text)`,
+    );
+
+    const consumer = new ServerIntelligenceResultConsumer(provider);
+    const summary = await consumer.consumeForTenant("tenant-disposition");
+    expect(summary).toMatchObject({ rejected: 1, duplicate: 1, applied: 0 });
+    expect(await readCaseVersion(fixture.adminConfig, "case-rejected-disposition")).toBe(0);
+    expect(await readCaseVersion(fixture.adminConfig, "case-duplicate-disposition")).toBe(0);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select idempotency_key, status, code, aggregate_id, new_version
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-disposition'
+        order by idempotency_key`,
+    );
+    expect(dispositions.rows).toEqual([
+      {
+        idempotency_key: "idem-duplicate-disposition",
+        status: "duplicate",
+        code: null,
+        aggregate_id: "case-duplicate-disposition",
+        new_version: 1,
+      },
+      {
+        idempotency_key: rejectedPair.result.idempotencyKey,
+        status: "rejected",
+        code: "TerminalNotSucceeded",
+        aggregate_id: null,
+        new_version: null,
+      },
+    ]);
+  });
+
   it("does not apply a raw legacy result row without validated inbox metadata", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-raw-result",
@@ -344,5 +468,28 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(summary.recompute).toBe(1);
     expect(summary.applied).toBe(0);
     expect(await readCaseVersion(fixture.adminConfig, "case-inbox-4")).toBe(1);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select status, reason, new_version
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-a' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(dispositions.rows).toHaveLength(1);
+    expect(dispositions.rows[0]).toMatchObject({ status: "recompute", new_version: null });
+    expect(dispositions.rows[0]?.reason).toContain("Base aggregate version 0");
   });
 });
+
+async function readAdminRows(
+  config: PostgresFixture["adminConfig"],
+  query: string,
+  values: readonly unknown[] = [],
+): Promise<{ readonly rows: Array<Record<string, unknown>> }> {
+  const admin = new Client(config);
+  await admin.connect();
+  try {
+    return await admin.query<Record<string, unknown>>(query, [...values]);
+  } finally {
+    await admin.end();
+  }
+}

@@ -20,6 +20,16 @@ function serverConfig() {
     host: "127.0.0.1",
     port: 8080,
     postgres: { host: "127.0.0.1", port: 5432, database: "qualigence", user: "server", password: "secret" },
+    intelligenceResultConsumer: {
+      enabled: false,
+      consumerId: "server-test",
+      tenantBatchSize: 1,
+      resultBatchSize: 1,
+      leaseDurationMs: 30_000,
+      idleBackoffMs: 1_000,
+      errorBackoffMs: 1_000,
+      maximumBackoffMs: 30_000,
+    },
     oidc: {
       issuer: "https://issuer.example",
       audience: "qualigence",

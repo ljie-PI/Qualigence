@@ -13,6 +13,7 @@
   "dependencies": {
     "@qualigence/evidence": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
+    "@qualigence/investigation": "workspace:*",
     "@qualigence/runner-control": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/shared-kernel": "workspace:*",

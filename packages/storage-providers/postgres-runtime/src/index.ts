@@ -52,6 +52,7 @@ export {
   IntelligenceQueueError,
   PostgresIntelligenceQueue,
 } from "./postgres-intelligence-queue.js";
+export { PostgresIntelligenceResultWakeupStore } from "./postgres-intelligence-result-wakeup-store.js";
 
 export type {
   AbandonLeaseDisposition,
@@ -64,3 +65,12 @@ export type {
   RenewInput,
   TransactionGuard,
 } from "./postgres-intelligence-queue.js";
+export type {
+  ClaimIntelligenceResultWakeupsInput,
+  CompleteIntelligenceResultWakeupDisposition,
+  CompleteIntelligenceResultWakeupInput,
+  IntelligenceResultWakeupClaim,
+  IntelligenceResultWakeupStore,
+  RetryIntelligenceResultWakeupDisposition,
+  RetryIntelligenceResultWakeupInput,
+} from "./postgres-intelligence-result-wakeup-store.js";

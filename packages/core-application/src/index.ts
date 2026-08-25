@@ -19,7 +19,7 @@ export type {
 export {
   ServerIntelligenceResultConsumer,
 } from "./intelligence/server-result-consumer.js";
-export type { ConsumeSummary } from "./intelligence/server-result-consumer.js";
+export type { ConsumeForTenantOptions, ConsumeSummary } from "./intelligence/server-result-consumer.js";
 
 export {
   CoreApplicationError,

@@ -40,7 +40,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
   });
 
   it("reports the shared logical schema version", async () => {
-    expect(await readSchemaVersion(fixture.adminConfig)).toBe(12);
+    expect(await readSchemaVersion(fixture.adminConfig)).toBe(13);
   });
 
   it("creates every catalogued table", async () => {
@@ -253,7 +253,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
           applied.push(version);
         },
       });
-      expect(applied).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12]);
+      expect(applied).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaBehind" });
       await markAuxSchemaCurrent(admin);
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaMalformed" });
@@ -380,7 +380,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
         code: "SchemaMalformed",
       } satisfies Partial<PostgresSchemaError>);
       await client.query(
-        "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (13, 'future', now()::text)",
+        "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (14, 'future', now()::text)",
       );
       await client.end();
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({

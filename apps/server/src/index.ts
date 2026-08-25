@@ -1,4 +1,10 @@
 export { buildServer } from "./server.js";
+export { IntelligenceResultConsumerLoop } from "./intelligence-result-consumer-loop.js";
+export type {
+  IntelligenceResultConsumer,
+  IntelligenceResultConsumerCycleResult,
+  IntelligenceResultConsumerLoopOptions,
+} from "./intelligence-result-consumer-loop.js";
 export { bootstrapServerDatabase } from "./bootstrap.js";
 export type { ServerBootstrapInput } from "./bootstrap.js";
 export { provisionAuxSchema } from "./aux-schema.js";

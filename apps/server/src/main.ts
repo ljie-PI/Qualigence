@@ -8,9 +8,12 @@ import {
   type OidcSigningKey,
 } from "@qualigence/oidc";
 import { pathToFileURL } from "node:url";
+import { ServerIntelligenceResultConsumer } from "@qualigence/core-application";
 import {
+  acquirePostgresOperationLock,
   assertPostgresSchemaCurrent,
   createPostgresRuntime,
+  PostgresIntelligenceResultWakeupStore,
   PostgresReviewTaskRepository,
 } from "@qualigence/postgres-runtime";
 import { LocalSkillSigner } from "@qualigence/kms-local";
@@ -19,6 +22,7 @@ import type { Clock } from "@qualigence/shared-kernel";
 import { loadServerConfig } from "./config.js";
 import type { ServerConfig } from "./config.js";
 import { buildServer } from "./server.js";
+import { IntelligenceResultConsumerLoop } from "./intelligence-result-consumer-loop.js";
 import {
   PostgresRunnerEnrollmentStore,
   PostgresRunnerPrincipalStore,
@@ -57,6 +61,25 @@ export async function main(
   });
 
   const provider = createPostgresRuntime(config.postgres);
+  const resultWakeups = new PostgresIntelligenceResultWakeupStore(
+    config.postgres,
+    acquirePostgresOperationLock,
+  );
+  const resultConsumer = new ServerIntelligenceResultConsumer(provider);
+  const resultConsumerLoop = new IntelligenceResultConsumerLoop({
+    consumerId: config.intelligenceResultConsumer.consumerId,
+    wakeups: resultWakeups,
+    consumer: resultConsumer,
+    tenantBatchSize: config.intelligenceResultConsumer.tenantBatchSize,
+    resultBatchSize: config.intelligenceResultConsumer.resultBatchSize,
+    leaseDurationMs: config.intelligenceResultConsumer.leaseDurationMs,
+    idleBackoffMs: config.intelligenceResultConsumer.idleBackoffMs,
+    errorBackoffMs: config.intelligenceResultConsumer.errorBackoffMs,
+    maximumBackoffMs: config.intelligenceResultConsumer.maximumBackoffMs,
+    onError: (error) => {
+      console.error("[server] intelligence result consumer failed", error);
+    },
+  });
   const issuer = new PemCaRunnerCertificateIssuer({
     caCertificatePem: config.runnerCa.certificatePem,
     caPrivateKeyPem: config.runnerCa.privateKeyPem,
@@ -78,6 +101,8 @@ export async function main(
   const app = buildServer(deps);
 
   const shutdown = async (): Promise<void> => {
+    await resultConsumerLoop.stop();
+    await resultWakeups.close();
     await app.close();
     await provider.close();
   };
@@ -85,6 +110,9 @@ export async function main(
   process.once("SIGTERM", () => void shutdown());
 
   await app.listen({ host: config.host, port: config.port });
+  if (config.intelligenceResultConsumer.enabled) {
+    resultConsumerLoop.start();
+  }
   console.error(`[server] listening on ${config.host}:${config.port}`);
 }
 
