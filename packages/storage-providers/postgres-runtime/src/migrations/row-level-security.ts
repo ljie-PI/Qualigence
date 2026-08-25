@@ -85,32 +85,10 @@ export async function applyRowLevelSecurity(
   }
 
   if (hasTable("intelligence_jobs")) {
-    await sql`revoke update on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
-    await sql`grant select on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
-
-    const completedPredicate = hasTable("intelligence_result_inbox")
-      ? sql`public.intelligence_result_inbox i`
-      : sql`public.intelligence_results i`;
-    await sql`
-      create or replace function public.worker_lock_intelligence_job(accepted_types text[])
-      returns table (job_json text)
-      language sql
-      security definer
-      set search_path = pg_catalog
-      as $function$
-        select j.job_json
-          from public.intelligence_jobs j
-         where j.job_type = any(accepted_types)
-           and not exists (
-             select 1 from ${completedPredicate} where i.tenant_id = j.tenant_id and i.job_id = j.job_id
-           )
-         order by j.created_at asc
-         for update of j skip locked
-         limit 1
-      $function$
-    `.execute(db);
-    await sql`revoke all on function public.worker_lock_intelligence_job(text[]) from public`.execute(db);
-    await sql`grant execute on function public.worker_lock_intelligence_job(text[]) to ${workerRole}`.execute(db);
+    await sql`drop policy if exists worker_access on ${sql.table("intelligence_jobs")}`.execute(db);
+    await sql`revoke all on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
+    await sql`drop function if exists public.worker_lock_intelligence_job(text[])`.execute(db);
+    await sql`drop function if exists public.worker_lock_intelligence_job(text[], text)`.execute(db);
   }
 
   if (hasTable("intelligence_results")) {
@@ -124,57 +102,33 @@ export async function applyRowLevelSecurity(
   }
 
   if (hasTable("intelligence_jobs") && hasTable("intelligence_leases") && hasTable("intelligence_result_inbox")) {
-    await sql`
-      create or replace function public.worker_lock_intelligence_job(accepted_types text[], checked_at text)
-      returns table (job_json text)
-      language sql
-      security definer
-      set search_path = pg_catalog
-      as $function$
-        select j.job_json
-          from public.intelligence_jobs j
-         where j.job_type = any(accepted_types)
-           and not exists (
-             select 1
-               from public.intelligence_result_inbox i
-              where i.tenant_id = j.tenant_id
-                and i.job_id = j.job_id
-           )
-           and not exists (
-             select 1
-               from public.intelligence_leases l
-              where l.tenant_id = j.tenant_id
-                and l.job_id = j.job_id
-                and l.released_at is null
-                and l.completed_at is null
-                and l.expires_at > checked_at
-           )
-         order by j.created_at asc
-         for update of j skip locked
-         limit 1
-      $function$
-    `.execute(db);
-    await sql`revoke all on function public.worker_lock_intelligence_job(text[], text) from public`.execute(db);
-    await sql`grant execute on function public.worker_lock_intelligence_job(text[], text) to ${workerRole}`.execute(db);
+    await sql`drop function if exists public.worker_claim_intelligence_lease(text[], text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_renew_intelligence_lease(text, text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_abandon_intelligence_lease(text, text, text, integer, text, text)`.execute(db);
 
     await sql`
       create or replace function public.worker_claim_intelligence_lease(
         accepted_types text[],
-        checked_at text,
         input_worker_id text,
         input_lease_token_hash text,
-        input_expires_at text
+        input_lease_duration_ms integer
       )
-      returns table (job_json text, attempt integer)
+      returns table (job_json text, attempt integer, expires_at text)
       language plpgsql
       security definer
       set search_path = pg_catalog
       as $function$
       declare
+        checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
         selected_tenant_id text;
         selected_job_id text;
         selected_job_json text;
         next_attempt integer;
+        next_expires_at text := to_char(
+          (transaction_timestamp() + (input_lease_duration_ms * interval '1 millisecond')) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        );
       begin
         select j.tenant_id, j.job_id, j.job_json
           into selected_tenant_id, selected_job_id, selected_job_json
@@ -222,24 +176,24 @@ export async function applyRowLevelSecurity(
            expires_at, last_renewed_at, renewal_count, released_at, completed_at)
         values
           (selected_tenant_id, selected_job_id, next_attempt, input_worker_id,
-           input_lease_token_hash, checked_at, input_expires_at, null, 0, null, null);
+           input_lease_token_hash, checked_at, next_expires_at, null, 0, null, null);
 
         job_json := selected_job_json;
         attempt := next_attempt;
+        expires_at := next_expires_at;
         return next;
       end
       $function$
     `.execute(db);
-    await sql`revoke all on function public.worker_claim_intelligence_lease(text[], text, text, text, text) from public`.execute(db);
-    await sql`grant execute on function public.worker_claim_intelligence_lease(text[], text, text, text, text) to ${workerRole}`.execute(db);
+    await sql`revoke all on function public.worker_claim_intelligence_lease(text[], text, text, integer) from public`.execute(db);
+    await sql`grant execute on function public.worker_claim_intelligence_lease(text[], text, text, integer) to ${workerRole}`.execute(db);
 
     await sql`
       create or replace function public.worker_renew_intelligence_lease(
         input_job_id text,
         input_worker_id text,
         input_lease_token_hash text,
-        checked_at text,
-        input_expires_at text
+        input_lease_duration_ms integer
       )
       returns table (status text, attempt integer, expires_at text)
       language plpgsql
@@ -247,10 +201,15 @@ export async function applyRowLevelSecurity(
       set search_path = pg_catalog
       as $function$
       declare
+        checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+        next_expires_at text := to_char(
+          (transaction_timestamp() + (input_lease_duration_ms * interval '1 millisecond')) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        );
         current_lease record;
       begin
         update public.intelligence_leases l
-           set expires_at = input_expires_at,
+           set expires_at = next_expires_at,
                last_renewed_at = checked_at,
                renewal_count = l.renewal_count + 1
          where l.job_id = input_job_id
@@ -293,8 +252,8 @@ export async function applyRowLevelSecurity(
       end
       $function$
     `.execute(db);
-    await sql`revoke all on function public.worker_renew_intelligence_lease(text, text, text, text, text) from public`.execute(db);
-    await sql`grant execute on function public.worker_renew_intelligence_lease(text, text, text, text, text) to ${workerRole}`.execute(db);
+    await sql`revoke all on function public.worker_renew_intelligence_lease(text, text, text, integer) from public`.execute(db);
+    await sql`grant execute on function public.worker_renew_intelligence_lease(text, text, text, integer) to ${workerRole}`.execute(db);
 
     await sql`
       create or replace function public.worker_append_intelligence_result(
@@ -306,8 +265,7 @@ export async function applyRowLevelSecurity(
         input_base_aggregate_version integer,
         input_idempotency_key text,
         input_result_hash text,
-        input_result_json text,
-        input_accepted_at text
+        input_result_json text
       )
       returns table (status text)
       language plpgsql
@@ -319,6 +277,7 @@ export async function applyRowLevelSecurity(
         job_base_version integer;
         lease_row record;
         inserted_count integer;
+        accepted_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
       begin
         select i.job_id, i.worker_id, i.lease_attempt, i.lease_token_hash,
                i.base_aggregate_version, i.result_hash, i.result_json
@@ -390,7 +349,7 @@ export async function applyRowLevelSecurity(
           return next;
           return;
         end if;
-        if lease_row.expires_at <= input_accepted_at then
+        if lease_row.expires_at <= accepted_at then
           status := 'LeaseExpired';
           return next;
           return;
@@ -402,7 +361,7 @@ export async function applyRowLevelSecurity(
         values
           (input_tenant_id, input_idempotency_key, input_job_id, input_worker_id,
            input_lease_attempt, input_lease_token_hash, lease_row.expires_at,
-           input_base_aggregate_version, input_result_hash, input_result_json, input_accepted_at)
+           input_base_aggregate_version, input_result_hash, input_result_json, accepted_at)
         on conflict (tenant_id, idempotency_key) do nothing;
         get diagnostics inserted_count = row_count;
 
@@ -431,7 +390,7 @@ export async function applyRowLevelSecurity(
         end if;
 
         update public.intelligence_leases l
-           set completed_at = input_accepted_at
+           set completed_at = accepted_at
          where l.tenant_id = input_tenant_id
            and l.job_id = input_job_id
            and l.attempt = input_lease_attempt
@@ -445,8 +404,8 @@ export async function applyRowLevelSecurity(
       end
       $function$
     `.execute(db);
-    await sql`revoke all on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text, text) from public`.execute(db);
-    await sql`grant execute on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text, text) to ${workerRole}`.execute(db);
+    await sql`revoke all on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) from public`.execute(db);
+    await sql`grant execute on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) to ${workerRole}`.execute(db);
 
     await sql`
       create or replace function public.worker_abandon_intelligence_lease(
@@ -454,17 +413,18 @@ export async function applyRowLevelSecurity(
         input_job_id text,
         input_worker_id text,
         input_lease_attempt integer,
-        input_lease_token_hash text,
-        input_released_at text
+        input_lease_token_hash text
       )
       returns table (status text)
       language plpgsql
       security definer
       set search_path = pg_catalog
       as $function$
+      declare
+        released_at_value text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
       begin
         update public.intelligence_leases l
-           set released_at = input_released_at
+           set released_at = released_at_value
          where l.tenant_id = input_tenant_id
            and l.job_id = input_job_id
            and l.attempt = input_lease_attempt
@@ -482,8 +442,8 @@ export async function applyRowLevelSecurity(
       end
       $function$
     `.execute(db);
-    await sql`revoke all on function public.worker_abandon_intelligence_lease(text, text, text, integer, text, text) from public`.execute(db);
-    await sql`grant execute on function public.worker_abandon_intelligence_lease(text, text, text, integer, text, text) to ${workerRole}`.execute(db);
+    await sql`revoke all on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) from public`.execute(db);
+    await sql`grant execute on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) to ${workerRole}`.execute(db);
   }
 
   await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);

@@ -844,7 +844,7 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     name: "intelligence_jobs",
     tenantOwned: true,
     hasNativeTenantColumn: true,
-    workerAccessible: true,
+    workerAccessible: false,
     columns: [
       t("job_id"),
       t("job_type"),

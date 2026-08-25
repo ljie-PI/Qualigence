@@ -49,6 +49,7 @@ export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
 interface LeaseClaimRow {
   readonly job_json: string;
   readonly attempt: number;
+  readonly expires_at: string;
 }
 
 interface LeaseRenewRow {
@@ -71,10 +72,6 @@ function hashToken(token: string): string {
 
 function hashResult(result: IntelligenceResult): string {
   return createHash("sha256").update(JSON.stringify(result)).digest("hex");
-}
-
-function expiresAt(now: string, leaseDurationMs: number): string {
-  return new Date(Date.parse(now) + leaseDurationMs).toISOString();
 }
 
 /**
@@ -114,11 +111,10 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
       await client.query("begin");
       await this.transactionGuard(client);
       const leaseToken = randomUUID();
-      const leaseExpiresAt = expiresAt(input.now, input.leaseDurationMs);
       const selected = await client.query<LeaseClaimRow>(
-        `select job_json, attempt
-           from worker_claim_intelligence_lease($1::text[], $2::text, $3::text, $4::text, $5::text)`,
-        [[...input.acceptedTypes], input.now, input.workerId, hashToken(leaseToken), leaseExpiresAt],
+        `select job_json, attempt, expires_at
+           from worker_claim_intelligence_lease($1::text[], $2::text, $3::text, $4::integer)`,
+        [[...input.acceptedTypes], input.workerId, hashToken(leaseToken), input.leaseDurationMs],
       );
       const row = selected.rows[0];
       if (row === undefined) {
@@ -134,7 +130,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
           jobId: job.jobId,
           leaseToken,
           workerId: input.workerId,
-          expiresAt: leaseExpiresAt,
+          expiresAt: row.expires_at,
           attempt: row.attempt,
         },
       };
@@ -151,11 +147,10 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     try {
       await client.query("begin");
       await this.transactionGuard(client);
-      const nextExpiresAt = expiresAt(input.now, input.leaseDurationMs);
       const renewed = await client.query<LeaseRenewRow>(
         `select status, attempt, expires_at
-           from worker_renew_intelligence_lease($1::text, $2::text, $3::text, $4::text, $5::text)`,
-        [input.jobId, input.workerId, hashToken(input.leaseToken), input.now, nextExpiresAt],
+           from worker_renew_intelligence_lease($1::text, $2::text, $3::text, $4::integer)`,
+        [input.jobId, input.workerId, hashToken(input.leaseToken), input.leaseDurationMs],
       );
       const row = renewed.rows[0];
       if (row === undefined || row.status !== "renewed" || row.attempt === null || row.expires_at === null) {
@@ -188,7 +183,6 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
 
     const client = await this.pool.connect();
     const resultJson = JSON.stringify(input.result);
-    const acceptedAt = new Date().toISOString();
     try {
       await client.query("begin");
       await this.transactionGuard(client);
@@ -196,7 +190,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
         `select status
            from worker_append_intelligence_result(
              $1::text, $2::text, $3::text, $4::integer, $5::text,
-             $6::integer, $7::text, $8::text, $9::text, $10::text
+             $6::integer, $7::text, $8::text, $9::text
            )`,
         [
           input.tenantId,
@@ -208,7 +202,6 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
           input.result.idempotencyKey,
           hashResult(input.result),
           resultJson,
-          acceptedAt,
         ],
       );
       const status = appended.rows[0]?.status;
@@ -233,14 +226,13 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
       await this.transactionGuard(client);
       const released = await client.query<AbandonLeaseRow>(
         `select status
-           from worker_abandon_intelligence_lease($1::text, $2::text, $3::text, $4::integer, $5::text, $6::text)`,
+           from worker_abandon_intelligence_lease($1::text, $2::text, $3::text, $4::integer, $5::text)`,
         [
           input.tenantId,
           input.jobId,
           input.workerId,
           input.leaseAttempt,
           hashToken(input.leaseToken),
-          new Date().toISOString(),
         ],
       );
       await client.query("commit");

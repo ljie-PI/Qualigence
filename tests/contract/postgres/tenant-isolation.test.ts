@@ -131,15 +131,21 @@ describe.skipIf(!dockerAvailable())("PostgreSQL tenant isolation", () => {
     }
   });
 
-  it("lets the Worker role lease Intelligence Jobs across tenants", async () => {
+  it("denies raw Worker reads of Intelligence Jobs while preserving lease operations", async () => {
     const client = new Client(fixture.workerConfig);
     await client.connect();
     try {
+      await expect(
+        client.query("select job_id, tenant_id from intelligence_jobs"),
+      ).rejects.toMatchObject({ code: "42501" });
+
       const result = await client.query(
-        "select job_id, tenant_id from intelligence_jobs",
+        "select job_json, attempt, expires_at from worker_claim_intelligence_lease($1::text[], $2::text, $3::text, $4::integer)",
+        [["reproduce"], "worker-isolation", "token-hash", 60_000],
       );
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-      expect(result.rows.some((row) => row.tenant_id === "tenant-a")).toBe(true);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({ attempt: 1 });
+      expect(result.rows[0].expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     } finally {
       await client.end();
     }

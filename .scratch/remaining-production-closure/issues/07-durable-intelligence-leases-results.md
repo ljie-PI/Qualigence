@@ -49,6 +49,11 @@ Migration 012 only: durable Intelligence leases/Result inbox. Migrations 001-011
 - `.scratch/remaining-production-closure/issues/07-durable-intelligence-leases-results.md` (`## Comments`/`## Answer` evidence plus GitHub PR/check/artifact references only)
 - Post-review acceptance only: `tests/e2e/self-hosted/intelligence-worker-lease.test.ts`
 
+Maintainer-approved scope expansions during review fixes:
+
+- `packages/core-application/src/intelligence/**` plus directly affected tests for validated inbox consumption and fenced lease release.
+- `tests/unit/admin-cli/migrate.test.ts` only for updating migration target/schema-version expectations to schema `12`.
+
 ## Focused non-E2E Gate
 
 ```bash
@@ -93,3 +98,4 @@ Run against a real Worker/PostgreSQL path and prove lease, renewal, restart, and
 ## Comments
 
 - start: base SHA `c55f377460033d9053085b5aface51b02ca12842`; behavior matrix applicable as recorded above for stateful/concurrent lease and Result inbox work; planned Gates: `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- update: maintainer-approved scope expansions recorded above. Round-2 blocker fixes remove raw Worker `intelligence_jobs` access, switch lease claim/renew/append/abandon SECURITY DEFINER functions to database transaction time, add the required real PostgreSQL Worker lease E2E, and update admin migration schema expectations to `12`. Fix validation: `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/unit/admin-cli/migrate.test.ts` passed; `CI=true corepack pnpm vitest run tests/e2e/self-hosted/intelligence-worker-lease.test.ts` passed; `CI=true corepack pnpm typecheck` passed.

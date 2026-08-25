@@ -99,7 +99,7 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
       expect(leaseRows.rows[0]).toMatchObject({
         worker_id: "worker-a",
         attempt: 1,
-        expires_at: "2026-08-25T00:01:00.000Z",
+        expires_at: leased?.lease.expiresAt,
         renewal_count: 0,
         released_at: null,
         completed_at: null,
@@ -123,6 +123,18 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
       expect(stillHeld).toBeUndefined();
     } finally {
       await blocked.close();
+    }
+
+    const expirer = new Client(fixture.adminConfig);
+    await expirer.connect();
+    try {
+      await expirer.query(
+        `update intelligence_leases
+            set expires_at = to_char((transaction_timestamp() - interval '1 second') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+          where tenant_id = 'tenant-a' and job_id = 'job-lease-2' and attempt = 1`,
+      );
+    } finally {
+      await expirer.end();
     }
 
     const recovered = queue();
@@ -165,6 +177,69 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
       ).rejects.toMatchObject({ code: "LeaseNotActive" });
     } finally {
       await recovered.close();
+    }
+  });
+
+  it("rejects renew and append after database-observed expiry despite caller time", async () => {
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-a",
+      caseId: "case-lease-expiry",
+      jobId: "job-lease-expiry",
+      baseAggregateVersion: 0,
+      jobType: "investigation.bug-analysis",
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-a",
+      caseId: "case-lease-expiry",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const q = queue();
+    try {
+      const leased = await q.lease({
+        workerId: "worker-expiry",
+        acceptedTypes: ["investigation.bug-analysis"],
+        now: "1900-01-01T00:00:00.000Z",
+        leaseDurationMs: 60_000,
+      });
+      expect(leased?.job.jobId).toBe(job.jobId);
+
+      const admin = new Client(fixture.adminConfig);
+      await admin.connect();
+      try {
+        await admin.query(
+          `update intelligence_leases
+              set expires_at = to_char((transaction_timestamp() - interval '1 second') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+            where tenant_id = $1 and job_id = $2 and attempt = $3`,
+          [job.tenantId, job.jobId, leased!.lease.attempt],
+        );
+      } finally {
+        await admin.end();
+      }
+
+      await expect(
+        q.renew({
+          jobId: job.jobId,
+          leaseToken: leased!.lease.leaseToken,
+          workerId: "worker-expiry",
+          now: "1900-01-01T00:00:00.000Z",
+          leaseDurationMs: 60_000,
+        }),
+      ).rejects.toMatchObject({ code: "LeaseExpired" });
+      await expect(
+        q.append({
+          tenantId: job.tenantId,
+          jobId: job.jobId,
+          leaseToken: leased!.lease.leaseToken,
+          leaseAttempt: leased!.lease.attempt,
+          workerId: "worker-expiry",
+          baseAggregateVersion: 0,
+          result,
+        }),
+      ).rejects.toMatchObject({ code: "LeaseExpired" });
+    } finally {
+      await q.close();
     }
   });
 
