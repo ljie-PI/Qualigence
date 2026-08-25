@@ -128,4 +128,116 @@ describe("WorkerLoop lease renewal", () => {
       },
     ]);
   });
+
+  it("honors abort before model processing and releases the fenced lease without appending", async () => {
+    const lease: IntelligenceJobLease = {
+      jobId: job.jobId,
+      leaseToken: "lease-token-abort-before-model",
+      workerId: "worker-a",
+      expiresAt: "2026-08-25T00:01:00.000Z",
+      attempt: 1,
+    };
+    const controller = new AbortController();
+    const abandoned: unknown[] = [];
+    let processed = false;
+    let appended = false;
+
+    const store: IntelligenceJobStore = {
+      lease: async () => {
+        controller.abort();
+        return { job, lease };
+      },
+      renew: async () => lease,
+      abandon: async (input) => {
+        abandoned.push(input);
+        return { disposition: "released" };
+      },
+    };
+    const inbox: IntelligenceResultInbox = {
+      append: async () => {
+        appended = true;
+        return { disposition: "accepted" };
+      },
+    };
+
+    const loop = new WorkerLoop({
+      store,
+      inbox,
+      processor: {
+        process: async () => {
+          processed = true;
+          return result;
+        },
+      },
+      workerId: "worker-a",
+      acceptedTypes: ["investigation.reproduction-planning"],
+      leaseDurationMs: 60_000,
+      idleBackoffMs: 5,
+      clock: { now: () => "2026-08-25T00:00:00.000Z", sleep: async () => {} },
+    });
+
+    await expect(loop.runOnce(controller.signal)).resolves.toBe("aborted");
+    expect(processed).toBe(false);
+    expect(appended).toBe(false);
+    expect(abandoned).toEqual([
+      {
+        tenantId: job.tenantId,
+        jobId: job.jobId,
+        leaseToken: lease.leaseToken,
+        leaseAttempt: lease.attempt,
+        workerId: "worker-a",
+      },
+    ]);
+  });
+
+  it("honors abort before append and does not report success", async () => {
+    const lease: IntelligenceJobLease = {
+      jobId: job.jobId,
+      leaseToken: "lease-token-abort-before-append",
+      workerId: "worker-a",
+      expiresAt: "2026-08-25T00:01:00.000Z",
+      attempt: 1,
+    };
+    const controller = new AbortController();
+    let appended = false;
+    const abandoned: unknown[] = [];
+    const signals: (AbortSignal | undefined)[] = [];
+
+    const store: IntelligenceJobStore = {
+      lease: async () => ({ job, lease }),
+      renew: async () => lease,
+      abandon: async (input) => {
+        abandoned.push(input);
+        return { disposition: "released" };
+      },
+    };
+    const inbox: IntelligenceResultInbox = {
+      append: async () => {
+        appended = true;
+        return { disposition: "accepted" };
+      },
+    };
+
+    const loop = new WorkerLoop({
+      store,
+      inbox,
+      processor: {
+        process: async (_job, signal) => {
+          signals.push(signal);
+          controller.abort();
+          return result;
+        },
+      },
+      workerId: "worker-a",
+      acceptedTypes: ["investigation.reproduction-planning"],
+      leaseDurationMs: 60_000,
+      idleBackoffMs: 5,
+      clock: { now: () => "2026-08-25T00:00:00.000Z", sleep: async () => {} },
+    });
+
+    await expect(loop.runOnce(controller.signal)).resolves.toBe("aborted");
+    expect(signals).toEqual([controller.signal]);
+    expect(appended).toBe(false);
+    expect(abandoned).toHaveLength(1);
+  });
 });

@@ -29,6 +29,16 @@ export interface RenewInput {
   readonly leaseDurationMs: number;
 }
 
+export interface AbandonLeaseInput {
+  readonly tenantId: string;
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly leaseAttempt: number;
+  readonly workerId: string;
+}
+
+export type AbandonLeaseDisposition = "released" | "not-active";
+
 /**
  * The Worker-facing durable work queue. A Worker only ever leases Jobs of an
  * accepted type; it never reads or writes an aggregate table.
@@ -36,8 +46,12 @@ export interface RenewInput {
 export interface IntelligenceJobStore {
   lease(input: LeaseInput): Promise<{ readonly job: IntelligenceJob; readonly lease: IntelligenceJobLease } | undefined>;
   renew(input: RenewInput): Promise<IntelligenceJobLease>;
-  /** Release a held lease without appending a Result (e.g. after a processing failure) so the Job can be re-leased. */
-  abandon(jobId: string): Promise<void>;
+  /**
+   * Release a held lease without appending a Result (e.g. after a processing
+   * failure) so the Job can be re-leased. The release is fenced by the active
+   * lease identity; stale owners must not clear newer leases.
+   */
+  abandon(input: AbandonLeaseInput): Promise<{ readonly disposition: AbandonLeaseDisposition }>;
 }
 
 export interface AppendResultInput {

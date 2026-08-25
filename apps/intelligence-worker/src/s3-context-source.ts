@@ -4,7 +4,7 @@ import type {
   BugAnalysisContext,
   ReproductionPlanningContext,
 } from "@qualigence/investigation";
-import { JobProcessingError } from "./job-processor.js";
+import { JobProcessingError, throwIfJobProcessingAborted } from "./job-processor.js";
 import type { IntelligenceContextSource } from "./investigation-job-processor.js";
 
 export interface S3ContextSourceConfig {
@@ -37,23 +37,27 @@ export class S3ContextSource implements IntelligenceContextSource {
     });
   }
 
-  loadReproductionPlanning(job: IntelligenceJob): Promise<ReproductionPlanningContext> {
-    return this.load<ReproductionPlanningContext>(job);
+  loadReproductionPlanning(job: IntelligenceJob, signal?: AbortSignal): Promise<ReproductionPlanningContext> {
+    return this.load<ReproductionPlanningContext>(job, signal);
   }
 
-  loadBugAnalysis(job: IntelligenceJob): Promise<BugAnalysisContext> {
-    return this.load<BugAnalysisContext>(job);
+  loadBugAnalysis(job: IntelligenceJob, signal?: AbortSignal): Promise<BugAnalysisContext> {
+    return this.load<BugAnalysisContext>(job, signal);
   }
 
-  private async load<T>(job: IntelligenceJob): Promise<T> {
+  private async load<T>(job: IntelligenceJob, signal?: AbortSignal): Promise<T> {
+    throwIfJobProcessingAborted(signal);
     const key = job.inputRefs[0];
     if (key === undefined) {
       throw new JobProcessingError("ContextUnavailable", `job ${job.jobId} has no context inputRef`);
     }
     try {
+      const command = new GetObjectCommand({ Bucket: this.config.bucket, Key: key });
       const response = await this.client.send(
-        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        command,
+        signal === undefined ? undefined : { abortSignal: signal },
       );
+      throwIfJobProcessingAborted(signal);
       const body = await response.Body?.transformToString();
       if (body === undefined) {
         throw new JobProcessingError("ContextUnavailable", `context artifact ${key} is empty`);

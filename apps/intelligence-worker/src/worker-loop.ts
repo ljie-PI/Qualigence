@@ -4,7 +4,7 @@ import type {
   IntelligenceJobStore,
   IntelligenceResultInbox,
 } from "@qualigence/core-application";
-import type { JobProcessor } from "./job-processor.js";
+import { throwIfJobProcessingAborted, type JobProcessor } from "./job-processor.js";
 
 /** A monotonic wall clock the loop can drive deterministically in tests. */
 export interface Clock {
@@ -32,7 +32,7 @@ export const systemClock: Clock = {
     }),
 };
 
-export type WorkerStepOutcome = "processed" | "idle" | "failed";
+export type WorkerStepOutcome = "processed" | "idle" | "failed" | "aborted";
 
 const MINIMUM_RENEWAL_DELAY_MS = 1;
 
@@ -62,7 +62,10 @@ export class WorkerLoop {
     this.clock = config.clock ?? systemClock;
   }
 
-  async runOnce(): Promise<WorkerStepOutcome> {
+  async runOnce(signal?: AbortSignal): Promise<WorkerStepOutcome> {
+    if (signal?.aborted === true) {
+      return "aborted";
+    }
     const leased = await this.config.store.lease({
       workerId: this.config.workerId,
       acceptedTypes: this.config.acceptedTypes,
@@ -76,8 +79,11 @@ export class WorkerLoop {
     const { job, lease } = leased;
     const renewals = this.startRenewalLoop(lease);
     try {
-      const result = await this.config.processor.process(job);
+      throwIfJobProcessingAborted(signal);
+      const result = await this.config.processor.process(job, signal);
+      throwIfJobProcessingAborted(signal);
       const currentLease = await renewals.stop();
+      throwIfJobProcessingAborted(signal);
       await this.config.inbox.append({
         tenantId: job.tenantId,
         jobId: job.jobId,
@@ -89,9 +95,18 @@ export class WorkerLoop {
       });
       return "processed";
     } catch (error) {
-      await renewals.stop().catch(() => undefined);
+      const currentLease = await renewals.stop().catch(() => lease);
+      await this.config.store.abandon({
+        tenantId: job.tenantId,
+        jobId: job.jobId,
+        leaseToken: currentLease.leaseToken,
+        leaseAttempt: currentLease.attempt,
+        workerId: this.config.workerId,
+      });
+      if (Boolean(signal?.aborted)) {
+        return "aborted";
+      }
       this.config.onError?.(error);
-      await this.config.store.abandon(job.jobId);
       return "failed";
     }
   }
@@ -141,7 +156,7 @@ export class WorkerLoop {
 
   async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
-      const outcome = await this.runOnce();
+      const outcome = await this.runOnce(signal);
       if (signal.aborted) {
         return;
       }

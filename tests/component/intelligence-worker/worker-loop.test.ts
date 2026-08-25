@@ -50,7 +50,7 @@ describeMaybe("Intelligence Worker loop", () => {
     await client.connect();
     try {
       const rows = await client.query(
-        "select count(*)::int as n from intelligence_results where idempotency_key = $1",
+        "select count(*)::int as n from intelligence_result_inbox where idempotency_key = $1",
         [idempotencyKey],
       );
       return rows.rows[0].n as number;
@@ -159,7 +159,7 @@ describeMaybe("Intelligence Worker loop", () => {
     }
   });
 
-  it("run() processes pending work then stops when the signal aborts", async () => {
+  it("run() stops without appending when the signal aborts before append", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-a",
       caseId: "case-loop-4",
@@ -176,13 +176,13 @@ describeMaybe("Intelligence Worker loop", () => {
     const q = queue();
     const controller = new AbortController();
     const processor: JobProcessor = { process: async () => {
-      // Abort after the single job is processed so run() exits the loop.
+      // Abort after model processing but before append; the loop must not claim success.
       controller.abort();
       return result;
     } };
     try {
       await loopWith(q, processor).run(controller.signal);
-      expect(await resultCount(result.idempotencyKey)).toBe(1);
+      expect(await resultCount(result.idempotencyKey)).toBe(0);
     } finally {
       await q.close();
     }

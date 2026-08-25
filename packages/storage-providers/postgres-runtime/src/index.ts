@@ -54,6 +54,8 @@ export {
 } from "./postgres-intelligence-queue.js";
 
 export type {
+  AbandonLeaseDisposition,
+  AbandonLeaseInput,
   AppendDisposition,
   AppendResultInput,
   IntelligenceJobLease,

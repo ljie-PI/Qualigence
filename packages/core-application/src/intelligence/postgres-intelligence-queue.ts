@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
 import type {
+  AbandonLeaseDisposition,
+  AbandonLeaseInput,
   AppendResultInput,
   AppendDisposition,
   IntelligenceJobLease,
@@ -18,7 +20,9 @@ export type IntelligenceQueueErrorCode =
   | "LeaseTokenMismatch"
   | "LeaseExpired"
   | "BaseVersionMismatch"
-  | "WorkerMismatch";
+  | "WorkerMismatch"
+  | "JobMismatch"
+  | "IdempotencyConflict";
 
 export class IntelligenceQueueError extends Error {
   readonly code: IntelligenceQueueErrorCode;
@@ -40,38 +44,48 @@ export interface PostgresIntelligenceQueueConfig {
   readonly max?: number;
 }
 
-interface ActiveLease {
-  readonly client: pg.PoolClient;
-  readonly job: IntelligenceJob;
-  readonly workerId: string;
-  readonly leaseTokenHash: string;
-  attempt: number;
-  expiresAt: string;
+export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
+
+interface LeaseClaimRow {
+  readonly job_json: string;
+  readonly attempt: number;
 }
 
-export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
+interface LeaseRenewRow {
+  readonly status: IntelligenceQueueErrorCode | "renewed";
+  readonly attempt: number | null;
+  readonly expires_at: string | null;
+}
+
+interface AppendResultRow {
+  readonly status: IntelligenceQueueErrorCode | AppendDisposition;
+}
+
+interface AbandonLeaseRow {
+  readonly status: AbandonLeaseDisposition;
+}
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function hashResult(result: IntelligenceResult): string {
+  return createHash("sha256").update(JSON.stringify(result)).digest("hex");
+}
+
+function expiresAt(now: string, leaseDurationMs: number): string {
+  return new Date(Date.parse(now) + leaseDurationMs).toISOString();
+}
+
 /**
- * A PostgreSQL-backed Intelligence work queue that is BOTH the Worker's
- * {@link IntelligenceJobStore} and its {@link IntelligenceResultInbox}. Leasing
- * uses `FOR UPDATE SKIP LOCKED` inside a transaction that is held open for the
- * lease lifetime, so concurrent Workers never lease the same Job and a crash
- * (connection loss) releases the lock for re-lease. Only jobs of an accepted
- * type with no committed Result are visible. The append validates the active
- * lease (token, worker, attempt, expiry and base aggregate version) and inserts
- * the Result idempotently; it never touches an aggregate table.
- *
- * The Worker connects as the least-privilege Worker role: RLS + table grants
- * mean any read of an aggregate/run/evidence table fails closed with SQLSTATE
- * 42501 before it can leak another tenant's data.
+ * PostgreSQL-backed Intelligence work queue for the Worker-facing ports. The
+ * Worker role executes constrained SECURITY DEFINER queue functions: it can
+ * claim/renew/abandon a fenced lease and append a proposal Result to
+ * `intelligence_result_inbox`, but it cannot insert raw rows into the legacy
+ * `intelligence_results` table consumed by no Server code.
  */
 export class PostgresIntelligenceQueue implements IntelligenceJobStore, IntelligenceResultInbox {
   private readonly pool: pg.Pool;
-  private readonly leases = new Map<string, ActiveLease>();
   private readonly transactionGuard: TransactionGuard;
 
   constructor(
@@ -90,201 +104,156 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
       password: config.password,
       max: config.max ?? 8,
     });
-    // A held lease is a long-lived transaction; when the pool is torn down (a
-    // simulated Worker crash) idle clients emit an async error. Swallow it so a
-    // recovery never surfaces as an unhandled rejection.
-    this.pool.on("error", () => {
-      /* connection dropped while idle — the lock is released for re-lease */
-    });
   }
 
   async lease(
     input: LeaseInput,
   ): Promise<{ readonly job: IntelligenceJob; readonly lease: IntelligenceJobLease } | undefined> {
     const client = await this.pool.connect();
-    // A held-lease client lives across the whole lease; if its socket drops
-    // (simulated crash / pool teardown) pg emits an async 'error'. Swallow it so
-    // recovery never surfaces as an unhandled rejection.
-    client.on("error", () => {
-      /* connection lost — the held row lock is released for re-lease */
-    });
-    let keepClient = false;
     try {
       await client.query("begin");
       await this.transactionGuard(client);
-      const result = await client.query(
-        "select job_json from worker_lock_intelligence_job($1::text[])",
-        [[...input.acceptedTypes]],
+      const leaseToken = randomUUID();
+      const leaseExpiresAt = expiresAt(input.now, input.leaseDurationMs);
+      const selected = await client.query<LeaseClaimRow>(
+        `select job_json, attempt
+           from worker_claim_intelligence_lease($1::text[], $2::text, $3::text, $4::text, $5::text)`,
+        [[...input.acceptedTypes], input.now, input.workerId, hashToken(leaseToken), leaseExpiresAt],
       );
-      const row = result.rows[0] as { job_json: string } | undefined;
+      const row = selected.rows[0];
       if (row === undefined) {
-        await client.query("rollback");
+        await client.query("commit");
         return undefined;
       }
+
       const job = JSON.parse(row.job_json) as IntelligenceJob;
-      const leaseToken = randomUUID();
-      const expiresAt = new Date(Date.parse(input.now) + input.leaseDurationMs).toISOString();
-      this.leases.set(job.jobId, {
-        client,
-        job,
-        workerId: input.workerId,
-        leaseTokenHash: hashToken(leaseToken),
-        attempt: 1,
-        expiresAt,
-      });
-      keepClient = true;
+      await client.query("commit");
       return {
         job,
-        lease: { jobId: job.jobId, leaseToken, workerId: input.workerId, expiresAt, attempt: 1 },
+        lease: {
+          jobId: job.jobId,
+          leaseToken,
+          workerId: input.workerId,
+          expiresAt: leaseExpiresAt,
+          attempt: row.attempt,
+        },
       };
-    } catch (error) {
-      try {
-        await client.query("rollback");
-      } catch {
-        // ignore
-      }
-      throw error;
-    } finally {
-      if (!keepClient) {
-        client.release();
-      }
-    }
-  }
-
-  async renew(input: RenewInput): Promise<IntelligenceJobLease> {
-    const active = this.requireActiveLease(input.jobId, input.leaseToken, input.workerId);
-    active.expiresAt = new Date(Date.parse(input.now) + input.leaseDurationMs).toISOString();
-    return {
-      jobId: input.jobId,
-      leaseToken: input.leaseToken,
-      workerId: input.workerId,
-      expiresAt: active.expiresAt,
-      attempt: active.attempt,
-    };
-  }
-
-  async append(input: AppendResultInput): Promise<{ readonly disposition: AppendDisposition }> {
-    const active = this.leases.get(input.jobId);
-    if (active === undefined) {
-      // No active lease: the only legitimate case is a replay of an already
-      // committed Result, which we report as duplicate. Anything else is a
-      // forged/expired token and is rejected.
-      const disposition = await this.dispositionForExistingResult(input.result);
-      if (disposition === "duplicate") {
-        return { disposition };
-      }
-      throw new IntelligenceQueueError("LeaseNotActive", `no active lease for job ${input.jobId}`);
-    }
-
-    if (active.leaseTokenHash !== hashToken(input.leaseToken)) {
-      throw new IntelligenceQueueError("LeaseTokenMismatch", "lease token does not match the active lease");
-    }
-    if (active.workerId !== input.workerId) {
-      throw new IntelligenceQueueError("WorkerMismatch", "worker id does not match the active lease");
-    }
-    if (active.attempt !== input.leaseAttempt) {
-      throw new IntelligenceQueueError("LeaseTokenMismatch", "lease attempt does not match the active lease");
-    }
-    if (Date.parse(active.expiresAt) < Date.now()) {
-      await this.abandon(input.jobId);
-      throw new IntelligenceQueueError("LeaseExpired", "the lease has expired");
-    }
-    if (active.job.baseAggregateVersion !== input.baseAggregateVersion) {
-      throw new IntelligenceQueueError(
-        "BaseVersionMismatch",
-        "submitted base aggregate version does not match the job",
-      );
-    }
-
-    const { client } = active;
-    try {
-      const inserted = await client.query(
-        `insert into intelligence_results
-           (tenant_id, idempotency_key, job_id, terminal_status, confidence, result_json, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         on conflict (tenant_id, idempotency_key) do nothing
-         returning idempotency_key`,
-        [
-          input.tenantId,
-          input.result.idempotencyKey,
-          input.result.jobId,
-          input.result.terminalStatus,
-          input.result.confidence,
-          JSON.stringify(input.result),
-          new Date().toISOString(),
-        ],
-      );
-      await client.query("commit");
-      const disposition: AppendDisposition = inserted.rowCount === 1 ? "accepted" : "duplicate";
-      return { disposition };
-    } catch (error) {
-      try {
-        await client.query("rollback");
-      } catch {
-        // ignore
-      }
-      throw error;
-    } finally {
-      client.release();
-      this.leases.delete(input.jobId);
-    }
-  }
-
-  /** Release a held lease without appending (e.g. after processing failure). */
-  async abandon(jobId: string): Promise<void> {
-    const active = this.leases.get(jobId);
-    if (active === undefined) {
-      return;
-    }
-    this.leases.delete(jobId);
-    try {
-      await active.client.query("rollback");
-    } catch {
-      // ignore
-    } finally {
-      active.client.release();
-    }
-  }
-
-  async close(): Promise<void> {
-    for (const jobId of [...this.leases.keys()]) {
-      await this.abandon(jobId);
-    }
-    await this.pool.end();
-  }
-
-  private requireActiveLease(jobId: string, leaseToken: string, workerId: string): ActiveLease {
-    const active = this.leases.get(jobId);
-    if (active === undefined) {
-      throw new IntelligenceQueueError("LeaseNotActive", `no active lease for job ${jobId}`);
-    }
-    if (active.leaseTokenHash !== hashToken(leaseToken)) {
-      throw new IntelligenceQueueError("LeaseTokenMismatch", "lease token does not match the active lease");
-    }
-    if (active.workerId !== workerId) {
-      throw new IntelligenceQueueError("WorkerMismatch", "worker id does not match the active lease");
-    }
-    return active;
-  }
-
-  private async dispositionForExistingResult(
-    result: IntelligenceResult,
-  ): Promise<AppendDisposition | undefined> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      await this.transactionGuard(client);
-      const existing = await client.query(
-        `select 1 from intelligence_results where idempotency_key = $1 and job_id = $2 limit 1`,
-        [result.idempotencyKey, result.jobId],
-      );
-      await client.query("commit");
-      return existing.rowCount === 1 ? "duplicate" : undefined;
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  async renew(input: RenewInput): Promise<IntelligenceJobLease> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await this.transactionGuard(client);
+      const nextExpiresAt = expiresAt(input.now, input.leaseDurationMs);
+      const renewed = await client.query<LeaseRenewRow>(
+        `select status, attempt, expires_at
+           from worker_renew_intelligence_lease($1::text, $2::text, $3::text, $4::text, $5::text)`,
+        [input.jobId, input.workerId, hashToken(input.leaseToken), input.now, nextExpiresAt],
+      );
+      const row = renewed.rows[0];
+      if (row === undefined || row.status !== "renewed" || row.attempt === null || row.expires_at === null) {
+        await client.query("rollback");
+        throw new IntelligenceQueueError(
+          row?.status === undefined || row?.status === "renewed" ? "LeaseNotActive" : row.status,
+          "lease is no longer renewable",
+        );
+      }
+      await client.query("commit");
+      return {
+        jobId: input.jobId,
+        leaseToken: input.leaseToken,
+        workerId: input.workerId,
+        expiresAt: row.expires_at,
+        attempt: row.attempt,
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async append(input: AppendResultInput): Promise<{ readonly disposition: AppendDisposition }> {
+    if (input.result.jobId !== input.jobId) {
+      throw new IntelligenceQueueError("JobMismatch", "result job id does not match append job id");
+    }
+
+    const client = await this.pool.connect();
+    const resultJson = JSON.stringify(input.result);
+    const acceptedAt = new Date().toISOString();
+    try {
+      await client.query("begin");
+      await this.transactionGuard(client);
+      const appended = await client.query<AppendResultRow>(
+        `select status
+           from worker_append_intelligence_result(
+             $1::text, $2::text, $3::text, $4::integer, $5::text,
+             $6::integer, $7::text, $8::text, $9::text, $10::text
+           )`,
+        [
+          input.tenantId,
+          input.jobId,
+          input.workerId,
+          input.leaseAttempt,
+          hashToken(input.leaseToken),
+          input.baseAggregateVersion,
+          input.result.idempotencyKey,
+          hashResult(input.result),
+          resultJson,
+          acceptedAt,
+        ],
+      );
+      const status = appended.rows[0]?.status;
+      if (status !== "accepted" && status !== "duplicate") {
+        await client.query("rollback");
+        throw new IntelligenceQueueError(status ?? "LeaseNotActive", "result append was rejected");
+      }
+      await client.query("commit");
+      return { disposition: status };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async abandon(input: AbandonLeaseInput): Promise<{ readonly disposition: AbandonLeaseDisposition }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await this.transactionGuard(client);
+      const released = await client.query<AbandonLeaseRow>(
+        `select status
+           from worker_abandon_intelligence_lease($1::text, $2::text, $3::text, $4::integer, $5::text, $6::text)`,
+        [
+          input.tenantId,
+          input.jobId,
+          input.workerId,
+          input.leaseAttempt,
+          hashToken(input.leaseToken),
+          new Date().toISOString(),
+        ],
+      );
+      await client.query("commit");
+      return { disposition: released.rows[0]?.status ?? "not-active" };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
   }
 }

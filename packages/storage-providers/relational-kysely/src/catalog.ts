@@ -877,7 +877,7 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     name: "intelligence_results",
     tenantOwned: true,
     hasNativeTenantColumn: false,
-    workerAccessible: true,
+    workerAccessible: false,
     columns: [
       t("idempotency_key"),
       t("job_id"),
@@ -1430,7 +1430,7 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     name: "intelligence_leases",
     tenantOwned: true,
     hasNativeTenantColumn: true,
-    workerAccessible: true,
+    workerAccessible: false,
     columns: [
       t("tenant_id"),
       t("job_id"),
@@ -1466,7 +1466,7 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
     name: "intelligence_result_inbox",
     tenantOwned: true,
     hasNativeTenantColumn: true,
-    workerAccessible: true,
+    workerAccessible: false,
     columns: [
       t("tenant_id"),
       t("idempotency_key"),

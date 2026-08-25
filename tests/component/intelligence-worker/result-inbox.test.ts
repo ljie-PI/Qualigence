@@ -260,6 +260,48 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     }
   });
 
+  it("does not apply a raw legacy result row without validated inbox metadata", async () => {
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-raw-result",
+      caseId: "case-raw-result",
+      jobId: "job-raw-result",
+      baseAggregateVersion: 0,
+      jobType: "investigation.bug-analysis",
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-raw-result",
+      caseId: "case-raw-result",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const admin = new Client(fixture.adminConfig);
+    await admin.connect();
+    try {
+      await admin.query(
+        `insert into intelligence_results
+          (tenant_id, idempotency_key, job_id, terminal_status, confidence, result_json, created_at)
+         values ($1, $2, $3, $4, $5, $6, now()::text)`,
+        [
+          job.tenantId,
+          result.idempotencyKey,
+          result.jobId,
+          result.terminalStatus,
+          result.confidence,
+          JSON.stringify(result),
+        ],
+      );
+    } finally {
+      await admin.end();
+    }
+
+    const consumer = new ServerIntelligenceResultConsumer(provider);
+    const summary = await consumer.consumeForTenant("tenant-raw-result");
+    expect(summary.applied).toBe(0);
+    expect(summary.dispositions).toEqual([]);
+    expect(await readCaseVersion(fixture.adminConfig, "case-raw-result")).toBe(0);
+  });
+
   it("returns recompute for a stale base version at apply time", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-a",

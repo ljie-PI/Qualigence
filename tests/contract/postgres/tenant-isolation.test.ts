@@ -145,13 +145,30 @@ describe.skipIf(!dockerAvailable())("PostgreSQL tenant isolation", () => {
     }
   });
 
-  it("forbids the Worker role from writing Intelligence Results it may not append elsewhere", async () => {
+  it("forbids the Worker role from writing raw Server-consumed Intelligence Results", async () => {
     const client = new Client(fixture.workerConfig);
     await client.connect();
     try {
-      // Worker has no grant on intelligence_applied_results.
+      // Worker has no grant on intelligence_applied_results or on the legacy raw
+      // results table; accepted proposals must go through the fenced append
+      // function that records intelligence_result_inbox metadata.
       await expect(
         client.query("select * from intelligence_applied_results"),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        client.query(
+          `insert into intelligence_results
+             (tenant_id, idempotency_key, job_id, terminal_status, confidence, result_json, created_at)
+           values ('tenant-a', 'forged-result', 'job-a', 'succeeded', 1, '{}', now()::text)`,
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        client.query(
+          `insert into intelligence_result_inbox
+             (tenant_id, idempotency_key, job_id, worker_id, lease_attempt, lease_token_hash,
+              lease_expires_at, base_aggregate_version, result_hash, result_json, accepted_at)
+           values ('tenant-a', 'forged-inbox', 'job-a', 'worker-a', 1, 'hash', now()::text, 0, 'hash', '{}', now()::text)`,
+        ),
       ).rejects.toMatchObject({ code: "42501" });
     } finally {
       await client.end();

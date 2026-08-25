@@ -136,6 +136,23 @@ describeMaybe("Intelligence Worker lease and recovery", () => {
       expect(released?.job.jobId).toBe("job-lease-2");
       expect(released?.lease.attempt).toBe(2);
       await expect(
+        recovered.abandon({
+          tenantId: "tenant-a",
+          jobId: job.jobId,
+          leaseToken: leased!.lease.leaseToken,
+          leaseAttempt: leased!.lease.attempt,
+          workerId: "worker-a",
+        }),
+      ).resolves.toEqual({ disposition: "not-active" });
+      await expect(
+        recovered.lease({
+          workerId: "worker-c",
+          acceptedTypes,
+          now: "2026-08-25T00:01:30.000Z",
+          leaseDurationMs: 60_000,
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
         recovered.append({
           tenantId: "tenant-a",
           jobId: job.jobId,

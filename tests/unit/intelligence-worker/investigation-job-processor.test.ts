@@ -107,6 +107,46 @@ describe("InvestigationJobProcessor", () => {
     expect(result).toBe(succeeded);
   });
 
+  it("does not invoke model work when the processor signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const agent: InvestigationModelAgentPort = {
+      proposeReproductionPlan: async () => {
+        throw new Error("model should not be called");
+      },
+      analyzeBug: async () => {
+        throw new Error("model should not be called");
+      },
+    };
+    const processor = new InvestigationJobProcessor(agent, contextSource());
+
+    await expect(processor.process(job(), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("checks for abort after context loading and before model work", async () => {
+    const controller = new AbortController();
+    let modelCalled = false;
+    const agent: InvestigationModelAgentPort = {
+      proposeReproductionPlan: async () => {
+        modelCalled = true;
+        return succeeded;
+      },
+      analyzeBug: async () => succeeded,
+    };
+    const processor = new InvestigationJobProcessor(
+      agent,
+      contextSource({
+        loadReproductionPlanning: async () => {
+          controller.abort();
+          return reproContext;
+        },
+      }),
+    );
+
+    await expect(processor.process(job(), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(modelCalled).toBe(false);
+  });
+
   it("rejects a job type it does not handle", async () => {
     const agent: InvestigationModelAgentPort = {
       proposeReproductionPlan: async () => succeeded,

@@ -6,9 +6,9 @@ import type { Database } from "../schema.js";
 /**
  * Migration 012: durable Intelligence Worker leases and Result inbox metadata.
  * The migration is additive: the historical `intelligence_results` table remains
- * the Server consumer's proposal inbox, while `intelligence_result_inbox`
- * records the lease/worker/attempt/base-version fence that authorized each
- * accepted Result.
+ * for pre-012 compatibility only, while `intelligence_result_inbox` is the
+ * Server-consumed proposal inbox and records the lease/worker/attempt/base-version
+ * fence that authorized each accepted Result.
  */
 export const migration012: Migration = {
   version: 12,
