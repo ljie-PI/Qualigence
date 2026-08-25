@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Resolve tenant-bound Runner applications.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -106,3 +106,7 @@ Prove the atomic terminal Run, attempt, logical Job, and Mission projection.
 - The affected context documents listed above, especially one terminal completion, append-only Trace, durable ACK, atomic persisted ownership, and provider parity.
 - `packages/core-application/src/runner/core-runner-protocol-application.ts`, including `RunCompletionSink`; `packages/core-modules/evidence/src/trace-ingestor.ts`; and `packages/core-modules/runner-control/src/runner-control-store.ts`.
 - The unchanged SQLite/PostgreSQL/Runner-control/Public API contracts named by the focused Gate.
+
+## Comments
+
+- start: base SHA `5cdc7452b118b37354ead7643e0ba604a37161e2`; behavior matrix applies in full because Self-hosted Trace ingestion and terminal Run completion are stateful, side-effecting, retrying, concurrent, timeout/unknown-outcome-sensitive, and terminal-persistence-sensitive; planned Gates: `CI=true corepack pnpm vitest run tests/contract/runner-control tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/sqlite/sqlite-record-stores.test.ts tests/contract/postgres/postgres-trace-store.test.ts tests/contract/postgres/postgres-run-store.test.ts tests/contract/postgres/self-hosted-completion.test.ts tests/contract/public-api/api-v1.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.

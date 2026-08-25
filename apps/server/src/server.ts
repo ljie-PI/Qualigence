@@ -10,6 +10,7 @@ import { registerReviewTaskRoutes } from "./routes/review-tasks.js";
 import { registerRunnerEnrollmentRoutes } from "./routes/runner-enrollments.js";
 import { registerTestPlanRoutes } from "./routes/test-plans.js";
 import { registerMissionRoutes } from "./routes/missions.js";
+import { registerRunRoutes } from "./routes/runs.js";
 import { registerSkillRoutes } from "./routes/skills.js";
 
 /**
@@ -76,6 +77,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerRunnerEnrollmentRoutes(app, deps);
   registerTestPlanRoutes(app, deps);
   registerMissionRoutes(app, deps);
+  registerRunRoutes(app, deps);
   registerSkillRoutes(app, deps);
 
   return app;

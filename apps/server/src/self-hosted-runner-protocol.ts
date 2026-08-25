@@ -82,7 +82,7 @@ export function selfHostedRunnerApplicationResolver(
 ): TenantRunnerApplicationResolver {
   return new TenantRunnerApplicationResolver({
     welcome: options.welcome,
-    runnerControlStore: (tenantId) => new OperationScopedPostgresRunnerControlStore(options.provider, tenantId),
+    runnerControlStore: (tenantId) => new OperationScopedPostgresRunnerControlStore(options.provider, tenantId, { projectSelfHostedCompletion: true }),
     traceStore: (tenantId) => new OperationScopedPostgresTraceStore(options.provider, tenantId, options.clock),
     integrityEvents: options.integrityEvents,
     now: () => Date.parse(options.clock.now()),
