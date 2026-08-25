@@ -5,6 +5,7 @@ import type {
   ObservationMigrationStore,
   StoredObservationMigration,
 } from "./migration-runner.js";
+import { OBSERVATION_MIGRATOR_VERSION } from "./pre-v1-projector.js";
 
 /**
  * A durable, append-only, resumable {@link ObservationMigrationStore} backed by
@@ -30,14 +31,19 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
   async find(
     assetId: string,
     sourceHash: string,
+    migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
   ): Promise<StoredObservationMigration | undefined> {
     const cache = await this.load();
-    return cache.get(this.key(assetId, sourceHash));
+    return cache.get(this.key(assetId, sourceHash, migratorVersion));
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
     const cache = await this.load();
-    const key = this.key(record.result.assetId, record.result.sourceHash);
+    const key = this.key(
+      record.result.assetId,
+      record.result.sourceHash,
+      record.result.migratorVersion,
+    );
     if (cache.has(key)) {
       return;
     }
@@ -81,17 +87,31 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
         // A torn final line from an interrupted append: skip it and resume.
         continue;
       }
-      cache.set(this.key(record.result.assetId, record.result.sourceHash), record);
+      cache.set(
+        this.key(
+          record.result.assetId,
+          record.result.sourceHash,
+          record.result.migratorVersion,
+        ),
+        record,
+      );
     }
     this.cache = cache;
     return cache;
   }
 
-  private key(assetId: string, sourceHash: string): string {
-    return createHash("sha256")
+  private key(
+    assetId: string,
+    sourceHash: string,
+    migratorVersion: string | undefined,
+  ): string {
+    const hash = createHash("sha256")
       .update(assetId)
       .update("\u0000")
-      .update(sourceHash)
-      .digest("hex");
+      .update(sourceHash);
+    if (migratorVersion !== undefined) {
+      hash.update("\u0000").update(migratorVersion);
+    }
+    return hash.digest("hex");
   }
 }

@@ -15,6 +15,14 @@ export {
 
 export { FileObservationMigrationStore } from "./file-migration-store.js";
 
+export { ObservationCandidateInventoryRunner } from "./candidate-inventory.js";
+
+export type {
+  ActivePreV1InventoryAsset,
+  CandidateInventoryRunOptions,
+  PreV1SkillInventoryAsset,
+} from "./candidate-inventory.js";
+
 export {
   OBSERVATION_FREEZE_REPORT_VERSION,
   buildFreezeReport,

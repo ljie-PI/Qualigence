@@ -112,6 +112,25 @@ describe("pre-v1 Skill recompilation", () => {
     void signer;
   });
 
+  it("fails closed when the stored pre-v1 Skill source hash no longer matches", async () => {
+    const fixture = await loadSkillFixture();
+    const recompiler = new SkillRecompiler(
+      new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
+    );
+
+    const outcome = await recompiler.recompile({
+      ...assetFrom(fixture),
+      previous: { ...fixture.previous, contentSha256: "0".repeat(64) },
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reasonCode).toBe("MigrationSourceChanged");
+    expect(outcome.sourceContentSha256).toBe("0".repeat(64));
+    expect(outcome.computedContentSha256).toBe(fixture.previous.contentSha256);
+    expect(outcome.candidate).toBeUndefined();
+    expect(outcome.evaluation).toBeUndefined();
+  });
+
   it("never mutates the pre-v1 Skill source (bytes and epoch unchanged)", async () => {
     const fixture = await loadSkillFixture();
     const signer = LocalSkillSigner.generate();

@@ -4,7 +4,7 @@
 
 **Blocked by:** 24 — Migrate live Graph consumers to v1.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -99,7 +99,31 @@ Run the complete active pre-v1 inventory/migration classification and candidate-
 | Result/report persistence fails | `started` | Stable storage/report error; candidate acceptance fails | Per-asset atomicity prevents partial record; prior results remain | Retry exact known write/rebuild report; never claim candidate Gate without durable report | Injected failure/rollback and no passed report |
 | Caller attempts to mark Graph `frozen` | `not_started` | Explicit rejection/failing assertion; status remains `candidate` | Candidate checklist/status only | Freeze is deferred to ticket 35 serialized evidence | Candidate-only status/checklist evidence |
 
-- [ ] Repository scan leaves legacy types only in explicit migration/decoder code.
-- [ ] Active pre-v1 Trace/Skill inventory is migrated, deprecated, or needs-human with hashes.
-- [ ] Web and existing Windows replay pass the same v1 schema.
-- [ ] Status/checklists state `candidate`; no freeze claim is made.
+## Comments
+
+### start — 2026-08-25
+
+- Fixed base: `6e8e4bdad38b934ab9f414305bb4c944a8942fd8` (`main`/worktree base supplied for `ticket-25-contract-legacy-graph-candidate`, includes merged Ticket 24 PR #107).
+- Predecessor merge evidence: Ticket 22 is `resolved` with PR #90 merge commit `7ef31db708612ddc5c020e6e2bb2758d763fba85`; Ticket 23 is `resolved` with PR #97 merge commit `b7d08755b0223ec89e35b30a2ac795064a514951`; Ticket 24 is `resolved` with PR #107 and reviewed code head `178c5165b3464187ebe2fa77e9d0327c12ea127d`, present in current base per worktree assignment.
+- Behavior Matrix applicability: applicable; every row in this ticket's frozen matrix governs live legacy contraction, append-only historical inventory/classification, migration/recompile verification, replay/schema checks, and candidate-only status. No rows are marked N/A for implementation planning.
+- Planned focused non-E2E Gate: `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay`, then `rg -l "\\bObservationGraph\\b" apps packages tests`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Exact inventory command: `rg -l "\\bObservationGraph\\b" apps packages tests`; every returned path must be classified as an allowed historical decoder/projector, immutable fixture, migration/replay test, or finding.
+
+### worker implementation evidence — 2026-08-25
+
+- Implemented active pre-v1 candidate inventory in `@qualigence/observation-migration`: Trace assets still project through the explicit pre-v1 projector, and active Skill assets now recompile/reverify through the standard Skill verifier before appending a hash/version-bound migration result.
+- Inventory/classification evidence from `rg -l "\\bObservationGraph\\b" apps packages tests`:
+  - `packages/observation-migration/src/pre-v1-projector.ts` — explicit pre-v1 decoder/projector allowed by Ticket 25.
+  - `packages/contracts/runner-protocol/src/index.ts` — hard-excluded legacy Runner Protocol contract declaration retained for pre-v1 migration/test fixture typing; no live producer or consumer imports it.
+  - `tests/migration/observation-v1/candidate-inventory.test.ts` — Ticket 25 inventory test that executes and classifies the required scan.
+  - `tests/component/skill-lifecycle/recording-to-replay.test.ts` — immutable historical pre-v1 Skill lifecycle fixture that projects through `PreV1TraceProjector` before live replay.
+  - `tests/e2e/observation-v1/consumer-migration.test.ts` — post-review consumer-migration acceptance historical fixture that projects through `PreV1TraceProjector` before live consumers.
+- Active pre-v1 fixture inventory evidence: `candidate-inventory.test.ts` classifies `m1-web-observation.json` and `m2-procedure-skill.json` as `migrated`, records 64-character source/output hashes, preserves `sourceTraceRefs`, `locatorSchemaVersion`, `skillCompilerVersion`, and keeps the report `status: "candidate"` / `gate.frozen: false`.
+- Guard evidence: observation migration hash mismatch records `SourceAssetCorrupted`; Skill source mismatch records `MigrationSourceChanged`; idempotency keys include migrator/compiler version so changed versions do not overwrite prior immutable results.
+- Worker Gates passed: `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` (19 files / 113 tests), `rg -l "\\bObservationGraph\\b" apps packages tests`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Post-review acceptance intentionally not run by this worker per assignment; complete-matrix review remains pending. Status remains `claimed` until PR merge.
+
+- [x] Repository scan leaves legacy types only in explicit migration/decoder code.
+- [x] Active pre-v1 Trace/Skill inventory is migrated, deprecated, or needs-human with hashes.
+- [x] Web and existing Windows replay pass the same v1 schema.
+- [x] Status/checklists state `candidate`; no freeze claim is made.

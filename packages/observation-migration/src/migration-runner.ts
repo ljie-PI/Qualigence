@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ObservationError,
   observationGraphHash,
@@ -20,11 +21,16 @@ export type ObservationMigrationStatus =
 /** The immutable per-asset migration result, keyed by asset + source hash. */
 export interface ObservationMigrationResult {
   readonly assetId: string;
+  readonly assetKind?: "observation" | "skill";
   readonly sourceHash: string;
   readonly status: ObservationMigrationStatus;
   readonly outputRef?: string;
   readonly reasonCode?: string;
   readonly migratorVersion: string;
+  readonly sourceTraceRefs?: readonly string[];
+  readonly expectedSourceHash?: string;
+  readonly locatorSchemaVersion?: string;
+  readonly skillCompilerVersion?: string;
 }
 
 /** A durable, append-only migration ledger entry. */
@@ -43,6 +49,7 @@ export interface ObservationMigrationStore {
   find(
     assetId: string,
     sourceHash: string,
+    migratorVersion?: string,
   ): Promise<StoredObservationMigration | undefined>;
   append(record: StoredObservationMigration): Promise<void>;
   list(): Promise<readonly StoredObservationMigration[]>;
@@ -77,14 +84,17 @@ export class ObservationMigrationRunner {
     asset: PreV1ObservationAsset,
     options: ObservationMigrationRunnerOptions = {},
   ): Promise<ObservationMigrationResult> {
-    const sourceHash = this.projector.sourceHash(asset);
+    const sourceHash = this.sourceHashForLedger(asset);
+    const record = this.classify(asset, sourceHash);
 
-    const existing = await this.store.find(asset.assetId, sourceHash);
+    const existing = await this.store.find(
+      asset.assetId,
+      sourceHash,
+      record.result.migratorVersion,
+    );
     if (existing !== undefined) {
       return existing.result;
     }
-
-    const record = this.classify(asset, sourceHash);
     if (options.dryRun !== true) {
       await this.store.append(record);
     }
@@ -101,10 +111,17 @@ export class ObservationMigrationRunner {
       return {
         result: {
           assetId: asset.assetId,
+          assetKind: asset.kind,
           sourceHash,
           status: "migrated",
           outputRef,
           migratorVersion: this.migratorVersion,
+          ...(asset.locatorSchemaVersion === undefined
+            ? {}
+            : { locatorSchemaVersion: asset.locatorSchemaVersion }),
+          ...(asset.skillCompilerVersion === undefined
+            ? {}
+            : { skillCompilerVersion: asset.skillCompilerVersion }),
         },
         projection: projected.graph,
         metadata: projected.metadata,
@@ -113,11 +130,34 @@ export class ObservationMigrationRunner {
       return {
         result: {
           assetId: asset.assetId,
+          assetKind: asset.kind,
           sourceHash,
           ...this.classifyFailure(error),
           migratorVersion: this.migratorVersion,
+          ...(asset.locatorSchemaVersion === undefined
+            ? {}
+            : { locatorSchemaVersion: asset.locatorSchemaVersion }),
+          ...(asset.skillCompilerVersion === undefined
+            ? {}
+            : { skillCompilerVersion: asset.skillCompilerVersion }),
         },
       };
+    }
+  }
+
+  private sourceHashForLedger(asset: PreV1ObservationAsset): string {
+    try {
+      const computed = this.projector.sourceHash(asset);
+      if (
+        asset.declaredSourceHash !== undefined &&
+        asset.declaredSourceHash !== computed
+      ) {
+        return asset.declaredSourceHash;
+      }
+      return computed;
+    } catch {
+      const raw = JSON.stringify(asset.observation ?? null);
+      return createHash("sha256").update(raw).digest("hex");
     }
   }
 
@@ -150,12 +190,17 @@ export class InMemoryObservationMigrationStore
   async find(
     assetId: string,
     sourceHash: string,
+    migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
   ): Promise<StoredObservationMigration | undefined> {
-    return this.records.get(this.key(assetId, sourceHash));
+    return this.records.get(this.key(assetId, sourceHash, migratorVersion));
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
-    const key = this.key(record.result.assetId, record.result.sourceHash);
+    const key = this.key(
+      record.result.assetId,
+      record.result.sourceHash,
+      record.result.migratorVersion,
+    );
     if (this.records.has(key)) {
       return;
     }
@@ -166,7 +211,7 @@ export class InMemoryObservationMigrationStore
     return [...this.records.values()];
   }
 
-  private key(assetId: string, sourceHash: string): string {
-    return `${assetId}\u0000${sourceHash}`;
+  private key(assetId: string, sourceHash: string, migratorVersion: string): string {
+    return `${assetId}\u0000${sourceHash}\u0000${migratorVersion}`;
   }
 }

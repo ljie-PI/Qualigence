@@ -48,7 +48,7 @@ export interface RecompiledSkillReverifier {
   }): Promise<SkillEvaluation>;
 }
 
-export type RecompileStatus = "migrated" | "needs_human" | "deprecated";
+export type RecompileStatus = "migrated" | "needs_human" | "deprecated" | "failed";
 
 /** The immutable outcome of recompiling one pre-v1 Skill against migrated data. */
 export interface RecompileOutcome {
@@ -59,6 +59,7 @@ export interface RecompileOutcome {
   readonly evaluation?: SkillEvaluation;
   /** The pre-v1 content digest, echoed unchanged to prove source immutability. */
   readonly sourceContentSha256: string;
+  readonly computedContentSha256?: string;
 }
 
 /**
@@ -76,6 +77,31 @@ export class SkillRecompiler {
   ) {}
 
   async recompile(asset: PreV1SkillAsset): Promise<RecompileOutcome> {
+    let preV1Candidate: SkillCandidate;
+    try {
+      preV1Candidate = this.compiler.compile(asset.recording, asset.proposal);
+    } catch (error) {
+      if (error instanceof SkillCompilerError) {
+        return {
+          assetId: asset.assetId,
+          status: "deprecated",
+          reasonCode: error.code,
+          sourceContentSha256: asset.previous.contentSha256,
+        };
+      }
+      throw error;
+    }
+
+    if (preV1Candidate.contentSha256 !== asset.previous.contentSha256) {
+      return {
+        assetId: asset.assetId,
+        status: "failed",
+        reasonCode: "MigrationSourceChanged",
+        sourceContentSha256: asset.previous.contentSha256,
+        computedContentSha256: preV1Candidate.contentSha256,
+      };
+    }
+
     const v1Recording = migrateRecordingToV1(asset.recording);
 
     let candidate: SkillCandidate;

@@ -31,6 +31,22 @@ describe("migration runner idempotency and resume", () => {
     expect(stored[0]?.metadata?.observationSchemaEpoch).toBe("pre-v1");
   });
 
+  it("records a hash mismatch as a failed attempt instead of returning a prior migrated result", async () => {
+    const asset = await loadAsset("m1-web-observation.json");
+    const store = new InMemoryObservationMigrationStore();
+    const runner = new ObservationMigrationRunner(store);
+
+    const first = await runner.migrate(asset);
+    const corrupted = { ...asset, declaredSourceHash: "0".repeat(64) };
+    const second = await runner.migrate(corrupted);
+
+    expect(first.status).toBe("migrated");
+    expect(second.status).toBe("failed");
+    expect(second.reasonCode).toBe("SourceAssetCorrupted");
+    expect(second.sourceHash).toBe("0".repeat(64));
+    expect(await store.list()).toHaveLength(2);
+  });
+
   it("is idempotent for an unchanged source (same hash + migrator)", async () => {
     const asset = await loadAsset("m1-web-observation.json");
     const store = new InMemoryObservationMigrationStore();
@@ -63,6 +79,34 @@ describe("migration runner idempotency and resume", () => {
 
     expect(second.sourceHash).not.toBe(first.sourceHash);
     expect(await store.list()).toHaveLength(2);
+  });
+
+  it("keys idempotency by migrator version as well as asset and source", async () => {
+    const store = new InMemoryObservationMigrationStore();
+    await store.append({
+      result: {
+        assetId: "asset-versioned",
+        sourceHash: "hash-versioned",
+        status: "migrated",
+        outputRef: "output-v1",
+        migratorVersion: "observation-migrator/v1",
+      },
+    });
+
+    expect(
+      await store.find(
+        "asset-versioned",
+        "hash-versioned",
+        "observation-migrator/v1",
+      ),
+    ).toBeDefined();
+    expect(
+      await store.find(
+        "asset-versioned",
+        "hash-versioned",
+        "observation-migrator/v2",
+      ),
+    ).toBeUndefined();
   });
 
   it("does not persist during a dry run", async () => {
