@@ -303,6 +303,17 @@ function collectPageObservation(
     return record?.baseline?.get(element)?.has(value) === true;
   }
 
+  function shadowBaselineAllows(node: Node, markerId: string, value: string): boolean {
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly records?: readonly {
+        readonly markerId: string;
+        readonly shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
+      }[];
+    } | undefined;
+    const record = state?.records?.find((candidate) => candidate.markerId === markerId);
+    return record?.shadowBaseline?.get(node)?.has(value) === true;
+  }
+
   function sensitiveEvidenceUnavailable(): boolean {
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       active?: unknown;
@@ -310,6 +321,7 @@ function collectPageObservation(
       readonly records?: readonly {
         readonly markerId: string;
         readonly forms: readonly string[];
+        readonly shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
       }[];
     } | undefined;
     if (state === undefined) return false;
@@ -330,11 +342,15 @@ function collectPageObservation(
     for (const root of shadowRoots()) {
       for (const record of records) {
         for (const value of shadowRootValues(root)) {
-          if (carriesForm(value, record.forms)) return true;
+          if (carriesForm(value, record.forms) && !shadowBaselineAllows(root, record.markerId, value)) {
+            return true;
+          }
         }
         for (const element of Array.from(root.querySelectorAll("*"))) {
           for (const value of sensitiveValues(element)) {
-            if (carriesForm(value, record.forms)) return true;
+            if (carriesForm(value, record.forms) && !shadowBaselineAllows(element, record.markerId, value)) {
+              return true;
+            }
           }
         }
       }

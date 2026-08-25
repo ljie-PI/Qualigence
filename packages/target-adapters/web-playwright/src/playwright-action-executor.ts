@@ -629,6 +629,7 @@ async function beginPageSensitiveActionEpoch(
       classifiedRegions: Set<string>;
       classifiedElements: Element[];
       baseline: WeakMap<Element, ReadonlySet<string>>;
+      shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
       observer: MutationObserver;
       targetCaptureListener: EventListener;
       documentBubbleListener: EventListener;
@@ -641,6 +642,7 @@ async function beginPageSensitiveActionEpoch(
       markerId: string;
       forms: string[];
       baseline: WeakMap<Element, ReadonlySet<string>>;
+      shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
     };
 
     const win = element.ownerDocument.defaultView;
@@ -662,6 +664,7 @@ async function beginPageSensitiveActionEpoch(
 
     const forms = reflectedCandidateForms(element, input.kind, input.sourceValue);
     const baseline = baselineSensitiveForms(element.ownerDocument, forms);
+    const shadowBaseline = baselineShadowSensitiveForms(forms);
     const observer = new MutationObserver((records) => {
       const active = state.active;
       if (active === null || active === undefined) return;
@@ -699,6 +702,7 @@ async function beginPageSensitiveActionEpoch(
       classifiedRegions: new Set<string>(),
       classifiedElements: [],
       baseline,
+      shadowBaseline,
       observer,
       targetCaptureListener: noteTargetDispatch,
       documentBubbleListener: finishTargetDispatch,
@@ -754,6 +758,32 @@ async function beginPageSensitiveActionEpoch(
       return result;
     }
 
+    function baselineShadowSensitiveForms(formsToMatch: readonly string[]): WeakMap<Node, ReadonlySet<string>> {
+      const result = new WeakMap<Node, ReadonlySet<string>>();
+      for (const root of shadowRoots()) {
+        rememberSensitiveBaseline(result, root, shadowRootValues(root), formsToMatch);
+        for (const candidate of Array.from(root.querySelectorAll("*"))) {
+          rememberSensitiveBaseline(result, candidate, sensitiveValues(candidate), formsToMatch);
+        }
+      }
+      return result;
+    }
+
+    function rememberSensitiveBaseline(
+      result: WeakMap<Node, ReadonlySet<string>>,
+      node: Node,
+      values: readonly string[],
+      formsToMatch: readonly string[],
+    ): void {
+      const matches = new Set<string>();
+      for (const value of values) {
+        for (const form of formsToMatch) {
+          if (carriesForm(value, form)) matches.add(value);
+        }
+      }
+      if (matches.size > 0) result.set(node, matches);
+    }
+
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
       const matches: string[] = [];
       for (const value of sensitiveValues(candidate)) {
@@ -771,9 +801,17 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
-      const listenerType = eventType === "select" ? "change" : "input";
-      return hasDelegatedEventListener(listenerType) ||
-        hasDelegatedEventHandlerProperty(listenerType);
+      for (const listenerType of sensitiveEventTypes(eventType)) {
+        if (hasDelegatedEventListener(listenerType) ||
+          hasDelegatedEventHandlerProperty(listenerType)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function sensitiveEventTypes(eventType: "input" | "select"): readonly ("input" | "change")[] {
+      return eventType === "select" ? ["input", "change"] : ["input"];
     }
 
     function hasDelegatedEventListener(listenerType: "input" | "change"): boolean {
@@ -808,7 +846,6 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function hasSchedulerAdjacentListener(eventType: "input" | "select"): boolean {
-      const listenerType = eventType === "select" ? "change" : "input";
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly listenerTargets?: readonly {
           readonly type?: unknown;
@@ -816,25 +853,28 @@ async function beginPageSensitiveActionEpoch(
           readonly listener?: unknown;
         }[];
       } | undefined;
-      for (const entry of registry?.listenerTargets ?? []) {
-        if (
-          entry.type === listenerType &&
-          entry.target === element &&
-          !isInstrumentationListener(entry.listener) &&
-          mentionsSchedulerBoundary(entry.listener)
-        ) {
+      for (const listenerType of sensitiveEventTypes(eventType)) {
+        for (const entry of registry?.listenerTargets ?? []) {
+          if (
+            entry.type === listenerType &&
+            entry.target === element &&
+            !isInstrumentationListener(entry.listener) &&
+            mentionsSchedulerBoundary(entry.listener)
+          ) {
+            return true;
+          }
+        }
+        const handlerName = `on${listenerType}`;
+        try {
+          const handler = (element as unknown as Record<string, unknown>)[handlerName];
+          if (mentionsSchedulerBoundary(handler)) return true;
+        } catch {
           return true;
         }
+        const inlineHandler = element.getAttribute(handlerName);
+        if (inlineHandler !== null && mentionsSchedulerBoundary(inlineHandler)) return true;
       }
-      const handlerName = `on${listenerType}`;
-      try {
-        const handler = (element as unknown as Record<string, unknown>)[handlerName];
-        if (mentionsSchedulerBoundary(handler)) return true;
-      } catch {
-        return true;
-      }
-      const inlineHandler = element.getAttribute(handlerName);
-      return inlineHandler !== null && mentionsSchedulerBoundary(inlineHandler);
+      return false;
     }
 
     function markInstrumentationListener(listener: EventListener): void {
@@ -1082,6 +1122,46 @@ async function beginPageSensitiveActionEpoch(
         .join("");
     }
 
+    function shadowRootValues(root: ShadowRoot): readonly string[] {
+      const values: string[] = [];
+      const direct = Array.from(root.childNodes)
+        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.data)
+        .join("");
+      if (direct !== "") values.push(direct);
+      const fullText = root.textContent ?? "";
+      if (fullText !== "" && fullText !== direct) values.push(fullText);
+      return values;
+    }
+
+    function shadowRoots(): ShadowRoot[] {
+      const roots = new Set<ShadowRoot>();
+      const pending: ShadowRoot[] = [];
+      const addRoot = (root: ShadowRoot): void => {
+        if (roots.has(root)) return;
+        roots.add(root);
+        pending.push(root);
+      };
+      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
+        readonly roots?: readonly unknown[];
+      } | undefined;
+      for (const root of registry?.roots ?? []) {
+        if (root instanceof ShadowRoot) addRoot(root);
+      }
+      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+        const shadowRoot = candidate.shadowRoot;
+        if (shadowRoot !== null) addRoot(shadowRoot);
+      }
+      for (let index = 0; index < pending.length; index += 1) {
+        const root = pending[index]!;
+        for (const candidate of Array.from(root.querySelectorAll("*"))) {
+          const nestedShadowRoot = candidate.shadowRoot;
+          if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
+        }
+      }
+      return pending;
+    }
+
     function normalizeVisibleSensitiveForm(value: string): string {
       return value.normalize("NFC").replace(/\s+/g, " ").trim();
     }
@@ -1120,6 +1200,7 @@ async function endPageSensitiveActionEpoch(
         markerId: string;
         forms: string[];
         baseline: WeakMap<Element, ReadonlySet<string>>;
+        shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
         observer: MutationObserver;
         targetCaptureListener: EventListener;
         documentBubbleListener: EventListener;
@@ -1137,6 +1218,7 @@ async function endPageSensitiveActionEpoch(
         markerId: string;
         forms: string[];
         baseline: WeakMap<Element, ReadonlySet<string>>;
+        shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
       }[];
       poisoned: boolean;
       nextNodeOrdinal: number;
@@ -1172,6 +1254,7 @@ async function endPageSensitiveActionEpoch(
         markerId: active.markerId,
         forms: active.forms,
         baseline: active.baseline,
+        shadowBaseline: active.shadowBaseline,
       });
     } else {
       cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
@@ -1281,9 +1364,17 @@ async function endPageSensitiveActionEpoch(
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
-      const listenerType = eventType === "select" ? "change" : "input";
-      return hasDelegatedEventListener(listenerType) ||
-        hasDelegatedEventHandlerProperty(listenerType);
+      for (const listenerType of sensitiveEventTypes(eventType)) {
+        if (hasDelegatedEventListener(listenerType) ||
+          hasDelegatedEventHandlerProperty(listenerType)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function sensitiveEventTypes(eventType: "input" | "select"): readonly ("input" | "change")[] {
+      return eventType === "select" ? ["input", "change"] : ["input"];
     }
 
     function hasDelegatedEventListener(listenerType: "input" | "change"): boolean {

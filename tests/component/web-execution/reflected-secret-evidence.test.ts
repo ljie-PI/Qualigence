@@ -176,6 +176,20 @@ describe("Playwright reflected sensitive evidence", () => {
           };
         </script>
       `, "Delegated document change reflected secret"),
+      "/delegated-document-input-select": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Choice
+          <select aria-label="Choice">
+            <option value="">Choose</option>
+            <option value="${SECRET}">${SECRET}</option>
+          </select>
+        </label>
+        <script>
+          document.addEventListener('input', event => {
+            document.getElementById('mirror').textContent = event.target.value;
+          });
+        </script>
+      `, "Delegated document input reflected select secret"),
       "/delegated-dynamic-focus": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -273,6 +287,46 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Closed shadow direct text reflected secret"),
+      "/shadow-preexisting-equal-open": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <div id="host" hidden></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          shadow.textContent = '${SECRET}';
+          input.addEventListener('input', () => {
+            document.getElementById('mirror').textContent = 'saved';
+          });
+        </script>
+      `, "Open shadow preexisting equal secret"),
+      "/shadow-preexisting-equal-closed": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <div id="host" hidden></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+          shadow.textContent = '${SECRET}';
+          input.addEventListener('input', () => {
+            document.getElementById('mirror').textContent = 'saved';
+          });
+        </script>
+      `, "Closed shadow preexisting equal secret"),
+      "/shadow-post-epoch-equal": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <div id="host" hidden></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          shadow.textContent = 'ordinary';
+          window.setShadowEqualText = value => { shadow.textContent = value; };
+          input.addEventListener('input', event => {
+            document.getElementById('mirror').textContent = event.target.value;
+          });
+        </script>
+      `, "Shadow post-epoch equal text"),
       "/mutation-overflow": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -715,6 +769,24 @@ describe("Playwright reflected sensitive evidence", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails evidence closed for delegated document input reflected from a select action", async () => {
+    const { observer, resolver, executor } = await wire("/delegated-document-input-select");
+    const url = `${fixture.origin}/delegated-document-input-select`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "select",
+      target: { nodeId: nodeNamed(before, "Choice").id },
+      valueRef: "customer.email",
+      reason: "delegated input secret from select",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it.each(["/shadow-open", "/shadow-closed", "/shadow-open-text", "/shadow-closed-text"])("fails evidence closed for %s reflected matching content", async (path) => {
     const { observer, resolver, executor } = await wire(path);
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
@@ -730,6 +802,53 @@ describe("Playwright reflected sensitive evidence", () => {
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
     expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it.each(["/shadow-preexisting-equal-open", "/shadow-preexisting-equal-closed"])(
+    "does not fail closed for %s containing equal text before the sensitive action",
+    async (path) => {
+      const { observer, resolver, executor } = await wire(path);
+      const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+      const action = await resolver.resolve({
+        kind: "input",
+        target: { nodeId: nodeNamed(before, "Email").id },
+        valueRef: "customer.email",
+        reason: "preexisting shadow equal text",
+      }, before);
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+      expect(nodeNamed(after, "Email").value).toBe("[redacted]");
+      expect(after.nodes.some((node) => node.name === "saved" || node.value === "saved")).toBe(true);
+    },
+    60_000,
+  );
+
+  it("leaves shadow-root equal text introduced after a closed sensitive epoch ordinary", async () => {
+    const { observer, resolver, executor } = await wire("/shadow-post-epoch-equal");
+    const url = `${fixture.origin}/shadow-post-epoch-equal`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reflect before later shadow equal text",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const reflected = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(reflected.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+
+    await session.withPage((page) => page.evaluate((secret) => {
+      const browser = globalThis as unknown as {
+        readonly setShadowEqualText?: (value: string) => void;
+      };
+      if (typeof browser.setShadowEqualText !== "function") throw new Error("Missing shadow equal setter.");
+      browser.setShadowEqualText(secret);
+    }, SECRET));
+
+    const afterEqual = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(afterEqual.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
   }, 60_000);
 
   it("fails evidence closed when the DOM-to-screenshot window exposes matching content", async () => {
