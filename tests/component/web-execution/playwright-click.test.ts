@@ -39,6 +39,15 @@ function sensitiveTargetEvaluate(value = "private-value") {
     if (
       typeof argument === "object" &&
       argument !== null &&
+      "markerId" in argument &&
+      "stateProperty" in argument
+    ) {
+      markerId = String(argument.markerId);
+      return { status: "ok" };
+    }
+    if (
+      typeof argument === "object" &&
+      argument !== null &&
       "markerId" in argument
     ) {
       markerId = String(argument.markerId);
@@ -511,13 +520,16 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome]))
       .not.toContain("private@example.test");
     expect(nodeNamed(afterInput, "Email").value).toBe("[redacted]");
-    expect(afterInput.nodes.some((node) => node.name === "private@example.test" || node.value === "private@example.test")).toBe(true);
+    expect(afterInput.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(afterInput.nodes.some((node) => node.name === "private@example.test" || node.value === "private@example.test")).toBe(false);
     expect(nodeNamed(afterSelect, "Email").value).toBe("[redacted]");
     expect(nodeNamed(afterSelect, "Country")).toMatchObject({
       value: "[redacted]",
     });
+    expect(afterSelect.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length)
+      .toBeGreaterThanOrEqual(2);
     expect(afterSelect.nodes.some((node) => node.name === "private@example.test:private-country-code" || node.value === "private@example.test:private-country-code"))
-      .toBe(true);
+      .toBe(false);
   });
 
   it("registers browser-normalized textarea newline forms against only the authorized target", async () => {
@@ -536,7 +548,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     const after = await observer.capture(job);
 
     expect(nodeNamed(after, "Notes").value).toBe("[redacted]");
-    expect(after.nodes.some((node) => node.name === "line-one line-two" || node.value === "line-one line-two")).toBe(true);
+    expect(after.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(after.nodes.some((node) => node.name === "line-one line-two" || node.value === "line-one line-two")).toBe(false);
   });
 
   it("redacts input target fields from Trace and verifier context without global equal-text replacement", async () => {
@@ -580,7 +593,8 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(observations).toHaveLength(2);
     const after = observations.at(-1)?.payload as ObservationGraphV1;
     expect(nodeNamed(after, "Email").value).toBe("[redacted]");
-    expect(after.nodes.some((node) => node.name === secret || node.value === secret)).toBe(true);
+    expect(after.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(after.nodes.some((node) => node.name === secret || node.value === secret)).toBe(false);
     const verifierContext = JSON.parse(serializedVerifierContext) as { readonly after: ObservationGraphV1 };
     expect(nodeNamed(verifierContext.after, "Email").value).toBe("[redacted]");
   });
@@ -1063,7 +1077,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
     expect(clickEffect).toHaveBeenCalledOnce();
     expect(modelContexts).toHaveLength(1);
-    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledTimes(3);
     expect(title).toHaveBeenCalledTimes(1);
     expect(screenshot).toHaveBeenCalledTimes(1);
     expect(trace.filter((event) => event.stage === "observation")).toHaveLength(1);

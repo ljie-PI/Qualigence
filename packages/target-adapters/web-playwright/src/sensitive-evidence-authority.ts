@@ -1,9 +1,16 @@
 export const REDACTED_SENSITIVE_TEXT = "[redacted]";
 export const SENSITIVE_TARGET_IDS_PROPERTY = "__qualigenceSensitiveTargetIds";
+export const SENSITIVE_MASK_ID_ATTRIBUTE = "data-qualigence-sensitive-mask";
+export const SENSITIVE_EVIDENCE_STATE_PROPERTY = "__qualigenceSensitiveEvidenceState";
+export const SENSITIVE_SHADOW_ROOTS_PROPERTY = "__qualigenceSensitiveShadowRoots";
 
 const MAX_SENSITIVE_RECORDS = 100;
 const MAX_FORMS_PER_RECORD = 4;
 const MAX_FORM_BYTES = 64 * 1024;
+
+export const MAX_REFLECTED_MUTATION_RECORDS = 1_024;
+export const MAX_REFLECTED_NODES = 256;
+export const MAX_REFLECTED_REGIONS = 256;
 
 export interface PreparedSensitiveEvidenceRecord {
   readonly navigationGeneration: number;
@@ -29,6 +36,11 @@ export interface SensitiveEvidenceAuthorityResult<T> {
   readonly status: "ok" | "failed";
   readonly value?: T;
   readonly reason?: SensitiveEvidenceAuthorityFailure;
+}
+
+export interface SensitiveEvidenceRedactionResult {
+  readonly status: "redacted" | "unchanged" | "unavailable";
+  readonly value: string;
 }
 
 interface SensitiveEvidenceRecord {
@@ -101,16 +113,30 @@ export class SensitiveEvidenceAuthority {
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
   ): string {
+    return this.redactFieldWithStatus(sensitiveTargetIds, value).value;
+  }
+
+  redactFieldWithStatus(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+  ): SensitiveEvidenceRedactionResult {
     if (sensitiveTargetIds === undefined || sensitiveTargetIds.length === 0) {
-      return value;
+      return { status: "unchanged", value };
     }
+    let hasUnknownRecord = false;
     for (const markerId of sensitiveTargetIds) {
       const record = this.records.get(markerId);
-      if (record !== undefined && carriesSensitiveForm(value, record.forms)) {
-        return REDACTED_SENSITIVE_TEXT;
+      if (record === undefined) {
+        hasUnknownRecord = true;
+        continue;
+      }
+      if (carriesSensitiveForm(value, record.forms)) {
+        return { status: "redacted", value: REDACTED_SENSITIVE_TEXT };
       }
     }
-    return value;
+    return hasUnknownRecord
+      ? { status: "unavailable", value }
+      : { status: "unchanged", value };
   }
 
   clear(): void {

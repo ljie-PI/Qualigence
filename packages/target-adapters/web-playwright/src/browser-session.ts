@@ -3,6 +3,7 @@ import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigen
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 import {
   SensitiveEvidenceAuthority,
+  SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
 } from "./sensitive-evidence-authority.js";
 
@@ -70,6 +71,50 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
     "SensitiveEvidenceUnavailable",
     "Sensitive target evidence could not be proven.",
   );
+}
+
+async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
+  if (typeof page.addInitScript !== "function") return;
+  await page.addInitScript((propertyName: string) => {
+    type SensitiveRuntimeRegistry = {
+      readonly roots: ShadowRoot[];
+      readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
+      readonly originalAttachShadow: typeof Element.prototype.attachShadow;
+      readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
+    };
+    const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
+    if (win[propertyName] !== undefined) return;
+    const registry: SensitiveRuntimeRegistry = {
+      roots: [],
+      listenerTargets: [],
+      originalAttachShadow: Element.prototype.attachShadow,
+      originalAddEventListener: EventTarget.prototype.addEventListener,
+    };
+    Object.defineProperty(win, propertyName, {
+      configurable: false,
+      enumerable: false,
+      value: registry,
+      writable: false,
+    });
+    Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
+      const root = registry.originalAttachShadow.call(this, init);
+      registry.roots.push(root);
+      return root;
+    };
+    EventTarget.prototype.addEventListener = function addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | AddEventListenerOptions,
+    ): void {
+      const isSensitiveInstrumentation = listener !== null &&
+        (typeof listener === "function" || typeof listener === "object") &&
+        (listener as unknown as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
+      if ((type === "input" || type === "change") && listener !== null && !isSensitiveInstrumentation) {
+        registry.listenerTargets.push({ type, target: this, listener });
+      }
+      registry.originalAddEventListener.call(this, type, listener, options);
+    };
+  }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
 }
 
 export interface WebSessionOptions {
@@ -141,6 +186,8 @@ export class PlaywrightBrowserSession {
   private readonly sensitiveEvidence = new SensitiveEvidenceAuthority();
   private sensitiveDispatchOrdinal = 0;
   private sensitiveEvidenceUnavailable = false;
+  private activeSensitiveDispatch: PreparedSensitiveEvidenceRecord | undefined;
+  private pendingSensitiveCapture = false;
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
 
@@ -372,25 +419,60 @@ export class PlaywrightBrowserSession {
     return result.value;
   }
 
+  beginSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    this.assertNavigationGeneration(prepared.navigationGeneration);
+    this.assertSensitiveEvidenceAvailable();
+    if (this.activeSensitiveDispatch !== undefined || this.pendingSensitiveCapture) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    this.activeSensitiveDispatch = prepared;
+  }
+
+  cancelSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    if (this.activeSensitiveDispatch?.markerId === prepared.markerId) {
+      this.activeSensitiveDispatch = undefined;
+    }
+  }
+
+  abandonSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    this.cancelSensitiveEvidenceDispatch(prepared);
+    this.markSensitiveEvidenceUnavailable();
+  }
+
   completeSensitiveEvidenceRecord(
     prepared: PreparedSensitiveEvidenceRecord,
     observedForms: readonly string[],
   ): void {
     this.assertNavigationGeneration(prepared.navigationGeneration);
     const result = this.sensitiveEvidence.complete(prepared, observedForms);
+    this.cancelSensitiveEvidenceDispatch(prepared);
     if (result.status === "failed") {
       this.markSensitiveEvidenceUnavailable();
+      return;
     }
+    this.pendingSensitiveCapture = true;
   }
 
   markSensitiveEvidenceUnavailable(): void {
+    this.activeSensitiveDispatch = undefined;
+    this.pendingSensitiveCapture = false;
     this.sensitiveEvidenceUnavailable = true;
   }
 
   assertSensitiveEvidenceAvailable(): void {
-    if (this.sensitiveEvidenceUnavailable) {
+    if (this.sensitiveEvidenceUnavailable || this.activeSensitiveDispatch !== undefined) {
       throw sensitiveEvidenceUnavailable();
     }
+  }
+
+  hasPendingSensitiveEvidenceCapture(): boolean {
+    return this.pendingSensitiveCapture;
+  }
+
+  completeSensitiveEvidenceCapture(): void {
+    this.assertSensitiveEvidenceAvailable();
+    this.pendingSensitiveCapture = false;
   }
 
   redactSensitiveTargetField(
@@ -399,6 +481,19 @@ export class PlaywrightBrowserSession {
   ): string {
     this.assertSensitiveEvidenceAvailable();
     return this.sensitiveEvidence.redactField(sensitiveTargetIds, value);
+  }
+
+  redactSensitiveTitleField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+  ): string {
+    this.assertSensitiveEvidenceAvailable();
+    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
   }
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -446,6 +541,7 @@ export class PlaywrightBrowserSession {
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
 
       const page = await context.newPage();
+      await installSensitiveShadowRootTracker(page);
       this.page = page;
       page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;
@@ -650,6 +746,8 @@ export class PlaywrightBrowserSession {
     }
     this.sensitiveEvidence.clear();
     this.sensitiveEvidenceUnavailable = false;
+    this.activeSensitiveDispatch = undefined;
+    this.pendingSensitiveCapture = false;
 
     const browser = this.browser;
     this.browser = undefined;
