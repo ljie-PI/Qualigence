@@ -38,6 +38,10 @@ export interface DetectionBenchmarkReport {
   readonly manifestSha256: string;
   readonly profileSha256: string;
   readonly groundTruthSha256: string;
+  /** Canonical hash of all release inputs beyond manifest/profile/truth: policy, seed and fixture/scenario definitions. */
+  readonly inputSha256: string;
+  /** Canonical per-attempt binding hashes for every scenario/repetition slot that was scored. */
+  readonly attemptBindingSha256s: readonly string[];
   readonly profileStatus: ProfileStatus;
   readonly attemptIds: readonly string[];
   readonly metrics: DetectionMetrics;

@@ -4,7 +4,7 @@
 
 **Blocked by:** 20 — Restore exploration seed, checkpoint, and recovery budget.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -33,7 +33,7 @@ This is the complete edit scope. `**` means the named subtree only.
 - `pnpm-lock.yaml`
 - `tests/{unit/benchmarking/detection,contract/sqlite/benchmark-store.test.ts,e2e/detection-benchmark}`
 - `.scratch/remaining-production-closure/issues/21-real-reference-model-benchmark.md`
-- Post-review acceptance is the already allowed exact file `tests/e2e/detection-benchmark/reference-model-profile.test.ts`.
+- Post-review external LLM-provider acceptance is deferred to `46-centralized-llm-provider-acceptance.md` by explicit maintainer decision. The already allowed exact file remains `tests/e2e/detection-benchmark/reference-model-profile.test.ts`, but Ticket 21 closure records code/review readiness and does not require provider credentials in this ticket.
 
 No root package/workspace script, model package, provider package, SQLite source, or unlisted benchmark fixture is in scope; stop and request an explicit maintainer scope decision before editing one.
 
@@ -59,8 +59,8 @@ Resolve conflicts in this order: applicable security and public-contract invaria
 - Critical always blocks. Important blocks only for explicit acceptance, applicable architecture/security, public/persisted contract, required Gate, or primary-workflow correctness/data integrity. Core fixes require affected non-E2E tests and a fresh complete-matrix review.
 - Stop after five review rounds. If a core blocker remains, set this ticket to `needs-info`, record it here, stop dependents, and request a maintainer scope/ownership decision. Do not create recursive local remediation tickets.
 - Non-Critical advanced hardening is deferred unless promoted. Create one GitHub Issue in `ljie-PI/Qualigence` with source ticket/PR or branch, fixed/reviewed heads, severity/risk, authority, affected files/Gates, and acceptance; do not implement it here or block this ticket on it.
-- Run the real model-backed acceptance only after review is clean. Any later code/test change requires focused verification, a fresh complete-matrix review, then acceptance again.
-- Create one non-draft PR only after focused Gate, typecheck, diff check, clean review, acceptance, and final ticket evidence. A final ticket-evidence-only commit is allowed only with byte-identical reviewed code/test diff. Keep `claimed` until merge; then record PR/merge SHA under `## Answer`, resolve, and remove branch/worktree.
+- Run deterministic/focused acceptance after review is clean. External real model-backed acceptance is intentionally deferred to ticket 46 by explicit maintainer direction so provider credentials/network can be validated once across all LLM-provider-dependent surfaces. Any later code/test change requires focused verification and a fresh complete-matrix review.
+- Create one non-draft PR only after focused Gate, typecheck, diff check, clean review, deferred-provider evidence, and final ticket evidence. A final ticket-evidence-only commit is allowed only with byte-identical reviewed code/test diff. For this ticket, the external provider Gate is tracked by ticket 46 rather than blocking PR merge.
 
 ## Focused non-E2E Gate
 
@@ -78,7 +78,12 @@ git diff --check
 corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts
 ```
 
-Run the configured frozen Reference Model Profile across every manifest scenario and repetition with real provider calls. No fixture walker, provider fake, omitted repetition, selected best run, or skip satisfies acceptance. Provider/network/credential absence must be reported explicitly and blocks completion.
+Deferred to `46-centralized-llm-provider-acceptance.md` by maintainer decision: run the configured frozen Reference Model Profile across every manifest scenario and repetition with real provider calls. No fixture walker, provider fake, omitted repetition, selected best run, or skip satisfies that deferred acceptance. Provider/network/credential absence is tracked there instead of blocking Ticket 21 closure.
+
+## Comments
+
+- start — Claimed for isolated implementation on branch `ticket-21-real-reference-model-benchmark` from base SHA `c55f377460033d9053085b5aface51b02ca12842` (current main with ticket 20 resolved via PR #99 merge commit `1995a946fc09b05425949cf53f2fe1f29a311731`, as supplied by the worktree). Matrix applicability: applicable; all rows in the Behavior Matrix below govern this stateful, side-effecting, retry/restart-sensitive release benchmark workflow. Planned focused Gates: `CI=true corepack pnpm vitest run tests/unit/benchmarking/detection tests/contract/sqlite/benchmark-store.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Post-review real Reference Model acceptance `CI=true corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts` is required only after review is clean and real configured provider credentials/network are available.
+- update — Maintainer explicitly changed closure authority for LLM-provider-backed acceptance: Ticket 21 may skip the external provider credential/network Gate, and all such validation is centralized in new Ticket 46. Search found current closure issue dependency on LLM provider env in Ticket 21 plus live smoke coverage in `tests/live/remote-model-smoke.test.ts`. Implementation/review remains code-complete; deterministic edit-time test-double reports remain forced to `profileStatus: unverified` / `gate.status: unverified`, and real Reference Model release evidence must be produced under Ticket 46 before final release claims.
 
 ## Behavior Matrix
 

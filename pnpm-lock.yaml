@@ -261,12 +261,24 @@ importers:
       '@qualigence/benchmarking-detection':
         specifier: workspace:*
         version: link:../../packages/benchmarking/detection
+      '@qualigence/execution-application':
+        specifier: workspace:*
+        version: link:../../packages/execution-application
       '@qualigence/exploration':
         specifier: workspace:*
         version: link:../../packages/runner-components/exploration
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
+      '@qualigence/model-agent':
+        specifier: workspace:*
+        version: link:../../packages/runner-components/model-agent
+      '@qualigence/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@qualigence/openai-compatible-model-provider':
+        specifier: workspace:*
+        version: link:../../packages/model-providers/openai-compatible
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../packages/contracts/runner-protocol

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createScenarioWalkTestDoubleAgentFactory,
   loadBenchmark,
   runBenchmark,
   type ScenarioDefinition,
@@ -16,21 +17,22 @@ import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime"
 
 const BENCHMARK_DIR = join(process.cwd(), "benchmarks", "detection-v1");
 
-describe("detection benchmark reference profile gate", () => {
-  it("passes the release gate for the frozen reference profile against the known-good fixtures", async () => {
+describe("detection benchmark edit-time test-double gate", () => {
+  it("runs known-good fixtures with the explicit deterministic test double but keeps the report unverified", async () => {
     const loaded = await loadBenchmark(BENCHMARK_DIR);
 
     const outcome = await withBenchmarkStore(async (store) => runBenchmark({
       manifest: loaded.manifest,
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
+      agentFactory: createScenarioWalkTestDoubleAgentFactory(),
       store,
     }));
 
-    expect(outcome.exitCode).toBe(0);
-    expect(outcome.report.profileStatus).toBe("reference");
-    expect(outcome.report.gate.status).toBe("passed");
-    expect(outcome.report.gate.failureCodes).toEqual([]);
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.report.profileStatus).toBe("unverified");
+    expect(outcome.report.gate.status).toBe("unverified");
+    expect(outcome.report.gate.status).not.toBe("passed");
 
     // All five frozen reference thresholds are met.
     expect(outcome.report.metrics.p0Recall.value).toBe(1);
@@ -51,6 +53,7 @@ describe("detection benchmark reference profile gate", () => {
         manifest: loaded.manifest,
         groundTruth: loaded.groundTruth,
         scenarios: loaded.scenarios,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         store,
         createdAt: "2026-08-01T00:00:00.000Z",
       };
@@ -140,10 +143,16 @@ describe("detection benchmark reference profile gate", () => {
       ],
     };
 
-    const outcome = await withBenchmarkStore(async (store) => runBenchmark({ manifest, groundTruth, scenarios: [scenario], store }));
+    const outcome = await withBenchmarkStore(async (store) => runBenchmark({
+      manifest,
+      groundTruth,
+      scenarios: [scenario],
+      agentFactory: createScenarioWalkTestDoubleAgentFactory(),
+      store,
+    }));
 
-    expect(outcome.report.profileStatus).toBe("reference");
-    expect(outcome.report.gate.status).toBe("failed");
+    expect(outcome.report.profileStatus).toBe("unverified");
+    expect(outcome.report.gate.status).toBe("unverified");
     expect(outcome.report.gate.failureCodes).toContain("KnownBugRecallBelowMinimum");
     expect(outcome.report.metrics.knownBugRecall.value).toBeCloseTo(0.6, 5);
     expect(outcome.exitCode).toBe(1);
@@ -161,6 +170,7 @@ describe("detection benchmark reference profile gate", () => {
         manifest: loaded.manifest,
         groundTruth: loaded.groundTruth,
         scenarios: loaded.scenarios,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         store,
       });
       await runtime.close();
@@ -175,7 +185,7 @@ describe("detection benchmark reference profile gate", () => {
 
       const storedReport = await reopenedStore.reportForRun(outcome.runId);
       expect(storedReport?.reportId).toBe(outcome.report.reportId);
-      expect(storedReport?.profileStatus).toBe("reference");
+      expect(storedReport?.profileStatus).toBe("unverified");
       await reopened.close();
     } finally {
       await rm(dir, { recursive: true, force: true });
