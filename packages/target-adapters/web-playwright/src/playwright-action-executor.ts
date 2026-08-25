@@ -598,10 +598,13 @@ async function beginPageSensitiveActionEpoch(
       classifiedRegions: Set<string>;
       baseline: WeakMap<Element, ReadonlySet<string>>;
       observer: MutationObserver;
-      targetListener: EventListener;
+      targetCaptureListener: EventListener;
+      targetBubbleListener: EventListener;
       hasDelegatedListener: boolean;
       inTargetDispatch: boolean;
-      targetDispatchReset: number | undefined;
+      schedulerBoundaryObserved: boolean;
+      originalQueueMicrotask: typeof window.queueMicrotask;
+      originalPromiseThen: typeof Promise.prototype.then;
       poisoned: boolean;
     };
     type BrowserSensitiveRecord = {
@@ -638,11 +641,31 @@ async function beginPageSensitiveActionEpoch(
       const active = state.active;
       if (active === null || active === undefined) return;
       active.inTargetDispatch = true;
-      if (active.targetDispatchReset !== undefined) win.clearTimeout(active.targetDispatchReset);
-      active.targetDispatchReset = win.setTimeout(() => {
-        const current = state.active;
-        if (current?.markerId === input.markerId) current.inTargetDispatch = false;
-      }, 0);
+    };
+    const noteSchedulerBoundary = (): void => {
+      const active = state.active;
+      if (active === null || active === undefined || !active.inTargetDispatch) return;
+      active.schedulerBoundaryObserved = true;
+    };
+    const originalQueueMicrotask = win.queueMicrotask;
+    const originalPromiseThen = win.Promise.prototype.then;
+    win.queueMicrotask = function queueMicrotask(callback: VoidFunction): void {
+      noteSchedulerBoundary();
+      return originalQueueMicrotask.call(win, callback);
+    };
+    win.Promise.prototype.then = function then<TResult1 = unknown, TResult2 = never>(
+      this: Promise<unknown>,
+      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ): Promise<TResult1 | TResult2> {
+      noteSchedulerBoundary();
+      return originalPromiseThen.call(this, onfulfilled, onrejected) as Promise<TResult1 | TResult2>;
+    };
+    const finishTargetDispatch = (): void => {
+      const active = state.active;
+      if (active === null || active === undefined) return;
+      processMutationRecords(active, active.observer.takeRecords(), active.inTargetDispatch && !active.hasDelegatedListener);
+      active.inTargetDispatch = false;
     };
     const epoch: BrowserSensitiveEpoch = {
       markerId: input.markerId,
@@ -652,10 +675,13 @@ async function beginPageSensitiveActionEpoch(
       classifiedRegions: new Set<string>(),
       baseline,
       observer,
-      targetListener: noteTargetDispatch,
+      targetCaptureListener: noteTargetDispatch,
+      targetBubbleListener: finishTargetDispatch,
       hasDelegatedListener: hasDelegatedListener(input.kind),
       inTargetDispatch: false,
-      targetDispatchReset: undefined,
+      schedulerBoundaryObserved: false,
+      originalQueueMicrotask,
+      originalPromiseThen,
       poisoned: false,
     };
     state.active = epoch;
@@ -666,8 +692,10 @@ async function beginPageSensitiveActionEpoch(
       childList: true,
       subtree: true,
     });
-    element.addEventListener("input", epoch.targetListener, true);
-    element.addEventListener("change", epoch.targetListener, true);
+    element.addEventListener("input", epoch.targetCaptureListener, true);
+    element.addEventListener("change", epoch.targetCaptureListener, true);
+    element.addEventListener("input", epoch.targetBubbleListener, false);
+    element.addEventListener("change", epoch.targetBubbleListener, false);
     return { status: state.poisoned || epoch.poisoned ? "failed" : "ok" };
 
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
@@ -777,7 +805,7 @@ async function beginPageSensitiveActionEpoch(
           if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
             continue;
           }
-          if (!allowClassification) {
+          if (epochToUpdate.schedulerBoundaryObserved || !allowClassification) {
             poison(epochToUpdate);
             return;
           }
@@ -799,12 +827,25 @@ async function beginPageSensitiveActionEpoch(
       if (node instanceof Element) {
         candidates.push(node);
         candidates.push(...Array.from(node.querySelectorAll("*")));
+        candidates.push(...observedAncestors(node));
         return;
       }
-      if (node.parentElement !== null) candidates.push(node.parentElement);
+      if (node.parentElement !== null) {
+        candidates.push(node.parentElement);
+        candidates.push(...observedAncestors(node.parentElement));
+      }
     }
 
     function classifyElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
+      classifySingleElement(candidate, epochToUpdate);
+      if (epochToUpdate.poisoned) return;
+      for (const ancestor of observedAncestors(candidate)) {
+        classifySingleElement(ancestor, epochToUpdate);
+        if (epochToUpdate.poisoned) return;
+      }
+    }
+
+    function classifySingleElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
       if (candidate.getRootNode() !== candidate.ownerDocument) {
         poison(epochToUpdate);
         return;
@@ -826,6 +867,25 @@ async function beginPageSensitiveActionEpoch(
         }
       }
       markSensitiveElement(candidate, epochToUpdate.markerId);
+    }
+
+    function observedAncestors(candidate: Element): Element[] {
+      const result: Element[] = [];
+      for (let current = candidate.parentElement; current !== null; current = current.parentElement) {
+        if (isObservationCandidate(current)) result.push(current);
+      }
+      return result;
+    }
+
+    function isObservationCandidate(candidate: Element): boolean {
+      const tag = candidate.tagName.toLowerCase();
+      return tag === "button" ||
+        (tag === "a" && candidate.hasAttribute("href")) ||
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        candidate.hasAttribute("role") ||
+        candidate.hasAttribute("data-qualigence-observe");
     }
 
     function nodeIdentity(candidate: Element): string {
@@ -871,6 +931,8 @@ async function beginPageSensitiveActionEpoch(
       const values: string[] = [];
       const text = directText(candidate);
       if (text !== "") values.push(text);
+      const observedText = isObservationCandidate(candidate) ? candidate.textContent ?? "" : "";
+      if (observedText !== "" && observedText !== text) values.push(observedText);
       if (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement) {
         if (candidate.value !== "") values.push(candidate.value);
         if (candidate.placeholder !== "") values.push(candidate.placeholder);
@@ -927,13 +989,16 @@ async function endPageSensitiveActionEpoch(
         forms: string[];
         baseline: WeakMap<Element, ReadonlySet<string>>;
         observer: MutationObserver;
-        targetListener: EventListener;
+        targetCaptureListener: EventListener;
+        targetBubbleListener: EventListener;
         mutationOrdinal: number;
         classifiedNodes: Set<string>;
         classifiedRegions: Set<string>;
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
-        targetDispatchReset: number | undefined;
+        schedulerBoundaryObserved: boolean;
+        originalQueueMicrotask: typeof window.queueMicrotask;
+        originalPromiseThen: typeof Promise.prototype.then;
         poisoned: boolean;
       } | null;
       records: {
@@ -955,10 +1020,16 @@ async function endPageSensitiveActionEpoch(
       return { status: "failed" };
     }
     processMutationRecords(state, active, active.observer.takeRecords(), active.inTargetDispatch && !active.hasDelegatedListener);
-    if (active.targetDispatchReset !== undefined) win?.clearTimeout(active.targetDispatchReset);
+    active.inTargetDispatch = false;
+    if (win !== null) {
+      win.queueMicrotask = active.originalQueueMicrotask;
+      win.Promise.prototype.then = active.originalPromiseThen;
+    }
     active.observer.disconnect();
-    element.removeEventListener("input", active.targetListener, true);
-    element.removeEventListener("change", active.targetListener, true);
+    element.removeEventListener("input", active.targetCaptureListener, true);
+    element.removeEventListener("change", active.targetCaptureListener, true);
+    element.removeEventListener("input", active.targetBubbleListener, false);
+    element.removeEventListener("change", active.targetBubbleListener, false);
     state.records.push({
       markerId: active.markerId,
       forms: active.forms,
@@ -990,7 +1061,7 @@ async function endPageSensitiveActionEpoch(
           if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
             continue;
           }
-          if (!allowClassification) {
+          if (epochToUpdate.schedulerBoundaryObserved || !allowClassification) {
             epochToUpdate.poisoned = true;
             stateToUpdate.poisoned = true;
             return;
@@ -1013,9 +1084,13 @@ async function endPageSensitiveActionEpoch(
       if (node instanceof Element) {
         candidates.push(node);
         candidates.push(...Array.from(node.querySelectorAll("*")));
+        candidates.push(...observedAncestors(node));
         return;
       }
-      if (node.parentElement !== null) candidates.push(node.parentElement);
+      if (node.parentElement !== null) {
+        candidates.push(node.parentElement);
+        candidates.push(...observedAncestors(node.parentElement));
+      }
     }
 
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
@@ -1027,6 +1102,19 @@ async function endPageSensitiveActionEpoch(
     }
 
     function classifyElement(
+      stateToUpdate: BrowserSensitiveState,
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+      candidate: Element,
+    ): void {
+      classifySingleElement(stateToUpdate, epochToUpdate, candidate);
+      if (epochToUpdate.poisoned) return;
+      for (const ancestor of observedAncestors(candidate)) {
+        classifySingleElement(stateToUpdate, epochToUpdate, ancestor);
+        if (epochToUpdate.poisoned) return;
+      }
+    }
+
+    function classifySingleElement(
       stateToUpdate: BrowserSensitiveState,
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
       candidate: Element,
@@ -1055,6 +1143,25 @@ async function endPageSensitiveActionEpoch(
         }
       }
       markSensitiveElement(stateToUpdate, candidate, epochToUpdate.markerId);
+    }
+
+    function observedAncestors(candidate: Element): Element[] {
+      const result: Element[] = [];
+      for (let current = candidate.parentElement; current !== null; current = current.parentElement) {
+        if (isObservationCandidate(current)) result.push(current);
+      }
+      return result;
+    }
+
+    function isObservationCandidate(candidate: Element): boolean {
+      const tag = candidate.tagName.toLowerCase();
+      return tag === "button" ||
+        (tag === "a" && candidate.hasAttribute("href")) ||
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        candidate.hasAttribute("role") ||
+        candidate.hasAttribute("data-qualigence-observe");
     }
 
     function nodeIdentity(stateToUpdate: BrowserSensitiveState, candidate: Element): string {
@@ -1104,6 +1211,8 @@ async function endPageSensitiveActionEpoch(
       const values: string[] = [];
       const text = directText(candidate);
       if (text !== "") values.push(text);
+      const observedText = isObservationCandidate(candidate) ? candidate.textContent ?? "" : "";
+      if (observedText !== "" && observedText !== text) values.push(observedText);
       if (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement) {
         if (candidate.value !== "") values.push(candidate.value);
         if (candidate.placeholder !== "") values.push(candidate.placeholder);

@@ -80,6 +80,28 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Async reflected secret"),
+      "/promise": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            const value = event.target.value;
+            Promise.resolve().then(() => { document.getElementById('mirror').textContent = value; });
+          });
+        </script>
+      `, "Promise reflected secret"),
+      "/queue-microtask": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            const value = event.target.value;
+            queueMicrotask(() => { document.getElementById('mirror').textContent = value; });
+          });
+        </script>
+      `, "queueMicrotask reflected secret"),
       "/overflow": htmlDocument(`
         <div id="container" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -106,6 +128,16 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Safe reflected content"),
+      "/nested-observed": htmlDocument(`
+        <div id="mirror" data-qualigence-observe><span id="mirror-child">waiting</span></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            document.getElementById('mirror-child').textContent = event.target.value;
+          });
+        </script>
+      `, "Nested observed reflected secret"),
       "/delegated": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -275,6 +307,28 @@ describe("Playwright reflected sensitive evidence", () => {
     expect(pixels[1]).toEqual([123, 45, 67, 255]);
   }, 60_000);
 
+  it("redacts a nested observed ancestor when a child reflects matching content", async () => {
+    const { observer, resolver, executor } = await wire("/nested-observed");
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/nested-observed` } });
+    const email = nodeNamed(before, "Email");
+
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: email.id },
+      valueRef: "customer.email",
+      reason: "reflect secret into a nested observed child",
+    }, before);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+
+    const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/nested-observed` } });
+    expect(after.nodes.some((node) => node.name === SECRET || node.value === SECRET)).toBe(false);
+    expect(after.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    const graphArtifact = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "application/json");
+    expect(graphArtifact).toBeDefined();
+    expect(new TextDecoder().decode(graphArtifact!.bytes)).not.toContain(SECRET);
+  }, 60_000);
+
   it("does not accept observation artifacts when terminal registration fails after masking", async () => {
     const failingSession = new FailingObservationRegistrationSession(options());
     session = failingSession;
@@ -344,6 +398,27 @@ describe("Playwright reflected sensitive evidence", () => {
     expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
+
+  it.each(["/promise", "/queue-microtask"])(
+    "fails evidence closed for direct target %s reflected matching content",
+    async (path) => {
+      const { observer, resolver, executor } = await wire(path);
+      const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+      const action = await resolver.resolve({
+        kind: "input",
+        target: { nodeId: nodeNamed(before, "Email").id },
+        valueRef: "customer.email",
+        reason: "microtask reflect secret",
+      }, before);
+
+      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } }))
+        .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    },
+    60_000,
+  );
 
   it.each(["/delegated", "/delegated-property", "/delegated-inline"])(
     "fails evidence closed for %s reflected matching content",
