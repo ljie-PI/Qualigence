@@ -136,3 +136,11 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 
 - Maintainer authorized a narrow Ticket 40 scope amendment after review head `e5af77d2fb8cf56dfac1eed9efbc82fa0af4bf86`: a minimal Shadow DOM fail-closed detector/wrapper may remain in the listed web-playwright files solely to prevent accepted Graph/Artifact evidence when sensitive forms enter open, closed, or otherwise unprovable shadow roots during a Ticket 40 sensitive epoch. This does not authorize Shadow DOM success propagation/redaction/masking, scheduler/Promise propagation, or Ticket 41+ hardening.
 - Remaining core fixes to implement after this decision: DOM0/property delegated handlers such as `document.body.oninput` must fail closed with `SensitiveEvidenceUnavailable` and zero accepted evidence, and equal text introduced after a closed sensitive epoch must remain ordinary instead of causing global fail-closed behavior.
+
+### review-fix 2 — 2026-08-25
+
+- Reviewed head: `e5af77d2fb8cf56dfac1eed9efbc82fa0af4bf86`.
+- Scope decision: `9d87f36188b93219e9c755f30069ef654e759523` authorized only minimal Shadow DOM fail-closed detection/wrapping for Ticket 40, with no Shadow DOM success propagation/redaction/masking, scheduler/Promise propagation, or Ticket 41+ hardening.
+- Core blockers fixed: DOM0/property delegated `input`/`change` handlers now fail closed with `SensitiveEvidenceUnavailable` and no accepted observation artifacts; page-side sensitive form scan records are retired after the successful closed-epoch capture so later unrelated equal text remains ordinary instead of globally poisoning evidence.
+- Fix commit: `3479354a7ead0304d5b23c4111fa8b8dbce50617`.
+- Gates run: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 4 files / 71 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed: 1 file / 1 test); `CI=true corepack pnpm typecheck` (passed); `git diff --check` (passed).
