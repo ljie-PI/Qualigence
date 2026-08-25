@@ -13,7 +13,7 @@ import { MissionSchedulingService } from "@qualigence/mission";
 import type { AcceptedExecutionJob, ExecutionJobLease } from "@qualigence/runner-protocol";
 import { SqlitePrdMissionStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { MissionDispatchLoop, type MissionDispatchLeaseReader, type MissionDispatchRunnerConnection } from "../../../apps/server/src/mission-dispatch-loop.js";
-import { WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
+import { WEB_GRAPH_V1_REQUIREMENTS, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
 import { schedulingFixture } from "../../contract/mission/prd-mission-repository.contract.js";
 
 const clock = { now: () => "2026-08-24T00:00:00.000Z" };
@@ -26,7 +26,7 @@ function dispatch(overrides: Partial<PendingMissionDispatch> = {}): PendingMissi
     runnerId: "runner-1",
     runnerJobId: job.jobId,
     runId: job.runId,
-    requiredCapabilities: [WEB_TARGET_TOKEN],
+    requiredCapabilities: WEB_GRAPH_V1_REQUIREMENTS,
     job,
     status: "pending",
     version: 1,
@@ -186,7 +186,7 @@ function connection(overrides: Partial<MissionDispatchRunnerConnection> = {}): M
     authenticatedRunner: {
       runnerId: "runner-1",
       scope: { kind: "tenant", tenantId: "tenant-1", projectIds: ["project-1"] },
-      capabilities: [WEB_TARGET_TOKEN],
+      capabilities: WEB_GRAPH_V1_REQUIREMENTS,
     },
     offer: async (job) => leaseFor(job),
     ...overrides,
@@ -231,7 +231,7 @@ describe("MissionDispatchLoop", () => {
     const result = await loop.runOnce();
 
     expect(runners.lookups).toEqual([{ tenantId: "tenant-1", runnerId: "runner-1" }]);
-    expect(offered).toEqual([{ job: row.job, requirements: [WEB_TARGET_TOKEN] }]);
+    expect(offered).toEqual([{ job: row.job, requirements: WEB_GRAPH_V1_REQUIREMENTS }]);
     expect(repository.acceptCalls).toEqual([{ attemptId: "attempt-1", expectedVersion: 1, receipt: { status: "accepted", jobId: "runner-job-1", runId: "run-1", acceptedAt: row.createdAt } }]);
     expect(result).toMatchObject({ totalPending: 1, attempted: 1, accepted: 1, pending: 0, blocked: 0 });
     expect(result.results[0]).toMatchObject({ outcome: "accepted", receipt: { status: "accepted", jobId: "runner-job-1", runId: "run-1", acceptedAt: row.createdAt } });
@@ -253,14 +253,14 @@ describe("MissionDispatchLoop", () => {
 
   it("blocks capability mismatch explicitly without selecting another Runner", async () => {
     const repository = new MissionDispatchRepositoryFake();
-    repository.rows = [dispatch({ requiredCapabilities: [WEB_TARGET_TOKEN, "model:vision-input"] })];
+    repository.rows = [dispatch({ requiredCapabilities: [...WEB_GRAPH_V1_REQUIREMENTS, "model:vision-input"] })];
     const { loop, runners } = makeLoop({ repository });
     const offered: AcceptedExecutionJob[] = [];
     runners.connection = connection({
       authenticatedRunner: {
         runnerId: "runner-1",
         scope: { kind: "tenant", tenantId: "tenant-1", projectIds: ["project-1"] },
-        capabilities: [WEB_TARGET_TOKEN],
+        capabilities: WEB_GRAPH_V1_REQUIREMENTS,
       },
       offer: async (job) => {
         offered.push(job);
@@ -286,7 +286,7 @@ describe("MissionDispatchLoop", () => {
       authenticatedRunner: {
         runnerId: "runner-1",
         scope: { kind: "tenant", tenantId: "tenant-2", projectIds: ["project-1"] },
-        capabilities: [WEB_TARGET_TOKEN],
+        capabilities: WEB_GRAPH_V1_REQUIREMENTS,
       },
       offer: async (job) => {
         offered = true;
@@ -490,7 +490,7 @@ describe("MissionDispatchLoop", () => {
 
   it("lets one concurrent dispatcher durably block and makes the loser observe non-dispatchable state", async () => {
     const repository = new BlockingBarrierRepositoryFake();
-    repository.rows = [dispatch({ requiredCapabilities: [WEB_TARGET_TOKEN, "model:vision-input"] })];
+    repository.rows = [dispatch({ requiredCapabilities: [...WEB_GRAPH_V1_REQUIREMENTS, "model:vision-input"] })];
     repository.holdWrites();
     const runners = new RunnerDirectoryFake();
     runners.connection = connection({
@@ -511,7 +511,7 @@ describe("MissionDispatchLoop", () => {
 
   it("keeps deterministic rejects pending when durable block persistence fails", async () => {
     const repository = new MissionDispatchRepositoryFake();
-    repository.rows = [dispatch({ requiredCapabilities: [WEB_TARGET_TOKEN, "model:vision-input"] })];
+    repository.rows = [dispatch({ requiredCapabilities: [...WEB_GRAPH_V1_REQUIREMENTS, "model:vision-input"] })];
     repository.failBlock = true;
     const { loop, runners } = makeLoop({ repository });
     runners.connection = connection({

@@ -13,12 +13,21 @@ import type {
   FindingEnvelope,
   RunnerHello,
   RunnerProtocolMajor,
+  ObservationGraphV1,
   RunnerWelcome,
   TargetRef,
   TraceEvent,
   TraceStage,
 } from "@qualigence/runner-protocol";
-import { ExecutionPolicySnapshotError, parseExecutionJob, parseExecutionPolicySnapshot } from "@qualigence/runner-protocol";
+import {
+  ExecutionPolicySnapshotError,
+  ObservationError,
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  requireGraphExtensionMajor,
+  validateObservationGraphV1,
+  parseExecutionJob,
+  parseExecutionPolicySnapshot,
+} from "@qualigence/runner-protocol";
 import { RunnerProtocolError } from "./errors.js";
 
 /**
@@ -343,6 +352,7 @@ export function jobFromWire(wire: Wire): AcceptedExecutionJob {
 // --- ExecutionJobOffer ----------------------------------------------------
 
 export function offerToWire(offer: ExecutionJobOffer): Wire {
+  assertOfferObservationCapabilities(offer.job, offer.requiredCapabilities);
   return {
     offer_id: offer.offerId,
     job: jobToWire(offer.job),
@@ -352,12 +362,33 @@ export function offerToWire(offer: ExecutionJobOffer): Wire {
 }
 
 export function offerFromWire(wire: Wire): ExecutionJobOffer {
+  const job = jobFromWire((wire.job ?? {}) as Wire);
+  const requiredCapabilities = asArray<string>(wire.required_capabilities);
+  assertOfferObservationCapabilities(job, requiredCapabilities);
   return {
     offerId: asString(wire.offer_id),
-    job: jobFromWire((wire.job ?? {}) as Wire),
-    requiredCapabilities: asArray<string>(wire.required_capabilities),
+    job,
+    requiredCapabilities,
     leaseDurationMs: asNumber(wire.lease_duration_ms),
   };
+}
+
+function assertOfferObservationCapabilities(
+  job: AcceptedExecutionJob,
+  requiredCapabilities: readonly string[],
+): void {
+  if (job.target.kind !== "web") {
+    return;
+  }
+  const present = new Set(requiredCapabilities);
+  const missing = WEB_OBSERVATION_V1_CAPABILITY_TOKENS.filter((token) => !present.has(token));
+  if (missing.length > 0) {
+    throw new RunnerProtocolError(
+      "CapabilityMismatch",
+      "web execution offers must require Observation Graph v1 and web/v1 before payload admission",
+      { details: { missingCapabilities: missing } },
+    );
+  }
 }
 
 // --- ExecutionJobLease ----------------------------------------------------
@@ -408,6 +439,9 @@ export function renewLeaseFromWire(wire: Wire): ExecutionJobLease {
 // --- TraceEvent / ExecutionEventBatch -------------------------------------
 
 function traceEventToWire(event: TraceEvent): Wire {
+  const payload = event.stage === "observation"
+    ? validateObservationTracePayload(event.payload)
+    : event.payload;
   const wire: Wire = {
     protocol_version: event.protocolVersion,
     schema_version: event.schemaVersion,
@@ -418,7 +452,7 @@ function traceEventToWire(event: TraceEvent): Wire {
     stage: event.stage,
     occurred_at: event.occurredAt,
     payload_hash: event.payloadHash,
-    payload_json: JSON.stringify(event.payload),
+    payload_json: JSON.stringify(payload),
   };
   if (event.stepIndex !== undefined) wire.step_index = event.stepIndex;
   return wire;
@@ -426,6 +460,8 @@ function traceEventToWire(event: TraceEvent): Wire {
 
 function traceEventFromWire(wire: Wire): TraceEvent {
   const stepIndex = wire.step_index === undefined ? undefined : asNumber(wire.step_index);
+  const stage = asString(wire.stage) as TraceStage;
+  const payload = parseTracePayload(stage, wire.payload_json);
   const envelope = {
     protocolVersion: asString(wire.protocol_version) as TraceEvent["protocolVersion"],
     schemaVersion: asString(wire.schema_version) as TraceEvent["schemaVersion"],
@@ -434,12 +470,44 @@ function traceEventFromWire(wire: Wire): TraceEvent {
     runId: asString(wire.run_id),
     sequenceNumber: asNumber(wire.sequence_number),
     ...(stepIndex === undefined ? {} : { stepIndex }),
-    stage: asString(wire.stage) as TraceStage,
+    stage,
     occurredAt: asString(wire.occurred_at),
     payloadHash: asString(wire.payload_hash),
-    payload: JSON.parse(asString(wire.payload_json) || "null") as unknown,
+    payload,
   };
   return envelope as unknown as TraceEvent;
+}
+
+function parseTracePayload(stage: TraceStage, payloadJson: unknown): unknown {
+  const payload = JSON.parse(asString(payloadJson) || "null") as unknown;
+  return stage === "observation" ? validateObservationTracePayload(payload) : payload;
+}
+
+function validateObservationTracePayload(payload: unknown): ObservationGraphV1 {
+  try {
+    const graph = payload as ObservationGraphV1;
+    const webQueryKeys = graph.extensions?.["web/v1"]?.payload.query;
+    const allowedWebQueryKeys = webQueryKeys !== undefined &&
+      webQueryKeys !== null &&
+      typeof webQueryKeys === "object" &&
+      !Array.isArray(webQueryKeys)
+      ? Object.keys(webQueryKeys)
+      : [];
+    validateObservationGraphV1(graph, { allowedWebQueryKeys });
+    if (graph.target.kind === "web") {
+      requireGraphExtensionMajor(graph, "web", 1);
+    }
+    return graph;
+  } catch (error) {
+    throw new RunnerProtocolError(
+      "ProtocolViolation",
+      "observation Trace payload must be Observation Graph v1 with compatible graph and extension majors",
+      {
+        cause: error,
+        ...(error instanceof ObservationError ? { details: { observationCode: error.code } } : {}),
+      },
+    );
+  }
 }
 
 export function eventBatchToWire(batch: ExecutionEventBatch): Wire {

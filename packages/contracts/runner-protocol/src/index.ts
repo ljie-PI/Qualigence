@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
 
 export * from "./capabilities.js";
 export * from "./messages.js";
@@ -8,10 +9,10 @@ export * from "./messages.js";
  *
  * The v1 Graph lives in `@qualigence/observation-contracts`, which is the single
  * source of truth. Runner Protocol re-exports it for a compatibility cycle so
- * consumers have one canonical import surface. This is purely additive: the
- * existing pre-v1 {@link ObservationGraph}/{@link ObservationNode} types below
- * are unchanged and remain the shape the live runtime uses until a later PR
- * (LS-13) migrates consumers over.
+ * consumers have one canonical import surface. Live Runner observation Trace
+ * events now carry this candidate v1 shape while the existing pre-v1
+ * {@link ObservationGraph}/{@link ObservationNode} types below are kept as
+ * historical asset DTOs for the later inventory/contraction tickets.
  */
 export type {
   ObservationJsonValue,
@@ -45,6 +46,8 @@ export {
   requireGraphExtensionMajor,
   findExtensionMajor,
   findGraphExtensionMajor,
+  validateObservationGraphV1,
+  observationGraphHash,
 } from "@qualigence/observation-contracts";
 
 /**
@@ -54,9 +57,9 @@ export {
  * `@qualigence/desktop-contracts`, which is their single source of truth. Runner
  * Protocol re-exports them additively so consumers keep one canonical import
  * surface — the same pattern used above for the Observation Graph v1 types. This
- * is purely additive: the existing pre-desktop `TraceEvent`/`ObservationGraph`
- * shapes are unchanged, and the branded `ExecutionPermit`/Sensor/Action runtime
- * wiring in `@qualigence/runner-kernel` is untouched by this PR (that is PR-26).
+ * is purely additive for Desktop: the branded `ExecutionPermit`/Sensor/Action
+ * runtime wiring in `@qualigence/runner-kernel` is untouched by this PR (that is
+ * PR-26).
  */
 export type {
   AppTarget,
@@ -592,7 +595,7 @@ export type RunCompletedTracePayload =
     };
 
 export type TraceEvent =
-  | TraceEventEnvelope<"observation", ObservationGraph>
+  | TraceEventEnvelope<"observation", ObservationGraphV1>
   | TraceEventEnvelope<"decision", DecisionTracePayload>
   | TraceEventEnvelope<"action_resolved", ResolvedActionTracePayload>
   | TraceEventEnvelope<"policy_authorized", AuthorizedPolicyTracePayload>

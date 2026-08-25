@@ -4,13 +4,14 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  ExecutionJobLease,
-  ExecutionCompletion,
-  ExecutionEventBatch,
-  ExecutionJobOffer,
-  ExecutionPlanStep,
-  ObservationGraph,
+import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  type ExecutionJobLease,
+  type ExecutionCompletion,
+  type ExecutionEventBatch,
+  type ExecutionJobOffer,
+  type ExecutionPlanStep,
+  type ObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
@@ -205,9 +206,9 @@ describe("production valueRef browser execution", () => {
       .toMatchObject({ kind: "select", valueRef: "profile.country" });
     const inputObservation = finalObservation(trace, "run-input");
     const selectObservation = finalObservation(trace, "run-select");
-    expect(inputObservation.nodes.some((node) => node.text === "Notes ready")).toBe(true);
-    expect(selectObservation.nodes.some((node) => node.text === "Country ready")).toBe(true);
-    expect(inputObservation.nodes.some((node) => node.text === INPUT_EQUAL_TEXT)).toBe(true);
+    expect(inputObservation.nodes.some((node) => node.name === "Notes ready" || node.value === "Notes ready")).toBe(true);
+    expect(selectObservation.nodes.some((node) => node.name === "Country ready" || node.value === "Country ready")).toBe(true);
+    expect(inputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(inputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
     expect(targetNode(selectObservation, "combobox", "Country")).toMatchObject({
       text: "[redacted]",
@@ -216,7 +217,7 @@ describe("production valueRef browser execution", () => {
 
     const preAckInputObservation = finalObservation(spooledEvents, "run-input");
     const preAckSelectObservation = finalObservation(spooledEvents, "run-select");
-    expect(preAckInputObservation.nodes.some((node) => node.text === INPUT_EQUAL_TEXT)).toBe(true);
+    expect(preAckInputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(preAckInputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
     expect(targetNode(preAckSelectObservation, "combobox", "Country")).toMatchObject({
       text: "[redacted]",
@@ -279,7 +280,7 @@ function offer(
         budget: { maximumStepsPerJob: 1, maximumWallClockMs: 20_000, maximumModelTokens: 100 },
       },
     },
-    requiredCapabilities: [`action:${kind}`],
+    requiredCapabilities: ["target:web-playwright", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS, `action:${kind}`],
     leaseDurationMs: 60_000,
   };
 }
@@ -287,7 +288,7 @@ function offer(
 function decisionFrom(content: string): { readonly nodeId: string; readonly reason: string } {
   const prompt = JSON.parse(content) as {
     readonly step: Extract<ExecutionPlanStep, { readonly kind: "input" | "select" }>;
-    readonly observation: ObservationGraph;
+    readonly observation: ObservationGraphV1;
   };
   if (prompt.step.kind !== "input" && prompt.step.kind !== "select") throw new Error("Unexpected Plan step.");
   const node = prompt.observation.nodes.find((candidate) =>
@@ -299,13 +300,13 @@ function decisionFrom(content: string): { readonly nodeId: string; readonly reas
 function finalObservation(
   trace: readonly ExecutionEventBatch["events"][number][],
   runId: string,
-): ObservationGraph {
+): ObservationGraphV1 {
   const event = trace.filter((candidate) => candidate.runId === runId && candidate.stage === "observation").at(-1);
   if (event?.stage !== "observation") throw new Error(`Missing final observation for ${runId}.`);
   return event.payload;
 }
 
-function targetNode(graph: ObservationGraph, role: string, name: string): ObservationGraph["nodes"][number] {
+function targetNode(graph: ObservationGraphV1, role: string, name: string): ObservationGraphV1["nodes"][number] {
   const node = graph.nodes.find((candidate) => candidate.role === role && candidate.name === name);
   if (node === undefined) throw new Error(`Missing ${role} ${name} node.`);
   return node;

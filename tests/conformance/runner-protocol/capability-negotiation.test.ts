@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  OBSERVATION_GRAPH_V1_CAPABILITY,
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   advertisedCapabilityTokens,
   capabilities,
   negotiateCapabilities,
@@ -38,6 +42,10 @@ describe("protocol major negotiation", () => {
 describe("capability negotiation", () => {
   const runnerCapabilities = capabilities({
     targetAdapters: ["web-playwright"],
+    observationExtensions: [
+      OBSERVATION_GRAPH_V1_CAPABILITY,
+      WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
+    ],
     actionKinds: ["click"],
     model: { structuredOutput: true, visionInput: false },
   });
@@ -46,13 +54,20 @@ describe("capability negotiation", () => {
     const tokens = advertisedCapabilityTokens(runnerCapabilities);
     expect(tokens.has("target:web-playwright")).toBe(true);
     expect(tokens.has("action:click")).toBe(true);
+    expect(tokens.has(OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN)).toBe(true);
+    expect(tokens.has(WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN)).toBe(true);
     expect(tokens.has("model:structured-output")).toBe(true);
     expect(tokens.has("model:vision-input")).toBe(false);
   });
 
   it("accepts a requirement the runner satisfies", () => {
     expect(
-      negotiateCapabilities(runnerCapabilities, ["target:web-playwright", "action:click"]),
+      negotiateCapabilities(runnerCapabilities, [
+        "target:web-playwright",
+        "action:click",
+        OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+        WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+      ]),
     ).toEqual({ outcome: "accepted" });
   });
 
@@ -64,6 +79,24 @@ describe("capability negotiation", () => {
       rejection: {
         code: "CapabilityMismatch",
         missingCapabilities: ["model:vision-input"],
+      },
+    });
+  });
+
+  it("rejects incompatible observation and extension majors rather than downgrading", () => {
+    expect(
+      negotiateCapabilities(runnerCapabilities, [
+        "observation:observation-graph/v2",
+        "observation:web/v2",
+      ]),
+    ).toEqual({
+      outcome: "rejected",
+      rejection: {
+        code: "CapabilityMismatch",
+        missingCapabilities: [
+          "observation:observation-graph/v2",
+          "observation:web/v2",
+        ],
       },
     });
   });

@@ -15,7 +15,8 @@ import { MissionDispatchLoop } from "../../../apps/server/src/mission-dispatch-l
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient } from "../../helpers/grpc-harness.js";
-import { WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
+import { WEB_GRAPH_V1_REQUIREMENTS, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 let pki: GrpcTestPki;
 const cleanups: Array<() => Promise<void>> = [];
@@ -38,7 +39,7 @@ function event(runId: string, graphId = "graph-1"): TraceEvent {
     sequenceNumber: 1,
     stage: "observation",
     occurredAt: "2026-08-17T00:00:00.000Z",
-    payload: { graphId, nodes: [] },
+    payload: observationGraphV1(graphId),
   } as const;
   return { ...input, payloadHash: canonicalTraceEventHash(input) } as TraceEvent;
 }
@@ -309,10 +310,10 @@ describe("Core runner protocol production composition", () => {
     const session = await client.connect(makeHello("runner-1"));
     const connection = await daemon.server.waitForConnection("runner-1");
     const job = webJob();
-    const leasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);
-    const replayLeasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
+    const replayLeasePromise = connection.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     await expect(
-      connection.offer({ ...job, objective: "different objective" }, [WEB_TARGET_TOKEN]),
+      connection.offer({ ...job, objective: "different objective" }, WEB_GRAPH_V1_REQUIREMENTS),
     ).rejects.toMatchObject({ code: "RunIdentityMismatch" });
     const offer = await session.nextOffer(new AbortController().signal);
     const lease = await session.accept(offer.offerId);
@@ -386,7 +387,7 @@ describe("Core runner protocol production composition", () => {
       runnerId: "runner-1",
       runnerJobId: runnerJob.jobId,
       runId: runnerJob.runId,
-      requiredCapabilities: [WEB_TARGET_TOKEN],
+      requiredCapabilities: WEB_GRAPH_V1_REQUIREMENTS,
       job: runnerJob,
       status: "pending" as const,
       version: 1,
@@ -446,7 +447,7 @@ describe("Core runner protocol production composition", () => {
     const session = await client.connect(makeHello("runner-1"));
     const connection = await daemon.server.waitForConnection("runner-1");
     const job = webJob();
-    const leasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     const offer = await session.nextOffer(new AbortController().signal);
     await session.accept(offer.offerId);
     await leasePromise;
@@ -482,7 +483,7 @@ describe("Core runner protocol production composition", () => {
     const session1 = await client1.connect(makeHello("runner-1"));
     const connection1 = await first.server.waitForConnection("runner-1");
     const job = webJob({ jobId: "job-restart", runId: "run-restart" });
-    const offering = connection1.offer(job, [WEB_TARGET_TOKEN]);
+    const offering = connection1.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     offering.catch(() => undefined);
     await session1.nextOffer(new AbortController().signal);
     await client1.close();
@@ -503,7 +504,7 @@ describe("Core runner protocol production composition", () => {
     });
     const session2 = await client2.connect(makeHello("runner-1"));
     const connection2 = await second.server.waitForConnection("runner-1");
-    const leasePromise = connection2.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection2.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     const offer = await session2.nextOffer(new AbortController().signal);
     const lease = await session2.accept(offer.offerId);
     await expect(leasePromise).resolves.toEqual(lease);
@@ -527,7 +528,7 @@ describe("Core runner protocol production composition", () => {
     const session1 = await client1.connect(makeHello("runner-1"));
     const connection = await daemon.server.waitForConnection("runner-1");
     const job = webJob({ jobId: "job-resume", runId: "run-resume" });
-    const leasePromise = connection.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     const offer = await session1.nextOffer(new AbortController().signal);
     const lease = await session1.accept(offer.offerId);
     await leasePromise;

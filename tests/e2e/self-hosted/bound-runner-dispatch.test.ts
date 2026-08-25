@@ -9,7 +9,7 @@ import { SqlitePrdMissionStore, SqliteRuntime } from "@qualigence/sqlite-runtime
 import { MissionDispatchLoop, type MissionDispatchRunnerConnection } from "../../../apps/server/src/mission-dispatch-loop.js";
 import { createGrpcTestPki, type GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient } from "../../helpers/grpc-harness.js";
-import { UNSUPPORTED_TOKEN, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
+import { UNSUPPORTED_TOKEN, WEB_GRAPH_V1_REQUIREMENTS, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
 
 let pki: GrpcTestPki;
 const cleanups: Array<() => Promise<void>> = [];
@@ -118,7 +118,7 @@ describe("Self-hosted bound Runner dispatch acceptance", () => {
     });
     await client.connect(makeHello("runner-bound"));
     await daemon.server.waitForConnection("runner-bound");
-    const row = dispatch({ requiredCapabilities: [WEB_TARGET_TOKEN, UNSUPPORTED_TOKEN] });
+    const row = dispatch({ requiredCapabilities: [...WEB_GRAPH_V1_REQUIREMENTS, UNSUPPORTED_TOKEN] });
     const seeded = await seedDispatchStore(row);
     const loop = new MissionDispatchLoop({
       tenantId: "tenant-a",
@@ -154,7 +154,7 @@ function dispatch(overrides: Partial<PendingMissionDispatch> = {}): PendingMissi
     runnerId: "runner-bound",
     runnerJobId: job.jobId,
     runId: job.runId,
-    requiredCapabilities: [WEB_TARGET_TOKEN],
+    requiredCapabilities: WEB_GRAPH_V1_REQUIREMENTS,
     job,
     status: "pending",
     version: 1,

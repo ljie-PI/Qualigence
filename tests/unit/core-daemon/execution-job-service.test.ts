@@ -18,6 +18,7 @@ import {
   RunnerSessionService,
   RunOwnershipService,
 } from "@qualigence/core-application";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 function makeOwnership(options: { leaseDurationMs?: number; now?: () => number } = {}): {
   ownership: RunOwnershipService;
@@ -51,7 +52,7 @@ function job(runId: string, jobId = `job-${runId}`): AcceptedExecutionJob {
 }
 
 const owner1 = { runnerId: "runner-1", sessionId: "session-1" } as const;
-const webCaps = capabilities({ targetAdapters: ["web-playwright"] });
+const webCaps = capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] });
 
 describe("ExecutionJobService", () => {
   it.each([
@@ -94,7 +95,7 @@ describe("ExecutionJobService", () => {
       requiredCapabilities: ["target:web-playwright"],
     });
     expect(offer.job.jobId).toBe("job-run-1");
-    expect(offer.requiredCapabilities).toEqual(["target:web-playwright"]);
+    expect(offer.requiredCapabilities).toEqual(["target:web-playwright", "observation:observation-graph/v1", "observation:web/v1"]);
   });
 
   it("rejects an offer with an explicit CapabilityMismatch instead of silently downgrading", async () => {
@@ -170,7 +171,7 @@ function hello(runnerId: string, overrides: Partial<RunnerHello> = {}): RunnerHe
     runnerId,
     runnerVersion: "0.1.0",
     supportedProtocolMajors: [1],
-    capabilities: capabilities({ targetAdapters: ["web-playwright"] }),
+    capabilities: capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] }),
     ...overrides,
   };
 }
@@ -185,7 +186,7 @@ function observationEvent(runId: string, sequenceNumber: number, graphId = `grap
     sequenceNumber,
     stage: "observation",
     occurredAt: "2026-08-01T00:00:00.000Z",
-    payload: { graphId, nodes: [] },
+    payload: observationGraphV1(graphId),
   } as const;
   return { ...base, payloadHash: canonicalTraceEventHash(base) } as TraceEvent;
 }

@@ -1,4 +1,5 @@
 import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
   capabilities,
   type AcceptedExecutionJob,
   type ExecutionJobOffer,
@@ -10,9 +11,11 @@ import {
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
 import type { LeasedJobExecutorDependencies } from "../../apps/runner/src/job-executor.js";
+import { observationGraphV1 } from "./observation-graph-v1.js";
 
 /** Advertised token every deterministic web Runner in these tests satisfies. */
 export const WEB_TARGET_TOKEN = "target:web-playwright";
+export const WEB_GRAPH_V1_REQUIREMENTS = [WEB_TARGET_TOKEN, ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS] as const;
 /** A token the default Runner never advertises, used to force a mismatch. */
 export const UNSUPPORTED_TOKEN = "model:vision-input";
 
@@ -28,7 +31,7 @@ export const isolatedTestPolicy = {
 };
 
 export function webRunnerCapabilities(): RunnerCapabilities {
-  return capabilities({ targetAdapters: ["web-playwright"] });
+  return capabilities({ targetAdapters: ["web-playwright"], observationExtensions: ["observation-graph/v1", "web/v1"] });
 }
 
 export function webJob(overrides: Partial<AcceptedExecutionJob> = {}): AcceptedExecutionJob {
@@ -78,14 +81,8 @@ export function deterministicRunnerDependencies(
   overrides: Partial<LeasedJobExecutorDependencies> = {},
 ): LeasedJobExecutorDependencies {
   const observations = [
-    {
-      graphId: "graph-before",
-      nodes: [{ id: "node-add", role: "button", name: "Add to cart", confidence: 1 }],
-    },
-    {
-      graphId: "graph-after",
-      nodes: [{ id: "node-checkout", role: "button", name: "Checkout", confidence: 1 }],
-    },
+    observationGraphV1("graph-before", [{ id: "node-add", role: "button", name: "Add to cart", confidence: 1 }]),
+    observationGraphV1("graph-after", [{ id: "node-checkout", role: "button", name: "Checkout", confidence: 1 }]),
   ];
   return {
     observer: { capture: async () => observations.shift()! },

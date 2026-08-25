@@ -23,7 +23,8 @@ import { RunOwnershipService } from "../../../apps/core-daemon/src/index.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { makeHello, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
-import { openMemorySpool, WEB_TARGET_TOKEN, webJob } from "../../helpers/core-runner-harness.js";
+import { openMemorySpool, WEB_GRAPH_V1_REQUIREMENTS, webJob } from "../../helpers/core-runner-harness.js";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 let pki: GrpcTestPki;
 
@@ -64,7 +65,7 @@ async function spoolObservations(
     await recorder.append({
       runId,
       stage: "observation",
-      payload: { graphId: `graph-${index + 1}`, nodes: [] },
+      payload: observationGraphV1(`graph-${index + 1}`),
     });
   }
 }
@@ -321,7 +322,7 @@ describe("core/runner disconnect recovery Gate", () => {
     const session1 = await client1.connect(makeHello("runner-1"));
     const connection1 = await first.server.waitForConnection("runner-1");
     const job = webJob({ jobId: "job-persist", runId: "run-persist" });
-    const leasePromise = connection1.offer(job, [WEB_TARGET_TOKEN]);
+    const leasePromise = connection1.offer(job, WEB_GRAPH_V1_REQUIREMENTS);
     const offer = await session1.nextOffer(new AbortController().signal);
     const lease = await session1.accept(offer.offerId);
     await leasePromise;
@@ -379,7 +380,7 @@ function persistedEvent(runId: string): TraceEvent {
     sequenceNumber: 1,
     stage: "observation",
     occurredAt: "2026-08-18T00:00:00.000Z",
-    payload: { graphId: "graph-1", nodes: [] },
+    payload: observationGraphV1("graph-1"),
   } as const;
   return { ...input, payloadHash: canonicalTraceEventHash(input) } as TraceEvent;
 }

@@ -1,4 +1,5 @@
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
+import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
 
 export class LocalReadinessService {
   private quiesced = false;
@@ -20,7 +21,10 @@ export class LocalReadinessService {
   async ready(): Promise<boolean> {
     if (!await this.internalReady()) return false;
     const runner = this.options.connection()?.authenticatedRunner;
-    return runner?.runnerId === this.options.configuredRunnerId && runner.scope.kind === "local" && runner.capabilities.includes("target:web-playwright");
+    if (runner?.runnerId !== this.options.configuredRunnerId || runner.scope.kind !== "local") return false;
+    const capabilities = new Set(runner.capabilities);
+    return capabilities.has("target:web-playwright") &&
+      WEB_OBSERVATION_V1_CAPABILITY_TOKENS.every((token) => capabilities.has(token));
   }
   quiesce(): void { this.quiesced = true; }
 }

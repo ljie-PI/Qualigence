@@ -33,6 +33,11 @@ export const OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN =
 export const WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN =
   `observation:${WEB_OBSERVATION_EXTENSION_V1_CAPABILITY}` as const;
 
+export const WEB_OBSERVATION_V1_CAPABILITY_TOKENS = [
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+] as const;
+
 export interface RunnerCapabilitiesOverride {
   readonly operatingSystem?: RunnerOperatingSystem;
   readonly architecture?: RunnerArchitecture;

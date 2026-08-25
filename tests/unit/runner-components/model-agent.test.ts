@@ -22,6 +22,7 @@ import type {
   StructuredModelRequest,
 } from "@qualigence/model-gateway";
 import type { ModelProviderRequest } from "@qualigence/model-provider";
+import { observationGraphV1, type ObservationGraphV1TestNode } from "../../helpers/observation-graph-v1.js";
 
 describe("model-backed runner components", () => {
   afterEach(() => {
@@ -793,15 +794,9 @@ function job() {
 
 function observation(
   graphId: string,
-  nodes: readonly {
-    readonly id: string;
-    readonly role: string;
-    readonly name?: string;
-    readonly text?: string;
-    readonly confidence: number;
-  }[],
+  nodes: readonly ObservationGraphV1TestNode[],
 ) {
-  return { graphId, nodes };
+  return observationGraphV1(graphId, nodes);
 }
 
 function verificationContext() {

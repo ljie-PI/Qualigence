@@ -79,6 +79,7 @@ export interface WebSessionOptions {
   readonly navigationTimeoutMs: number;
   readonly actionTimeoutMs: number;
   readonly allowedOrigins: readonly string[];
+  readonly allowedWebQueryKeys?: readonly string[];
 }
 
 /**
@@ -153,6 +154,10 @@ export class PlaywrightBrowserSession {
 
   get allowedOrigins(): readonly string[] {
     return this.options.allowedOrigins;
+  }
+
+  get allowedWebQueryKeys(): readonly string[] {
+    return this.options.allowedWebQueryKeys ?? [];
   }
 
   get actionTimeoutMs(): number {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { LocalRunCoordinator } from "../../../apps/core-daemon/src/local/local-run-coordinator.js";
 import { RunnerControlStoreError } from "@qualigence/runner-control";
+import { WEB_GRAPH_V1_REQUIREMENTS } from "../../helpers/core-runner-harness.js";
 
 describe("LocalRunCoordinator", () => {
   it("quarantines offer uncertainty and never re-offers it", async () => {
@@ -16,7 +17,7 @@ describe("LocalRunCoordinator", () => {
     const offer = vi.fn(async () => { throw new Error("connection lost after write start"); });
     const coordinator = new LocalRunCoordinator({
       store: store as never,
-      connection: () => ({ authenticatedRunner: { runnerId: "runner-1", scope: { kind: "local" }, capabilities: ["target:web-playwright"] }, offer, cancel: vi.fn() }),
+      connection: () => ({ authenticatedRunner: { runnerId: "runner-1", scope: { kind: "local" }, capabilities: WEB_GRAPH_V1_REQUIREMENTS }, offer, cancel: vi.fn() }),
       configuredRunnerId: "runner-1",
       now: () => "2026-08-19T00:00:00.000Z",
     });
