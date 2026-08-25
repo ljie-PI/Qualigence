@@ -127,3 +127,26 @@ Run the complete active pre-v1 inventory/migration classification and candidate-
 - [x] Active pre-v1 Trace/Skill inventory is migrated, deprecated, or needs-human with hashes.
 - [x] Web and existing Windows replay pass the same v1 schema.
 - [x] Status/checklists state `candidate`; no freeze claim is made.
+
+### review-fix — 2026-08-25
+
+- Reviewed head fixed: `6a20ea9821929fe8b48aecb6318ea18d6019324f`; fixed point remains `6e8e4bdad38b934ab9f414305bb4c944a8942fd8`.
+- Fix commit: `c74e7b5` (`fix(observation): harden candidate inventory replay`). No PR was created or merged.
+- Findings fixed:
+  - Added required post-review acceptance target `tests/e2e/observation-v1/candidate-acceptance.test.ts`. It runs active pre-v1 Trace/Skill candidate inventory, asserts every active asset is classified as `migrated`/`deprecated`/`needs_human` with 64-character source/output hashes, exercises Web projection and existing Windows UIA replay projection/resolution on the v1 candidate schema, and rejects any generated `frozen` status.
+  - Skill inventory now verifies/projects the Skill asset's pre-v1 source Trace payload before reporting a Skill result. The durable lookup/result binding uses the verified source Trace hash plus `observation-migrator/v1+<skill compiler version>`, and results also carry the prior Skill content hash as `skillSourceHash` for Skill provenance.
+  - Repeated Skill inventory for the same source Trace hash/compiler/migrator now performs the durable store lookup before calling the Skill recompiler/reverifier; regression coverage spies the reverifier and makes a second call throw if lookup is bypassed.
+  - `FileObservationMigrationStore.append` now serializes per ledger path, reloads while holding the append boundary, and uses a file lock around check+append so concurrent same-binding calls produce one authoritative stored result and one JSONL record.
+- Inventory command/classification: `rg -l "\\bObservationGraph\\b" apps packages tests` returned:
+  - `packages/contracts/runner-protocol/src/index.ts` — hard-excluded legacy public contract declaration retained for pre-v1 migration/test fixture typing; no live producer or consumer imports it.
+  - `packages/observation-migration/src/pre-v1-projector.ts` — explicit pre-v1 decoder/projector allowed by Ticket 25.
+  - `tests/component/skill-lifecycle/recording-to-replay.test.ts` — immutable historical pre-v1 Skill lifecycle fixture that projects through `PreV1TraceProjector` before live replay.
+  - `tests/e2e/observation-v1/consumer-migration.test.ts` — post-review consumer-migration acceptance historical fixture that projects through `PreV1TraceProjector` before live consumers.
+  - `tests/migration/observation-v1/candidate-inventory.test.ts` — Ticket 25 inventory test that executes and classifies the required repository scan.
+- Gates run:
+  - `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` — passed (19 files / 117 tests).
+  - `rg -l "\\bObservationGraph\\b" apps packages tests` — passed with the five classified hits above.
+  - `CI=true corepack pnpm vitest run tests/e2e/observation-v1/candidate-acceptance.test.ts` — passed (1 file / 3 tests).
+  - `CI=true corepack pnpm typecheck` — passed.
+  - `git diff --check` — passed.
+- Candidate-only status: report generation and the checklist remain `candidate`; `gate.frozen` remains `false`. No release freeze claim or PR evidence was added.
