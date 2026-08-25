@@ -114,6 +114,14 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Gates run before fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 96 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Remaining active blocker at this reviewed head: Skill replay migration still requires implementation. Maintainer authorization has now expanded this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` for active Skill replay consumer migration, with directly related `tests/unit/runner-components/skill-replay/**` and `tests/replay/procedure-skill/**` already covered by the existing test-root allowance. The expansion is limited to migrating active Skill replay to `ObservationGraphV1`; it does not authorize Runner Kernel/public Graph contract changes, Web producer changes, repository-wide legacy contraction, package manifests, migrations, or unrelated test roots.
 
+
+### scope-decision implementation - 2026-08-25
+
+- Maintainer scope decision applied at head `b6a20778da50f82a43faf9629fa59b4134ad61e0`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`. Prior reviewed/fix heads remain `3895e54e70b6b1a00c90e3e638377681f701d3b7`, `6e04ac094f088cd27dfaad919ba88c40d24119db`, and `a30cfc4bad92db595a9f7bae976fe9c37334252f`.
+- New in-scope fix commit: `2f49dcb7701d78e99e492ec0610e167b0081c784` (`fix(skill-replay): consume observation graph v1`). Active Skill replay now validates every captured payload as `ObservationGraphV1`, requires typed `web/v1` semantics for web/path replay, reads `claim_satisfied` through a typed `skill-replay/v1` extension, and rejects direct legacy `ReplayObservation` before execution.
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 101 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed. Additional affected check `CI=true corepack pnpm vitest run tests/component/windows-uia/reference-app-pipeline.test.ts` passed (1 file / 10 tests passed, 1 skipped) after updating the shared replay test target to return v1.
+- Remaining risks: no PR has been created or merged; post-review acceptance remains pending after a fresh complete-matrix review; deprecated `ReplayObservation` export remains only as a stale-caller compatibility type and is covered by runtime rejection.
+
 - [ ] All live consumers use v1 fields and typed extension readers.
 - [ ] Artifact decorators use evidence references without losing provenance.
 - [ ] Exploration fingerprints and benchmark state remain deterministic.
