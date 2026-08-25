@@ -133,10 +133,19 @@ export function parseScenario(value: unknown): ScenarioDefinition {
  * so detection depends on where the real exploration session actually reached.
  */
 export class ScenarioExplorationTarget implements ExplorationTarget {
-  private index = 0;
-  private readonly visited: ScenarioState[] = [];
+  private index: number;
+  private readonly visited: ScenarioState[];
 
-  constructor(private readonly scenario: ScenarioDefinition) {}
+  constructor(
+    private readonly scenario: ScenarioDefinition,
+    startIndex = 0,
+  ) {
+    if (!Number.isInteger(startIndex) || startIndex < 0) {
+      throw new Error("Scenario exploration start index must be a non-negative integer.");
+    }
+    this.index = Math.min(startIndex, scenario.states.length - 1);
+    this.visited = scenario.states.slice(0, this.index);
+  }
 
   async capture(): Promise<ObservationGraph> {
     const state = this.currentState();

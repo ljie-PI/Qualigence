@@ -25,10 +25,10 @@ export interface ExplorationJob {
   readonly runId: string;
   readonly policy: ExplorationPolicy;
   readonly environment: "test" | "production";
-  /** Stable attempt identity for durable resume; defaults to runId for legacy callers. */
-  readonly attemptId?: string;
-  /** Stable source binding supplied by the benchmark/run manifest; defaults to runId hash. */
-  readonly sourceBindingHash?: string;
+  /** Stable attempt identity for durable resume. */
+  readonly attemptId: string;
+  /** Stable source binding supplied by the benchmark/run manifest. */
+  readonly sourceBindingHash: string;
   /** Verified Skill seeds configured by policy.seedSkillBundleIds. */
   readonly seedSkills?: readonly RegressionSeed[];
 }
@@ -177,7 +177,7 @@ export interface ExplorationControllerDependencies {
   readonly classifier?: ExplorationActionClassifier;
   readonly policyGate?: ExplorationPolicyGate;
   readonly seedReplay?: ExplorationSeedReplayPort;
-  readonly progressStore?: ExplorationProgressStore;
+  readonly progressStore: ExplorationProgressStore;
   /** Estimated model tokens reserved before each invocation; settled with actuals afterwards. */
   readonly tokenReservationEstimate?: number;
 }
@@ -191,7 +191,7 @@ interface AttemptBindings {
 }
 
 interface RunState {
-  progress?: ExplorationAttemptProgress;
+  progress: ExplorationAttemptProgress;
   budget: ExplorationBudget;
   tracker: StateVisitTracker;
   checkpoints: ExplorationCheckpoint[];
@@ -219,6 +219,9 @@ export class ExplorationController {
   private readonly tokenEstimate: number;
 
   constructor(private readonly deps: ExplorationControllerDependencies) {
+    if (deps.progressStore === undefined) {
+      throw new Error("ExplorationProgressStoreRequired");
+    }
     this.classifier = deps.classifier ?? new DefaultExplorationActionClassifier();
     this.policyGate = deps.policyGate ?? new AllowAllExplorationPolicyGate();
     this.tokenEstimate = deps.tokenReservationEstimate ?? DEFAULT_TOKEN_ESTIMATE;
@@ -228,6 +231,11 @@ export class ExplorationController {
     if (job.environment === "production") {
       // Production exploration is denied outright — the model is never consulted.
       return terminal("policy_denied", [], 0, [], "ExplorationNotAllowed");
+    }
+
+    const attemptBindingValidation = validateAttemptBinding(job);
+    if (!attemptBindingValidation.ok) {
+      throw new Error(attemptBindingValidation.errorCode);
     }
 
     const seedValidation = validateSeeds(job);
@@ -244,7 +252,7 @@ export class ExplorationController {
     const seedResult = await this.replaySeeds(job, state);
     if (seedResult !== undefined) return seedResult;
 
-    if (state.progress !== undefined && state.progress.phase === "seed_replay") {
+    if (state.progress.phase === "seed_replay") {
       const advanced = await this.updateProgress(state, {
         phase: "exploring",
         seedCursor: state.seedCursor,
@@ -276,16 +284,19 @@ export class ExplorationController {
       }
       const stateVisit = state.budget.reserveStateVisit();
       if (!stateVisit.ok) {
+        appendTerminalCheckpoint(state, fingerprint, "budget_exhausted");
         return this.finish(state, "budget_exhausted", "ExplorationBudgetExceeded");
       }
 
       const step = state.budget.reserveStep();
       if (!step.ok) {
+        appendTerminalCheckpoint(state, fingerprint, "budget_exhausted");
         return this.finish(state, "budget_exhausted", "ExplorationBudgetExceeded");
       }
 
       const tokenReservation = state.budget.reserveModelTokens(this.tokenEstimate);
       if (!tokenReservation.ok) {
+        appendTerminalCheckpoint(state, fingerprint, "budget_exhausted");
         return this.finish(state, "budget_exhausted", "ExplorationBudgetExceeded");
       }
 
@@ -300,10 +311,12 @@ export class ExplorationController {
 
       const proposal = await this.deps.agent.nextAction(context);
       if (proposal.tokensUsed === undefined) {
+        appendTerminalCheckpoint(state, fingerprint, "error");
         return this.finish(state, "error", "ModelUsageUnavailable");
       }
       const tokenSettlement = state.budget.settleModelTokens(this.tokenEstimate, proposal.tokensUsed);
       if (!tokenSettlement.ok) {
+        appendTerminalCheckpoint(state, fingerprint, "budget_exhausted");
         return this.finish(state, "budget_exhausted", "ExplorationBudgetExceeded");
       }
 
@@ -330,18 +343,16 @@ export class ExplorationController {
 
       const actionStep = state.stepsExecuted + 1;
       const inFlightAction = inFlight(actionStep, validated.action);
-      if (state.progress !== undefined) {
-        const inFlightUpdate = await this.updateProgress(state, {
-          phase: "action_in_flight",
-          seedCursor: state.seedCursor,
-          lastSafeStep: state.stepsExecuted,
-          lastSafeGraphFingerprint: lastSafeFingerprint(state),
-          remaining: state.budget.snapshot(),
-          inFlightAction,
-        });
-        if (inFlightUpdate.status !== "updated") {
-          return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
-        }
+      const inFlightUpdate = await this.updateProgress(state, {
+        phase: "action_in_flight",
+        seedCursor: state.seedCursor,
+        lastSafeStep: state.stepsExecuted,
+        lastSafeGraphFingerprint: lastSafeFingerprint(state),
+        remaining: state.budget.snapshot(),
+        inFlightAction,
+      });
+      if (inFlightUpdate.status !== "updated") {
+        return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
       }
 
       try {
@@ -353,18 +364,16 @@ export class ExplorationController {
       state.stepsExecuted = actionStep;
       const safe = checkpoint(actionStep, fingerprint, state.budget.snapshot());
       state.checkpoints.push(safe);
-      if (state.progress !== undefined) {
-        const checkpointUpdate = await this.updateProgress(state, {
-          phase: "exploring",
-          seedCursor: state.seedCursor,
-          lastSafeStep: state.stepsExecuted,
-          lastSafeGraphFingerprint: fingerprint,
-          remaining: state.budget.snapshot(),
-          checkpoint: safe,
-        });
-        if (checkpointUpdate.status !== "updated") {
-          return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationCheckpointPersistenceFailed");
-        }
+      const checkpointUpdate = await this.updateProgress(state, {
+        phase: "exploring",
+        seedCursor: state.seedCursor,
+        lastSafeStep: state.stepsExecuted,
+        lastSafeGraphFingerprint: fingerprint,
+        remaining: state.budget.snapshot(),
+        checkpoint: safe,
+      });
+      if (checkpointUpdate.status !== "updated") {
+        return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationCheckpointPersistenceFailed");
       }
     }
   }
@@ -378,20 +387,6 @@ export class ExplorationController {
     | { readonly status: "error"; readonly result: ExplorationResult }
   > {
     const store = this.deps.progressStore;
-    if (store === undefined) {
-      return {
-        status: "running",
-        state: {
-          budget: ExplorationBudget.from(job.policy, this.deps.clock),
-          tracker: new StateVisitTracker(Math.max(1, job.policy.maximumStateVisits)),
-          checkpoints: [],
-          seedReplays: [],
-          seedCursor: emptySeedCursor(),
-          stepsExecuted: 0,
-        },
-      };
-    }
-
     const initialBudget = ExplorationBudget.from(job.policy, this.deps.clock);
     const initial = await store.initializeAttemptProgress({
       ...bindings,
@@ -420,10 +415,15 @@ export class ExplorationController {
         inFlightAction: initial.inFlightAction,
         terminalReason: "error",
       });
-      const current = marked.status === "updated" ? marked.progress : initial;
+      if (marked.status !== "updated") {
+        return {
+          status: "error",
+          result: terminal("error", await store.liveCheckpointsForAttempt(bindings.attemptId), initial.lastSafeStep, [], "ExplorationProgressConflict"),
+        };
+      }
       return {
         status: "terminal",
-        result: terminal("error", await store.liveCheckpointsForAttempt(job.attemptId ?? job.runId), current.lastSafeStep, [], "ActionOutcomeUnknown"),
+        result: terminal("error", await store.liveCheckpointsForAttempt(bindings.attemptId), marked.progress.lastSafeStep, [], "ActionOutcomeUnknown"),
       };
     }
 
@@ -485,17 +485,15 @@ export class ExplorationController {
         nextSeedIndex: index + 1,
         completedSeedSkillBundleIds: [...state.seedCursor.completedSeedSkillBundleIds, seed.plan.skillBundleId],
       };
-      if (state.progress !== undefined) {
-        const update = await this.updateProgress(state, {
-          phase: index + 1 === seeds.length ? "exploring" : "seed_replay",
-          seedCursor: state.seedCursor,
-          lastSafeStep: state.stepsExecuted,
-          lastSafeGraphFingerprint: lastSafeFingerprint(state),
-          remaining: state.budget.snapshot(),
-        });
-        if (update.status !== "updated") {
-          return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
-        }
+      const update = await this.updateProgress(state, {
+        phase: index + 1 === seeds.length ? "exploring" : "seed_replay",
+        seedCursor: state.seedCursor,
+        lastSafeStep: state.stepsExecuted,
+        lastSafeGraphFingerprint: lastSafeFingerprint(state),
+        remaining: state.budget.snapshot(),
+      });
+      if (update.status !== "updated") {
+        return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationProgressConflict");
       }
     }
     return undefined;
@@ -524,8 +522,9 @@ export class ExplorationController {
     reason: ExplorationTerminalReason,
     errorCode?: string,
   ): Promise<ExplorationResult> {
-    if (state.progress !== undefined && state.progress.phase !== "terminal") {
-      await this.updateProgress(state, {
+    if (state.progress.phase !== "terminal") {
+      const terminalCheckpoint = state.checkpoints.at(-1);
+      const update = await this.updateProgress(state, {
         phase: "terminal",
         seedCursor: state.seedCursor,
         lastSafeStep: state.stepsExecuted,
@@ -533,7 +532,11 @@ export class ExplorationController {
         remaining: state.budget.snapshot(),
         inFlightAction: state.progress.inFlightAction,
         terminalReason: reason,
+        ...(terminalCheckpoint?.terminalReason === reason ? { checkpoint: terminalCheckpoint } : {}),
       });
+      if (update.status !== "updated") {
+        return terminal("error", state.checkpoints, state.stepsExecuted, state.seedReplays, "ExplorationTerminalPersistenceFailed");
+      }
     }
     return terminal(reason, state.checkpoints, state.stepsExecuted, state.seedReplays, errorCode);
   }
@@ -543,16 +546,15 @@ export class ExplorationController {
     update: Omit<ExplorationProgressUpdate, "attemptId" | "expectedVersion">,
   ): Promise<ExplorationProgressUpdateResult> {
     const progress = state.progress;
-    if (progress === undefined) throw new Error("Progress update requires initialized progress.");
-    const result = await this.deps.progressStore?.compareAndSetAttemptProgress({
+    const result = await this.deps.progressStore.compareAndSetAttemptProgress({
       attemptId: progress.attemptId,
       expectedVersion: progress.version,
       ...update,
     });
-    if (result?.status === "updated") {
+    if (result.status === "updated") {
       state.progress = result.progress;
     }
-    return result ?? { status: "conflict", current: progress };
+    return result;
   }
 }
 
@@ -619,6 +621,19 @@ function validateProposal(
   };
 }
 
+function appendTerminalCheckpoint(
+  state: RunState,
+  graphFingerprint: string,
+  terminalReason: ExplorationTerminalReason,
+): void {
+  state.checkpoints.push(checkpoint(
+    state.checkpoints.length + 1,
+    graphFingerprint,
+    state.budget.snapshot(),
+    terminalReason,
+  ));
+}
+
 function checkpoint(
   step: number,
   graphFingerprint: string,
@@ -664,9 +679,9 @@ function emptySeedCursor(): ExplorationSeedCursor {
 
 function attemptBindings(job: ExplorationJob): AttemptBindings {
   return {
-    attemptId: job.attemptId ?? job.runId,
+    attemptId: job.attemptId,
     runId: job.runId,
-    sourceBindingHash: job.sourceBindingHash ?? canonicalPayloadHash({ runId: job.runId }),
+    sourceBindingHash: job.sourceBindingHash,
     policyBindingHash: canonicalPayloadHash(job.policy),
     seedBindingHash: canonicalPayloadHash({
       policySeedSkillBundleIds: job.policy.seedSkillBundleIds,
@@ -679,6 +694,13 @@ function attemptBindings(job: ExplorationJob): AttemptBindings {
   };
 }
 
+function validateAttemptBinding(job: ExplorationJob): { readonly ok: true } | { readonly ok: false; readonly errorCode: string } {
+  if (job.attemptId.trim().length === 0 || job.sourceBindingHash.trim().length === 0) {
+    return { ok: false, errorCode: "ExplorationAttemptBindingRequired" };
+  }
+  return { ok: true };
+}
+
 function bindingsMatch(progress: ExplorationAttemptProgress, bindings: AttemptBindings): boolean {
   return progress.runId === bindings.runId &&
     progress.sourceBindingHash === bindings.sourceBindingHash &&
@@ -688,7 +710,7 @@ function bindingsMatch(progress: ExplorationAttemptProgress, bindings: AttemptBi
 
 function lastSafeFingerprint(state: RunState): string | undefined {
   return state.checkpoints.findLast((candidate) => candidate.terminalReason === undefined)?.graphFingerprint ??
-    state.progress?.lastSafeGraphFingerprint;
+    state.progress.lastSafeGraphFingerprint;
 }
 
 type SeedValidation =

@@ -5,6 +5,8 @@ import type {
   StructuredModelRequest,
 } from "@qualigence/model-gateway";
 import type {
+  ModelUsage,
+  ModelUsageState,
   StructuredOutputContract,
   ValidatedModelResult,
 } from "@qualigence/model-provider";
@@ -46,7 +48,8 @@ class ScriptedGateway implements StructuredModelInvoker {
 
   constructor(
     private readonly output: unknown,
-    private readonly usage: { totalTokens?: number } = { totalTokens: 42 },
+    private readonly usage: ModelUsage | undefined = { totalTokens: 42 },
+    private readonly usageState?: ModelUsageState,
   ) {}
 
   async invokeStructured<T>(
@@ -58,7 +61,8 @@ class ScriptedGateway implements StructuredModelInvoker {
       value: contract.parse(this.output),
       model: request.model,
       finishReason: "stop",
-      usage: this.usage,
+      ...(this.usage === undefined ? {} : { usage: this.usage }),
+      ...(this.usageState === undefined ? {} : { usageState: this.usageState }),
     };
   }
 }
@@ -84,6 +88,20 @@ describe("ExplorationAgent", () => {
 
     expect(proposal.decision.status).toBe("stop");
     expect(proposal.decision.action).toBeUndefined();
+  });
+
+  it("leaves token usage absent when the provider reports usage unavailable", async () => {
+    const gateway = new ScriptedGateway(
+      actOutput(),
+      undefined,
+      { status: "unavailable" },
+    );
+    const agent = new ExplorationAgent(gateway, "test-model");
+
+    const proposal = await agent.nextAction(context());
+
+    expect(proposal.decision.status).toBe("act");
+    expect(proposal.tokensUsed).toBeUndefined();
   });
 
   it("rejects a structurally invalid model output", async () => {

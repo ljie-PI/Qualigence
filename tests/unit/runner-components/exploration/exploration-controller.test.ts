@@ -4,6 +4,7 @@ import {
   type ExplorationActionClassifier,
   type ExplorationAgentPort,
   type ExplorationContext,
+  type ExplorationControllerDependencies,
   type ExplorationJob,
   type ExplorationPolicyGate,
   type ExplorationProgressStore,
@@ -56,7 +57,26 @@ function policy(overrides: Partial<ExplorationPolicy> = {}): ExplorationPolicy {
 }
 
 function job(overrides: Partial<ExplorationJob> = {}): ExplorationJob {
-  return { runId: "run-1", policy: policy(), environment: "test", ...overrides };
+  return {
+    runId: "run-1",
+    attemptId: "attempt-1",
+    sourceBindingHash: "source-binding-1",
+    policy: policy(),
+    environment: "test",
+    ...overrides,
+  };
+}
+
+type TestControllerDependencies =
+  & Omit<ExplorationControllerDependencies, "clock" | "progressStore">
+  & Partial<Pick<ExplorationControllerDependencies, "clock" | "progressStore">>;
+
+function createController(deps: TestControllerDependencies): ExplorationController {
+  return new ExplorationController({
+    ...deps,
+    progressStore: deps.progressStore ?? new InMemoryProgressStore(),
+    clock: deps.clock ?? new FakeClock(),
+  });
 }
 
 let graphCounter = 0;
@@ -203,9 +223,12 @@ class InMemoryProgressStore implements ExplorationProgressStore {
 }
 
 class CrashAfterSafeCheckpointStore extends InMemoryProgressStore {
+  private crashed = false;
+
   override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
     const result = await super.compareAndSetAttemptProgress(update);
-    if (update.checkpoint !== undefined) {
+    if (!this.crashed && update.checkpoint !== undefined && update.checkpoint.terminalReason === undefined) {
+      this.crashed = true;
       throw new Error("process crashed after checkpoint commit");
     }
     return result;
@@ -219,6 +242,15 @@ class CrashAfterInFlightStore extends InMemoryProgressStore {
       throw new Error("process crashed with action in flight");
     }
     return result;
+  }
+}
+
+class ConflictOnTerminalStore extends InMemoryProgressStore {
+  override async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    if (update.phase === "terminal") {
+      return { status: "conflict", current: await this.loadAttemptProgress(update.attemptId) };
+    }
+    return super.compareAndSetAttemptProgress(update);
   }
 }
 
@@ -313,7 +345,7 @@ function seed(skillBundleId: string, state: ProcedureSkillVersion["state"] = "ve
 describe("ExplorationController", () => {
   it("refuses to explore a production environment", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       clock: new FakeClock(),
@@ -328,7 +360,7 @@ describe("ExplorationController", () => {
 
   it("rejects a proposed action that references an unknown node", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() =>
         act({ kind: "click", nodeId: "node-ghost", reason: "click ghost" }),
@@ -344,7 +376,7 @@ describe("ExplorationController", () => {
 
   it("rejects a proposed action kind outside the allowlist", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       clock: new FakeClock(),
@@ -358,7 +390,7 @@ describe("ExplorationController", () => {
 
   it("rejects an action classified above the risk ceiling and never executes it", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       classifier: new RiskClassifier("Destructive"),
@@ -374,7 +406,7 @@ describe("ExplorationController", () => {
 
   it("stops with policy_denied when the runner policy gate denies the action", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       policyGate: new DenyingPolicyGate(),
@@ -389,7 +421,7 @@ describe("ExplorationController", () => {
 
   it("stops with objective_satisfied when the model proposes stop", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
       clock: new FakeClock(),
@@ -404,7 +436,7 @@ describe("ExplorationController", () => {
   it("never revisits a fingerprinted state beyond the policy limit", async () => {
     // The target always reports the same state, so the second observation is a revisit.
     const target = new ScriptedTarget([fixedGraph(), fixedGraph(), fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       clock: new FakeClock(),
@@ -425,7 +457,7 @@ describe("ExplorationController", () => {
       distinctGraph(),
     ]);
     let selector = 0;
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent((context) => {
         const node = context.graph.nodes[0];
@@ -444,7 +476,7 @@ describe("ExplorationController", () => {
   it("passes remaining budget and visited fingerprints to the model", async () => {
     const target = new ScriptedTarget([fixedGraph(), fixedGraph()]);
     const agent = new ScriptedAgent(() => act(clickAdd));
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent,
       clock: new FakeClock(),
@@ -460,7 +492,7 @@ describe("ExplorationController", () => {
     const target = new ScriptedTarget([fixedGraph()]);
     const agent = new ScriptedAgent(() => ({ status: "stop", reason: "done" }));
     const seedReplay = new RecordingSeedReplay();
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent,
       seedReplay,
@@ -484,7 +516,7 @@ describe("ExplorationController", () => {
     const firstAgent = new ScriptedAgent((context) =>
       act({ kind: "click", nodeId: context.graph.nodes[0]?.id ?? "missing", reason: "first" }),
     );
-    const first = new ExplorationController({
+    const first = createController({
       target: firstTarget,
       agent: firstAgent,
       progressStore: crashingStore,
@@ -496,7 +528,7 @@ describe("ExplorationController", () => {
 
     const resumedTarget = new ScriptedTarget([distinctGraph()]);
     const resumedAgent = new ScriptedAgent(() => ({ status: "stop", reason: "done" }));
-    const resumed = new ExplorationController({
+    const resumed = createController({
       target: resumedTarget,
       agent: resumedAgent,
       progressStore: crashingStore,
@@ -513,7 +545,7 @@ describe("ExplorationController", () => {
 
   it("uses the policy maximum state visits instead of a hard-coded one-visit cap", async () => {
     const target = new ScriptedTarget([fixedGraph(), fixedGraph(), fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => act(clickAdd)),
       clock: new FakeClock(),
@@ -527,7 +559,7 @@ describe("ExplorationController", () => {
 
   it("spends recovery budget only for deterministic environment recovery", async () => {
     const target = new RecoveringTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
       clock: new FakeClock(),
@@ -541,7 +573,7 @@ describe("ExplorationController", () => {
 
   it("fails closed when finite model usage is unavailable", async () => {
     const target = new ScriptedTarget([fixedGraph()]);
-    const controller = new ExplorationController({
+    const controller = createController({
       target,
       agent: { async nextAction() { return { decision: act(clickAdd) }; } },
       clock: new FakeClock(),
@@ -554,10 +586,26 @@ describe("ExplorationController", () => {
     expect(target.executedActions()).toHaveLength(0);
   });
 
+  it("fails closed when terminal progress cannot be persisted", async () => {
+    const store = new ConflictOnTerminalStore();
+    const target = new ScriptedTarget([fixedGraph()]);
+    const controller = createController({
+      target,
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      progressStore: store,
+    });
+
+    const result = await controller.run(job({ attemptId: "attempt-terminal-conflict" }));
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("ExplorationTerminalPersistenceFailed");
+    expect((await store.loadAttemptProgress("attempt-terminal-conflict"))?.phase).toBe("exploring");
+  });
+
   it("persists action_in_flight and refuses automatic replay after an unknown action outcome", async () => {
     const store = new CrashAfterInFlightStore();
     const firstTarget = new ScriptedTarget([fixedGraph()]);
-    const first = new ExplorationController({
+    const first = createController({
       target: firstTarget,
       agent: new ScriptedAgent(() => act(clickAdd)),
       progressStore: store,
@@ -569,7 +617,7 @@ describe("ExplorationController", () => {
     expect((await store.loadAttemptProgress("attempt-unknown"))?.phase).toBe("action_in_flight");
 
     const secondTarget = new ScriptedTarget([fixedGraph()]);
-    const second = new ExplorationController({
+    const second = createController({
       target: secondTarget,
       agent: new ScriptedAgent(() => act(clickAdd)),
       progressStore: store,
