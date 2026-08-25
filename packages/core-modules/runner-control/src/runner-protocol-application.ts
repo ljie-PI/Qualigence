@@ -43,3 +43,7 @@ export interface RunnerProtocolApplication {
   ): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
 }
+
+export interface RunnerProtocolApplicationResolver {
+  resolve(identity: AuthenticatedRunnerContext): Promise<RunnerProtocolApplication> | RunnerProtocolApplication;
+}

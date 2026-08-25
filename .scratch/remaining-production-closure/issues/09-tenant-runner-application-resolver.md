@@ -4,14 +4,14 @@
 
 **Blocked by:** 08 — Wire the production Intelligence Result consumer.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
-- [ ] Registry identity is keyed by tenant ID and Runner ID and retains project/capability scope.
-- [ ] No application connection holds a completed transaction or exposes unscoped storage.
-- [ ] Payload admission rejects wrong tenant, project, certificate, Runner ID, or capability before Job serialization.
-- [ ] Multi-tenant component test proves same Runner IDs cannot collide or supersede each other.
+- [x] Registry identity is keyed by tenant ID and Runner ID and retains project/capability scope.
+- [x] No application connection holds a completed transaction or exposes unscoped storage.
+- [x] Payload admission rejects wrong tenant, project, certificate, Runner ID, or capability before Job serialization.
+- [x] Multi-tenant component test proves same Runner IDs cannot collide or supersede each other.
 
 ## Tracked scope
 
@@ -93,3 +93,20 @@ Run the two-tenant, same-Runner-ID admission and isolation cases.
 - The affected context documents listed above, especially mTLS-before-payload, thin transport, operation-scoped tenant storage, forced RLS, and compound Runner identity.
 - `packages/core-modules/runner-control/src/runner-protocol-application.ts` and `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`.
 - The Runner identity, protocol conformance, and tenant-isolation contracts named by the focused Gate.
+
+## Comments
+
+- start: base SHA `6e8e4bdad38b934ab9f414305bb4c944a8942fd8`; behavior matrix applies in full because tenant-bound Runner session resolution, registry ownership, payload admission, operation-scoped storage, reconnect/fencing, concurrency and failure outcomes are stateful, side-effecting, retrying, timeout-sensitive, and terminal-sensitive; planned Gates: `CI=true corepack pnpm vitest run tests/contract/runner-identity tests/contract/postgres/tenant-isolation.test.ts tests/conformance/runner-protocol tests/component/core-runner`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- review-fix: complete-matrix review head `7918627bd97b5bd754e0506a8ec7b3ba2506ca1d` reported the Important core blocker that stale/superseded Runner connection objects could admit and serialize new Job offers after resume/supersession. Fixed by commit `03f3ec31be6322e2a4e1afeaa2e9cb615837137e`, which disposes the released connection on successful supersession and fences `ServerRunnerConnection.offer()` against current registry ownership before admission and again after `createOffer(...)` before `call.write(...)`. Gates run after the fix commit: `CI=true corepack pnpm vitest run tests/contract/runner-identity tests/contract/postgres/tenant-isolation.test.ts tests/conformance/runner-protocol tests/component/core-runner` (passed, 12 files / 131 tests), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). Not marking resolved and no PR evidence added pending fresh complete-matrix review.
+- review2-fix: complete-matrix review head `e0bc41ebdd973a8422e47b4f037e6f9837fb16f9` reported an Important core blocker that PostgreSQL Mission scheduling initialized `execution_runs.next_sequence_number` to `0` while Runner Trace events start at sequence `1`, causing the first valid Self-hosted Runner event to be rejected as `sequence_gap`; it also noted the required post-review E2E file was absent. Fixed by commit `46388cf53e1b90bcd59fc9246df30e0a98fb8f6c`, which initializes PostgreSQL Mission-scheduled runs at sequence `1`, adds PostgreSQL coverage proving first Runner event sequence `1` is accepted and later gaps reject, and adds `tests/e2e/self-hosted/tenant-runner-isolation.test.ts` for two-tenant same Runner ID admission/isolation plus project/capability rejection. Gates run after the fix commit: `CI=true corepack pnpm vitest run tests/contract/runner-identity tests/contract/postgres/tenant-isolation.test.ts tests/conformance/runner-protocol tests/component/core-runner` (passed, 12 files / 132 tests), `CI=true corepack pnpm vitest run tests/e2e/self-hosted/tenant-runner-isolation.test.ts` (passed, 1 file / 1 test), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). Not marking resolved and no PR evidence added pending fresh complete-matrix review.
+- final: reviewed code head `3240cbf4be5c43fcfddd5759db89b350206dabdf`; exact-base complete-matrix review reported no core blockers on Standards and Spec (`Q:/Qualigence/.pi-subagents/artifacts/outputs/ab9a130c-e946-4114-b6ed-8bbaadaf0ea2/ticket09-review3/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/ab9a130c-e946-4114-b6ed-8bbaadaf0ea2/ticket09-review3/spec.md`). Final post-review verification passed: `CI=true corepack pnpm vitest run tests/e2e/self-hosted/tenant-runner-isolation.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Pull request: `https://github.com/ljie-PI/Qualigence/pull/109`.
+
+## Answer
+
+Implemented tenant-bound Self-hosted Runner application resolution with compound tenant/Runner registry keys, scoped mTLS identity, operation-scoped PostgreSQL Runner-control and Trace stores, pre-serialization project/capability admission, stale/superseded connection fencing, and PostgreSQL first Trace sequence parity for Mission-scheduled runs.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/109`
+
+Reviewed code head: `3240cbf4be5c43fcfddd5759db89b350206dabdf`
+
+Final verification: focused Ticket 09 Gate, tenant-runner isolation E2E, `corepack pnpm typecheck`, and `git diff --check` passed.

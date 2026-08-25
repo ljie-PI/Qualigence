@@ -23,6 +23,15 @@ export interface SelfHostedRunnerAuthenticatorOptions {
   readonly clock: Clock;
 }
 
+export type SelfHostedAuthenticatedRunner = RunnerPrincipal & {
+  readonly certificateFingerprint: string;
+  readonly scope: {
+    readonly kind: "tenant";
+    readonly tenantId: string;
+    readonly projectIds: readonly string[];
+  };
+};
+
 /**
  * Resolves an incoming mTLS client certificate to a {@link RunnerPrincipal} for the
  * Self-hosted deployment and fails closed on any identity, validity, revocation or
@@ -46,7 +55,7 @@ export class SelfHostedRunnerAuthenticator {
     this.clock = options.clock;
   }
 
-  async authenticate(peer: RunnerClientCertificateInput, hello: RunnerHello): Promise<RunnerPrincipal> {
+  async authenticate(peer: RunnerClientCertificateInput, hello: RunnerHello): Promise<SelfHostedAuthenticatedRunner> {
     const certificate = this.parse(peer);
     this.assertTrusted(certificate);
     this.assertWithinValidity(certificate);
@@ -96,7 +105,15 @@ export class SelfHostedRunnerAuthenticator {
       );
     }
 
-    return principal;
+    return {
+      ...principal,
+      certificateFingerprint: principal.certificateFingerprintSha256,
+      scope: {
+        kind: "tenant",
+        tenantId: principal.tenantId,
+        projectIds: [...principal.projectIds],
+      },
+    };
   }
 
   /**

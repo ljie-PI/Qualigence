@@ -8,14 +8,25 @@ import {
   WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   type AcceptedExecutionJob,
   type ExecutionEventBatch,
+  type RunnerHello,
   type TraceEvent,
 } from "@qualigence/runner-protocol";
 import { GrpcRunnerProtocolClient } from "@qualigence/grpc-runner-protocol";
-import type { GrpcRunnerProtocolServer } from "@qualigence/grpc-runner-protocol";
+import type {
+  AuthenticatedRunnerContext,
+  GrpcRunnerProtocolServer,
+} from "@qualigence/grpc-runner-protocol";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { GrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import { eventBatchToWire, helloToWire } from "@qualigence/grpc-runner-protocol";
-import { makeHello, makeRawTestStream, makeTestClient, startTestServer } from "../../helpers/grpc-harness.js";
+import {
+  makeHello,
+  makeRawTestStream,
+  makeTestClient,
+  RecordingRunnerProtocolApplication,
+  startTestServer,
+  welcomeParameters,
+} from "../../helpers/grpc-harness.js";
 
 let pki: GrpcTestPki;
 
@@ -37,6 +48,23 @@ function track(server: GrpcRunnerProtocolServer, client: GrpcRunnerProtocolClien
     await client.close();
     await server.shutdown();
   });
+}
+
+function tenantAuthenticator(tenantForHello: (hello: RunnerHello) => string) {
+  return {
+    authenticate: async (_peer: unknown, hello: RunnerHello): Promise<AuthenticatedRunnerContext> => {
+      const tenantId = tenantForHello(hello);
+      return {
+        runnerId: hello.runnerId,
+        certificateFingerprint: `fp-${tenantId}-${hello.runnerId}`,
+        scope: {
+          kind: "tenant",
+          tenantId,
+          projectIds: tenantId === "tenant-a" ? ["project-a"] : ["project-b"],
+        },
+      };
+    },
+  };
 }
 
 function traceEvent(runId: string, sequenceNumber: number): TraceEvent {
@@ -93,6 +121,17 @@ function webV1Requirements(): readonly string[] {
     OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
     WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   ];
+}
+
+function webJob(runId: string, projectId = "project-a"): AcceptedExecutionJob {
+  return {
+    jobId: `job-${runId}`,
+    runId,
+    projectId,
+    target: { kind: "web", url: "https://example.test/" },
+    objective: "tenant scoped offer",
+    policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+  };
 }
 
 function makeWebV1Hello(runnerId: string, options?: Parameters<typeof makeHello>[1]): ReturnType<typeof makeHello> {
@@ -185,6 +224,69 @@ describe("grpc runner protocol handshake", () => {
 
     const ack = await session.submit(batch("run-attempt-1", 1, 2));
     expect(ack.nextExpectedSequenceNumber).toBe(3);
+  });
+
+  it("keeps same runner IDs isolated across tenants in the connection registry", async () => {
+    const applications = new Map<string, RecordingRunnerProtocolApplication>();
+    const { server, port } = await startTestServer(pki, {
+      authenticator: tenantAuthenticator((hello) => hello.runnerVersion),
+      applicationResolver: {
+        resolve: (identity) => {
+          if (identity.scope.kind !== "tenant") throw new Error("expected tenant identity");
+          let application = applications.get(identity.scope.tenantId);
+          if (application === undefined) {
+            application = new RecordingRunnerProtocolApplication(welcomeParameters());
+            applications.set(identity.scope.tenantId, application);
+          }
+          return application;
+        },
+      },
+    });
+    const cert = pki.clientFor("runner-shared");
+    const clientA = makeTestClient(pki, port, cert);
+    const clientB = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      await clientB.close();
+      await clientA.close();
+      await server.shutdown();
+    });
+
+    await clientA.connect({ ...makeWebV1Hello("runner-shared"), runnerVersion: "tenant-a" });
+    await clientB.connect({ ...makeWebV1Hello("runner-shared"), runnerVersion: "tenant-b" });
+
+    const tenantA = await server.waitForConnection({ tenantId: "tenant-a", runnerId: "runner-shared" });
+    const tenantB = await server.waitForConnection({ tenantId: "tenant-b", runnerId: "runner-shared" });
+    expect(tenantA).not.toBe(tenantB);
+    expect(tenantA.authenticatedRunner.scope).toEqual({ kind: "tenant", tenantId: "tenant-a", projectIds: ["project-a"] });
+    expect(tenantB.authenticatedRunner.scope).toEqual({ kind: "tenant", tenantId: "tenant-b", projectIds: ["project-b"] });
+    expect(server.connectionFor({ tenantId: "tenant-a", runnerId: "runner-shared" })).toBe(tenantA);
+    expect(server.connectionFor({ tenantId: "tenant-b", runnerId: "runner-shared" })).toBe(tenantB);
+    expect(server.connection("runner-shared")).toBeUndefined();
+  });
+
+  it("rejects tenant project and capability mismatch before application offer creation", async () => {
+    const application = new RecordingRunnerProtocolApplication(welcomeParameters());
+    const { server, port } = await startTestServer(pki, {
+      authenticator: tenantAuthenticator(() => "tenant-a"),
+      applicationResolver: { resolve: () => application },
+    });
+    const client = makeTestClient(pki, port, pki.clientFor("runner-tenant"));
+    cleanups.push(async () => {
+      await client.close();
+      await server.shutdown();
+    });
+
+    await client.connect(makeWebV1Hello("runner-tenant"));
+    const connection = await server.waitForConnection({ tenantId: "tenant-a", runnerId: "runner-tenant" });
+    application.calls.length = 0;
+
+    await expect(
+      connection.offer({ ...webJob("run-forbidden"), projectId: "project-b" }, webV1Requirements()),
+    ).rejects.toMatchObject({ code: "RunnerScopeViolation" });
+    await expect(
+      connection.offer(webJob("run-missing-capability"), [...webV1Requirements(), "model:vision-input"]),
+    ).rejects.toMatchObject({ code: "CapabilityMismatch" });
+    expect(application.calls).toEqual([]);
   });
 
   it("reconnects after a dropped connection and resumes the trace cursor via the resume token", async () => {
@@ -352,6 +454,79 @@ describe("grpc runner protocol handshake", () => {
     await expect.poll(() => streamError).toMatchObject({ details: "ProtocolViolation" });
     releaseWelcome();
     expect(server.connection("runner-1")).toBeUndefined();
+  });
+
+  it("fences a superseded connection from admitting or receiving offers after resume", async () => {
+    const application = new RecordingRunnerProtocolApplication(welcomeParameters());
+    let releaseCreateOffer!: () => void;
+    let resolveCreateOfferStarted!: () => void;
+    let createOfferAttempts = 0;
+    const createOfferStarted = new Promise<void>((resolve) => {
+      resolveCreateOfferStarted = resolve;
+    });
+    const createOfferBarrier = new Promise<void>((resolve) => {
+      releaseCreateOffer = resolve;
+    });
+    const createOffer = application.createOffer.bind(application);
+    application.createOffer = async (sessionId, job, requirements) => {
+      createOfferAttempts += 1;
+      if (job.runId === "run-stale") {
+        resolveCreateOfferStarted();
+        await createOfferBarrier;
+      }
+      return createOffer(sessionId, job, requirements);
+    };
+    const { server, port } = await startTestServer(pki, { application });
+    const cert = pki.clientFor("runner-1");
+    const client1 = makeTestClient(pki, port, cert);
+    const client2 = makeTestClient(pki, port, cert);
+    cleanups.push(async () => {
+      releaseCreateOffer();
+      await client1.close();
+      await client2.close();
+      await server.shutdown();
+    });
+
+    const session1 = await client1.connect(makeWebV1Hello("runner-1"));
+    const staleConnection = await server.waitForConnection("runner-1");
+    const staleOffer = staleConnection.offer(webJob("run-stale", "project-1"), webV1Requirements());
+    staleOffer.catch(() => undefined);
+    await createOfferStarted;
+
+    const session2 = await client2.connect(
+      makeWebV1Hello("runner-1", { resumeToken: session1.welcome.resumeToken }),
+    );
+    expect(server.connectionGeneration("runner-1")).toBe(2);
+    const currentConnection = await server.waitForConnection("runner-1");
+    expect(currentConnection).not.toBe(staleConnection);
+
+    await expect(
+      staleConnection.offer(webJob("run-after-resume", "project-1"), webV1Requirements()),
+    ).rejects.toMatchObject({ code: "SessionClosed" });
+    expect(createOfferAttempts).toBe(1);
+
+    const staleOfferReadAbort = new AbortController();
+    const staleOfferReadTimeout = setTimeout(
+      () => staleOfferReadAbort.abort(new Error("stale connection did not receive an offer")),
+      250,
+    );
+    staleOfferReadTimeout.unref?.();
+    const staleOfferRead = session1.nextOffer(staleOfferReadAbort.signal);
+    releaseCreateOffer();
+    await expect(staleOffer).rejects.toMatchObject({ code: "SessionClosed" });
+    await expect(staleOfferRead).rejects.toBeDefined();
+    clearTimeout(staleOfferReadTimeout);
+
+    const currentLease = currentConnection.offer(webJob("run-current", "project-1"), webV1Requirements());
+    const currentOffer = await session2.nextOffer(new AbortController().signal);
+    expect(currentOffer.job.runId).toBe("run-current");
+    const accepted = await session2.accept(currentOffer.offerId);
+    await expect(currentLease).resolves.toMatchObject({
+      jobId: "job-run-current",
+      runId: "run-current",
+      leaseToken: accepted.leaseToken,
+    });
+    expect(createOfferAttempts).toBe(2);
   });
 
   it("ignores a frame after the connection generation increments", async () => {

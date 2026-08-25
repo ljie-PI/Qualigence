@@ -38,6 +38,12 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const APPLICATION_ERROR_CODES: ReadonlySet<string> = new Set<RunnerProtocolErrorCode>([
   "RunnerIdentityMismatch",
   "RunnerAlreadyConnected",
+  "RunnerScopeViolation",
+  "RunnerCertificateUntrusted",
+  "RunnerCertificateExpired",
+  "RunnerCertificateRevoked",
+  "RunnerSuspended",
+  "RunnerPrincipalNotFound",
   "ResumeRejected",
   "LeaseLost",
   "RunIdentityMismatch",

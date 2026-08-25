@@ -1,5 +1,5 @@
 export { GrpcRunnerProtocolServer } from "./server.js";
-export type { GrpcRunnerProtocolServerOptions } from "./server.js";
+export type { GrpcRunnerProtocolServerOptions, RunnerConnectionLookup } from "./server.js";
 export { GrpcRunnerProtocolClient } from "./client.js";
 export type { GrpcRunnerProtocolClientOptions } from "./client.js";
 
@@ -8,6 +8,7 @@ export type {
   RunnerClientPort,
   RunnerConnectionPort,
   RunnerProtocolApplication,
+  RunnerProtocolApplicationResolver,
   RunnerSession,
   WelcomeParameters,
 } from "./ports.js";
