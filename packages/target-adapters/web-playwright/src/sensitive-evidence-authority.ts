@@ -11,6 +11,9 @@ const MAX_FORM_BYTES = 64 * 1024;
 export const MAX_REFLECTED_MUTATION_RECORDS = 1_024;
 export const MAX_REFLECTED_NODES = 256;
 export const MAX_REFLECTED_REGIONS = 256;
+export const MAX_SENSITIVE_SHADOW_ROOTS = 128;
+export const MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH = 1_024;
+export const MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION = 4_096;
 
 export interface PreparedSensitiveEvidenceRecord {
   readonly navigationGeneration: number;

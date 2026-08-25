@@ -15,6 +15,7 @@ import {
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
 import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
+import { safeRunnerLogLine } from "./safe-runner-log.js";
 
 async function openSpool(config: RunnerConfig): Promise<SqliteRunnerSpool> {
   await mkdir(config.dataDir, { recursive: true });
@@ -97,9 +98,7 @@ async function main(): Promise<void> {
       }
       // A transport failure loses no spooled Trace: reconnect with the rotating
       // resume token and continue; the Spool replays on the next drain.
-      process.stderr.write(
-        `${JSON.stringify({ event: "runner.reconnecting", error: String(error) })}\n`,
-      );
+      process.stderr.write(safeRunnerLogLine("runner.reconnecting", error));
       session = await clientPort.connect(makeHello(resumeToken));
       resumeToken = session.welcome.resumeToken;
     }
@@ -115,7 +114,7 @@ const invokedDirectly =
 
 if (invokedDirectly) {
   main().catch((error: unknown) => {
-    process.stderr.write(`${JSON.stringify({ event: "runner.fatal", error: String(error) })}\n`);
+    process.stderr.write(safeRunnerLogLine("runner.fatal", error));
     process.exit(1);
   });
 }

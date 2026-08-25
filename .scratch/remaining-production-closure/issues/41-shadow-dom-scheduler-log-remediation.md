@@ -4,7 +4,7 @@
 
 **Blocked by:** 40 - Redact causally reflected secret evidence.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -113,3 +113,12 @@ The real Chromium case must exercise causal reflection in open and closed roots,
 - [ ] The Runner log allowlist is exactly the seven existing `RunnerAppError` codes plus `UnexpectedRunnerError`; no structural lookalike or arbitrary string preserves its code.
 - [ ] Ticket 40 causal masking remains green but is not re-claimed as Ticket 41 acceptance.
 - [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+### start — 2026-08-25
+
+- Fixed base: `3e46233f6acf7733b9b0f77c871b2994ba2c0d67` (`main`, includes Ticket 40 PR #108).
+- Predecessor merge evidence: Ticket 40 is `resolved` with PR #108 and reviewed code head `5183d7916b94e55ec1d89ada0047243b6ecf338e` recorded in `.scratch/remaining-production-closure/issues/40-reflected-secret-evidence-remediation.md`; current base includes that merge.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable. Stateful/side-effecting sensitive evidence, scheduler propagation/accounting, Shadow DOM fail-closed/success boundaries, and Runner logging rows are in scope; Ticket 42 Promise exact semantics/owner hardening, Ticket 45 DOM getter/CDP/PNG hardening, and package/dependency changes remain excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains deferred to the parent/review protocol.

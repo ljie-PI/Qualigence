@@ -17,6 +17,7 @@ import {
   MAX_REFLECTED_MUTATION_RECORDS,
   MAX_REFLECTED_NODES,
   MAX_REFLECTED_REGIONS,
+  MAX_SENSITIVE_SHADOW_ROOTS,
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_MASK_ID_ATTRIBUTE,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
@@ -329,6 +330,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               try {
                 permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
                 await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+                await settleSensitiveSchedulerCallbacks(page);
               } finally {
                 epochResult = await endPageSensitiveActionEpoch(
                   locator,
@@ -380,6 +382,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               try {
                 permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
                 await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+                await settleSensitiveSchedulerCallbacks(page);
               } finally {
                 epochResult = await endPageSensitiveActionEpoch(
                   locator,
@@ -606,6 +609,10 @@ interface PageSensitiveEpochResult {
   readonly status: "ok" | "failed";
 }
 
+async function settleSensitiveSchedulerCallbacks(page: { waitForTimeout?: (timeout: number) => Promise<unknown> }): Promise<void> {
+  await page.waitForTimeout?.(25);
+}
+
 async function beginPageSensitiveActionEpoch(
   locator: Locator,
   prepared: PreparedSensitiveEvidenceRecord,
@@ -619,6 +626,7 @@ async function beginPageSensitiveActionEpoch(
       poisoned: boolean;
       nextNodeOrdinal: number;
       nextMaskOrdinal: number;
+      schedulerSessionRegistrations: number;
     };
     type BrowserSensitiveEpoch = {
       markerId: string;
@@ -634,8 +642,9 @@ async function beginPageSensitiveActionEpoch(
       targetCaptureListener: EventListener;
       documentBubbleListener: EventListener;
       hasDelegatedListener: boolean;
-      hasSchedulerAdjacentListener: boolean;
       inTargetDispatch: boolean;
+      inSchedulerCallback: boolean;
+      schedulerRegistrations: number;
       poisoned: boolean;
     };
     type BrowserSensitiveRecord = {
@@ -643,6 +652,11 @@ async function beginPageSensitiveActionEpoch(
       forms: string[];
       baseline: WeakMap<Element, ReadonlySet<string>>;
       shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
+      classifiedNodes: Set<string>;
+      classifiedRegions: Set<string>;
+      classifiedElements: Element[];
+      schedulerRegistrations: number;
+      poisoned: boolean;
     };
 
     const win = element.ownerDocument.defaultView;
@@ -655,7 +669,9 @@ async function beginPageSensitiveActionEpoch(
       poisoned: false,
       nextNodeOrdinal: 0,
       nextMaskOrdinal: 0,
+      schedulerSessionRegistrations: 0,
     };
+    state.schedulerSessionRegistrations ??= 0;
     stateHost[input.stateProperty] = state;
     if (state.active !== null && state.active !== undefined) {
       state.poisoned = true;
@@ -672,7 +688,7 @@ async function beginPageSensitiveActionEpoch(
         active.deferredRecords.push(...records);
         return;
       }
-      processMutationRecords(active, records, false);
+      processMutationRecords(active, records, active.inSchedulerCallback);
     });
     const noteTargetDispatch = (): void => {
       const active = state.active;
@@ -707,23 +723,33 @@ async function beginPageSensitiveActionEpoch(
       targetCaptureListener: noteTargetDispatch,
       documentBubbleListener: finishTargetDispatch,
       hasDelegatedListener: hasDelegatedListener(input.kind),
-      hasSchedulerAdjacentListener: hasSchedulerAdjacentListener(input.kind),
       inTargetDispatch: false,
+      inSchedulerCallback: false,
+      schedulerRegistrations: 0,
       poisoned: false,
     };
     state.active = epoch;
     classifyElement(element, epoch);
-    observer.observe(element.ownerDocument, {
-      attributes: true,
-      characterData: true,
-      childList: true,
-      subtree: true,
-    });
+    observeSensitiveMutations(observer, element.ownerDocument);
+    for (const root of shadowRoots()) observeSensitiveMutations(observer, root);
     element.addEventListener("input", epoch.targetCaptureListener, true);
     element.addEventListener("change", epoch.targetCaptureListener, true);
     element.ownerDocument.addEventListener("input", epoch.documentBubbleListener, false);
     element.ownerDocument.addEventListener("change", epoch.documentBubbleListener, false);
     return { status: state.poisoned || epoch.poisoned ? "failed" : "ok" };
+
+    function observeSensitiveMutations(observerToUse: MutationObserver, target: Node): void {
+      try {
+        observerToUse.observe(target, {
+          attributes: true,
+          characterData: true,
+          childList: true,
+          subtree: true,
+        });
+      } catch {
+        state.poisoned = true;
+      }
+    }
 
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
       const values = new Set<string>([source]);
@@ -746,7 +772,8 @@ async function beginPageSensitiveActionEpoch(
 
     function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, ReadonlySet<string>> {
       const result = new WeakMap<Element, ReadonlySet<string>>();
-      for (const candidate of Array.from(document.querySelectorAll("*"))) {
+      void document;
+      for (const candidate of observableElements()) {
         const matches = new Set<string>();
         for (const value of sensitiveValues(candidate)) {
           for (const form of formsToMatch) {
@@ -794,10 +821,7 @@ async function beginPageSensitiveActionEpoch(
 
     function canClassifyCurrentDispatch(epochToUpdate: BrowserSensitiveEpoch): boolean {
       epochToUpdate.hasDelegatedListener = epochToUpdate.hasDelegatedListener || hasDelegatedListener(input.kind);
-      epochToUpdate.hasSchedulerAdjacentListener = epochToUpdate.hasSchedulerAdjacentListener || hasSchedulerAdjacentListener(input.kind);
-      return epochToUpdate.inTargetDispatch &&
-        !epochToUpdate.hasDelegatedListener &&
-        !epochToUpdate.hasSchedulerAdjacentListener;
+      return epochToUpdate.inTargetDispatch && !epochToUpdate.hasDelegatedListener;
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
@@ -845,37 +869,6 @@ async function beginPageSensitiveActionEpoch(
       return false;
     }
 
-    function hasSchedulerAdjacentListener(eventType: "input" | "select"): boolean {
-      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
-        readonly listenerTargets?: readonly {
-          readonly type?: unknown;
-          readonly target?: unknown;
-          readonly listener?: unknown;
-        }[];
-      } | undefined;
-      for (const listenerType of sensitiveEventTypes(eventType)) {
-        for (const entry of registry?.listenerTargets ?? []) {
-          if (
-            entry.type === listenerType &&
-            entry.target === element &&
-            !isInstrumentationListener(entry.listener) &&
-            mentionsSchedulerBoundary(entry.listener)
-          ) {
-            return true;
-          }
-        }
-        const handlerName = `on${listenerType}`;
-        try {
-          const handler = (element as unknown as Record<string, unknown>)[handlerName];
-          if (mentionsSchedulerBoundary(handler)) return true;
-        } catch {
-          return true;
-        }
-        const inlineHandler = element.getAttribute(handlerName);
-        if (inlineHandler !== null && mentionsSchedulerBoundary(inlineHandler)) return true;
-      }
-      return false;
-    }
 
     function markInstrumentationListener(listener: EventListener): void {
       Object.defineProperty(listener, "__qualigenceSensitiveInstrumentation", {
@@ -892,27 +885,6 @@ async function beginPageSensitiveActionEpoch(
         (listener as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
     }
 
-    function mentionsSchedulerBoundary(listener: unknown): boolean {
-      let source: string;
-      try {
-        if (typeof listener === "function") {
-          source = Function.prototype.toString.call(listener);
-        } else if (
-          listener !== null &&
-          typeof listener === "object" &&
-          typeof (listener as { readonly handleEvent?: unknown }).handleEvent === "function"
-        ) {
-          source = Function.prototype.toString.call((listener as { readonly handleEvent: EventListener }).handleEvent);
-        } else if (typeof listener === "string") {
-          source = listener;
-        } else {
-          return false;
-        }
-      } catch {
-        return true;
-      }
-      return /\bqueueMicrotask\b|\bPromise\b|\.then\s*\(/.test(source);
-    }
 
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
@@ -934,7 +906,11 @@ async function beginPageSensitiveActionEpoch(
       epochToUpdate: BrowserSensitiveEpoch,
       allowClassification: boolean,
     ): void {
-      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+      if (shadowRootOverflow()) {
+        poison(epochToUpdate);
+        return;
+      }
+      for (const candidate of observableElements()) {
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -947,6 +923,29 @@ async function beginPageSensitiveActionEpoch(
         }
         classifyElement(candidate, epochToUpdate);
         if (epochToUpdate.poisoned) return;
+      }
+      for (const root of shadowRoots()) {
+        for (const value of shadowRootValues(root)) {
+          if (!carriesForm(value, epochToUpdate.forms) || shadowBaselineAllows(root, epochToUpdate, value)) {
+            continue;
+          }
+          if (root.mode === "open" && allowClassification) {
+            classifyElement(root.host, epochToUpdate);
+            if (epochToUpdate.poisoned) return;
+            continue;
+          }
+          poison(epochToUpdate);
+          return;
+        }
+        if (root.mode !== "closed") continue;
+        for (const candidate of Array.from(root.querySelectorAll("*"))) {
+          for (const value of sensitiveValues(candidate)) {
+            if (carriesForm(value, epochToUpdate.forms) && !shadowBaselineAllows(candidate, epochToUpdate, value)) {
+              poison(epochToUpdate);
+              return;
+            }
+          }
+        }
       }
     }
 
@@ -995,9 +994,10 @@ async function beginPageSensitiveActionEpoch(
         candidates.push(...observedAncestors(node));
         return;
       }
-      if (node.parentElement !== null) {
-        candidates.push(node.parentElement);
-        candidates.push(...observedAncestors(node.parentElement));
+      const parent = parentElementAcrossShadow(node);
+      if (parent !== null) {
+        candidates.push(parent);
+        candidates.push(...observedAncestors(parent));
       }
     }
 
@@ -1011,7 +1011,8 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function classifySingleElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
-      if (candidate.getRootNode() !== candidate.ownerDocument) {
+      const root = candidate.getRootNode();
+      if (root !== candidate.ownerDocument && (!(root instanceof ShadowRoot) || root.mode !== "open")) {
         poison(epochToUpdate);
         return;
       }
@@ -1037,10 +1038,24 @@ async function beginPageSensitiveActionEpoch(
 
     function observedAncestors(candidate: Element): Element[] {
       const result: Element[] = [];
-      for (let current = candidate.parentElement; current !== null; current = current.parentElement) {
+      for (let current = parentElementAcrossShadow(candidate); current !== null; current = parentElementAcrossShadow(current)) {
         if (isObservationCandidate(current)) result.push(current);
       }
       return result;
+    }
+
+    function parentElementAcrossShadow(node: Node): Element | null {
+      if (node.parentElement !== null) return node.parentElement;
+      const root = node.getRootNode();
+      return root instanceof ShadowRoot && root.mode === "open" ? root.host : null;
+    }
+
+    function observableElements(): Element[] {
+      const elements = Array.from(element.ownerDocument.querySelectorAll("*"));
+      for (const root of shadowRoots().filter((candidate) => candidate.mode === "open")) {
+        elements.push(...Array.from(root.querySelectorAll("*")));
+      }
+      return elements;
     }
 
     function isObservationCandidate(candidate: Element): boolean {
@@ -1166,8 +1181,20 @@ async function beginPageSensitiveActionEpoch(
       return value.normalize("NFC").replace(/\s+/g, " ").trim();
     }
 
-    function carriesForm(value: string, form: string): boolean {
-      return value === form || (form !== "" && value.includes(form));
+    function carriesForm(value: string, form: string | readonly string[]): boolean {
+      const forms = Array.isArray(form) ? form : [form];
+      return forms.some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)));
+    }
+
+    function shadowBaselineAllows(node: Node, epochToUpdate: BrowserSensitiveEpoch, value: string): boolean {
+      return epochToUpdate.shadowBaseline.get(node)?.has(value) === true;
+    }
+
+    function shadowRootOverflow(): boolean {
+      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
+        readonly shadowRootOverflow?: unknown;
+      } | undefined;
+      return registry?.shadowRootOverflow === true || shadowRoots().length > input.maxShadowRoots;
     }
 
     function poison(epochToUpdate: BrowserSensitiveEpoch): void {
@@ -1185,6 +1212,7 @@ async function beginPageSensitiveActionEpoch(
     maxMutationRecords: MAX_REFLECTED_MUTATION_RECORDS,
     maxClassifiedNodes: MAX_REFLECTED_NODES,
     maxMaskRegions: MAX_REFLECTED_REGIONS,
+    maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
   });
 }
 
@@ -1204,7 +1232,6 @@ async function endPageSensitiveActionEpoch(
         observer: MutationObserver;
         targetCaptureListener: EventListener;
         documentBubbleListener: EventListener;
-        hasSchedulerAdjacentListener: boolean;
         mutationOrdinal: number;
         deferredRecords: MutationRecord[];
         classifiedNodes: Set<string>;
@@ -1212,6 +1239,8 @@ async function endPageSensitiveActionEpoch(
         classifiedElements?: Element[];
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
+        inSchedulerCallback?: boolean;
+        schedulerRegistrations?: number;
         poisoned: boolean;
       } | null;
       records: {
@@ -1219,10 +1248,16 @@ async function endPageSensitiveActionEpoch(
         forms: string[];
         baseline: WeakMap<Element, ReadonlySet<string>>;
         shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
+        classifiedNodes?: Set<string>;
+        classifiedRegions?: Set<string>;
+        classifiedElements?: Element[];
+        schedulerRegistrations?: number;
+        poisoned?: boolean;
       }[];
       poisoned: boolean;
       nextNodeOrdinal: number;
       nextMaskOrdinal: number;
+      schedulerSessionRegistrations?: number;
     };
     const win = element.ownerDocument.defaultView;
     const state = win === null
@@ -1240,7 +1275,7 @@ async function endPageSensitiveActionEpoch(
         state,
         active,
         records,
-        canClassifyCurrentDispatch(active),
+        canClassifyCurrentDispatch(active) || (active.schedulerRegistrations ?? 0) > 0,
       );
     }
     active.inTargetDispatch = false;
@@ -1255,6 +1290,11 @@ async function endPageSensitiveActionEpoch(
         forms: active.forms,
         baseline: active.baseline,
         shadowBaseline: active.shadowBaseline,
+        classifiedNodes: active.classifiedNodes,
+        classifiedRegions: active.classifiedRegions,
+        ...(active.classifiedElements === undefined ? {} : { classifiedElements: active.classifiedElements }),
+        schedulerRegistrations: active.schedulerRegistrations ?? 0,
+        poisoned: active.poisoned,
       });
     } else {
       cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
@@ -1340,9 +1380,10 @@ async function endPageSensitiveActionEpoch(
         candidates.push(...observedAncestors(node));
         return;
       }
-      if (node.parentElement !== null) {
-        candidates.push(node.parentElement);
-        candidates.push(...observedAncestors(node.parentElement));
+      const parent = parentElementAcrossShadow(node);
+      if (parent !== null) {
+        candidates.push(parent);
+        candidates.push(...observedAncestors(parent));
       }
     }
 
@@ -1358,9 +1399,7 @@ async function endPageSensitiveActionEpoch(
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
     ): boolean {
       epochToUpdate.hasDelegatedListener = epochToUpdate.hasDelegatedListener || hasDelegatedListener(input.kind);
-      return epochToUpdate.inTargetDispatch &&
-        !epochToUpdate.hasDelegatedListener &&
-        !epochToUpdate.hasSchedulerAdjacentListener;
+      return epochToUpdate.inTargetDispatch && !epochToUpdate.hasDelegatedListener;
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
@@ -1448,7 +1487,8 @@ async function endPageSensitiveActionEpoch(
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
       candidate: Element,
     ): void {
-      if (candidate.getRootNode() !== candidate.ownerDocument) {
+      const root = candidate.getRootNode();
+      if (root !== candidate.ownerDocument && (!(root instanceof ShadowRoot) || root.mode !== "open")) {
         epochToUpdate.poisoned = true;
         stateToUpdate.poisoned = true;
         return;
@@ -1479,10 +1519,16 @@ async function endPageSensitiveActionEpoch(
 
     function observedAncestors(candidate: Element): Element[] {
       const result: Element[] = [];
-      for (let current = candidate.parentElement; current !== null; current = current.parentElement) {
+      for (let current = parentElementAcrossShadow(candidate); current !== null; current = parentElementAcrossShadow(current)) {
         if (isObservationCandidate(current)) result.push(current);
       }
       return result;
+    }
+
+    function parentElementAcrossShadow(node: Node): Element | null {
+      if (node.parentElement !== null) return node.parentElement;
+      const root = node.getRootNode();
+      return root instanceof ShadowRoot && root.mode === "open" ? root.host : null;
     }
 
     function isObservationCandidate(candidate: Element): boolean {

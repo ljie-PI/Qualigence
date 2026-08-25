@@ -12,6 +12,7 @@ import {
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 import {
+  MAX_SENSITIVE_SHADOW_ROOTS,
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_MASK_ID_ATTRIBUTE,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
@@ -89,6 +90,7 @@ interface BrowserObservationCaptureInput {
   readonly sensitiveMaskIdAttribute: string;
   readonly sensitiveEvidenceStateProperty: string;
   readonly sensitiveShadowRootsProperty: string;
+  readonly maxShadowRoots: number;
 }
 
 function browserObservationCaptureInput(): BrowserObservationCaptureInput {
@@ -97,6 +99,7 @@ function browserObservationCaptureInput(): BrowserObservationCaptureInput {
     sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
     sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
     sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+    maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
   };
 }
 
@@ -328,6 +331,7 @@ function collectPageObservation(
     if (state.active !== undefined && state.active !== null) return true;
     if (state.poisoned === true) return true;
     const records = state.records ?? [];
+    if (records.length > 0 && shadowRootOverflow()) return true;
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const ids = readSensitiveTargetIds(element);
       for (const record of records) {
@@ -342,15 +346,21 @@ function collectPageObservation(
     for (const root of shadowRoots()) {
       for (const record of records) {
         for (const value of shadowRootValues(root)) {
-          if (carriesForm(value, record.forms) && !shadowBaselineAllows(root, record.markerId, value)) {
-            return true;
+          if (!carriesForm(value, record.forms) || shadowBaselineAllows(root, record.markerId, value)) {
+            continue;
           }
+          if (root.mode === "open" && openRootValueCoveredBySensitiveMarker(root, record.markerId, value)) {
+            continue;
+          }
+          return true;
         }
         for (const element of Array.from(root.querySelectorAll("*"))) {
+          const ids = readSensitiveTargetIds(element);
           for (const value of sensitiveValues(element)) {
-            if (carriesForm(value, record.forms) && !shadowBaselineAllows(element, record.markerId, value)) {
-              return true;
-            }
+            if (!carriesForm(value, record.forms)) continue;
+            if (root.mode === "open" && hasSensitiveTargetId(ids, record.markerId)) continue;
+            if (shadowBaselineAllows(element, record.markerId, value)) continue;
+            return true;
           }
         }
       }
@@ -368,6 +378,32 @@ function collectPageObservation(
     const fullText = root.textContent ?? "";
     if (fullText !== "" && fullText !== direct) values.push(fullText);
     return values;
+  }
+
+  function observableElements(selector: string): Element[] {
+    const elements = Array.from(document.querySelectorAll(selector));
+    for (const root of shadowRoots().filter((candidate) => candidate.mode === "open")) {
+      elements.push(...Array.from(root.querySelectorAll(selector)));
+    }
+    return elements;
+  }
+
+  function openRootValueCoveredBySensitiveMarker(root: ShadowRoot, markerId: string, value: string): boolean {
+    if (hasSensitiveTargetId(readSensitiveTargetIds(root.host), markerId)) return true;
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      if (!hasSensitiveTargetId(readSensitiveTargetIds(element), markerId)) continue;
+      if (sensitiveValues(element).some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function shadowRootOverflow(): boolean {
+    const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
+      readonly shadowRootOverflow?: unknown;
+    } | undefined;
+    return registry?.shadowRootOverflow === true || shadowRoots().length > input.maxShadowRoots;
   }
 
   function shadowRoots(): ShadowRoot[] {
@@ -390,6 +426,7 @@ function collectPageObservation(
     }
     for (let index = 0; index < pending.length; index += 1) {
       const root = pending[index]!;
+      if (pending.length > input.maxShadowRoots) break;
       for (const element of Array.from(root.querySelectorAll("*"))) {
         const nestedShadowRoot = element.shadowRoot;
         if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
@@ -400,7 +437,7 @@ function collectPageObservation(
 
   const selector =
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
-  const elements = Array.from(document.querySelectorAll(selector));
+  const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
   const sensitiveMaskIds = new Set<string>();
   const titleElement = document.querySelector("title");
