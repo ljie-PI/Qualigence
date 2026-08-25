@@ -91,9 +91,13 @@ function distinctGraph(): ObservationGraph {
 }
 
 function fixedGraph(): ObservationGraph {
+  return graphAt("https://shop.example/product");
+}
+
+function graphAt(url: string): ObservationGraph {
   return {
-    graphId: "graph-fixed",
-    url: "https://shop.example/product",
+    graphId: `graph-${url}`,
+    url,
     title: "Product",
     nodes: [{ id: "node-add", role: "button", name: "Add to cart", confidence: 0.9 }],
   };
@@ -568,6 +572,67 @@ describe("ExplorationController", () => {
     const result = await controller.run(job({ policy: policy({ maximumRecoveries: 1 }) }));
 
     expect(result.terminalReason).toBe("objective_satisfied");
+    expect(target.recoveries).toBe(1);
+  });
+
+  it("rejects out-of-origin observations before model actions dispatch", async () => {
+    const target = new ScriptedTarget([graphAt("https://evil.example/product")]);
+    const controller = createController({
+      target,
+      agent: new ScriptedAgent(() => act(clickAdd)),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job());
+
+    expect(result.terminalReason).toBe("policy_denied");
+    expect(result.errorCode).toBe("OriginViolation");
+    expect(target.executedActions()).toHaveLength(0);
+  });
+
+  it("rejects out-of-origin navigation proposals before dispatch", async () => {
+    const target = new ScriptedTarget([fixedGraph()]);
+    const controller = createController({
+      target,
+      agent: new ScriptedAgent(() => act({ kind: "navigate", path: "https://evil.example/", reason: "leave" })),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job());
+
+    expect(result.terminalReason).toBe("policy_denied");
+    expect(result.errorCode).toBe("OriginViolation");
+    expect(target.executedActions()).toHaveLength(0);
+  });
+
+  it("maps model invocation failures to a stable terminal error before dispatch", async () => {
+    const target = new ScriptedTarget([fixedGraph()]);
+    const controller = createController({
+      target,
+      agent: { async nextAction() { throw new Error("provider timeout"); } },
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job());
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("ExplorationModelUnavailable");
+    expect(target.executedActions()).toHaveLength(0);
+  });
+
+  it("maps failed recovery attempts to a stable terminal error", async () => {
+    const target = new RecoveringTarget([fixedGraph()]);
+    target.failuresBeforeRecovery = 2;
+    const controller = createController({
+      target,
+      agent: new ScriptedAgent(() => ({ status: "stop", reason: "done" })),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job({ policy: policy({ maximumRecoveries: 1 }) }));
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("EnvironmentRecoveryFailed");
     expect(target.recoveries).toBe(1);
   });
 

@@ -145,7 +145,8 @@ function assertExistingAttemptProgress(input: {
     progress.sourceBindingHash !== sourceBindingHash ||
     progress.policyBindingHash !== policyBindingHashFor(policy) ||
     progress.seedBindingHash !== seedBindingHashFor(policy) ||
-    progress.phase !== "terminal"
+    progress.phase !== "terminal" ||
+    progress.terminalReason === "error"
   ) {
     throw new BenchmarkError(
       "BenchmarkAttemptMatrixIncomplete",
@@ -239,6 +240,12 @@ export async function runBenchmark(config: BenchmarkRunConfig): Promise<Benchmar
         policy,
         environment: "test",
       });
+      if (result.terminalReason === "error") {
+        throw new BenchmarkError(
+          "BenchmarkAttemptMatrixIncomplete",
+          `Benchmark attempt "${attemptId}" ended with exploration error ${result.errorCode ?? "UnknownExplorationError"}.`,
+        );
+      }
       const findings = target.collectFindings().map((signal) => ({
         defectId: signal.defectId,
         confidence: signal.confidence,

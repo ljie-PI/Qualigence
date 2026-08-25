@@ -309,7 +309,13 @@ export class ExplorationController {
         remainingBudget: state.budget.snapshot(),
       };
 
-      const proposal = await this.deps.agent.nextAction(context);
+      let proposal: ExplorationProposal;
+      try {
+        proposal = await this.deps.agent.nextAction(context);
+      } catch {
+        appendTerminalCheckpoint(state, fingerprint, "error");
+        return this.finish(state, "error", "ExplorationModelUnavailable");
+      }
       if (proposal.tokensUsed === undefined) {
         appendTerminalCheckpoint(state, fingerprint, "error");
         return this.finish(state, "error", "ModelUsageUnavailable");
@@ -512,8 +518,12 @@ export class ExplorationController {
       if (!recovery.ok) {
         return { ok: false, result: await this.finish(state, "budget_exhausted", "ExplorationBudgetExceeded") };
       }
-      await this.deps.target.recover();
-      return { ok: true, graph: await this.deps.target.capture() };
+      try {
+        await this.deps.target.recover();
+        return { ok: true, graph: await this.deps.target.capture() };
+      } catch {
+        return { ok: false, result: await this.finish(state, "error", "EnvironmentRecoveryFailed") };
+      }
     }
   }
 
@@ -584,6 +594,12 @@ function validateProposal(
   if (!policy.allowedActionKinds.includes(action.kind)) {
     return { ok: false, reason: "no_safe_action", errorCode: "UnsafeExplorationAction" };
   }
+  if (!isGraphOriginAllowed(graph, policy)) {
+    return { ok: false, reason: "policy_denied", errorCode: "OriginViolation" };
+  }
+  if (action.kind === "navigate" && !isNavigationTargetAllowed(action, graph, policy)) {
+    return { ok: false, reason: "policy_denied", errorCode: "OriginViolation" };
+  }
 
   let node: ObservationNode | undefined;
   if (action.kind === "click" || action.kind === "input") {
@@ -619,6 +635,32 @@ function validateProposal(
       ...(action.valueRef === undefined ? {} : { valueRef: action.valueRef }),
     },
   };
+}
+
+function isGraphOriginAllowed(graph: ObservationGraph, policy: ExplorationPolicy): boolean {
+  if (graph.url === undefined) return false;
+  return isUrlOriginAllowed(graph.url, policy);
+}
+
+function isNavigationTargetAllowed(
+  action: ProposedExplorationAction,
+  graph: ObservationGraph,
+  policy: ExplorationPolicy,
+): boolean {
+  if (action.path === undefined || graph.url === undefined) return false;
+  try {
+    return isUrlOriginAllowed(new URL(action.path, graph.url).href, policy);
+  } catch {
+    return false;
+  }
+}
+
+function isUrlOriginAllowed(url: string, policy: ExplorationPolicy): boolean {
+  try {
+    return policy.allowedOrigins.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
 }
 
 function appendTerminalCheckpoint(

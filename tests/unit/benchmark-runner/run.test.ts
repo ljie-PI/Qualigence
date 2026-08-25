@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,10 +7,13 @@ import {
   type BenchmarkStore,
   type ScenarioDefinition,
 } from "@qualigence/benchmark-runner";
-import type {
-  DetectionBenchmarkManifest,
-  GroundTruth,
-  ReferenceModelProfile,
+import {
+  groundTruthSha256,
+  manifestSha256,
+  referenceProfileSha256,
+  type DetectionBenchmarkManifest,
+  type GroundTruth,
+  type ReferenceModelProfile,
 } from "@qualigence/benchmarking-detection";
 import type {
   ExplorationAttemptProgress,
@@ -86,10 +90,8 @@ const scenario: ScenarioDefinition = {
   ],
 };
 
-class CrashAfterSafeCheckpointStore implements BenchmarkStore {
-  private crashed = false;
-
-  constructor(private readonly delegate: SqliteBenchmarkStore) {}
+class DelegatingBenchmarkStore implements BenchmarkStore {
+  constructor(protected readonly delegate: SqliteBenchmarkStore) {}
 
   saveRun: BenchmarkStore["saveRun"] = (run) => this.delegate.saveRun(run);
   appendAttempt: BenchmarkStore["appendAttempt"] = (runId, attempt) => this.delegate.appendAttempt(runId, attempt);
@@ -98,14 +100,28 @@ class CrashAfterSafeCheckpointStore implements BenchmarkStore {
   loadAttemptProgress: BenchmarkStore["loadAttemptProgress"] = (attemptId) => this.delegate.loadAttemptProgress(attemptId);
   initializeAttemptProgress: BenchmarkStore["initializeAttemptProgress"] = (progress) => this.delegate.initializeAttemptProgress(progress);
   liveCheckpointsForAttempt: BenchmarkStore["liveCheckpointsForAttempt"] = (attemptId) => this.delegate.liveCheckpointsForAttempt(attemptId);
+  compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = (update) => this.delegate.compareAndSetAttemptProgress(update);
+}
 
-  compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = async (update) => {
+class CrashAfterSafeCheckpointStore extends DelegatingBenchmarkStore {
+  private crashed = false;
+
+  override compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = async (update) => {
     const result = await this.delegate.compareAndSetAttemptProgress(update);
     if (!this.crashed && update.checkpoint !== undefined && update.checkpoint.terminalReason === undefined) {
       this.crashed = true;
       throw new Error("simulated crash after durable safe checkpoint");
     }
     return result;
+  };
+}
+
+class ConflictOnTerminalStore extends DelegatingBenchmarkStore {
+  override compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = async (update) => {
+    if (update.phase === "terminal") {
+      return { status: "conflict", current: await this.delegate.loadAttemptProgress(update.attemptId) };
+    }
+    return this.delegate.compareAndSetAttemptProgress(update);
   };
 }
 
@@ -155,6 +171,21 @@ describe("benchmark runner durable exploration progress", () => {
     });
   });
 
+  it("does not append or score an attempt when terminal progress persistence fails", async () => {
+    await withStore(async (store) => {
+      const conflicting = new ConflictOnTerminalStore(store);
+      await expect(runBenchmark({
+        manifest,
+        groundTruth,
+        scenarios: [scenario],
+        store: conflicting,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      })).rejects.toMatchObject({ code: "BenchmarkAttemptMatrixIncomplete" });
+
+      await expect(store.attemptsForRun(runIdFor(manifest, profile, groundTruth))).resolves.toEqual([]);
+    });
+  });
+
   it("reuses an existing terminal attempt only when matching live progress is present", async () => {
     await withStore(async (store) => {
       const first = await runBenchmark({
@@ -181,6 +212,16 @@ describe("benchmark runner durable exploration progress", () => {
     });
   });
 });
+
+function runIdFor(
+  inputManifest: DetectionBenchmarkManifest,
+  inputProfile: ReferenceModelProfile,
+  inputTruth: GroundTruth,
+): string {
+  return createHash("sha256")
+    .update(`${manifestSha256(inputManifest)}\u0000${referenceProfileSha256(inputProfile)}\u0000${groundTruthSha256(inputTruth)}`, "utf8")
+    .digest("hex");
+}
 
 async function withStore<T>(callback: (store: SqliteBenchmarkStore) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(process.cwd(), ".tmp-benchmark-runner-"));
