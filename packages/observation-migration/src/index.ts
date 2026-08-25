@@ -15,6 +15,14 @@ export {
 
 export { FileObservationMigrationStore } from "./file-migration-store.js";
 
+export { ObservationCandidateInventoryRunner } from "./candidate-inventory.js";
+
+export type {
+  ActivePreV1InventoryAsset,
+  CandidateInventoryRunOptions,
+  PreV1SkillInventoryAsset,
+} from "./candidate-inventory.js";
+
 export {
   OBSERVATION_FREEZE_REPORT_VERSION,
   buildFreezeReport,
@@ -61,6 +69,7 @@ export type {
 export type {
   ObservationMigrationStatus,
   ObservationMigrationResult,
+  ObservationMigrationLookupIdentity,
   StoredObservationMigration,
   ObservationMigrationStore,
   ObservationMigrationRunnerOptions,
@@ -77,4 +86,5 @@ export type {
   RecompiledSkillReverifier,
   RecompileStatus,
   RecompileOutcome,
+  SkillSourceVerification,
 } from "./skill-recompiler.js";

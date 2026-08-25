@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ObservationError,
   observationGraphHash,
@@ -17,14 +18,34 @@ export type ObservationMigrationStatus =
   | "needs_human"
   | "failed";
 
-/** The immutable per-asset migration result, keyed by asset + source hash. */
+/** The immutable per-asset migration result recorded in the append-only ledger. */
 export interface ObservationMigrationResult {
   readonly assetId: string;
+  readonly assetKind?: "observation" | "skill";
   readonly sourceHash: string;
   readonly status: ObservationMigrationStatus;
   readonly outputRef?: string;
   readonly reasonCode?: string;
   readonly migratorVersion: string;
+  readonly sourceTraceRefs?: readonly string[];
+  /** Declared source hash when it mismatches the computed source payload hash. */
+  readonly expectedSourceHash?: string;
+  /** Original pre-v1 Skill content hash when a Skill result is keyed by source Trace hash. */
+  readonly skillSourceHash?: string;
+  /** Original pre-v1 Skill version when a Skill result is keyed by source Trace hash. */
+  readonly skillVersion?: number;
+  /** Hash of the actual Skill inventory source bytes used to distinguish stale declared content hashes. */
+  readonly skillAssetHash?: string;
+  readonly computedSkillSourceHash?: string;
+  readonly locatorSchemaVersion?: string;
+  readonly skillCompilerVersion?: string;
+}
+
+/** Optional identity fields that distinguish Skill inventory attempts sharing one source Trace. */
+export interface ObservationMigrationLookupIdentity {
+  readonly skillSourceHash?: string;
+  readonly skillVersion?: number;
+  readonly skillAssetHash?: string;
 }
 
 /** A durable, append-only migration ledger entry. */
@@ -36,13 +57,19 @@ export interface StoredObservationMigration {
 
 /**
  * The durable, append-only store the runner uses for idempotency and resume.
- * `find` is keyed by `(assetId, sourceHash)` so a re-run with unchanged source
- * returns the existing result, while a changed source becomes a new attempt.
+ * Observation results are keyed by `(assetId, sourceHash, migratorVersion)` so a
+ * re-run with unchanged source returns the existing result, while a changed
+ * source becomes a new attempt. Skill inventory results also include the
+ * immutable Skill version/content hash and actual Skill asset hash because
+ * several Skill versions or stale declared hashes can share one source Trace
+ * hash.
  */
 export interface ObservationMigrationStore {
   find(
     assetId: string,
     sourceHash: string,
+    migratorVersion?: string,
+    identity?: ObservationMigrationLookupIdentity,
   ): Promise<StoredObservationMigration | undefined>;
   append(record: StoredObservationMigration): Promise<void>;
   list(): Promise<readonly StoredObservationMigration[]>;
@@ -51,6 +78,13 @@ export interface ObservationMigrationStore {
 export interface ObservationMigrationRunnerOptions {
   /** When true, the runner projects and classifies but never persists. */
   readonly dryRun?: boolean;
+}
+
+interface SourceHashBinding {
+  /** The hash computed from the actual source payload observed in this run. */
+  readonly sourceHash: string;
+  /** The declared source hash when it mismatches the computed source payload. */
+  readonly expectedSourceHash?: string;
 }
 
 /**
@@ -77,14 +111,19 @@ export class ObservationMigrationRunner {
     asset: PreV1ObservationAsset,
     options: ObservationMigrationRunnerOptions = {},
   ): Promise<ObservationMigrationResult> {
-    const sourceHash = this.projector.sourceHash(asset);
+    const sourceBinding = this.sourceHashForLedger(asset);
+    const record = this.classify(asset, sourceBinding);
 
-    const existing = await this.store.find(asset.assetId, sourceHash);
-    if (existing !== undefined) {
-      return existing.result;
+    if (this.canReturnExistingResult(record.result)) {
+      const existing = await this.store.find(
+        asset.assetId,
+        sourceBinding.sourceHash,
+        record.result.migratorVersion,
+      );
+      if (existing !== undefined) {
+        return existing.result;
+      }
     }
-
-    const record = this.classify(asset, sourceHash);
     if (options.dryRun !== true) {
       await this.store.append(record);
     }
@@ -93,18 +132,25 @@ export class ObservationMigrationRunner {
 
   private classify(
     asset: PreV1ObservationAsset,
-    sourceHash: string,
+    sourceBinding: SourceHashBinding,
   ): StoredObservationMigration {
     try {
       const projected = this.projector.projectRecord(asset);
+      if (asset.kind === "skill") {
+        return {
+          result: {
+            ...this.baseResult(asset, sourceBinding),
+            status: "needs_human",
+            reasonCode: "SkillInventoryRunnerRequired",
+          },
+        };
+      }
       const outputRef = observationGraphHash(projected.graph);
       return {
         result: {
-          assetId: asset.assetId,
-          sourceHash,
+          ...this.baseResult(asset, sourceBinding),
           status: "migrated",
           outputRef,
-          migratorVersion: this.migratorVersion,
         },
         projection: projected.graph,
         metadata: projected.metadata,
@@ -112,13 +158,65 @@ export class ObservationMigrationRunner {
     } catch (error) {
       return {
         result: {
-          assetId: asset.assetId,
-          sourceHash,
+          ...this.baseResult(asset, sourceBinding),
           ...this.classifyFailure(error),
-          migratorVersion: this.migratorVersion,
         },
       };
     }
+  }
+
+  private baseResult(
+    asset: PreV1ObservationAsset,
+    sourceBinding: SourceHashBinding,
+  ): Omit<ObservationMigrationResult, "status"> {
+    return {
+      assetId: asset.assetId,
+      assetKind: asset.kind,
+      sourceHash: sourceBinding.sourceHash,
+      migratorVersion: this.migratorVersion,
+      ...(sourceBinding.expectedSourceHash === undefined
+        ? {}
+        : { expectedSourceHash: sourceBinding.expectedSourceHash }),
+      ...(asset.locatorSchemaVersion === undefined
+        ? {}
+        : { locatorSchemaVersion: asset.locatorSchemaVersion }),
+      ...(asset.skillCompilerVersion === undefined
+        ? {}
+        : { skillCompilerVersion: asset.skillCompilerVersion }),
+    };
+  }
+
+  private sourceHashForLedger(asset: PreV1ObservationAsset): SourceHashBinding {
+    try {
+      const computed = this.projector.sourceHash(asset);
+      return this.bindComputedSourceHash(asset, computed);
+    } catch {
+      const raw = JSON.stringify(asset.observation ?? null);
+      return this.bindComputedSourceHash(
+        asset,
+        createHash("sha256").update(raw).digest("hex"),
+      );
+    }
+  }
+
+  private bindComputedSourceHash(
+    asset: PreV1ObservationAsset,
+    computed: string,
+  ): SourceHashBinding {
+    if (
+      asset.declaredSourceHash !== undefined &&
+      asset.declaredSourceHash !== computed
+    ) {
+      return { sourceHash: computed, expectedSourceHash: asset.declaredSourceHash };
+    }
+    return { sourceHash: computed };
+  }
+
+  private canReturnExistingResult(result: ObservationMigrationResult): boolean {
+    // A source integrity failure must never be hidden by a prior successful
+    // record for the same asset. The caller sees the freshly verified failure;
+    // append remains duplicate-safe if that exact failed binding already exists.
+    return result.reasonCode !== "SourceAssetCorrupted";
   }
 
   private classifyFailure(error: unknown): {
@@ -150,12 +248,16 @@ export class InMemoryObservationMigrationStore
   async find(
     assetId: string,
     sourceHash: string,
+    migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
+    identity: ObservationMigrationLookupIdentity = {},
   ): Promise<StoredObservationMigration | undefined> {
-    return this.records.get(this.key(assetId, sourceHash));
+    return this.records.get(
+      this.key(assetId, sourceHash, migratorVersion, identity),
+    );
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
-    const key = this.key(record.result.assetId, record.result.sourceHash);
+    const key = this.recordKey(record);
     if (this.records.has(key)) {
       return;
     }
@@ -166,7 +268,44 @@ export class InMemoryObservationMigrationStore
     return [...this.records.values()];
   }
 
-  private key(assetId: string, sourceHash: string): string {
-    return `${assetId}\u0000${sourceHash}`;
+  private recordKey(record: StoredObservationMigration): string {
+    return this.key(
+      record.result.assetId,
+      record.result.sourceHash,
+      record.result.migratorVersion,
+      record.result,
+    );
   }
+
+  private key(
+    assetId: string,
+    sourceHash: string,
+    migratorVersion: string,
+    identity: ObservationMigrationLookupIdentity = {},
+  ): string {
+    return [
+      assetId,
+      sourceHash,
+      migratorVersion,
+      ...skillIdentityKeyParts(identity),
+    ].join("\u0000");
+  }
+}
+
+function skillIdentityKeyParts(
+  identity: ObservationMigrationLookupIdentity,
+): readonly string[] {
+  if (
+    identity.skillSourceHash === undefined &&
+    identity.skillVersion === undefined &&
+    identity.skillAssetHash === undefined
+  ) {
+    return [];
+  }
+  return [
+    "skill",
+    identity.skillSourceHash ?? "",
+    identity.skillVersion === undefined ? "" : String(identity.skillVersion),
+    identity.skillAssetHash ?? "",
+  ];
 }
