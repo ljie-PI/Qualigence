@@ -15,6 +15,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/benchmarking-detection": "workspace:*",
+    "@qualigence/execution-application": "workspace:*",
     "@qualigence/exploration": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/model-agent": "workspace:*",

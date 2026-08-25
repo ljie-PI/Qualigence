@@ -261,6 +261,9 @@ importers:
       '@qualigence/benchmarking-detection':
         specifier: workspace:*
         version: link:../../packages/benchmarking/detection
+      '@qualigence/execution-application':
+        specifier: workspace:*
+        version: link:../../packages/execution-application
       '@qualigence/exploration':
         specifier: workspace:*
         version: link:../../packages/runner-components/exploration

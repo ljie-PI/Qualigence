@@ -6,6 +6,7 @@ import {
   createScenarioWalkTestDoubleAgentFactory,
   runBenchmark,
   type BenchmarkAgentFactory,
+  type BenchmarkStore,
   type ScenarioDefinition,
 } from "@qualigence/benchmark-runner";
 import {
@@ -52,7 +53,7 @@ const manifest: DetectionBenchmarkManifest = {
 const groundTruth: GroundTruth = {
   benchmarkVersion: manifest.benchmarkVersion,
   defects: [
-    { scenarioId: "checkout-bug", defectId: "bug-1", severity: "P1", stable: true },
+    { scenarioId: "checkout-bug", defectId: "bug-1", severity: "P0", stable: true },
   ],
 };
 
@@ -96,6 +97,72 @@ describe("Detection Benchmark Reference Model runner", () => {
         createdAt: "2026-08-01T00:00:00.000Z",
       })).rejects.toMatchObject({ code: "ReferenceProfileMismatch" });
     });
+  });
+
+  it("rejects manifest/Ground Truth mismatch before run, attempt, fixture or provider effects", async () => {
+    const effects: string[] = [];
+    const mismatchedTruth: GroundTruth = { benchmarkVersion: manifest.benchmarkVersion, defects: [] };
+    const store: BenchmarkStore = {
+      async saveRun() {
+        effects.push("saveRun");
+      },
+      async appendAttempt() {
+        effects.push("appendAttempt");
+      },
+      async attemptsForRun() {
+        effects.push("attemptsForRun");
+        return [];
+      },
+      async saveReport() {
+        effects.push("saveReport");
+      },
+      async loadAttemptProgress() {
+        effects.push("loadAttemptProgress");
+        return undefined;
+      },
+      async initializeAttemptProgress(progress) {
+        effects.push("initializeAttemptProgress");
+        return {
+          ...progress,
+          version: 1,
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        };
+      },
+      async compareAndSetAttemptProgress() {
+        effects.push("compareAndSetAttemptProgress");
+        return { status: "conflict" };
+      },
+      async liveCheckpointsForAttempt() {
+        effects.push("liveCheckpointsForAttempt");
+        return [];
+      },
+    };
+    const agentFactory: BenchmarkAgentFactory = {
+      provenance: "model-provider",
+      createAgent() {
+        effects.push("createAgent");
+        return {
+          async nextAction() {
+            effects.push("nextAction");
+            return { decision: { status: "stop", reason: "not reached" }, tokensUsed: 1 };
+          },
+        };
+      },
+    };
+
+    await expect(runBenchmark({
+      manifest,
+      groundTruth: mismatchedTruth,
+      scenarios: [scenario],
+      agentFactory,
+      store,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toMatchObject({
+      code: "GroundTruthMismatch",
+      message: expect.stringContaining("missing from Ground Truth: bug-1"),
+    });
+    expect(effects).toEqual([]);
   });
 
   it("runs every repetition through the configured model-agent seam", async () => {

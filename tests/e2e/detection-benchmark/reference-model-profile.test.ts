@@ -1,12 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PersistedModelInvocationObserver } from "@qualigence/execution-application";
 import {
   createReferenceModelAgentFactory,
   loadBenchmark,
   runBenchmark,
 } from "@qualigence/benchmark-runner";
-import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
+import { SqliteBenchmarkStore, SqliteModelInvocationStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 
 const BENCHMARK_DIR = join(process.cwd(), "benchmarks", "detection-v1");
 
@@ -20,14 +21,21 @@ describe("real Detection Benchmark Reference Model Profile acceptance", () => {
     });
     try {
       const store = new SqliteBenchmarkStore(runtime);
+      const invocationStore = new SqliteModelInvocationStore(runtime);
       const outcome = await runBenchmark({
         manifest: loaded.manifest,
         groundTruth: loaded.groundTruth,
         scenarios: loaded.scenarios,
-        agentFactory: createReferenceModelAgentFactory(loaded.manifest.referenceProfile),
+        agentFactory: createReferenceModelAgentFactory(
+          loaded.manifest.referenceProfile,
+          process.env,
+          { invocationObserver: new PersistedModelInvocationObserver(invocationStore) },
+        ),
         store,
         createdAt: "2026-08-01T00:00:00.000Z",
       });
+
+      const invocationEvidence = await invocationStore.listForRun(outcome.runId);
 
       const expectedAttempts = loaded.manifest.scenarios.length * loaded.manifest.referenceProfile.repetitions;
       const persistedAttempts = await store.attemptsForRun(outcome.runId);
@@ -48,6 +56,10 @@ describe("real Detection Benchmark Reference Model Profile acceptance", () => {
       for (const count of Object.values(outcome.report.metrics.highConfidenceFalsePositivesByNormalMission)) {
         expect(count).toBeLessThanOrEqual(1);
       }
+      expect(invocationEvidence.length).toBeGreaterThanOrEqual(expectedAttempts);
+      expect(invocationEvidence.every((invocation) => invocation.status === "succeeded")).toBe(true);
+      expect(new Set(invocationEvidence.map((invocation) => invocation.invocationId)).size)
+        .toBe(invocationEvidence.length);
       expect(persistedReport).toEqual(outcome.report);
       expect(outcome.exitCode).toBe(0);
     } finally {

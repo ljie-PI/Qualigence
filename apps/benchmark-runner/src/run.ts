@@ -5,6 +5,7 @@ import {
   manifestSha256,
   scoreBenchmark,
   BenchmarkError,
+  assertGroundTruthConsistent,
   type BenchmarkAttempt,
   type DetectionBenchmarkManifest,
   type DetectionBenchmarkReport,
@@ -361,6 +362,7 @@ export function createScenarioWalkTestDoubleAgentFactory(): BenchmarkAgentFactor
  */
 export async function runBenchmark(config: BenchmarkRunConfig): Promise<BenchmarkRunOutcome> {
   const { manifest, groundTruth } = config;
+  assertGroundTruthConsistent(manifest, groundTruth);
   const agentFactory = requireAgentFactory(config.agentFactory);
   const requestedProfile = config.profile ?? manifest.referenceProfile;
   const actualProfile = profileForProvenance(requestedProfile, agentFactory);

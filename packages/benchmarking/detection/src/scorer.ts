@@ -1,6 +1,7 @@
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
 import {
   BenchmarkError,
+  assertGroundTruthConsistent,
   groundTruthSha256,
   manifestSha256,
   referenceProfileSha256,
@@ -71,9 +72,9 @@ export function scoreBenchmark(
   truth: GroundTruth,
   options: ScoreOptions = {},
 ): DetectionBenchmarkReport {
+  assertGroundTruthConsistent(manifest, truth);
   assertCompleteAttemptMatrix(manifest, attempts);
   const profileHash = assertSingleProfile(attempts);
-  assertGroundTruthConsistent(manifest, truth);
 
   const metrics = computeMetrics(manifest, attempts, truth);
   const failureCodes = evaluateThresholds(manifest, metrics);
@@ -178,27 +179,6 @@ function assertSingleProfile(attempts: readonly BenchmarkAttempt[]): string {
   return first.profileSha256;
 }
 
-function assertGroundTruthConsistent(
-  manifest: DetectionBenchmarkManifest,
-  truth: GroundTruth,
-): void {
-  if (truth.benchmarkVersion !== manifest.benchmarkVersion) {
-    throw new BenchmarkError(
-      "GroundTruthMismatch",
-      `Ground truth version "${truth.benchmarkVersion}" does not match manifest "${manifest.benchmarkVersion}".`,
-    );
-  }
-  const scenarioIds = new Set(manifest.scenarios.map((scenario) => scenario.scenarioId));
-  for (const defect of truth.defects) {
-    if (!scenarioIds.has(defect.scenarioId)) {
-      throw new BenchmarkError(
-        "GroundTruthMismatch",
-        `Ground truth defect "${defect.defectId}" references unknown scenario "${defect.scenarioId}".`,
-      );
-    }
-  }
-}
-
 function computeMetrics(
   manifest: DetectionBenchmarkManifest,
   attempts: readonly BenchmarkAttempt[],
@@ -230,7 +210,9 @@ function computeMetrics(
   // P0 recall — any miss is release-blocking.
   const p0Defects = knownDefects.filter((defect) => defect.severity === "P0");
   const p0Hit = p0Defects.filter(isDetected).length;
-  const p0Recall = ratio(p0Hit, p0Defects.length);
+  const p0Recall = p0Defects.length === 0
+    ? { numerator: 0, denominator: 0, value: 0 }
+    : ratio(p0Hit, p0Defects.length);
 
   // The set of known (scenarioId+defectId) pairs, for precision classification.
   const knownDefectKeys = new Set(knownDefects.map((defect) => defectKey(defect.scenarioId, defect.defectId)));
@@ -304,7 +286,11 @@ function evaluateThresholds(
   const thresholds = manifest.thresholds;
   const failures: DetectionFailureCode[] = [];
 
-  if (metrics.p0Recall.value < thresholds.p0RecallMinimum) {
+  if (
+    metrics.p0Recall.denominator === 0 ||
+    metrics.p0Recall.numerator !== metrics.p0Recall.denominator ||
+    metrics.p0Recall.value < thresholds.p0RecallMinimum
+  ) {
     failures.push("P0RecallBelowMinimum");
   }
   if (metrics.knownBugRecall.value < thresholds.knownBugRecallMinimum) {

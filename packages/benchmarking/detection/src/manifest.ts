@@ -205,8 +205,16 @@ function parseScenario(value: unknown): BenchmarkScenario {
     fail("BenchmarkManifestInvalid", `scenario.mode must be "normal" or "fault", received "${mode}".`);
   }
   const expectedRaw = record["expectedDefectIds"];
-  if (!Array.isArray(expectedRaw) || expectedRaw.some((entry) => typeof entry !== "string")) {
-    fail("BenchmarkManifestInvalid", "scenario.expectedDefectIds must be an array of strings.");
+  if (!Array.isArray(expectedRaw) || expectedRaw.some((entry) => typeof entry !== "string" || entry.length === 0)) {
+    fail("BenchmarkManifestInvalid", "scenario.expectedDefectIds must be an array of non-empty strings.");
+  }
+  const expectedDefectIds = [...(expectedRaw as string[])];
+  const duplicateExpectedDefectId = firstDuplicate(expectedDefectIds);
+  if (duplicateExpectedDefectId !== undefined) {
+    fail(
+      "BenchmarkManifestInvalid",
+      `scenario.expectedDefectIds contains duplicate defect "${duplicateExpectedDefectId}".`,
+    );
   }
   return {
     scenarioId: requireString(record, "scenarioId", "BenchmarkManifestInvalid", "scenario"),
@@ -215,8 +223,17 @@ function parseScenario(value: unknown): BenchmarkScenario {
     mode,
     missionRef: requireString(record, "missionRef", "BenchmarkManifestInvalid", "scenario"),
     groundTruthRef: requireString(record, "groundTruthRef", "BenchmarkManifestInvalid", "scenario"),
-    expectedDefectIds: [...(expectedRaw as string[])],
+    expectedDefectIds,
   };
+}
+
+function firstDuplicate(values: readonly string[]): string | undefined {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) return value;
+    seen.add(value);
+  }
+  return undefined;
 }
 
 function parseThresholds(value: unknown): DetectionThresholds {
@@ -284,6 +301,7 @@ export function parseGroundTruth(value: unknown): GroundTruth {
   if (!Array.isArray(defectsRaw)) {
     fail("GroundTruthMismatch", "groundTruth.defects must be an array.");
   }
+  const seenDefectKeys = new Set<string>();
   const defects = defectsRaw.map((entry) => {
     const defectRecord = asRecord(entry, "GroundTruthMismatch", "defect");
     const severity = requireString(defectRecord, "severity", "GroundTruthMismatch", "defect");
@@ -294,15 +312,87 @@ export function parseGroundTruth(value: unknown): GroundTruth {
     if (typeof stable !== "boolean") {
       fail("GroundTruthMismatch", "defect.stable must be a boolean.");
     }
-    return {
+    const defect = {
       scenarioId: requireString(defectRecord, "scenarioId", "GroundTruthMismatch", "defect"),
       defectId: requireString(defectRecord, "defectId", "GroundTruthMismatch", "defect"),
       severity,
       stable,
     } satisfies GroundTruthDefect;
+    const key = `${defect.scenarioId}\u0000${defect.defectId}`;
+    if (seenDefectKeys.has(key)) {
+      fail(
+        "GroundTruthMismatch",
+        `Duplicate ground-truth defect "${defect.defectId}" for scenario "${defect.scenarioId}".`,
+      );
+    }
+    seenDefectKeys.add(key);
+    return defect;
   });
   return {
     benchmarkVersion: requireString(record, "benchmarkVersion", "GroundTruthMismatch", "groundTruth"),
     defects,
   };
+}
+
+/**
+ * Validate that the manifest's expected defects are exactly the seeded Ground
+ * Truth defects that will be scored. This must run before any provider or
+ * fixture attempt starts so an omitted known/P0 defect cannot turn into a
+ * denominator-zero pass.
+ */
+export function assertGroundTruthConsistent(
+  manifest: DetectionBenchmarkManifest,
+  truth: GroundTruth,
+): void {
+  if (truth.benchmarkVersion !== manifest.benchmarkVersion) {
+    throw new BenchmarkError(
+      "GroundTruthMismatch",
+      `Ground truth version "${truth.benchmarkVersion}" does not match manifest "${manifest.benchmarkVersion}".`,
+    );
+  }
+
+  const scenariosById = new Map(manifest.scenarios.map((scenario) => [scenario.scenarioId, scenario]));
+  const truthDefectIdsByScenario = new Map<string, Set<string>>();
+  for (const defect of truth.defects) {
+    if (!scenariosById.has(defect.scenarioId)) {
+      throw new BenchmarkError(
+        "GroundTruthMismatch",
+        `Ground truth defect "${defect.defectId}" references unknown scenario "${defect.scenarioId}".`,
+      );
+    }
+    const defectIds = truthDefectIdsByScenario.get(defect.scenarioId) ?? new Set<string>();
+    if (defectIds.has(defect.defectId)) {
+      throw new BenchmarkError(
+        "GroundTruthMismatch",
+        `Duplicate ground-truth defect "${defect.defectId}" for scenario "${defect.scenarioId}".`,
+      );
+    }
+    defectIds.add(defect.defectId);
+    truthDefectIdsByScenario.set(defect.scenarioId, defectIds);
+  }
+
+  for (const scenario of manifest.scenarios) {
+    const duplicateExpectedDefectId = firstDuplicate(scenario.expectedDefectIds);
+    if (duplicateExpectedDefectId !== undefined) {
+      throw new BenchmarkError(
+        "BenchmarkManifestInvalid",
+        `Scenario "${scenario.scenarioId}" expectedDefectIds contains duplicate defect "${duplicateExpectedDefectId}".`,
+      );
+    }
+    const expected = new Set(scenario.expectedDefectIds);
+    const actual = truthDefectIdsByScenario.get(scenario.scenarioId) ?? new Set<string>();
+    const missing = [...expected].filter((defectId) => !actual.has(defectId)).sort();
+    const unexpected = [...actual].filter((defectId) => !expected.has(defectId)).sort();
+    if (missing.length > 0 || unexpected.length > 0) {
+      throw new BenchmarkError(
+        "GroundTruthMismatch",
+        `Scenario "${scenario.scenarioId}" expectedDefectIds must exactly match Ground Truth defects` +
+          ` (missing from Ground Truth: ${formatDefectList(missing)}; unexpected in Ground Truth: ${formatDefectList(unexpected)}).`,
+      );
+    }
+  }
+}
+
+function formatDefectList(defectIds: readonly string[]): string {
+  return defectIds.length === 0 ? "none" : defectIds.join(", ");
 }

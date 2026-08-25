@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
+  assertGroundTruthConsistent,
   parseGroundTruth,
   parseManifest,
   type DetectionBenchmarkManifest,
@@ -40,6 +41,7 @@ export async function loadBenchmark(benchmarkDir: string): Promise<LoadedBenchma
   }
   const [groundTruthRef] = [...groundTruthRefs];
   const groundTruth = parseGroundTruth(await readJson(resolveRef(baseDir, groundTruthRef!)));
+  assertGroundTruthConsistent(manifest, groundTruth);
 
   const scenarios: ScenarioDefinition[] = [];
   for (const scenario of manifest.scenarios) {

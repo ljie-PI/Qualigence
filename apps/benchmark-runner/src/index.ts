@@ -7,6 +7,7 @@ export type { LoadedBenchmark } from "./loader.js";
 export { createReferenceModelAgentFactory } from "./reference-model-provider.js";
 
 export type {
+  ReferenceModelAgentFactoryDependencies,
   ReferenceModelProviderEnvironment,
 } from "./reference-model-provider.js";
 

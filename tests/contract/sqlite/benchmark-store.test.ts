@@ -50,7 +50,7 @@ const manifest: DetectionBenchmarkManifest = {
 const groundTruth: GroundTruth = {
   benchmarkVersion: manifest.benchmarkVersion,
   defects: [
-    { scenarioId: "checkout-bug", defectId: "bug-1", severity: "P1", stable: true },
+    { scenarioId: "checkout-bug", defectId: "bug-1", severity: "P0", stable: true },
   ],
 };
 

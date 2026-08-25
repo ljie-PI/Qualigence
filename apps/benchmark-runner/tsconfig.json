@@ -10,6 +10,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../../packages/benchmarking/detection" },
+    { "path": "../../packages/execution-application" },
     { "path": "../../packages/runner-components/exploration" },
     { "path": "../../packages/runner-components/model-agent" },
     { "path": "../../packages/model-gateway" },

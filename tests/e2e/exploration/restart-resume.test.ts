@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ScenarioDefinition } from "@qualigence/benchmark-runner";
+import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import {
   groundTruthSha256,
   manifestSha256,
@@ -53,7 +54,7 @@ const manifest: DetectionBenchmarkManifest = {
 
 const groundTruth: GroundTruth = {
   benchmarkVersion: manifest.benchmarkVersion,
-  defects: [{ scenarioId: "checkout-bug", defectId: "bug-1", severity: "P1", stable: true }],
+  defects: [{ scenarioId: "checkout-bug", defectId: "bug-1", severity: "P0", stable: true }],
 };
 
 const scenario: ScenarioDefinition = {
@@ -84,8 +85,8 @@ describe("exploration restart/resume acceptance", () => {
     const dir = await mkdtemp(join(process.cwd(), ".tmp-exploration-resume-"));
     const databaseFile = join(dir, "benchmark.db");
     const scriptFile = join(dir, "restart-child.mjs");
-    const runId = runIdFor(manifest, profile, groundTruth);
-    const attemptId = `${runId}:checkout-bug:1`;
+    const runId = runIdFor(manifest, profile, groundTruth, [scenario]);
+    const attemptId = attemptIdFor(manifest, profile, groundTruth, [scenario], "checkout-bug", 1);
     try {
       await writeFile(scriptFile, childScript(), "utf8");
 
@@ -153,7 +154,7 @@ function runChild(
 
 function childScript(): string {
   return `
-import { runBenchmark } from ${JSON.stringify("@qualigence/benchmark-runner")};
+import { createScenarioWalkTestDoubleAgentFactory, runBenchmark } from ${JSON.stringify("@qualigence/benchmark-runner")};
 import { SqliteBenchmarkStore, SqliteRuntime } from ${JSON.stringify("@qualigence/sqlite-runtime")};
 const manifest = ${JSON.stringify(manifest)};
 const groundTruth = ${JSON.stringify(groundTruth)};
@@ -185,6 +186,7 @@ try {
     manifest,
     groundTruth,
     scenarios,
+    agentFactory: createScenarioWalkTestDoubleAgentFactory(),
     store: mode === "crash" ? new CrashAfterSafeCheckpointStore(store) : store,
     createdAt: "2026-08-01T00:00:00.000Z",
   });
@@ -203,8 +205,103 @@ function runIdFor(
   inputManifest: DetectionBenchmarkManifest,
   inputProfile: ReferenceModelProfile,
   inputTruth: GroundTruth,
+  inputScenarios: readonly ScenarioDefinition[],
 ): string {
-  return createHash("sha256")
-    .update(`${manifestSha256(inputManifest)}\u0000${referenceProfileSha256(inputProfile)}\u0000${groundTruthSha256(inputTruth)}`, "utf8")
-    .digest("hex");
+  const bindings = runBindings(inputManifest, inputProfile, inputTruth, inputScenarios);
+  return createHash("sha256").update(bindings.inputSha256, "utf8").digest("hex");
+}
+
+function attemptIdFor(
+  inputManifest: DetectionBenchmarkManifest,
+  inputProfile: ReferenceModelProfile,
+  inputTruth: GroundTruth,
+  inputScenarios: readonly ScenarioDefinition[],
+  scenarioId: string,
+  repetition: number,
+): string {
+  const bindings = runBindings(inputManifest, inputProfile, inputTruth, inputScenarios);
+  const manifestScenario = inputManifest.scenarios.find((entry) => entry.scenarioId === scenarioId);
+  const scenarioDefinition = inputScenarios.find((entry) => entry.scenarioId === scenarioId);
+  if (manifestScenario === undefined || scenarioDefinition === undefined) {
+    throw new Error(`Unknown scenario ${scenarioId}`);
+  }
+  const sourceBindingHash = canonicalPayloadHash({
+    benchmarkVersion: inputManifest.benchmarkVersion,
+    manifestSha256: manifestSha256(inputManifest),
+    profileSha256: bindings.profileHash,
+    groundTruthSha256: groundTruthSha256(inputTruth),
+    scenario: manifestScenario,
+    scenarioDefinition,
+    repetition,
+  });
+  const attemptBindingHash = canonicalPayloadHash({
+    runId: bindings.runId,
+    sourceBindingHash,
+    policyBindingHash: bindings.policyBindingHash,
+    seedBindingHash: bindings.seedBindingHash,
+    scenarioId,
+    repetition,
+  });
+  return `${bindings.runId}:${attemptBindingHash}`;
+}
+
+function runBindings(
+  inputManifest: DetectionBenchmarkManifest,
+  inputProfile: ReferenceModelProfile,
+  inputTruth: GroundTruth,
+  inputScenarios: readonly ScenarioDefinition[],
+): {
+  readonly inputSha256: string;
+  readonly runId: string;
+  readonly profileHash: string;
+  readonly policyBindingHash: string;
+  readonly seedBindingHash: string;
+} {
+  const actualProfile = {
+    ...inputProfile,
+    profileId: `${inputProfile.profileId}:edit-time-test-double`,
+    providerId: "qualigence-edit-time-test-double",
+    modelId: "scenario-walk-agent",
+    promptVersion: `${inputProfile.promptVersion}:scenario-walk-agent`,
+  };
+  const policy = {
+    seedSkillBundleIds: [],
+    allowedActionKinds: ["navigate", "click", "input"],
+    allowedOrigins: allowedOriginsFor(inputScenarios),
+    maximumSteps: inputProfile.maximumSteps,
+    maximumWallClockMs: inputProfile.maximumWallClockMs,
+    maximumModelTokens: inputProfile.maximumModelTokens,
+    maximumStateVisits: inputProfile.maximumSteps,
+    maximumRecoveries: 0,
+    riskCeiling: "RecoverableMutation",
+  };
+  const policyBindingHash = canonicalPayloadHash(policy);
+  const seedBindingHash = canonicalPayloadHash({
+    policySeedSkillBundleIds: policy.seedSkillBundleIds,
+    seeds: [],
+  });
+  const profileHash = referenceProfileSha256(actualProfile);
+  const inputSha256 = canonicalPayloadHash({
+    manifestSha256: manifestSha256(inputManifest),
+    profileSha256: profileHash,
+    groundTruthSha256: groundTruthSha256(inputTruth),
+    policyBindingHash,
+    seedBindingHash,
+    scenarioDefinitions: inputScenarios,
+  });
+  const runId = createHash("sha256").update(inputSha256, "utf8").digest("hex");
+  return { inputSha256, runId, profileHash, policyBindingHash, seedBindingHash };
+}
+
+function allowedOriginsFor(inputScenarios: readonly ScenarioDefinition[]): readonly string[] {
+  const origins = new Set<string>();
+  for (const inputScenario of inputScenarios) {
+    for (const state of inputScenario.states) {
+      origins.add(new URL(state.url).origin);
+    }
+    if (inputScenario.seedUrl !== undefined) {
+      origins.add(new URL(inputScenario.seedUrl).origin);
+    }
+  }
+  return [...origins].sort();
 }

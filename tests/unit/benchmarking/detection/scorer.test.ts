@@ -190,6 +190,46 @@ describe("scoreBenchmark", () => {
     expect(report.metrics.stableReproductionRate).toEqual({ numerator: 7, denominator: 10, value: 0.7 });
   });
 
+  it("rejects expected defects omitted from Ground Truth before denominator-zero scoring can pass", () => {
+    const m = manifest([faultScenario("checkout-security", ["p0-security-bypass"])], { repetitions: 1 });
+    const truth = truthOf([]);
+    const attempts = completeAttempts(m, () => []);
+
+    expect(() => scoreBenchmark(m, attempts, truth)).toThrow(
+      expect.objectContaining({
+        code: "GroundTruthMismatch",
+        message: expect.stringContaining("missing from Ground Truth: p0-security-bypass"),
+      }),
+    );
+  });
+
+  it("rejects extra Ground Truth defects omitted from scenario expectedDefectIds", () => {
+    const m = manifest([faultScenario("checkout-security", [])], { repetitions: 1 });
+    const truth = truthOf([
+      defect("checkout-security", "p0-security-bypass", { severity: "P0" }),
+    ]);
+    const attempts = completeAttempts(m, () => []);
+
+    expect(() => scoreBenchmark(m, attempts, truth)).toThrow(
+      expect.objectContaining({
+        code: "GroundTruthMismatch",
+        message: expect.stringContaining("unexpected in Ground Truth: p0-security-bypass"),
+      }),
+    );
+  });
+
+  it("fails the gate when Ground Truth has no P0 denominator to satisfy exact P0 recall", () => {
+    const m = manifest([faultScenario("cart-known-bugs", ["d1"])], { repetitions: 1 });
+    const truth = truthOf([defect("cart-known-bugs", "d1", { severity: "P1" })]);
+    const attempts = completeAttempts(m, () => [finding("d1")]);
+
+    const report = scoreBenchmark(m, attempts, truth);
+
+    expect(report.metrics.p0Recall).toEqual({ numerator: 0, denominator: 0, value: 0 });
+    expect(report.gate.status).toBe("failed");
+    expect(report.gate.failureCodes).toContain("P0RecallBelowMinimum");
+  });
+
   it("fails the gate when any P0 defect is missed regardless of other totals", () => {
     const m = manifest([faultScenario("cart-known-bugs", ["p0", "d2", "d3", "d4", "d5"])], { repetitions: 1 });
     const truth = truthOf([

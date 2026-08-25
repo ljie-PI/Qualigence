@@ -1,5 +1,9 @@
 import { ExplorationAgent } from "@qualigence/model-agent";
-import { ModelGateway, type StructuredModelInvoker } from "@qualigence/model-gateway";
+import {
+  ModelGateway,
+  type ModelGatewayDependencies,
+  type StructuredModelInvoker,
+} from "@qualigence/model-gateway";
 import { OpenAICompatibleModelProvider } from "@qualigence/openai-compatible-model-provider";
 import type { ReferenceModelProfile } from "@qualigence/benchmarking-detection";
 import type { BenchmarkAgentFactory } from "./run.js";
@@ -9,6 +13,11 @@ export interface ReferenceModelProviderEnvironment {
   readonly QUALIGENCE_REFERENCE_MODEL_API_KEY?: string | undefined;
   readonly QUALIGENCE_MODEL_BASE_URL?: string | undefined;
   readonly QUALIGENCE_MODEL_API_KEY?: string | undefined;
+}
+
+export interface ReferenceModelAgentFactoryDependencies {
+  readonly invocationObserver?: ModelGatewayDependencies["invocationObserver"];
+  readonly clock?: ModelGatewayDependencies["clock"];
 }
 
 const SUPPORTED_EXPLORATION_PROMPT_VERSION = "prompt/2026-08-01";
@@ -29,6 +38,7 @@ export class ReferenceModelProviderConfigurationError extends Error {
 export function createReferenceModelAgentFactory(
   profile: ReferenceModelProfile,
   env: ReferenceModelProviderEnvironment = process.env,
+  dependencies: ReferenceModelAgentFactoryDependencies = {},
 ): BenchmarkAgentFactory {
   if (profile.promptVersion !== SUPPORTED_EXPLORATION_PROMPT_VERSION) {
     throw new ReferenceModelProviderConfigurationError(
@@ -63,6 +73,8 @@ export function createReferenceModelAgentFactory(
 
   const gateway = new ModelGateway({
     provider: new OpenAICompatibleModelProvider({ baseUrl, apiKey }),
+    ...(dependencies.invocationObserver === undefined ? {} : { invocationObserver: dependencies.invocationObserver }),
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
   const invoker = assertManifestModelInvoker(gateway, profile.modelId);
 

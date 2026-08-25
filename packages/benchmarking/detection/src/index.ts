@@ -2,6 +2,7 @@ export {
   BenchmarkError,
   DEFAULT_DETECTION_THRESHOLDS,
   DETECTION_BENCHMARK_SCHEMA_VERSION,
+  assertGroundTruthConsistent,
   groundTruthSha256,
   manifestSha256,
   parseGroundTruth,

@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
+import { PersistedModelInvocationObserver } from "@qualigence/execution-application";
+import { SqliteBenchmarkStore, SqliteModelInvocationStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { loadBenchmark } from "./loader.js";
 import {
   createReferenceModelAgentFactory,
@@ -86,13 +87,18 @@ export async function main(argv: readonly string[]): Promise<number> {
   await mkdir(dirname(options.databasePath), { recursive: true });
   const runtime = await SqliteRuntime.open({ filename: options.databasePath, busyTimeoutMs: 5_000 });
   const store: BenchmarkStore = new SqliteBenchmarkStore(runtime);
+  const modelInvocations = new SqliteModelInvocationStore(runtime);
 
   try {
     const outcome = await runBenchmark({
       manifest: loaded.manifest,
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
-      agentFactory: createReferenceModelAgentFactory(loaded.manifest.referenceProfile),
+      agentFactory: createReferenceModelAgentFactory(
+        loaded.manifest.referenceProfile,
+        process.env,
+        { invocationObserver: new PersistedModelInvocationObserver(modelInvocations) },
+      ),
       store,
       createdAt: new Date().toISOString(),
     });
