@@ -106,6 +106,74 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Safe reflected content"),
+      "/delegated": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          document.body.addEventListener('input', event => {
+            document.getElementById('mirror').textContent = event.target.value;
+          });
+        </script>
+      `, "Delegated reflected secret"),
+      "/shadow-open": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          const mirror = document.createElement('div');
+          mirror.textContent = 'waiting';
+          shadow.appendChild(mirror);
+          input.addEventListener('input', event => {
+            mirror.textContent = event.target.value;
+          });
+        </script>
+      `, "Open shadow reflected secret"),
+      "/shadow-closed": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+          const mirror = document.createElement('div');
+          mirror.textContent = 'waiting';
+          shadow.appendChild(mirror);
+          input.addEventListener('input', event => {
+            mirror.textContent = event.target.value;
+          });
+        </script>
+      `, "Closed shadow reflected secret"),
+      "/mutation-overflow": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', () => {
+            const mirror = document.getElementById('mirror');
+            for (let index = 0; index < 1025; index += 1) {
+              mirror.setAttribute('data-overflow-' + index, String(index));
+            }
+          });
+        </script>
+      `, "Mutation overflow reflected secret"),
+      "/late": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 360px; height: 180px; }
+          #mirror {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            width: 180px;
+            height: 32px;
+            color: white;
+            background: rgb(250, 250, 250);
+            font: 16px sans-serif;
+          }
+          label { display: block; margin-top: 80px; }
+        </style>
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+      `, "Late reflected secret"),
     });
   });
 
@@ -180,6 +248,92 @@ describe("Playwright reflected sensitive evidence", () => {
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
     await session.withPage((page) => page.waitForTimeout(25));
     await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/async` } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails evidence closed for delegated reflected matching content", async () => {
+    const { observer, resolver, executor } = await wire("/delegated");
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/delegated` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "delegated reflect secret",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/delegated` } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it.each(["/shadow-open", "/shadow-closed"])("fails evidence closed for %s reflected matching content", async (path) => {
+    const { observer, resolver, executor } = await wire(path);
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "shadow reflect secret",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails evidence closed when the DOM-to-screenshot window exposes matching content", async () => {
+    session = new PlaywrightBrowserSession(options("/late"));
+    await session.start();
+    let exposeLateSecret = false;
+    const observer = new PlaywrightObserver(session, {
+      afterDomCollection: async (page) => {
+        if (!exposeLateSecret) return;
+        await page.evaluate((secret) => {
+          const browser = globalThis as unknown as {
+            readonly document: { getElementById(id: string): { textContent: string } | null };
+          };
+          const mirror = browser.document.getElementById("mirror");
+          if (mirror === null) throw new Error("Missing late mirror.");
+          mirror.textContent = secret;
+        }, SECRET);
+      },
+    });
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/late` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "late reflect secret",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    exposeLateSecret = true;
+    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/late` } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails evidence closed when reflected mutation bounds are exceeded", async () => {
+    const { observer, resolver, executor } = await wire("/mutation-overflow");
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/mutation-overflow` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "mutation overflow secret",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/mutation-overflow` } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
     expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));

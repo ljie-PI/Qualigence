@@ -3,6 +3,7 @@ import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigen
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 import {
   SensitiveEvidenceAuthority,
+  SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
 } from "./sensitive-evidence-authority.js";
 
@@ -70,6 +71,47 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
     "SensitiveEvidenceUnavailable",
     "Sensitive target evidence could not be proven.",
   );
+}
+
+async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
+  if (typeof page.addInitScript !== "function") return;
+  await page.addInitScript((propertyName: string) => {
+    type SensitiveRuntimeRegistry = {
+      readonly roots: ShadowRoot[];
+      readonly listenerTargets: { readonly type: string; readonly target: EventTarget }[];
+      readonly originalAttachShadow: typeof Element.prototype.attachShadow;
+      readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
+    };
+    const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
+    if (win[propertyName] !== undefined) return;
+    const registry: SensitiveRuntimeRegistry = {
+      roots: [],
+      listenerTargets: [],
+      originalAttachShadow: Element.prototype.attachShadow,
+      originalAddEventListener: EventTarget.prototype.addEventListener,
+    };
+    Object.defineProperty(win, propertyName, {
+      configurable: false,
+      enumerable: false,
+      value: registry,
+      writable: false,
+    });
+    Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
+      const root = registry.originalAttachShadow.call(this, init);
+      registry.roots.push(root);
+      return root;
+    };
+    EventTarget.prototype.addEventListener = function addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | AddEventListenerOptions,
+    ): void {
+      if ((type === "input" || type === "change") && listener !== null) {
+        registry.listenerTargets.push({ type, target: this });
+      }
+      registry.originalAddEventListener.call(this, type, listener, options);
+    };
+  }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
 }
 
 export interface WebSessionOptions {
@@ -479,6 +521,7 @@ export class PlaywrightBrowserSession {
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
 
       const page = await context.newPage();
+      await installSensitiveShadowRootTracker(page);
       this.page = page;
       page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;

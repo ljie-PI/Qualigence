@@ -14,11 +14,12 @@ import type { CapturedArtifact } from "./types.js";
 import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_MASK_ID_ATTRIBUTE,
+  SENSITIVE_SHADOW_ROOTS_PROPERTY,
   SENSITIVE_TARGET_IDS_PROPERTY,
 } from "./sensitive-evidence-authority.js";
 
 export interface PlaywrightObserverHooks {
-  readonly afterDomCollection?: () => void | Promise<void>;
+  readonly afterDomCollection?: (page: Page) => void | Promise<void>;
 }
 
 async function captureScreenshot(
@@ -80,12 +81,37 @@ interface BrowserObservationCapture {
   readonly sensitiveEvidenceUnavailable: boolean;
 }
 
+interface BrowserObservationCaptureInput {
+  readonly sensitiveTargetIdsProperty: string;
+  readonly sensitiveMaskIdAttribute: string;
+  readonly sensitiveEvidenceStateProperty: string;
+  readonly sensitiveShadowRootsProperty: string;
+}
+
+function browserObservationCaptureInput(): BrowserObservationCaptureInput {
+  return {
+    sensitiveTargetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+    sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+    sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+  };
+}
+
+async function collectAuthorizedPageObservation(
+  page: Page,
+  assertCaptureAuthority: () => void,
+): Promise<BrowserObservationCapture> {
+  return readPageValue(
+    assertCaptureAuthority,
+    async () => (await page.evaluate(
+      collectPageObservation,
+      browserObservationCaptureInput(),
+    )) as BrowserObservationCapture,
+  );
+}
+
 function collectPageObservation(
-  input: {
-    readonly sensitiveTargetIdsProperty: string;
-    readonly sensitiveMaskIdAttribute: string;
-    readonly sensitiveEvidenceStateProperty: string;
-  },
+  input: BrowserObservationCaptureInput,
 ): BrowserObservationCapture {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
@@ -257,9 +283,10 @@ function collectPageObservation(
     if (state === undefined) return false;
     if (state.active !== undefined && state.active !== null) return true;
     if (state.poisoned === true) return true;
+    const records = state.records ?? [];
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const ids = readSensitiveTargetIds(element);
-      for (const record of state.records ?? []) {
+      for (const record of records) {
         for (const value of sensitiveValues(element)) {
           if (!carriesForm(value, record.forms)) continue;
           if (hasSensitiveTargetId(ids, record.markerId)) continue;
@@ -268,7 +295,41 @@ function collectPageObservation(
         }
       }
     }
+    for (const element of shadowRootElements()) {
+      for (const record of records) {
+        for (const value of sensitiveValues(element)) {
+          if (carriesForm(value, record.forms)) return true;
+        }
+      }
+    }
     return false;
+  }
+
+  function shadowRootElements(): Element[] {
+    const result: Element[] = [];
+    const roots = new Set<ShadowRoot>();
+    const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
+      readonly roots?: readonly unknown[];
+    } | undefined;
+    for (const root of registry?.roots ?? []) {
+      if (root instanceof ShadowRoot) roots.add(root);
+    }
+    for (const element of Array.from(document.querySelectorAll("*"))) {
+      const shadowRoot = element.shadowRoot;
+      if (shadowRoot !== null) roots.add(shadowRoot);
+    }
+    const pending = [...roots];
+    for (const root of pending) {
+      for (const element of Array.from(root.querySelectorAll("*"))) {
+        result.push(element);
+        const nestedShadowRoot = element.shadowRoot;
+        if (nestedShadowRoot !== null && !roots.has(nestedShadowRoot)) {
+          roots.add(nestedShadowRoot);
+          pending.push(nestedShadowRoot);
+        }
+      }
+    }
+    return result;
   }
 
   const selector =
@@ -380,21 +441,16 @@ export class PlaywrightObserver implements Observer {
         this.session.assertPageTargetOrigin(page, navigationGeneration);
       };
       this.session.assertSensitiveEvidenceAvailable();
-      const captured = await readPageValue(
-        assertCaptureAuthority,
-        async () => (await page.evaluate(
-          collectPageObservation,
-          {
-            sensitiveTargetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
-            sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
-            sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
-          },
-        )) as BrowserObservationCapture,
-      );
+      const captured = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
       if (captured.sensitiveEvidenceUnavailable) {
         this.session.markSensitiveEvidenceUnavailable();
       }
-      await this.hooks.afterDomCollection?.();
+      this.session.assertSensitiveEvidenceAvailable();
+      await this.hooks.afterDomCollection?.(page);
+      const preScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+      if (preScreenshotCheck.sensitiveEvidenceUnavailable) {
+        this.session.markSensitiveEvidenceUnavailable();
+      }
       assertCaptureAuthority();
       this.session.assertSensitiveEvidenceAvailable();
       const raw = captured.candidates.map((candidate) => ({
@@ -451,7 +507,12 @@ export class PlaywrightObserver implements Observer {
         .map((candidate) => candidate.sensitiveMaskId)
         .filter((maskId): maskId is string => maskId !== undefined && /^[A-Za-z0-9_-]+$/.test(maskId)))];
       const screenshot = await captureScreenshot(page, assertCaptureAuthority, maskIds);
+      const postScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+      if (postScreenshotCheck.sensitiveEvidenceUnavailable) {
+        this.session.markSensitiveEvidenceUnavailable();
+      }
       assertCaptureAuthority();
+      this.session.assertSensitiveEvidenceAvailable();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
       this.session.registerCapturedObservation(page, graph.graphId, {
         descriptors,

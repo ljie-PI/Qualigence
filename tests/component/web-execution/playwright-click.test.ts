@@ -1077,7 +1077,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
     expect(clickEffect).toHaveBeenCalledOnce();
     expect(modelContexts).toHaveLength(1);
-    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledTimes(3);
     expect(title).toHaveBeenCalledTimes(1);
     expect(screenshot).toHaveBeenCalledTimes(1);
     expect(trace.filter((event) => event.stage === "observation")).toHaveLength(1);

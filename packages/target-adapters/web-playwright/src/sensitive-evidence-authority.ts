@@ -2,6 +2,7 @@ export const REDACTED_SENSITIVE_TEXT = "[redacted]";
 export const SENSITIVE_TARGET_IDS_PROPERTY = "__qualigenceSensitiveTargetIds";
 export const SENSITIVE_MASK_ID_ATTRIBUTE = "data-qualigence-sensitive-mask";
 export const SENSITIVE_EVIDENCE_STATE_PROPERTY = "__qualigenceSensitiveEvidenceState";
+export const SENSITIVE_SHADOW_ROOTS_PROPERTY = "__qualigenceSensitiveShadowRoots";
 
 const MAX_SENSITIVE_RECORDS = 100;
 const MAX_FORMS_PER_RECORD = 4;

@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { once } from "node:events";
+import { inflateSync } from "node:zlib";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import {
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import { PlaywrightWebTargetAdapter, type CapturedArtifact } from "@qualigence/web-playwright";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
@@ -49,6 +51,23 @@ describe("production valueRef browser execution", () => {
   it("runs immutable input/select Plan jobs through RunnerOfferRuntime without plaintext leakage", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 520px; height: 260px; font: 16px sans-serif; }
+          label { display: block; margin-left: 20px; }
+          label:first-of-type { margin-top: 170px; }
+          #input-reflection, #select-reflection, #equal-text {
+            position: absolute;
+            left: 20px;
+            width: 260px;
+            height: 32px;
+            margin: 0;
+            color: white;
+            font: 16px sans-serif;
+          }
+          #input-reflection { top: 20px; background: rgb(250, 250, 250); }
+          #select-reflection { top: 70px; background: rgb(250, 250, 250); }
+          #equal-text { top: 120px; background: rgb(123, 45, 67); }
+        </style>
         <label>Notes <textarea aria-label="Notes"></textarea></label>
         <label>Country
           <select aria-label="Country">
@@ -166,6 +185,15 @@ describe("production valueRef browser execution", () => {
       complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
       close: async () => undefined,
     };
+    const capturedArtifacts = new Map<string, readonly CapturedArtifact[]>();
+    class ArtifactCapturingWebTargetAdapter extends PlaywrightWebTargetAdapter {
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        const graph = await super.capture(job, signal);
+        capturedArtifacts.set(graph.graphId, await super.captureArtifacts(graph.graphId));
+        return graph;
+      }
+    }
+
     const config: RunnerConfig = {
       runnerId: "runner-value-ref",
       coreAddress: "unused",
@@ -187,6 +215,7 @@ describe("production valueRef browser execution", () => {
       session,
       spool,
       valueProvider,
+      createTarget: (targetOptions) => new ArtifactCapturingWebTargetAdapter(targetOptions),
     });
 
     try {
@@ -219,21 +248,36 @@ describe("production valueRef browser execution", () => {
     expect(inputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(inputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
     expect(inputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
-    expect(targetNode(selectObservation, "combobox", "Country")).toMatchObject({
-      text: "[redacted]",
-      value: "[redacted]",
-    });
+    const selectTarget = targetNode(selectObservation, "combobox", "Country");
+    expect(selectTarget).toMatchObject({ value: "[redacted]" });
+    expect(JSON.stringify(selectObservation)).not.toContain(SELECT_TEXT);
     expect(selectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
+
+    const inputArtifacts = artifactsForGraph(capturedArtifacts, inputObservation.graphId);
+    const selectArtifacts = artifactsForGraph(capturedArtifacts, selectObservation.graphId);
+    assertArtifactJsonRedacted(inputArtifacts, [INPUT_VALUE, INPUT_BROWSER_VALUE, SELECT_VALUE, SELECT_TEXT], ["[redacted]", INPUT_EQUAL_TEXT]);
+    assertArtifactJsonRedacted(selectArtifacts, [INPUT_VALUE, INPUT_BROWSER_VALUE, SELECT_VALUE, SELECT_TEXT], ["[redacted]", INPUT_EQUAL_TEXT]);
+    const [inputMirrorPixel, inputEqualPixel] = await samplePngPixels(pngArtifact(inputArtifacts).bytes, [
+      [250, 30],
+      [250, 130],
+    ]);
+    expect(inputMirrorPixel).toEqual([0, 0, 0, 255]);
+    expect(inputEqualPixel).toEqual([123, 45, 67, 255]);
+    const [selectMirrorPixel, selectEqualPixel] = await samplePngPixels(pngArtifact(selectArtifacts).bytes, [
+      [250, 80],
+      [250, 130],
+    ]);
+    expect(selectMirrorPixel).toEqual([0, 0, 0, 255]);
+    expect(selectEqualPixel).toEqual([123, 45, 67, 255]);
 
     const preAckInputObservation = finalObservation(spooledEvents, "run-input");
     const preAckSelectObservation = finalObservation(spooledEvents, "run-select");
     expect(preAckInputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(preAckInputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
     expect(preAckInputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
-    expect(targetNode(preAckSelectObservation, "combobox", "Country")).toMatchObject({
-      text: "[redacted]",
-      value: "[redacted]",
-    });
+    const preAckSelectTarget = targetNode(preAckSelectObservation, "combobox", "Country");
+    expect(preAckSelectTarget).toMatchObject({ value: "[redacted]" });
+    expect(JSON.stringify(preAckSelectObservation)).not.toContain(SELECT_TEXT);
     expect(preAckSelectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
 
     await spool.close();
@@ -324,6 +368,135 @@ function targetNode(graph: ObservationGraphV1, role: string, name: string): Obse
   const node = graph.nodes.find((candidate) => candidate.role === role && candidate.name === name);
   if (node === undefined) throw new Error(`Missing ${role} ${name} node.`);
   return node;
+}
+
+function artifactsForGraph(
+  artifactsByGraph: ReadonlyMap<string, readonly CapturedArtifact[]>,
+  graphId: string,
+): readonly CapturedArtifact[] {
+  const artifacts = artifactsByGraph.get(graphId);
+  if (artifacts === undefined) throw new Error(`Missing captured artifacts for ${graphId}.`);
+  expect(artifacts.some((artifact) => artifact.mediaType === "application/json")).toBe(true);
+  expect(artifacts.some((artifact) => artifact.mediaType === "image/png")).toBe(true);
+  return artifacts;
+}
+
+function pngArtifact(artifacts: readonly CapturedArtifact[]): CapturedArtifact {
+  const artifact = artifacts.find((candidate) => candidate.mediaType === "image/png");
+  if (artifact === undefined) throw new Error("Missing PNG artifact.");
+  return artifact;
+}
+
+function assertArtifactJsonRedacted(
+  artifacts: readonly CapturedArtifact[],
+  forbidden: readonly string[],
+  required: readonly string[],
+): void {
+  const text = artifacts
+    .filter((artifact) => artifact.mediaType === "application/json")
+    .map((artifact) => new TextDecoder().decode(artifact.bytes))
+    .join("\n");
+  for (const value of forbidden) {
+    expect(text).not.toContain(value);
+  }
+  for (const value of required) {
+    expect(text).toContain(value);
+  }
+}
+
+async function samplePngPixels(
+  bytes: Uint8Array,
+  points: readonly (readonly [number, number])[],
+): Promise<readonly (readonly [number, number, number, number])[]> {
+  const image = decodePngRgba(bytes);
+  return points.map(([x, y]) => {
+    const offset = (y * image.width + x) * 4;
+    return Array.from(image.rgba.slice(offset, offset + 4)) as [number, number, number, number];
+  });
+}
+
+function decodePngRgba(bytes: Uint8Array): { readonly width: number; readonly rgba: Uint8Array } {
+  const buffer = Buffer.from(bytes);
+  const signature = "89504e470d0a1a0a";
+  if (buffer.subarray(0, 8).toString("hex") !== signature) throw new Error("Invalid PNG signature.");
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idat: Buffer[] = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8]!;
+      colorType = data[9]!;
+      const interlace = data[12]!;
+      if (bitDepth !== 8 || interlace !== 0) throw new Error("Unsupported PNG format.");
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (width <= 0 || height <= 0 || channels === 0) throw new Error("Unsupported PNG color type.");
+  const inflated = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const scanlines = new Uint8Array(height * stride);
+  let sourceOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[sourceOffset]!;
+    sourceOffset += 1;
+    for (let x = 0; x < stride; x += 1) {
+      const raw = inflated[sourceOffset]!;
+      sourceOffset += 1;
+      const left = x >= channels ? scanlines[y * stride + x - channels]! : 0;
+      const up = y > 0 ? scanlines[(y - 1) * stride + x]! : 0;
+      const upperLeft = y > 0 && x >= channels ? scanlines[(y - 1) * stride + x - channels]! : 0;
+      scanlines[y * stride + x] = (raw + pngFilterDelta(filter, left, up, upperLeft)) & 0xff;
+    }
+  }
+  const rgba = new Uint8Array(width * height * 4);
+  for (let index = 0; index < width * height; index += 1) {
+    const source = index * channels;
+    const target = index * 4;
+    if (channels === 1) {
+      rgba[target] = scanlines[source]!;
+      rgba[target + 1] = scanlines[source]!;
+      rgba[target + 2] = scanlines[source]!;
+      rgba[target + 3] = 255;
+    } else {
+      rgba[target] = scanlines[source]!;
+      rgba[target + 1] = scanlines[source + 1]!;
+      rgba[target + 2] = scanlines[source + 2]!;
+      rgba[target + 3] = channels === 4 ? scanlines[source + 3]! : 255;
+    }
+  }
+  return { width, rgba };
+}
+
+function pngFilterDelta(filter: number, left: number, up: number, upperLeft: number): number {
+  if (filter === 0) return 0;
+  if (filter === 1) return left;
+  if (filter === 2) return up;
+  if (filter === 3) return Math.floor((left + up) / 2);
+  if (filter === 4) return paeth(left, up, upperLeft);
+  throw new Error(`Unsupported PNG filter ${filter}.`);
+}
+
+function paeth(left: number, up: number, upperLeft: number): number {
+  const estimate = left + up - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) return left;
+  if (upDistance <= upperLeftDistance) return up;
+  return upperLeft;
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {

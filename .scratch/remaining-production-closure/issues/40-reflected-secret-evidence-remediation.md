@@ -122,3 +122,10 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 - Predecessor merge evidence: Ticket 39 is `resolved` with PR #94 merge commit `8fd56808dea9fc8b202e0d4833a0e8f5606e6001` recorded in `.scratch/remaining-production-closure/issues/39-browser-normalized-secret-redaction-remediation.md` and present in current history.
 - Behavior Matrix applicability: complete matrix in this ticket is applicable for synchronous light-DOM causal reflected evidence. Scheduler, Shadow DOM, Promise-owner, DOM-getter, CDP geometry, independent PNG hardening, and Runner log rows remain out of scope here and are boundary-owned by Ticket 41+.
 - Planned Gates: `corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts`, then `corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains deferred per ticket protocol.
+
+### review-fix — 2026-08-25
+
+- Reviewed head: `1592b0e1d8b428ae2c102dab6c498bce7a6d0fa1`.
+- Core blockers addressed: Shadow DOM sensitive forms now fail closed without accepted Graph/Artifact bytes; delegated/unattributed matching mutations no longer become successful classifications; capture rechecks sensitive evidence before and after screenshot registration points to close the DOM-collection-to-screenshot race; E2E select redaction assertions and decoded PNG Artifact sampling were updated.
+- Fix commit: pending in this review-fix commit.
+- Gates run: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 4 files / 66 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed: 1 file / 1 test); `CI=true corepack pnpm typecheck` (passed); `git diff --check` (passed).
