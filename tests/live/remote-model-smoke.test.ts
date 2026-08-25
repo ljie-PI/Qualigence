@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunExecutionResult } from "@qualigence/execution-application";
-import type { ObservationGraph, TraceEvent } from "@qualigence/runner-protocol";
+import type { ObservationGraphV1, TraceEvent } from "@qualigence/runner-protocol";
 import { runCli } from "../helpers/cli-process.js";
 import { withTempDataDir, type TempDataDir } from "../helpers/temp-data-dir.js";
 import { startCartFixture, type FixtureHandle } from "../fixtures/web-cart/server.js";
@@ -120,7 +120,7 @@ liveDescribe("remote model smoke (opt-in)", () => {
     );
     expect(observationEvent).toBeDefined();
     expect(decisionEvent).toBeDefined();
-    const graph = observationEvent!.payload as ObservationGraph;
+    const graph = observationEvent!.payload as ObservationGraphV1;
     const decision = decisionEvent!.payload as { target: { nodeId: string } };
     expect(graph.nodes.some((node) => node.id === decision.target.nodeId)).toBe(true);
 

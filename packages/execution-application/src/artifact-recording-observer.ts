@@ -5,7 +5,7 @@ import type {
 } from "@qualigence/evidence";
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
+  ObservationGraphV1,
   RunId,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
@@ -38,7 +38,7 @@ export interface ArtifactRecordingObserverDependencies {
 /**
  * Decorates a raw {@link Observer}: after every capture it persists the graph
  * JSON, the screenshot and their manifests, then returns a copy of the graph
- * carrying the registered Artifact IDs. If any artifact step fails it raises
+ * carrying the registered Artifact IDs as v1 evidence refs. If any artifact step fails it raises
  * `ArtifactUnavailable` before returning, so a Finding can never reference a
  * missing artifact.
  */
@@ -47,7 +47,7 @@ export class ArtifactRecordingObserver implements Observer {
     private readonly dependencies: ArtifactRecordingObserverDependencies,
   ) {}
 
-  async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
+  async capture(job: AcceptedExecutionJob): Promise<ObservationGraphV1> {
     const graph = await this.dependencies.observer.capture(job);
 
     let rawArtifacts: readonly RawArtifact[];
@@ -86,10 +86,9 @@ export class ArtifactRecordingObserver implements Observer {
       artifactRefs.push(artifactId);
     }
 
-    const existing = graph.artifactRefs ?? [];
     return {
       ...graph,
-      artifactRefs: [...new Set([...existing, ...artifactRefs])],
+      evidenceRefs: [...new Set([...graph.evidenceRefs, ...artifactRefs])],
     };
   }
 }

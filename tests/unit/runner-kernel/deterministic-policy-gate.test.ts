@@ -10,6 +10,7 @@ import {
 } from "@qualigence/runner-kernel";
 import type { AcceptedExecutionJob, ExecutionPolicyRisk } from "@qualigence/runner-protocol";
 import { InMemoryTraceRecorder } from "@qualigence/testkit";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 const policy = {
   policyId: "policy-isolated",
@@ -127,7 +128,7 @@ describe("DeterministicRunnerPolicyGate", () => {
         });
         const traceRecorder = new InMemoryTraceRecorder();
         const runtime = new ExecutionRuntime({
-          observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+          observer: { capture: async () => observationGraphV1("graph-1") },
           decisionProvider: { decide },
           resolver: { resolve },
           policyGate: new DeterministicRunnerPolicyGate(scopedPolicy, { now }),

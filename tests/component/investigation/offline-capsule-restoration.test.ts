@@ -147,9 +147,9 @@ class PlaywrightReproductionRunner implements ReproductionRunnerPort {
         policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: [this.origin], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: FROZEN, expiresAt: "2026-08-01T00:01:00.000Z" },
       });
 
-      const total = graph.nodes.find((n) => n.text?.includes("Cart total"));
+      const total = graph.nodes.find((n) => n.name?.includes("Cart total") || n.value?.includes("Cart total"));
       // The defect reproduces when the checkout total is the wrong $19.
-      const reproduced = total?.text?.includes("$19") === true;
+      const reproduced = total !== undefined && ((total.name ?? "").includes("$19") || (total.value ?? "").includes("$19"));
 
       const artifacts = session.artifactsFor(graph.graphId);
       const screenshot = artifacts.find((a) => a.mediaType === "image/png");

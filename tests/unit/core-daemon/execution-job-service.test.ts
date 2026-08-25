@@ -18,6 +18,7 @@ import {
   RunnerSessionService,
   RunOwnershipService,
 } from "@qualigence/core-application";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 function makeOwnership(options: { leaseDurationMs?: number; now?: () => number } = {}): {
   ownership: RunOwnershipService;
@@ -185,7 +186,7 @@ function observationEvent(runId: string, sequenceNumber: number, graphId = `grap
     sequenceNumber,
     stage: "observation",
     occurredAt: "2026-08-01T00:00:00.000Z",
-    payload: { graphId, nodes: [] },
+    payload: observationGraphV1(graphId),
   } as const;
   return { ...base, payloadHash: canonicalTraceEventHash(base) } as TraceEvent;
 }

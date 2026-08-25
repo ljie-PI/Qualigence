@@ -10,9 +10,9 @@ import type {
   ExecutionJobLease,
   ExecutionJobOffer,
   ExecutionPlanStep,
-  ObservationGraph,
+  ObservationGraphV1,
 } from "@qualigence/runner-protocol";
-import { capabilities } from "@qualigence/runner-protocol";
+import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS, capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { SqliteRunnerSpool } from "@qualigence/runner-spool";
 import {
@@ -230,7 +230,7 @@ describe("bounded multi-step production Web Runtime", () => {
     expect(observations[0]).toMatchObject({ stepIndex: 0, payload: { url: fixture.url } });
     expect(observations[1]).toMatchObject({ stepIndex: 1, payload: { url: `${fixture.origin}/next` } });
     expect(observations[1]?.payload.graphId).not.toBe(observations[0]?.payload.graphId);
-    expect(finalObservation(trace).nodes.some((node) => node.text === "Completed")).toBe(true);
+    expect(finalObservation(trace).nodes.some((node) => node.name === "Completed" || node.value === "Completed")).toBe(true);
     expect(modelRequests).toHaveLength(6);
 
     await spool.close();
@@ -635,6 +635,7 @@ function offer(): ExecutionJobOffer {
     },
     requiredCapabilities: [
       "target:web-playwright",
+      ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
       "model:structured-output",
       "action:navigate",
       "action:input",
@@ -649,19 +650,19 @@ function offer(): ExecutionJobOffer {
 function decisionFrom(content: string): { readonly nodeId?: string; readonly reason: string } {
   const prompt = JSON.parse(content) as {
     readonly step: Exclude<ExecutionPlanStep, { readonly kind: "verify" }>;
-    readonly observation: ObservationGraph;
+    readonly observation: ObservationGraphV1;
   };
   const step = prompt.step;
   if (step.kind === "navigate") return { reason: "follow the approved path" };
   const node = step.kind === "scroll"
-    ? prompt.observation.nodes.find((candidate) => candidate.text === "Completed")
+    ? prompt.observation.nodes.find((candidate) => candidate.name === "Completed" || candidate.value === "Completed")
     : prompt.observation.nodes.find((candidate) =>
         candidate.role === step.target.role && candidate.name === step.target.name);
   if (node === undefined) throw new Error(`No current node grounds ${prompt.step.kind}.`);
   return { nodeId: node.id, reason: `ground ${prompt.step.kind}` };
 }
 
-function finalObservation(trace: readonly ExecutionEventBatch["events"][number][]): ObservationGraph {
+function finalObservation(trace: readonly ExecutionEventBatch["events"][number][]): ObservationGraphV1 {
   const event = trace.filter((candidate) => candidate.stage === "observation").at(-1);
   if (event?.stage !== "observation") throw new Error("Missing final observation.");
   return event.payload;

@@ -2,8 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
-  ObservationNode,
+  ObservationGraphV1,
+  ObservationNodeV1,
 } from "@qualigence/runner-protocol";
 import { ExecutionPermit, type ProposedAction } from "@qualigence/runner-kernel";
 import {
@@ -24,7 +24,7 @@ function click(nodeId: string): ProposedAction {
   return { kind: "click", target: { nodeId }, reason: "facade test" };
 }
 
-function nodeNamed(graph: ObservationGraph, name: string): ObservationNode {
+function nodeNamed(graph: ObservationGraphV1, name: string): ObservationNodeV1 {
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (!node) {
     throw new Error(`No node named ${name}`);
@@ -134,7 +134,7 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     expect(await adapter.execute(action, allowedPermit())).toEqual({ status: "ok" });
 
     const after = await adapter.capture(job);
-    expect(after.nodes.find((node) => node.text?.includes("Cart total"))?.text).toContain(
+    expect(after.nodes.find((node) => node.name?.includes("Cart total") || node.value?.includes("Cart total"))?.name).toContain(
       "$19",
     );
 

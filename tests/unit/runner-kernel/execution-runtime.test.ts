@@ -17,6 +17,12 @@ import {
   InMemoryTraceRecorder,
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  type ObservationGraphV1,
+  type ObservationNodeV1,
+} from "@qualigence/runner-protocol";
 
 const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"] as const, maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" };
 const objectiveOnlyBudget = {
@@ -35,7 +41,7 @@ describe("ExecutionRuntime", () => {
     let executorCalls = 0;
     const budget = new DeterministicExecutionBudget();
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: {
         decide: async (context) => {
           context.budget?.consumeModelUsage(context.job.runId, undefined);
@@ -98,7 +104,7 @@ describe("ExecutionRuntime", () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const budget = new DeterministicExecutionBudget({ clock: { now: () => now } });
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: {
         decide: async () => {
           now = 1_000;
@@ -143,7 +149,7 @@ describe("ExecutionRuntime", () => {
       finish: () => undefined,
     };
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "test" }),
       resolver: { resolve: async () => ({ kind: "click", target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" }) },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -164,7 +170,7 @@ describe("ExecutionRuntime", () => {
   it("keeps model-budget exhaustion in the approved blocked classification", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: {
         decide: async (context) => {
           context.budget?.consumeModelUsage(context.job.runId, { totalTokens: 1_001 });
@@ -213,7 +219,7 @@ describe("ExecutionRuntime", () => {
             if (hangingStage === "observer") {
               return never(signal);
             }
-            return { graphId: `graph-${captureCalls}`, nodes: [] };
+            return graph(`graph-${captureCalls}`);
           },
         },
         decisionProvider: {
@@ -289,7 +295,7 @@ describe("ExecutionRuntime", () => {
     let rejectLate: ((error: Error) => void) | undefined;
     const appended: unknown[] = [];
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: new ScriptedDecisionProvider({
         kind: "click",
         target: { nodeId: "node-1" },
@@ -363,7 +369,7 @@ describe("ExecutionRuntime", () => {
   ] as const)("maps expected target error %s to a terminal %s completion", async (errorCode, status) => {
     const traceRecorder = new InMemoryTraceRecorder();
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: new ScriptedDecisionProvider({
         kind: "click",
         target: { nodeId: "node-1" },
@@ -389,7 +395,7 @@ describe("ExecutionRuntime", () => {
   it("reports terminal recorder failure as a distinct disposition without a duplicate append", async () => {
     let terminalAppends = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: new ScriptedDecisionProvider({
         kind: "click",
         target: { nodeId: "node-1" },
@@ -423,7 +429,7 @@ describe("ExecutionRuntime", () => {
     let now = 0;
     let terminalAppends = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: {
         decide: async () => {
           now = 1_000;
@@ -504,8 +510,8 @@ describe("ExecutionRuntime", () => {
   it("preserves the indexed action step through public run and Trace recording", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const observations = [
-      { graphId: "graph-before", nodes: [] },
-      { graphId: "graph-after", nodes: [] },
+      graph("graph-before"),
+      graph("graph-after"),
     ];
     const runtime = new ExecutionRuntime({
       observer: { capture: async () => observations.shift()! },
@@ -552,12 +558,9 @@ describe("ExecutionRuntime", () => {
         capture: async () => {
           observationOrdinal += 1;
           calls.push(`observe:${observationOrdinal}`);
-          return {
-            graphId: `graph-${observationOrdinal}`,
-            nodes: [
-              { id: `node-${observationOrdinal}`, role: "button", name: `Step ${observationOrdinal}`, confidence: 1 },
-            ],
-          };
+          return graph(`graph-${observationOrdinal}`, [
+            { id: `node-${observationOrdinal}`, role: "button", name: `Step ${observationOrdinal}`, confidence: 1 },
+          ]);
         },
       },
       decisionProvider: {
@@ -684,7 +687,7 @@ describe("ExecutionRuntime", () => {
     const verificationContexts: unknown[] = [];
     let captures = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: `graph-${++captures}`, nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      observer: { capture: async () => graph(`graph-${++captures}`, [{ id: "node-1", role: "button", confidence: 1 }]) },
       decisionProvider: { decide: async () => ({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }) },
       resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -713,7 +716,7 @@ describe("ExecutionRuntime", () => {
     let decisionCalls = 0;
     let executorCalls = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      observer: { capture: async () => graph("graph-current", [{ id: "node-1", role: "button", confidence: 1 }]) },
       decisionProvider: { decide: async () => { decisionCalls += 1; return { kind: "click", target: { nodeId: "node-1" }, reason: "continue" }; } },
       resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
       policyGate: {
@@ -741,7 +744,7 @@ describe("ExecutionRuntime", () => {
     let decisions = 0;
     let attempts = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      observer: { capture: async () => graph("graph-current", [{ id: "node-1", role: "button", confidence: 1 }]) },
       decisionProvider: { decide: async () => { decisions += 1; return { kind: "click", target: { nodeId: "node-1" }, reason: "continue" }; } },
       resolver: { resolve: async (_action, graph) => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: graph.graphId }) },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -803,7 +806,7 @@ describe("ExecutionRuntime", () => {
     let decisions = 0;
     let attempts = 0;
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-current", nodes: [{ id: "node-1", role: "button", confidence: 1 }] }) },
+      observer: { capture: async () => graph("graph-current", [{ id: "node-1", role: "button", confidence: 1 }]) },
       decisionProvider: { decide: async () => { decisions += 1; return proposal as never; } },
       resolver: { resolve: async () => resolved as never },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -838,7 +841,7 @@ describe("ExecutionRuntime", () => {
   it("preserves an explicit unknown action outcome as error", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      observer: { capture: async () => graph("graph-current") },
       decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
       resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -858,7 +861,7 @@ describe("ExecutionRuntime", () => {
   it("maps a timeout reported after dispatch to unknown outcome", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+      observer: { capture: async () => graph("graph-current") },
       decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
       resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
       policyGate: new AllowAllRunnerPolicyGate(),
@@ -883,7 +886,7 @@ describe("ExecutionRuntime", () => {
     const run = async (error: ExecutionTargetError) => {
       const traceRecorder = new InMemoryTraceRecorder();
       const runtime = new ExecutionRuntime({
-        observer: { capture: async () => ({ graphId: "graph-current", nodes: [] }) },
+        observer: { capture: async () => graph("graph-current") },
         decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "continue" }),
         resolver: { resolve: async () => ({ targetKind: "web", kind: "click", target: { nodeId: "node-1", selector: "token" }, graphId: "graph-current" }) },
         policyGate: new AllowAllRunnerPolicyGate(),
@@ -922,7 +925,7 @@ describe("ExecutionRuntime", () => {
       : { kind: "click" as const, target: { nodeId: "node-1", selector: "button" }, graphId: "graph-1" };
     const policy = { policyId: "policy-1", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z", ...override };
     const runtime = new ExecutionRuntime({
-      observer: { capture: async () => ({ graphId: "graph-1", nodes: [] }) },
+      observer: { capture: async () => graph("graph-1") },
       decisionProvider: new ScriptedDecisionProvider({ kind: "click", target: { nodeId: "node-1" }, reason: "test" }),
       resolver: { resolve: async () => action as never },
       policyGate: new DeterministicRunnerPolicyGate(policy),
@@ -940,28 +943,22 @@ describe("ExecutionRuntime", () => {
   it("runs an accepted web job through all M1 stages and records trace in order", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const observations = [
-      {
-        graphId: "graph-before",
-        nodes: [
-          {
-            id: "node-login",
-            role: "button",
-            name: "Login",
-            confidence: 1,
-          },
-        ],
-      },
-      {
-        graphId: "graph-after",
-        nodes: [
-          {
-            id: "node-logout",
-            role: "button",
-            name: "Logout",
-            confidence: 1,
-          },
-        ],
-      },
+      graph("graph-before", [
+        {
+          id: "node-login",
+          role: "button",
+          name: "Login",
+          confidence: 1,
+        },
+      ]),
+      graph("graph-after", [
+        {
+          id: "node-logout",
+          role: "button",
+          name: "Logout",
+          confidence: 1,
+        },
+      ]),
     ];
     const runtime = new ExecutionRuntime({
       observer: {
@@ -1032,17 +1029,14 @@ describe("ExecutionRuntime", () => {
 
     const runtime = new ExecutionRuntime({
       observer: {
-        capture: async () => ({
-          graphId: "graph-before",
-          nodes: [
-            {
-              id: "node-danger",
-              role: "button",
-              name: "Delete",
-              confidence: 1,
-            },
-          ],
-        }),
+        capture: async () => graph("graph-before", [
+          {
+            id: "node-danger",
+            role: "button",
+            name: "Delete",
+            confidence: 1,
+          },
+        ]),
       },
       decisionProvider: new ScriptedDecisionProvider({
         kind: "click",
@@ -1102,28 +1096,22 @@ describe("ExecutionRuntime", () => {
   it("returns a finding completion with grounded evidence when verification fails", async () => {
     const traceRecorder = new InMemoryTraceRecorder();
     const observations = [
-      {
-        graphId: "graph-before",
-        nodes: [
-          {
-            id: "node-price",
-            role: "text",
-            text: "$19",
-            confidence: 1,
-          },
-        ],
-      },
-      {
-        graphId: "graph-after",
-        nodes: [
-          {
-            id: "node-total",
-            role: "text",
-            text: "$29",
-            confidence: 1,
-          },
-        ],
-      },
+      graph("graph-before", [
+        {
+          id: "node-price",
+          role: "text",
+          name: "$19",
+          confidence: 1,
+        },
+      ]),
+      graph("graph-after", [
+        {
+          id: "node-total",
+          role: "text",
+          name: "$29",
+          confidence: 1,
+        },
+      ]),
     ];
 
     const runtime = new ExecutionRuntime({
@@ -1221,17 +1209,14 @@ describe("ExecutionRuntime", () => {
       observer: {
         capture: async () => {
           captureCount += 1;
-          return {
-            graphId: "graph-before",
-            nodes: [
-              {
-                id: "node-add",
-                role: "button",
-                name: "Add to cart",
-                confidence: 1,
-              },
-            ],
-          };
+          return graph("graph-before", [
+            {
+              id: "node-add",
+              role: "button",
+              name: "Add to cart",
+              confidence: 1,
+            },
+          ]);
         },
       },
       decisionProvider: new ScriptedDecisionProvider({
@@ -1291,6 +1276,60 @@ describe("ExecutionRuntime", () => {
     });
   });
 });
+
+type TestNode = Pick<ObservationNodeV1, "id" | "role" | "confidence"> & {
+  readonly name?: string;
+  readonly value?: string;
+};
+
+function graph(graphId: string, nodes: readonly TestNode[] = []): ObservationGraphV1 {
+  const root: ObservationNodeV1 = {
+    id: `${graphId}:root`,
+    role: "document",
+    name: "Test page",
+    state: {},
+    relations: nodes.map((node) => ({ type: "child", targetNodeId: node.id })),
+    source: { adapterId: "runner-kernel-test", sourceKind: "fixture" },
+    confidence: 1,
+    sensitivity: "public",
+    extensions: {},
+    evidenceRefs: [],
+  };
+  return {
+    schema: OBSERVATION_GRAPH_V1_SCHEMA,
+    graphId,
+    target: { kind: "web", targetId: "https://example.test" },
+    capturedAt: "2026-08-24T00:00:00.000Z",
+    rootNodeIds: [root.id],
+    nodes: [root, ...nodes.map((node): ObservationNodeV1 => ({
+      id: node.id,
+      role: node.role,
+      ...(node.name === undefined ? {} : { name: node.name }),
+      ...(node.value === undefined ? {} : { value: node.value }),
+      state: {},
+      relations: [],
+      source: { adapterId: "runner-kernel-test", sourceKind: "fixture" },
+      confidence: node.confidence,
+      sensitivity: "public",
+      extensions: {},
+      evidenceRefs: [],
+    }))],
+    evidenceRefs: [],
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: "https://example.test",
+          pathname: "/",
+          title: "Test page",
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  };
+}
 
 function indexedJob() {
   return {

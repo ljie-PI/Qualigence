@@ -12,6 +12,7 @@ import {
   SqliteRuntime,
   SqliteTraceStore,
 } from "@qualigence/sqlite-runtime";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 let dir: string;
 let filename: string;
@@ -60,7 +61,7 @@ function event(
     sequenceNumber,
     stage: "observation",
     occurredAt: "2026-08-01T00:00:00.000Z",
-    payload: { graphId, nodes: [] },
+    payload: observationGraphV1(graphId),
   };
   return {
     ...hashInput,

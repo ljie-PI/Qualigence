@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ObservationGraph } from "@qualigence/runner-protocol";
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  type ObservationGraphV1,
+} from "@qualigence/runner-protocol";
 import {
   ExecutionBlockedError,
   ExecutionPermit,
@@ -81,10 +85,53 @@ function scroll(nodeId?: string): ProposedAction<"scroll"> {
   };
 }
 
-function graphWith(graphId: string, nodeId: string): ObservationGraph {
+function graphWith(graphId: string, nodeId: string): ObservationGraphV1 {
   return {
+    schema: OBSERVATION_GRAPH_V1_SCHEMA,
     graphId,
-    nodes: [{ id: nodeId, role: "button", name: "Add", confidence: 1 }],
+    target: { kind: "web", targetId: "https://example.test" },
+    capturedAt: "2026-08-24T00:00:00.000Z",
+    rootNodeIds: ["root"],
+    nodes: [
+      {
+        id: "root",
+        role: "document",
+        name: "Test page",
+        state: {},
+        relations: [{ type: "child", targetNodeId: nodeId }],
+        source: { adapterId: "web-playwright-test", sourceKind: "fixture" },
+        confidence: 1,
+        sensitivity: "public",
+        extensions: {},
+        evidenceRefs: [],
+      },
+      {
+        id: nodeId,
+        role: "button",
+        name: "Add",
+        state: {},
+        relations: [],
+        source: { adapterId: "web-playwright-test", sourceKind: "fixture" },
+        confidence: 1,
+        sensitivity: "public",
+        extensions: {},
+        evidenceRefs: [],
+      },
+    ],
+    evidenceRefs: [],
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: "https://example.test",
+          pathname: "/",
+          title: "Test page",
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
   };
 }
 

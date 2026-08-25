@@ -6,6 +6,7 @@ import {
   AllowAllRunnerPolicyGate,
   ScriptedDecisionProvider,
 } from "@qualigence/testkit";
+import { observationGraphV1 } from "../helpers/observation-graph-v1.js";
 
 describe("M1 web walking skeleton", () => {
   it("delivers runner trace and finding events into Core Evidence", async () => {
@@ -13,28 +14,22 @@ describe("M1 web walking skeleton", () => {
     const traceIngestor = new TraceIngestor(traceStore);
     const traceRecorder = new InMemoryProtocolTraceRecorder(traceIngestor);
     const observations = [
-      {
-        graphId: "graph-before",
-        nodes: [
-          {
-            id: "node-login",
-            role: "button",
-            name: "Login",
-            confidence: 1,
-          },
-        ],
-      },
-      {
-        graphId: "graph-after",
-        nodes: [
-          {
-            id: "node-logout",
-            role: "button",
-            name: "Logout",
-            confidence: 1,
-          },
-        ],
-      },
+      observationGraphV1("graph-before", [
+        {
+          id: "node-login",
+          role: "button",
+          name: "Login",
+          confidence: 1,
+        },
+      ]),
+      observationGraphV1("graph-after", [
+        {
+          id: "node-logout",
+          role: "button",
+          name: "Logout",
+          confidence: 1,
+        },
+      ]),
     ];
 
     const runtime = new ExecutionRuntime({

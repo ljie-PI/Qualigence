@@ -1,5 +1,6 @@
 import type { RunCompletionSink } from "@qualigence/core-application";
 import type { RunnerConnectionPort } from "@qualigence/grpc-runner-protocol";
+import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
 import type { LocalRunIntakeStore, RunnerControlStore } from "@qualigence/runner-control";
 import { RunnerControlStoreError } from "@qualigence/runner-control";
 
@@ -29,10 +30,10 @@ export class LocalRunCoordinator implements RunCompletionSink {
     for (const pending of await this.options.store.pendingDispatches(this.options.batchSize ?? 64)) {
       const connection = this.options.connection();
       const runner = connection?.authenticatedRunner;
-      if (connection === undefined || runner?.runnerId !== this.options.configuredRunnerId || runner.scope.kind !== "local" || !runner.capabilities.includes("target:web-playwright")) continue;
+      if (connection === undefined || runner?.runnerId !== this.options.configuredRunnerId || runner.scope.kind !== "local" || !hasWebPlaywrightV1Capabilities(runner.capabilities)) continue;
       const at = this.now();
       if (!await this.options.store.beginOffer({ runId: pending.runId, expectedAttempt: pending.expectedAttempt, startedAt: at })) continue;
-      try { await connection.offer(pending.job, ["target:web-playwright"]); await this.options.store.markOffered({ runId: pending.runId, expectedAttempt: pending.expectedAttempt, offeredAt: this.now() }); }
+      try { await connection.offer(pending.job, WEB_PLAYWRIGHT_V1_REQUIRED_CAPABILITIES); await this.options.store.markOffered({ runId: pending.runId, expectedAttempt: pending.expectedAttempt, offeredAt: this.now() }); }
       catch { await this.options.store.markOfferOutcomeUnknown({ runId: pending.runId, expectedAttempt: pending.expectedAttempt, failedAt: this.now(), errorCode: "OfferFailed" }); }
     }
   }); }
@@ -97,6 +98,13 @@ export class LocalRunCoordinator implements RunCompletionSink {
   }
   private now(): string { return this.options.now?.() ?? new Date().toISOString(); }
   private serialize(operation: () => Promise<void>): Promise<void> { const result = this.queue.then(operation); this.queue = result.catch(() => undefined); return result; }
+}
+
+const WEB_PLAYWRIGHT_V1_REQUIRED_CAPABILITIES = ["target:web-playwright", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS] as const;
+
+function hasWebPlaywrightV1Capabilities(capabilities: readonly string[]): boolean {
+  const advertised = new Set(capabilities);
+  return WEB_PLAYWRIGHT_V1_REQUIRED_CAPABILITIES.every((capability) => advertised.has(capability));
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); }); }

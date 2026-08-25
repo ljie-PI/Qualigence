@@ -8,6 +8,7 @@ import {
   type TraceEventHashInput,
   type TraceEventSubmission,
 } from "@qualigence/runner-protocol";
+import { observationGraphV1 } from "../../../helpers/observation-graph-v1.js";
 
 function traceEvent(event: TraceEventHashInput): TraceEventSubmission {
   return {
@@ -29,7 +30,7 @@ describe("TraceIngestor", () => {
       schemaVersion: "trace-event/v1",
       idempotencyKey: "idem-1",
       occurredAt: "2026-07-30T00:00:00.000Z",
-      payload: { graphId: "graph-1", nodes: [] },
+      payload: observationGraphV1("graph-1"),
     }));
 
     expect(result).toEqual({ status: "accepted", nextSequenceNumber: 2 });
@@ -46,7 +47,7 @@ describe("TraceIngestor", () => {
       schemaVersion: "trace-event/v1",
       idempotencyKey: "idem-1",
       occurredAt: "2026-07-30T00:00:00.000Z",
-      payload: { graphId: "graph-1", nodes: [] },
+      payload: observationGraphV1("graph-1"),
     });
 
     await ingestor.ingest(event);
@@ -67,7 +68,7 @@ describe("TraceIngestor", () => {
       schemaVersion: "trace-event/v1",
       idempotencyKey: "idem-1",
       occurredAt: "2026-07-30T00:00:00.000Z",
-      payload: { graphId: "graph-1", nodes: [] },
+      payload: observationGraphV1("graph-1"),
     }));
 
     const conflict = await ingestor.ingest(traceEvent({
@@ -79,7 +80,7 @@ describe("TraceIngestor", () => {
       schemaVersion: "trace-event/v1",
       idempotencyKey: "idem-2",
       occurredAt: "2026-07-30T00:00:01.000Z",
-      payload: { graphId: "graph-2", nodes: [] },
+      payload: observationGraphV1("graph-2"),
     }));
 
     expect(conflict.status).toBe("integrity_violation");
@@ -102,7 +103,7 @@ describe("TraceIngestor", () => {
       idempotencyKey: "idem-1",
       occurredAt: "2026-07-30T00:00:00.000Z",
       payloadHash: "sender-controlled-hash",
-      payload: { graphId: "graph-1", nodes: [] },
+      payload: observationGraphV1("graph-1"),
     });
 
     expect(result.status).toBe("hash_mismatch");
@@ -127,7 +128,7 @@ describe("TraceIngestor", () => {
         schemaVersion: "trace-event/v1",
         idempotencyKey: "idem-1",
         occurredAt: "2026-07-30T00:00:00.000Z",
-        payload: { graphId: "graph-1", nodes: [] },
+        payload: observationGraphV1("graph-1"),
       })),
       ingestor.ingest(traceEvent({
         runId: "run-1",
@@ -138,7 +139,7 @@ describe("TraceIngestor", () => {
         schemaVersion: "trace-event/v1",
         idempotencyKey: "idem-2",
         occurredAt: "2026-07-30T00:00:01.000Z",
-        payload: { graphId: "graph-2", nodes: [] },
+        payload: observationGraphV1("graph-2"),
       })),
     ]);
 

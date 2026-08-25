@@ -1,14 +1,50 @@
 // This file is verified by `pnpm typecheck`; Vitest should not execute it.
-import type { TraceEvent, TraceEventSubmission } from "@qualigence/runner-protocol";
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  type TraceEvent,
+  type TraceEventSubmission,
+} from "@qualigence/runner-protocol";
 import type { TraceEventInput } from "@qualigence/runner-kernel";
+
+const graphV1 = {
+  schema: OBSERVATION_GRAPH_V1_SCHEMA,
+  graphId: "graph-1",
+  target: { kind: "web", targetId: "https://example.test" },
+  capturedAt: "2026-08-24T00:00:00.000Z",
+  rootNodeIds: ["root"],
+  nodes: [{
+    id: "root",
+    role: "document",
+    name: "Test page",
+    state: {},
+    relations: [],
+    source: { adapterId: "type-test", sourceKind: "fixture" },
+    confidence: 1,
+    sensitivity: "public",
+    extensions: {},
+    evidenceRefs: [],
+  }],
+  evidenceRefs: [],
+  extensions: {
+    [WEB_EXTENSION_V1_TYPE]: {
+      type: WEB_EXTENSION_V1_TYPE,
+      version: "1.0",
+      payload: {
+        origin: "https://example.test",
+        pathname: "/",
+        title: "Test page",
+        viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+        query: {},
+      },
+    },
+  },
+} as const;
 
 const observationInput: TraceEventInput = {
   runId: "run-1",
   stage: "observation",
-  payload: {
-    graphId: "graph-1",
-    nodes: [],
-  },
+  payload: graphV1,
 };
 
 observationInput satisfies TraceEventInput;
@@ -139,8 +175,5 @@ const missingPayloadHash: TraceEventSubmission = {
   sequenceNumber: 1,
   stage: "observation",
   occurredAt: "2026-07-30T00:00:00.000Z",
-  payload: {
-    graphId: "graph-1",
-    nodes: [],
-  },
+  payload: graphV1,
 };

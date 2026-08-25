@@ -10,6 +10,7 @@ import {
   TraceUploadPump,
   type TraceBatchSubmitter,
 } from "../../../apps/runner/src/trace-upload-pump.js";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 const RUN_ID = "run-1";
 const LIMIT = { maximumEvents: 100, maximumBytes: 1_000_000 };
@@ -54,7 +55,7 @@ async function recordThreeEvents(spool: RunnerSpool): Promise<void> {
   await recorder.append({
     runId: RUN_ID,
     stage: "observation",
-    payload: { graphId: "graph-before", nodes: [] },
+    payload: observationGraphV1("graph-before"),
   });
   await recorder.append({
     runId: RUN_ID,

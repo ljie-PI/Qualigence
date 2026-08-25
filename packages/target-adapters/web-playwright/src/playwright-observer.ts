@@ -1,6 +1,5 @@
 import type {
   AcceptedExecutionJob,
-  ObservationGraph,
   ObservationGraphV1,
   WebViewportV1,
 } from "@qualigence/runner-protocol";
@@ -278,7 +277,7 @@ export class PlaywrightObserver implements Observer {
     private readonly hooks: PlaywrightObserverHooks = {},
   ) {}
 
-  async capture(job: AcceptedExecutionJob): Promise<ObservationGraph> {
+  async capture(job: AcceptedExecutionJob): Promise<ObservationGraphV1> {
     return this.session.withPage(async (page) => {
       const ordinal = this.session.nextObservationOrdinal();
       const navigationGeneration = this.session.currentNavigationGeneration;

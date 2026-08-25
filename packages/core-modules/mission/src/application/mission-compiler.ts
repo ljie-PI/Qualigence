@@ -48,6 +48,12 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+const WEB_PLAYWRIGHT_TARGET_CAPABILITY = "target:web-playwright";
+const WEB_OBSERVATION_V1_REQUIRED_CAPABILITIES = [
+  "observation:observation-graph/v1",
+  "observation:web/v1",
+] as const;
+
 function requiredCapabilities(testCase: TestCase, target: TargetCapabilitySummary): readonly string[] {
   const targetCapabilities = target.capabilities.filter((capability) => capability.startsWith("target:"));
   if (targetCapabilities.length !== 1) {
@@ -55,6 +61,7 @@ function requiredCapabilities(testCase: TestCase, target: TargetCapabilitySummar
   }
   const capabilities = new Set<string>([
     ...targetCapabilities,
+    ...(targetCapabilities[0] === WEB_PLAYWRIGHT_TARGET_CAPABILITY ? WEB_OBSERVATION_V1_REQUIRED_CAPABILITIES : []),
     "model:structured-output",
   ]);
   for (const step of testCase.steps) {

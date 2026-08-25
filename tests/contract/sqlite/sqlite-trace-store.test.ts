@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canonicalTraceEventHash,
+  type ObservationGraphV1,
   type TraceEvent,
   type TraceEventHashInput,
 } from "@qualigence/runner-protocol";
 import { SqliteRuntime, SqliteTraceStore } from "@qualigence/sqlite-runtime";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 let dir: string;
 let filename: string;
@@ -43,7 +45,7 @@ async function createRun(runtime: SqliteRuntime, runId: string): Promise<void> {
 
 interface EventOptions {
   readonly runId?: string;
-  readonly payload?: { readonly graphId: string; readonly nodes: readonly [] };
+  readonly payload?: ObservationGraphV1;
   readonly messageId?: string;
   readonly idempotencyKey?: string;
 }
@@ -58,7 +60,7 @@ function event(sequenceNumber: number, options: EventOptions = {}): TraceEvent {
     sequenceNumber,
     stage: "observation",
     occurredAt: "2026-08-01T00:00:00.000Z",
-    payload: options.payload ?? { graphId: `g-${sequenceNumber}`, nodes: [] },
+    payload: options.payload ?? observationGraphV1(`g-${sequenceNumber}`),
   };
   return {
     ...hashInput,
@@ -88,7 +90,7 @@ describe("SqliteTraceStore", () => {
     expect(
       await store.appendTraceEvent(
         event(1, {
-          payload: { graphId: "changed", nodes: [] },
+          payload: observationGraphV1("changed"),
           messageId: "m-1b",
           idempotencyKey: "i-1b",
         }),
