@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
+  ObservationMigrationLookupIdentity,
   ObservationMigrationStore,
   StoredObservationMigration,
 } from "./migration-runner.js";
@@ -18,10 +19,11 @@ const LEDGER_LOCK_POLL_MS = 10;
  * crash mid-run leaves a truncated final line that is skipped on reload, so a
  * resumed run replays only the assets that were never durably recorded.
  *
- * The ledger is content-keyed by `(assetId, sourceHash)`: a re-run with an
+ * The ledger is content-keyed by `(assetId, sourceHash, migratorVersion)`, plus
+ * Skill inventory content/version identity when present: a re-run with an
  * unchanged source finds the existing line and never re-projects, and a changed
- * source becomes a new attempt. Historical source assets are never touched — the
- * ledger is a derived, additive record.
+ * source or Skill version becomes a new attempt. Historical source assets are
+ * never touched — the ledger is a derived, additive record.
  *
  * This is deliberately NOT wired into the shared multi-tenant relational schema:
  * the migration ledger is an operator artifact, not tenant-owned data, so it
@@ -37,19 +39,16 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
     assetId: string,
     sourceHash: string,
     migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
+    identity: ObservationMigrationLookupIdentity = {},
   ): Promise<StoredObservationMigration | undefined> {
     const cache = await this.reload();
-    return cache.get(this.key(assetId, sourceHash, migratorVersion));
+    return cache.get(this.key(assetId, sourceHash, migratorVersion, identity));
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
     await serializeLedgerAppend(this.ledgerPath, async () => {
       const cache = await this.reload();
-      const key = this.key(
-        record.result.assetId,
-        record.result.sourceHash,
-        record.result.migratorVersion,
-      );
+      const key = this.recordKey(record);
       if (cache.has(key)) {
         return;
       }
@@ -93,23 +92,26 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
         // A torn final line from an interrupted append: skip it and resume.
         continue;
       }
-      cache.set(
-        this.key(
-          record.result.assetId,
-          record.result.sourceHash,
-          record.result.migratorVersion,
-        ),
-        record,
-      );
+      cache.set(this.recordKey(record), record);
     }
     this.cache = cache;
     return cache;
+  }
+
+  private recordKey(record: StoredObservationMigration): string {
+    return this.key(
+      record.result.assetId,
+      record.result.sourceHash,
+      record.result.migratorVersion,
+      record.result,
+    );
   }
 
   private key(
     assetId: string,
     sourceHash: string,
     migratorVersion: string | undefined,
+    identity: ObservationMigrationLookupIdentity = {},
   ): string {
     const hash = createHash("sha256")
       .update(assetId)
@@ -118,8 +120,27 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
     if (migratorVersion !== undefined) {
       hash.update("\u0000").update(migratorVersion);
     }
+    for (const part of skillIdentityKeyParts(identity)) {
+      hash.update("\u0000").update(part);
+    }
     return hash.digest("hex");
   }
+}
+
+function skillIdentityKeyParts(
+  identity: ObservationMigrationLookupIdentity,
+): readonly string[] {
+  if (
+    identity.skillSourceHash === undefined &&
+    identity.skillVersion === undefined
+  ) {
+    return [];
+  }
+  return [
+    "skill",
+    identity.skillSourceHash ?? "",
+    identity.skillVersion === undefined ? "" : String(identity.skillVersion),
+  ];
 }
 
 async function serializeLedgerAppend(

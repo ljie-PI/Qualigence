@@ -69,6 +69,7 @@ export type {
 export type {
   ObservationMigrationStatus,
   ObservationMigrationResult,
+  ObservationMigrationLookupIdentity,
   StoredObservationMigration,
   ObservationMigrationStore,
   ObservationMigrationRunnerOptions,

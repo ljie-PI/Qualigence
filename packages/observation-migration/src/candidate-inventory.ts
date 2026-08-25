@@ -111,6 +111,7 @@ export class ObservationCandidateInventoryRunner {
       asset.assetId,
       sourceBinding.sourceHash,
       migratorVersion,
+      skillLookupIdentity(asset),
     );
     if (existing !== undefined) {
       return existing.result;
@@ -242,6 +243,17 @@ function baseSkillResult(
     locatorSchemaVersion: asset.previous.locatorSchemaVersion,
     skillCompilerVersion: asset.previous.compilerVersion,
     skillSourceHash: asset.previous.contentSha256,
+    skillVersion: asset.previous.version,
+  };
+}
+
+function skillLookupIdentity(asset: PreV1SkillInventoryAsset): {
+  readonly skillSourceHash: string;
+  readonly skillVersion: number;
+} {
+  return {
+    skillSourceHash: asset.previous.contentSha256,
+    skillVersion: asset.previous.version,
   };
 }
 

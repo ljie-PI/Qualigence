@@ -18,7 +18,7 @@ export type ObservationMigrationStatus =
   | "needs_human"
   | "failed";
 
-/** The immutable per-asset migration result, keyed by asset + source hash. */
+/** The immutable per-asset migration result recorded in the append-only ledger. */
 export interface ObservationMigrationResult {
   readonly assetId: string;
   readonly assetKind?: "observation" | "skill";
@@ -32,9 +32,17 @@ export interface ObservationMigrationResult {
   readonly expectedSourceHash?: string;
   /** Original pre-v1 Skill content hash when a Skill result is keyed by source Trace hash. */
   readonly skillSourceHash?: string;
+  /** Original pre-v1 Skill version when a Skill result is keyed by source Trace hash. */
+  readonly skillVersion?: number;
   readonly computedSkillSourceHash?: string;
   readonly locatorSchemaVersion?: string;
   readonly skillCompilerVersion?: string;
+}
+
+/** Optional identity fields that distinguish Skill inventory attempts sharing one source Trace. */
+export interface ObservationMigrationLookupIdentity {
+  readonly skillSourceHash?: string;
+  readonly skillVersion?: number;
 }
 
 /** A durable, append-only migration ledger entry. */
@@ -46,14 +54,18 @@ export interface StoredObservationMigration {
 
 /**
  * The durable, append-only store the runner uses for idempotency and resume.
- * `find` is keyed by `(assetId, sourceHash)` so a re-run with unchanged source
- * returns the existing result, while a changed source becomes a new attempt.
+ * Observation results are keyed by `(assetId, sourceHash, migratorVersion)` so a
+ * re-run with unchanged source returns the existing result, while a changed
+ * source becomes a new attempt. Skill inventory results also include the
+ * immutable Skill version/content hash because several Skill versions can share
+ * one source Trace hash.
  */
 export interface ObservationMigrationStore {
   find(
     assetId: string,
     sourceHash: string,
     migratorVersion?: string,
+    identity?: ObservationMigrationLookupIdentity,
   ): Promise<StoredObservationMigration | undefined>;
   append(record: StoredObservationMigration): Promise<void>;
   list(): Promise<readonly StoredObservationMigration[]>;
@@ -233,16 +245,15 @@ export class InMemoryObservationMigrationStore
     assetId: string,
     sourceHash: string,
     migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
+    identity: ObservationMigrationLookupIdentity = {},
   ): Promise<StoredObservationMigration | undefined> {
-    return this.records.get(this.key(assetId, sourceHash, migratorVersion));
+    return this.records.get(
+      this.key(assetId, sourceHash, migratorVersion, identity),
+    );
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
-    const key = this.key(
-      record.result.assetId,
-      record.result.sourceHash,
-      record.result.migratorVersion,
-    );
+    const key = this.recordKey(record);
     if (this.records.has(key)) {
       return;
     }
@@ -253,7 +264,42 @@ export class InMemoryObservationMigrationStore
     return [...this.records.values()];
   }
 
-  private key(assetId: string, sourceHash: string, migratorVersion: string): string {
-    return `${assetId}\u0000${sourceHash}\u0000${migratorVersion}`;
+  private recordKey(record: StoredObservationMigration): string {
+    return this.key(
+      record.result.assetId,
+      record.result.sourceHash,
+      record.result.migratorVersion,
+      record.result,
+    );
   }
+
+  private key(
+    assetId: string,
+    sourceHash: string,
+    migratorVersion: string,
+    identity: ObservationMigrationLookupIdentity = {},
+  ): string {
+    return [
+      assetId,
+      sourceHash,
+      migratorVersion,
+      ...skillIdentityKeyParts(identity),
+    ].join("\u0000");
+  }
+}
+
+function skillIdentityKeyParts(
+  identity: ObservationMigrationLookupIdentity,
+): readonly string[] {
+  if (
+    identity.skillSourceHash === undefined &&
+    identity.skillVersion === undefined
+  ) {
+    return [];
+  }
+  return [
+    "skill",
+    identity.skillSourceHash ?? "",
+    identity.skillVersion === undefined ? "" : String(identity.skillVersion),
+  ];
 }

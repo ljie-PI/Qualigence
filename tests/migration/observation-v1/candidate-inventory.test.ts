@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { LocalSkillSigner } from "@qualigence/kms-local";
 import {
+  FileObservationMigrationStore,
   InMemoryObservationMigrationStore,
   ObservationCandidateInventoryRunner,
   PreV1TraceProjector,
@@ -73,6 +76,7 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
       status: "migrated",
       sourceHash: skill.declaredSourceHash,
       skillSourceHash: skill.previous.contentSha256,
+      skillVersion: skill.previous.version,
       locatorSchemaVersion: skill.previous.locatorSchemaVersion,
       skillCompilerVersion: skill.previous.compilerVersion,
       sourceTraceRefs: skill.recording.sourceTraceRefs,
@@ -249,9 +253,11 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
     expect(await store.list()).toHaveLength(2);
   });
 
-  it("does not return a prior Skill success when the Skill content hash changes", async () => {
+  it("durably appends a changed Skill content hash classification after prior success", async () => {
     const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
-    const store = new InMemoryObservationMigrationStore();
+    const root = await mkdtemp(join(tmpdir(), "obs-skill-inventory-"));
+    const ledgerPath = join(root, "ledger.jsonl");
+    const store = new FileObservationMigrationStore(ledgerPath);
     const runner = new ObservationCandidateInventoryRunner(
       store,
       new SkillRecompiler(
@@ -259,23 +265,77 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
       ),
     );
 
-    const first = await runner.run([skill], { now: NOW });
-    const changed = {
-      ...skill,
-      previous: { ...skill.previous, contentSha256: "0".repeat(64) },
-    } satisfies PreV1SkillInventoryAsset;
-    const second = await runner.run([changed], { now: NOW });
+    try {
+      const first = await runner.run([skill], { now: NOW });
+      const changed = {
+        ...skill,
+        previous: { ...skill.previous, contentSha256: "0".repeat(64) },
+      } satisfies PreV1SkillInventoryAsset;
+      const second = await runner.run([changed], { now: NOW });
 
-    expect(first.results[0]?.status).toBe("migrated");
-    expect(second.results[0]).toMatchObject({
-      assetId: skill.assetId,
-      assetKind: "skill",
-      sourceHash: first.results[0]?.sourceHash,
-      status: "failed",
-      reasonCode: "MigrationSourceChanged",
-      skillSourceHash: "0".repeat(64),
-      computedSkillSourceHash: skill.previous.contentSha256,
+      expect(first.results[0]).toMatchObject({
+        status: "migrated",
+        skillSourceHash: skill.previous.contentSha256,
+        skillVersion: skill.previous.version,
+      });
+      expect(second.results[0]).toMatchObject({
+        assetId: skill.assetId,
+        assetKind: "skill",
+        sourceHash: first.results[0]?.sourceHash,
+        status: "failed",
+        reasonCode: "MigrationSourceChanged",
+        skillSourceHash: "0".repeat(64),
+        skillVersion: skill.previous.version,
+        computedSkillSourceHash: skill.previous.contentSha256,
+      });
+
+      const stored = await new FileObservationMigrationStore(ledgerPath).list();
+      expect(stored).toHaveLength(2);
+      expect(stored.map((entry) => entry.result.status)).toEqual([
+        "migrated",
+        "failed",
+      ]);
+      expect(stored[1]?.result).toEqual(second.results[0]);
+      const raw = await readFile(ledgerPath, "utf8");
+      expect(raw.trim().split("\n")).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a changed Skill version as a new hash-bound identity", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const reverifier = new StandardReverifier(
+      LocalSkillSigner.generate(),
+      resolvingTargets,
+    );
+    const verify = vi.spyOn(reverifier, "verify");
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(reverifier),
+    );
+
+    const first = await runner.run([skill], { now: NOW });
+    const changedVersion = {
+      ...skill,
+      previous: { ...skill.previous, version: skill.previous.version + 1 },
+    } satisfies PreV1SkillInventoryAsset;
+    const second = await runner.run([changedVersion], { now: NOW });
+
+    expect(first.results[0]).toMatchObject({
+      status: "migrated",
+      sourceHash: second.results[0]?.sourceHash,
+      skillSourceHash: skill.previous.contentSha256,
+      skillVersion: skill.previous.version,
     });
+    expect(second.results[0]).toMatchObject({
+      status: "migrated",
+      skillSourceHash: skill.previous.contentSha256,
+      skillVersion: changedVersion.previous.version,
+    });
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(await store.list()).toHaveLength(2);
   });
 
   it("returns the existing immutable result for repeated active inventory runs", async () => {
