@@ -1,17 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligence";
-import type {
-  AbandonLeaseDisposition,
-  AbandonLeaseInput,
-  AppendResultInput,
-  AppendDisposition,
-  IntelligenceJobLease,
-  IntelligenceJobStore,
-  IntelligenceResultInbox,
-  LeaseInput,
-  RenewInput,
-} from "./intelligence-queue-contracts.js";
+import type { PostgresConnectionConfig } from "./postgres-runtime.js";
 
 const { Pool } = pg;
 
@@ -34,17 +24,51 @@ export class IntelligenceQueueError extends Error {
   }
 }
 
-export interface PostgresIntelligenceQueueConfig {
-  readonly host: string;
-  readonly port: number;
-  readonly database: string;
-  /** The dedicated, least-privilege Worker role. */
-  readonly user: string;
-  readonly password: string;
-  readonly max?: number;
+export interface IntelligenceJobLease {
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly workerId: string;
+  readonly expiresAt: string;
+  readonly attempt: number;
 }
 
+export interface LeaseInput {
+  readonly workerId: string;
+  readonly acceptedTypes: readonly IntelligenceJob["jobType"][];
+  readonly now: string;
+  readonly leaseDurationMs: number;
+}
+
+export interface RenewInput {
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly workerId: string;
+  readonly now: string;
+  readonly leaseDurationMs: number;
+}
+
+export interface AppendResultInput {
+  readonly tenantId: string;
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly leaseAttempt: number;
+  readonly workerId: string;
+  readonly baseAggregateVersion: number;
+  readonly result: IntelligenceResult;
+}
+
+export type AppendDisposition = "accepted" | "duplicate";
 export type TransactionGuard = (transaction: pg.PoolClient) => Promise<void>;
+
+export interface AbandonLeaseInput {
+  readonly tenantId: string;
+  readonly jobId: string;
+  readonly leaseToken: string;
+  readonly leaseAttempt: number;
+  readonly workerId: string;
+}
+
+export type AbandonLeaseDisposition = "released" | "not-active";
 
 interface LeaseClaimRow {
   readonly job_json: string;
@@ -75,18 +99,18 @@ function hashResult(result: IntelligenceResult): string {
 }
 
 /**
- * PostgreSQL-backed Intelligence work queue for the Worker-facing ports. The
- * Worker role executes constrained SECURITY DEFINER queue functions: it can
- * claim/renew/abandon a fenced lease and append a proposal Result to
- * `intelligence_result_inbox`, but it cannot insert raw rows into the legacy
- * `intelligence_results` table consumed by no Server code.
+ * Durable PostgreSQL Intelligence work queue. Leases are committed rows bound to
+ * tenant, job, worker, attempt and lease-token hash; the raw token is returned
+ * only to the Worker. A Result append revalidates that durable fence in the
+ * same transaction that records the Server-consumed inbox row. The Worker role
+ * receives no direct aggregate or raw Result-table grants.
  */
-export class PostgresIntelligenceQueue implements IntelligenceJobStore, IntelligenceResultInbox {
+export class PostgresIntelligenceQueue {
   private readonly pool: pg.Pool;
   private readonly transactionGuard: TransactionGuard;
 
   constructor(
-    config: PostgresIntelligenceQueueConfig,
+    config: PostgresConnectionConfig,
     transactionGuard?: TransactionGuard,
   ) {
     if (transactionGuard === undefined) {
@@ -123,6 +147,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
       }
 
       const job = JSON.parse(row.job_json) as IntelligenceJob;
+      const attempt = row.attempt;
       await client.query("commit");
       return {
         job,
@@ -131,7 +156,7 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
           leaseToken,
           workerId: input.workerId,
           expiresAt: row.expires_at,
-          attempt: row.attempt,
+          attempt,
         },
       };
     } catch (error) {
@@ -147,10 +172,11 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
     try {
       await client.query("begin");
       await this.transactionGuard(client);
+      const leaseTokenHash = hashToken(input.leaseToken);
       const renewed = await client.query<LeaseRenewRow>(
         `select status, attempt, expires_at
            from worker_renew_intelligence_lease($1::text, $2::text, $3::text, $4::integer)`,
-        [input.jobId, input.workerId, hashToken(input.leaseToken), input.leaseDurationMs],
+        [input.jobId, input.workerId, leaseTokenHash, input.leaseDurationMs],
       );
       const row = renewed.rows[0];
       if (row === undefined || row.status !== "renewed" || row.attempt === null || row.expires_at === null) {
@@ -248,4 +274,5 @@ export class PostgresIntelligenceQueue implements IntelligenceJobStore, Intellig
   async close(): Promise<void> {
     await this.pool.end();
   }
+
 }

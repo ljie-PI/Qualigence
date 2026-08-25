@@ -23,19 +23,34 @@ const AGGREGATE_TABLES: Readonly<
 };
 
 interface IntelligenceDatabase {
-  intelligence_results: {
+  intelligence_result_inbox: {
     tenant_id: string;
     idempotency_key: string;
     job_id: string;
-    terminal_status: string;
-    confidence: number;
+    worker_id: string;
+    lease_attempt: number;
+    lease_token_hash: string;
+    lease_expires_at: string;
+    base_aggregate_version: number;
+    result_hash: string;
     result_json: string;
-    created_at: string;
+    accepted_at: string;
   };
   intelligence_jobs: {
     tenant_id: string;
     job_id: string;
+    base_aggregate_version: number;
     job_json: string;
+  };
+  intelligence_leases: {
+    tenant_id: string;
+    job_id: string;
+    attempt: number;
+    worker_id: string;
+    lease_token_hash: string;
+    expires_at: string;
+    released_at: string | null;
+    completed_at: string | null;
   };
   intelligence_applied_results: {
     tenant_id: string;
@@ -90,16 +105,33 @@ export class ServerIntelligenceResultConsumer<Database extends IntelligenceDatab
     return this.provider.withTenant(tenantId, async ({ db }) => {
       const intelligenceDb = db as Transaction<IntelligenceDatabase>;
       const pending = await intelligenceDb
-        .selectFrom("intelligence_results as r")
-        .innerJoin("intelligence_jobs as j", "j.job_id", "r.job_id")
-        .leftJoin(
-          "intelligence_applied_results as a",
-          "a.idempotency_key",
-          "r.idempotency_key",
+        .selectFrom("intelligence_result_inbox as i")
+        .innerJoin("intelligence_jobs as j", (join) =>
+          join
+            .onRef("j.tenant_id", "=", "i.tenant_id")
+            .onRef("j.job_id", "=", "i.job_id"),
         )
+        .innerJoin("intelligence_leases as l", (join) =>
+          join
+            .onRef("l.tenant_id", "=", "i.tenant_id")
+            .onRef("l.job_id", "=", "i.job_id")
+            .onRef("l.attempt", "=", "i.lease_attempt")
+            .onRef("l.worker_id", "=", "i.worker_id")
+            .onRef("l.lease_token_hash", "=", "i.lease_token_hash")
+            .onRef("l.expires_at", "=", "i.lease_expires_at"),
+        )
+        .leftJoin("intelligence_applied_results as a", (join) =>
+          join
+            .onRef("a.tenant_id", "=", "i.tenant_id")
+            .onRef("a.idempotency_key", "=", "i.idempotency_key"),
+        )
+        .where("i.tenant_id", "=", tenantId)
         .where("a.idempotency_key", "is", null)
-        .select(["r.result_json as resultJson", "j.job_json as jobJson"])
-        .orderBy("r.created_at", "asc")
+        .where("l.released_at", "is", null)
+        .where("l.completed_at", "is not", null)
+        .whereRef("j.base_aggregate_version", "=", "i.base_aggregate_version")
+        .select(["i.result_json as resultJson", "j.job_json as jobJson"])
+        .orderBy("i.accepted_at", "asc")
         .execute();
 
       const ledger = new TransactionAppliedResultLedger(intelligenceDb, tenantId);

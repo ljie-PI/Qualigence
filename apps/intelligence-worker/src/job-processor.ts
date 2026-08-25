@@ -8,7 +8,16 @@ import type { IntelligenceJob, IntelligenceResult } from "@qualigence/intelligen
  * and NEVER mutates an aggregate. The Server alone applies the Result.
  */
 export interface JobProcessor {
-  process(job: IntelligenceJob): Promise<IntelligenceResult>;
+  process(job: IntelligenceJob, signal?: AbortSignal): Promise<IntelligenceResult>;
+}
+
+export function throwIfJobProcessingAborted(signal?: AbortSignal): void {
+  if (signal?.aborted !== true) {
+    return;
+  }
+  const error = new Error("Intelligence job processing aborted");
+  error.name = "AbortError";
+  throw error;
 }
 
 export type JobProcessingErrorCode = "UnsupportedJobType" | "ContextUnavailable" | "ModelFailed";

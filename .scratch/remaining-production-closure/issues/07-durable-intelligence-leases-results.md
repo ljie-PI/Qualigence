@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Dispatch Mission work to its bound Runner; 06 — Deliver Skill version management loop; 20 — Restore exploration seed, checkpoint, and recovery budget schema migration `011`.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -49,6 +49,11 @@ Migration 012 only: durable Intelligence leases/Result inbox. Migrations 001-011
 - `.scratch/remaining-production-closure/issues/07-durable-intelligence-leases-results.md` (`## Comments`/`## Answer` evidence plus GitHub PR/check/artifact references only)
 - Post-review acceptance only: `tests/e2e/self-hosted/intelligence-worker-lease.test.ts`
 
+Maintainer-approved scope expansions during review fixes:
+
+- `packages/core-application/src/intelligence/**` plus directly affected tests for validated inbox consumption and fenced lease release.
+- `tests/unit/admin-cli/migrate.test.ts` only for updating migration target/schema-version expectations to schema `12`.
+
 ## Focused non-E2E Gate
 
 ```bash
@@ -89,3 +94,9 @@ Run against a real Worker/PostgreSQL path and prove lease, renewal, restart, and
 - The affected context documents listed above, especially proposal-only Worker authority, owner-bound leases, Result binding, RLS, and runtime-role separation.
 - `packages/core-application/src/intelligence/intelligence-queue-contracts.ts` and `packages/core-modules/intelligence/src/contracts.ts`.
 - The forced-RLS and tenant-isolation contracts under `tests/contract/postgres/**`.
+
+## Comments
+
+- start: base SHA `c55f377460033d9053085b5aface51b02ca12842`; behavior matrix applicable as recorded above for stateful/concurrent lease and Result inbox work; planned Gates: `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- update: maintainer-approved scope expansions recorded above. Round-2 blocker fixes remove raw Worker `intelligence_jobs` access, switch lease claim/renew/append/abandon SECURITY DEFINER functions to database transaction time, add the required real PostgreSQL Worker lease E2E, and update admin migration schema expectations to `12`. Fix validation: `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/unit/admin-cli/migrate.test.ts` passed; `CI=true corepack pnpm vitest run tests/e2e/self-hosted/intelligence-worker-lease.test.ts` passed; `CI=true corepack pnpm typecheck` passed.
+- final: reviewed head `df54a14d68c91b4cdcd696387667454f6136cf1e` against base `219532953a4eb0601b8471a8e510508dbd2c8647` after merging current `main`; Standards review and Spec review both found no blockers. Clean complete-matrix evidence: focused non-E2E Gate `CI=true corepack pnpm vitest run tests/unit/intelligence-worker tests/unit/core-modules/intelligence tests/component/intelligence-worker tests/contract/postgres/tenant-isolation.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/unit/admin-cli/migrate.test.ts` passed with 11 files / 66 tests; required post-review E2E `CI=true corepack pnpm vitest run tests/e2e/self-hosted/intelligence-worker-lease.test.ts` passed with 1 file / 1 test; `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.

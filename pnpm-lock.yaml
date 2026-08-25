@@ -975,6 +975,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../core-modules/context-intake
+      '@qualigence/intelligence':
+        specifier: workspace:*
+        version: link:../../core-modules/intelligence
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission

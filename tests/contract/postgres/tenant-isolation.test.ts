@@ -131,27 +131,50 @@ describe.skipIf(!dockerAvailable())("PostgreSQL tenant isolation", () => {
     }
   });
 
-  it("lets the Worker role lease Intelligence Jobs across tenants", async () => {
+  it("denies raw Worker reads of Intelligence Jobs while preserving lease operations", async () => {
     const client = new Client(fixture.workerConfig);
     await client.connect();
     try {
+      await expect(
+        client.query("select job_id, tenant_id from intelligence_jobs"),
+      ).rejects.toMatchObject({ code: "42501" });
+
       const result = await client.query(
-        "select job_id, tenant_id from intelligence_jobs",
+        "select job_json, attempt, expires_at from worker_claim_intelligence_lease($1::text[], $2::text, $3::text, $4::integer)",
+        [["reproduce"], "worker-isolation", "token-hash", 60_000],
       );
-      expect(result.rows.length).toBeGreaterThanOrEqual(1);
-      expect(result.rows.some((row) => row.tenant_id === "tenant-a")).toBe(true);
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toMatchObject({ attempt: 1 });
+      expect(result.rows[0].expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     } finally {
       await client.end();
     }
   });
 
-  it("forbids the Worker role from writing Intelligence Results it may not append elsewhere", async () => {
+  it("forbids the Worker role from writing raw Server-consumed Intelligence Results", async () => {
     const client = new Client(fixture.workerConfig);
     await client.connect();
     try {
-      // Worker has no grant on intelligence_applied_results.
+      // Worker has no grant on intelligence_applied_results or on the legacy raw
+      // results table; accepted proposals must go through the fenced append
+      // function that records intelligence_result_inbox metadata.
       await expect(
         client.query("select * from intelligence_applied_results"),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        client.query(
+          `insert into intelligence_results
+             (tenant_id, idempotency_key, job_id, terminal_status, confidence, result_json, created_at)
+           values ('tenant-a', 'forged-result', 'job-a', 'succeeded', 1, '{}', now()::text)`,
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await expect(
+        client.query(
+          `insert into intelligence_result_inbox
+             (tenant_id, idempotency_key, job_id, worker_id, lease_attempt, lease_token_hash,
+              lease_expires_at, base_aggregate_version, result_hash, result_json, accepted_at)
+           values ('tenant-a', 'forged-inbox', 'job-a', 'worker-a', 1, 'hash', now()::text, 0, 'hash', '{}', now()::text)`,
+        ),
       ).rejects.toMatchObject({ code: "42501" });
     } finally {
       await client.end();

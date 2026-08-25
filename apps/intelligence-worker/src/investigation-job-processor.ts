@@ -4,7 +4,7 @@ import type {
   InvestigationModelAgentPort,
   ReproductionPlanningContext,
 } from "@qualigence/investigation";
-import { JobProcessingError, type JobProcessor } from "./job-processor.js";
+import { JobProcessingError, throwIfJobProcessingAborted, type JobProcessor } from "./job-processor.js";
 
 /**
  * Loads the deterministically pre-assembled context for an Intelligence Job.
@@ -14,8 +14,8 @@ import { JobProcessingError, type JobProcessor } from "./job-processor.js";
  * plugs into.
  */
 export interface IntelligenceContextSource {
-  loadReproductionPlanning(job: IntelligenceJob): Promise<ReproductionPlanningContext>;
-  loadBugAnalysis(job: IntelligenceJob): Promise<BugAnalysisContext>;
+  loadReproductionPlanning(job: IntelligenceJob, signal?: AbortSignal): Promise<ReproductionPlanningContext>;
+  loadBugAnalysis(job: IntelligenceJob, signal?: AbortSignal): Promise<BugAnalysisContext>;
 }
 
 /**
@@ -31,14 +31,17 @@ export class InvestigationJobProcessor implements JobProcessor {
     private readonly context: IntelligenceContextSource,
   ) {}
 
-  async process(job: IntelligenceJob): Promise<IntelligenceResult> {
+  async process(job: IntelligenceJob, signal?: AbortSignal): Promise<IntelligenceResult> {
+    throwIfJobProcessingAborted(signal);
     switch (job.jobType) {
       case "investigation.reproduction-planning": {
-        const context = await this.context.loadReproductionPlanning(job);
+        const context = await this.context.loadReproductionPlanning(job, signal);
+        throwIfJobProcessingAborted(signal);
         return this.invoke(() => this.agent.proposeReproductionPlan(job, context));
       }
       case "investigation.bug-analysis": {
-        const context = await this.context.loadBugAnalysis(job);
+        const context = await this.context.loadBugAnalysis(job, signal);
+        throwIfJobProcessingAborted(signal);
         return this.invoke(() => this.agent.analyzeBug(job, context));
       }
       default:

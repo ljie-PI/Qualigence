@@ -48,3 +48,19 @@ export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";
 export { PostgresProjectTargetRepository, PostgresTestPlanRepository } from "./postgres-product-intake-store.js";
 export { PostgresPrdMissionRepository } from "./postgres-prd-mission-store.js";
 export { PostgresSkillStore } from "./postgres-skill-store.js";
+export {
+  IntelligenceQueueError,
+  PostgresIntelligenceQueue,
+} from "./postgres-intelligence-queue.js";
+
+export type {
+  AbandonLeaseDisposition,
+  AbandonLeaseInput,
+  AppendDisposition,
+  AppendResultInput,
+  IntelligenceJobLease,
+  IntelligenceQueueErrorCode,
+  LeaseInput,
+  RenewInput,
+  TransactionGuard,
+} from "./postgres-intelligence-queue.js";

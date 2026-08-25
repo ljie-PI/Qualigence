@@ -28,9 +28,10 @@ function assertIdentifier(value: string, label: string): void {
  * context resolves to NULL and therefore returns zero rows / rejects writes —
  * it can never be caught and bypassed in application code.
  *
- * The Worker role is granted exclusively on the Intelligence Job tables so it
- * can lease jobs across tenants without ever reading or writing aggregate,
- * evidence or review data.
+ * The Worker role is granted exclusively on the Intelligence Job lease/Result
+ * functions so it can lease jobs across tenants and submit proposals without
+ * direct write authority over Server-consumed Result rows, aggregate, evidence
+ * or review data.
  */
 export async function applyRowLevelSecurity(
   db: Kysely<any>,
@@ -51,6 +52,7 @@ export async function applyRowLevelSecurity(
   await sql`grant select on table ${sql.table("schema_components")} to ${serverRole}, ${workerRole}`.execute(db);
 
   const selected = tableNames === undefined ? undefined : new Set(tableNames);
+  const hasTable = (table: string): boolean => selected === undefined || selected.has(table);
   for (const table of TENANT_OWNED_TABLES) {
     if (selected !== undefined && !selected.has(table.name)) continue;
     const ref = sql.table(table.name);
@@ -82,36 +84,366 @@ export async function applyRowLevelSecurity(
     `.execute(db);
   }
 
-  // The Worker may lease jobs through the constrained lock function and append
-  // results (select/insert). It receives no direct UPDATE authority over jobs.
-  // — and nothing else. Every other tenant table has no grant, so a worker read
-  // fails closed with SQLSTATE 42501 before RLS is even consulted.
-  if (selected === undefined || selected.has("intelligence_jobs")) {
-    await sql`revoke update on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
-    await sql`grant select on table ${sql.table("intelligence_jobs")} to ${workerRole}`.execute(db);
+  if (hasTable("intelligence_jobs")) {
+    await sql`drop policy if exists worker_access on ${sql.table("intelligence_jobs")}`.execute(db);
+    await sql`revoke all on table ${sql.table("intelligence_jobs")} from ${workerRole}`.execute(db);
+    await sql`drop function if exists public.worker_lock_intelligence_job(text[])`.execute(db);
+    await sql`drop function if exists public.worker_lock_intelligence_job(text[], text)`.execute(db);
+  }
+
+  if (hasTable("intelligence_results")) {
+    await sql`revoke all on table ${sql.table("intelligence_results")} from ${workerRole}`.execute(db);
+  }
+  if (hasTable("intelligence_leases")) {
+    await sql`revoke all on table ${sql.table("intelligence_leases")} from ${workerRole}`.execute(db);
+  }
+  if (hasTable("intelligence_result_inbox")) {
+    await sql`revoke all on table ${sql.table("intelligence_result_inbox")} from ${workerRole}`.execute(db);
+  }
+
+  if (hasTable("intelligence_jobs") && hasTable("intelligence_leases") && hasTable("intelligence_result_inbox")) {
+    await sql`drop function if exists public.worker_claim_intelligence_lease(text[], text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_renew_intelligence_lease(text, text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text, text)`.execute(db);
+    await sql`drop function if exists public.worker_abandon_intelligence_lease(text, text, text, integer, text, text)`.execute(db);
+
     await sql`
-      create or replace function public.worker_lock_intelligence_job(accepted_types text[])
-      returns table (job_json text)
-      language sql
+      create or replace function public.worker_claim_intelligence_lease(
+        accepted_types text[],
+        input_worker_id text,
+        input_lease_token_hash text,
+        input_lease_duration_ms integer
+      )
+      returns table (job_json text, attempt integer, expires_at text)
+      language plpgsql
       security definer
       set search_path = pg_catalog
       as $function$
-        select j.job_json
+      declare
+        checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+        selected_tenant_id text;
+        selected_job_id text;
+        selected_job_json text;
+        next_attempt integer;
+        next_expires_at text := to_char(
+          (transaction_timestamp() + (input_lease_duration_ms * interval '1 millisecond')) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        );
+      begin
+        select j.tenant_id, j.job_id, j.job_json
+          into selected_tenant_id, selected_job_id, selected_job_json
           from public.intelligence_jobs j
          where j.job_type = any(accepted_types)
            and not exists (
-             select 1 from public.intelligence_results r where r.job_id = j.job_id
+             select 1
+               from public.intelligence_result_inbox i
+              where i.tenant_id = j.tenant_id
+                and i.job_id = j.job_id
+           )
+           and not exists (
+             select 1
+               from public.intelligence_leases l
+              where l.tenant_id = j.tenant_id
+                and l.job_id = j.job_id
+                and l.released_at is null
+                and l.completed_at is null
+                and l.expires_at > checked_at
            )
          order by j.created_at asc
          for update of j skip locked
-         limit 1
+         limit 1;
+
+        if selected_job_id is null then
+          return;
+        end if;
+
+        update public.intelligence_leases l
+           set released_at = checked_at
+         where l.tenant_id = selected_tenant_id
+           and l.job_id = selected_job_id
+           and l.released_at is null
+           and l.completed_at is null
+           and l.expires_at <= checked_at;
+
+        select (coalesce(max(l.attempt), 0) + 1)::integer
+          into next_attempt
+          from public.intelligence_leases l
+         where l.tenant_id = selected_tenant_id
+           and l.job_id = selected_job_id;
+
+        insert into public.intelligence_leases
+          (tenant_id, job_id, attempt, worker_id, lease_token_hash, lease_started_at,
+           expires_at, last_renewed_at, renewal_count, released_at, completed_at)
+        values
+          (selected_tenant_id, selected_job_id, next_attempt, input_worker_id,
+           input_lease_token_hash, checked_at, next_expires_at, null, 0, null, null);
+
+        job_json := selected_job_json;
+        attempt := next_attempt;
+        expires_at := next_expires_at;
+        return next;
+      end
       $function$
     `.execute(db);
-    await sql`revoke all on function public.worker_lock_intelligence_job(text[]) from public`.execute(db);
-    await sql`grant execute on function public.worker_lock_intelligence_job(text[]) to ${workerRole}`.execute(db);
-  }
-  if (selected === undefined || selected.has("intelligence_results")) {
-    await sql`grant select, insert on table ${sql.table("intelligence_results")} to ${workerRole}`.execute(db);
+    await sql`revoke all on function public.worker_claim_intelligence_lease(text[], text, text, integer) from public`.execute(db);
+    await sql`grant execute on function public.worker_claim_intelligence_lease(text[], text, text, integer) to ${workerRole}`.execute(db);
+
+    await sql`
+      create or replace function public.worker_renew_intelligence_lease(
+        input_job_id text,
+        input_worker_id text,
+        input_lease_token_hash text,
+        input_lease_duration_ms integer
+      )
+      returns table (status text, attempt integer, expires_at text)
+      language plpgsql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+      declare
+        checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+        next_expires_at text := to_char(
+          (transaction_timestamp() + (input_lease_duration_ms * interval '1 millisecond')) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        );
+        current_lease record;
+      begin
+        update public.intelligence_leases l
+           set expires_at = next_expires_at,
+               last_renewed_at = checked_at,
+               renewal_count = l.renewal_count + 1
+         where l.job_id = input_job_id
+           and l.worker_id = input_worker_id
+           and l.lease_token_hash = input_lease_token_hash
+           and l.released_at is null
+           and l.completed_at is null
+           and l.expires_at > checked_at
+        returning l.attempt, l.expires_at into current_lease;
+
+        if found then
+          status := 'renewed';
+          attempt := current_lease.attempt;
+          expires_at := current_lease.expires_at;
+          return next;
+          return;
+        end if;
+
+        select l.worker_id, l.lease_token_hash, l.expires_at, l.released_at, l.completed_at
+          into current_lease
+          from public.intelligence_leases l
+         where l.job_id = input_job_id
+         order by l.attempt desc
+         limit 1;
+
+        if not found or current_lease.released_at is not null or current_lease.completed_at is not null then
+          status := 'LeaseNotActive';
+        elsif current_lease.worker_id <> input_worker_id then
+          status := 'WorkerMismatch';
+        elsif current_lease.lease_token_hash <> input_lease_token_hash then
+          status := 'LeaseTokenMismatch';
+        elsif current_lease.expires_at <= checked_at then
+          status := 'LeaseExpired';
+        else
+          status := 'LeaseNotActive';
+        end if;
+        attempt := null;
+        expires_at := null;
+        return next;
+      end
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_renew_intelligence_lease(text, text, text, integer) from public`.execute(db);
+    await sql`grant execute on function public.worker_renew_intelligence_lease(text, text, text, integer) to ${workerRole}`.execute(db);
+
+    await sql`
+      create or replace function public.worker_append_intelligence_result(
+        input_tenant_id text,
+        input_job_id text,
+        input_worker_id text,
+        input_lease_attempt integer,
+        input_lease_token_hash text,
+        input_base_aggregate_version integer,
+        input_idempotency_key text,
+        input_result_hash text,
+        input_result_json text
+      )
+      returns table (status text)
+      language plpgsql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+      declare
+        existing_result record;
+        job_base_version integer;
+        lease_row record;
+        inserted_count integer;
+        accepted_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+      begin
+        select i.job_id, i.worker_id, i.lease_attempt, i.lease_token_hash,
+               i.base_aggregate_version, i.result_hash, i.result_json
+          into existing_result
+          from public.intelligence_result_inbox i
+         where i.tenant_id = input_tenant_id
+           and i.idempotency_key = input_idempotency_key
+         limit 1;
+
+        if found then
+          if existing_result.job_id = input_job_id
+             and existing_result.worker_id = input_worker_id
+             and existing_result.lease_attempt = input_lease_attempt
+             and existing_result.lease_token_hash = input_lease_token_hash
+             and existing_result.base_aggregate_version = input_base_aggregate_version
+             and existing_result.result_hash = input_result_hash
+             and existing_result.result_json = input_result_json then
+            status := 'duplicate';
+          else
+            status := 'IdempotencyConflict';
+          end if;
+          return next;
+          return;
+        end if;
+
+        select j.base_aggregate_version
+          into job_base_version
+          from public.intelligence_jobs j
+         where j.tenant_id = input_tenant_id
+           and j.job_id = input_job_id
+         limit 1;
+
+        if not found then
+          status := 'JobMismatch';
+          return next;
+          return;
+        end if;
+        if job_base_version <> input_base_aggregate_version then
+          status := 'BaseVersionMismatch';
+          return next;
+          return;
+        end if;
+
+        select l.worker_id, l.lease_token_hash, l.expires_at, l.released_at, l.completed_at
+          into lease_row
+          from public.intelligence_leases l
+         where l.tenant_id = input_tenant_id
+           and l.job_id = input_job_id
+           and l.attempt = input_lease_attempt
+         for update;
+
+        if not found then
+          status := 'LeaseNotActive';
+          return next;
+          return;
+        end if;
+        if lease_row.worker_id <> input_worker_id then
+          status := 'WorkerMismatch';
+          return next;
+          return;
+        end if;
+        if lease_row.lease_token_hash <> input_lease_token_hash then
+          status := 'LeaseTokenMismatch';
+          return next;
+          return;
+        end if;
+        if lease_row.released_at is not null or lease_row.completed_at is not null then
+          status := 'LeaseNotActive';
+          return next;
+          return;
+        end if;
+        if lease_row.expires_at <= accepted_at then
+          status := 'LeaseExpired';
+          return next;
+          return;
+        end if;
+
+        insert into public.intelligence_result_inbox
+          (tenant_id, idempotency_key, job_id, worker_id, lease_attempt, lease_token_hash,
+           lease_expires_at, base_aggregate_version, result_hash, result_json, accepted_at)
+        values
+          (input_tenant_id, input_idempotency_key, input_job_id, input_worker_id,
+           input_lease_attempt, input_lease_token_hash, lease_row.expires_at,
+           input_base_aggregate_version, input_result_hash, input_result_json, accepted_at)
+        on conflict (tenant_id, idempotency_key) do nothing;
+        get diagnostics inserted_count = row_count;
+
+        if inserted_count = 0 then
+          select i.job_id, i.worker_id, i.lease_attempt, i.lease_token_hash,
+                 i.base_aggregate_version, i.result_hash, i.result_json
+            into existing_result
+            from public.intelligence_result_inbox i
+           where i.tenant_id = input_tenant_id
+             and i.idempotency_key = input_idempotency_key
+           limit 1;
+          if found
+             and existing_result.job_id = input_job_id
+             and existing_result.worker_id = input_worker_id
+             and existing_result.lease_attempt = input_lease_attempt
+             and existing_result.lease_token_hash = input_lease_token_hash
+             and existing_result.base_aggregate_version = input_base_aggregate_version
+             and existing_result.result_hash = input_result_hash
+             and existing_result.result_json = input_result_json then
+            status := 'duplicate';
+          else
+            status := 'IdempotencyConflict';
+          end if;
+          return next;
+          return;
+        end if;
+
+        update public.intelligence_leases l
+           set completed_at = accepted_at
+         where l.tenant_id = input_tenant_id
+           and l.job_id = input_job_id
+           and l.attempt = input_lease_attempt
+           and l.worker_id = input_worker_id
+           and l.lease_token_hash = input_lease_token_hash
+           and l.released_at is null
+           and l.completed_at is null;
+
+        status := 'accepted';
+        return next;
+      end
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) from public`.execute(db);
+    await sql`grant execute on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) to ${workerRole}`.execute(db);
+
+    await sql`
+      create or replace function public.worker_abandon_intelligence_lease(
+        input_tenant_id text,
+        input_job_id text,
+        input_worker_id text,
+        input_lease_attempt integer,
+        input_lease_token_hash text
+      )
+      returns table (status text)
+      language plpgsql
+      security definer
+      set search_path = pg_catalog
+      as $function$
+      declare
+        released_at_value text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+      begin
+        update public.intelligence_leases l
+           set released_at = released_at_value
+         where l.tenant_id = input_tenant_id
+           and l.job_id = input_job_id
+           and l.attempt = input_lease_attempt
+           and l.worker_id = input_worker_id
+           and l.lease_token_hash = input_lease_token_hash
+           and l.released_at is null
+           and l.completed_at is null;
+
+        if found then
+          status := 'released';
+        else
+          status := 'not-active';
+        end if;
+        return next;
+      end
+      $function$
+    `.execute(db);
+    await sql`revoke all on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) from public`.execute(db);
+    await sql`grant execute on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) to ${workerRole}`.execute(db);
   }
 
   await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);

@@ -115,12 +115,15 @@ export async function createTenantSchemaTables(
     await builder.execute();
 
     for (const index of table.partialIndexes ?? []) {
-      await db.schema
+      let indexBuilder = db.schema
         .createIndex(index.name)
         .on(table.name)
         .columns(compositeKey(table, index.columns))
-        .where(sql.raw<SqlBool>(index.predicate))
-        .execute();
+        .where(sql.raw<SqlBool>(index.predicate));
+      if (index.unique === true) {
+        indexBuilder = indexBuilder.unique();
+      }
+      await indexBuilder.execute();
     }
   }
 }
