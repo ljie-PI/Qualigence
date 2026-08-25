@@ -85,6 +85,28 @@ export class ObservationCandidateInventoryRunner {
   ): Promise<ObservationMigrationResult> {
     const migratorVersion = skillMigratorVersion(asset);
     const sourceBinding = this.skillSourceBinding(asset, migratorVersion);
+
+    if (sourceBinding.failure !== undefined) {
+      if (options.dryRun !== true) {
+        await this.store.append({ result: sourceBinding.failure });
+      }
+      return sourceBinding.failure;
+    }
+
+    const sourceVerification = this.skillRecompiler.verifySource(asset);
+    if (sourceVerification.status === "failed") {
+      const result = skillOutcomeToMigrationResult(
+        asset,
+        sourceVerification.outcome,
+        migratorVersion,
+        sourceBinding.projection,
+      );
+      if (options.dryRun !== true) {
+        await this.store.append({ result });
+      }
+      return result;
+    }
+
     const existing = await this.store.find(
       asset.assetId,
       sourceBinding.sourceHash,
@@ -92,13 +114,6 @@ export class ObservationCandidateInventoryRunner {
     );
     if (existing !== undefined) {
       return existing.result;
-    }
-
-    if (sourceBinding.failure !== undefined) {
-      if (options.dryRun !== true) {
-        await this.store.append({ result: sourceBinding.failure });
-      }
-      return sourceBinding.failure;
     }
 
     const outcome = await this.skillRecompiler.recompile(asset);
@@ -154,22 +169,28 @@ export class ObservationCandidateInventoryRunner {
   } {
     try {
       const computed = this.sourceProjector.sourceHash(asset);
-      if (
-        asset.declaredSourceHash !== undefined &&
-        asset.declaredSourceHash !== computed
-      ) {
-        return { sourceHash: asset.declaredSourceHash, expectedSourceHash: computed };
-      }
-      return { sourceHash: computed };
+      return bindComputedSourceHash(asset, computed);
     } catch {
       const raw = JSON.stringify(asset.observation ?? null);
-      return {
-        sourceHash:
-          asset.declaredSourceHash ??
-          createHash("sha256").update(raw).digest("hex"),
-      };
+      return bindComputedSourceHash(
+        asset,
+        createHash("sha256").update(raw).digest("hex"),
+      );
     }
   }
+}
+
+function bindComputedSourceHash(
+  asset: PreV1SkillInventoryAsset,
+  computed: string,
+): { readonly sourceHash: string; readonly expectedSourceHash?: string } {
+  if (
+    asset.declaredSourceHash !== undefined &&
+    asset.declaredSourceHash !== computed
+  ) {
+    return { sourceHash: computed, expectedSourceHash: asset.declaredSourceHash };
+  }
+  return { sourceHash: computed };
 }
 
 function isSkillInventoryAsset(

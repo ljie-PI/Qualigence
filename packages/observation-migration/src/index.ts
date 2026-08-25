@@ -85,4 +85,5 @@ export type {
   RecompiledSkillReverifier,
   RecompileStatus,
   RecompileOutcome,
+  SkillSourceVerification,
 } from "./skill-recompiler.js";

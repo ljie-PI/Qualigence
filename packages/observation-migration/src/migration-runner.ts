@@ -28,6 +28,7 @@ export interface ObservationMigrationResult {
   readonly reasonCode?: string;
   readonly migratorVersion: string;
   readonly sourceTraceRefs?: readonly string[];
+  /** Declared source hash when it mismatches the computed source payload hash. */
   readonly expectedSourceHash?: string;
   /** Original pre-v1 Skill content hash when a Skill result is keyed by source Trace hash. */
   readonly skillSourceHash?: string;
@@ -63,6 +64,13 @@ export interface ObservationMigrationRunnerOptions {
   readonly dryRun?: boolean;
 }
 
+interface SourceHashBinding {
+  /** The hash computed from the actual source payload observed in this run. */
+  readonly sourceHash: string;
+  /** The declared source hash when it mismatches the computed source payload. */
+  readonly expectedSourceHash?: string;
+}
+
 /**
  * The idempotent, resumable migration runner. It projects each pre-v1 asset to a
  * v1 candidate, classifies the outcome, and appends an immutable ledger entry.
@@ -87,16 +95,18 @@ export class ObservationMigrationRunner {
     asset: PreV1ObservationAsset,
     options: ObservationMigrationRunnerOptions = {},
   ): Promise<ObservationMigrationResult> {
-    const sourceHash = this.sourceHashForLedger(asset);
-    const record = this.classify(asset, sourceHash);
+    const sourceBinding = this.sourceHashForLedger(asset);
+    const record = this.classify(asset, sourceBinding);
 
-    const existing = await this.store.find(
-      asset.assetId,
-      sourceHash,
-      record.result.migratorVersion,
-    );
-    if (existing !== undefined) {
-      return existing.result;
+    if (this.canReturnExistingResult(record.result)) {
+      const existing = await this.store.find(
+        asset.assetId,
+        sourceBinding.sourceHash,
+        record.result.migratorVersion,
+      );
+      if (existing !== undefined) {
+        return existing.result;
+      }
     }
     if (options.dryRun !== true) {
       await this.store.append(record);
@@ -106,25 +116,25 @@ export class ObservationMigrationRunner {
 
   private classify(
     asset: PreV1ObservationAsset,
-    sourceHash: string,
+    sourceBinding: SourceHashBinding,
   ): StoredObservationMigration {
     try {
       const projected = this.projector.projectRecord(asset);
+      if (asset.kind === "skill") {
+        return {
+          result: {
+            ...this.baseResult(asset, sourceBinding),
+            status: "needs_human",
+            reasonCode: "SkillInventoryRunnerRequired",
+          },
+        };
+      }
       const outputRef = observationGraphHash(projected.graph);
       return {
         result: {
-          assetId: asset.assetId,
-          assetKind: asset.kind,
-          sourceHash,
+          ...this.baseResult(asset, sourceBinding),
           status: "migrated",
           outputRef,
-          migratorVersion: this.migratorVersion,
-          ...(asset.locatorSchemaVersion === undefined
-            ? {}
-            : { locatorSchemaVersion: asset.locatorSchemaVersion }),
-          ...(asset.skillCompilerVersion === undefined
-            ? {}
-            : { skillCompilerVersion: asset.skillCompilerVersion }),
         },
         projection: projected.graph,
         metadata: projected.metadata,
@@ -132,36 +142,65 @@ export class ObservationMigrationRunner {
     } catch (error) {
       return {
         result: {
-          assetId: asset.assetId,
-          assetKind: asset.kind,
-          sourceHash,
+          ...this.baseResult(asset, sourceBinding),
           ...this.classifyFailure(error),
-          migratorVersion: this.migratorVersion,
-          ...(asset.locatorSchemaVersion === undefined
-            ? {}
-            : { locatorSchemaVersion: asset.locatorSchemaVersion }),
-          ...(asset.skillCompilerVersion === undefined
-            ? {}
-            : { skillCompilerVersion: asset.skillCompilerVersion }),
         },
       };
     }
   }
 
-  private sourceHashForLedger(asset: PreV1ObservationAsset): string {
+  private baseResult(
+    asset: PreV1ObservationAsset,
+    sourceBinding: SourceHashBinding,
+  ): Omit<ObservationMigrationResult, "status"> {
+    return {
+      assetId: asset.assetId,
+      assetKind: asset.kind,
+      sourceHash: sourceBinding.sourceHash,
+      migratorVersion: this.migratorVersion,
+      ...(sourceBinding.expectedSourceHash === undefined
+        ? {}
+        : { expectedSourceHash: sourceBinding.expectedSourceHash }),
+      ...(asset.locatorSchemaVersion === undefined
+        ? {}
+        : { locatorSchemaVersion: asset.locatorSchemaVersion }),
+      ...(asset.skillCompilerVersion === undefined
+        ? {}
+        : { skillCompilerVersion: asset.skillCompilerVersion }),
+    };
+  }
+
+  private sourceHashForLedger(asset: PreV1ObservationAsset): SourceHashBinding {
     try {
       const computed = this.projector.sourceHash(asset);
-      if (
-        asset.declaredSourceHash !== undefined &&
-        asset.declaredSourceHash !== computed
-      ) {
-        return asset.declaredSourceHash;
-      }
-      return computed;
+      return this.bindComputedSourceHash(asset, computed);
     } catch {
       const raw = JSON.stringify(asset.observation ?? null);
-      return createHash("sha256").update(raw).digest("hex");
+      return this.bindComputedSourceHash(
+        asset,
+        createHash("sha256").update(raw).digest("hex"),
+      );
     }
+  }
+
+  private bindComputedSourceHash(
+    asset: PreV1ObservationAsset,
+    computed: string,
+  ): SourceHashBinding {
+    if (
+      asset.declaredSourceHash !== undefined &&
+      asset.declaredSourceHash !== computed
+    ) {
+      return { sourceHash: computed, expectedSourceHash: asset.declaredSourceHash };
+    }
+    return { sourceHash: computed };
+  }
+
+  private canReturnExistingResult(result: ObservationMigrationResult): boolean {
+    // A source integrity failure must never be hidden by a prior successful
+    // record for the same asset. The caller sees the freshly verified failure;
+    // append remains duplicate-safe if that exact failed binding already exists.
+    return result.reasonCode !== "SourceAssetCorrupted";
   }
 
   private classifyFailure(error: unknown): {

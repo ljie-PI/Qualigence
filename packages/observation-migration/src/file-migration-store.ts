@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
   ObservationMigrationStore,
@@ -8,6 +8,9 @@ import type {
 import { OBSERVATION_MIGRATOR_VERSION } from "./pre-v1-projector.js";
 
 const ledgerAppendQueues = new Map<string, Promise<void>>();
+const LEDGER_LOCK_WAIT_TIMEOUT_MS = 30_000;
+const LEDGER_LOCK_STALE_AFTER_MS = 30_000;
+const LEDGER_LOCK_POLL_MS = 10;
 
 /**
  * A durable, append-only, resumable {@link ObservationMigrationStore} backed by
@@ -152,7 +155,7 @@ async function acquireLedgerLock(lockPath: string): Promise<() => Promise<void>>
   for (;;) {
     try {
       const handle = await open(lockPath, "wx");
-      await handle.writeFile(`${process.pid}\n`, "utf8");
+      await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, "utf8");
       return async () => {
         await handle.close();
         await rm(lockPath, { force: true });
@@ -161,11 +164,63 @@ async function acquireLedgerLock(lockPath: string): Promise<() => Promise<void>>
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      if (Date.now() - started > 30_000) {
+      if (await recoverStaleLedgerLock(lockPath)) {
+        continue;
+      }
+      if (Date.now() - started > LEDGER_LOCK_WAIT_TIMEOUT_MS) {
         throw new Error(`Timed out waiting for observation migration ledger lock: ${lockPath}`);
       }
-      await delay(10);
+      await delay(LEDGER_LOCK_POLL_MS);
     }
+  }
+}
+
+async function recoverStaleLedgerLock(lockPath: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw error;
+  }
+
+  const pid = Number.parseInt(raw.trim().split(/\s+/)[0] ?? "", 10);
+  if (Number.isInteger(pid) && pid > 0) {
+    if (pid === process.pid || isProcessAlive(pid)) {
+      return false;
+    }
+    await rm(lockPath, { force: true });
+    return true;
+  }
+
+  let lockStat;
+  try {
+    lockStat = await stat(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw error;
+  }
+  if (Date.now() - lockStat.mtimeMs > LEDGER_LOCK_STALE_AFTER_MS) {
+    await rm(lockPath, { force: true });
+    return true;
+  }
+  return false;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH" || code === "EINVAL") {
+      return false;
+    }
+    return true;
   }
 }
 

@@ -194,12 +194,88 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
       assetKind: "skill",
       status: "failed",
       reasonCode: "SourceAssetCorrupted",
-      sourceHash: "0".repeat(64),
+      sourceHash: skill.declaredSourceHash,
+      expectedSourceHash: "0".repeat(64),
       skillSourceHash: skill.previous.contentSha256,
     });
-    expect(report.results[0]?.expectedSourceHash).toHaveLength(64);
     expect(reverified).toBe(false);
     expect(await store.list()).toHaveLength(1);
+  });
+
+  it("does not return a prior Skill success when the source Trace changed but kept the old declared hash", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(
+        new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
+      ),
+    );
+
+    const first = await runner.run([skill], { now: NOW });
+    const firstSourceHash = first.results[0]!.sourceHash;
+    let reverified = false;
+    const noReverifyRunner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler({
+        async verify() {
+          reverified = true;
+          throw new Error("should not reverify a corrupted source Trace");
+        },
+      }),
+    );
+    const corrupted = {
+      ...skill,
+      observation: {
+        ...skill.observation,
+        graphId: `${skill.observation.graphId}:corrupted`,
+      },
+      declaredSourceHash: firstSourceHash,
+    } satisfies PreV1SkillInventoryAsset;
+
+    const second = await noReverifyRunner.run([corrupted], { now: NOW });
+
+    expect(first.results[0]?.status).toBe("migrated");
+    expect(second.results[0]).toMatchObject({
+      assetId: skill.assetId,
+      assetKind: "skill",
+      status: "failed",
+      reasonCode: "SourceAssetCorrupted",
+      expectedSourceHash: firstSourceHash,
+      skillSourceHash: skill.previous.contentSha256,
+    });
+    expect(second.results[0]?.sourceHash).not.toBe(firstSourceHash);
+    expect(reverified).toBe(false);
+    expect(await store.list()).toHaveLength(2);
+  });
+
+  it("does not return a prior Skill success when the Skill content hash changes", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(
+        new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
+      ),
+    );
+
+    const first = await runner.run([skill], { now: NOW });
+    const changed = {
+      ...skill,
+      previous: { ...skill.previous, contentSha256: "0".repeat(64) },
+    } satisfies PreV1SkillInventoryAsset;
+    const second = await runner.run([changed], { now: NOW });
+
+    expect(first.results[0]?.status).toBe("migrated");
+    expect(second.results[0]).toMatchObject({
+      assetId: skill.assetId,
+      assetKind: "skill",
+      sourceHash: first.results[0]?.sourceHash,
+      status: "failed",
+      reasonCode: "MigrationSourceChanged",
+      skillSourceHash: "0".repeat(64),
+      computedSkillSourceHash: skill.previous.contentSha256,
+    });
   });
 
   it("returns the existing immutable result for repeated active inventory runs", async () => {

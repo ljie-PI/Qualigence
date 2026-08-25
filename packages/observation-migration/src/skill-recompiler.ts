@@ -62,6 +62,16 @@ export interface RecompileOutcome {
   readonly computedContentSha256?: string;
 }
 
+export type SkillSourceVerification =
+  | {
+      readonly status: "valid";
+      readonly sourceContentSha256: string;
+    }
+  | {
+      readonly status: "failed";
+      readonly outcome: RecompileOutcome;
+    };
+
 /**
  * Recompile a pre-v1 Skill against its migrated (v1-projected) source and
  * reverify it. A deterministic compile failure (unsupported action/schema, a
@@ -76,17 +86,20 @@ export class SkillRecompiler {
     private readonly compiler: SkillCompiler = new SkillCompiler(),
   ) {}
 
-  async recompile(asset: PreV1SkillAsset): Promise<RecompileOutcome> {
+  verifySource(asset: PreV1SkillAsset): SkillSourceVerification {
     let preV1Candidate: SkillCandidate;
     try {
       preV1Candidate = this.compiler.compile(asset.recording, asset.proposal);
     } catch (error) {
       if (error instanceof SkillCompilerError) {
         return {
-          assetId: asset.assetId,
-          status: "deprecated",
-          reasonCode: error.code,
-          sourceContentSha256: asset.previous.contentSha256,
+          status: "failed",
+          outcome: {
+            assetId: asset.assetId,
+            status: "deprecated",
+            reasonCode: error.code,
+            sourceContentSha256: asset.previous.contentSha256,
+          },
         };
       }
       throw error;
@@ -94,12 +107,24 @@ export class SkillRecompiler {
 
     if (preV1Candidate.contentSha256 !== asset.previous.contentSha256) {
       return {
-        assetId: asset.assetId,
         status: "failed",
-        reasonCode: "MigrationSourceChanged",
-        sourceContentSha256: asset.previous.contentSha256,
-        computedContentSha256: preV1Candidate.contentSha256,
+        outcome: {
+          assetId: asset.assetId,
+          status: "failed",
+          reasonCode: "MigrationSourceChanged",
+          sourceContentSha256: asset.previous.contentSha256,
+          computedContentSha256: preV1Candidate.contentSha256,
+        },
       };
+    }
+
+    return { status: "valid", sourceContentSha256: preV1Candidate.contentSha256 };
+  }
+
+  async recompile(asset: PreV1SkillAsset): Promise<RecompileOutcome> {
+    const sourceVerification = this.verifySource(asset);
+    if (sourceVerification.status === "failed") {
+      return sourceVerification.outcome;
     }
 
     const v1Recording = migrateRecordingToV1(asset.recording);

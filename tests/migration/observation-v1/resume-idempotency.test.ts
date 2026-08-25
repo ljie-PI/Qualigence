@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,19 +34,27 @@ describe("migration runner idempotency and resume", () => {
     expect(stored[0]?.metadata?.observationSchemaEpoch).toBe("pre-v1");
   });
 
-  it("records a hash mismatch as a failed attempt instead of returning a prior migrated result", async () => {
+  it("records a changed payload with a stale declared hash as failed instead of returning a prior migrated result", async () => {
     const asset = await loadAsset("m1-web-observation.json");
     const store = new InMemoryObservationMigrationStore();
     const runner = new ObservationMigrationRunner(store);
 
     const first = await runner.migrate(asset);
-    const corrupted = { ...asset, declaredSourceHash: "0".repeat(64) };
+    const corrupted = {
+      ...asset,
+      observation: {
+        ...asset.observation,
+        graphId: `${asset.observation.graphId}:corrupted`,
+      },
+      declaredSourceHash: first.sourceHash,
+    } satisfies PreV1ObservationAsset;
     const second = await runner.migrate(corrupted);
 
     expect(first.status).toBe("migrated");
     expect(second.status).toBe("failed");
     expect(second.reasonCode).toBe("SourceAssetCorrupted");
-    expect(second.sourceHash).toBe("0".repeat(64));
+    expect(second.sourceHash).not.toBe(first.sourceHash);
+    expect(second.expectedSourceHash).toBe(first.sourceHash);
     expect(await store.list()).toHaveLength(2);
   });
 
@@ -122,6 +130,23 @@ describe("migration runner idempotency and resume", () => {
     expect(await store.list()).toHaveLength(0);
   });
 
+  it("does not report Skill assets as graph-only migrated through the trace runner", async () => {
+    const skill = await loadAsset("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const runner = new ObservationMigrationRunner(store);
+
+    const result = await runner.migrate(skill);
+
+    expect(result).toMatchObject({
+      assetKind: "skill",
+      status: "needs_human",
+      reasonCode: "SkillInventoryRunnerRequired",
+      migratorVersion: runner.migratorVersion,
+    });
+    expect(result.outputRef).toBeUndefined();
+    expect(await store.list()).toHaveLength(1);
+  });
+
   it("serializes concurrent file-backed appends for the same binding", async () => {
     const root = await mkdtemp(join(tmpdir(), "obs-migration-store-"));
     const ledgerPath = join(root, "ledger.jsonl");
@@ -147,6 +172,33 @@ describe("migration runner idempotency and resume", () => {
       const stored = await new FileObservationMigrationStore(ledgerPath).list();
       expect(stored).toHaveLength(1);
       expect(stored[0]).toEqual(record);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a stale file-backed ledger lock left by a crashed process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "obs-migration-store-"));
+    const ledgerPath = join(root, "ledger.jsonl");
+    const record = {
+      result: {
+        assetId: "asset-after-crash",
+        sourceHash: "hash-after-crash",
+        status: "migrated" as const,
+        outputRef: "output-after-crash",
+        migratorVersion: "observation-migrator/v1",
+      },
+    };
+
+    try {
+      await writeFile(`${ledgerPath}.lock`, "999999999\n", "utf8");
+
+      await new FileObservationMigrationStore(ledgerPath).append(record);
+
+      const stored = await new FileObservationMigrationStore(ledgerPath).list();
+      expect(stored).toEqual([record]);
+      const raw = await readFile(ledgerPath, "utf8");
+      expect(raw.trim().split("\n")).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
