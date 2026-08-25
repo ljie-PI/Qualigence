@@ -72,6 +72,9 @@ export const migration013: Migration = {
       .addColumn("aggregate_id", "text")
       .addColumn("new_version", "integer")
       .addColumn("summary", "text")
+      .addColumn("follow_up_job_id", "text", (column) =>
+        column.references("intelligence_jobs.job_id"),
+      )
       .addColumn("created_at", "text", (column) => column.notNull())
       .addPrimaryKeyConstraint("intelligence_result_dispositions_pk", [
         "tenant_id",

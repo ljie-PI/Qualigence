@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Transaction } from "kysely";
 import {
   IntelligenceResultApplier,
@@ -54,8 +55,20 @@ interface IntelligenceDatabase {
   intelligence_jobs: {
     tenant_id: string;
     job_id: string;
+    job_type: string;
+    schema_version: string;
+    project_id: string;
+    aggregate_type: string;
+    aggregate_id: string;
     base_aggregate_version: number;
+    model_profile_id: string;
+    data_policy_id: string;
+    priority: string;
+    idempotency_key: string;
+    causation_id: string;
+    expected_result_schema: string;
     job_json: string;
+    created_at: string;
   };
   intelligence_leases: {
     tenant_id: string;
@@ -88,6 +101,7 @@ interface IntelligenceDatabase {
     aggregate_id: string | null;
     new_version: number | null;
     summary: string | null;
+    follow_up_job_id: string | null;
     created_at: string;
   };
   investigation_cases: {
@@ -218,11 +232,15 @@ export class ServerIntelligenceResultConsumer {
         const job = JSON.parse(row.jobJson) as IntelligenceJob;
         const result = JSON.parse(row.resultJson) as IntelligenceResult;
         const outcome = await applyOrRejectDeterministically(applier, job, result, options.signal);
+        const followUpJobId = outcome.status === "recompute"
+          ? await createRecomputeFollowUp(intelligenceDb, tenantId, job, result, options.signal)
+          : null;
         await dispositionRecorder.record({
           idempotencyKey: row.idempotencyKey,
           jobId: row.jobId,
           resultHash: row.resultHash,
           outcome,
+          followUpJobId,
         });
         dispositions.push(outcome.status);
         counts[outcome.status] += 1;
@@ -317,6 +335,7 @@ interface DispositionInput {
   readonly jobId: string;
   readonly resultHash: string;
   readonly outcome: ApplyResult;
+  readonly followUpJobId: string | null;
 }
 
 class TransactionResultDispositionRecorder {
@@ -340,6 +359,7 @@ class TransactionResultDispositionRecorder {
       aggregate_id: fields.effect?.aggregateId ?? null,
       new_version: fields.effect?.newVersion ?? null,
       summary: fields.effect?.summary ?? null,
+      follow_up_job_id: input.followUpJobId,
       created_at: recordedAt,
     };
     await this.db
@@ -353,10 +373,76 @@ class TransactionResultDispositionRecorder {
         aggregate_id: values.aggregate_id,
         new_version: values.new_version,
         summary: values.summary,
+        follow_up_job_id: values.follow_up_job_id,
         created_at: values.created_at,
       }))
       .execute();
   }
+}
+
+async function createRecomputeFollowUp(
+  db: Transaction<IntelligenceDatabase>,
+  tenantId: string,
+  originalJob: IntelligenceJob,
+  staleResult: IntelligenceResult,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  const currentVersion = await new TransactionAggregateVersionReader(db, tenantId).currentVersion(originalJob.aggregateRef);
+  throwIfAborted(signal);
+  if (currentVersion === undefined) {
+    return null;
+  }
+
+  const followUp = recomputeFollowUpJob(tenantId, originalJob, staleResult, currentVersion);
+  const createdAt = new Date().toISOString();
+  await db
+    .insertInto("intelligence_jobs")
+    .values({
+      tenant_id: tenantId,
+      job_id: followUp.jobId,
+      job_type: followUp.jobType,
+      schema_version: followUp.schemaVersion,
+      project_id: followUp.projectId,
+      aggregate_type: followUp.aggregateRef.type,
+      aggregate_id: followUp.aggregateRef.id,
+      base_aggregate_version: followUp.baseAggregateVersion,
+      model_profile_id: followUp.modelProfileId,
+      data_policy_id: followUp.dataPolicyId,
+      priority: followUp.priority,
+      idempotency_key: followUp.idempotencyKey,
+      causation_id: followUp.causationId,
+      expected_result_schema: followUp.expectedResultSchema,
+      job_json: JSON.stringify(followUp),
+      created_at: createdAt,
+    })
+    .onConflict((oc) => oc.columns(["tenant_id", "job_id"]).doNothing())
+    .execute();
+  return followUp.jobId;
+}
+
+function recomputeFollowUpJob(
+  tenantId: string,
+  originalJob: IntelligenceJob,
+  staleResult: IntelligenceResult,
+  baseAggregateVersion: number,
+): IntelligenceJob {
+  const seed = [
+    tenantId,
+    originalJob.jobId,
+    staleResult.idempotencyKey,
+    originalJob.aggregateRef.type,
+    originalJob.aggregateRef.id,
+    String(baseAggregateVersion),
+  ].join("\u0000");
+  const digest = createHash("sha256").update(seed).digest("hex");
+  return {
+    ...originalJob,
+    tenantId,
+    jobId: `recompute-job-${digest}`,
+    baseAggregateVersion,
+    idempotencyKey: `recompute-idem-${digest}`,
+    causationId: staleResult.idempotencyKey,
+  };
 }
 
 async function applyOrRejectDeterministically(

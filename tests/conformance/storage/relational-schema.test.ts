@@ -131,7 +131,7 @@ describe("shared relational schema catalog", () => {
       expect(await tableColumns(runtime, "intelligence_result_dispositions")).toEqual([
         "tenant_id", "idempotency_key", "job_id", "result_hash", "status",
         "code", "reason", "aggregate_type", "aggregate_id", "new_version",
-        "summary", "created_at",
+        "summary", "follow_up_job_id", "created_at",
       ]);
     } finally { await runtime.close(); }
   });

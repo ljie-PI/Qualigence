@@ -453,6 +453,7 @@ export interface IntelligenceResultDispositionsTable {
   aggregate_id: string | null;
   new_version: number | null;
   summary: string | null;
+  follow_up_job_id: string | null;
   created_at: string;
 }
 

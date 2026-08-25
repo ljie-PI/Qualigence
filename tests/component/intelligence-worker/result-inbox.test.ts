@@ -540,13 +540,12 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(await readCaseVersion(fixture.adminConfig, "case-raw-result")).toBe(0);
   });
 
-  it("records stale base-version recompute once without reprocessing the Result forever", async () => {
+  it("records stale base-version recompute once and enqueues an authorized follow-up", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-a",
       caseId: "case-inbox-4",
       jobId: "job-inbox-4",
       baseAggregateVersion: 0,
-      jobType: "skill.evaluation",
     });
     // The aggregate has already moved to version 1, so the result is stale.
     await seedInvestigationCase(fixture.adminConfig, {
@@ -560,7 +559,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     try {
       const leased = await q.lease({
         workerId: "worker-a",
-        acceptedTypes: ["skill.evaluation"],
+        acceptedTypes: ["investigation.reproduction-planning"],
         now: now(),
         leaseDurationMs: 60_000,
       });
@@ -584,7 +583,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(summary.hasMore).toBe(false);
     expect(await readCaseVersion(fixture.adminConfig, "case-inbox-4")).toBe(1);
     const dispositions = await readAdminRows(fixture.adminConfig,
-      `select status, reason, new_version
+      `select status, reason, new_version, follow_up_job_id
          from intelligence_result_dispositions
         where tenant_id = 'tenant-a' and idempotency_key = $1`,
       [result.idempotencyKey],
@@ -592,6 +591,56 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(dispositions.rows).toHaveLength(1);
     expect(dispositions.rows[0]).toMatchObject({ status: "recompute", new_version: null });
     expect(dispositions.rows[0]?.reason).toContain("Base aggregate version 0");
+    const followUpJobId = dispositions.rows[0]?.follow_up_job_id;
+    expect(typeof followUpJobId).toBe("string");
+    expect(followUpJobId).not.toBe(job.jobId);
+
+    const followUps = await readAdminRows(fixture.adminConfig,
+      `select job_id, job_type, aggregate_id, base_aggregate_version, idempotency_key, causation_id, job_json
+         from intelligence_jobs
+        where tenant_id = 'tenant-a' and job_id = $1`,
+      [followUpJobId],
+    );
+    expect(followUps.rows).toHaveLength(1);
+    expect(followUps.rows[0]).toMatchObject({
+      job_id: followUpJobId,
+      job_type: job.jobType,
+      aggregate_id: "case-inbox-4",
+      base_aggregate_version: 1,
+      causation_id: result.idempotencyKey,
+    });
+    expect(followUps.rows[0]?.idempotency_key).not.toBe(job.idempotencyKey);
+    expect(JSON.parse(followUps.rows[0]?.job_json as string)).toMatchObject({
+      jobId: followUpJobId,
+      jobType: job.jobType,
+      aggregateRef: job.aggregateRef,
+      baseAggregateVersion: 1,
+      causationId: result.idempotencyKey,
+    });
+
+    const followUpQueue = queue();
+    try {
+      const leasedFollowUp = await followUpQueue.lease({
+        workerId: "worker-follow-up",
+        acceptedTypes: ["investigation.reproduction-planning"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      expect(leasedFollowUp?.job).toMatchObject({
+        jobId: followUpJobId,
+        baseAggregateVersion: 1,
+        causationId: result.idempotencyKey,
+      });
+      await followUpQueue.abandon({
+        tenantId: "tenant-a",
+        jobId: followUpJobId as string,
+        leaseToken: leasedFollowUp!.lease.leaseToken,
+        leaseAttempt: leasedFollowUp!.lease.attempt,
+        workerId: "worker-follow-up",
+      });
+    } finally {
+      await followUpQueue.close();
+    }
 
     const retrySummary = await consumer.consumeForTenant("tenant-a");
     expect(retrySummary).toMatchObject({ processed: 0, recompute: 0, hasMore: false });

@@ -1544,12 +1544,14 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       t("aggregate_id", false),
       i("new_version", false),
       t("summary", false),
+      t("follow_up_job_id", false),
       t("created_at"),
     ],
     primaryKey: ["tenant_id", "idempotency_key"],
     uniques: [],
     foreignKeys: [
       { columns: ["tenant_id", "idempotency_key"], references: { table: "intelligence_result_inbox", columns: ["tenant_id", "idempotency_key"] } },
+      { columns: ["follow_up_job_id"], references: { table: "intelligence_jobs", columns: ["job_id"] } },
     ],
     checks: [
       { name: "intelligence_result_dispositions_status_check", predicate: "status IN ('applied', 'duplicate', 'rejected', 'recompute')" },
