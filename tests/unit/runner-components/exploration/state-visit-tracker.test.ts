@@ -85,6 +85,29 @@ function graphWithRootRelations(
   };
 }
 
+function graphWithAmbiguousRelationTarget(targetNodeId: "node-b" | "node-c"): ObservationGraphV1 {
+  const base = graph({
+    nodes: [
+      { id: "node-a", role: "group", name: "Action container", confidence: 0.9 },
+      { id: "node-b", role: "button", name: "Details", confidence: 0.8 },
+      { id: "node-c", role: "button", name: "Details", confidence: 0.7 },
+      { id: "node-d", role: "status", name: "Expanded details", confidence: 0.6 },
+    ],
+  });
+  return {
+    ...base,
+    nodes: base.nodes.map((node) => {
+      if (node.id === "node-a") {
+        return { ...node, relations: [{ type: "controls", targetNodeId }] };
+      }
+      if (node.id === "node-c") {
+        return { ...node, relations: [{ type: "described_by", targetNodeId: "node-d" }] };
+      }
+      return node;
+    }),
+  };
+}
+
 describe("fingerprintObservationGraph", () => {
   it("normalizes volatile graphId, node ids, timestamps and confidence to the same fingerprint", () => {
     const a = fingerprintObservationGraph(graph());
@@ -149,6 +172,13 @@ describe("fingerprintObservationGraph", () => {
     );
 
     expect(controlsRelation).not.toBe(childRelation);
+  });
+
+  it("distinguishes relation targets with matching base identity but different outgoing topology", () => {
+    const targetsLeafNode = fingerprintObservationGraph(graphWithAmbiguousRelationTarget("node-b"));
+    const targetsRelationNode = fingerprintObservationGraph(graphWithAmbiguousRelationTarget("node-c"));
+
+    expect(targetsRelationNode).not.toBe(targetsLeafNode);
   });
 
   it("produces a different fingerprint for a semantic or state change", () => {

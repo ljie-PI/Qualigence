@@ -56,7 +56,7 @@ interface ObservationNodeBaseFingerprintView {
 
 interface ObservationRelationFingerprintView {
   readonly type: ObservationRelationV1["type"];
-  /** Stable semantic identity of the target node; raw volatile node IDs are not fingerprinted. */
+  /** Stable topology-aware semantic identity of the target node; raw volatile node IDs are not fingerprinted. */
   readonly target: string;
 }
 
@@ -173,7 +173,16 @@ function webSemanticsFromExtension(extension: VersionedExtension): WebV1Semantic
 }
 
 function stableNodeIdentityById(nodes: readonly ObservationNodeV1[]): ReadonlyMap<string, string> {
-  return new Map(nodes.map((node) => [node.id, canonicalPayloadHash(nodeBaseFingerprintView(node))]));
+  let identities = new Map(nodes.map((node) => [node.id, canonicalPayloadHash(nodeBaseFingerprintView(node))]));
+  const orderedNodes = [...nodes].sort((left, right) => compareStrings(left.id, right.id));
+
+  for (let depth = 0; depth < nodes.length; depth += 1) {
+    identities = new Map(
+      orderedNodes.map((node) => [node.id, canonicalPayloadHash(nodeFingerprintView(node, identities))]),
+    );
+  }
+
+  return identities;
 }
 
 function nodeBaseFingerprintView(node: ObservationNodeV1): ObservationNodeBaseFingerprintView {
