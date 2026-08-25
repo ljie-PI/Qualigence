@@ -38,6 +38,9 @@ const mismatchedProvenanceCases: readonly [string, CorruptProvenance][] = [
   ["execution_runs.job_id", async ({ db }, seed) => {
     await db.updateTable("execution_runs").set({ job_id: `${seed.job.jobId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("run_id", "=", seed.job.runId).execute();
   }],
+  ["missions.project_id", async ({ db }, seed) => {
+    await db.updateTable("missions").set({ project_id: `${seed.job.projectId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("mission_id", "=", seed.missionId).where("revision", "=", seed.missionRevision).execute();
+  }],
   ["mission_execution_provenance.mission_id", async ({ db }, seed) => {
     await db.updateTable("mission_execution_provenance").set({ mission_id: `${seed.missionId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
   }],

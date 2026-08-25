@@ -192,6 +192,7 @@ interface CompletionProjectionRow {
   readonly run_job_id: string;
   readonly logical_job_mission_id: string;
   readonly logical_job_mission_revision: number;
+  readonly mission_project_id: string;
   readonly provenance_project_id: string;
   readonly provenance_mission_id: string;
   readonly provenance_mission_revision: number;
@@ -244,6 +245,8 @@ async function applySelfHostedCompletionProjection(
     acceptedJob.jobId !== input.jobId ||
     acceptedJob.runId !== input.runId ||
     acceptedJob.projectId !== row.provenance_project_id ||
+    acceptedJob.projectId !== row.mission_project_id ||
+    row.mission_project_id !== row.provenance_project_id ||
     acceptedJob.plan === undefined ||
     acceptedJob.plan.missionId !== row.attempt_mission_id ||
     acceptedJob.plan.missionId !== row.provenance_mission_id ||
@@ -377,6 +380,7 @@ async function loadCompletionProjectionRow(
       "execution_runs.job_id as run_job_id",
       "execution_jobs.mission_id as logical_job_mission_id",
       "execution_jobs.mission_revision as logical_job_mission_revision",
+      "missions.project_id as mission_project_id",
       "mission_execution_provenance.project_id as provenance_project_id",
       "mission_execution_provenance.mission_id as provenance_mission_id",
       "mission_execution_provenance.mission_revision as provenance_mission_revision",
