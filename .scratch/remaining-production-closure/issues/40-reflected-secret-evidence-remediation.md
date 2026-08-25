@@ -144,3 +144,10 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 - Core blockers fixed: DOM0/property delegated `input`/`change` handlers now fail closed with `SensitiveEvidenceUnavailable` and no accepted observation artifacts; page-side sensitive form scan records are retired after the successful closed-epoch capture so later unrelated equal text remains ordinary instead of globally poisoning evidence.
 - Fix commit: `3479354a7ead0304d5b23c4111fa8b8dbce50617`.
 - Gates run: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 4 files / 71 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed: 1 file / 1 test); `CI=true corepack pnpm typecheck` (passed); `git diff --check` (passed).
+
+### review-fix 3 — 2026-08-25
+
+- Reviewed head: `83813d860ef48acf4b77a7a973a0086f40d01f1d`.
+- Core blockers fixed: nested light-DOM observed ancestors now receive the same sensitive marker/redaction when a descendant synchronously reflects a registered form, preventing ancestor `textContent` Graph/Artifact leaks without global string replacement; direct-target `Promise.resolve().then(...)` and `queueMicrotask(...)` reflected forms now poison the Ticket 40 epoch and fail closed with `SensitiveEvidenceUnavailable` and no accepted observation artifacts rather than becoming synchronous success propagation.
+- Fix commit: `bbcd71707731ae42008acca55feaf32f481c9431`.
+- Gates run: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 4 files / 74 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed: 1 file / 1 test); `CI=true corepack pnpm typecheck` (passed); `git diff --check` (passed).
