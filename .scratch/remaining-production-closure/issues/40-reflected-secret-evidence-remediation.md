@@ -4,7 +4,7 @@
 
 **Blocked by:** 39 - Redact browser-normalized input and select forms.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -115,3 +115,10 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 
 - needs-info resolution: Maintainer re-authorized Ticket 40 as synchronous light-DOM causal reflected-evidence only. Timer/rAF/microtask/Promise/scheduler propagation, Shadow DOM, Promise owner, DOM getter, CDP geometry, and independent PNG hardening stay out of Ticket 40 and remain owned by Ticket 41+ as already tracked. Ticket 40 may proceed by succeeding on synchronously attributed light-DOM reflections and by failing evidence closed with `SensitiveEvidenceUnavailable` plus zero accepted Graph/Artifact bytes for unattributed, delegated, scheduler-adjacent, or still-open/unsettled sensitive epochs.
 - continuation base: The historical experimental branch `closure/ticket-40-reflected-secret-evidence` remains intentionally unmerged and is not implementation/cherry-pick authority. Continue from current `main`; the branch may be inspected only as non-authoritative background.
+
+### start — 2026-08-25
+
+- Fixed base: `f34e7547c8208dd85425f64992553d4b8d290afc` (`main`, includes PR #105 merge `f34e754` reauthorizing Ticket 40 scope after PR #104 touchpoint guidance).
+- Predecessor merge evidence: Ticket 39 is `resolved` with PR #94 merge commit `8fd56808dea9fc8b202e0d4833a0e8f5606e6001` recorded in `.scratch/remaining-production-closure/issues/39-browser-normalized-secret-redaction-remediation.md` and present in current history.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable for synchronous light-DOM causal reflected evidence. Scheduler, Shadow DOM, Promise-owner, DOM-getter, CDP geometry, independent PNG hardening, and Runner log rows remain out of scope here and are boundary-owned by Ticket 41+.
+- Planned Gates: `corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts`, then `corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains deferred per ticket protocol.

@@ -58,12 +58,20 @@ describe("production valueRef browser execution", () => {
         </label>
         <p data-qualigence-observe id="equal-text">${INPUT_EQUAL_TEXT}</p>
         <p data-qualigence-observe id="status">Waiting</p>
+        <p data-qualigence-observe id="input-reflection">Input mirror pending</p>
+        <p data-qualigence-observe id="select-reflection">Select mirror pending</p>
         <script>
           const notes = document.querySelector('textarea');
           const country = document.querySelector('select');
           const status = document.getElementById('status');
-          notes.addEventListener('input', () => { status.textContent = 'Notes ready'; });
-          country.addEventListener('change', () => { status.textContent = 'Country ready'; });
+          notes.addEventListener('input', () => {
+            status.textContent = 'Notes ready';
+            document.getElementById('input-reflection').textContent = notes.value;
+          });
+          country.addEventListener('change', () => {
+            status.textContent = 'Country ready';
+            document.getElementById('select-reflection').textContent = country.selectedOptions[0].text;
+          });
         </script>
       `, "ValueRef acceptance"),
     });
@@ -210,19 +218,23 @@ describe("production valueRef browser execution", () => {
     expect(selectObservation.nodes.some((node) => node.name === "Country ready" || node.value === "Country ready")).toBe(true);
     expect(inputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(inputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(inputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
     expect(targetNode(selectObservation, "combobox", "Country")).toMatchObject({
       text: "[redacted]",
       value: "[redacted]",
     });
+    expect(selectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
 
     const preAckInputObservation = finalObservation(spooledEvents, "run-input");
     const preAckSelectObservation = finalObservation(spooledEvents, "run-select");
     expect(preAckInputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(preAckInputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(preAckInputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
     expect(targetNode(preAckSelectObservation, "combobox", "Country")).toMatchObject({
       text: "[redacted]",
       value: "[redacted]",
     });
+    expect(preAckSelectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
 
     await spool.close();
     spool = undefined;
@@ -238,6 +250,8 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).not.toContain(`\"value\":${JSON.stringify(SELECT_VALUE)}`);
     expect(spoolText).not.toContain(`\"text\":${JSON.stringify(SELECT_TEXT)}`);
     expect(spoolText).not.toContain(`\"name\":${JSON.stringify(SELECT_TEXT)}`);
+    expect(spoolText).not.toContain(`\"text\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
+    expect(spoolText).not.toContain(`\"name\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
   }, 60_000);
 });
 

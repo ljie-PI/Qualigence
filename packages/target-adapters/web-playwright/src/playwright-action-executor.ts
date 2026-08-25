@@ -14,6 +14,11 @@ import { locatorFor } from "./action-locator.js";
 import { isActionToken } from "./action-token.js";
 import type { LocatorDescriptor } from "./types.js";
 import {
+  MAX_REFLECTED_MUTATION_RECORDS,
+  MAX_REFLECTED_NODES,
+  MAX_REFLECTED_REGIONS,
+  SENSITIVE_EVIDENCE_STATE_PROPERTY,
+  SENSITIVE_MASK_ID_ATTRIBUTE,
   SENSITIVE_TARGET_IDS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
 } from "./sensitive-evidence-authority.js";
@@ -292,20 +297,41 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             nodeId: actionTarget.nodeId,
             sourceValue: value,
           });
+          this.session.beginSensitiveEvidenceDispatch(sensitiveEvidence);
           if (action.kind === "input") {
             const dispatchGenerationFailure = navigationGenerationFailure(
               page,
               this.session,
               navigationGeneration,
             );
-            if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
+            if (dispatchGenerationFailure !== undefined) {
+              this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
+              return dispatchGenerationFailure;
+            }
             this.session.invalidateObservations();
-            permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             try {
-              await locator.fill(value, { timeout: this.session.actionTimeoutMs });
-              await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+              permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
+              const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "input", value);
+              if (startedEpoch.status === "failed") {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              }
+              let epochResult: PageSensitiveEpochResult | undefined;
+              try {
+                await locator.fill(value, { timeout: this.session.actionTimeoutMs });
+              } finally {
+                epochResult = await endPageSensitiveActionEpoch(locator, sensitiveEvidence);
+              }
+              if (epochResult.status === "failed") {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              } else {
+                await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+              }
             } catch (error) {
-              this.session.markSensitiveEvidenceUnavailable();
+              if (permit.dispatchStarted) {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              } else {
+                this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
+              }
               throw error;
             }
           } else {
@@ -314,14 +340,34 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               this.session,
               navigationGeneration,
             );
-            if (dispatchGenerationFailure !== undefined) return dispatchGenerationFailure;
+            if (dispatchGenerationFailure !== undefined) {
+              this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
+              return dispatchGenerationFailure;
+            }
             this.session.invalidateObservations();
-            permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
             try {
-              await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
-              await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+              permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
+              const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "select", value);
+              if (startedEpoch.status === "failed") {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              }
+              let epochResult: PageSensitiveEpochResult | undefined;
+              try {
+                await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
+              } finally {
+                epochResult = await endPageSensitiveActionEpoch(locator, sensitiveEvidence);
+              }
+              if (epochResult.status === "failed") {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              } else {
+                await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+              }
             } catch (error) {
-              this.session.markSensitiveEvidenceUnavailable();
+              if (permit.dispatchStarted) {
+                this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+              } else {
+                this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
+              }
               throw error;
             }
           }
@@ -525,6 +571,316 @@ function navigationGenerationFailure(
   }
 }
 
+interface PageSensitiveEpochResult {
+  readonly status: "ok" | "failed";
+}
+
+async function beginPageSensitiveActionEpoch(
+  locator: Locator,
+  prepared: PreparedSensitiveEvidenceRecord,
+  kind: "input" | "select",
+  sourceValue: string,
+): Promise<PageSensitiveEpochResult> {
+  return locator.evaluate((element, input): PageSensitiveEpochResult => {
+    type BrowserSensitiveState = {
+      active?: BrowserSensitiveEpoch | null;
+      records: BrowserSensitiveRecord[];
+      poisoned: boolean;
+      nextNodeOrdinal: number;
+      nextMaskOrdinal: number;
+    };
+    type BrowserSensitiveEpoch = {
+      markerId: string;
+      forms: string[];
+      mutationOrdinal: number;
+      classifiedNodes: Set<string>;
+      classifiedRegions: Set<string>;
+      baseline: WeakMap<Element, ReadonlySet<string>>;
+      observer: MutationObserver;
+      targetListener: EventListener;
+      windowListener: EventListener;
+      poisoned: boolean;
+    };
+    type BrowserSensitiveRecord = {
+      markerId: string;
+      forms: string[];
+      baseline: WeakMap<Element, ReadonlySet<string>>;
+    };
+
+    const win = element.ownerDocument.defaultView;
+    if (win === null) return { status: "failed" };
+    const stateHost = win as unknown as Record<string, BrowserSensitiveState | undefined>;
+    const existing = stateHost[input.stateProperty];
+    const state: BrowserSensitiveState = existing ?? {
+      active: null,
+      records: [],
+      poisoned: false,
+      nextNodeOrdinal: 0,
+      nextMaskOrdinal: 0,
+    };
+    stateHost[input.stateProperty] = state;
+    if (state.active !== null && state.active !== undefined) {
+      state.poisoned = true;
+      return { status: "failed" };
+    }
+
+    const forms = reflectedCandidateForms(element, input.kind, input.sourceValue);
+    const baseline = baselineSensitiveForms(element.ownerDocument, forms);
+    const classifyCurrentLightDom = (): void => {
+      const active = state.active;
+      if (active === null || active === undefined) return;
+      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+        const matches = sensitiveMatches(candidate, active.forms);
+        if (matches.length === 0) continue;
+        if (candidate.getRootNode() !== candidate.ownerDocument) {
+          poison(active);
+          continue;
+        }
+        if (matches.every((value) => active.baseline.get(candidate)?.has(value) === true)) {
+          continue;
+        }
+        classifyElement(candidate, active);
+      }
+    };
+    const observer = new MutationObserver((records) => {
+      const active = state.active;
+      if (active === null || active === undefined) return;
+      const applicationRecords = records.filter((record) =>
+        record.type !== "attributes" || record.attributeName !== input.maskAttribute);
+      active.mutationOrdinal += applicationRecords.length;
+      if (active.mutationOrdinal > input.maxMutationRecords) poison(active);
+    });
+    const epoch: BrowserSensitiveEpoch = {
+      markerId: input.markerId,
+      forms,
+      mutationOrdinal: 0,
+      classifiedNodes: new Set<string>(),
+      classifiedRegions: new Set<string>(),
+      baseline,
+      observer,
+      targetListener: classifyCurrentLightDom,
+      windowListener: classifyCurrentLightDom,
+      poisoned: false,
+    };
+    state.active = epoch;
+    classifyElement(element, epoch);
+    observer.observe(element.ownerDocument, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    element.addEventListener("input", epoch.targetListener, false);
+    element.addEventListener("change", epoch.targetListener, false);
+    win.addEventListener("input", epoch.windowListener, false);
+    win.addEventListener("change", epoch.windowListener, false);
+    return { status: state.poisoned || epoch.poisoned ? "failed" : "ok" };
+
+    function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
+      const values = new Set<string>([source]);
+      if (actionKind === "input") {
+        values.add(source.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+      }
+      if (actionKind === "select" && target instanceof HTMLSelectElement) {
+        for (const option of Array.from(target.options)) {
+          if (option.value === source || option.text === source || option.label === source) {
+            values.add(option.value);
+            values.add(option.text);
+            values.add(option.label);
+          }
+        }
+      }
+      return Array.from(values).filter((value) => value !== "");
+    }
+
+    function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, ReadonlySet<string>> {
+      const result = new WeakMap<Element, ReadonlySet<string>>();
+      for (const candidate of Array.from(document.querySelectorAll("*"))) {
+        const matches = new Set<string>();
+        for (const value of sensitiveValues(candidate)) {
+          for (const form of formsToMatch) {
+            if (carriesForm(value, form)) matches.add(value);
+          }
+        }
+        if (matches.size > 0) result.set(candidate, matches);
+      }
+      return result;
+    }
+
+    function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
+      const matches: string[] = [];
+      for (const value of sensitiveValues(candidate)) {
+        if (formsToMatch.some((form) => carriesForm(value, form))) matches.push(value);
+      }
+      return matches;
+    }
+
+    function classifyElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
+      if (candidate.getRootNode() !== candidate.ownerDocument) {
+        poison(epochToUpdate);
+        return;
+      }
+      const nodeKey = `${input.markerId}:${nodeIdentity(candidate)}`;
+      if (!epochToUpdate.classifiedNodes.has(nodeKey)) {
+        epochToUpdate.classifiedNodes.add(nodeKey);
+        if (epochToUpdate.classifiedNodes.size > input.maxClassifiedNodes) {
+          poison(epochToUpdate);
+          return;
+        }
+      }
+      const regionKey = nodeKey;
+      if (!epochToUpdate.classifiedRegions.has(regionKey)) {
+        epochToUpdate.classifiedRegions.add(regionKey);
+        if (epochToUpdate.classifiedRegions.size > input.maxMaskRegions) {
+          poison(epochToUpdate);
+          return;
+        }
+      }
+      markSensitiveElement(candidate, epochToUpdate.markerId);
+    }
+
+    function nodeIdentity(candidate: Element): string {
+      const host = candidate as unknown as Element & Record<string, unknown>;
+      const existingId = host.__qualigenceSensitiveNodeIdentity;
+      if (typeof existingId === "string") return existingId;
+      state.nextNodeOrdinal += 1;
+      const nodeId = `qn-${state.nextNodeOrdinal}`;
+      Object.defineProperty(host, "__qualigenceSensitiveNodeIdentity", {
+        configurable: true,
+        enumerable: false,
+        value: nodeId,
+        writable: false,
+      });
+      return nodeId;
+    }
+
+    function markSensitiveElement(candidate: Element, markerId: string): void {
+      const host = candidate as unknown as Element & Record<string, unknown>;
+      const current = host[input.targetIdsProperty];
+      if (Array.isArray(current)) {
+        if (!current.includes(markerId)) current.push(markerId);
+      } else {
+        Object.defineProperty(host, input.targetIdsProperty, {
+          configurable: true,
+          enumerable: false,
+          value: [markerId],
+          writable: true,
+        });
+      }
+      if (!candidate.hasAttribute(input.maskAttribute)) {
+        state.nextMaskOrdinal += 1;
+        candidate.setAttribute(input.maskAttribute, `qm-${state.nextMaskOrdinal}`);
+      }
+    }
+
+    function sensitiveValues(candidate: Element): readonly string[] {
+      const values: string[] = [];
+      const text = directText(candidate);
+      if (text !== "") values.push(text);
+      if (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement) {
+        if (candidate.value !== "") values.push(candidate.value);
+        if (candidate.placeholder !== "") values.push(candidate.placeholder);
+      }
+      if (candidate instanceof HTMLSelectElement) {
+        if (candidate.value !== "") values.push(candidate.value);
+        const selectedText = candidate.selectedOptions.item(0)?.text ?? "";
+        if (selectedText !== "") values.push(selectedText);
+      }
+      for (const attribute of ["aria-label", "title", "value"] as const) {
+        const attributeValue = candidate.getAttribute(attribute);
+        if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
+      }
+      return values;
+    }
+
+    function directText(candidate: Element): string {
+      return Array.from(candidate.childNodes)
+        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.data)
+        .join("");
+    }
+
+    function carriesForm(value: string, form: string): boolean {
+      return value === form || (form !== "" && value.includes(form));
+    }
+
+    function poison(epochToUpdate: BrowserSensitiveEpoch): void {
+      epochToUpdate.poisoned = true;
+      state.poisoned = true;
+    }
+  }, {
+    markerId: prepared.markerId,
+    kind,
+    sourceValue,
+    stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+    maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+    maxMutationRecords: MAX_REFLECTED_MUTATION_RECORDS,
+    maxClassifiedNodes: MAX_REFLECTED_NODES,
+    maxMaskRegions: MAX_REFLECTED_REGIONS,
+  });
+}
+
+async function endPageSensitiveActionEpoch(
+  locator: Locator,
+  prepared: PreparedSensitiveEvidenceRecord,
+): Promise<PageSensitiveEpochResult> {
+  return locator.evaluate((element, input): PageSensitiveEpochResult => {
+    type BrowserSensitiveState = {
+      active?: {
+        markerId: string;
+        forms: string[];
+        baseline: WeakMap<Element, ReadonlySet<string>>;
+        observer: MutationObserver;
+        targetListener: EventListener;
+        windowListener: EventListener;
+        mutationOrdinal: number;
+        poisoned: boolean;
+      } | null;
+      records: {
+        markerId: string;
+        forms: string[];
+        baseline: WeakMap<Element, ReadonlySet<string>>;
+      }[];
+      poisoned: boolean;
+    };
+    const win = element.ownerDocument.defaultView;
+    const state = win === null
+      ? undefined
+      : (win as unknown as Record<string, BrowserSensitiveState | undefined>)[input.stateProperty];
+    const active = state?.active;
+    if (state === undefined || active === null || active === undefined || active.markerId !== input.markerId) {
+      if (state !== undefined) state.poisoned = true;
+      return { status: "failed" };
+    }
+    const pendingRecords = active.observer.takeRecords().filter((record) =>
+      record.type !== "attributes" || record.attributeName !== input.maskAttribute);
+    active.mutationOrdinal += pendingRecords.length;
+    if (active.mutationOrdinal > input.maxMutationRecords) {
+      active.poisoned = true;
+      state.poisoned = true;
+    }
+    active.observer.disconnect();
+    element.removeEventListener("input", active.targetListener, false);
+    element.removeEventListener("change", active.targetListener, false);
+    win?.removeEventListener("input", active.windowListener, false);
+    win?.removeEventListener("change", active.windowListener, false);
+    state.records.push({
+      markerId: active.markerId,
+      forms: active.forms,
+      baseline: active.baseline,
+    });
+    const failed = state.poisoned || active.poisoned;
+    state.active = null;
+    return { status: failed ? "failed" : "ok" };
+  }, {
+    markerId: prepared.markerId,
+    stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+    maxMutationRecords: MAX_REFLECTED_MUTATION_RECORDS,
+  });
+}
+
 async function markSensitiveTarget(
   locator: Locator,
   markerId: string,
@@ -535,16 +891,23 @@ async function markSensitiveTarget(
       const current = host[input.property];
       if (Array.isArray(current)) {
         if (!current.includes(input.markerId)) current.push(input.markerId);
-        return;
+      } else {
+        Object.defineProperty(host, input.property, {
+          configurable: true,
+          enumerable: false,
+          value: [input.markerId],
+          writable: true,
+        });
       }
-      Object.defineProperty(host, input.property, {
-        configurable: true,
-        enumerable: false,
-        value: [input.markerId],
-        writable: true,
-      });
+      if (!element.hasAttribute(input.maskAttribute)) {
+        element.setAttribute(input.maskAttribute, "qm-target");
+      }
     },
-    { property: SENSITIVE_TARGET_IDS_PROPERTY, markerId },
+    {
+      property: SENSITIVE_TARGET_IDS_PROPERTY,
+      markerId,
+      maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+    },
   );
 }
 

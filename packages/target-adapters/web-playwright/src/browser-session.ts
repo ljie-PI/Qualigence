@@ -141,6 +141,8 @@ export class PlaywrightBrowserSession {
   private readonly sensitiveEvidence = new SensitiveEvidenceAuthority();
   private sensitiveDispatchOrdinal = 0;
   private sensitiveEvidenceUnavailable = false;
+  private activeSensitiveDispatch: PreparedSensitiveEvidenceRecord | undefined;
+  private pendingSensitiveCapture = false;
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
 
@@ -372,25 +374,56 @@ export class PlaywrightBrowserSession {
     return result.value;
   }
 
+  beginSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    this.assertNavigationGeneration(prepared.navigationGeneration);
+    this.assertSensitiveEvidenceAvailable();
+    if (this.activeSensitiveDispatch !== undefined || this.pendingSensitiveCapture) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    this.activeSensitiveDispatch = prepared;
+  }
+
+  cancelSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    if (this.activeSensitiveDispatch?.markerId === prepared.markerId) {
+      this.activeSensitiveDispatch = undefined;
+    }
+  }
+
+  abandonSensitiveEvidenceDispatch(prepared: PreparedSensitiveEvidenceRecord): void {
+    this.cancelSensitiveEvidenceDispatch(prepared);
+    this.markSensitiveEvidenceUnavailable();
+  }
+
   completeSensitiveEvidenceRecord(
     prepared: PreparedSensitiveEvidenceRecord,
     observedForms: readonly string[],
   ): void {
     this.assertNavigationGeneration(prepared.navigationGeneration);
     const result = this.sensitiveEvidence.complete(prepared, observedForms);
+    this.cancelSensitiveEvidenceDispatch(prepared);
     if (result.status === "failed") {
       this.markSensitiveEvidenceUnavailable();
+      return;
     }
+    this.pendingSensitiveCapture = true;
   }
 
   markSensitiveEvidenceUnavailable(): void {
+    this.activeSensitiveDispatch = undefined;
+    this.pendingSensitiveCapture = false;
     this.sensitiveEvidenceUnavailable = true;
   }
 
   assertSensitiveEvidenceAvailable(): void {
-    if (this.sensitiveEvidenceUnavailable) {
+    if (this.sensitiveEvidenceUnavailable || this.activeSensitiveDispatch !== undefined) {
       throw sensitiveEvidenceUnavailable();
     }
+  }
+
+  completeSensitiveEvidenceCapture(): void {
+    this.assertSensitiveEvidenceAvailable();
+    this.pendingSensitiveCapture = false;
   }
 
   redactSensitiveTargetField(
@@ -650,6 +683,8 @@ export class PlaywrightBrowserSession {
     }
     this.sensitiveEvidence.clear();
     this.sensitiveEvidenceUnavailable = false;
+    this.activeSensitiveDispatch = undefined;
+    this.pendingSensitiveCapture = false;
 
     const browser = this.browser;
     this.browser = undefined;

@@ -11,7 +11,11 @@ import {
 } from "./observation-builder.js";
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
-import { SENSITIVE_TARGET_IDS_PROPERTY } from "./sensitive-evidence-authority.js";
+import {
+  SENSITIVE_EVIDENCE_STATE_PROPERTY,
+  SENSITIVE_MASK_ID_ATTRIBUTE,
+  SENSITIVE_TARGET_IDS_PROPERTY,
+} from "./sensitive-evidence-authority.js";
 
 export interface PlaywrightObserverHooks {
   readonly afterDomCollection?: () => void | Promise<void>;
@@ -20,13 +24,20 @@ export interface PlaywrightObserverHooks {
 async function captureScreenshot(
   page: Page,
   assertCaptureAuthority: () => void,
+  maskIds: readonly string[],
 ): Promise<Uint8Array> {
   let lastError: unknown;
+  const mask = maskIds.map((maskId) => page.locator(
+    `[${SENSITIVE_MASK_ID_ATTRIBUTE}="${maskId}"]`,
+  ));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     assertCaptureAuthority();
     let screenshot: Uint8Array;
     try {
-      screenshot = new Uint8Array(await page.screenshot({ timeout: 5000 }));
+      screenshot = new Uint8Array(await page.screenshot({
+        timeout: 5000,
+        ...(mask.length === 0 ? {} : { mask, maskColor: "#000000" }),
+      }));
     } catch (error) {
       assertCaptureAuthority();
       lastError = error;
@@ -60,15 +71,21 @@ async function readPageValue<T>(
  */
 interface BrowserObservationCandidate extends ObservationCandidate {
   readonly sensitiveTargetIds?: readonly string[];
+  readonly sensitiveMaskId?: string;
 }
 
 interface BrowserObservationCapture {
   readonly candidates: readonly BrowserObservationCandidate[];
   readonly viewport: WebViewportV1;
+  readonly sensitiveEvidenceUnavailable: boolean;
 }
 
 function collectPageObservation(
-  sensitiveTargetIdsProperty: string,
+  input: {
+    readonly sensitiveTargetIdsProperty: string;
+    readonly sensitiveMaskIdAttribute: string;
+    readonly sensitiveEvidenceStateProperty: string;
+  },
 ): BrowserObservationCapture {
   function isVisible(element: Element): boolean {
     if (!(element instanceof HTMLElement)) {
@@ -172,15 +189,90 @@ function collectPageObservation(
   }
 
   function readSensitiveTargetIds(element: Element): readonly string[] {
-    const value = (element as unknown as Element & Record<string, unknown>)[sensitiveTargetIdsProperty];
+    const value = (element as unknown as Element & Record<string, unknown>)[input.sensitiveTargetIdsProperty];
     if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
       return [];
     }
     return value;
   }
 
+  function sensitiveValues(element: Element): readonly string[] {
+    const values: string[] = [];
+    const text = directText(element);
+    if (text !== "") values.push(text);
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      if (element.value !== "") values.push(element.value);
+      if (element.placeholder !== "") values.push(element.placeholder);
+    }
+    if (element instanceof HTMLSelectElement) {
+      if (element.value !== "") values.push(element.value);
+      const selectedText = element.selectedOptions.item(0)?.text ?? "";
+      if (selectedText !== "") values.push(selectedText);
+    }
+    for (const attribute of ["aria-label", "title", "value"] as const) {
+      const attributeValue = element.getAttribute(attribute);
+      if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
+    }
+    return values;
+  }
+
+  function directText(element: Element): string {
+    return Array.from(element.childNodes)
+      .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.data)
+      .join("");
+  }
+
+  function carriesForm(value: string, forms: readonly string[]): boolean {
+    for (const form of forms) {
+      if (value === form || (form !== "" && value.includes(form))) return true;
+    }
+    return false;
+  }
+
+  function hasSensitiveTargetId(ids: readonly string[], markerId: string): boolean {
+    return ids.includes(markerId);
+  }
+
+  function baselineAllows(element: Element, markerId: string, value: string): boolean {
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly records?: readonly {
+        readonly markerId: string;
+        readonly baseline?: WeakMap<Element, ReadonlySet<string>>;
+      }[];
+    } | undefined;
+    const record = state?.records?.find((candidate) => candidate.markerId === markerId);
+    return record?.baseline?.get(element)?.has(value) === true;
+  }
+
+  function sensitiveEvidenceUnavailable(): boolean {
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      active?: unknown;
+      poisoned?: boolean;
+      readonly records?: readonly {
+        readonly markerId: string;
+        readonly forms: readonly string[];
+      }[];
+    } | undefined;
+    if (state === undefined) return false;
+    if (state.active !== undefined && state.active !== null) return true;
+    if (state.poisoned === true) return true;
+    for (const element of Array.from(document.querySelectorAll("*"))) {
+      const ids = readSensitiveTargetIds(element);
+      for (const record of state.records ?? []) {
+        for (const value of sensitiveValues(element)) {
+          if (!carriesForm(value, record.forms)) continue;
+          if (hasSensitiveTargetId(ids, record.markerId)) continue;
+          if (baselineAllows(element, record.markerId, value)) continue;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   const selector =
-    "button, a[href], input, textarea, select, [role], [data-qualigence-observe]";
+    `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = Array.from(document.querySelectorAll(selector));
   const candidates: BrowserObservationCandidate[] = [];
 
@@ -193,6 +285,7 @@ function collectPageObservation(
 
     const sensitiveTargetIds = readSensitiveTargetIds(element);
     const isSensitiveTarget = sensitiveTargetIds.length > 0;
+    const sensitiveMaskId = element.getAttribute(input.sensitiveMaskIdAttribute) ?? undefined;
     const isFormField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement;
@@ -237,6 +330,7 @@ function collectPageObservation(
       ...(value !== undefined ? { value } : {}),
       ...(disabled ? { disabled: true } : {}),
       ...(sensitiveTargetIds.length > 0 ? { sensitiveTargetIds } : {}),
+      ...(sensitiveMaskId !== undefined ? { sensitiveMaskId } : {}),
     };
     candidates.push(candidate);
   }
@@ -248,6 +342,7 @@ function collectPageObservation(
       height: Math.max(1, Math.trunc(window.innerHeight)),
       devicePixelRatio: window.devicePixelRatio,
     },
+    sensitiveEvidenceUnavailable: sensitiveEvidenceUnavailable(),
   };
 }
 
@@ -289,9 +384,16 @@ export class PlaywrightObserver implements Observer {
         assertCaptureAuthority,
         async () => (await page.evaluate(
           collectPageObservation,
-          SENSITIVE_TARGET_IDS_PROPERTY,
+          {
+            sensitiveTargetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+            sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+            sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+          },
         )) as BrowserObservationCapture,
       );
+      if (captured.sensitiveEvidenceUnavailable) {
+        this.session.markSensitiveEvidenceUnavailable();
+      }
       await this.hooks.afterDomCollection?.();
       assertCaptureAuthority();
       this.session.assertSensitiveEvidenceAvailable();
@@ -344,13 +446,18 @@ export class PlaywrightObserver implements Observer {
       );
       assertCaptureAuthority();
 
-      const screenshot = await captureScreenshot(page, assertCaptureAuthority);
+      const maskIds = [...new Set(captured.candidates
+        .filter((candidate) => candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0)
+        .map((candidate) => candidate.sensitiveMaskId)
+        .filter((maskId): maskId is string => maskId !== undefined && /^[A-Za-z0-9_-]+$/.test(maskId)))];
+      const screenshot = await captureScreenshot(page, assertCaptureAuthority, maskIds);
       assertCaptureAuthority();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
       this.session.registerCapturedObservation(page, graph.graphId, {
         descriptors,
         artifacts,
       }, navigationGeneration);
+      this.session.completeSensitiveEvidenceCapture();
       return graph;
     });
   }
