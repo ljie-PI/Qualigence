@@ -262,6 +262,150 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     }
   }, 120_000);
 
+  it("backfills payload-free Result wakeups when upgrading v12 inbox rows to v13", async () => {
+    const partial = await startPostgres();
+    const admin = {
+      host: partial.host,
+      port: partial.port,
+      database: partial.database,
+      user: partial.superuser,
+      password: partial.password,
+    };
+    const client = new Client(admin);
+    await client.connect();
+    try {
+      await migratePostgres({ admin, targetVersion: 12 });
+      expect(await readSchemaVersion(admin)).toBe(12);
+
+      await client.query(`
+        insert into intelligence_jobs (
+          tenant_id, job_id, job_type, schema_version, project_id, aggregate_type,
+          aggregate_id, base_aggregate_version, model_profile_id, data_policy_id,
+          priority, idempotency_key, causation_id, expected_result_schema, job_json, created_at
+        ) values
+          ('tenant-a', 'job-a-1', 'prd.planning', 'intelligence-job/v1', 'project-a', 'skill', 'skill-a', 0,
+           'profile-a', 'policy-a', 'normal', 'job-idem-a-1', 'cause-a-1', 'intelligence-result/v1',
+           '{"prompt":"secret-proposal-a1"}', '2026-08-20T00:00:00.000Z'),
+          ('tenant-a', 'job-a-2', 'prd.planning', 'intelligence-job/v1', 'project-a', 'skill', 'skill-a', 0,
+           'profile-a', 'policy-a', 'normal', 'job-idem-a-2', 'cause-a-2', 'intelligence-result/v1',
+           '{"prompt":"secret-proposal-a2"}', '2026-08-20T00:00:00.000Z'),
+          ('tenant-b', 'job-b-1', 'prd.planning', 'intelligence-job/v1', 'project-b', 'skill', 'skill-b', 0,
+           'profile-b', 'policy-b', 'normal', 'job-idem-b-1', 'cause-b-1', 'intelligence-result/v1',
+           '{"prompt":"secret-proposal-b1"}', '2026-08-20T00:00:00.000Z')
+      `);
+      await client.query(`
+        insert into intelligence_leases (
+          tenant_id, job_id, attempt, worker_id, lease_token_hash, lease_started_at,
+          expires_at, last_renewed_at, renewal_count, released_at, completed_at
+        ) values
+          ('tenant-a', 'job-a-1', 1, 'worker-a', 'token-a-1', '2026-08-20T00:00:00.000Z',
+           '2026-08-20T00:10:00.000Z', null, 0, null, '2026-08-20T00:01:00.000Z'),
+          ('tenant-a', 'job-a-2', 1, 'worker-a', 'token-a-2', '2026-08-20T00:00:00.000Z',
+           '2026-08-20T00:10:00.000Z', null, 0, null, '2026-08-20T00:03:00.000Z'),
+          ('tenant-b', 'job-b-1', 1, 'worker-b', 'token-b-1', '2026-08-20T00:00:00.000Z',
+           '2026-08-20T00:10:00.000Z', null, 0, null, '2026-08-20T00:02:00.000Z')
+      `);
+      await client.query(`
+        insert into intelligence_result_inbox (
+          tenant_id, idempotency_key, job_id, worker_id, lease_attempt, lease_token_hash,
+          lease_expires_at, base_aggregate_version, result_hash, result_json, accepted_at
+        ) values
+          ('tenant-a', 'result-a-1', 'job-a-1', 'worker-a', 1, 'token-a-1',
+           '2026-08-20T00:10:00.000Z', 0, 'hash-a-1', '{"proposal":"secret-proposal-a1"}', '2026-08-20T00:01:00.000Z'),
+          ('tenant-a', 'result-a-2', 'job-a-2', 'worker-a', 1, 'token-a-2',
+           '2026-08-20T00:10:00.000Z', 0, 'hash-a-2', '{"proposal":"secret-proposal-a2"}', '2026-08-20T00:03:00.000Z'),
+          ('tenant-b', 'result-b-1', 'job-b-1', 'worker-b', 1, 'token-b-1',
+           '2026-08-20T00:10:00.000Z', 0, 'hash-b-1', '{"proposal":"secret-proposal-b1"}', '2026-08-20T00:02:00.000Z')
+      `);
+
+      const migration = await migratePostgres({ admin, targetVersion: 13 });
+      expect(migration.appliedVersions).toEqual([13]);
+      const wakeups = await client.query<{
+        tenant_id: string;
+        generation: number;
+        status: string;
+        available_at: string;
+        lease_owner: string | null;
+        lease_generation: number | null;
+        lease_expires_at: string | null;
+        last_claimed_at: string | null;
+        last_completed_at: string | null;
+        failure_count: number;
+        last_error: string | null;
+        created_at: string;
+        updated_at: string;
+      }>(`
+        select tenant_id, generation, status, available_at, lease_owner, lease_generation,
+               lease_expires_at, last_claimed_at, last_completed_at, failure_count, last_error,
+               created_at, updated_at
+          from intelligence_result_wakeups
+         order by tenant_id
+      `);
+      expect(wakeups.rows).toEqual([
+        {
+          tenant_id: "tenant-a",
+          generation: 2,
+          status: "pending",
+          available_at: "2026-08-20T00:01:00.000Z",
+          lease_owner: null,
+          lease_generation: null,
+          lease_expires_at: null,
+          last_claimed_at: null,
+          last_completed_at: null,
+          failure_count: 0,
+          last_error: null,
+          created_at: "2026-08-20T00:01:00.000Z",
+          updated_at: "2026-08-20T00:01:00.000Z",
+        },
+        {
+          tenant_id: "tenant-b",
+          generation: 1,
+          status: "pending",
+          available_at: "2026-08-20T00:02:00.000Z",
+          lease_owner: null,
+          lease_generation: null,
+          lease_expires_at: null,
+          last_claimed_at: null,
+          last_completed_at: null,
+          failure_count: 0,
+          last_error: null,
+          created_at: "2026-08-20T00:02:00.000Z",
+          updated_at: "2026-08-20T00:02:00.000Z",
+        },
+      ]);
+      const wakeupJson = JSON.stringify(wakeups.rows);
+      expect(wakeupJson).not.toContain("secret-proposal");
+      expect(wakeupJson).not.toContain("hash-a-1");
+      expect(wakeupJson).not.toContain("result-a-1");
+
+      const wakeupColumns = await client.query<{ column_name: string }>(`
+        select column_name from information_schema.columns
+         where table_schema = 'public' and table_name = 'intelligence_result_wakeups'
+      `);
+      expect(wakeupColumns.rows.map((row) => row.column_name)).not.toEqual(
+        expect.arrayContaining(["idempotency_key", "job_id", "result_hash", "result_json"]),
+      );
+
+      await expect(migratePostgres({ admin, targetVersion: 13 })).resolves.toMatchObject({
+        fromVersion: 13,
+        toVersion: 13,
+        appliedVersions: [],
+      });
+      const replayedWakeups = await client.query(
+        "select tenant_id, generation, status, available_at from intelligence_result_wakeups order by tenant_id",
+      );
+      expect(replayedWakeups.rows).toEqual(wakeups.rows.map(({
+        tenant_id,
+        generation,
+        status,
+        available_at,
+      }) => ({ tenant_id, generation, status, available_at })));
+    } finally {
+      await client.end().catch(() => undefined);
+      await partial.stop();
+    }
+  }, 120_000);
+
   it("applies runtime access only to tables released through the migration target", async () => {
     const partial = await startPostgres();
     const admin = {
