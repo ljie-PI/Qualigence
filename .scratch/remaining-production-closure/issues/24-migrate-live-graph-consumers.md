@@ -28,6 +28,7 @@ This ticket owns the consumer migration phase. It moves all listed live model, e
 This is the complete edit scope.
 
 - `packages/{runner-components/model-agent,runner-components/exploration,execution-application,observation-migration}/src`
+- `packages/runner-components/skill-replay/src/**` (maintainer-authorized scope expansion for active Skill replay consumer migration only)
 - `apps/benchmark-runner/src`
 - `tests/{unit/runner-components,unit/execution-application,replay,property}`
 - `.scratch/remaining-production-closure/issues/24-migrate-live-graph-consumers.md`
@@ -43,7 +44,7 @@ Resolve conflicts in this order: security/public-contract invariants, architectu
 - Context authority: all ownership, seams, invariants, and verification surfaces in **Affected context paths**.
 - Umbrella authority: `.scratch/remaining-production-closure/spec.md` user stories 35, 38-42, and 68; Implementation Decisions on canonicalization/`web/v1`/candidate status; Testing Decisions on combined model/resolver/exploration/evidence/benchmark/replay coverage and complete matrices.
 - Tracked predecessor authority: `.scratch/remaining-production-closure/issues/21-real-reference-model-benchmark.md` and `.scratch/remaining-production-closure/issues/23-migrate-live-web-producers-v1.md`, together with their merged GitHub PR/check evidence, establish the benchmark and producer behavior inherited here.
-- Current public contracts and tests: `packages/contracts/observation/src/*` and `packages/runner-kernel/src/execution-runtime.ts` (consume, do not edit); `packages/runner-components/model-agent/src/model-agent.ts`; `packages/runner-components/exploration/src/{exploration-controller,state-visit-tracker}.ts`; `packages/execution-application/src/artifact-recording-observer.ts`; `packages/observation-migration/src/{pre-v1-projector,migration-runner,skill-recompiler}.ts`; `apps/benchmark-runner/src/{run,scenario}.ts`; and the consumer/replay tests named here.
+- Current public contracts and tests: `packages/contracts/observation/src/*` and `packages/runner-kernel/src/execution-runtime.ts` (consume, do not edit); `packages/runner-components/model-agent/src/model-agent.ts`; `packages/runner-components/exploration/src/{exploration-controller,state-visit-tracker}.ts`; `packages/runner-components/skill-replay/src/skill-replay-controller.ts`; `packages/execution-application/src/artifact-recording-observer.ts`; `packages/observation-migration/src/{pre-v1-projector,migration-runner,skill-recompiler}.ts`; `apps/benchmark-runner/src/{run,scenario}.ts`; and the consumer/replay tests named here.
 - Ticket-local and GitHub evidence: this ticket's `## Comments` and `## Answer`, merged predecessor and final ticket PRs, required checks, reviewed-head and merge-commit bindings, and any deferred advanced-hardening Issues in `ljie-PI/Qualigence` are the durable execution evidence.
 
 ## Execution protocol
@@ -111,7 +112,7 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Core findings addressed in scope: v1 exploration fingerprints previously hashed secret node value/state, and benchmark `inputSha256`/run identity previously hashed raw `ScenarioDefinition[]` including raw URL query values instead of the existing canonical/redacted `scenarioDefinitionBinding()`/v1 graph-hash path.
 - Fix commit evidence: `6e04ac094f088cd27dfaad919ba88c40d24119db` (`fix(graph): redact v1 fingerprints and benchmark input binding`) updates the fingerprint projection, benchmark input binding, and focused regression tests.
 - Gates run before fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 96 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
-- Remaining active blocker: Skill replay migration still requires maintainer authorization to expand this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` and directly related tests. No excluded `skill-replay` or other unlisted roots were edited in this fix.
+- Remaining active blocker at this reviewed head: Skill replay migration still requires implementation. Maintainer authorization has now expanded this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` for active Skill replay consumer migration, with directly related `tests/unit/runner-components/skill-replay/**` and `tests/replay/procedure-skill/**` already covered by the existing test-root allowance. The expansion is limited to migrating active Skill replay to `ObservationGraphV1`; it does not authorize Runner Kernel/public Graph contract changes, Web producer changes, repository-wide legacy contraction, package manifests, migrations, or unrelated test roots.
 
 - [ ] All live consumers use v1 fields and typed extension readers.
 - [ ] Artifact decorators use evidence references without losing provenance.
