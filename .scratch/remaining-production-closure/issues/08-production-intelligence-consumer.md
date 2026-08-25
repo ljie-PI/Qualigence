@@ -4,14 +4,14 @@
 
 **Blocked by:** 07 — Persist Intelligence Worker leases and Results.
 
-**Status:** claimed
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
-- [ ] Payload-free tenant wakeups use leased claims, generation/epoch fencing, bounded batches, and abortable backoff.
-- [ ] Applied, duplicate, rejected, and recompute dispositions become non-ambiguous durable state.
-- [ ] Worker proposals reach existing aggregate application handlers; no direct version bump or SQL domain mutation remains.
-- [ ] Clean-review process E2E proves restart, failure retry, readiness, and orderly shutdown.
+- [x] Payload-free tenant wakeups use leased claims, generation/epoch fencing, bounded batches, and abortable backoff.
+- [x] Applied, duplicate, rejected, and recompute dispositions become non-ambiguous durable state.
+- [x] Worker proposals reach existing aggregate application handlers; no direct version bump or SQL domain mutation remains.
+- [x] Clean-review process E2E proves restart, failure retry, readiness, and orderly shutdown.
 
 ## Tracked scope
 
@@ -105,3 +105,14 @@ The process E2E must prove Server/Worker restart, retry, readiness, and orderly 
 - blocked: Review round 5 at reviewed head `247c528da568fc123d93aaa15a14de493fde26ad` still reported core blockers, so this ticket was set to `needs-info` per the execution protocol and dependent Ticket 09 was stopped pending maintainer scope/ownership decision. Remaining blockers: malformed accepted inbox Results can throw before durable rejected disposition, and an expired wakeup lease may let a second consumer overwrite a first terminal disposition for the same Result. Review artifacts: `Q:/Qualigence/.pi-subagents/artifacts/outputs/8da7bb9f-91ff-4060-9527-2b1c0ee7c903/ticket08-review5/standards.md` and `Q:/Qualigence/.pi-subagents/artifacts/outputs/8da7bb9f-91ff-4060-9527-2b1c0ee7c903/ticket08-review5/spec.md`.
 - scope-decision: Maintainer authorized continued Ticket 08 fix and complete-matrix review beyond the five-round cap, and broadly authorized continued fix/review beyond five rounds for active and future closure tickets when remaining core blockers are finite, ticket-scoped, and do not require a new architecture decision. Ticket 08 returns to `claimed`; dependents remain blocked until this ticket is actually resolved and merged.
 - review-fix: after review5 head `247c528da568fc123d93aaa15a14de493fde26ad` and authorization commit `16fe9dcb89a9ea57a70fc385f8747b1107950178`, remaining core blockers were fixed in `4b2e6d0b4b64d7b7c3906dc66c8af9524354af25`: malformed accepted inbox `job_json`/`result_json` now decode through guarded JSON and structural validation into durable `rejected` dispositions without aggregate mutation or retry loops, and Result disposition recording is terminal-idempotent/insert-only so a later consumer observes an existing terminal disposition instead of overwriting `applied` with `recompute` or another status. Gates run before this evidence comment: `CI=true corepack pnpm vitest run tests/unit/core-modules/intelligence/result-applier.test.ts tests/component/intelligence-worker/result-inbox.test.ts tests/component/intelligence-worker/server-consumer-loop.test.ts tests/contract/postgres/intelligence-result-wakeup-store.test.ts` (passed, 4 files / 30 tests), `CI=true corepack pnpm vitest run tests/e2e/self-hosted/intelligence-result-loop.test.ts` (passed, 1 file / 1 test), `CI=true corepack pnpm vitest run tests/conformance/storage/relational-schema.test.ts tests/contract/postgres/postgres-runtime.test.ts tests/unit/admin-cli/migrate.test.ts tests/unit/server/schema-startup.test.ts` (passed, 4 files / 36 tests), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). Not marked resolved; PR evidence is not added.
+- final: reviewed code head `a666aea5e386c1b42f162db8dc29367eedb0549d`; exact-base complete-matrix review6 reported no core blockers on Standards and Spec (`Q:/Qualigence/.pi-subagents/artifacts/outputs/328c81ce-cab7-4259-a696-3b6eee1b2133/ticket08-review6/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/328c81ce-cab7-4259-a696-3b6eee1b2133/ticket08-review6/spec.md`). Final post-review verification passed: `CI=true corepack pnpm vitest run tests/e2e/self-hosted/intelligence-result-loop.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Pull request: `https://github.com/ljie-PI/Qualigence/pull/106`.
+
+## Answer
+
+Implemented production Intelligence Result consumption with migration 013 wakeups/dispositions, tenant-scoped PostgreSQL wakeup claiming/backfill, bounded Server consumer loop/readiness, deterministic policy-gated Result application, durable terminal dispositions, recompute follow-up job creation, malformed payload rejection, terminal-idempotent disposition recording, abort-safe shutdown handling, and focused/component/contract/E2E coverage.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/106`
+
+Reviewed code head: `a666aea5e386c1b42f162db8dc29367eedb0549d`
+
+Final verification: focused Ticket 08 Gate, self-hosted Result-loop E2E, schema/admin/startup validation, `corepack pnpm typecheck`, and `git diff --check` passed.
