@@ -211,3 +211,21 @@ Run the complete active pre-v1 inventory/migration classification and candidate-
   - `CI=true corepack pnpm typecheck` — passed (root build, test-project no-emit typecheck, and web-console typecheck/build).
   - `git diff --check` — passed.
 - Candidate-only status remains unchanged; no resolved status, PR evidence, storage migration, package manifest, lockfile, Graph/Runner Protocol contract, `apps/admin-cli`, or unrelated path was edited.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `d25c3d4d5c7c58777ce76f6e231c778c91591047`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/49c8f98f-8551-4c00-bd72-b57e5aaa7542/ticket25-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/49c8f98f-8551-4c00-bd72-b57e5aaa7542/ticket25-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/observation-v1/candidate-acceptance.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed. Focused Gate and legacy `ObservationGraph` inventory evidence are recorded in the review artifacts and review-fix comments.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/110`.
+
+## Answer
+
+Contracted legacy Observation Graph usage for the candidate phase. Active pre-v1 Trace and Skill assets are inventoried and classified with verified source/output hashes, Skill recompilation uses the standard verifier seam, migration ledger writes are hash-bound and concurrency/restart safe, remaining legacy `ObservationGraph` hits are explicitly classified, and candidate acceptance proves Web and existing Windows replay while keeping Graph v1 `candidate` and not frozen.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/110`
+
+Reviewed code head: `d25c3d4d5c7c58777ce76f6e231c778c91591047`
+
+Final verification: focused Ticket 25 Gate, legacy `ObservationGraph` inventory, candidate acceptance, `corepack pnpm typecheck`, and `git diff --check` passed.
