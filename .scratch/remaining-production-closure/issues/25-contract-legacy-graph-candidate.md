@@ -172,3 +172,22 @@ Run the complete active pre-v1 inventory/migration classification and candidate-
   - `CI=true corepack pnpm typecheck` — passed.
   - `git diff --check` — passed.
 - Candidate-only status: report generation and the checklist remain `candidate`; `gate.frozen` remains `false`. No release freeze claim or PR evidence was added.
+
+### review3-fix — 2026-08-25
+
+- Review3 head fixed: `725a7c026d3ed2ef25de73eaaf227ccf657e3f9f`; fixed point remains `6e8e4bdad38b934ab9f414305bb4c944a8942fd8`.
+- Fix commit: `b65d9eb88201a470d9342c2ca72677be68c984a0` (`fix(observation): key skill inventory ledger identity`). No PR was created or merged.
+- Finding fixed: Skill inventory ledger identity now includes the immutable pre-v1 Skill content hash and Skill version for Skill inventory results, while observation Trace results continue to use the existing `(assetId, sourceHash, migratorVersion)` key. Changed `previous.contentSha256` after a prior migrated Skill success now returns and durably appends a `failed` / `MigrationSourceChanged` result instead of colliding with the earlier migrated ledger row; exact replay still returns the existing row before reverifier side effects.
+- Inventory command/classification from `rg -l "\\bObservationGraph\\b" apps packages tests`:
+  - `packages/contracts/runner-protocol/src/index.ts` — hard-excluded legacy public contract declaration retained for pre-v1 migration/test fixture typing; no live producer or consumer imports it.
+  - `packages/observation-migration/src/pre-v1-projector.ts` — explicit pre-v1 decoder/projector allowed by Ticket 25.
+  - `tests/component/skill-lifecycle/recording-to-replay.test.ts` — immutable historical pre-v1 Skill lifecycle fixture that projects through `PreV1TraceProjector` before live replay.
+  - `tests/e2e/observation-v1/consumer-migration.test.ts` — post-review consumer-migration acceptance historical fixture that projects through `PreV1TraceProjector` before live consumers.
+  - `tests/migration/observation-v1/candidate-inventory.test.ts` — Ticket 25 inventory test that executes and classifies the required legacy-type repository scan.
+- Gates/E2E run after review3 fix:
+  - `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` — passed (19 files / 122 tests).
+  - `rg -l "\\bObservationGraph\\b" apps packages tests` — passed with the five classified hits above.
+  - `CI=true corepack pnpm vitest run tests/e2e/observation-v1/candidate-acceptance.test.ts` — passed (1 file / 3 tests).
+  - `CI=true corepack pnpm typecheck` — passed (root build, test-project no-emit typecheck, and web-console typecheck/build).
+  - `git diff --check` — passed.
+- Candidate-only status remains unchanged; no resolved status, PR evidence, storage migration, package manifest, lockfile, Graph/Runner Protocol contract, `apps/admin-cli`, or unrelated path was edited.
