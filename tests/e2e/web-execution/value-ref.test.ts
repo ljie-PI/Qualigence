@@ -85,10 +85,12 @@ describe("production valueRef browser execution", () => {
           const status = document.getElementById('status');
           notes.addEventListener('input', () => {
             status.textContent = 'Notes ready';
+            document.title = notes.value;
             document.getElementById('input-reflection').textContent = notes.value;
           });
           country.addEventListener('change', () => {
             status.textContent = 'Country ready';
+            document.title = country.selectedOptions[0].text;
             document.getElementById('select-reflection').textContent = country.selectedOptions[0].text;
           });
         </script>
@@ -247,9 +249,11 @@ describe("production valueRef browser execution", () => {
     expect(selectObservation.nodes.some((node) => node.name === "Country ready" || node.value === "Country ready")).toBe(true);
     expect(inputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(inputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(inputObservation.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
     expect(inputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
     const selectTarget = targetNode(selectObservation, "combobox", "Country");
     expect(selectTarget).toMatchObject({ value: "[redacted]" });
+    expect(selectObservation.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
     expect(JSON.stringify(selectObservation)).not.toContain(SELECT_TEXT);
     expect(selectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
 
@@ -274,9 +278,11 @@ describe("production valueRef browser execution", () => {
     const preAckSelectObservation = finalObservation(spooledEvents, "run-select");
     expect(preAckInputObservation.nodes.some((node) => node.name === INPUT_EQUAL_TEXT || node.value === INPUT_EQUAL_TEXT)).toBe(true);
     expect(targetNode(preAckInputObservation, "textbox", "Notes")).toMatchObject({ value: "[redacted]" });
+    expect(preAckInputObservation.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
     expect(preAckInputObservation.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
     const preAckSelectTarget = targetNode(preAckSelectObservation, "combobox", "Country");
     expect(preAckSelectTarget).toMatchObject({ value: "[redacted]" });
+    expect(preAckSelectObservation.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
     expect(JSON.stringify(preAckSelectObservation)).not.toContain(SELECT_TEXT);
     expect(preAckSelectObservation.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
 

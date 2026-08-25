@@ -309,18 +309,26 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
               return dispatchGenerationFailure;
             }
-            this.session.invalidateObservations();
             try {
-              permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "input", value);
               if (startedEpoch.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+                throw new WebTargetError(
+                  "SensitiveEvidenceUnavailable",
+                  "Sensitive target evidence could not be proven.",
+                );
               }
+              this.session.invalidateObservations();
               let epochResult: PageSensitiveEpochResult | undefined;
               try {
+                permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
                 await locator.fill(value, { timeout: this.session.actionTimeoutMs });
               } finally {
-                epochResult = await endPageSensitiveActionEpoch(locator, sensitiveEvidence);
+                epochResult = await endPageSensitiveActionEpoch(
+                  locator,
+                  sensitiveEvidence,
+                  permit.dispatchStarted,
+                );
               }
               if (epochResult.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
@@ -345,18 +353,26 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               this.session.cancelSensitiveEvidenceDispatch(sensitiveEvidence);
               return dispatchGenerationFailure;
             }
-            this.session.invalidateObservations();
             try {
-              permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "select", value);
               if (startedEpoch.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
+                throw new WebTargetError(
+                  "SensitiveEvidenceUnavailable",
+                  "Sensitive target evidence could not be proven.",
+                );
               }
+              this.session.invalidateObservations();
               let epochResult: PageSensitiveEpochResult | undefined;
               try {
+                permit.assertAuthorizedForDispatch(signal, () => dispatchSnapshot(this.session));
                 await locator.selectOption(value, { timeout: this.session.actionTimeoutMs });
               } finally {
-                epochResult = await endPageSensitiveActionEpoch(locator, sensitiveEvidence);
+                epochResult = await endPageSensitiveActionEpoch(
+                  locator,
+                  sensitiveEvidence,
+                  permit.dispatchStarted,
+                );
               }
               if (epochResult.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
@@ -448,7 +464,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         this.session.markSensitiveEvidenceUnavailable();
         return;
       }
-      this.session.completeSensitiveEvidenceRecord(prepared, [observed.value]);
+      this.session.completeSensitiveEvidenceRecord(prepared, sensitiveInputForms(observed.value));
     } catch {
       this.session.markSensitiveEvidenceUnavailable();
     }
@@ -594,17 +610,16 @@ async function beginPageSensitiveActionEpoch(
       markerId: string;
       forms: string[];
       mutationOrdinal: number;
+      deferredRecords: MutationRecord[];
       classifiedNodes: Set<string>;
       classifiedRegions: Set<string>;
       baseline: WeakMap<Element, ReadonlySet<string>>;
       observer: MutationObserver;
       targetCaptureListener: EventListener;
-      targetBubbleListener: EventListener;
+      documentBubbleListener: EventListener;
       hasDelegatedListener: boolean;
+      hasSchedulerAdjacentListener: boolean;
       inTargetDispatch: boolean;
-      schedulerBoundaryObserved: boolean;
-      originalQueueMicrotask: typeof window.queueMicrotask;
-      originalPromiseThen: typeof Promise.prototype.then;
       poisoned: boolean;
     };
     type BrowserSensitiveRecord = {
@@ -635,53 +650,47 @@ async function beginPageSensitiveActionEpoch(
     const observer = new MutationObserver((records) => {
       const active = state.active;
       if (active === null || active === undefined) return;
-      processMutationRecords(active, records, active.inTargetDispatch && !active.hasDelegatedListener);
+      if (active.inTargetDispatch) {
+        active.deferredRecords.push(...records);
+        return;
+      }
+      processMutationRecords(active, records, false);
     });
     const noteTargetDispatch = (): void => {
       const active = state.active;
       if (active === null || active === undefined) return;
       active.inTargetDispatch = true;
     };
-    const noteSchedulerBoundary = (): void => {
-      const active = state.active;
-      if (active === null || active === undefined || !active.inTargetDispatch) return;
-      active.schedulerBoundaryObserved = true;
-    };
-    const originalQueueMicrotask = win.queueMicrotask;
-    const originalPromiseThen = win.Promise.prototype.then;
-    win.queueMicrotask = function queueMicrotask(callback: VoidFunction): void {
-      noteSchedulerBoundary();
-      return originalQueueMicrotask.call(win, callback);
-    };
-    win.Promise.prototype.then = function then<TResult1 = unknown, TResult2 = never>(
-      this: Promise<unknown>,
-      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
-      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-    ): Promise<TResult1 | TResult2> {
-      noteSchedulerBoundary();
-      return originalPromiseThen.call(this, onfulfilled, onrejected) as Promise<TResult1 | TResult2>;
-    };
     const finishTargetDispatch = (): void => {
       const active = state.active;
       if (active === null || active === undefined) return;
-      processMutationRecords(active, active.observer.takeRecords(), active.inTargetDispatch && !active.hasDelegatedListener);
+      const allowClassification = active.inTargetDispatch &&
+        !active.hasDelegatedListener &&
+        !active.hasSchedulerAdjacentListener;
+      processCurrentSensitiveMatches(active, allowClassification);
+      if (!active.poisoned) {
+        const records = [...active.deferredRecords, ...active.observer.takeRecords()];
+        active.deferredRecords = [];
+        processMutationRecords(active, records, allowClassification);
+      }
       active.inTargetDispatch = false;
     };
+    markInstrumentationListener(noteTargetDispatch);
+    markInstrumentationListener(finishTargetDispatch);
     const epoch: BrowserSensitiveEpoch = {
       markerId: input.markerId,
       forms,
       mutationOrdinal: 0,
+      deferredRecords: [],
       classifiedNodes: new Set<string>(),
       classifiedRegions: new Set<string>(),
       baseline,
       observer,
       targetCaptureListener: noteTargetDispatch,
-      targetBubbleListener: finishTargetDispatch,
+      documentBubbleListener: finishTargetDispatch,
       hasDelegatedListener: hasDelegatedListener(input.kind),
+      hasSchedulerAdjacentListener: hasSchedulerAdjacentListener(input.kind),
       inTargetDispatch: false,
-      schedulerBoundaryObserved: false,
-      originalQueueMicrotask,
-      originalPromiseThen,
       poisoned: false,
     };
     state.active = epoch;
@@ -694,14 +703,16 @@ async function beginPageSensitiveActionEpoch(
     });
     element.addEventListener("input", epoch.targetCaptureListener, true);
     element.addEventListener("change", epoch.targetCaptureListener, true);
-    element.addEventListener("input", epoch.targetBubbleListener, false);
-    element.addEventListener("change", epoch.targetBubbleListener, false);
+    element.ownerDocument.addEventListener("input", epoch.documentBubbleListener, false);
+    element.ownerDocument.addEventListener("change", epoch.documentBubbleListener, false);
     return { status: state.poisoned || epoch.poisoned ? "failed" : "ok" };
 
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
       const values = new Set<string>([source]);
       if (actionKind === "input") {
-        values.add(source.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+        const browserValue = source.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        values.add(browserValue);
+        values.add(normalizeVisibleSensitiveForm(browserValue));
       }
       if (actionKind === "select" && target instanceof HTMLSelectElement) {
         for (const option of Array.from(target.options)) {
@@ -745,10 +756,15 @@ async function beginPageSensitiveActionEpoch(
 
     function hasDelegatedEventListener(listenerType: "input" | "change"): boolean {
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
-        readonly listenerTargets?: readonly { readonly type?: unknown; readonly target?: unknown }[];
+        readonly listenerTargets?: readonly {
+          readonly type?: unknown;
+          readonly target?: unknown;
+          readonly listener?: unknown;
+        }[];
       } | undefined;
       for (const entry of registry?.listenerTargets ?? []) {
         if (entry.type !== listenerType) continue;
+        if (isInstrumentationListener(entry.listener)) continue;
         if (isDelegatedEventTarget(entry.target)) return true;
       }
       return false;
@@ -769,6 +785,73 @@ async function beginPageSensitiveActionEpoch(
       return false;
     }
 
+    function hasSchedulerAdjacentListener(eventType: "input" | "select"): boolean {
+      const listenerType = eventType === "select" ? "change" : "input";
+      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
+        readonly listenerTargets?: readonly {
+          readonly type?: unknown;
+          readonly target?: unknown;
+          readonly listener?: unknown;
+        }[];
+      } | undefined;
+      for (const entry of registry?.listenerTargets ?? []) {
+        if (
+          entry.type === listenerType &&
+          entry.target === element &&
+          !isInstrumentationListener(entry.listener) &&
+          mentionsSchedulerBoundary(entry.listener)
+        ) {
+          return true;
+        }
+      }
+      const handlerName = `on${listenerType}`;
+      try {
+        const handler = (element as unknown as Record<string, unknown>)[handlerName];
+        if (mentionsSchedulerBoundary(handler)) return true;
+      } catch {
+        return true;
+      }
+      const inlineHandler = element.getAttribute(handlerName);
+      return inlineHandler !== null && mentionsSchedulerBoundary(inlineHandler);
+    }
+
+    function markInstrumentationListener(listener: EventListener): void {
+      Object.defineProperty(listener, "__qualigenceSensitiveInstrumentation", {
+        configurable: true,
+        enumerable: false,
+        value: true,
+        writable: false,
+      });
+    }
+
+    function isInstrumentationListener(listener: unknown): boolean {
+      return listener !== null &&
+        (typeof listener === "function" || typeof listener === "object") &&
+        (listener as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
+    }
+
+    function mentionsSchedulerBoundary(listener: unknown): boolean {
+      let source: string;
+      try {
+        if (typeof listener === "function") {
+          source = Function.prototype.toString.call(listener);
+        } else if (
+          listener !== null &&
+          typeof listener === "object" &&
+          typeof (listener as { readonly handleEvent?: unknown }).handleEvent === "function"
+        ) {
+          source = Function.prototype.toString.call((listener as { readonly handleEvent: EventListener }).handleEvent);
+        } else if (typeof listener === "string") {
+          source = listener;
+        } else {
+          return false;
+        }
+      } catch {
+        return true;
+      }
+      return /\bqueueMicrotask\b|\bPromise\b|\.then\s*\(/.test(source);
+    }
+
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
       for (let current = element.parentElement; current !== null; current = current.parentElement) {
@@ -783,6 +866,26 @@ async function beginPageSensitiveActionEpoch(
       if (target === element) return false;
       if (target === win || target === element.ownerDocument) return true;
       return target instanceof Node && target.contains(element);
+    }
+
+    function processCurrentSensitiveMatches(
+      epochToUpdate: BrowserSensitiveEpoch,
+      allowClassification: boolean,
+    ): void {
+      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+        const matches = sensitiveMatches(candidate, epochToUpdate.forms);
+        if (matches.length === 0) continue;
+        if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
+        if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
+          continue;
+        }
+        if (!allowClassification) {
+          poison(epochToUpdate);
+          return;
+        }
+        classifyElement(candidate, epochToUpdate);
+        if (epochToUpdate.poisoned) return;
+      }
     }
 
     function processMutationRecords(
@@ -805,7 +908,7 @@ async function beginPageSensitiveActionEpoch(
           if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
             continue;
           }
-          if (epochToUpdate.schedulerBoundaryObserved || !allowClassification) {
+          if (!allowClassification) {
             poison(epochToUpdate);
             return;
           }
@@ -956,6 +1059,10 @@ async function beginPageSensitiveActionEpoch(
         .join("");
     }
 
+    function normalizeVisibleSensitiveForm(value: string): string {
+      return value.normalize("NFC").replace(/\s+/g, " ").trim();
+    }
+
     function carriesForm(value: string, form: string): boolean {
       return value === form || (form !== "" && value.includes(form));
     }
@@ -981,6 +1088,7 @@ async function beginPageSensitiveActionEpoch(
 async function endPageSensitiveActionEpoch(
   locator: Locator,
   prepared: PreparedSensitiveEvidenceRecord,
+  retainRecord = true,
 ): Promise<PageSensitiveEpochResult> {
   return locator.evaluate((element, input): PageSensitiveEpochResult => {
     type BrowserSensitiveState = {
@@ -990,15 +1098,14 @@ async function endPageSensitiveActionEpoch(
         baseline: WeakMap<Element, ReadonlySet<string>>;
         observer: MutationObserver;
         targetCaptureListener: EventListener;
-        targetBubbleListener: EventListener;
+        documentBubbleListener: EventListener;
+        hasSchedulerAdjacentListener: boolean;
         mutationOrdinal: number;
+        deferredRecords: MutationRecord[];
         classifiedNodes: Set<string>;
         classifiedRegions: Set<string>;
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
-        schedulerBoundaryObserved: boolean;
-        originalQueueMicrotask: typeof window.queueMicrotask;
-        originalPromiseThen: typeof Promise.prototype.then;
         poisoned: boolean;
       } | null;
       records: {
@@ -1019,23 +1126,30 @@ async function endPageSensitiveActionEpoch(
       if (state !== undefined) state.poisoned = true;
       return { status: "failed" };
     }
-    processMutationRecords(state, active, active.observer.takeRecords(), active.inTargetDispatch && !active.hasDelegatedListener);
-    active.inTargetDispatch = false;
-    if (win !== null) {
-      win.queueMicrotask = active.originalQueueMicrotask;
-      win.Promise.prototype.then = active.originalPromiseThen;
+    if (input.retainRecord) {
+      const records = [...active.deferredRecords, ...active.observer.takeRecords()];
+      active.deferredRecords = [];
+      processMutationRecords(
+        state,
+        active,
+        records,
+        active.inTargetDispatch && !active.hasDelegatedListener && !active.hasSchedulerAdjacentListener,
+      );
     }
+    active.inTargetDispatch = false;
     active.observer.disconnect();
     element.removeEventListener("input", active.targetCaptureListener, true);
     element.removeEventListener("change", active.targetCaptureListener, true);
-    element.removeEventListener("input", active.targetBubbleListener, false);
-    element.removeEventListener("change", active.targetBubbleListener, false);
-    state.records.push({
-      markerId: active.markerId,
-      forms: active.forms,
-      baseline: active.baseline,
-    });
-    const failed = state.poisoned || active.poisoned;
+    element.ownerDocument.removeEventListener("input", active.documentBubbleListener, false);
+    element.ownerDocument.removeEventListener("change", active.documentBubbleListener, false);
+    if (input.retainRecord) {
+      state.records.push({
+        markerId: active.markerId,
+        forms: active.forms,
+        baseline: active.baseline,
+      });
+    }
+    const failed = input.retainRecord && (state.poisoned || active.poisoned);
     state.active = null;
     return { status: failed ? "failed" : "ok" };
 
@@ -1061,7 +1175,7 @@ async function endPageSensitiveActionEpoch(
           if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
             continue;
           }
-          if (epochToUpdate.schedulerBoundaryObserved || !allowClassification) {
+          if (!allowClassification) {
             epochToUpdate.poisoned = true;
             stateToUpdate.poisoned = true;
             return;
@@ -1241,6 +1355,7 @@ async function endPageSensitiveActionEpoch(
     }
   }, {
     markerId: prepared.markerId,
+    retainRecord,
     stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
     targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
     maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
@@ -1248,6 +1363,13 @@ async function endPageSensitiveActionEpoch(
     maxClassifiedNodes: MAX_REFLECTED_NODES,
     maxMaskRegions: MAX_REFLECTED_REGIONS,
   });
+}
+
+function sensitiveInputForms(value: string): string[] {
+  const forms = new Set<string>([value]);
+  const visible = value.normalize("NFC").replace(/\s+/g, " ").trim();
+  if (visible !== "") forms.add(visible);
+  return [...forms];
 }
 
 async function markSensitiveTarget(

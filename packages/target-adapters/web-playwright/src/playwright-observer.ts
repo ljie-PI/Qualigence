@@ -78,6 +78,8 @@ interface BrowserObservationCandidate extends ObservationCandidate {
 interface BrowserObservationCapture {
   readonly candidates: readonly BrowserObservationCandidate[];
   readonly viewport: WebViewportV1;
+  readonly title?: string;
+  readonly titleSensitiveTargetIds?: readonly string[];
   readonly sensitiveEvidenceUnavailable: boolean;
 }
 
@@ -324,47 +326,66 @@ function collectPageObservation(
         }
       }
     }
-    for (const element of shadowRootElements()) {
+    for (const root of shadowRoots()) {
       for (const record of records) {
-        for (const value of sensitiveValues(element)) {
+        for (const value of shadowRootValues(root)) {
           if (carriesForm(value, record.forms)) return true;
+        }
+        for (const element of Array.from(root.querySelectorAll("*"))) {
+          for (const value of sensitiveValues(element)) {
+            if (carriesForm(value, record.forms)) return true;
+          }
         }
       }
     }
     return false;
   }
 
-  function shadowRootElements(): Element[] {
-    const result: Element[] = [];
+  function shadowRootValues(root: ShadowRoot): readonly string[] {
+    const values: string[] = [];
+    const direct = Array.from(root.childNodes)
+      .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.data)
+      .join("");
+    if (direct !== "") values.push(direct);
+    const fullText = root.textContent ?? "";
+    if (fullText !== "" && fullText !== direct) values.push(fullText);
+    return values;
+  }
+
+  function shadowRoots(): ShadowRoot[] {
     const roots = new Set<ShadowRoot>();
+    const pending: ShadowRoot[] = [];
+    const addRoot = (root: ShadowRoot): void => {
+      if (roots.has(root)) return;
+      roots.add(root);
+      pending.push(root);
+    };
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly roots?: readonly unknown[];
     } | undefined;
     for (const root of registry?.roots ?? []) {
-      if (root instanceof ShadowRoot) roots.add(root);
+      if (root instanceof ShadowRoot) addRoot(root);
     }
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const shadowRoot = element.shadowRoot;
-      if (shadowRoot !== null) roots.add(shadowRoot);
+      if (shadowRoot !== null) addRoot(shadowRoot);
     }
-    const pending = [...roots];
-    for (const root of pending) {
+    for (let index = 0; index < pending.length; index += 1) {
+      const root = pending[index]!;
       for (const element of Array.from(root.querySelectorAll("*"))) {
-        result.push(element);
         const nestedShadowRoot = element.shadowRoot;
-        if (nestedShadowRoot !== null && !roots.has(nestedShadowRoot)) {
-          roots.add(nestedShadowRoot);
-          pending.push(nestedShadowRoot);
-        }
+        if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
       }
     }
-    return result;
+    return pending;
   }
 
   const selector =
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = Array.from(document.querySelectorAll(selector));
   const candidates: BrowserObservationCandidate[] = [];
+  const titleElement = document.querySelector("title");
 
   for (const element of elements) {
     if (!isVisible(element)) {
@@ -432,6 +453,8 @@ function collectPageObservation(
       height: Math.max(1, Math.trunc(window.innerHeight)),
       devicePixelRatio: window.devicePixelRatio,
     },
+    title: document.title,
+    ...(titleElement === null ? {} : { titleSensitiveTargetIds: readSensitiveTargetIds(titleElement) }),
     sensitiveEvidenceUnavailable: sensitiveEvidenceUnavailable(),
   };
 }
@@ -508,10 +531,15 @@ export class PlaywrightObserver implements Observer {
           : {}),
       }));
       const url = this.session.assertPageTargetOrigin(page, navigationGeneration);
-      const title = await readPageValue(
-        assertCaptureAuthority,
-        () => page.title(),
-      );
+      const title = this.session.hasPendingSensitiveEvidenceCapture()
+        ? this.session.redactSensitiveTargetField(
+            captured.titleSensitiveTargetIds,
+            captured.title ?? "",
+          )
+        : await readPageValue(
+            assertCaptureAuthority,
+            () => page.title(),
+          );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];
       assertCaptureAuthority();

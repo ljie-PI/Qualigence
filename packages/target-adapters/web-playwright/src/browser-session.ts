@@ -78,7 +78,7 @@ async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
   await page.addInitScript((propertyName: string) => {
     type SensitiveRuntimeRegistry = {
       readonly roots: ShadowRoot[];
-      readonly listenerTargets: { readonly type: string; readonly target: EventTarget }[];
+      readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
       readonly originalAttachShadow: typeof Element.prototype.attachShadow;
       readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
     };
@@ -106,8 +106,11 @@ async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
       listener: EventListenerOrEventListenerObject | null,
       options?: boolean | AddEventListenerOptions,
     ): void {
-      if ((type === "input" || type === "change") && listener !== null) {
-        registry.listenerTargets.push({ type, target: this });
+      const isSensitiveInstrumentation = listener !== null &&
+        (typeof listener === "function" || typeof listener === "object") &&
+        (listener as unknown as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
+      if ((type === "input" || type === "change") && listener !== null && !isSensitiveInstrumentation) {
+        registry.listenerTargets.push({ type, target: this, listener });
       }
       registry.originalAddEventListener.call(this, type, listener, options);
     };

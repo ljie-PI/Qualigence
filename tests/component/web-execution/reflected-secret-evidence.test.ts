@@ -187,6 +187,17 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Post-epoch equal text"),
+      "/title": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            document.title = event.target.value;
+            document.getElementById('mirror').textContent = 'saved';
+          });
+        </script>
+      `, "Title before reflection"),
       "/shadow-open": htmlDocument(`
         <div id="host"></div>
         <label>Email <input aria-label="Email" /></label>
@@ -215,6 +226,30 @@ describe("Playwright reflected sensitive evidence", () => {
           });
         </script>
       `, "Closed shadow reflected secret"),
+      "/shadow-open-text": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          shadow.textContent = 'waiting';
+          input.addEventListener('input', event => {
+            shadow.textContent = event.target.value;
+          });
+        </script>
+      `, "Open shadow direct text reflected secret"),
+      "/shadow-closed-text": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+          shadow.textContent = 'waiting';
+          input.addEventListener('input', event => {
+            shadow.textContent = event.target.value;
+          });
+        </script>
+      `, "Closed shadow direct text reflected secret"),
       "/mutation-overflow": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -381,6 +416,59 @@ describe("Playwright reflected sensitive evidence", () => {
     expect(afterEqual.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
   }, 60_000);
 
+  it("redacts a causally reflected document title before Graph and Artifact serialization", async () => {
+    const { observer, resolver, executor } = await wire("/title");
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/title` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reflect secret into document title",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/title` } });
+
+    expect(after.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
+    expect((after as unknown as { readonly title: string }).title).toBe("[redacted]");
+    expect(JSON.stringify(after)).not.toContain(SECRET);
+    const graphArtifact = session.artifactsFor(after.graphId)
+      .find((artifact) => artifact.mediaType === "application/json");
+    expect(graphArtifact).toBeDefined();
+    expect(new TextDecoder().decode(graphArtifact!.bytes)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("classifies page-side sensitive epoch setup failure before dispatch", async () => {
+    const { observer, resolver, executor } = await wire("/safe");
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/safe` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "fail before dispatch",
+    }, before);
+    await session.withPage((page) => page.evaluate((stateProperty) => {
+      (globalThis as unknown as Record<string, unknown>)[stateProperty] = {
+        active: {},
+        records: [],
+        poisoned: false,
+        nextNodeOrdinal: 0,
+        nextMaskOrdinal: 0,
+      };
+    }, "__qualigenceSensitiveEvidenceState"));
+
+    const permit = allowedPermit();
+    await expect(executor.execute(action, permit))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(permit.dispatchStarted).toBe(false);
+    await expect(session.withPage((page) => page.evaluate(() => {
+      const browser = globalThis as unknown as {
+        readonly document: { querySelector(selector: "input"): { readonly value: string } | null };
+      };
+      return browser.document.querySelector("input")?.value ?? "missing";
+    }))).resolves.toBe("");
+  }, 60_000);
+
   it("fails evidence closed for scheduler-adjacent reflected matching content", async () => {
     const { observer, resolver, executor } = await wire("/async");
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/async` } });
@@ -458,7 +546,7 @@ describe("Playwright reflected sensitive evidence", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
-  it.each(["/shadow-open", "/shadow-closed"])("fails evidence closed for %s reflected matching content", async (path) => {
+  it.each(["/shadow-open", "/shadow-closed", "/shadow-open-text", "/shadow-closed-text"])("fails evidence closed for %s reflected matching content", async (path) => {
     const { observer, resolver, executor } = await wire(path);
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
     const action = await resolver.resolve({
