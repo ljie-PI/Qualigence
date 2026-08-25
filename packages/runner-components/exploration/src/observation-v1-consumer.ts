@@ -44,6 +44,15 @@ export interface ObservationNodePromptView {
   readonly evidenceRefs: readonly string[];
 }
 
+interface ObservationNodeFingerprintView {
+  readonly role: string;
+  readonly name: string;
+  readonly value?: string;
+  readonly state: Readonly<Record<string, boolean | string | number>>;
+  readonly source: ObservationNodeV1["source"];
+  readonly sensitivity: ObservationNodeV1["sensitivity"];
+}
+
 /** Validate a live v1 Graph before any consumer derives prompts, fingerprints, or actions from it. */
 export function validateConsumerObservationGraph(graph: ObservationGraphV1): ObservationGraphV1 {
   return validateObservationGraphV1(graph, {
@@ -112,14 +121,7 @@ export function fingerprintObservationGraphV1(graph: ObservationGraphV1): string
   const validated = validateConsumerObservationGraph(graph);
   const web = requireWebV1Semantics(validated);
   const nodes = [...validated.nodes]
-    .map((node) => ({
-      role: normalizeText(node.role),
-      name: normalizeText(node.name ?? ""),
-      value: normalizeText(node.value ?? ""),
-      state: normalizedState(node.state),
-      source: node.source,
-      sensitivity: node.sensitivity,
-    }))
+    .map((node) => nodeFingerprintView(node))
     .sort((left, right) => compareStrings(canonicalPayloadHash(left), canonicalPayloadHash(right)));
 
   return canonicalPayloadHash({
@@ -153,6 +155,17 @@ function webSemanticsFromExtension(extension: VersionedExtension): WebV1Semantic
     title: String(payload["title"]),
     viewport,
     queryKeys: sortStrings(Object.keys(query)),
+  };
+}
+
+function nodeFingerprintView(node: ObservationNodeV1): ObservationNodeFingerprintView {
+  return {
+    role: normalizeText(node.role),
+    name: normalizeText(node.name ?? ""),
+    ...(node.value === undefined || node.sensitivity === "secret" ? {} : { value: normalizeText(node.value) }),
+    state: node.sensitivity === "secret" ? {} : normalizedState(node.state),
+    source: node.source,
+    sensitivity: node.sensitivity,
   };
 }
 

@@ -151,7 +151,19 @@ function policyBindingHashFor(policy: ExplorationPolicy): string {
   return canonicalPayloadHash(policy);
 }
 
-function scenarioDefinitionBinding(definition: ScenarioDefinition): unknown {
+interface ScenarioDefinitionBinding {
+  readonly scenarioId: string;
+  readonly mode: ScenarioDefinition["mode"];
+  readonly seedUrl?: { readonly origin: string; readonly pathname: string };
+  readonly states: readonly {
+    readonly id: string;
+    readonly advanceNodeId: string | null;
+    readonly signals: ScenarioDefinition["states"][number]["signals"];
+    readonly observationGraphSha256: string;
+  }[];
+}
+
+function scenarioDefinitionBinding(definition: ScenarioDefinition): ScenarioDefinitionBinding {
   return {
     scenarioId: definition.scenarioId,
     mode: definition.mode,
@@ -168,6 +180,12 @@ function scenarioDefinitionBinding(definition: ScenarioDefinition): unknown {
 function redactedUrlBinding(url: string): { readonly origin: string; readonly pathname: string } {
   const parsed = new URL(url);
   return { origin: parsed.origin, pathname: parsed.pathname };
+}
+
+function compareStrings(left: string, right: string): number {
+  const normalizedLeft = left.normalize("NFC");
+  const normalizedRight = right.normalize("NFC");
+  return normalizedLeft < normalizedRight ? -1 : normalizedLeft > normalizedRight ? 1 : 0;
 }
 
 function seedBindingHashFor(policy: ExplorationPolicy): string {
@@ -205,7 +223,9 @@ function inputBindingHashFor(input: {
     groundTruthSha256: input.truthHash,
     policyBindingHash: input.policyBindingHash,
     seedBindingHash: input.seedBindingHash,
-    scenarioDefinitions: input.scenarios,
+    scenarioDefinitions: input.scenarios
+      .map((scenario) => scenarioDefinitionBinding(scenario))
+      .sort((left, right) => compareStrings(left.scenarioId, right.scenarioId)),
   });
 }
 

@@ -51,6 +51,22 @@ function graph(overrides: GraphOptions = {}): ObservationGraphV1 {
   );
 }
 
+function graphWithSecretValueAndState(
+  value: string,
+  state: Readonly<Record<string, boolean | string | number>>,
+): ObservationGraphV1 {
+  const base = graph({
+    nodes: [
+      { id: "node-1", role: "button", name: "Add to cart", confidence: 0.9 },
+      { id: "node-secret", role: "textbox", name: "Password", value, sensitivity: "secret", confidence: 0.8 },
+    ],
+  });
+  return {
+    ...base,
+    nodes: base.nodes.map((node) => (node.id === "node-secret" ? { ...node, state } : node)),
+  };
+}
+
 describe("fingerprintObservationGraph", () => {
   it("normalizes volatile graphId, node ids, timestamps and confidence to the same fingerprint", () => {
     const a = fingerprintObservationGraph(graph());
@@ -100,6 +116,17 @@ describe("fingerprintObservationGraph", () => {
     );
     expect(differentPath).not.toBe(base);
     expect(differentValue).not.toBe(base);
+  });
+
+  it("does not let secret node values or state change the fingerprint", () => {
+    const first = fingerprintObservationGraph(
+      graphWithSecretValueAndState("***", { filled: true, length: 8, text: "first secret" }),
+    );
+    const second = fingerprintObservationGraph(
+      graphWithSecretValueAndState("••••••", { filled: false, length: 12, text: "second secret" }),
+    );
+
+    expect(second).toBe(first);
   });
 
   it("fails closed when web/v1 is missing for a web-dependent fingerprint", () => {
