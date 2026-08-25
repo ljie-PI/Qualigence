@@ -176,6 +176,29 @@ describe("Playwright reflected sensitive evidence", () => {
           };
         </script>
       `, "Delegated document change reflected secret"),
+      "/delegated-dynamic-focus": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('focus', () => {
+            document.body.addEventListener('input', event => {
+              document.getElementById('mirror').textContent = event.target.value;
+            });
+          });
+        </script>
+      `, "Dynamic focus delegated reflected secret"),
+      "/delegated-dynamic-dispatch": htmlDocument(`
+        <div id="mirror" data-qualigence-observe>waiting</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const input = document.querySelector('input');
+          input.addEventListener('input', event => {
+            document.body.addEventListener('input', () => {});
+            document.getElementById('mirror').textContent = event.target.value;
+          });
+        </script>
+      `, "Dynamic dispatch delegated reflected secret"),
       "/post-epoch-equal": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <div id="late-equal" data-qualigence-observe>ordinary</div>
@@ -436,6 +459,15 @@ describe("Playwright reflected sensitive evidence", () => {
       .find((artifact) => artifact.mediaType === "application/json");
     expect(graphArtifact).toBeDefined();
     expect(new TextDecoder().decode(graphArtifact!.bytes)).not.toContain(SECRET);
+
+    const repeated = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/title` } });
+    expect(repeated.extensions?.["web/v1"]?.payload).toMatchObject({ title: "[redacted]" });
+    expect((repeated as unknown as { readonly title: string }).title).toBe("[redacted]");
+    expect(JSON.stringify(repeated)).not.toContain(SECRET);
+    const repeatedGraphArtifact = session.artifactsFor(repeated.graphId)
+      .find((artifact) => artifact.mediaType === "application/json");
+    expect(repeatedGraphArtifact).toBeDefined();
+    expect(new TextDecoder().decode(repeatedGraphArtifact!.bytes)).not.toContain(SECRET);
   }, 60_000);
 
   it("classifies page-side sensitive epoch setup failure before dispatch", async () => {
@@ -508,7 +540,13 @@ describe("Playwright reflected sensitive evidence", () => {
     60_000,
   );
 
-  it.each(["/delegated", "/delegated-property", "/delegated-inline"])(
+  it.each([
+    "/delegated",
+    "/delegated-property",
+    "/delegated-inline",
+    "/delegated-dynamic-focus",
+    "/delegated-dynamic-dispatch",
+  ])(
     "fails evidence closed for %s reflected matching content",
     async (path) => {
       const { observer, resolver, executor } = await wire(path);

@@ -531,14 +531,14 @@ export class PlaywrightObserver implements Observer {
           : {}),
       }));
       const url = this.session.assertPageTargetOrigin(page, navigationGeneration);
-      const title = this.session.hasPendingSensitiveEvidenceCapture()
-        ? this.session.redactSensitiveTargetField(
-            captured.titleSensitiveTargetIds,
-            captured.title ?? "",
-          )
-        : await readPageValue(
+      const title = captured.title === undefined
+        ? await readPageValue(
             assertCaptureAuthority,
             () => page.title(),
+          )
+        : this.session.redactSensitiveTitleField(
+            captured.titleSensitiveTargetIds,
+            captured.title,
           );
 
       const artifactNames = [`${ordinal}-observation.json`, `${ordinal}.png`];

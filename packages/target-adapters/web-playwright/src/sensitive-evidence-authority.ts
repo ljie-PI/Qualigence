@@ -38,6 +38,11 @@ export interface SensitiveEvidenceAuthorityResult<T> {
   readonly reason?: SensitiveEvidenceAuthorityFailure;
 }
 
+export interface SensitiveEvidenceRedactionResult {
+  readonly status: "redacted" | "unchanged" | "unavailable";
+  readonly value: string;
+}
+
 interface SensitiveEvidenceRecord {
   readonly markerId: string;
   readonly navigationGeneration: number;
@@ -108,16 +113,30 @@ export class SensitiveEvidenceAuthority {
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
   ): string {
+    return this.redactFieldWithStatus(sensitiveTargetIds, value).value;
+  }
+
+  redactFieldWithStatus(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+  ): SensitiveEvidenceRedactionResult {
     if (sensitiveTargetIds === undefined || sensitiveTargetIds.length === 0) {
-      return value;
+      return { status: "unchanged", value };
     }
+    let hasUnknownRecord = false;
     for (const markerId of sensitiveTargetIds) {
       const record = this.records.get(markerId);
-      if (record !== undefined && carriesSensitiveForm(value, record.forms)) {
-        return REDACTED_SENSITIVE_TEXT;
+      if (record === undefined) {
+        hasUnknownRecord = true;
+        continue;
+      }
+      if (carriesSensitiveForm(value, record.forms)) {
+        return { status: "redacted", value: REDACTED_SENSITIVE_TEXT };
       }
     }
-    return value;
+    return hasUnknownRecord
+      ? { status: "unavailable", value }
+      : { status: "unchanged", value };
   }
 
   clear(): void {

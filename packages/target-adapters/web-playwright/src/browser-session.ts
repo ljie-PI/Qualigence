@@ -483,6 +483,19 @@ export class PlaywrightBrowserSession {
     return this.sensitiveEvidence.redactField(sensitiveTargetIds, value);
   }
 
+  redactSensitiveTitleField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+  ): string {
+    this.assertSensitiveEvidenceAvailable();
+    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
+  }
+
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (this.state === "started") {

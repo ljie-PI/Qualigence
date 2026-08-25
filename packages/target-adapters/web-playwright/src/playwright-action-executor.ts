@@ -327,6 +327,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
                 epochResult = await endPageSensitiveActionEpoch(
                   locator,
                   sensitiveEvidence,
+                  "input",
                   permit.dispatchStarted,
                 );
               }
@@ -371,6 +372,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
                 epochResult = await endPageSensitiveActionEpoch(
                   locator,
                   sensitiveEvidence,
+                  "select",
                   permit.dispatchStarted,
                 );
               }
@@ -664,9 +666,7 @@ async function beginPageSensitiveActionEpoch(
     const finishTargetDispatch = (): void => {
       const active = state.active;
       if (active === null || active === undefined) return;
-      const allowClassification = active.inTargetDispatch &&
-        !active.hasDelegatedListener &&
-        !active.hasSchedulerAdjacentListener;
+      const allowClassification = canClassifyCurrentDispatch(active);
       processCurrentSensitiveMatches(active, allowClassification);
       if (!active.poisoned) {
         const records = [...active.deferredRecords, ...active.observer.takeRecords()];
@@ -746,6 +746,14 @@ async function beginPageSensitiveActionEpoch(
         if (formsToMatch.some((form) => carriesForm(value, form))) matches.push(value);
       }
       return matches;
+    }
+
+    function canClassifyCurrentDispatch(epochToUpdate: BrowserSensitiveEpoch): boolean {
+      epochToUpdate.hasDelegatedListener = epochToUpdate.hasDelegatedListener || hasDelegatedListener(input.kind);
+      epochToUpdate.hasSchedulerAdjacentListener = epochToUpdate.hasSchedulerAdjacentListener || hasSchedulerAdjacentListener(input.kind);
+      return epochToUpdate.inTargetDispatch &&
+        !epochToUpdate.hasDelegatedListener &&
+        !epochToUpdate.hasSchedulerAdjacentListener;
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
@@ -1088,6 +1096,7 @@ async function beginPageSensitiveActionEpoch(
 async function endPageSensitiveActionEpoch(
   locator: Locator,
   prepared: PreparedSensitiveEvidenceRecord,
+  kind: "input" | "select",
   retainRecord = true,
 ): Promise<PageSensitiveEpochResult> {
   return locator.evaluate((element, input): PageSensitiveEpochResult => {
@@ -1133,7 +1142,7 @@ async function endPageSensitiveActionEpoch(
         state,
         active,
         records,
-        active.inTargetDispatch && !active.hasDelegatedListener && !active.hasSchedulerAdjacentListener,
+        canClassifyCurrentDispatch(active),
       );
     }
     active.inTargetDispatch = false;
@@ -1213,6 +1222,74 @@ async function endPageSensitiveActionEpoch(
         if (formsToMatch.some((form) => carriesForm(value, form))) matches.push(value);
       }
       return matches;
+    }
+
+    function canClassifyCurrentDispatch(
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+    ): boolean {
+      epochToUpdate.hasDelegatedListener = epochToUpdate.hasDelegatedListener || hasDelegatedListener(input.kind);
+      return epochToUpdate.inTargetDispatch &&
+        !epochToUpdate.hasDelegatedListener &&
+        !epochToUpdate.hasSchedulerAdjacentListener;
+    }
+
+    function hasDelegatedListener(eventType: "input" | "select"): boolean {
+      const listenerType = eventType === "select" ? "change" : "input";
+      return hasDelegatedEventListener(listenerType) ||
+        hasDelegatedEventHandlerProperty(listenerType);
+    }
+
+    function hasDelegatedEventListener(listenerType: "input" | "change"): boolean {
+      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
+        readonly listenerTargets?: readonly {
+          readonly type?: unknown;
+          readonly target?: unknown;
+          readonly listener?: unknown;
+        }[];
+      } | undefined;
+      for (const entry of registry?.listenerTargets ?? []) {
+        if (entry.type !== listenerType) continue;
+        if (isInstrumentationListener(entry.listener)) continue;
+        if (isDelegatedEventTarget(entry.target)) return true;
+      }
+      return false;
+    }
+
+    function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
+      const handlerName = `on${listenerType}`;
+      for (const target of delegatedEventPathTargets()) {
+        if (target instanceof Element && target.hasAttribute(handlerName)) return true;
+        try {
+          if (typeof (target as unknown as Record<string, unknown>)[handlerName] === "function") {
+            return true;
+          }
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function isInstrumentationListener(listener: unknown): boolean {
+      return listener !== null &&
+        (typeof listener === "function" || typeof listener === "object") &&
+        (listener as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
+    }
+
+    function delegatedEventPathTargets(): EventTarget[] {
+      const targets: EventTarget[] = [];
+      for (let current = element.parentElement; current !== null; current = current.parentElement) {
+        targets.push(current);
+      }
+      targets.push(element.ownerDocument);
+      if (win !== null) targets.push(win);
+      return targets;
+    }
+
+    function isDelegatedEventTarget(target: unknown): boolean {
+      if (target === element) return false;
+      if (target === win || target === element.ownerDocument) return true;
+      return target instanceof Node && target.contains(element);
     }
 
     function classifyElement(
@@ -1356,9 +1433,11 @@ async function endPageSensitiveActionEpoch(
   }, {
     markerId: prepared.markerId,
     retainRecord,
+    kind,
     stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
     targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
     maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+    runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
     maxMutationRecords: MAX_REFLECTED_MUTATION_RECORDS,
     maxClassifiedNodes: MAX_REFLECTED_NODES,
     maxMaskRegions: MAX_REFLECTED_REGIONS,
