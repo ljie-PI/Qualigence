@@ -198,9 +198,9 @@ export class ScenarioExplorationTarget implements ExplorationTarget {
 /**
  * A deterministic exploration proposer that walks the fixture: it proposes
  * clicking the first `link` node in the current graph (the advance control), or
- * stops when there is none. It stands in for the model so the reference
- * benchmark is fully reproducible; a BYO profile may substitute a model-backed
- * agent. It only ever proposes — the controller owns every decision.
+ * stops when there is none. It is only an explicitly injected edit-time test
+ * double; release-grade Reference Profile reports must use the model-provider
+ * agent factory. It only ever proposes — the controller owns every decision.
  */
 export class ScenarioWalkAgent {
   async nextAction(context: ExplorationContext): Promise<ExplorationProposal> {

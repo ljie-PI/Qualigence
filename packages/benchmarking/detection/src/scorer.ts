@@ -40,6 +40,10 @@ export interface BenchmarkAttempt {
 /** Options that never influence the score, only the report envelope. */
 export interface ScoreOptions {
   readonly createdAt?: string;
+  /** Hash of policy, seed and fixture/scenario inputs bound by the runner. */
+  readonly inputSha256?: string;
+  /** Per-attempt binding hashes supplied by the runner for durable audit. */
+  readonly attemptBindingSha256s?: readonly string[];
 }
 
 /** A frozen sentinel so an omitted timestamp keeps the report deterministic. */
@@ -83,9 +87,11 @@ export function scoreBenchmark(
   const manifestHash = manifestSha256(manifest);
   const truthHash = groundTruthSha256(truth);
   const attemptIds = attempts.map((attempt) => attempt.attemptId).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const inputSha256 = options.inputSha256 ?? sha256Hex(canonicalJson({ manifestHash, profileHash, truthHash }));
+  const attemptBindingSha256s = [...(options.attemptBindingSha256s ?? attemptIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const reportId = sha256Hex(
-    canonicalJson({ manifestHash, profileHash, truthHash, attemptIds }),
+    canonicalJson({ manifestHash, profileHash, truthHash, inputSha256, attemptIds, attemptBindingSha256s }),
   );
 
   return {
@@ -94,6 +100,8 @@ export function scoreBenchmark(
     manifestSha256: manifestHash,
     profileSha256: profileHash,
     groundTruthSha256: truthHash,
+    inputSha256,
+    attemptBindingSha256s,
     profileStatus,
     attemptIds,
     metrics,

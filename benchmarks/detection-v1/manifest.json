@@ -3,12 +3,12 @@
   "benchmarkVersion": "detection-v1",
   "referenceProfile": {
     "profileId": "detection-reference-v1",
-    "providerId": "qualigence-deterministic",
+    "providerId": "openai-compatible",
     "modelId": "qualigence-reference-detector-1",
     "promptVersion": "prompt/2026-08-01",
     "policyBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
     "skillPackSha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "browserVersion": "deterministic-target/1.0.0",
+    "browserVersion": "chromium/reference-profile",
     "fixtureVersions": {
       "cart": "cart/1.0.0"
     },

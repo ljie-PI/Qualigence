@@ -4,7 +4,7 @@
 
 **Blocked by:** 20 — Restore exploration seed, checkpoint, and recovery budget.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -79,6 +79,11 @@ corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.t
 ```
 
 Run the configured frozen Reference Model Profile across every manifest scenario and repetition with real provider calls. No fixture walker, provider fake, omitted repetition, selected best run, or skip satisfies acceptance. Provider/network/credential absence must be reported explicitly and blocks completion.
+
+## Comments
+
+- start — Claimed for isolated implementation on branch `ticket-21-real-reference-model-benchmark` from base SHA `c55f377460033d9053085b5aface51b02ca12842` (current main with ticket 20 resolved via PR #99 merge commit `1995a946fc09b05425949cf53f2fe1f29a311731`, as supplied by the worktree). Matrix applicability: applicable; all rows in the Behavior Matrix below govern this stateful, side-effecting, retry/restart-sensitive release benchmark workflow. Planned focused Gates: `CI=true corepack pnpm vitest run tests/unit/benchmarking/detection tests/contract/sqlite/benchmark-store.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Post-review real Reference Model acceptance `CI=true corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts` is required only after review is clean and real configured provider credentials/network are available.
+- blocked — Implementation is committed-ready and focused non-E2E Gates are clean, but the real post-review Reference Model acceptance cannot be run in this worker environment because `QUALIGENCE_REFERENCE_MODEL_BASE_URL`, `QUALIGENCE_REFERENCE_MODEL_API_KEY`, `QUALIGENCE_MODEL_BASE_URL`, and `QUALIGENCE_MODEL_API_KEY` are unset. Do not treat deterministic edit-time test-double reports as release evidence; they are forced to `profileStatus: unverified` / `gate.status: unverified`.
 
 ## Behavior Matrix
 

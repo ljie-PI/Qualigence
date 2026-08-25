@@ -17,6 +17,9 @@
     "@qualigence/benchmarking-detection": "workspace:*",
     "@qualigence/exploration": "workspace:*",
     "@qualigence/mission": "workspace:*",
+    "@qualigence/model-agent": "workspace:*",
+    "@qualigence/model-gateway": "workspace:*",
+    "@qualigence/openai-compatible-model-provider": "workspace:*",
     "@qualigence/runner-protocol": "workspace:*",
     "@qualigence/sqlite-runtime": "workspace:*"
   }

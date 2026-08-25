@@ -267,6 +267,15 @@ importers:
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
+      '@qualigence/model-agent':
+        specifier: workspace:*
+        version: link:../../packages/runner-components/model-agent
+      '@qualigence/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/model-gateway
+      '@qualigence/openai-compatible-model-provider':
+        specifier: workspace:*
+        version: link:../../packages/model-providers/openai-compatible
       '@qualigence/runner-protocol':
         specifier: workspace:*
         version: link:../../packages/contracts/runner-protocol

@@ -3,6 +3,10 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { loadBenchmark } from "./loader.js";
+import {
+  createReferenceModelAgentFactory,
+  ReferenceModelProviderConfigurationError,
+} from "./reference-model-provider.js";
 import { runBenchmark, type BenchmarkStore } from "./run.js";
 
 interface CliOptions {
@@ -88,6 +92,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       manifest: loaded.manifest,
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
+      agentFactory: createReferenceModelAgentFactory(loaded.manifest.referenceProfile),
       store,
       createdAt: new Date().toISOString(),
     });
@@ -103,6 +108,12 @@ export async function main(argv: readonly string[]): Promise<number> {
       `benchmark ${outcome.report.benchmarkVersion} profile=${outcome.report.profileStatus} gate=${outcome.report.gate.status}\n`,
     );
     return outcome.exitCode;
+  } catch (error) {
+    if (error instanceof ReferenceModelProviderConfigurationError) {
+      process.stderr.write(`${error.message}\n`);
+      return 3;
+    }
+    throw error;
   } finally {
     await runtime.close();
   }
