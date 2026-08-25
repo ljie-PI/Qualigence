@@ -10,9 +10,9 @@ import type {
 } from "@qualigence/skill";
 import {
   SkillReplayController,
-  type ReplayObservation,
   type ReplayTarget,
 } from "@qualigence/skill-replay";
+import { webReplayGraph } from "../../../replay/procedure-skill/graph-fixture.js";
 import type { RegressionJobPlan } from "@qualigence/mission";
 
 const scope: SkillVerificationScope = {
@@ -68,8 +68,8 @@ const ADD = { role: "button", name: "Add to cart" };
 
 class CartTarget implements ReplayTarget {
   private path = "/product";
-  async capture(): Promise<ReplayObservation> {
-    return { urlPath: this.path, nodes: [ADD], claims: [] };
+  async capture() {
+    return webReplayGraph(this.path, [ADD]);
   }
   async execute(action: { step: { intent: { kind: string } } }): Promise<void> {
     if (action.step.intent.kind === "click") {
@@ -80,8 +80,8 @@ class CartTarget implements ReplayTarget {
 
 /** A Target permanently off the skill's precondition path, so replay diverges. */
 class BrokenTarget implements ReplayTarget {
-  async capture(): Promise<ReplayObservation> {
-    return { urlPath: "/home", nodes: [ADD], claims: [] };
+  async capture() {
+    return webReplayGraph("/home", [ADD]);
   }
   async execute(): Promise<void> {}
 }

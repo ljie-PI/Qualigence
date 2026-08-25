@@ -19,6 +19,7 @@ import {
   type ReplayObservation,
   type ReplayTarget,
 } from "@qualigence/skill-replay";
+import { webReplayGraph } from "./graph-fixture.js";
 
 const scope: SkillVerificationScope = {
   projectId: "proj-1",
@@ -75,8 +76,10 @@ function cartPayload(): ProcedureSkillVersion {
   return { ...base, contentSha256: bundlePayloadContentSha256(base) };
 }
 
-function unsignedBundle(signerKeyId: string): UnsignedSkillBundle {
-  const payload = cartPayload();
+function unsignedBundle(
+  signerKeyId: string,
+  payload: ProcedureSkillVersion = cartPayload(),
+): UnsignedSkillBundle {
   return {
     bundleId: "bundle-cart-1",
     skillId: payload.skillId,
@@ -88,6 +91,30 @@ function unsignedBundle(signerKeyId: string): UnsignedSkillBundle {
     signatureAlgorithm: "Ed25519",
     issuedAt: "2026-08-01T00:00:00.000Z",
     payload,
+  };
+}
+
+function claimCheckpointPayload(): ProcedureSkillVersion {
+  const base = cartPayload();
+  const firstStep = base.steps[0];
+  const secondStep = base.steps[1];
+  if (secondStep === undefined) {
+    throw new Error("cart fixture must contain a second step");
+  }
+  const withClaimCheckpoint: ProcedureSkillVersion = {
+    ...base,
+    steps: [
+      firstStep,
+      {
+        ...secondStep,
+        checkpoint: [{ kind: "claim_satisfied", claimId: "cart.count>=1" }],
+      },
+    ],
+    contentSha256: "will-be-overwritten",
+  };
+  return {
+    ...withClaimCheckpoint,
+    contentSha256: bundlePayloadContentSha256(withClaimCheckpoint),
   };
 }
 
@@ -103,10 +130,11 @@ const ADD = { role: "button", name: "Add to cart" };
 class CartTarget implements ReplayTarget {
   captures = 0;
   private path = "/product";
+  private readonly claims = new Set<string>();
 
   constructor(private readonly variant: "normal" | "dom" = "normal") {}
 
-  async capture(): Promise<ReplayObservation> {
+  async capture() {
     this.captures += 1;
     const nodes =
       this.variant === "dom"
@@ -115,7 +143,11 @@ class CartTarget implements ReplayTarget {
             { ...QTY, text: "reordered field 42" },
           ]
         : [QTY, ADD];
-    return { urlPath: this.path, nodes, claims: [] };
+    return webReplayGraph(this.path, nodes, {
+      graphId: `cart-${this.captures}`,
+      queryKeys: ["ref"],
+      claimIds: [...this.claims],
+    });
   }
 
   async execute(action: {
@@ -123,6 +155,7 @@ class CartTarget implements ReplayTarget {
   }): Promise<void> {
     if (action.step.intent.kind === "click") {
       this.path = "/cart";
+      this.claims.add("cart.count>=1");
     }
   }
 }
@@ -130,12 +163,37 @@ class CartTarget implements ReplayTarget {
 /** A Target whose precondition (`/product`) is never satisfied. */
 class OffTarget implements ReplayTarget {
   captures = 0;
-  async capture(): Promise<ReplayObservation> {
+  async capture() {
     this.captures += 1;
-    return { urlPath: "/home", nodes: [QTY, ADD], claims: [] };
+    return webReplayGraph("/home", [QTY, ADD], { graphId: `off-${this.captures}` });
   }
   async execute(): Promise<void> {
     throw new Error("execute must not be called after a diverged precondition");
+  }
+}
+
+class LegacyObservationTarget implements ReplayTarget {
+  captures = 0;
+  executed = 0;
+  async capture(): Promise<ReplayObservation> {
+    this.captures += 1;
+    return { urlPath: "/product", nodes: [QTY, ADD], claims: [] };
+  }
+  async execute(): Promise<void> {
+    this.executed += 1;
+  }
+}
+
+class InvalidGraphTarget implements ReplayTarget {
+  captures = 0;
+  executed = 0;
+  constructor(private readonly captureGraph: () => unknown) {}
+  async capture(): Promise<unknown> {
+    this.captures += 1;
+    return this.captureGraph();
+  }
+  async execute(): Promise<void> {
+    this.executed += 1;
   }
 }
 
@@ -156,6 +214,82 @@ describe("Procedure Skill replay — cart procedure", () => {
 
     const result = await controller.run(bundle, new CartTarget("dom"), scope);
     expect(result).toEqual({ status: "passed" });
+  });
+
+  it("rejects a direct legacy replay observation before executing actions", async () => {
+    const signer = LocalSkillSigner.generate();
+    const bundle = await signer.sign(unsignedBundle(signer.keyId));
+    const controller = new SkillReplayController({ signer });
+    const target = new LegacyObservationTarget();
+
+    const result = await controller.run(bundle, target, scope);
+
+    expect(result).toEqual({ status: "blocked", errorCode: "ObservationSchemaInvalid" });
+    expect(target.captures).toBe(1);
+    expect(target.executed).toBe(0);
+  });
+
+  it("uses canonical redacted web/v1 path semantics for URL checkpoints", async () => {
+    const signer = LocalSkillSigner.generate();
+    const bundle = await signer.sign(unsignedBundle(signer.keyId));
+    const controller = new SkillReplayController({ signer });
+
+    const result = await controller.run(bundle, new CartTarget("normal"), scope);
+
+    expect(result).toEqual({ status: "passed" });
+  });
+
+  it("checks claim_satisfied checkpoints through the typed skill-replay/v1 extension", async () => {
+    const signer = LocalSkillSigner.generate();
+    const bundle = await signer.sign(unsignedBundle(signer.keyId, claimCheckpointPayload()));
+    const controller = new SkillReplayController({ signer });
+
+    const result = await controller.run(bundle, new CartTarget("normal"), scope);
+
+    expect(result).toEqual({ status: "passed" });
+  });
+
+  it("rejects a web v1 replay graph without the required web/v1 extension", async () => {
+    const signer = LocalSkillSigner.generate();
+    const bundle = await signer.sign(unsignedBundle(signer.keyId));
+    const controller = new SkillReplayController({ signer });
+    const target = new InvalidGraphTarget(() => ({
+      ...webReplayGraph("/product", [QTY, ADD]),
+      extensions: {},
+    }));
+
+    const result = await controller.run(bundle, target, scope);
+
+    expect(result).toEqual({ status: "blocked", errorCode: "ExtensionVersionUnsupported" });
+    expect(target.captures).toBe(1);
+    expect(target.executed).toBe(0);
+  });
+
+  it("rejects raw web/v1 query values before replay consumers use URL state", async () => {
+    const signer = LocalSkillSigner.generate();
+    const bundle = await signer.sign(unsignedBundle(signer.keyId));
+    const controller = new SkillReplayController({ signer });
+    const graph = webReplayGraph("/product", [QTY, ADD]);
+    const web = graph.extensions?.["web/v1"];
+    const target = new InvalidGraphTarget(() => ({
+      ...graph,
+      extensions: {
+        ...graph.extensions,
+        "web/v1": {
+          ...web,
+          payload: {
+            ...web?.payload,
+            query: { token: "raw-secret" },
+          },
+        },
+      },
+    }));
+
+    const result = await controller.run(bundle, target, scope);
+
+    expect(result).toEqual({ status: "blocked", errorCode: "ObservationSchemaInvalid" });
+    expect(target.captures).toBe(1);
+    expect(target.executed).toBe(0);
   });
 
   it("verifies across four oracles and permits promotion", async () => {

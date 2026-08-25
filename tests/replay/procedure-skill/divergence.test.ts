@@ -16,9 +16,9 @@ import type {
 } from "@qualigence/skill";
 import {
   SkillReplayController,
-  type ReplayObservation,
   type ReplayTarget,
 } from "@qualigence/skill-replay";
+import { webReplayGraph } from "./graph-fixture.js";
 
 const scope: SkillVerificationScope = {
   projectId: "proj-1",
@@ -78,9 +78,9 @@ const ADD = { role: "button", name: "Add to cart" };
 class OffTarget implements ReplayTarget {
   captures = 0;
   executed = 0;
-  async capture(): Promise<ReplayObservation> {
+  async capture() {
     this.captures += 1;
-    return { urlPath: "/home", nodes: [ADD], claims: [] };
+    return webReplayGraph("/home", [ADD], { graphId: `off-${this.captures}` });
   }
   async execute(): Promise<void> {
     this.executed += 1;
@@ -90,9 +90,9 @@ class OffTarget implements ReplayTarget {
 /** A Target that records whether it was ever touched. */
 class SpyTarget implements ReplayTarget {
   captures = 0;
-  async capture(): Promise<ReplayObservation> {
+  async capture() {
     this.captures += 1;
-    return { urlPath: "/product", nodes: [ADD], claims: [] };
+    return webReplayGraph("/product", [ADD], { graphId: `spy-${this.captures}` });
   }
   async execute(): Promise<void> {}
 }
