@@ -4,7 +4,7 @@
 
 **Blocked by:** 24 — Migrate live Graph consumers to v1.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
