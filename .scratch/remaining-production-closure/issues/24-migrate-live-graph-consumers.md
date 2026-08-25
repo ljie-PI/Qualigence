@@ -31,6 +31,8 @@ This is the complete edit scope.
 - `packages/runner-components/skill-replay/src/**` (maintainer-authorized scope expansion for active Skill replay consumer migration only)
 - `apps/benchmark-runner/src`
 - `tests/{unit/runner-components,unit/execution-application,replay,property}`
+- `tests/helpers/skill-reverifier.ts` and `tests/helpers/windows-reference-app.ts` (maintainer-authorized support fixtures for v1 replay/recompiler/reference-app coverage only)
+- `tests/component/skill-lifecycle/recording-to-replay.test.ts` (maintainer-authorized stale Skill lifecycle replay fixture update only)
 - `.scratch/remaining-production-closure/issues/24-migrate-live-graph-consumers.md`
 - Post-review acceptance only: `tests/e2e/observation-v1/consumer-migration.test.ts`
 
@@ -113,6 +115,11 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Fix commit evidence: `6e04ac094f088cd27dfaad919ba88c40d24119db` (`fix(graph): redact v1 fingerprints and benchmark input binding`) updates the fingerprint projection, benchmark input binding, and focused regression tests.
 - Gates run before fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 96 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Remaining active blocker at this reviewed head: Skill replay migration still requires implementation. Maintainer authorization has now expanded this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` for active Skill replay consumer migration, with directly related `tests/unit/runner-components/skill-replay/**` and `tests/replay/procedure-skill/**` already covered by the existing test-root allowance. The expansion is limited to migrating active Skill replay to `ObservationGraphV1`; it does not authorize Runner Kernel/public Graph contract changes, Web producer changes, repository-wide legacy contraction, package manifests, migrations, or unrelated test roots.
+
+### scope-decision — 2026-08-25
+
+- Maintainer further authorized Ticket 24 to update `tests/helpers/skill-reverifier.ts`, `tests/helpers/windows-reference-app.ts`, and `tests/component/skill-lifecycle/recording-to-replay.test.ts` only as directly affected v1 replay/recompiler/reference-app/Skill lifecycle fixtures. This closes the strict-scope ambiguity raised during review of head `a07278b332b22722f7457c77d2c8886f126bfba0`; it does not authorize additional `tests/helpers/**`, unrelated component tests, package manifests, public Graph contracts, Web producers, migrations, or repository-wide legacy contraction.
+- Remaining acceptance blocker after head `a07278b332b22722f7457c77d2c8886f126bfba0`: add the required post-review acceptance test file `tests/e2e/observation-v1/consumer-migration.test.ts` and update the stale Skill lifecycle component replay fixture to produce validated `ObservationGraphV1` before live replay.
 
 
 ### scope-decision implementation - 2026-08-25
