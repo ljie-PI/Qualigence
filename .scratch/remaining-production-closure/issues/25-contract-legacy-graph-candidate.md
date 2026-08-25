@@ -123,6 +123,28 @@ Run the complete active pre-v1 inventory/migration classification and candidate-
 - Worker Gates passed: `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` (19 files / 113 tests), `rg -l "\\bObservationGraph\\b" apps packages tests`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
 - Post-review acceptance intentionally not run by this worker per assignment; complete-matrix review remains pending. Status remains `claimed` until PR merge.
 
+### review2-fix — 2026-08-25
+
+- Review2 head fixed: `1e563517a00fb02e3702fb26451750ff83822439`; fixed point remains `6e8e4bdad38b934ab9f414305bb4c944a8942fd8`.
+- Fix commit: `51326ec73666dedd2ee1262df5fff388137d85b9` (`fix(observation): close ticket 25 review2 blockers`). No PR was created or merged.
+- Findings fixed:
+  - Stale declared source hashes no longer hide changed/corrupt Observation sources. `ObservationMigrationRunner` computes the actual source payload hash first, classifies hash mismatches as `failed` / `SourceAssetCorrupted`, records the declared hash separately as `expectedSourceHash`, and does not return prior migrated results for source-integrity failures.
+  - Stale declared source hashes and stale Skill content hashes no longer hide changed/corrupt Skill inventory sources. `ObservationCandidateInventoryRunner` verifies the source Trace hash and the pre-v1 Skill content hash before durable lookup; source Trace mismatches return `SourceAssetCorrupted`, Skill content drift returns `MigrationSourceChanged`, and unchanged Skill results remain keyed by source Trace hash plus observation migrator and Skill compiler versions.
+  - File-backed ledger append now recovers stale `.lock` files left by crashed processes by replacing locks owned by dead PIDs while preserving live concurrent duplicate protection through the per-ledger serializer, process lock, reload-under-lock, and same-key append check.
+  - The package-level `ObservationMigrationRunner` no longer reports `kind: "skill"` assets as graph-only migrated. Direct Skill inputs are classified as `needs_human` with `SkillInventoryRunnerRequired`, so Skill assets must use `ObservationCandidateInventoryRunner`/`SkillRecompiler` to produce migrated Skill evidence. No `apps/admin-cli/**` path was edited.
+- Inventory command/classification from `rg -l "\\bObservationGraph\\b" apps packages tests`:
+  - `packages/contracts/runner-protocol/src/index.ts` — hard-excluded legacy public contract declaration retained for pre-v1 migration/test fixture typing; no live producer or consumer imports it.
+  - `packages/observation-migration/src/pre-v1-projector.ts` — explicit pre-v1 decoder/projector allowed by Ticket 25.
+  - `tests/component/skill-lifecycle/recording-to-replay.test.ts` — immutable historical pre-v1 Skill lifecycle fixture that projects through `PreV1TraceProjector` before live replay.
+  - `tests/e2e/observation-v1/consumer-migration.test.ts` — post-review consumer-migration acceptance historical fixture that projects through `PreV1TraceProjector` before live consumers.
+  - `tests/migration/observation-v1/candidate-inventory.test.ts` — Ticket 25 inventory test that executes and classifies the required repository scan.
+- Gates/E2E run after review2 fixes:
+  - `CI=true corepack pnpm vitest run tests/conformance/observation tests/property/observation-graph.test.ts tests/migration/observation-v1 tests/replay` — passed (19 files / 121 tests).
+  - `rg -l "\\bObservationGraph\\b" apps packages tests` — passed with the five classified hits above.
+  - `CI=true corepack pnpm vitest run tests/e2e/observation-v1/candidate-acceptance.test.ts` — passed (1 file / 3 tests).
+  - `CI=true corepack pnpm typecheck` — passed (root build, test-project no-emit typecheck, and web-console typecheck).
+  - `git diff --check` — passed.
+
 - [x] Repository scan leaves legacy types only in explicit migration/decoder code.
 - [x] Active pre-v1 Trace/Skill inventory is migrated, deprecated, or needs-human with hashes.
 - [x] Web and existing Windows replay pass the same v1 schema.
