@@ -4,7 +4,7 @@
 
 **Blocked by:** 21 — Run the real Reference Model benchmark; 23 — Migrate live Web and Runner producers to Graph v1.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -154,7 +154,24 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/exploration/state-visit-tracker.test.ts` first failed as expected on the added regression before rebuilding package output, then passed after `CI=true corepack pnpm build` (1 file / 12 tests); `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 103 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
 
-- [ ] All live consumers use v1 fields and typed extension readers.
-- [ ] Artifact decorators use evidence references without losing provenance.
-- [ ] Exploration fingerprints and benchmark state remain deterministic.
-- [ ] Historical pre-v1 decoding remains isolated to migration paths.
+- [x] All live consumers use v1 fields and typed extension readers.
+- [x] Artifact decorators use evidence references without losing provenance.
+- [x] Exploration fingerprints and benchmark state remain deterministic.
+- [x] Historical pre-v1 decoding remains isolated to migration paths.
+
+### final — 2026-08-25
+
+- Reviewed code head: `178c5165b3464187ebe2fa77e9d0327c12ea127d`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/8f921924-28ca-4476-9dce-5c8cc33979a8/ticket24-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/8f921924-28ca-4476-9dce-5c8cc33979a8/ticket24-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 103 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/107`.
+
+## Answer
+
+Migrated live model, verifier, exploration, evidence decoration, benchmark, and active Skill replay consumers to validated `ObservationGraphV1` and typed extension readers. Historical pre-v1 input is routed through `@qualigence/observation-migration`, direct legacy replay input is rejected before side effects, fingerprints and benchmark identity use canonical/redacted v1 semantics including relation topology, and combined consumer-migration acceptance coverage was added.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/107`
+
+Reviewed code head: `178c5165b3464187ebe2fa77e9d0327c12ea127d`
+
+Final verification: focused Ticket 24 Gate, observation-v1 consumer migration acceptance, `corepack pnpm typecheck`, and `git diff --check` passed.
