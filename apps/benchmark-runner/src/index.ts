@@ -4,9 +4,19 @@ export { loadBenchmark, benchmarkDirOfManifest } from "./loader.js";
 
 export type { LoadedBenchmark } from "./loader.js";
 
-export { runBenchmark } from "./run.js";
+export { createReferenceModelAgentFactory } from "./reference-model-provider.js";
 
 export type {
+  ReferenceModelAgentFactoryDependencies,
+  ReferenceModelProviderEnvironment,
+} from "./reference-model-provider.js";
+
+export { createScenarioWalkTestDoubleAgentFactory, runBenchmark } from "./run.js";
+
+export type {
+  BenchmarkAgentFactory,
+  BenchmarkAgentInput,
+  BenchmarkAgentProvenance,
   BenchmarkRunConfig,
   BenchmarkRunOutcome,
   BenchmarkStore,

@@ -1,7 +1,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadBenchmark, runBenchmark } from "@qualigence/benchmark-runner";
+import {
+  createScenarioWalkTestDoubleAgentFactory,
+  loadBenchmark,
+  runBenchmark,
+} from "@qualigence/benchmark-runner";
 import {
   referenceProfileSha256,
   type ReferenceModelProfile,
@@ -26,6 +30,7 @@ describe("detection benchmark unverified profile gate", () => {
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
       profile: byoProfile,
+      agentFactory: createScenarioWalkTestDoubleAgentFactory(),
       store,
     }));
 
@@ -56,6 +61,7 @@ describe("detection benchmark unverified profile gate", () => {
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
       profile: byoProfile,
+      agentFactory: createScenarioWalkTestDoubleAgentFactory(),
       store,
     }));
 
