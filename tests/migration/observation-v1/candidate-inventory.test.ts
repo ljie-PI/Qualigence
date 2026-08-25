@@ -2,11 +2,12 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LocalSkillSigner } from "@qualigence/kms-local";
 import {
   InMemoryObservationMigrationStore,
   ObservationCandidateInventoryRunner,
+  PreV1TraceProjector,
   SkillRecompiler,
   type ActivePreV1InventoryAsset,
   type PreV1ObservationAsset,
@@ -70,7 +71,8 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
     expect(skillResult).toMatchObject({
       assetKind: "skill",
       status: "migrated",
-      sourceHash: skill.previous.contentSha256,
+      sourceHash: skill.declaredSourceHash,
+      skillSourceHash: skill.previous.contentSha256,
       locatorSchemaVersion: skill.previous.locatorSchemaVersion,
       skillCompilerVersion: skill.previous.compilerVersion,
       sourceTraceRefs: skill.recording.sourceTraceRefs,
@@ -88,7 +90,7 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
     );
   });
 
-  it("classifies changed Skill source hashes as failed without overwriting prior results", async () => {
+  it("classifies changed Skill content hashes as failed without overwriting prior results", async () => {
     const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
     const store = new InMemoryObservationMigrationStore();
     const runner = new ObservationCandidateInventoryRunner(
@@ -97,11 +99,20 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
         new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
       ),
     );
+    const projector = new PreV1TraceProjector();
 
     const first = await runner.run([skill], { now: NOW });
-    const changed = {
+    const changedBase = {
       ...skill,
       recording: { ...skill.recording, recordingId: "rec-m2-cart-mutated" },
+      observation: {
+        ...skill.observation,
+        graphId: "run-m2-product-mutated:observation:0",
+      },
+    } satisfies PreV1SkillInventoryAsset;
+    const changed = {
+      ...changedBase,
+      declaredSourceHash: projector.sourceHash(changedBase),
     } satisfies PreV1SkillInventoryAsset;
     const second = await runner.run([changed], { now: NOW });
 
@@ -111,13 +122,84 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
       assetKind: "skill",
       status: "failed",
       reasonCode: "MigrationSourceChanged",
-      expectedSourceHash: skill.previous.contentSha256,
+      skillSourceHash: skill.previous.contentSha256,
     });
-    expect(second.results[0]?.sourceHash).not.toBe(skill.previous.contentSha256);
+    expect(second.results[0]?.computedSkillSourceHash).toHaveLength(64);
+    expect(second.results[0]?.computedSkillSourceHash).not.toBe(
+      skill.previous.contentSha256,
+    );
+    expect(second.results[0]?.sourceHash).toBe(changed.declaredSourceHash);
     expect(second.gate.allAssetsClassified).toBe(true);
     expect(second.gate.zeroUnexplainedFailures).toBe(true);
     expect(second.counts.failed).toBe(1);
     expect(await store.list()).toHaveLength(2);
+  });
+
+  it("treats a changed Skill source Trace payload as a new hash-bound attempt", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(
+        new StandardReverifier(LocalSkillSigner.generate(), resolvingTargets),
+      ),
+    );
+    const projector = new PreV1TraceProjector();
+
+    const first = await runner.run([skill], { now: NOW });
+    const changedBase = {
+      ...skill,
+      observation: {
+        ...skill.observation,
+        nodes: skill.observation.nodes.map((node, index) =>
+          index === 0 ? { ...node, name: "Wireless Mouse Updated" } : node,
+        ),
+      },
+    } satisfies PreV1SkillInventoryAsset;
+    const changed = {
+      ...changedBase,
+      declaredSourceHash: projector.sourceHash(changedBase),
+    } satisfies PreV1SkillInventoryAsset;
+    const second = await runner.run([changed], { now: NOW });
+
+    expect(first.results[0]?.status).toBe("migrated");
+    expect(second.results[0]?.status).toBe("migrated");
+    expect(second.results[0]?.sourceHash).toBe(changed.declaredSourceHash);
+    expect(second.results[0]?.sourceHash).not.toBe(first.results[0]?.sourceHash);
+    expect(second.results[0]?.skillSourceHash).toBe(skill.previous.contentSha256);
+    expect(await store.list()).toHaveLength(2);
+  });
+
+  it("classifies a changed Skill source Trace hash as failed before reverification", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    let reverified = false;
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler({
+        async verify() {
+          reverified = true;
+          throw new Error("should not reverify a corrupted source Trace");
+        },
+      }),
+    );
+
+    const report = await runner.run(
+      [{ ...skill, declaredSourceHash: "0".repeat(64) }],
+      { now: NOW },
+    );
+
+    expect(report.results[0]).toMatchObject({
+      assetId: skill.assetId,
+      assetKind: "skill",
+      status: "failed",
+      reasonCode: "SourceAssetCorrupted",
+      sourceHash: "0".repeat(64),
+      skillSourceHash: skill.previous.contentSha256,
+    });
+    expect(report.results[0]?.expectedSourceHash).toHaveLength(64);
+    expect(reverified).toBe(false);
+    expect(await store.list()).toHaveLength(1);
   });
 
   it("returns the existing immutable result for repeated active inventory runs", async () => {
@@ -134,6 +216,30 @@ describe("Ticket 25 active pre-v1 candidate inventory", () => {
     const second = await runner.run([skill], { now: NOW });
 
     expect(second.results).toEqual(first.results);
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("looks up an existing Skill result before side-effecting reverification", async () => {
+    const skill = await loadFixture<PreV1SkillInventoryAsset>("m2-procedure-skill.json");
+    const store = new InMemoryObservationMigrationStore();
+    const reverifier = new StandardReverifier(
+      LocalSkillSigner.generate(),
+      resolvingTargets,
+    );
+    const verify = vi.spyOn(reverifier, "verify");
+    const runner = new ObservationCandidateInventoryRunner(
+      store,
+      new SkillRecompiler(reverifier),
+    );
+
+    const first = await runner.run([skill], { now: NOW });
+    verify.mockImplementation(async () => {
+      throw new Error("reverified after durable lookup");
+    });
+    const second = await runner.run([skill], { now: NOW });
+
+    expect(second.results).toEqual(first.results);
+    expect(verify).toHaveBeenCalledTimes(1);
     expect(await store.list()).toHaveLength(1);
   });
 });

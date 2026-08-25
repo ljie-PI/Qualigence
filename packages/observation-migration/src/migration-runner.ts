@@ -29,6 +29,9 @@ export interface ObservationMigrationResult {
   readonly migratorVersion: string;
   readonly sourceTraceRefs?: readonly string[];
   readonly expectedSourceHash?: string;
+  /** Original pre-v1 Skill content hash when a Skill result is keyed by source Trace hash. */
+  readonly skillSourceHash?: string;
+  readonly computedSkillSourceHash?: string;
   readonly locatorSchemaVersion?: string;
   readonly skillCompilerVersion?: string;
 }

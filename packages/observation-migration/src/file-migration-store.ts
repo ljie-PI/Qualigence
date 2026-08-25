@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, appendFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
   ObservationMigrationStore,
   StoredObservationMigration,
 } from "./migration-runner.js";
 import { OBSERVATION_MIGRATOR_VERSION } from "./pre-v1-projector.js";
+
+const ledgerAppendQueues = new Map<string, Promise<void>>();
 
 /**
  * A durable, append-only, resumable {@link ObservationMigrationStore} backed by
@@ -33,37 +35,38 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
     sourceHash: string,
     migratorVersion: string = OBSERVATION_MIGRATOR_VERSION,
   ): Promise<StoredObservationMigration | undefined> {
-    const cache = await this.load();
+    const cache = await this.reload();
     return cache.get(this.key(assetId, sourceHash, migratorVersion));
   }
 
   async append(record: StoredObservationMigration): Promise<void> {
-    const cache = await this.load();
-    const key = this.key(
-      record.result.assetId,
-      record.result.sourceHash,
-      record.result.migratorVersion,
-    );
-    if (cache.has(key)) {
-      return;
-    }
-    const line = `${JSON.stringify(record)}\n`;
-    await mkdir(dirname(this.ledgerPath), { recursive: true });
-    // A single small JSONL append is atomic on POSIX; a torn tail is skipped on
-    // reload, so a crash can never corrupt an already-recorded entry.
-    await appendFile(this.ledgerPath, line, "utf8");
-    cache.set(key, record);
+    await serializeLedgerAppend(this.ledgerPath, async () => {
+      const cache = await this.reload();
+      const key = this.key(
+        record.result.assetId,
+        record.result.sourceHash,
+        record.result.migratorVersion,
+      );
+      if (cache.has(key)) {
+        return;
+      }
+      const line = `${JSON.stringify(record)}\n`;
+      // The per-ledger serializer and lock make check+append atomic for
+      // concurrent callers sharing this operator ledger. Reloading while holding
+      // that boundary makes sibling store instances observe the winner before
+      // writing a JSONL line.
+      await appendFile(this.ledgerPath, line, "utf8");
+      cache.set(key, record);
+      this.cache = cache;
+    });
   }
 
   async list(): Promise<readonly StoredObservationMigration[]> {
-    const cache = await this.load();
+    const cache = await this.reload();
     return [...cache.values()];
   }
 
-  private async load(): Promise<Map<string, StoredObservationMigration>> {
-    if (this.cache !== undefined) {
-      return this.cache;
-    }
+  private async reload(): Promise<Map<string, StoredObservationMigration>> {
     const cache = new Map<string, StoredObservationMigration>();
     let raw: string;
     try {
@@ -114,4 +117,58 @@ export class FileObservationMigrationStore implements ObservationMigrationStore 
     }
     return hash.digest("hex");
   }
+}
+
+async function serializeLedgerAppend(
+  ledgerPath: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = ledgerAppendQueues.get(ledgerPath) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(async () => {
+    await mkdir(dirname(ledgerPath), { recursive: true });
+    const release = await acquireLedgerLock(`${ledgerPath}.lock`);
+    try {
+      await operation();
+    } finally {
+      await release();
+    }
+  });
+  const tail = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  ledgerAppendQueues.set(ledgerPath, tail);
+  try {
+    await current;
+  } finally {
+    if (ledgerAppendQueues.get(ledgerPath) === tail) {
+      ledgerAppendQueues.delete(ledgerPath);
+    }
+  }
+}
+
+async function acquireLedgerLock(lockPath: string): Promise<() => Promise<void>> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.writeFile(`${process.pid}\n`, "utf8");
+      return async () => {
+        await handle.close();
+        await rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (Date.now() - started > 30_000) {
+        throw new Error(`Timed out waiting for observation migration ledger lock: ${lockPath}`);
+      }
+      await delay(10);
+    }
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

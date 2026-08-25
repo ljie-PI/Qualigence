@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
+  FileObservationMigrationStore,
   InMemoryObservationMigrationStore,
   ObservationMigrationRunner,
   type PreV1ObservationAsset,
@@ -117,5 +120,35 @@ describe("migration runner idempotency and resume", () => {
     const result = await runner.migrate(asset, { dryRun: true });
     expect(result.status).toBe("migrated");
     expect(await store.list()).toHaveLength(0);
+  });
+
+  it("serializes concurrent file-backed appends for the same binding", async () => {
+    const root = await mkdtemp(join(tmpdir(), "obs-migration-store-"));
+    const ledgerPath = join(root, "ledger.jsonl");
+    const record = {
+      result: {
+        assetId: "asset-concurrent",
+        sourceHash: "hash-concurrent",
+        status: "migrated" as const,
+        outputRef: "output-concurrent",
+        migratorVersion: "observation-migrator/v1",
+      },
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: 12 }, () =>
+          new FileObservationMigrationStore(ledgerPath).append(record),
+        ),
+      );
+
+      const raw = await readFile(ledgerPath, "utf8");
+      expect(raw.trim().split("\n")).toHaveLength(1);
+      const stored = await new FileObservationMigrationStore(ledgerPath).list();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toEqual(record);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
