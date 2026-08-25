@@ -4,7 +4,7 @@
 
 **Blocked by:** 39 - Redact browser-normalized input and select forms.
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Tracked scope
 
@@ -108,3 +108,7 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 - [ ] Overflow, incomplete attribution, timeout, and capture failure fail evidence closed without cancelling or replaying the application action.
 - [ ] Ticket 39 normalization remains green but is not re-claimed as Ticket 40 acceptance.
 - [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+- blocked: Ticket 40 implementation reached repeated complete-matrix review blockers around async/scheduler-adjacent reflected writes. Maintainer decision: do **not** pull Ticket 41 scheduler/Promise propagation into Ticket 40. Remaining core blocker: strictly distinguishing all synchronous light-DOM reflected `valueRef` exposures from timer/rAF/microtask/Promise/delegated propagation without scheduler/Promise hooks is not safely resolvable within the current Ticket 40 scope. Current experimental branch `closure/ticket-40-reflected-secret-evidence` is intentionally unmerged; Ticket 41 remains stopped until this scope/ownership boundary is re-authorized or Ticket 40 is re-cut.
