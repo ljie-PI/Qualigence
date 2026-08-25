@@ -12,6 +12,7 @@
     { "path": "../../packages/auth/oidc" },
     { "path": "../../packages/auth/runner-mtls" },
     { "path": "../../packages/contracts/public-api" },
+    { "path": "../../packages/core-application" },
     { "path": "../../packages/contracts/runner-protocol" },
     { "path": "../../packages/storage-providers/kms-local" },
     { "path": "../../packages/core-modules/runner-identity" },

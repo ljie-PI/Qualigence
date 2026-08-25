@@ -103,13 +103,13 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       },
       migrate: async (input) => {
         calls.push("migrate");
-        return { fromVersion: 0, toVersion: 12, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] };
+        return { fromVersion: 0, toVersion: 13, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] };
       },
     });
 
-    expect(calls).toEqual(["backup:invocation-1:12", "migrate"]);
+    expect(calls).toEqual(["backup:invocation-1:13", "migrate"]);
     expect(result.action).toBe("provisioned");
-    expect(result).toMatchObject({ schemaVersion: 12, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] });
+    expect(result).toMatchObject({ schemaVersion: 13, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] });
   });
 
   it("leaves committed data intact and the schema resumable after an injected step failure", async () => {
@@ -122,7 +122,8 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       execution_completions, execution_leases, runner_resume_tokens, runner_sessions,
       evidence_audit_events, evidence_local_only_records, evidence_key_rotations,
       evidence_capsule_entries, evidence_capsule_manifests, evidence_encryption_profiles,
-      intelligence_applied_results, intelligence_results, intelligence_jobs,
+      intelligence_result_dispositions, intelligence_result_wakeups, intelligence_result_inbox,
+      intelligence_leases, intelligence_applied_results, intelligence_results, intelligence_jobs,
       review_resolutions, review_claims, review_tasks, investigation_handoffs,
       investigation_bug_episodes, investigation_attempts, investigation_cases,
       benchmark_reports, exploration_checkpoints, benchmark_attempts, benchmark_runs
@@ -174,7 +175,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
           throw new Error("injected auxiliary schema failure");
         },
       })).rejects.toThrow("injected auxiliary schema failure");
-      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(12);
+      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(13);
       await expect(assertPostgresSchemaCurrent(
         isolatedConfig.postgres.admin,
         isolatedConfig.postgres.server.name,
@@ -370,6 +371,16 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       host: "127.0.0.1",
       port: 8080,
       postgres: runtimeConfig(input, "server"),
+      intelligenceResultConsumer: {
+        enabled: false,
+        consumerId: "server-test",
+        tenantBatchSize: 1,
+        resultBatchSize: 1,
+        leaseDurationMs: 30_000,
+        idleBackoffMs: 1_000,
+        errorBackoffMs: 1_000,
+        maximumBackoffMs: 30_000,
+      },
       oidc: {
         issuer: "https://issuer.example",
         audience: "qualigence",

@@ -1490,6 +1490,73 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "intelligence_result_inbox_lease_attempt_check", predicate: "lease_attempt >= 1" },
     ],
   },
+  // ---- Migration 013: Result wakeups and durable dispositions ----------
+  {
+    name: "intelligence_result_wakeups",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: false,
+    columns: [
+      t("tenant_id"),
+      i("generation"),
+      t("status"),
+      t("available_at"),
+      t("lease_owner", false),
+      i("lease_generation", false),
+      t("lease_expires_at", false),
+      t("last_claimed_at", false),
+      t("last_completed_at", false),
+      i("failure_count"),
+      t("last_error", false),
+      t("created_at"),
+      t("updated_at"),
+    ],
+    primaryKey: ["tenant_id"],
+    uniques: [],
+    foreignKeys: [],
+    checks: [
+      { name: "intelligence_result_wakeups_generation_check", predicate: "generation >= 0" },
+      { name: "intelligence_result_wakeups_status_check", predicate: "status IN ('pending', 'idle')" },
+      { name: "intelligence_result_wakeups_failure_count_check", predicate: "failure_count >= 0" },
+    ],
+    partialIndexes: [
+      {
+        name: "intelligence_result_wakeups_due",
+        columns: ["status", "available_at", "tenant_id"],
+        predicate: "status = 'pending'",
+      },
+    ],
+  },
+  {
+    name: "intelligence_result_dispositions",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: false,
+    columns: [
+      t("tenant_id"),
+      t("idempotency_key"),
+      t("job_id"),
+      t("result_hash"),
+      t("status"),
+      t("code", false),
+      t("reason", false),
+      t("aggregate_type", false),
+      t("aggregate_id", false),
+      i("new_version", false),
+      t("summary", false),
+      t("follow_up_job_id", false),
+      t("created_at"),
+    ],
+    primaryKey: ["tenant_id", "idempotency_key"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["tenant_id", "idempotency_key"], references: { table: "intelligence_result_inbox", columns: ["tenant_id", "idempotency_key"] } },
+      { columns: ["follow_up_job_id"], references: { table: "intelligence_jobs", columns: ["job_id"] } },
+    ],
+    checks: [
+      { name: "intelligence_result_dispositions_status_check", predicate: "status IN ('applied', 'duplicate', 'rejected', 'recompute')" },
+    ],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1505,6 +1572,7 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 10, name: "skill-lifecycle-commands", tables: tablesFromTo("skill_lifecycle_commands", "skill_lifecycle_audit_events") },
   { version: 11, name: "exploration-attempt-progress", tables: tablesFromTo("exploration_attempt_progress", "exploration_live_checkpoints") },
   { version: 12, name: "intelligence-leases-results", tables: tablesFromTo("intelligence_leases", "intelligence_result_inbox") },
+  { version: 13, name: "intelligence-result-wakeups-dispositions", tables: tablesFromTo("intelligence_result_wakeups", "intelligence_result_dispositions") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

@@ -15,6 +15,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/core-application": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/mission": "workspace:*",

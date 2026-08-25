@@ -255,7 +255,24 @@ export async function applyRowLevelSecurity(
     await sql`revoke all on function public.worker_renew_intelligence_lease(text, text, text, integer) from public`.execute(db);
     await sql`grant execute on function public.worker_renew_intelligence_lease(text, text, text, integer) to ${workerRole}`.execute(db);
 
-    await sql`
+    const signalWakeupSql = hasTable("intelligence_result_wakeups")
+      ? `
+        insert into public.intelligence_result_wakeups
+          (tenant_id, generation, status, available_at, lease_owner, lease_generation,
+           lease_expires_at, last_claimed_at, last_completed_at, failure_count, last_error,
+           created_at, updated_at)
+        values
+          (input_tenant_id, 1, 'pending', accepted_at, null, null, null, null, null, 0, null,
+           accepted_at, accepted_at)
+        on conflict (tenant_id) do update
+          set generation = public.intelligence_result_wakeups.generation + 1,
+              status = 'pending',
+              available_at = accepted_at,
+              updated_at = accepted_at;
+      `
+      : "";
+
+    await sql.raw(`
       create or replace function public.worker_append_intelligence_result(
         input_tenant_id text,
         input_job_id text,
@@ -399,11 +416,13 @@ export async function applyRowLevelSecurity(
            and l.released_at is null
            and l.completed_at is null;
 
+        ${signalWakeupSql}
+
         status := 'accepted';
         return next;
       end
       $function$
-    `.execute(db);
+    `).execute(db);
     await sql`revoke all on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) from public`.execute(db);
     await sql`grant execute on function public.worker_append_intelligence_result(text, text, text, integer, text, integer, text, text, text) to ${workerRole}`.execute(db);
 
@@ -444,6 +463,150 @@ export async function applyRowLevelSecurity(
     `.execute(db);
     await sql`revoke all on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) from public`.execute(db);
     await sql`grant execute on function public.worker_abandon_intelligence_lease(text, text, text, integer, text) to ${workerRole}`.execute(db);
+
+    if (hasTable("intelligence_result_wakeups")) {
+      await sql`drop function if exists public.server_claim_intelligence_result_wakeups(text, integer, integer)`.execute(db);
+      await sql`drop function if exists public.server_complete_intelligence_result_wakeup(text, integer, text)`.execute(db);
+      await sql`drop function if exists public.server_retry_intelligence_result_wakeup(text, integer, text, integer, text)`.execute(db);
+
+      await sql`
+        create or replace function public.server_claim_intelligence_result_wakeups(
+          input_consumer_id text,
+          input_lease_duration_ms integer,
+          input_batch_size integer
+        )
+        returns table (tenant_id text, generation integer, lease_expires_at text)
+        language plpgsql
+        security definer
+        set search_path = pg_catalog
+        as $function$
+        declare
+          checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+          next_expires_at text := to_char(
+            (transaction_timestamp() + (input_lease_duration_ms * interval '1 millisecond')) at time zone 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          );
+          bounded_batch integer := least(greatest(input_batch_size, 1), 256);
+        begin
+          return query
+          with candidate as (
+            select w.tenant_id
+              from public.intelligence_result_wakeups w
+             where w.status = 'pending'
+               and w.available_at <= checked_at
+               and (w.lease_owner is null or w.lease_expires_at <= checked_at)
+             order by w.available_at asc, w.tenant_id asc
+             for update skip locked
+             limit bounded_batch
+          )
+          update public.intelligence_result_wakeups w
+             set lease_owner = input_consumer_id,
+                 lease_generation = w.generation,
+                 lease_expires_at = next_expires_at,
+                 last_claimed_at = checked_at,
+                 updated_at = checked_at
+            from candidate c
+           where w.tenant_id = c.tenant_id
+          returning w.tenant_id, w.generation, w.lease_expires_at;
+        end
+        $function$
+      `.execute(db);
+      await sql`revoke all on function public.server_claim_intelligence_result_wakeups(text, integer, integer) from public`.execute(db);
+      await sql`grant execute on function public.server_claim_intelligence_result_wakeups(text, integer, integer) to ${serverRole}`.execute(db);
+
+      await sql`
+        create or replace function public.server_complete_intelligence_result_wakeup(
+          input_tenant_id text,
+          input_generation integer,
+          input_consumer_id text
+        )
+        returns table (status text)
+        language plpgsql
+        security definer
+        set search_path = pg_catalog
+        as $function$
+        declare
+          checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+          current_generation integer;
+        begin
+          update public.intelligence_result_wakeups w
+             set status = case when w.generation = input_generation then 'idle' else 'pending' end,
+                 available_at = checked_at,
+                 lease_owner = null,
+                 lease_generation = null,
+                 lease_expires_at = null,
+                 last_completed_at = case when w.generation = input_generation then checked_at else w.last_completed_at end,
+                 failure_count = case when w.generation = input_generation then 0 else w.failure_count end,
+                 last_error = case when w.generation = input_generation then null else w.last_error end,
+                 updated_at = checked_at
+           where w.tenant_id = input_tenant_id
+             and w.lease_owner = input_consumer_id
+             and w.lease_generation = input_generation
+          returning w.generation into current_generation;
+
+          if not found then
+            status := 'stale';
+          elsif current_generation = input_generation then
+            status := 'completed';
+          else
+            status := 'stale-generation';
+          end if;
+          return next;
+        end
+        $function$
+      `.execute(db);
+      await sql`revoke all on function public.server_complete_intelligence_result_wakeup(text, integer, text) from public`.execute(db);
+      await sql`grant execute on function public.server_complete_intelligence_result_wakeup(text, integer, text) to ${serverRole}`.execute(db);
+
+      await sql`
+        create or replace function public.server_retry_intelligence_result_wakeup(
+          input_tenant_id text,
+          input_generation integer,
+          input_consumer_id text,
+          input_retry_after_ms integer,
+          input_error text
+        )
+        returns table (status text)
+        language plpgsql
+        security definer
+        set search_path = pg_catalog
+        as $function$
+        declare
+          checked_at text := to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+          next_available_at text := to_char(
+            (transaction_timestamp() + (input_retry_after_ms * interval '1 millisecond')) at time zone 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          );
+          current_generation integer;
+        begin
+          update public.intelligence_result_wakeups w
+             set status = 'pending',
+                 available_at = case when w.generation = input_generation then next_available_at else checked_at end,
+                 lease_owner = null,
+                 lease_generation = null,
+                 lease_expires_at = null,
+                 failure_count = case when w.generation = input_generation then w.failure_count + 1 else w.failure_count end,
+                 last_error = case when w.generation = input_generation then left(input_error, 512) else w.last_error end,
+                 updated_at = checked_at
+           where w.tenant_id = input_tenant_id
+             and w.lease_owner = input_consumer_id
+             and w.lease_generation = input_generation
+          returning w.generation into current_generation;
+
+          if not found then
+            status := 'stale';
+          elsif current_generation = input_generation then
+            status := 'scheduled';
+          else
+            status := 'stale-generation';
+          end if;
+          return next;
+        end
+        $function$
+      `.execute(db);
+      await sql`revoke all on function public.server_retry_intelligence_result_wakeup(text, integer, text, integer, text) from public`.execute(db);
+      await sql`grant execute on function public.server_retry_intelligence_result_wakeup(text, integer, text, integer, text) to ${serverRole}`.execute(db);
+    }
   }
 
   await sql`revoke create on schema public from ${serverRole}, ${workerRole}`.execute(db);

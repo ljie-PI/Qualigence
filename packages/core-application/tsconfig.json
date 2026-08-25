@@ -13,6 +13,7 @@
     { "path": "../core-modules/evidence" },
     { "path": "../core-modules/runner-control" },
     { "path": "../core-modules/intelligence" },
+    { "path": "../core-modules/investigation" },
     { "path": "../shared-kernel" }
   ]
 }

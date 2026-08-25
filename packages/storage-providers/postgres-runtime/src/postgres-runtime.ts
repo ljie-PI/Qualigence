@@ -168,6 +168,31 @@ export async function migratePostgres(
             on conflict (tenant_id, mission_id) do nothing
           `.execute(trx);
         }
+        if (step.version === 13) {
+          await sql`
+            insert into intelligence_result_wakeups
+              (tenant_id, generation, status, available_at, lease_owner, lease_generation,
+               lease_expires_at, last_claimed_at, last_completed_at, failure_count, last_error,
+               created_at, updated_at)
+            select tenant_id, cast(count(*) as integer), 'pending', min(accepted_at), null, null,
+                   null, null, null, 0, null, min(accepted_at), min(accepted_at)
+              from intelligence_result_inbox
+             group by tenant_id
+            on conflict (tenant_id) do update
+              set generation = greatest(intelligence_result_wakeups.generation, excluded.generation),
+                  status = 'pending',
+                  available_at = least(intelligence_result_wakeups.available_at, excluded.available_at),
+                  lease_owner = null,
+                  lease_generation = null,
+                  lease_expires_at = null,
+                  last_claimed_at = null,
+                  last_completed_at = null,
+                  failure_count = 0,
+                  last_error = null,
+                  created_at = least(intelligence_result_wakeups.created_at, excluded.created_at),
+                  updated_at = least(intelligence_result_wakeups.updated_at, excluded.updated_at)
+          `.execute(trx);
+        }
         if (input.roles !== undefined) {
           await applyRowLevelSecurity(trx, input.roles, step.tables);
         }

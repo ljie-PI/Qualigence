@@ -17,6 +17,10 @@ export interface IntelligenceResultApplierDeps {
   readonly policy?: IntelligencePolicyGate;
 }
 
+export interface IntelligenceResultApplyOptions {
+  readonly signal?: AbortSignal | undefined;
+}
+
 type EnvelopeCheck =
   | { readonly ok: true }
   | { readonly ok: false; readonly code: IntelligenceRejectionCode; readonly reason: string };
@@ -36,18 +40,22 @@ export class IntelligenceResultApplier {
   async apply(
     job: IntelligenceJob,
     result: IntelligenceResult,
+    options: IntelligenceResultApplyOptions = {},
   ): Promise<ApplyResult> {
     const envelope = this.validateEnvelope(job, result);
     if (!envelope.ok) {
       return { status: "rejected", code: envelope.code, reason: envelope.reason };
     }
 
+    throwIfAborted(options.signal);
     const existing = await this.deps.ledger.find(result.idempotencyKey);
+    throwIfAborted(options.signal);
     if (existing !== undefined) {
       return { status: "duplicate", effect: existing };
     }
 
     const current = await this.deps.versions.currentVersion(job.aggregateRef);
+    throwIfAborted(options.signal);
     if (current === undefined || current !== job.baseAggregateVersion) {
       return {
         status: "recompute",
@@ -93,6 +101,7 @@ export class IntelligenceResultApplier {
       };
     }
 
+    throwIfAborted(options.signal);
     const effect: AppliedEffect = await this.deps.executor.execute(job, result);
     await this.deps.ledger.record(result.idempotencyKey, effect);
     return { status: "applied", effect };
@@ -159,5 +168,18 @@ export class IntelligenceResultApplier {
       };
     }
     return { ok: true };
+  }
+}
+
+export class IntelligenceResultApplyAbortError extends Error {
+  constructor() {
+    super("Intelligence Result application was aborted before aggregate dispatch.");
+    this.name = "IntelligenceResultApplyAbortError";
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new IntelligenceResultApplyAbortError();
   }
 }

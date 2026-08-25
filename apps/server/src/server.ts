@@ -55,6 +55,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     void reply.status(404).send(envelope);
   });
 
+  app.get("/readyz", async (_request, reply) => {
+    const report = deps.readiness?.() ?? {
+      status: "not-ready" as const,
+      checks: [{
+        name: "intelligence_result_consumer" as const,
+        status: "fail" as const,
+        code: "NotConfigured",
+        safeMessage: "intelligence result consumer readiness is not configured",
+      }],
+    };
+    await reply.status(report.status === "ready" ? 200 : 503).send(report);
+  });
+
   registerProjectRoutes(app, deps);
   registerTargetRoutes(app, deps);
   registerPrdRevisionRoutes(app, deps);

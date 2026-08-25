@@ -124,6 +124,28 @@ describe("IntelligenceResultApplier", () => {
     expect(executor.calls).toBe(0);
   });
 
+  it("aborts after async version reads and before aggregate executor dispatch", async () => {
+    const abort = new AbortController();
+    const ledger = new InMemoryLedger();
+    const executor = new CountingExecutor();
+    const a = new IntelligenceResultApplier({
+      ledger,
+      versions: {
+        async currentVersion() {
+          abort.abort();
+          return 3;
+        },
+      },
+      executor,
+    });
+
+    await expect(a.apply(job(), result(), { signal: abort.signal })).rejects.toMatchObject({
+      name: "IntelligenceResultApplyAbortError",
+    });
+    expect(executor.calls).toBe(0);
+    await expect(ledger.find("idem-1")).resolves.toBeUndefined();
+  });
+
   it("rejects a result over the token budget", async () => {
     const { applier: a } = applier();
     const rejected = await a.apply(
