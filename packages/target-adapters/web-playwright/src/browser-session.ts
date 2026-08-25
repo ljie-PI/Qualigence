@@ -463,6 +463,10 @@ export class PlaywrightBrowserSession {
     }
   }
 
+  hasPendingSensitiveEvidenceCapture(): boolean {
+    return this.pendingSensitiveCapture;
+  }
+
   completeSensitiveEvidenceCapture(): void {
     this.assertSensitiveEvidenceAvailable();
     this.pendingSensitiveCapture = false;

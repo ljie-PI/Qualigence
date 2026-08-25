@@ -110,6 +110,35 @@ async function collectAuthorizedPageObservation(
   );
 }
 
+async function retireCapturedSensitiveEvidence(
+  page: Page,
+  assertCaptureAuthority: () => void,
+): Promise<boolean> {
+  return readPageValue(
+    assertCaptureAuthority,
+    async () => {
+      const result = await page.evaluate(
+        retirePageSensitiveEvidence,
+        SENSITIVE_EVIDENCE_STATE_PROPERTY,
+      );
+      return result === true;
+    },
+  );
+}
+
+function retirePageSensitiveEvidence(stateProperty: string): boolean {
+  const state = (window as unknown as Record<string, unknown>)[stateProperty] as {
+    active?: unknown;
+    poisoned?: boolean;
+    records?: unknown[];
+  } | undefined;
+  if (state === undefined) return false;
+  if (state.active !== undefined && state.active !== null) return true;
+  if (state.poisoned === true) return true;
+  state.records = [];
+  return false;
+}
+
 function collectPageObservation(
   input: BrowserObservationCaptureInput,
 ): BrowserObservationCapture {
@@ -512,6 +541,13 @@ export class PlaywrightObserver implements Observer {
         this.session.markSensitiveEvidenceUnavailable();
       }
       assertCaptureAuthority();
+      this.session.assertSensitiveEvidenceAvailable();
+      if (
+        this.session.hasPendingSensitiveEvidenceCapture() &&
+        await retireCapturedSensitiveEvidence(page, assertCaptureAuthority)
+      ) {
+        this.session.markSensitiveEvidenceUnavailable();
+      }
       this.session.assertSensitiveEvidenceAvailable();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
       this.session.registerCapturedObservation(page, graph.graphId, {

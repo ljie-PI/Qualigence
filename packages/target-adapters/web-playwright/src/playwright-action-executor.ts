@@ -710,18 +710,51 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
+      const listenerType = eventType === "select" ? "change" : "input";
+      return hasDelegatedEventListener(listenerType) ||
+        hasDelegatedEventHandlerProperty(listenerType);
+    }
+
+    function hasDelegatedEventListener(listenerType: "input" | "change"): boolean {
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly listenerTargets?: readonly { readonly type?: unknown; readonly target?: unknown }[];
       } | undefined;
-      const listenerType = eventType === "select" ? "change" : "input";
       for (const entry of registry?.listenerTargets ?? []) {
         if (entry.type !== listenerType) continue;
-        const target = entry.target;
-        if (target === element) continue;
-        if (target === win || target === element.ownerDocument) return true;
-        if (target instanceof Node && target.contains(element)) return true;
+        if (isDelegatedEventTarget(entry.target)) return true;
       }
       return false;
+    }
+
+    function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
+      const handlerName = `on${listenerType}`;
+      for (const target of delegatedEventPathTargets()) {
+        if (target instanceof Element && target.hasAttribute(handlerName)) return true;
+        try {
+          if (typeof (target as unknown as Record<string, unknown>)[handlerName] === "function") {
+            return true;
+          }
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function delegatedEventPathTargets(): EventTarget[] {
+      const targets: EventTarget[] = [];
+      for (let current = element.parentElement; current !== null; current = current.parentElement) {
+        targets.push(current);
+      }
+      targets.push(element.ownerDocument);
+      if (win !== null) targets.push(win);
+      return targets;
+    }
+
+    function isDelegatedEventTarget(target: unknown): boolean {
+      if (target === element) return false;
+      if (target === win || target === element.ownerDocument) return true;
+      return target instanceof Node && target.contains(element);
     }
 
     function processMutationRecords(
