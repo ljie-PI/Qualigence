@@ -4,11 +4,13 @@
 
 **Blocked by:** 39 - Redact browser-normalized input and select forms.
 
-**Status:** needs-info
+**Status:** ready-for-agent
 
 ## Tracked scope
 
 This ticket owns light-DOM causal reflection from a sensitive action through the next accepted evidence capture. A permitted input/select dispatch opens an action epoch; synchronous action/event-listener work and its mutation records may classify nodes or regions only when they expose a Ticket 39 source/canonical form. Async timer/rAF/microtask/Promise propagation is not claimed here: if the epoch observes a matching mutation without synchronous attribution, capture fails `SensitiveEvidenceUnavailable`; Ticket 41 owns scheduler propagation and bounds. The epoch retains bounded action, node, and region records, closes deterministically after capture or terminal failure, and poisons evidence rather than broadening redaction when a bound is exceeded.
+
+Maintainer scope decision: Ticket 40 is re-cut as **synchronous light-DOM causal reflected-evidence only**. It must not implement timer, rAF, microtask, Promise, scheduler propagation, Shadow DOM, Promise owner, DOM getter, CDP geometry, or independent PNG hardening. Sensitive forms observed through unattributed, delegated, or scheduler-adjacent mutation in Ticket 40 fail evidence closed with `SensitiveEvidenceUnavailable` and return zero accepted Graph/Artifact bytes; successful propagation through those mechanisms belongs to Ticket 41 and later tickets. Existing experimental branch `closure/ticket-40-reflected-secret-evidence` is not implementation authority; new work starts from current `main`, though that branch may be inspected only as non-authoritative background.
 
 Ticket 39 is assumed complete: target-bound source/browser forms and primary target-field sink protection are inherited. This ticket may amend that implementation to attach causal node/region provenance, but it does not re-accept browser normalization or Ticket 18 behavior.
 
@@ -111,4 +113,5 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 
 ## Comments
 
-- blocked: Ticket 40 implementation reached repeated complete-matrix review blockers around async/scheduler-adjacent reflected writes. Maintainer decision: do **not** pull Ticket 41 scheduler/Promise propagation into Ticket 40. Remaining core blocker: strictly distinguishing all synchronous light-DOM reflected `valueRef` exposures from timer/rAF/microtask/Promise/delegated propagation without scheduler/Promise hooks is not safely resolvable within the current Ticket 40 scope. Current experimental branch `closure/ticket-40-reflected-secret-evidence` is intentionally unmerged; Ticket 41 remains stopped until this scope/ownership boundary is re-authorized or Ticket 40 is re-cut.
+- needs-info resolution: Maintainer re-authorized Ticket 40 as synchronous light-DOM causal reflected-evidence only. Timer/rAF/microtask/Promise/scheduler propagation, Shadow DOM, Promise owner, DOM getter, CDP geometry, and independent PNG hardening stay out of Ticket 40 and remain owned by Ticket 41+ as already tracked. Ticket 40 may proceed by succeeding on synchronously attributed light-DOM reflections and by failing evidence closed with `SensitiveEvidenceUnavailable` plus zero accepted Graph/Artifact bytes for unattributed, delegated, scheduler-adjacent, or still-open/unsettled sensitive epochs.
+- continuation base: The historical experimental branch `closure/ticket-40-reflected-secret-evidence` remains intentionally unmerged and is not implementation/cherry-pick authority. Continue from current `main`; the branch may be inspected only as non-authoritative background.
