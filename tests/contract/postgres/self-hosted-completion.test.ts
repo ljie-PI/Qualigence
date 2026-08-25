@@ -7,6 +7,7 @@ import {
 import {
   createPostgresRuntime,
   OperationScopedPostgresRunnerControlStore,
+  type RuntimeStores,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
 import { RunnerControlStoreError } from "@qualigence/runner-control";
@@ -20,6 +21,40 @@ const CREATED_AT = "2026-08-22T00:00:00.000Z";
 const CHECKED_AT = "2026-08-22T00:00:30.000Z";
 const EXPIRES_AT = "2026-08-22T00:01:00.000Z";
 const TENANT_ID = "tenant-self-hosted-completion";
+
+type CorruptProvenance = (stores: RuntimeStores, seed: SeededAttempt) => Promise<void>;
+
+const mismatchedProvenanceCases: readonly [string, CorruptProvenance][] = [
+  ["runner_execution_jobs.runner_job_id", async ({ db }, seed) => {
+    await db.updateTable("runner_execution_jobs").set({ runner_job_id: `${seed.job.jobId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["runner_execution_jobs.runner_id", async ({ db }, seed) => {
+    await db.updateTable("runner_execution_jobs").set({ runner_id: "runner-mismatch" }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["runner_execution_jobs.attempt_id", async (stores, seed) => {
+    const alternateAttemptId = await insertAlternateAttempt(stores, seed, "runner-job-attempt");
+    await stores.db.updateTable("runner_execution_jobs").set({ attempt_id: alternateAttemptId }).where("tenant_id", "=", seed.tenantId).where("runner_job_id", "=", seed.job.jobId).execute();
+  }],
+  ["execution_runs.job_id", async ({ db }, seed) => {
+    await db.updateTable("execution_runs").set({ job_id: `${seed.job.jobId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("run_id", "=", seed.job.runId).execute();
+  }],
+  ["mission_execution_provenance.mission_id", async ({ db }, seed) => {
+    await db.updateTable("mission_execution_provenance").set({ mission_id: `${seed.missionId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["mission_execution_provenance.mission_revision", async ({ db }, seed) => {
+    await db.updateTable("mission_execution_provenance").set({ mission_revision: seed.missionRevision + 1 }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["mission_execution_provenance.logical_job_id", async ({ db }, seed) => {
+    await db.updateTable("mission_execution_provenance").set({ logical_job_id: `${seed.logicalJobId}-mismatch` }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["mission_execution_provenance.runner_id", async ({ db }, seed) => {
+    await db.updateTable("mission_execution_provenance").set({ runner_id: "runner-mismatch" }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+  ["mission_execution_provenance.attempt_id", async (stores, seed) => {
+    const alternateAttemptId = await insertAlternateAttempt(stores, seed, "provenance-attempt");
+    await stores.db.updateTable("mission_execution_provenance").set({ attempt_id: alternateAttemptId }).where("tenant_id", "=", seed.tenantId).where("attempt_id", "=", seed.attemptId).execute();
+  }],
+];
 
 describe.skipIf(!dockerAvailable())("Self-hosted Run completion projection", () => {
   let fixture: PostgresFixture;
@@ -92,24 +127,21 @@ describe.skipIf(!dockerAvailable())("Self-hosted Run completion projection", () 
     });
   });
 
-  it("rolls back the completion and all projections when provenance does not match", async () => {
+  it("rolls back the completion and all projections when the accepted-job hash does not match", async () => {
     const seed = selfHostedAttempt("bad-hash", { acceptedJobHash: "0".repeat(64) });
+    await expectCompletionRejectedWithoutWrites(runtime, seed);
+  });
+
+  it.each(mismatchedProvenanceCases)("rolls back the completion and all projections when %s does not match", async (_name, corrupt) => {
+    const seed = selfHostedAttempt(`mismatch-${_name.replaceAll(".", "-")}`);
     await seedAttempt(runtime, TENANT_ID, seed);
+    await runtime.withTenant(TENANT_ID, (stores) => corrupt(stores, seed));
     const store = projectedStore(runtime);
     await store.grantLease(lease(seed.job));
 
     await expect(store.completeLease(completionInput(seed.job, passed(seed.job)))).rejects.toBeInstanceOf(RunnerControlStoreError);
 
-    await expect(snapshot(runtime, TENANT_ID, seed)).resolves.toEqual({
-      runStatus: "running",
-      runCompletedAt: null,
-      runErrorCode: null,
-      attemptStatus: "accepted",
-      logicalJobStatus: "queued",
-      missionStatus: "running",
-      completions: 0,
-      leaseCompletedAt: null,
-    });
+    await expect(snapshot(runtime, TENANT_ID, seed)).resolves.toEqual(runningSnapshot());
   });
 
   it("rolls back every linked terminal projection when a later write fails", async () => {
@@ -178,6 +210,47 @@ function selfHostedAttempt(name: string, overrides: Partial<Pick<SeededAttempt, 
     job,
     acceptedJobHash: overrides.acceptedJobHash ?? canonicalPayloadHash(job),
   };
+}
+
+async function expectCompletionRejectedWithoutWrites(
+  provider: TenantTransactionProvider,
+  seed: SeededAttempt,
+): Promise<void> {
+  await seedAttempt(provider, TENANT_ID, seed);
+  const store = projectedStore(provider);
+  await store.grantLease(lease(seed.job));
+
+  await expect(store.completeLease(completionInput(seed.job, passed(seed.job)))).rejects.toBeInstanceOf(RunnerControlStoreError);
+
+  await expect(snapshot(provider, TENANT_ID, seed)).resolves.toEqual(runningSnapshot());
+}
+
+function runningSnapshot() {
+  return {
+    runStatus: "running",
+    runCompletedAt: null,
+    runErrorCode: null,
+    attemptStatus: "accepted",
+    logicalJobStatus: "queued",
+    missionStatus: "running",
+    completions: 0,
+    leaseCompletedAt: null,
+  };
+}
+
+async function insertAlternateAttempt(
+  { db }: RuntimeStores,
+  seed: SeededAttempt,
+  suffix: string,
+): Promise<string> {
+  const logicalJobId = `${seed.logicalJobId}-${suffix}`;
+  const runnerJobId = `${seed.job.jobId}-${suffix}`;
+  const runId = `${seed.job.runId}-${suffix}`;
+  const attemptId = `${seed.attemptId}-${suffix}`;
+  await db.insertInto("execution_jobs").values({ tenant_id: seed.tenantId, job_id: logicalJobId, mission_id: seed.missionId, mission_revision: seed.missionRevision, test_case_id: `${seed.job.plan?.testCaseId ?? "case"}-${suffix}`, objective: seed.job.objective, required_capabilities_json: JSON.stringify(["target:web-playwright"]), source_refs_json: "[]", snapshot_hash: `snapshot-${attemptId}`, snapshot_json: JSON.stringify({ id: `${seed.job.plan?.testCaseId ?? "case"}-${suffix}`, objective: seed.job.objective }), idempotency_key: `logical-${attemptId}`, status: "queued" } as never).execute();
+  await db.insertInto("execution_runs").values({ tenant_id: seed.tenantId, run_id: runId, job_id: runnerJobId, target_kind: "web", objective: seed.job.objective, status: "running", next_sequence_number: 1, created_at: CREATED_AT, completed_at: null, error_code: null } as never).execute();
+  await db.insertInto("mission_job_attempts").values({ tenant_id: seed.tenantId, attempt_id: attemptId, mission_id: seed.missionId, mission_revision: seed.missionRevision, logical_job_id: logicalJobId, runner_job_id: runnerJobId, run_id: runId, status: "accepted", created_at: CREATED_AT } as never).execute();
+  return attemptId;
 }
 
 async function seedAttempt(provider: TenantTransactionProvider, tenantId: string, seed: SeededAttempt): Promise<void> {

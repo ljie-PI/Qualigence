@@ -185,10 +185,20 @@ interface CompletionProjectionInput extends RunnerCompletionRecord {
 
 interface CompletionProjectionRow {
   readonly attempt_id: string;
-  readonly logical_job_id: string;
-  readonly mission_id: string;
-  readonly mission_revision: number;
-  readonly project_id: string;
+  readonly attempt_logical_job_id: string;
+  readonly attempt_runner_job_id: string;
+  readonly attempt_mission_id: string;
+  readonly attempt_mission_revision: number;
+  readonly run_job_id: string;
+  readonly logical_job_mission_id: string;
+  readonly logical_job_mission_revision: number;
+  readonly provenance_project_id: string;
+  readonly provenance_mission_id: string;
+  readonly provenance_mission_revision: number;
+  readonly provenance_logical_job_id: string;
+  readonly provenance_runner_id: string;
+  readonly runner_job_id: string;
+  readonly runner_job_attempt_id: string;
   readonly runner_id: string;
   readonly accepted_job_json: string;
   readonly accepted_job_hash: string;
@@ -224,14 +234,24 @@ async function applySelfHostedCompletionProjection(
   const acceptedJob = parseExecutionJob(JSON.parse(row.accepted_job_json));
   if (
     row.runner_id !== input.runnerId ||
+    row.provenance_runner_id !== input.runnerId ||
+    row.runner_job_id !== input.jobId ||
+    row.runner_job_attempt_id !== row.attempt_id ||
+    row.attempt_runner_job_id !== input.jobId ||
+    row.run_job_id !== input.jobId ||
     row.accepted_job_hash !== input.jobSha256 ||
     canonicalPayloadHash(acceptedJob) !== input.jobSha256 ||
     acceptedJob.jobId !== input.jobId ||
     acceptedJob.runId !== input.runId ||
-    acceptedJob.projectId !== row.project_id ||
+    acceptedJob.projectId !== row.provenance_project_id ||
     acceptedJob.plan === undefined ||
-    acceptedJob.plan.missionId !== row.mission_id ||
-    acceptedJob.plan.missionRevision !== row.mission_revision ||
+    acceptedJob.plan.missionId !== row.attempt_mission_id ||
+    acceptedJob.plan.missionId !== row.provenance_mission_id ||
+    acceptedJob.plan.missionRevision !== row.attempt_mission_revision ||
+    acceptedJob.plan.missionRevision !== row.provenance_mission_revision ||
+    row.provenance_logical_job_id !== row.attempt_logical_job_id ||
+    row.logical_job_mission_id !== row.attempt_mission_id ||
+    row.logical_job_mission_revision !== row.attempt_mission_revision ||
     input.completion.jobId !== input.jobId ||
     input.completion.runId !== input.runId
   ) {
@@ -280,7 +300,7 @@ async function applySelfHostedCompletionProjection(
     .updateTable("execution_jobs")
     .set({ status: jobStatus })
     .where("tenant_id", "=", tenantId)
-    .where("job_id", "=", row.logical_job_id)
+    .where("job_id", "=", row.attempt_logical_job_id)
     .where("status", "in", ["queued", "leased"])
     .execute();
   wrote();
@@ -288,16 +308,16 @@ async function applySelfHostedCompletionProjection(
   const missionStatus = await missionStatusAfterCompletion(
     db,
     tenantId,
-    row.mission_id,
-    row.mission_revision,
+    row.attempt_mission_id,
+    row.attempt_mission_revision,
     row.stop_on_blocked === 1,
   );
   await db
     .updateTable("missions")
     .set({ status: missionStatus })
     .where("tenant_id", "=", tenantId)
-    .where("mission_id", "=", row.mission_id)
-    .where("revision", "=", row.mission_revision)
+    .where("mission_id", "=", row.attempt_mission_id)
+    .where("revision", "=", row.attempt_mission_revision)
     .where("status", "=", "running")
     .execute();
   wrote();
@@ -350,11 +370,21 @@ async function loadCompletionProjectionRow(
     )
     .select([
       "mission_job_attempts.attempt_id as attempt_id",
-      "mission_job_attempts.logical_job_id as logical_job_id",
-      "mission_job_attempts.mission_id as mission_id",
-      "mission_job_attempts.mission_revision as mission_revision",
-      "mission_execution_provenance.project_id as project_id",
-      "mission_execution_provenance.runner_id as runner_id",
+      "mission_job_attempts.logical_job_id as attempt_logical_job_id",
+      "mission_job_attempts.runner_job_id as attempt_runner_job_id",
+      "mission_job_attempts.mission_id as attempt_mission_id",
+      "mission_job_attempts.mission_revision as attempt_mission_revision",
+      "execution_runs.job_id as run_job_id",
+      "execution_jobs.mission_id as logical_job_mission_id",
+      "execution_jobs.mission_revision as logical_job_mission_revision",
+      "mission_execution_provenance.project_id as provenance_project_id",
+      "mission_execution_provenance.mission_id as provenance_mission_id",
+      "mission_execution_provenance.mission_revision as provenance_mission_revision",
+      "mission_execution_provenance.logical_job_id as provenance_logical_job_id",
+      "mission_execution_provenance.runner_id as provenance_runner_id",
+      "runner_execution_jobs.runner_job_id as runner_job_id",
+      "runner_execution_jobs.attempt_id as runner_job_attempt_id",
+      "runner_execution_jobs.runner_id as runner_id",
       "runner_execution_jobs.accepted_job_json as accepted_job_json",
       "runner_execution_jobs.accepted_job_hash as accepted_job_hash",
       "execution_runs.status as run_status",
