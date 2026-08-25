@@ -14,6 +14,12 @@ export type {
   IntelligenceResultUsage,
 } from "./contracts.js";
 
-export { IntelligenceResultApplier } from "./application/intelligence-result-applier.js";
+export {
+  IntelligenceResultApplier,
+  IntelligenceResultApplyAbortError,
+} from "./application/intelligence-result-applier.js";
 
-export type { IntelligenceResultApplierDeps } from "./application/intelligence-result-applier.js";
+export type {
+  IntelligenceResultApplierDeps,
+  IntelligenceResultApplyOptions,
+} from "./application/intelligence-result-applier.js";

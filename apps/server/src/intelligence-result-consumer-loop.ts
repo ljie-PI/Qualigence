@@ -285,5 +285,9 @@ function errorMessage(error: unknown): string {
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "IntelligenceResultConsumerAbortError";
+  return error instanceof Error && (
+    error.name === "IntelligenceResultConsumerAbortError" ||
+    error.name === "IntelligenceResultApplyAbortError" ||
+    error.name === "AbortError"
+  );
 }

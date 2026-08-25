@@ -437,6 +437,67 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     ]);
   });
 
+  it("aborts the production applier path before aggregate dispatch without a terminal disposition", async () => {
+    const abort = new AbortController();
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-abort-dispatch",
+      caseId: "case-abort-dispatch",
+      jobId: "job-abort-dispatch",
+      baseAggregateVersion: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-abort-dispatch",
+      caseId: "case-abort-dispatch",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const q = queue();
+    try {
+      const leased = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.reproduction-planning"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-abort-dispatch",
+        jobId: job.jobId,
+        leaseToken: leased!.lease.leaseToken,
+        leaseAttempt: leased!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 0,
+        result,
+      });
+    } finally {
+      await q.close();
+    }
+
+    const abortingConsumer = new ServerIntelligenceResultConsumer(provider, {
+      policy: {
+        allows() {
+          abort.abort();
+          return true;
+        },
+      },
+    });
+    await expect(abortingConsumer.consumeForTenant("tenant-abort-dispatch", { signal: abort.signal }))
+      .rejects.toMatchObject({ name: "IntelligenceResultApplyAbortError" });
+    expect(await readCaseVersion(fixture.adminConfig, "case-abort-dispatch")).toBe(0);
+    const noDisposition = await readAdminRows(fixture.adminConfig,
+      `select status
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-abort-dispatch' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(noDisposition.rows).toEqual([]);
+
+    const retryingConsumer = new ServerIntelligenceResultConsumer(provider);
+    await expect(retryingConsumer.consumeForTenant("tenant-abort-dispatch"))
+      .resolves.toMatchObject({ applied: 1 });
+    expect(await readCaseVersion(fixture.adminConfig, "case-abort-dispatch")).toBe(1);
+  });
+
   it("does not apply a raw legacy result row without validated inbox metadata", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-raw-result",
@@ -479,7 +540,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(await readCaseVersion(fixture.adminConfig, "case-raw-result")).toBe(0);
   });
 
-  it("returns recompute for a stale base version at apply time", async () => {
+  it("records stale base-version recompute once without reprocessing the Result forever", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-a",
       caseId: "case-inbox-4",
@@ -520,7 +581,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     const summary = await consumer.consumeForTenant("tenant-a");
     expect(summary.recompute).toBe(1);
     expect(summary.applied).toBe(0);
-    expect(summary.hasMore).toBe(true);
+    expect(summary.hasMore).toBe(false);
     expect(await readCaseVersion(fixture.adminConfig, "case-inbox-4")).toBe(1);
     const dispositions = await readAdminRows(fixture.adminConfig,
       `select status, reason, new_version
@@ -533,7 +594,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(dispositions.rows[0]?.reason).toContain("Base aggregate version 0");
 
     const retrySummary = await consumer.consumeForTenant("tenant-a");
-    expect(retrySummary.recompute).toBe(1);
+    expect(retrySummary).toMatchObject({ processed: 0, recompute: 0, hasMore: false });
     const dispositionCount = await readAdminRows(fixture.adminConfig,
       `select count(*)::int as count
          from intelligence_result_dispositions

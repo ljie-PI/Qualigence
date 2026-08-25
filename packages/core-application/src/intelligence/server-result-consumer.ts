@@ -265,10 +265,7 @@ function pendingResultQuery(db: Transaction<IntelligenceDatabase>, tenantId: str
         .onRef("d.idempotency_key", "=", "i.idempotency_key"),
     )
     .where("i.tenant_id", "=", tenantId)
-    .where((eb) => eb.or([
-      eb("d.idempotency_key", "is", null),
-      eb("d.status", "=", "recompute"),
-    ]))
+    .where("d.idempotency_key", "is", null)
     .where("l.released_at", "is", null)
     .where("l.completed_at", "is not", null)
     .whereRef("j.base_aggregate_version", "=", "i.base_aggregate_version");
@@ -370,7 +367,7 @@ async function applyOrRejectDeterministically(
 ): Promise<ApplyResult> {
   try {
     throwIfAborted(signal);
-    return await applier.apply(job, result);
+    return await applier.apply(job, result, { signal });
   } catch (error) {
     if (error instanceof ReproductionPlanError || error instanceof InvestigationError) {
       return {

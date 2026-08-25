@@ -64,7 +64,7 @@ function claim(tenantId: string, generation: number): IntelligenceResultWakeupCl
 }
 
 describe("IntelligenceResultConsumerLoop", () => {
-  it("claims bounded tenant wakeups and schedules immediate retry when the result batch is not drained", async () => {
+  it("claims bounded tenant wakeups and does not busy-spin recompute-only wakeups", async () => {
     const wakeups = new FakeWakeups([claim("tenant-a", 1), claim("tenant-b", 4), claim("tenant-c", 7)]);
     const calls: Array<{ tenantId: string; batchSize: number | undefined }> = [];
     const loop = new IntelligenceResultConsumerLoop({
