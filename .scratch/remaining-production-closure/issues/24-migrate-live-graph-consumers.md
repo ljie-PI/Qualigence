@@ -146,6 +146,14 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 102 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
 
+### review4 relation-target-topology fix — 2026-08-25
+
+- Reviewed head fixed: `7bf213a4220835281ec8cb43cdac0e1721dbe7bb`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core blocker addressed in scope: exploration fingerprints no longer collapse a relation target to only the target node's base redacted identity. Target-node outgoing relation topology now contributes through deterministic, topology-aware semantic identities, preserving volatile node-ID normalization, canonical relation/root/node set ordering, and secret/query-value redaction while avoiding recursive traversal on cycles.
+- New fix commit: `f846e35e48fe5317010a41d223634cac94904561` (`fix(exploration): distinguish v1 relation target topology`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/exploration/state-visit-tracker.test.ts` first failed as expected on the added regression before rebuilding package output, then passed after `CI=true corepack pnpm build` (1 file / 12 tests); `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 103 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
+
 - [ ] All live consumers use v1 fields and typed extension readers.
 - [ ] Artifact decorators use evidence references without losing provenance.
 - [ ] Exploration fingerprints and benchmark state remain deterministic.
