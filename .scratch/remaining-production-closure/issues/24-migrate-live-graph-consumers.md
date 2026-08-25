@@ -138,6 +138,14 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 - Gates run: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 101 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm vitest run tests/component/skill-lifecycle/recording-to-replay.test.ts` completed with 1 skipped file / 1 skipped test on Windows due the existing `it.skipIf(process.platform === "win32")` quarantine; `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required; the Skill lifecycle component scenario remains skipped on Windows, so non-Windows execution is represented by typecheck and the migrated fixture source rather than local runtime execution on this host.
 
+### review3 relation-fingerprint fix — 2026-08-25
+
+- Reviewed head fixed: `1aae2c959854d835098007299d28bbc004d07a2f`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core blocker addressed in scope: exploration fingerprints now include canonical/redacted v1 relation and root-node semantics, so relation-only valid graph changes no longer collide while semantic-set ordering stays stable and secret/query-value redaction is preserved.
+- New fix commit: `e1da74588f3dcedd3454eca32f83e63fe453c5ac` (`fix(exploration): include v1 relations in fingerprints`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 102 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
+
 - [ ] All live consumers use v1 fields and typed extension readers.
 - [ ] Artifact decorators use evidence references without losing provenance.
 - [ ] Exploration fingerprints and benchmark state remain deterministic.
