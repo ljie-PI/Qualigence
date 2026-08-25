@@ -4,7 +4,7 @@
 
 **Blocked by:** 39 - Redact browser-normalized input and select forms.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -104,14 +104,14 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 
 ## Acceptance
 
-- [ ] Bounded action-to-capture provenance classifies only light-DOM nodes and screenshot regions causally exposing Ticket 39 forms.
-- [ ] One active epoch and the exact 1,024-mutation/256-node/256-region limits deduplicate by the declared identities and fail with `SensitiveEvidenceUnavailable` on overflow or uncertain attribution.
-- [ ] Classified Graph fields are redacted and screenshot regions are masked before evidence return or persistence.
-- [ ] Graph uses `[redacted]`; masked pixels are opaque black RGBA `(0, 0, 0, 255)` while image dimensions and all pixels outside classified regions remain exact.
-- [ ] Unrelated equal text and pixels remain unchanged; global string/region replacement is absent.
-- [ ] Overflow, incomplete attribution, timeout, and capture failure fail evidence closed without cancelling or replaying the application action.
-- [ ] Ticket 39 normalization remains green but is not re-claimed as Ticket 40 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] Bounded action-to-capture provenance classifies only light-DOM nodes and screenshot regions causally exposing Ticket 39 forms.
+- [x] One active epoch and the exact 1,024-mutation/256-node/256-region limits deduplicate by the declared identities and fail with `SensitiveEvidenceUnavailable` on overflow or uncertain attribution.
+- [x] Classified Graph fields are redacted and screenshot regions are masked before evidence return or persistence.
+- [x] Graph uses `[redacted]`; masked pixels are opaque black RGBA `(0, 0, 0, 255)` while image dimensions and all pixels outside classified regions remain exact.
+- [x] Unrelated equal text and pixels remain unchanged; global string/region replacement is absent.
+- [x] Overflow, incomplete attribution, timeout, and capture failure fail evidence closed without cancelling or replaying the application action.
+- [x] Ticket 39 normalization remains green but is not re-claimed as Ticket 40 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
 
 ## Comments
 
@@ -179,3 +179,20 @@ The real Chromium case must cause input and select handlers to reflect sensitive
 - Core blockers fixed: select delegated-listener detection now treats select actions as sensitive to both Chromium `input` and `change` events, so delegated ancestor/document/window `input` reflection from `selectOption` fails closed with `SensitiveEvidenceUnavailable` and no accepted observation artifacts. ShadowRoot equality detection now records the pre-action shadow-root baseline and ignores matching text that was already present before the sensitive action while still failing closed for non-baseline sensitive forms that enter/touch open or closed shadow roots during the pending sensitive capture epoch.
 - Fix commit: `1821ba4` (`1821ba401ec50efaa80f9816146163db6c354f92`).
 - Gates run: `corepack pnpm exec tsc -b packages/target-adapters/web-playwright/tsconfig.json` (passed; refreshed local dist used by package self-tests); `CI=true corepack pnpm vitest run tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 1 file / 30 tests); `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/reflected-secret-evidence.test.ts` (passed: 4 files / 87 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed: 1 file / 1 test); `CI=true corepack pnpm typecheck` (passed); `git diff --check` (passed).
+
+### final — 2026-08-25
+
+- Reviewed code head: `5183d7916b94e55ec1d89ada0047243b6ecf338e`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/72fb5531-c12d-41fc-a79e-34250704db25/ticket40-review8/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/72fb5531-c12d-41fc-a79e-34250704db25/ticket40-review8/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/108`.
+
+## Answer
+
+Implemented synchronous light-DOM reflected sensitive-evidence protection. Sensitive input/select actions now classify causally reflected light-DOM fields, redact Graph/title metadata to `[redacted]`, mask classified screenshot regions to opaque black, preserve unrelated equal text/pixels, and fail evidence closed with `SensitiveEvidenceUnavailable` for uncertain, delegated, scheduler-adjacent, active/unsettled, overflow, or Shadow DOM detector-only cases. Ticket 41+ remains responsible for successful scheduler/Shadow DOM propagation and later hardening.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/108`
+
+Reviewed code head: `5183d7916b94e55ec1d89ada0047243b6ecf338e`
+
+Final verification: focused Ticket 40 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
