@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import {
+  validateAppTarget,
+  type AppTarget,
+} from "@qualigence/desktop-contracts";
 import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
 
 export * from "./capabilities.js";
@@ -91,13 +95,13 @@ export {
   UIA_EXTENSION_TYPE,
   UIA_EXTENSION_VERSION,
   COMPANION_REQUEST_TYPES,
+  validateAppTarget,
   parseCompanionRequest,
   parseCompanionDecision,
   parseResolvedDesktopAction,
   classifyLocalAuthorization,
   isLocalPermitExpired,
 } from "@qualigence/desktop-contracts";
-
 
 export type ExecutionJobId = string;
 export type RunId = string;
@@ -114,7 +118,12 @@ export interface WebTargetRef {
   readonly url: string;
 }
 
-export type TargetRef = WebTargetRef;
+export interface DesktopTargetRef {
+  readonly kind: "desktop";
+  readonly app: AppTarget;
+}
+
+export type TargetRef = WebTargetRef | DesktopTargetRef;
 
 export type ExecutionPolicyEnvironment = "isolated_test" | "staging" | "production";
 export type ExecutionPolicyActionKind = "navigate" | "click" | "input" | "select" | "scroll" | "window";
@@ -277,15 +286,27 @@ function parseExecutionPlanTarget(value: unknown): ExecutionPlanTarget {
 
 function parseExecutionJobIdentity(value: unknown): Omit<AcceptedExecutionJob, "policy" | "plan"> {
   const job = record(value);
-  const target = record(job.target);
-  if (target.kind !== "web") throw new ExecutionPolicySnapshotError();
   return {
     jobId: nonEmptyString(job.jobId),
     runId: nonEmptyString(job.runId),
     projectId: nonEmptyString(job.projectId),
-    target: { kind: "web", url: parseTargetUrl(target.url) },
+    target: parseTargetRef(job.target),
     objective: nonEmptyString(job.objective),
   };
+}
+
+function parseTargetRef(value: unknown): TargetRef {
+  const target = record(value);
+  switch (target.kind) {
+    case "web":
+      exactKeys(target, ["kind", "url"]);
+      return { kind: "web", url: parseTargetUrl(target.url) };
+    case "desktop":
+      exactKeys(target, ["kind", "app"]);
+      return { kind: "desktop", app: validateAppTarget(target.app) };
+    default:
+      throw new ExecutionPolicySnapshotError();
+  }
 }
 
 function record(value: unknown): Readonly<Record<string, unknown>> {

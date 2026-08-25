@@ -4,7 +4,7 @@
 
 **Blocked by:** 25 — Contract legacy Graph and close candidate Gate.
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Tracked scope
 
@@ -104,3 +104,26 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
 - [ ] Project, policy, plan, Target revision/hash, and Runner binding remain lossless.
 - [ ] Public Target/Mission producer can create an authorized Desktop Job.
 - [ ] Existing Web round trips and admission remain unchanged.
+
+## Comments
+
+### start - 2026-08-25
+
+- Fixed base: `05e05ebd762a9222b5fc031503c29612424d0105` (`ticket-26-desktop-target-protocol`, based on current `main` and including merged Ticket 25 PR #110).
+- Predecessor evidence: Ticket 25 is `resolved` with PR #110; reviewed code head `d25c3d4d5c7c58777ce76f6e231c778c91591047` and final verification evidence are recorded in `.scratch/remaining-production-closure/issues/25-contract-legacy-graph-candidate.md` and are present in this worktree base.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs Desktop/Web TargetRef parsing, lossless AppTarget protobuf/mappers, provider-neutral Target validation, explicit capability/provenance rejection, and Mission scheduling's pure Desktop `AcceptedExecutionJob` construction. Rows for auth, timeout/cancel, unknown outcome, and terminal persistence remain N/A for implementation because this ticket owns no authentication boundary, async transport session, process dispatch, or persistence implementation.
+- Planned focused non-E2E Gate: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Mission-scheduling scope decision: implementation is limited to `packages/core-modules/mission/src/application/mission-scheduling-service.ts` and unit tests; Ticket 26 owns authorized Desktop job construction and Runner Protocol mapping only. Server routes, Runner runtime composition, package manifests/lockfiles, storage migrations, component tests, and E2E proof remain out of scope.
+
+### blocked - 2026-08-25
+
+- In-scope implementation reached a safe point: `TargetRef` now has an additive Web/Desktop domain shape, structured Desktop `AppTarget` protobuf/wire mapping, Desktop capability tokens, mapper/oneof rejection tests, provider-neutral Target tests, and Mission scheduling Desktop `AcceptedExecutionJob` construction limited to `mission-scheduling-service.ts`.
+- Focused non-E2E Vitest Gate passed after building the touched packages for local dist availability: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol` (14 files / 168 tests).
+- Root typecheck is blocked by required compatibility edits outside this ticket's explicit allowed scope after widening `TargetRef`:
+  - `packages/runner-kernel/src/deterministic-policy-gate.ts(56,40): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `packages/runner-kernel/src/deterministic-policy-gate.ts(105,31): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `apps/core-daemon/src/main.ts(144,69): error TS2322: Type '"web" | "desktop"' is not assignable to type '"web" | "app"'. Type '"desktop"' is not assignable to type '"web" | "app"'.`
+  - `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts(104,65): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `apps/runner/src/offer-runtime.ts(81,40): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+- Minimal scope expansion needed: allow narrow fail-closed compatibility edits in the directly affected Desktop-unaware consumers listed above so each switches on `target.kind` and either preserves Web behavior or rejects/defers Desktop until Ticket 28 owns runtime execution. Without that expansion, the widened public `TargetRef` contract cannot remain type-safe under the required root `corepack pnpm typecheck`.
+- No Server routes, storage migrations, package manifests/lockfile, Runner runtime composition beyond the listed blocked consumers, component tests, or E2E tests were edited.

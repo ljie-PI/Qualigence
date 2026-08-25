@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY,
+  DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY_TOKEN,
   OBSERVATION_GRAPH_V1_CAPABILITY,
   OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  UIA_OBSERVATION_EXTENSION_V1_CAPABILITY,
+  UIA_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   WEB_OBSERVATION_EXTENSION_V1_CAPABILITY,
   WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   advertisedCapabilityTokens,
@@ -99,5 +103,25 @@ describe("capability negotiation", () => {
         ],
       },
     });
+  });
+
+  it("advertises Desktop UIA capability tokens through the same fail-closed vocabulary", () => {
+    const desktopCapabilities = capabilities({
+      operatingSystem: "windows",
+      targetAdapters: [DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY],
+      observationExtensions: [OBSERVATION_GRAPH_V1_CAPABILITY, UIA_OBSERVATION_EXTENSION_V1_CAPABILITY],
+      actionKinds: ["click", "input", "select", "scroll", "window"],
+    });
+
+    const tokens = advertisedCapabilityTokens(desktopCapabilities);
+    expect(tokens.has(DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY_TOKEN)).toBe(true);
+    expect(tokens.has(OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN)).toBe(true);
+    expect(tokens.has(UIA_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN)).toBe(true);
+    expect(negotiateCapabilities(desktopCapabilities, [
+      DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY_TOKEN,
+      OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+      UIA_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+      "action:window",
+    ])).toEqual({ outcome: "accepted" });
   });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { TargetConfiguration } from "@qualigence/project-target";
 import type { Clock } from "@qualigence/shared-kernel";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 import type { IntentStep, TestCase } from "../domain/test-plan-revision.js";
@@ -12,11 +13,15 @@ export interface StartMissionCommand {
 }
 
 /** Structural twin of the Runner Protocol AcceptedExecutionJob at this neutral seam. */
+export type AcceptedMissionTargetRef =
+  | { readonly kind: "web"; readonly url: string }
+  | { readonly kind: "desktop"; readonly app: Extract<TargetConfiguration, { readonly kind: "desktop" }>["app"] };
+
 export interface AcceptedMissionExecutionJob {
   readonly jobId: string;
   readonly runId: string;
   readonly projectId: string;
-  readonly target: { readonly kind: "web"; readonly url: string };
+  readonly target: AcceptedMissionTargetRef;
   readonly objective: string;
   readonly policy: ApprovedExecutionPolicy;
   readonly plan: {
@@ -145,6 +150,18 @@ function expectedClaimIds(testCase: TestCase): readonly [string, ...string[]] {
   return [first, ...rest];
 }
 
+function missionTargetRef(
+  targetUrl: string,
+  configuration: TargetConfiguration,
+): AcceptedMissionTargetRef {
+  switch (configuration.kind) {
+    case "web":
+      return { kind: "web", url: targetUrl };
+    case "desktop":
+      return { kind: "desktop", app: configuration.app };
+  }
+}
+
 export class MissionSchedulingService {
   constructor(
     private readonly repository: PrdMissionRepository,
@@ -163,12 +180,6 @@ export class MissionSchedulingService {
     const binding = mission.dispatch.binding;
     if (binding === undefined) {
       throw new MissionSchedulingError("MissionHashConflict", "Mission provenance binding is missing");
-    }
-    if (binding.configuration.kind !== "web") {
-      throw new MissionSchedulingError(
-        "MissionTargetUnsupported",
-        "Desktop Runner dispatch is not available in this protocol version",
-      );
     }
 
     return this.repository.scheduleMission({
@@ -190,7 +201,7 @@ export class MissionSchedulingService {
             jobId: runnerJobId,
             runId,
             projectId: mission.projectId,
-            target: { kind: "web", url: mission.dispatch.targetUrl },
+            target: missionTargetRef(mission.dispatch.targetUrl, binding.configuration),
             objective: logicalJob.objective,
             policy: mission.executionPolicy,
             plan: {

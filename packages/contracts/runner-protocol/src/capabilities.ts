@@ -38,6 +38,19 @@ export const WEB_OBSERVATION_V1_CAPABILITY_TOKENS = [
   WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
 ] as const;
 
+export const DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY = "desktop-windows-uia" as const;
+export const UIA_OBSERVATION_EXTENSION_V1_CAPABILITY = "uia/v1" as const;
+export const DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY_TOKEN =
+  `target:${DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY}` as const;
+export const UIA_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN =
+  `observation:${UIA_OBSERVATION_EXTENSION_V1_CAPABILITY}` as const;
+
+export const DESKTOP_UIA_V1_CAPABILITY_TOKENS = [
+  DESKTOP_WINDOWS_UIA_TARGET_CAPABILITY_TOKEN,
+  OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
+  UIA_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
+] as const;
+
 export interface RunnerCapabilitiesOverride {
   readonly operatingSystem?: RunnerOperatingSystem;
   readonly architecture?: RunnerArchitecture;
