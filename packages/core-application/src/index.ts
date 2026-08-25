@@ -17,9 +17,14 @@ export type {
   TransactionGuard,
 } from "./intelligence/postgres-intelligence-queue.js";
 export {
+  IntelligenceResultConsumerAbortError,
   ServerIntelligenceResultConsumer,
 } from "./intelligence/server-result-consumer.js";
-export type { ConsumeForTenantOptions, ConsumeSummary } from "./intelligence/server-result-consumer.js";
+export type {
+  ConsumeForTenantOptions,
+  ConsumeSummary,
+  ServerIntelligenceResultConsumerOptions,
+} from "./intelligence/server-result-consumer.js";
 
 export {
   CoreApplicationError,

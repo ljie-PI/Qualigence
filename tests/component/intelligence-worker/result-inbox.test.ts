@@ -384,13 +384,66 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     ]);
   });
 
+  it("rejects policy-authored model proposals before aggregate execution", async () => {
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-policy-invalid",
+      caseId: "case-policy-invalid",
+      jobId: "job-policy-invalid",
+      baseAggregateVersion: 0,
+    });
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-policy-invalid",
+      caseId: "case-policy-invalid",
+      version: 0,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const q = queue();
+    try {
+      const leased = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.reproduction-planning"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-policy-invalid",
+        jobId: job.jobId,
+        leaseToken: leased!.lease.leaseToken,
+        leaseAttempt: leased!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 0,
+        result: {
+          ...result,
+          proposals: [{ ...result.proposals[0]!, policyId: "model-authored-policy" }],
+        },
+      });
+    } finally {
+      await q.close();
+    }
+
+    const consumer = new ServerIntelligenceResultConsumer(provider);
+    const summary = await consumer.consumeForTenant("tenant-policy-invalid");
+    expect(summary).toMatchObject({ rejected: 1, applied: 0 });
+    expect(await readCaseVersion(fixture.adminConfig, "case-policy-invalid")).toBe(0);
+    const dispositions = await readAdminRows(fixture.adminConfig,
+      `select status, code, aggregate_id
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-policy-invalid' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(dispositions.rows).toEqual([
+      { status: "rejected", code: "PolicyViolation", aggregate_id: null },
+    ]);
+  });
+
   it("does not apply a raw legacy result row without validated inbox metadata", async () => {
     const { job, result } = buildJobPair({
       tenantId: "tenant-raw-result",
       caseId: "case-raw-result",
       jobId: "job-raw-result",
       baseAggregateVersion: 0,
-      jobType: "investigation.bug-analysis",
+      jobType: "skill.induction",
     });
     await seedInvestigationCase(fixture.adminConfig, {
       tenantId: "tenant-raw-result",
@@ -467,6 +520,7 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     const summary = await consumer.consumeForTenant("tenant-a");
     expect(summary.recompute).toBe(1);
     expect(summary.applied).toBe(0);
+    expect(summary.hasMore).toBe(true);
     expect(await readCaseVersion(fixture.adminConfig, "case-inbox-4")).toBe(1);
     const dispositions = await readAdminRows(fixture.adminConfig,
       `select status, reason, new_version
@@ -477,8 +531,131 @@ describeMaybe("Intelligence Worker result inbox and server-only apply", () => {
     expect(dispositions.rows).toHaveLength(1);
     expect(dispositions.rows[0]).toMatchObject({ status: "recompute", new_version: null });
     expect(dispositions.rows[0]?.reason).toContain("Base aggregate version 0");
+
+    const retrySummary = await consumer.consumeForTenant("tenant-a");
+    expect(retrySummary.recompute).toBe(1);
+    const dispositionCount = await readAdminRows(fixture.adminConfig,
+      `select count(*)::int as count
+         from intelligence_result_dispositions
+        where tenant_id = 'tenant-a' and idempotency_key = $1`,
+      [result.idempotencyKey],
+    );
+    expect(dispositionCount.rows).toEqual([{ count: 1 }]);
+  });
+
+  it("ignores model-authored BugEpisode IDs and persists only the deterministic server ID", async () => {
+    const caseId = "case-bug-id-owner";
+    const attemptId = "attempt-bug-id-owner";
+    const { job, result } = buildJobPair({
+      tenantId: "tenant-bug-id-owner",
+      caseId,
+      jobId: "job-bug-id-owner",
+      baseAggregateVersion: 1,
+      jobType: "investigation.bug-analysis",
+    });
+    const analysisResult = {
+      ...result,
+      proposals: [{
+        kind: "bug-analysis",
+        episodeId: "model-authored-episode-id",
+        confirmedAttemptIds: [attemptId],
+        expectedClaims: ["expected behavior"],
+        observedFacts: ["observed failure"],
+        minimalSteps: [{ kind: "navigate", path: "/" }],
+        environment: { browser: "chromium" },
+      }],
+    };
+    await seedInvestigationCase(fixture.adminConfig, {
+      tenantId: "tenant-bug-id-owner",
+      caseId,
+      version: 1,
+    });
+    await seedReproducingAttempt(fixture.adminConfig, {
+      tenantId: "tenant-bug-id-owner",
+      caseId,
+      attemptId,
+    });
+    await seedJob(fixture.adminConfig, job);
+
+    const q = queue();
+    try {
+      const leased = await q.lease({
+        workerId: "worker-a",
+        acceptedTypes: ["investigation.bug-analysis"],
+        now: now(),
+        leaseDurationMs: 60_000,
+      });
+      await q.append({
+        tenantId: "tenant-bug-id-owner",
+        jobId: job.jobId,
+        leaseToken: leased!.lease.leaseToken,
+        leaseAttempt: leased!.lease.attempt,
+        workerId: "worker-a",
+        baseAggregateVersion: 1,
+        result: analysisResult,
+      });
+    } finally {
+      await q.close();
+    }
+
+    const consumer = new ServerIntelligenceResultConsumer(provider);
+    await expect(consumer.consumeForTenant("tenant-bug-id-owner")).resolves.toMatchObject({ applied: 1 });
+    const rows = await readAdminRows(fixture.adminConfig,
+      `select c.bug_episode_id, e.episode_id, e.episode_json
+         from investigation_cases c
+         join investigation_bug_episodes e on e.episode_id = c.bug_episode_id
+        where c.tenant_id = 'tenant-bug-id-owner' and c.case_id = $1`,
+      [caseId],
+    );
+    const deterministicId = `${caseId}:episode:${result.idempotencyKey}`;
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]?.bug_episode_id).toBe(deterministicId);
+    expect(rows.rows[0]?.episode_id).toBe(deterministicId);
+    expect(JSON.parse(rows.rows[0]?.episode_json as string)).toMatchObject({
+      episodeId: deterministicId,
+      caseId,
+    });
   });
 });
+
+async function seedReproducingAttempt(
+  config: PostgresFixture["adminConfig"],
+  input: { readonly tenantId: string; readonly caseId: string; readonly attemptId: string },
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const attempt = {
+    attemptId: input.attemptId,
+    caseId: input.caseId,
+    ordinal: 1,
+    planRevision: 1,
+    environmentRef: "environment-1",
+    startedAt: nowIso,
+    completedAt: nowIso,
+    outcome: "reproduced",
+    evidenceRefs: ["evidence-1"],
+    budgetConsumed: {
+      reproductionAttempts: 1,
+      planningRevisions: 0,
+      environmentRetries: 0,
+      wallClockMs: 1,
+      modelTokens: 0,
+      environmentResets: 0,
+      destructiveActions: 0,
+    },
+  };
+  await readAdminRows(config,
+    `update investigation_cases
+        set status = 'reproducing', usage_json = $1, updated_at = $2
+      where tenant_id = $3 and case_id = $4`,
+    [JSON.stringify(attempt.budgetConsumed), nowIso, input.tenantId, input.caseId],
+  );
+  await readAdminRows(config,
+    `insert into investigation_attempts
+       (tenant_id, attempt_id, case_id, ordinal, plan_revision, outcome, attempt_json, created_at)
+     values ($1, $2, $3, 1, 1, 'reproduced', $4, $5)`,
+    [input.tenantId, input.attemptId, input.caseId, JSON.stringify(attempt), nowIso],
+  );
+}
 
 async function readAdminRows(
   config: PostgresFixture["adminConfig"],

@@ -38,6 +38,19 @@ export interface TenantStores {
 }
 
 /** Everything the routes need, wired once at startup. */
+export interface ServerReadinessCheck {
+  readonly name: "intelligence_result_consumer";
+  readonly status: "pass" | "fail";
+  readonly code?: string;
+  readonly safeMessage: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export interface ServerReadinessReport {
+  readonly status: "ready" | "not-ready";
+  readonly checks: readonly ServerReadinessCheck[];
+}
+
 export interface ServerDeps {
   readonly provider: TenantTransactionProvider;
   readonly oidc: OidcAuthenticator;
@@ -56,6 +69,7 @@ export interface ServerDeps {
   readonly skillRepository?: (stores: TenantStores, tenantId: string) => SkillRepository;
   readonly skillSigner?: SkillSigner;
   readonly missionSchedulingIds?: MissionSchedulingIds;
+  readonly readiness?: () => ServerReadinessReport;
 }
 
 export function projectTargetService(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetService {

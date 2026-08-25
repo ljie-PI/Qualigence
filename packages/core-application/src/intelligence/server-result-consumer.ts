@@ -8,6 +8,7 @@ import {
   type IntelligenceAggregateRef,
   type IntelligenceCommandExecutor,
   type IntelligenceJob,
+  type IntelligencePolicyGate,
   type IntelligenceResult,
 } from "@qualigence/intelligence";
 import {
@@ -148,6 +149,11 @@ export interface ConsumeSummary {
 
 export interface ConsumeForTenantOptions {
   readonly batchSize?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface ServerIntelligenceResultConsumerOptions {
+  readonly policy?: IntelligencePolicyGate;
 }
 
 const DEFAULT_RESULT_BATCH_SIZE = 32;
@@ -163,7 +169,14 @@ const MAX_RESULT_BATCH_SIZE = 256;
  * this class or the applier — it can only append Results to the inbox.
  */
 export class ServerIntelligenceResultConsumer {
-  constructor(private readonly provider: IntelligenceTransactionProvider) {}
+  private readonly policy: IntelligencePolicyGate;
+
+  constructor(
+    private readonly provider: IntelligenceTransactionProvider,
+    options: ServerIntelligenceResultConsumerOptions = {},
+  ) {
+    this.policy = options.policy ?? new ProductionIntelligencePolicyGate();
+  }
 
   /**
    * Apply a bounded batch of not-yet-dispositioned Results belonging to
@@ -176,6 +189,7 @@ export class ServerIntelligenceResultConsumer {
     tenantId: string,
     options: ConsumeForTenantOptions = {},
   ): Promise<ConsumeSummary> {
+    throwIfAborted(options.signal);
     const batchSize = boundedPositive(options.batchSize ?? DEFAULT_RESULT_BATCH_SIZE, "batchSize", MAX_RESULT_BATCH_SIZE);
     return this.provider.withTenant(tenantId, async ({ db }) => {
       const intelligenceDb = db as Transaction<IntelligenceDatabase>;
@@ -195,14 +209,15 @@ export class ServerIntelligenceResultConsumer {
       const versions = new TransactionAggregateVersionReader(intelligenceDb, tenantId);
       const executor = new TransactionCommandExecutor(intelligenceDb, tenantId);
       const dispositionRecorder = new TransactionResultDispositionRecorder(intelligenceDb, tenantId);
-      const applier = new IntelligenceResultApplier({ ledger, versions, executor });
+      const applier = new IntelligenceResultApplier({ ledger, versions, executor, policy: this.policy });
 
       const dispositions: ApplyResult["status"][] = [];
       const counts = { applied: 0, duplicate: 0, recompute: 0, rejected: 0 };
       for (const row of pending) {
+        throwIfAborted(options.signal);
         const job = JSON.parse(row.jobJson) as IntelligenceJob;
         const result = JSON.parse(row.resultJson) as IntelligenceResult;
-        const outcome = await applyOrRejectDeterministically(applier, job, result);
+        const outcome = await applyOrRejectDeterministically(applier, job, result, options.signal);
         await dispositionRecorder.record({
           idempotencyKey: row.idempotencyKey,
           jobId: row.jobId,
@@ -250,7 +265,10 @@ function pendingResultQuery(db: Transaction<IntelligenceDatabase>, tenantId: str
         .onRef("d.idempotency_key", "=", "i.idempotency_key"),
     )
     .where("i.tenant_id", "=", tenantId)
-    .where("d.idempotency_key", "is", null)
+    .where((eb) => eb.or([
+      eb("d.idempotency_key", "is", null),
+      eb("d.status", "=", "recompute"),
+    ]))
     .where("l.released_at", "is", null)
     .where("l.completed_at", "is not", null)
     .whereRef("j.base_aggregate_version", "=", "i.base_aggregate_version");
@@ -312,23 +330,34 @@ class TransactionResultDispositionRecorder {
 
   async record(input: DispositionInput): Promise<void> {
     const fields = dispositionFields(input.outcome);
+    const recordedAt = new Date().toISOString();
+    const values = {
+      tenant_id: this.tenantId,
+      idempotency_key: input.idempotencyKey,
+      job_id: input.jobId,
+      result_hash: input.resultHash,
+      status: input.outcome.status,
+      code: fields.code,
+      reason: fields.reason,
+      aggregate_type: fields.effect?.aggregateType ?? null,
+      aggregate_id: fields.effect?.aggregateId ?? null,
+      new_version: fields.effect?.newVersion ?? null,
+      summary: fields.effect?.summary ?? null,
+      created_at: recordedAt,
+    };
     await this.db
       .insertInto("intelligence_result_dispositions")
-      .values({
-        tenant_id: this.tenantId,
-        idempotency_key: input.idempotencyKey,
-        job_id: input.jobId,
-        result_hash: input.resultHash,
-        status: input.outcome.status,
-        code: fields.code,
-        reason: fields.reason,
-        aggregate_type: fields.effect?.aggregateType ?? null,
-        aggregate_id: fields.effect?.aggregateId ?? null,
-        new_version: fields.effect?.newVersion ?? null,
-        summary: fields.effect?.summary ?? null,
-        created_at: new Date().toISOString(),
-      })
-      .onConflict((oc) => oc.columns(["tenant_id", "idempotency_key"]).doNothing())
+      .values(values)
+      .onConflict((oc) => oc.columns(["tenant_id", "idempotency_key"]).doUpdateSet({
+        status: values.status,
+        code: values.code,
+        reason: values.reason,
+        aggregate_type: values.aggregate_type,
+        aggregate_id: values.aggregate_id,
+        new_version: values.new_version,
+        summary: values.summary,
+        created_at: values.created_at,
+      }))
       .execute();
   }
 }
@@ -337,8 +366,10 @@ async function applyOrRejectDeterministically(
   applier: IntelligenceResultApplier,
   job: IntelligenceJob,
   result: IntelligenceResult,
+  signal: AbortSignal | undefined,
 ): Promise<ApplyResult> {
   try {
+    throwIfAborted(signal);
     return await applier.apply(job, result);
   } catch (error) {
     if (error instanceof ReproductionPlanError || error instanceof InvestigationError) {
@@ -415,8 +446,8 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
 
     if (job.jobType === "investigation.bug-analysis") {
       const draft = bugEpisodeDraftFromResult(
-        result,
-        `${investigation.caseId}:episode:${result.idempotencyKey}`,
+        withoutModelAuthoredDomainIds(result),
+        deterministicBugEpisodeId(investigation.caseId, result.idempotencyKey),
       );
       let transition: InvestigationTransition;
       try {
@@ -482,7 +513,7 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
       .execute();
     const bugEpisode = row.bug_episode_id === null
       ? undefined
-      : await this.loadBugEpisode(row.bug_episode_id);
+      : await this.loadBugEpisode(row.bug_episode_id, row.case_id, row.finding_id);
     const handoff = await this.loadHandoff(caseId);
     return InvestigationCase.restore({
       caseId: row.case_id,
@@ -499,14 +530,31 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
     });
   }
 
-  private async loadBugEpisode(episodeId: string): Promise<BugEpisode | undefined> {
+  private async loadBugEpisode(
+    episodeId: string,
+    expectedCaseId: string,
+    expectedFindingId: string,
+  ): Promise<BugEpisode | undefined> {
     const row = await this.db
       .selectFrom("investigation_bug_episodes")
-      .select("episode_json")
+      .select(["case_id", "finding_id", "episode_json"])
       .where("tenant_id", "=", this.tenantId)
       .where("episode_id", "=", episodeId)
       .executeTakeFirst();
-    return row === undefined ? undefined : JSON.parse(row.episode_json) as BugEpisode;
+    if (row === undefined) {
+      return undefined;
+    }
+    const episode = JSON.parse(row.episode_json) as BugEpisode;
+    if (
+      row.case_id !== expectedCaseId ||
+      row.finding_id !== expectedFindingId ||
+      episode.caseId !== expectedCaseId ||
+      episode.findingId !== expectedFindingId ||
+      episode.episodeId !== episodeId
+    ) {
+      throw new Error(`BugEpisode ${episodeId} does not belong to investigation case ${expectedCaseId}.`);
+    }
+    return episode;
   }
 
   private async loadHandoff(caseId: string): Promise<HumanHandoff | undefined> {
@@ -559,7 +607,7 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
         .execute();
     }
     if (transition.bugEpisode !== undefined) {
-      await this.db
+      const inserted = await this.db
         .insertInto("investigation_bug_episodes")
         .values({
           tenant_id: this.tenantId,
@@ -571,7 +619,11 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
           created_at: now,
         })
         .onConflict((oc) => oc.columns(["tenant_id", "episode_id"]).doNothing())
-        .execute();
+        .returning("episode_id")
+        .executeTakeFirst();
+      if (inserted === undefined) {
+        await this.assertExistingBugEpisodeMatches(transition.bugEpisode);
+      }
     }
     if (transition.handoff !== undefined) {
       await this.db
@@ -590,6 +642,26 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
     }
   }
 
+  private async assertExistingBugEpisodeMatches(episode: BugEpisode): Promise<void> {
+    const row = await this.db
+      .selectFrom("investigation_bug_episodes")
+      .select(["case_id", "finding_id", "episode_json"])
+      .where("tenant_id", "=", this.tenantId)
+      .where("episode_id", "=", episode.episodeId)
+      .executeTakeFirst();
+    if (row === undefined) {
+      throw new Error(`BugEpisode ${episode.episodeId} insert conflicted but no existing episode could be read.`);
+    }
+    const existing = JSON.parse(row.episode_json) as BugEpisode;
+    if (
+      row.case_id !== episode.caseId ||
+      row.finding_id !== episode.findingId ||
+      JSON.stringify(existing) !== JSON.stringify(episode)
+    ) {
+      throw new Error(`BugEpisode ${episode.episodeId} collides with a different persisted episode.`);
+    }
+  }
+
   private effect(investigation: InvestigationCase, transition: InvestigationTransition): AppliedEffect {
     return {
       aggregateType: "investigation",
@@ -597,6 +669,65 @@ class TransactionCommandExecutor implements IntelligenceCommandExecutor {
       newVersion: transition.version,
       summary: transition.toStatus,
     };
+  }
+}
+
+class ProductionIntelligencePolicyGate implements IntelligencePolicyGate {
+  allows(job: IntelligenceJob, result: IntelligenceResult): boolean {
+    if (job.dataPolicyId.trim().length === 0) {
+      return false;
+    }
+    return result.proposals.every((proposal) => !containsForbiddenPolicyAuthority(proposal));
+  }
+}
+
+const FORBIDDEN_POLICY_AUTHORITY_KEYS = new Set([
+  "budget",
+  "dataPolicyId",
+  "maximumCostMicros",
+  "maximumTokens",
+  "policy",
+  "policyId",
+]);
+
+function containsForbiddenPolicyAuthority(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsForbiddenPolicyAuthority);
+  }
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (FORBIDDEN_POLICY_AUTHORITY_KEYS.has(key) || containsForbiddenPolicyAuthority(nested)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function deterministicBugEpisodeId(caseId: string, idempotencyKey: string): string {
+  return `${caseId}:episode:${idempotencyKey}`;
+}
+
+function withoutModelAuthoredDomainIds(result: IntelligenceResult): IntelligenceResult {
+  const [first, ...rest] = result.proposals;
+  if (first === undefined || !("episodeId" in first)) {
+    return result;
+  }
+  const { episodeId: _ignored, ...sanitized } = first;
+  return { ...result, proposals: [sanitized, ...rest] };
+}
+
+export class IntelligenceResultConsumerAbortError extends Error {
+  constructor() {
+    super("Intelligence Result consumption was aborted before aggregate dispatch.");
+    this.name = "IntelligenceResultConsumerAbortError";
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new IntelligenceResultConsumerAbortError();
   }
 }
 

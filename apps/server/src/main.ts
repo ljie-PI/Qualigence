@@ -65,6 +65,7 @@ export async function main(
     config.postgres,
     acquirePostgresOperationLock,
   );
+  const shutdown = new AbortController();
   const resultConsumer = new ServerIntelligenceResultConsumer(provider);
   const resultConsumerLoop = new IntelligenceResultConsumerLoop({
     consumerId: config.intelligenceResultConsumer.consumerId,
@@ -76,6 +77,7 @@ export async function main(
     idleBackoffMs: config.intelligenceResultConsumer.idleBackoffMs,
     errorBackoffMs: config.intelligenceResultConsumer.errorBackoffMs,
     maximumBackoffMs: config.intelligenceResultConsumer.maximumBackoffMs,
+    signal: shutdown.signal,
     onError: (error) => {
       console.error("[server] intelligence result consumer failed", error);
     },
@@ -96,24 +98,45 @@ export async function main(
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
+    readiness: () => readinessReport(config.intelligenceResultConsumer.enabled, resultConsumerLoop.readiness()),
   };
 
   const app = buildServer(deps);
 
-  const shutdown = async (): Promise<void> => {
+  const shutdownServer = async (): Promise<void> => {
+    shutdown.abort();
     await resultConsumerLoop.stop();
     await resultWakeups.close();
     await app.close();
     await provider.close();
   };
-  process.once("SIGINT", () => void shutdown());
-  process.once("SIGTERM", () => void shutdown());
+  process.once("SIGINT", () => void shutdownServer());
+  process.once("SIGTERM", () => void shutdownServer());
 
   await app.listen({ host: config.host, port: config.port });
   if (config.intelligenceResultConsumer.enabled) {
     resultConsumerLoop.start();
   }
   console.error(`[server] listening on ${config.host}:${config.port}`);
+}
+
+function readinessReport(
+  enabled: boolean,
+  loop: ReturnType<IntelligenceResultConsumerLoop["readiness"]>,
+): { readonly status: "ready" | "not-ready"; readonly checks: readonly [{ readonly name: "intelligence_result_consumer"; readonly status: "pass" | "fail"; readonly code?: string; readonly safeMessage: string; readonly details: Readonly<Record<string, unknown>> }] } {
+  const pass = enabled && loop.status === "ready";
+  return {
+    status: pass ? "ready" : "not-ready",
+    checks: [{
+      name: "intelligence_result_consumer",
+      status: pass ? "pass" : "fail",
+      ...(enabled ? {} : { code: "Disabled" }),
+      safeMessage: pass
+        ? "intelligence result consumer loop is running"
+        : "intelligence result consumer loop cannot make progress",
+      details: { ...loop },
+    }],
+  };
 }
 
 const isEntrypoint =

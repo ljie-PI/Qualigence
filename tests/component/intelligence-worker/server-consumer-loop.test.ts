@@ -93,9 +93,10 @@ describe("IntelligenceResultConsumerLoop", () => {
     ]);
     expect(wakeups.retried).toMatchObject([
       { tenantId: "tenant-a", generation: 1, retryAfterMs: 0, error: "bounded-batch-remaining" },
+      { tenantId: "tenant-b", generation: 4, retryAfterMs: 1000, error: "recompute-reschedulable" },
     ]);
-    expect(wakeups.completed).toEqual([claim("tenant-b", 4)]);
-    expect(summary).toMatchObject({ claimed: 2, processed: 2, applied: 1, recompute: 1, retried: 1, completed: 1 });
+    expect(wakeups.completed).toEqual([]);
+    expect(summary).toMatchObject({ claimed: 2, processed: 2, applied: 1, recompute: 1, retried: 2, completed: 0 });
   });
 
   it("stops before claiming when aborted", async () => {
@@ -125,6 +126,85 @@ describe("IntelligenceResultConsumerLoop", () => {
       stale: 0,
     });
     expect(wakeups.claimInputs).toEqual([]);
+  });
+
+  it("retries a claimed tenant without dispatching when shutdown is requested after claim", async () => {
+    const abort = new AbortController();
+    class AbortingWakeups extends FakeWakeups {
+      override async claimDueTenants(input: {
+        readonly consumerId: string;
+        readonly leaseDurationMs: number;
+        readonly batchSize: number;
+      }): Promise<readonly IntelligenceResultWakeupClaim[]> {
+        const claims = await super.claimDueTenants(input);
+        abort.abort();
+        return claims;
+      }
+    }
+    const wakeups = new AbortingWakeups([claim("tenant-a", 3)]);
+    const loop = new IntelligenceResultConsumerLoop({
+      consumerId: "consumer-1",
+      wakeups,
+      signal: abort.signal,
+      consumer: {
+        async consumeForTenant() {
+          throw new Error("should not reach aggregate dispatch");
+        },
+      },
+    });
+
+    const summary = await loop.runOnce();
+
+    expect(wakeups.completed).toEqual([]);
+    expect(wakeups.retried).toMatchObject([
+      { tenantId: "tenant-a", generation: 3, consumerId: "consumer-1", retryAfterMs: 0, error: "aborted" },
+    ]);
+    expect(summary).toMatchObject({ claimed: 1, processed: 0, retried: 1, completed: 0 });
+  });
+
+  it("propagates cancellation into in-flight tenant consumption and leaves the claim retryable", async () => {
+    const abort = new AbortController();
+    const wakeups = new FakeWakeups([claim("tenant-a", 5)]);
+    const loop = new IntelligenceResultConsumerLoop({
+      consumerId: "consumer-1",
+      wakeups,
+      signal: abort.signal,
+      consumer: {
+        async consumeForTenant(_tenantId, options) {
+          abort.abort();
+          if (options?.signal?.aborted === true) {
+            const error = new Error("aborted before dispatch");
+            error.name = "IntelligenceResultConsumerAbortError";
+            throw error;
+          }
+          throw new Error("missing abort signal");
+        },
+      },
+    });
+
+    const summary = await loop.runOnce();
+
+    expect(wakeups.completed).toEqual([]);
+    expect(wakeups.retried).toMatchObject([
+      { tenantId: "tenant-a", generation: 5, consumerId: "consumer-1", retryAfterMs: 0, error: "aborted" },
+    ]);
+    expect(summary).toMatchObject({ claimed: 1, processed: 0, retried: 1, completed: 0 });
+  });
+
+  it("reports readiness only while the loop is active and not aborted", async () => {
+    const loop = new IntelligenceResultConsumerLoop({
+      consumerId: "consumer-1",
+      wakeups: new FakeWakeups([]),
+      consumer: { consumeForTenant: async () => emptySummary },
+      setTimeout: () => ({ timer: true }),
+      clearTimeout: () => undefined,
+    });
+
+    expect(loop.readiness()).toMatchObject({ status: "not-ready", active: false, aborted: false });
+    loop.start();
+    expect(loop.readiness()).toMatchObject({ status: "ready", active: true, aborted: false });
+    await loop.stop();
+    expect(loop.readiness()).toMatchObject({ status: "not-ready", active: false, aborted: true });
   });
 
   it("releases failed claims through abortable retry backoff instead of clearing the wakeup", async () => {
