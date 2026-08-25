@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SqliteBenchmarkStore, SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { loadBenchmark } from "./loader.js";
@@ -8,14 +8,14 @@ import { runBenchmark, type BenchmarkStore } from "./run.js";
 interface CliOptions {
   readonly manifestDir: string;
   readonly outputPath?: string;
-  readonly databasePath?: string;
+  readonly databasePath: string;
 }
 
 class CliUsageError extends Error {}
 
 function parseArgs(argv: readonly string[]): CliOptions {
   if (argv[0] !== "run") {
-    throw new CliUsageError('Usage: qualigence-benchmark run --manifest <dir> [--output <report.json>] [--db <path>]');
+    throw new CliUsageError('Usage: qualigence-benchmark run --manifest <dir> [--db <path>] [--output <report.json>]');
   }
   let manifestDir: string | undefined;
   let outputPath: string | undefined;
@@ -47,8 +47,8 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
   return {
     manifestDir,
+    databasePath: databasePath ?? join(process.cwd(), ".tmp", "benchmark-runner-progress.sqlite"),
     ...(outputPath === undefined ? {} : { outputPath }),
-    ...(databasePath === undefined ? {} : { databasePath }),
   };
 }
 
@@ -61,9 +61,9 @@ function requireValue(flag: string, value: string | undefined): string {
 
 /**
  * Run the Detection Benchmark from the command line. Loads and validates the
- * frozen manifest/fixtures/ground truth, drives real bounded exploration, scores
- * with the frozen scorer, optionally persists into a SQLite database, writes the
- * hash-linked report, and returns the release-gate exit code (0 = passed).
+ * frozen manifest/fixtures/ground truth, drives real bounded exploration,
+ * persists live progress into a SQLite database, writes the hash-linked report,
+ * and returns the release-gate exit code (0 = passed).
  */
 export async function main(argv: readonly string[]): Promise<number> {
   let options: CliOptions;
@@ -79,19 +79,16 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   const loaded = await loadBenchmark(options.manifestDir);
 
-  let runtime: SqliteRuntime | undefined;
-  let store: BenchmarkStore | undefined;
-  if (options.databasePath !== undefined) {
-    runtime = await SqliteRuntime.open({ filename: options.databasePath, busyTimeoutMs: 5_000 });
-    store = new SqliteBenchmarkStore(runtime);
-  }
+  await mkdir(dirname(options.databasePath), { recursive: true });
+  const runtime = await SqliteRuntime.open({ filename: options.databasePath, busyTimeoutMs: 5_000 });
+  const store: BenchmarkStore = new SqliteBenchmarkStore(runtime);
 
   try {
     const outcome = await runBenchmark({
       manifest: loaded.manifest,
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
-      ...(store === undefined ? {} : { store }),
+      store,
       createdAt: new Date().toISOString(),
     });
 
@@ -107,9 +104,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     );
     return outcome.exitCode;
   } finally {
-    if (runtime !== undefined) {
-      await runtime.close();
-    }
+    await runtime.close();
   }
 }
 

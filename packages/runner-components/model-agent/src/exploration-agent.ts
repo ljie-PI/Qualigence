@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { StructuredModelInvoker } from "@qualigence/model-gateway";
 import type {
   JsonSchema,
+  ModelUsage,
+  ModelUsageState,
   StructuredOutputContract,
   StructuredOutputValidationIssue,
 } from "@qualigence/model-provider";
@@ -124,9 +126,11 @@ export class ExplorationAgent {
       explorationContract(),
     );
 
-    const tokensUsed =
-      result.usage?.totalTokens ?? result.usage?.outputTokens ?? 0;
-    return { decision: result.value, tokensUsed };
+    const tokensUsed = tokensUsedFrom(result.usageState, result.usage);
+    return {
+      decision: result.value,
+      ...(tokensUsed === undefined ? {} : { tokensUsed }),
+    };
   }
 }
 
@@ -139,6 +143,23 @@ function explorationContract(): StructuredOutputContract<ExplorationDecision> {
       return toDecision(parsed);
     },
   };
+}
+
+function tokensUsedFrom(
+  state: ModelUsageState | undefined,
+  legacyUsage: ModelUsage | undefined,
+): number | undefined {
+  const usage = state === undefined
+    ? legacyUsage
+    : state.status === "available"
+      ? state.usage
+      : undefined;
+  if (usage === undefined) return undefined;
+  if (usage.totalTokens !== undefined) return usage.totalTokens;
+  if (usage.inputTokens !== undefined && usage.outputTokens !== undefined) {
+    return usage.inputTokens + usage.outputTokens;
+  }
+  return undefined;
 }
 
 function toDecision(parsed: ParsedDecision): ExplorationDecision {

@@ -85,6 +85,13 @@ export class StateVisitTracker {
     }
   }
 
+  restore(fingerprint: string): void {
+    const current = this.visits.get(fingerprint) ?? 0;
+    if (current < this.maximumVisits) {
+      this.visits.set(fingerprint, current + 1);
+    }
+  }
+
   fingerprintOf(graph: ObservationGraph): string {
     return fingerprintObservationGraph(graph);
   }

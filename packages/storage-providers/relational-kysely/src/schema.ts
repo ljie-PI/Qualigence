@@ -270,6 +270,33 @@ export interface ExplorationCheckpointsTable {
   terminal_reason: string | null;
 }
 
+export interface ExplorationAttemptProgressTable {
+  attempt_id: string;
+  run_id: string;
+  source_binding_hash: string;
+  policy_binding_hash: string;
+  seed_binding_hash: string;
+  phase: string;
+  seed_cursor_json: string;
+  last_safe_step: number;
+  last_safe_graph_fingerprint: string | null;
+  remaining_json: string;
+  in_flight_action_json: string | null;
+  terminal_reason: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExplorationLiveCheckpointsTable {
+  attempt_id: string;
+  step: number;
+  graph_fingerprint: string;
+  remaining_json: string;
+  terminal_reason: string | null;
+  created_at: string;
+}
+
 export interface BenchmarkReportsTable {
   report_id: string;
   run_id: string;
@@ -718,6 +745,8 @@ export interface Database {
   benchmark_attempts: BenchmarkAttemptsTable;
   exploration_checkpoints: ExplorationCheckpointsTable;
   benchmark_reports: BenchmarkReportsTable;
+  exploration_attempt_progress: ExplorationAttemptProgressTable;
+  exploration_live_checkpoints: ExplorationLiveCheckpointsTable;
   investigation_cases: InvestigationCasesTable;
   investigation_attempts: InvestigationAttemptsTable;
   investigation_bug_episodes: InvestigationBugEpisodesTable;

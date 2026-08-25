@@ -4,13 +4,21 @@ import {
   type ExplorationAgentPort,
   type ExplorationContext,
   type ExplorationJob,
+  type ExplorationProgressStore,
+  type ExplorationProgressUpdate,
+  type ExplorationProgressUpdateResult,
   type ExplorationProposal,
   type ExplorationResult,
   type ExplorationTarget,
   type GroundedExplorationAction,
   type MonotonicClock,
 } from "@qualigence/exploration";
-import type { ExplorationDecision, ExplorationPolicy } from "@qualigence/mission";
+import type {
+  ExplorationAttemptProgress,
+  ExplorationCheckpoint,
+  ExplorationDecision,
+  ExplorationPolicy,
+} from "@qualigence/mission";
 import type { ObservationGraph } from "@qualigence/runner-protocol";
 
 class FakeClock implements MonotonicClock {
@@ -89,12 +97,70 @@ function policy(): ExplorationPolicy {
   };
 }
 
-const job: ExplorationJob = { runId: "run-replay", policy: policy(), environment: "test" };
+const job: ExplorationJob = {
+  runId: "run-replay",
+  attemptId: "attempt-replay",
+  sourceBindingHash: "source-replay",
+  policy: policy(),
+  environment: "test",
+};
+
+class TestProgressStore implements ExplorationProgressStore {
+  private progress: ExplorationAttemptProgress | undefined;
+  private readonly checkpoints: ExplorationCheckpoint[] = [];
+
+  async loadAttemptProgress(): Promise<ExplorationAttemptProgress | undefined> {
+    return this.progress;
+  }
+
+  async initializeAttemptProgress(input: Parameters<ExplorationProgressStore["initializeAttemptProgress"]>[0]): Promise<ExplorationAttemptProgress> {
+    if (this.progress !== undefined) return this.progress;
+    this.progress = {
+      ...input,
+      version: 1,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    };
+    return this.progress;
+  }
+
+  async compareAndSetAttemptProgress(update: ExplorationProgressUpdate): Promise<ExplorationProgressUpdateResult> {
+    if (this.progress === undefined || this.progress.version !== update.expectedVersion) {
+      return { status: "conflict", current: this.progress };
+    }
+    if (update.checkpoint !== undefined) {
+      this.checkpoints.push(update.checkpoint);
+    }
+    this.progress = {
+      attemptId: this.progress.attemptId,
+      runId: this.progress.runId,
+      sourceBindingHash: this.progress.sourceBindingHash,
+      policyBindingHash: this.progress.policyBindingHash,
+      seedBindingHash: this.progress.seedBindingHash,
+      phase: update.phase,
+      seedCursor: update.seedCursor,
+      lastSafeStep: update.lastSafeStep,
+      ...(update.lastSafeGraphFingerprint === undefined ? {} : { lastSafeGraphFingerprint: update.lastSafeGraphFingerprint }),
+      remaining: update.remaining,
+      ...(update.inFlightAction === undefined ? {} : { inFlightAction: update.inFlightAction }),
+      ...(update.terminalReason === undefined ? {} : { terminalReason: update.terminalReason }),
+      version: this.progress.version + 1,
+      createdAt: this.progress.createdAt,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    };
+    return { status: "updated", progress: this.progress };
+  }
+
+  async liveCheckpointsForAttempt(): Promise<readonly ExplorationCheckpoint[]> {
+    return this.checkpoints;
+  }
+}
 
 async function runOnce(): Promise<ExplorationResult> {
   const controller = new ExplorationController({
     target: new FixtureTarget(),
     agent: new FixtureAgent(),
+    progressStore: new TestProgressStore(),
     clock: new FakeClock(),
   });
   return controller.run(job);

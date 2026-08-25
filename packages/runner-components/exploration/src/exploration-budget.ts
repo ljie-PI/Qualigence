@@ -54,6 +54,22 @@ export class ExplorationBudget {
     );
   }
 
+  static resumeFromSnapshot(
+    snapshot: ExplorationBudgetSnapshot,
+    clock: MonotonicClock,
+  ): ExplorationBudget {
+    validateSnapshot(snapshot);
+    return new ExplorationBudget(
+      snapshot.remainingSteps,
+      snapshot.remainingStateVisits,
+      snapshot.remainingModelTokens,
+      snapshot.remainingRecoveries,
+      snapshot.remainingWallClockMs,
+      clock,
+      clock.now(),
+    );
+  }
+
   reserveStep(): Reservation {
     if (this.remainingSteps <= 0) {
       return EXHAUSTED;
@@ -89,14 +105,18 @@ export class ExplorationBudget {
   }
 
   /** Reconcile a prior reservation against the actual tokens the model used. */
-  settleModelTokens(reserved: number, actual: number): void {
+  settleModelTokens(reserved: number, actual: number): Reservation {
     const reservedAmount = normalizeTokens(reserved);
     const actualAmount = normalizeTokens(actual);
-    // Return the over-reservation, or charge the shortfall, without underflowing.
+    // Return the over-reservation, or charge the shortfall. If actual usage
+    // exhausts the finite budget, report it before the controller can dispatch
+    // another action based on an over-budget model response.
     this.remainingModelTokens += reservedAmount - actualAmount;
     if (this.remainingModelTokens < 0) {
       this.remainingModelTokens = 0;
+      return EXHAUSTED;
     }
+    return { ok: true };
   }
 
   checkWallClock(): Reservation {
@@ -135,4 +155,12 @@ function normalizeTokens(value: number): number {
     throw new Error("Model token amounts must be a non-negative finite number.");
   }
   return Math.ceil(value);
+}
+
+function validateSnapshot(snapshot: ExplorationBudgetSnapshot): void {
+  for (const [name, value] of Object.entries(snapshot)) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Exploration budget snapshot ${name} must be a non-negative finite number.`);
+    }
+  }
 }

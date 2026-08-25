@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Complete bounded multi-step Web Runtime; 06 — Deliver Skill version management loop schema migration `010`.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -81,6 +81,17 @@ corepack pnpm vitest run tests/e2e/exploration/restart-resume.test.ts
 ```
 
 Interrupt the process after acknowledged safe progress and resume from the last atomically persisted checkpoint. The resumed run must preserve seed completion and all remaining budgets and must not replay an acknowledged or unknown-outcome action. No in-process restart substitute or skip satisfies acceptance.
+
+## Comments
+
+- start — Claimed for isolated implementation on branch `ticket-20-exploration-seed-checkpoint-budget` from base SHA `992804b95183973b5f0ddd76f32c676808fc2ac3` (current main including PR #93 as supplied by worktree). Matrix applicability: applicable; all rows in the Behavior Matrix below govern this stateful, side-effecting, retry/restart-sensitive workflow. Planned focused Gates: `corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts`, `corepack pnpm typecheck`, and `git diff --check`. Post-review E2E/PR/merge are intentionally out of scope for this worker run.
+- update — Maintainer expanded scope after blocker review to include `packages/runner-components/model-agent/src/exploration-agent.ts`, `apps/benchmark-runner/src/run.ts`, and directly affected tests/helpers. Merged current `main` at `4e6cc92a5df84892d636ca109b14b97f18583a41` into this branch as merge commit `ab6532d`. Repair targets completed: no missing-usage-to-zero conversion in the real exploration model agent, no non-durable benchmark/exploration production path, stable attempt/source/policy/seed live-progress bindings, durable resume from SQLite progress, and no success claim when terminal progress persistence conflicts. Worker validation passed: `corepack pnpm --version` = `11.7.0`; focused Gate `CI=true corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts`; expanded tests `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent/exploration-agent.test.ts tests/unit/benchmark-runner/run.test.ts tests/e2e/detection-benchmark/reference-profile.test.ts tests/e2e/detection-benchmark/unverified-profile.test.ts`; `CI=true corepack pnpm typecheck`; `git diff --check`; benchmark CLI `CI=true corepack pnpm benchmark:detection`. Review/PR/merge remain pending; status stays `claimed`.
+- review round 1: reviewed head `1ca8aac7cafca875510b2d9be2ecde3db59ddc30`; Standards found Important blockers for origin enforcement, benchmark error scoring, and stable timeout/recovery handling; Spec found Critical benchmark scoring after exploration error plus Important blockers for missing restart-resume E2E, origin ordering, and model timeout/cancel mapping. Behavior matrix rows 4, 6, 7, 8, 11, 12, and 13 had findings across the two axes; auth row N/A.
+- final: reviewed code/test head `a70fd868c93af11371fde012fcbbeb09eb1816e7` with complete matrix coverage; Standards findings 0 and Spec findings 0. Clean focused and expanded Gates: `CI=true corepack pnpm vitest run tests/unit/runner-components/exploration tests/replay/exploration/bounded-exploration.test.ts tests/contract/sqlite/exploration-checkpoint-store.test.ts tests/unit/runner-components/model-agent/exploration-agent.test.ts tests/unit/benchmark-runner/run.test.ts tests/e2e/detection-benchmark/reference-profile.test.ts tests/e2e/detection-benchmark/unverified-profile.test.ts tests/e2e/exploration/restart-resume.test.ts tests/conformance/storage/relational-schema.test.ts tests/contract/sqlite/sqlite-runtime.test.ts` passed with 13 files / 75 tests. Clean post-review acceptance: `CI=true corepack pnpm vitest run tests/e2e/exploration/restart-resume.test.ts` passed with 1 file / 1 test and uses a separate Node child process plus reopened SQLite store. `CI=true corepack pnpm typecheck`, `git diff --check`, and `CI=true corepack pnpm benchmark:detection` passed.
+
+## Answer
+
+Implemented durable exploration progress and resume through migration `011-exploration-attempt-progress`, SQLite live progress/checkpoint storage, and the real benchmark-runner path. Exploration now requires explicit attempt/source bindings and a progress store, persists seed and action side-effect boundaries, resumes from last safe progress, terminalizes unknown in-flight seed/action outcomes without replay, enforces origin/risk/state/recovery/model budgets, propagates missing model usage as `ModelUsageUnavailable`, blocks benchmark scoring on exploration errors, and proves restart/resume with a separate process and durable SQLite database.
 
 ## Behavior Matrix
 

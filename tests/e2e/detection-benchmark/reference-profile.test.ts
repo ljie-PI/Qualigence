@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   loadBenchmark,
   runBenchmark,
@@ -20,11 +20,12 @@ describe("detection benchmark reference profile gate", () => {
   it("passes the release gate for the frozen reference profile against the known-good fixtures", async () => {
     const loaded = await loadBenchmark(BENCHMARK_DIR);
 
-    const outcome = await runBenchmark({
+    const outcome = await withBenchmarkStore(async (store) => runBenchmark({
       manifest: loaded.manifest,
       groundTruth: loaded.groundTruth,
       scenarios: loaded.scenarios,
-    });
+      store,
+    }));
 
     expect(outcome.exitCode).toBe(0);
     expect(outcome.report.profileStatus).toBe("reference");
@@ -45,17 +46,20 @@ describe("detection benchmark reference profile gate", () => {
 
   it("scores deterministically: identical inputs produce identical reports", async () => {
     const loaded = await loadBenchmark(BENCHMARK_DIR);
-    const config = {
-      manifest: loaded.manifest,
-      groundTruth: loaded.groundTruth,
-      scenarios: loaded.scenarios,
-      createdAt: "2026-08-01T00:00:00.000Z",
-    };
+    await withBenchmarkStore(async (store) => {
+      const config = {
+        manifest: loaded.manifest,
+        groundTruth: loaded.groundTruth,
+        scenarios: loaded.scenarios,
+        store,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      };
 
-    const first = await runBenchmark(config);
-    const second = await runBenchmark(config);
+      const first = await runBenchmark(config);
+      const second = await runBenchmark(config);
 
-    expect(second.report).toEqual(first.report);
+      expect(second.report).toEqual(first.report);
+    });
   });
 
   it("fails the gate with KnownBugRecallBelowMinimum when the reference profile misses seeded bugs", async () => {
@@ -136,7 +140,7 @@ describe("detection benchmark reference profile gate", () => {
       ],
     };
 
-    const outcome = await runBenchmark({ manifest, groundTruth, scenarios: [scenario] });
+    const outcome = await withBenchmarkStore(async (store) => runBenchmark({ manifest, groundTruth, scenarios: [scenario], store }));
 
     expect(outcome.report.profileStatus).toBe("reference");
     expect(outcome.report.gate.status).toBe("failed");
@@ -178,6 +182,22 @@ describe("detection benchmark reference profile gate", () => {
     }
   });
 });
+
+async function withBenchmarkStore<T>(
+  callback: (store: SqliteBenchmarkStore) => Promise<T>,
+): Promise<T> {
+  const dir = await mkdtemp(join(process.cwd(), ".tmp-benchmark-"));
+  const runtime = await SqliteRuntime.open({
+    filename: join(dir, "benchmark.db"),
+    busyTimeoutMs: 5_000,
+  });
+  try {
+    return await callback(new SqliteBenchmarkStore(runtime));
+  } finally {
+    await runtime.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 function referenceProfile(overrides: Partial<ReferenceModelProfile> = {}): ReferenceModelProfile {
   return {
