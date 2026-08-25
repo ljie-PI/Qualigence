@@ -105,6 +105,14 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 | Consumer process restarts after durable checkpoint/projection/attempt | `not_started` until resume | Resume from durable state | Acknowledged records remain authoritative | Skip completed state; continue only from safe checkpoint | Restart/resume evidence |
 | Terminal persistence fails for checkpoint, projection, evidence decoration, or benchmark attempt | `started` | Stable store error; no success claim | Atomic rollback/no partial record at the owning seam | Retry exact known write only when safe; never rerun unknown action | Injected failure, rollback, and stopped workflow |
 
+### review-fix — 2026-08-25
+
+- Reviewed head fixed: `3895e54e70b6b1a00c90e3e638377681f701d3b7`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core findings addressed in scope: v1 exploration fingerprints previously hashed secret node value/state, and benchmark `inputSha256`/run identity previously hashed raw `ScenarioDefinition[]` including raw URL query values instead of the existing canonical/redacted `scenarioDefinitionBinding()`/v1 graph-hash path.
+- Fix commit evidence: `6e04ac094f088cd27dfaad919ba88c40d24119db` (`fix(graph): redact v1 fingerprints and benchmark input binding`) updates the fingerprint projection, benchmark input binding, and focused regression tests.
+- Gates run before fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 96 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining active blocker: Skill replay migration still requires maintainer authorization to expand this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` and directly related tests. No excluded `skill-replay` or other unlisted roots were edited in this fix.
+
 - [ ] All live consumers use v1 fields and typed extension readers.
 - [ ] Artifact decorators use evidence references without losing provenance.
 - [ ] Exploration fingerprints and benchmark state remain deterministic.
