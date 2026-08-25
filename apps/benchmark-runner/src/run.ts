@@ -22,7 +22,7 @@ import type {
   ExplorationAttemptProgress,
   ExplorationPolicy,
 } from "@qualigence/mission";
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash, observationGraphHash } from "@qualigence/runner-protocol";
 import type {
   BenchmarkRunRecord,
   PersistedAttempt,
@@ -30,6 +30,7 @@ import type {
 import {
   ScenarioExplorationTarget,
   ScenarioWalkAgent,
+  graphForState,
   type ScenarioDefinition,
 } from "./scenario.js";
 
@@ -141,13 +142,32 @@ function sourceBindingHashFor(input: {
     profileSha256: input.profileHash,
     groundTruthSha256: input.truthHash,
     scenario: input.manifestScenario,
-    scenarioDefinition: input.scenarioDefinition,
+    scenarioDefinition: scenarioDefinitionBinding(input.scenarioDefinition),
     repetition: input.repetition,
   });
 }
 
 function policyBindingHashFor(policy: ExplorationPolicy): string {
   return canonicalPayloadHash(policy);
+}
+
+function scenarioDefinitionBinding(definition: ScenarioDefinition): unknown {
+  return {
+    scenarioId: definition.scenarioId,
+    mode: definition.mode,
+    ...(definition.seedUrl === undefined ? {} : { seedUrl: redactedUrlBinding(definition.seedUrl) }),
+    states: definition.states.map((state) => ({
+      id: state.id,
+      advanceNodeId: state.advanceNodeId,
+      signals: state.signals,
+      observationGraphSha256: observationGraphHash(graphForState(definition.scenarioId, state)),
+    })),
+  };
+}
+
+function redactedUrlBinding(url: string): { readonly origin: string; readonly pathname: string } {
+  const parsed = new URL(url);
+  return { origin: parsed.origin, pathname: parsed.pathname };
 }
 
 function seedBindingHashFor(policy: ExplorationPolicy): string {

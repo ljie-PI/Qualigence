@@ -17,6 +17,7 @@ import type {
   StructuredOutputValidationError,
   StructuredOutputValidationIssue,
 } from "@qualigence/model-provider";
+import { observationGraphPromptView, observationNodeVisibleText } from "@qualigence/exploration";
 import type {
   AgentContext,
   AnyProposedAction,
@@ -130,7 +131,7 @@ export class ModelBackedDecisionProvider implements ExecutionDecisionProvider<im
               content: JSON.stringify({
                 objective: context.job.objective,
                 ...(currentStep === undefined ? {} : { step: currentStep }),
-                observation: context.observation,
+                observation: observationGraphPromptView(context.observation),
               }),
             },
           ],
@@ -175,8 +176,8 @@ export class ModelBackedVerifier implements Verifier {
               content: JSON.stringify({
                 objective: context.job.objective,
                 claimIds: context.claimIds ?? [],
-                before: context.before,
-                after: context.after,
+                before: observationGraphPromptView(context.before),
+                after: observationGraphPromptView(context.after),
                 ...(context.action === undefined
                   ? {}
                   : {
@@ -501,7 +502,7 @@ function validateEvidenceValue(
 }
 
 function normalizeText(node: ObservationNodeV1): string {
-  return normalizeTextValue(node.name ?? node.value ?? "");
+  return normalizeTextValue(observationNodeVisibleText(node));
 }
 
 function normalizeTextValue(value: string): string {

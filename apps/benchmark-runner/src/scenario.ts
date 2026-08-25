@@ -5,7 +5,23 @@ import type {
   ExplorationTarget,
   GroundedExplorationAction,
 } from "@qualigence/exploration";
-import type { ObservationGraph, ObservationNode } from "@qualigence/runner-protocol";
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
+  validateObservationGraphV1,
+  type ObservationGraphV1,
+  type ObservationNodeV1,
+} from "@qualigence/runner-protocol";
+
+export interface ScenarioNode {
+  readonly id: string;
+  readonly role: string;
+  readonly name?: string;
+  readonly text?: string;
+  readonly value?: string;
+  readonly disabled?: boolean;
+  readonly confidence: number;
+}
 
 /** A deterministic detection signal a scenario state surfaces when observed. */
 export interface ScenarioSignal {
@@ -18,7 +34,7 @@ export interface ScenarioState {
   readonly id: string;
   readonly url: string;
   readonly title?: string;
-  readonly nodes: readonly ObservationNode[];
+  readonly nodes: readonly ScenarioNode[];
   /** The node the walker clicks to advance, or `null` for a terminal state. */
   readonly advanceNodeId: string | null;
   readonly signals: readonly ScenarioSignal[];
@@ -47,7 +63,7 @@ function requireString(record: Record<string, unknown>, key: string, ctx: string
   return value;
 }
 
-function parseNode(value: unknown): ObservationNode {
+function parseNode(value: unknown): ScenarioNode {
   const record = asRecord(value, "scenario node");
   const id = requireString(record, "id", "scenario node");
   const role = requireString(record, "role", "scenario node");
@@ -55,14 +71,15 @@ function parseNode(value: unknown): ObservationNode {
   if (typeof confidence !== "number" || !Number.isFinite(confidence)) {
     throw new Error(`scenario node "${id}" is missing a numeric confidence.`);
   }
-  const node: {
-    -readonly [K in keyof ObservationNode]?: ObservationNode[K];
-  } = { id, role, confidence };
-  if (typeof record["name"] === "string") node.name = record["name"];
-  if (typeof record["text"] === "string") node.text = record["text"];
-  if (typeof record["value"] === "string") node.value = record["value"];
-  if (typeof record["disabled"] === "boolean") node.disabled = record["disabled"];
-  return node as ObservationNode;
+  return {
+    id,
+    role,
+    ...(typeof record["name"] === "string" ? { name: record["name"] } : {}),
+    ...(typeof record["text"] === "string" ? { text: record["text"] } : {}),
+    ...(typeof record["value"] === "string" ? { value: record["value"] } : {}),
+    ...(typeof record["disabled"] === "boolean" ? { disabled: record["disabled"] } : {}),
+    confidence,
+  };
 }
 
 function parseSignal(value: unknown): ScenarioSignal {
@@ -124,6 +141,64 @@ export function parseScenario(value: unknown): ScenarioDefinition {
   };
 }
 
+export function toObservationNodeV1(node: ScenarioNode): ObservationNodeV1 {
+  const state: Record<string, boolean | string | number> = {};
+  if (node.text !== undefined) state.text = node.text;
+  if (node.disabled !== undefined) state.disabled = node.disabled;
+  return {
+    id: node.id,
+    role: node.role,
+    ...(node.name === undefined ? {} : { name: node.name }),
+    ...(node.value === undefined ? {} : { value: node.value }),
+    state,
+    relations: [],
+    source: { adapterId: "benchmark-scenario", sourceKind: "fixture" },
+    confidence: node.confidence,
+    sensitivity: "public",
+    extensions: {},
+    evidenceRefs: [],
+  };
+}
+
+export function graphForState(scenarioId: string, state: ScenarioState): ObservationGraphV1 {
+  const url = new URL(state.url);
+  const nodes = state.nodes.map(toObservationNodeV1);
+  const root: ObservationNodeV1 = {
+    id: `${scenarioId}:${state.id}:root`,
+    role: "document",
+    ...(state.title === undefined ? {} : { name: state.title }),
+    state: {},
+    relations: nodes.map((node) => ({ type: "child", targetNodeId: node.id })),
+    source: { adapterId: "benchmark-scenario", sourceKind: "fixture" },
+    confidence: 1,
+    sensitivity: "public",
+    extensions: {},
+    evidenceRefs: [],
+  };
+  return validateObservationGraphV1({
+    schema: OBSERVATION_GRAPH_V1_SCHEMA,
+    graphId: `${scenarioId}:${state.id}`,
+    target: { kind: "web", targetId: url.origin },
+    capturedAt: "1970-01-01T00:00:00.000Z",
+    rootNodeIds: [root.id],
+    nodes: [root, ...nodes],
+    evidenceRefs: [],
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: url.origin,
+          pathname: url.pathname,
+          title: state.title ?? "",
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  });
+}
+
 /**
  * A deterministic {@link ExplorationTarget} built from a scenario definition. It
  * walks a linear chain of states: `capture()` returns the current state's
@@ -147,15 +222,10 @@ export class ScenarioExplorationTarget implements ExplorationTarget {
     this.visited = scenario.states.slice(0, this.index);
   }
 
-  async capture(): Promise<ObservationGraph> {
+  async capture(): Promise<ObservationGraphV1> {
     const state = this.currentState();
     this.visited.push(state);
-    return {
-      graphId: `${this.scenario.scenarioId}:${state.id}`,
-      url: state.url,
-      ...(state.title === undefined ? {} : { title: state.title }),
-      nodes: state.nodes,
-    };
+    return graphForState(this.scenario.scenarioId, state);
   }
 
   async execute(action: GroundedExplorationAction): Promise<void> {

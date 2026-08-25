@@ -19,7 +19,9 @@ import type {
   ExplorationDecision,
   ExplorationPolicy,
 } from "@qualigence/mission";
-import type { ObservationGraph } from "@qualigence/runner-protocol";
+import { PreV1TraceProjector } from "@qualigence/observation-migration";
+import type { ObservationGraphV1 } from "@qualigence/runner-protocol";
+import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 class FakeClock implements MonotonicClock {
   private value = 0;
@@ -32,36 +34,26 @@ class FakeClock implements MonotonicClock {
 }
 
 /** A fixed three-state cart fixture: product -> cart -> confirmation. */
-const FIXTURE: readonly ObservationGraph[] = [
-  {
-    graphId: "g-product",
-    url: "https://shop.example/product?ts=111",
-    title: "Product",
-    capturedAt: "2026-08-01T00:00:00.000Z",
-    nodes: [{ id: "p-add", role: "button", name: "Add to cart", confidence: 0.91 }],
-  },
-  {
-    graphId: "g-cart",
-    url: "https://shop.example/cart?ts=222",
-    title: "Cart",
-    capturedAt: "2026-08-01T00:00:05.000Z",
-    nodes: [{ id: "c-checkout", role: "button", name: "Checkout", confidence: 0.88 }],
-  },
-  {
-    graphId: "g-confirm",
-    url: "https://shop.example/confirm?ts=333",
-    title: "Confirmation",
-    capturedAt: "2026-08-01T00:00:09.000Z",
-    nodes: [{ id: "x-done", role: "heading", name: "Order placed", confidence: 0.99 }],
-  },
+const FIXTURE: readonly ObservationGraphV1[] = [
+  graph("g-product", "/product", "Product", [
+    { id: "p-add", role: "button", name: "Add to cart", confidence: 0.91 },
+  ]),
+  graph("g-cart", "/cart", "Cart", [
+    { id: "c-checkout", role: "button", name: "Checkout", confidence: 0.88 },
+  ]),
+  graph("g-confirm", "/confirm", "Confirmation", [
+    { id: "x-done", role: "heading", name: "Order placed", confidence: 0.99 },
+  ]),
 ];
 
 class FixtureTarget implements ExplorationTarget {
   private index = 0;
   readonly executed: GroundedExplorationAction[] = [];
 
-  async capture(): Promise<ObservationGraph> {
-    const graph = FIXTURE[Math.min(this.index, FIXTURE.length - 1)] as ObservationGraph;
+  constructor(private readonly graphs: readonly ObservationGraphV1[] = FIXTURE) {}
+
+  async capture(): Promise<ObservationGraphV1> {
+    const graph = this.graphs[Math.min(this.index, this.graphs.length - 1)] as ObservationGraphV1;
     this.index += 1;
     return graph;
   }
@@ -104,6 +96,30 @@ const job: ExplorationJob = {
   policy: policy(),
   environment: "test",
 };
+
+function graph(
+  graphId: string,
+  pathname: string,
+  title: string,
+  nodes: Parameters<typeof observationGraphV1>[1],
+): ObservationGraphV1 {
+  return observationGraphV1(graphId, nodes, {
+    target: { kind: "web", targetId: "https://shop.example" },
+    extensions: {
+      "web/v1": {
+        type: "web/v1",
+        version: "1.0",
+        payload: {
+          origin: "https://shop.example",
+          pathname,
+          title,
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  });
+}
 
 class TestProgressStore implements ExplorationProgressStore {
   private progress: ExplorationAttemptProgress | undefined;
@@ -167,6 +183,36 @@ async function runOnce(): Promise<ExplorationResult> {
 }
 
 describe("bounded exploration replay determinism", () => {
+  it("projects historical pre-v1 input before replaying it through the live exploration consumer", async () => {
+    const projected = new PreV1TraceProjector().project({
+      assetId: "legacy-web-observation",
+      kind: "observation",
+      sourceSchemaVersion: "m1-web-observation",
+      target: { kind: "web", targetId: "https://shop.example" },
+      adapterId: "legacy-web-adapter",
+      capturedAt: "2026-08-01T00:00:00.000Z",
+      observation: {
+        graphId: "legacy-product",
+        url: "https://shop.example/product?secret=never-copy",
+        title: "Product",
+        nodes: [{ id: "legacy-add", role: "button", name: "Add to cart", confidence: 0.91 }],
+      },
+    });
+    const target = new FixtureTarget([projected]);
+    const controller = new ExplorationController({
+      target,
+      agent: { async nextAction() { return { decision: { status: "stop", reason: "projected" }, tokensUsed: 1 }; } },
+      progressStore: new TestProgressStore(),
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run({ ...job, attemptId: "attempt-projected" });
+
+    expect(projected.schema.epoch).toBe("v1");
+    expect(JSON.stringify(projected)).not.toContain("never-copy");
+    expect(result.terminalReason).toBe("objective_satisfied");
+  });
+
   it("produces the same terminal reason and state sequence across repeated runs", async () => {
     const first = await runOnce();
     const second = await runOnce();

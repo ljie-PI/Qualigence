@@ -4,6 +4,7 @@ import {
   observationError,
   validateObservationGraphV1,
   OBSERVATION_GRAPH_V1_SCHEMA,
+  WEB_EXTENSION_V1_TYPE,
   type ObservationGraphV1,
   type ObservationNodeV1,
   type ObservationTarget,
@@ -174,6 +175,7 @@ export class PreV1TraceProjector {
       rootNodeIds: nodes.map((node) => node.id),
       nodes,
       evidenceRefs: source.artifactRefs ?? [],
+      ...webExtensionForPreV1Source(asset),
     };
   }
 
@@ -206,4 +208,35 @@ export class PreV1TraceProjector {
       evidenceRefs: [],
     };
   }
+}
+
+function webExtensionForPreV1Source(asset: PreV1ObservationAsset): Pick<ObservationGraphV1, "extensions"> | Record<string, never> {
+  if (asset.target.kind !== "web") {
+    return {};
+  }
+  const sourceUrl = asset.observation.url ?? asset.target.targetId;
+  let url: URL;
+  try {
+    url = new URL(sourceUrl);
+  } catch {
+    throw observationError(
+      "ProjectionUnsupported",
+      `Asset "${asset.assetId}" has no canonical web URL to project into web/v1 semantics.`,
+    );
+  }
+  return {
+    extensions: {
+      [WEB_EXTENSION_V1_TYPE]: {
+        type: WEB_EXTENSION_V1_TYPE,
+        version: "1.0",
+        payload: {
+          origin: url.origin,
+          pathname: url.pathname,
+          title: asset.observation.title ?? "",
+          viewport: { width: 1, height: 1, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  };
 }

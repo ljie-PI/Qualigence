@@ -169,6 +169,53 @@ describe("ArtifactRecordingObserver", () => {
     ]);
   });
 
+  it("rejects non-v1 observations before persisting artifacts", async () => {
+    const artifacts = new FakeArtifactStore();
+    const manifests = new FakeManifestStore();
+    const legacyGraph = {
+      graphId: "legacy",
+      url: "https://example.test",
+      nodes: [{ id: "node-1", role: "button", confidence: 1 }],
+    } as unknown as ObservationGraphV1;
+    const observer = new ArtifactRecordingObserver({
+      observer: innerObserver(legacyGraph),
+      source: fakeSource(rawArtifacts()),
+      artifacts,
+      manifests,
+      runId: "run-1",
+      createArtifactId: idFactory("before-json", "before-png"),
+    });
+
+    await expect(observer.capture(job)).rejects.toMatchObject({ code: "ObservationSchemaInvalid" });
+    expect(artifacts.writes).toHaveLength(0);
+    expect(manifests.appended).toHaveLength(0);
+  });
+
+  it("preserves producer and node-level evidence provenance while adding durable artifact refs", async () => {
+    const artifacts = new FakeArtifactStore();
+    const manifests = new FakeManifestStore();
+    const sourceGraph = {
+      ...graph("with-existing-evidence"),
+      evidenceRefs: ["producer-manifest"],
+      nodes: graph("with-existing-evidence").nodes.map((node) =>
+        node.id === "root" ? { ...node, evidenceRefs: ["node-manifest"] } : node,
+      ),
+    };
+    const observer = new ArtifactRecordingObserver({
+      observer: innerObserver(sourceGraph),
+      source: fakeSource(rawArtifacts()),
+      artifacts,
+      manifests,
+      runId: "run-1",
+      createArtifactId: idFactory("before-json", "before-png"),
+    });
+
+    const recorded = await observer.capture(job);
+
+    expect(recorded.evidenceRefs).toEqual(["producer-manifest", "before-json", "before-png"]);
+    expect(recorded.nodes.find((node) => node.id === "root")?.evidenceRefs).toEqual(["node-manifest"]);
+  });
+
   it("throws ArtifactUnavailable and records no partial refs when a write fails", async () => {
     const artifacts = new FakeArtifactStore();
     artifacts.failWritesForKind("screenshot");

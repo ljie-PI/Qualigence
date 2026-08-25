@@ -4,7 +4,7 @@
 
 **Blocked by:** 21 — Run the real Reference Model benchmark; 23 — Migrate live Web and Runner producers to Graph v1.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -74,6 +74,15 @@ corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts
 ```
 
 Run model, resolver-facing decisions, exploration, evidence decoration, the real benchmark path, and replay together over v1 producer output and projected historical input. Prove deterministic fingerprints/results, preserved evidence provenance, extension-major rejection, and no direct legacy Graph input to a live consumer.
+
+## Comments
+
+### start — 2026-08-25
+
+- Fixed base: `f34e7547c8208dd85425f64992553d4b8d290afc` (`main`/`origin/main` at isolated worktree start).
+- Predecessor merge evidence: Ticket 21 is `resolved` with PR #101 merge commit `219532953a4eb0601b8471a8e510508dbd2c8647` present in current history; Ticket 23 is `resolved` with PR #97 merge commit `b7d087526be47c86950ae0ff1714f68043445a6d` present in current history and PR #98 docs resolution `4e6cc92` on the base branch.
+- Behavior Matrix applicability: applicable; every row in this ticket's matrix governs the stateful/side-effecting consumer migration across model decisions, exploration, evidence decoration, benchmark state, and replay/migration paths. No rows are marked N/A for implementation planning.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review acceptance `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` is intentionally left for the parent after complete-matrix review.
 
 ## Behavior Matrix
 

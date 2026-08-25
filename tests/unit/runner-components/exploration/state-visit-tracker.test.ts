@@ -3,20 +3,52 @@ import {
   StateVisitTracker,
   fingerprintObservationGraph,
 } from "@qualigence/exploration";
-import type { ObservationGraph } from "@qualigence/runner-protocol";
+import {
+  WEB_EXTENSION_V1_TYPE,
+  type ObservationGraphV1,
+} from "@qualigence/runner-protocol";
+import { observationGraphV1, type ObservationGraphV1TestNode } from "../../../helpers/observation-graph-v1.js";
 
-function graph(overrides: Partial<ObservationGraph> = {}): ObservationGraph {
-  return {
-    graphId: "graph-1",
-    url: "https://shop.example/product?ref=abc",
-    title: "Product",
-    capturedAt: "2026-08-01T00:00:00.000Z",
-    nodes: [
+interface GraphOptions {
+  readonly graphId?: string;
+  readonly capturedAt?: string;
+  readonly evidenceRefs?: readonly string[];
+  readonly origin?: string;
+  readonly pathname?: string;
+  readonly title?: string;
+  readonly nodes?: readonly ObservationGraphV1TestNode[];
+}
+
+function graph(overrides: GraphOptions = {}): ObservationGraphV1 {
+  const graphId = overrides.graphId ?? "graph-1";
+  const origin = overrides.origin ?? "https://shop.example";
+  const pathname = overrides.pathname ?? "/product";
+  const title = overrides.title ?? "Product";
+  return observationGraphV1(
+    graphId,
+    overrides.nodes ?? [
       { id: "node-1", role: "button", name: "Add to cart", confidence: 0.9 },
       { id: "node-2", role: "spinbutton", name: "Quantity", value: "2", confidence: 0.8 },
     ],
-    ...overrides,
-  };
+    {
+      capturedAt: overrides.capturedAt ?? "2026-08-01T00:00:00.000Z",
+      evidenceRefs: overrides.evidenceRefs ?? [],
+      target: { kind: "web", targetId: origin },
+      extensions: {
+        [WEB_EXTENSION_V1_TYPE]: {
+          type: WEB_EXTENSION_V1_TYPE,
+          version: "1.0",
+          payload: {
+            origin,
+            pathname,
+            title,
+            viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+            query: {},
+          },
+        },
+      },
+    },
+  );
 }
 
 describe("fingerprintObservationGraph", () => {
@@ -26,7 +58,7 @@ describe("fingerprintObservationGraph", () => {
       graph({
         graphId: "graph-999",
         capturedAt: "2026-09-15T12:34:56.000Z",
-        artifactRefs: ["artifact://x"],
+        evidenceRefs: ["artifact://x"],
         nodes: [
           { id: "node-77", role: "button", name: "Add to cart", confidence: 0.1 },
           { id: "node-88", role: "spinbutton", name: "Quantity", value: "2", confidence: 0.5 },
@@ -36,13 +68,13 @@ describe("fingerprintObservationGraph", () => {
     expect(a).toBe(b);
   });
 
-  it("ignores the query string but keeps the URL path", () => {
-    const a = fingerprintObservationGraph(graph({ url: "https://shop.example/product?x=1" }));
-    const b = fingerprintObservationGraph(graph({ url: "https://shop.example/product?y=2" }));
+  it("ignores redacted query values but keeps the typed web/v1 path", () => {
+    const a = fingerprintObservationGraph(graph({ pathname: "/product" }));
+    const b = fingerprintObservationGraph(graph({ pathname: "/product" }));
     expect(a).toBe(b);
   });
 
-  it("is order-independent across nodes", () => {
+  it("is order-independent across graph semantic sets", () => {
     const forward = fingerprintObservationGraph(graph());
     const reversed = fingerprintObservationGraph(
       graph({
@@ -57,7 +89,7 @@ describe("fingerprintObservationGraph", () => {
 
   it("produces a different fingerprint for a semantic or state change", () => {
     const base = fingerprintObservationGraph(graph());
-    const differentPath = fingerprintObservationGraph(graph({ url: "https://shop.example/cart" }));
+    const differentPath = fingerprintObservationGraph(graph({ pathname: "/cart" }));
     const differentValue = fingerprintObservationGraph(
       graph({
         nodes: [
@@ -68,6 +100,11 @@ describe("fingerprintObservationGraph", () => {
     );
     expect(differentPath).not.toBe(base);
     expect(differentValue).not.toBe(base);
+  });
+
+  it("fails closed when web/v1 is missing for a web-dependent fingerprint", () => {
+    const withoutWeb = { ...graph(), extensions: {} };
+    expect(() => fingerprintObservationGraph(withoutWeb)).toThrow(/ExtensionVersionUnsupported/);
   });
 });
 
@@ -99,7 +136,7 @@ describe("StateVisitTracker", () => {
     const tracker = new StateVisitTracker();
     const product = tracker.record(tracker.fingerprintOf(graph()));
     const cart = tracker.record(
-      tracker.fingerprintOf(graph({ url: "https://shop.example/cart" })),
+      tracker.fingerprintOf(graph({ pathname: "/cart" })),
     );
     expect(product.status).toBe("novel");
     expect(cart.status).toBe("novel");

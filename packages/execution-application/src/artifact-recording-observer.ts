@@ -3,10 +3,11 @@ import type {
   ArtifactManifestStore,
   ArtifactStore,
 } from "@qualigence/evidence";
-import type {
-  AcceptedExecutionJob,
-  ObservationGraphV1,
-  RunId,
+import {
+  validateObservationGraphV1,
+  type AcceptedExecutionJob,
+  type ObservationGraphV1,
+  type RunId,
 } from "@qualigence/runner-protocol";
 import type { Observer } from "@qualigence/runner-kernel";
 import { ExecutionApplicationError } from "./errors.js";
@@ -48,7 +49,7 @@ export class ArtifactRecordingObserver implements Observer {
   ) {}
 
   async capture(job: AcceptedExecutionJob): Promise<ObservationGraphV1> {
-    const graph = await this.dependencies.observer.capture(job);
+    const graph = validateCapturedGraph(await this.dependencies.observer.capture(job));
 
     let rawArtifacts: readonly RawArtifact[];
     try {
@@ -86,11 +87,22 @@ export class ArtifactRecordingObserver implements Observer {
       artifactRefs.push(artifactId);
     }
 
-    return {
+    return validateCapturedGraph({
       ...graph,
       evidenceRefs: [...new Set([...graph.evidenceRefs, ...artifactRefs])],
-    };
+    });
   }
+}
+
+function validateCapturedGraph(graph: ObservationGraphV1): ObservationGraphV1 {
+  const web = graph.extensions?.["web/v1"];
+  const query = web?.payload["query"];
+  return validateObservationGraphV1(graph, {
+    allowedWebQueryKeys:
+      query !== undefined && query !== null && typeof query === "object" && !Array.isArray(query)
+        ? Object.keys(query)
+        : [],
+  });
 }
 
 function kindFor(mediaType: RawArtifact["mediaType"]): ArtifactKind {

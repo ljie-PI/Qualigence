@@ -8,9 +8,10 @@ import type {
   StructuredOutputContract,
   StructuredOutputValidationIssue,
 } from "@qualigence/model-provider";
-import type {
-  ExplorationContext,
-  ExplorationProposal,
+import {
+  observationGraphPromptView,
+  type ExplorationContext,
+  type ExplorationProposal,
 } from "@qualigence/exploration";
 import type {
   ExplorationDecision,
@@ -105,18 +106,7 @@ export class ExplorationAgent {
               riskCeiling: context.riskCeiling,
               remainingBudget: context.remainingBudget,
               visitedFingerprints: context.visitedFingerprints,
-              graph: {
-                url: context.graph.url,
-                title: context.graph.title,
-                nodes: context.graph.nodes.map((node) => ({
-                  id: node.id,
-                  role: node.role,
-                  name: node.name,
-                  text: node.text,
-                  value: node.value,
-                  disabled: node.disabled,
-                })),
-              },
+              graph: observationGraphPromptView(context.graph),
             }),
           },
         ],
