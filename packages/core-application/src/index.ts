@@ -70,3 +70,10 @@ export type {
   ExecutionJobServiceOptions,
   OfferRequest,
 } from "./runner/execution-job-service.js";
+export {
+  TenantRunnerApplicationResolver,
+} from "./runner/tenant-runner-application-resolver.js";
+export type {
+  TenantRunnerApplicationGraph,
+  TenantRunnerApplicationResolverOptions,
+} from "./runner/tenant-runner-application-resolver.js";

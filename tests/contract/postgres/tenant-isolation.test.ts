@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import {
   createPostgresRuntime,
+  OperationScopedPostgresRunnerControlStore,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
 import { dockerAvailable } from "../../helpers/docker-container.js";
@@ -70,6 +71,36 @@ describe.skipIf(!dockerAvailable())("PostgreSQL tenant isolation", () => {
           .execute();
       }),
     ).rejects.toThrow();
+  });
+
+  it("opens runner-control operations as tenant-scoped transactions without leaking across tenants", async () => {
+    const tenantAStore = new OperationScopedPostgresRunnerControlStore(runtime, "tenant-a");
+    const tenantBStore = new OperationScopedPostgresRunnerControlStore(runtime, "tenant-b");
+
+    await tenantAStore.saveSession({
+      sessionId: "runner-same-session-a",
+      runnerId: "runner-same",
+      certificateFingerprint: "fp-tenant-a",
+      capabilities: ["target:web-playwright"],
+      protocolMajor: 1,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
+    await tenantBStore.saveSession({
+      sessionId: "runner-same-session-b",
+      runnerId: "runner-same",
+      certificateFingerprint: "fp-tenant-b",
+      capabilities: ["target:web-playwright"],
+      protocolMajor: 1,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const [tenantARows, tenantBRows] = await Promise.all([
+      runtime.withTenant("tenant-a", ({ db }) => db.selectFrom("runner_sessions").select(["tenant_id", "runner_id", "session_id"]).where("runner_id", "=", "runner-same").execute()),
+      runtime.withTenant("tenant-b", ({ db }) => db.selectFrom("runner_sessions").select(["tenant_id", "runner_id", "session_id"]).where("runner_id", "=", "runner-same").execute()),
+    ]);
+
+    expect(tenantARows).toEqual([{ tenant_id: "tenant-a", runner_id: "runner-same", session_id: "runner-same-session-a" }]);
+    expect(tenantBRows).toEqual([{ tenant_id: "tenant-b", runner_id: "runner-same", session_id: "runner-same-session-b" }]);
   });
 
   it("rejects an insert when no tenant context is set", async () => {

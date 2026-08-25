@@ -4,6 +4,7 @@ export {
 } from "./pem-ca-runner-certificate-issuer.js";
 export {
   SelfHostedRunnerAuthenticator,
+  type SelfHostedAuthenticatedRunner,
   type SelfHostedRunnerAuthenticatorOptions,
 } from "./self-hosted-runner-authenticator.js";
 export {

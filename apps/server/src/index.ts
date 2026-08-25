@@ -22,6 +22,14 @@ export {
   PostgresRunnerPrincipalStore,
 } from "./runner-stores.js";
 export {
+  selfHostedRunnerApplicationResolver,
+  selfHostedRunnerPeerAuthenticator,
+} from "./self-hosted-runner-protocol.js";
+export type {
+  SelfHostedRunnerApplicationResolverOptions,
+  SelfHostedRunnerPeerAuthenticatorOptions,
+} from "./self-hosted-runner-protocol.js";
+export {
   ApiError,
   toErrorEnvelope,
 } from "./errors.js";

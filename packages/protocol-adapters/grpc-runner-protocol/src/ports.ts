@@ -9,7 +9,11 @@ import type {
   RunnerWelcome,
 } from "@qualigence/runner-protocol";
 
-export type { AuthenticatedRunnerContext, RunnerProtocolApplication } from "@qualigence/runner-control";
+export type {
+  AuthenticatedRunnerContext,
+  RunnerProtocolApplication,
+  RunnerProtocolApplicationResolver,
+} from "@qualigence/runner-control";
 
 /**
  * Core-facing seam for dispatching one execution attempt to a connected Runner.

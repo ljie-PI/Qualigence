@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Wire the production Intelligence Result consumer.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -93,3 +93,7 @@ Run the two-tenant, same-Runner-ID admission and isolation cases.
 - The affected context documents listed above, especially mTLS-before-payload, thin transport, operation-scoped tenant storage, forced RLS, and compound Runner identity.
 - `packages/core-modules/runner-control/src/runner-protocol-application.ts` and `packages/protocol-adapters/grpc-runner-protocol/src/server.ts`.
 - The Runner identity, protocol conformance, and tenant-isolation contracts named by the focused Gate.
+
+## Comments
+
+- start: base SHA `6e8e4bdad38b934ab9f414305bb4c944a8942fd8`; behavior matrix applies in full because tenant-bound Runner session resolution, registry ownership, payload admission, operation-scoped storage, reconnect/fencing, concurrency and failure outcomes are stateful, side-effecting, retrying, timeout-sensitive, and terminal-sensitive; planned Gates: `CI=true corepack pnpm vitest run tests/contract/runner-identity tests/contract/postgres/tenant-isolation.test.ts tests/conformance/runner-protocol tests/component/core-runner`, `CI=true corepack pnpm typecheck`, and `git diff --check`.

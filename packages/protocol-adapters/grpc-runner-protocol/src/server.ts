@@ -1,6 +1,6 @@
 import type { PeerCertificate } from "node:tls";
 import * as grpc from "@grpc/grpc-js";
-import type { RunnerProtocolApplication } from "@qualigence/runner-control";
+import type { AuthenticatedRunnerContext, RunnerProtocolApplication, RunnerProtocolApplicationResolver } from "@qualigence/runner-control";
 import type {
   AcceptedExecutionJob,
   ExecutionJobLease,
@@ -33,7 +33,8 @@ const DEFAULT_MAXIMUM_HANDSHAKE_PENDING_BYTES = 1024 * 1024;
 export interface GrpcRunnerProtocolServerOptions {
   readonly tls: { readonly ca: Buffer; readonly key: Buffer; readonly cert: Buffer };
   readonly authenticator: RunnerPeerAuthenticator;
-  readonly application: RunnerProtocolApplication;
+  readonly application?: RunnerProtocolApplication;
+  readonly applicationResolver?: RunnerProtocolApplicationResolver;
   readonly host?: string;
   readonly port?: number;
   readonly maxMessageBytes?: number;
@@ -47,13 +48,20 @@ export interface GrpcRunnerProtocolServerOptions {
 
 type Duplex = grpc.ServerDuplexStream<RunnerFrameWire, ServerFrameWire>;
 
+export interface RunnerConnectionLookup {
+  readonly tenantId: string;
+  readonly runnerId: string;
+}
+
+type RunnerConnectionSelector = string | RunnerConnectionLookup;
+
 export class GrpcRunnerProtocolServer {
   private readonly server: grpc.Server;
   private readonly options: GrpcRunnerProtocolServerOptions;
   private readonly connections = new Map<string, ServerRunnerConnection>();
   private readonly connectionWaiters = new Map<string, Array<Deferred<RunnerConnectionPort>>>();
   private readonly generations = new Map<string, number>();
-  private readonly establishingRunnerIds = new Set<string>();
+  private readonly establishingConnectionKeys = new Set<string>();
   private readonly lastReleased = new Map<string, ServerRunnerConnection>();
   private readonly activeCalls = new Set<Duplex>();
   private readonly handshakes = new Set<Promise<ServerRunnerConnection | undefined>>();
@@ -62,6 +70,9 @@ export class GrpcRunnerProtocolServer {
   private shutdownPromise: Promise<void> | undefined;
 
   constructor(options: GrpcRunnerProtocolServerOptions) {
+    if (options.application === undefined && options.applicationResolver === undefined) {
+      throw new Error("GrpcRunnerProtocolServer requires an application or applicationResolver");
+    }
     this.options = options;
     const maxMessageBytes = options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
     this.server = new grpc.Server({
@@ -92,21 +103,28 @@ export class GrpcRunnerProtocolServer {
   }
 
   connection(runnerId: string): RunnerConnectionPort | undefined {
-    return this.connections.get(runnerId);
+    return this.connections.get(connectionKey({ kind: "local", runnerId }));
   }
 
-  waitForConnection(runnerId: string, signal?: AbortSignal): Promise<RunnerConnectionPort> {
+  connectionFor(lookup: RunnerConnectionLookup): RunnerConnectionPort | undefined {
+    return this.connections.get(connectionKey({ kind: "tenant", ...lookup }));
+  }
+
+  waitForConnection(runnerId: string, signal?: AbortSignal): Promise<RunnerConnectionPort>;
+  waitForConnection(lookup: RunnerConnectionLookup, signal?: AbortSignal): Promise<RunnerConnectionPort>;
+  waitForConnection(lookup: RunnerConnectionSelector, signal?: AbortSignal): Promise<RunnerConnectionPort> {
     if (this.shuttingDown) {
       return Promise.reject(new RunnerProtocolError("SessionClosed", "server is shutting down"));
     }
-    const existing = this.connections.get(runnerId);
+    const key = connectionKeyForLookup(lookup);
+    const existing = this.connections.get(key);
     if (existing) {
       return Promise.resolve(existing);
     }
     const deferred = createDeferred<RunnerConnectionPort>();
-    const waiters = this.connectionWaiters.get(runnerId) ?? [];
+    const waiters = this.connectionWaiters.get(key) ?? [];
     waiters.push(deferred);
-    this.connectionWaiters.set(runnerId, waiters);
+    this.connectionWaiters.set(key, waiters);
     if (signal) {
       signal.addEventListener(
         "abort",
@@ -246,7 +264,7 @@ export class GrpcRunnerProtocolServer {
       failCall(
         call,
         grpc.status.UNAUTHENTICATED,
-        error instanceof RunnerProtocolError ? error.code : "TlsPeerRejected",
+        errorCode(error) === "ProtocolViolation" ? "TlsPeerRejected" : errorCode(error),
       );
       return undefined;
     }
@@ -258,28 +276,31 @@ export class GrpcRunnerProtocolServer {
     }
     if (terminated()) return undefined;
 
-    if (this.establishingRunnerIds.has(identity.runnerId)) {
+    const key = connectionKeyFromIdentity(identity);
+    if (this.establishingConnectionKeys.has(key)) {
       failCall(call, grpc.status.FAILED_PRECONDITION, "RunnerAlreadyConnected");
       return undefined;
     }
 
-    const existing = this.connections.get(identity.runnerId);
+    const existing = this.connections.get(key);
     if (existing !== undefined && hello.resumeToken === undefined) {
       failCall(call, grpc.status.FAILED_PRECONDITION, "RunnerAlreadyConnected");
       return undefined;
     }
 
-    this.establishingRunnerIds.add(identity.runnerId);
+    this.establishingConnectionKeys.add(key);
+    let application: RunnerProtocolApplication | undefined;
     try {
       if (terminated()) return undefined;
-      const welcome = await this.options.application.openSession(hello, identity);
+      application = await this.applicationFor(identity);
+      const welcome = await application.openSession(hello, identity);
       if (terminated()) {
-        await this.options.application.closeSession(welcome.sessionId).catch(() => undefined);
+        await application.closeSession(welcome.sessionId).catch(() => undefined);
         return undefined;
       }
 
-      const generation = (this.generations.get(identity.runnerId) ?? 0) + 1;
-      this.generations.set(identity.runnerId, generation);
+      const generation = (this.generations.get(key) ?? 0) + 1;
+      this.generations.set(key, generation);
       if (existing !== undefined) {
         this.releaseConnection(existing);
       }
@@ -287,9 +308,10 @@ export class GrpcRunnerProtocolServer {
       call.write({ correlation_id: frame.correlation_id, welcome: welcomeToWire(welcome) });
       const connection = new ServerRunnerConnection(
         this,
-        this.options.application,
+        application,
         call,
         identity,
+        key,
         capabilityTokens(hello),
         welcome.sessionId,
         generation,
@@ -315,36 +337,49 @@ export class GrpcRunnerProtocolServer {
       failApplicationCall(call, error);
       return undefined;
     } finally {
-      this.establishingRunnerIds.delete(identity.runnerId);
+      this.establishingConnectionKeys.delete(key);
     }
   }
 
+  private async applicationFor(identity: AuthenticatedRunnerContext): Promise<RunnerProtocolApplication> {
+    const resolved = this.options.applicationResolver === undefined
+      ? this.options.application
+      : await this.options.applicationResolver.resolve(identity);
+    if (resolved === undefined) {
+      throw new RunnerProtocolError("ProtocolViolation", "runner application could not be resolved");
+    }
+    return resolved;
+  }
+
   private registerConnection(connection: ServerRunnerConnection): void {
-    this.connections.set(connection.runnerId, connection);
-    const waiters = this.connectionWaiters.get(connection.runnerId);
+    this.connections.set(connection.connectionKey, connection);
+    const waiters = this.connectionWaiters.get(connection.connectionKey);
     if (waiters) {
-      this.connectionWaiters.delete(connection.runnerId);
+      this.connectionWaiters.delete(connection.connectionKey);
       for (const waiter of waiters) waiter.resolve(connection);
     }
   }
 
   private releaseConnection(connection: ServerRunnerConnection): void {
-    if (this.connections.get(connection.runnerId) === connection) {
-      this.connections.delete(connection.runnerId);
+    if (this.connections.get(connection.connectionKey) === connection) {
+      this.connections.delete(connection.connectionKey);
     }
-    this.lastReleased.set(connection.runnerId, connection);
+    this.lastReleased.set(connection.connectionKey, connection);
   }
 
   supersededConnection(runnerId: string): ServerRunnerConnection | undefined {
-    return this.lastReleased.get(runnerId);
+    return this.lastReleased.get(connectionKey({ kind: "local", runnerId }));
   }
 
   connectionGeneration(runnerId: string): number | undefined {
-    return this.generations.get(runnerId);
+    return this.generations.get(connectionKey({ kind: "local", runnerId }));
   }
 
-  isCurrentGeneration(runnerId: string, generation: number): boolean {
-    return this.generations.get(runnerId) === generation;
+  isCurrentGeneration(connectionKeyOrRunnerId: string, generation: number): boolean {
+    return (
+      this.generations.get(connectionKeyOrRunnerId) ??
+      this.generations.get(connectionKey({ kind: "local", runnerId: connectionKeyOrRunnerId }))
+    ) === generation;
   }
 }
 
@@ -361,6 +396,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     private readonly application: RunnerProtocolApplication,
     private readonly call: Duplex,
     readonly identity: Awaited<ReturnType<RunnerPeerAuthenticator["authenticate"]>>,
+    readonly connectionKey: string,
     capabilities: readonly string[],
     readonly sessionId: string,
     readonly generation: number,
@@ -377,6 +413,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     if (this.disposed) {
       return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection is closed"));
     }
+    this.authorizePayloadAdmission(job, requirements);
     const offer = await this.application.createOffer(this.sessionId, job, requirements);
     if (this.disposed) {
       return Promise.reject(new RunnerProtocolError("SessionClosed", "runner connection closed while creating offer"));
@@ -398,12 +435,30 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     return Promise.resolve();
   }
 
+  private authorizePayloadAdmission(job: AcceptedExecutionJob, requirements: readonly string[]): void {
+    const runner = this.authenticatedRunner;
+    if (runner.scope.kind === "tenant" && !runner.scope.projectIds.includes(job.projectId)) {
+      throw new RunnerProtocolError(
+        "RunnerScopeViolation",
+        `runner ${runner.runnerId} is not authorized for project ${job.projectId}`,
+        { details: { runnerId: runner.runnerId, tenantId: runner.scope.tenantId, projectId: job.projectId } },
+      );
+    }
+    const advertised = new Set(runner.capabilities);
+    const missingCapabilities = requirements.filter((requirement) => !advertised.has(requirement));
+    if (missingCapabilities.length > 0) {
+      throw new RunnerProtocolError("CapabilityMismatch", "runner is missing required capabilities", {
+        details: { missingCapabilities },
+      });
+    }
+  }
+
   drain(): Promise<void> {
     return this.processing;
   }
 
   enqueue(frame: RunnerFrameWire): void {
-    if (!this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+    if (!this.server.isCurrentGeneration(this.connectionKey, this.generation)) {
       return;
     }
     if (this.disposed) return;
@@ -438,7 +493,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     if (this.disposed) {
       throw new RunnerProtocolError("SessionClosed", "runner connection is closed");
     }
-    if (!this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+    if (!this.server.isCurrentGeneration(this.connectionKey, this.generation)) {
       return;
     }
     if (frame.accept_offer !== undefined) {
@@ -499,7 +554,7 @@ class ServerRunnerConnection implements RunnerConnectionPort {
     }
     this.pendingOffers.clear();
     this.call.end();
-    if (this.server.isCurrentGeneration(this.runnerId, this.generation)) {
+    if (this.server.isCurrentGeneration(this.connectionKey, this.generation)) {
       void this.application.closeSession(this.sessionId).catch(() => undefined);
     }
   }
@@ -538,6 +593,24 @@ export { SUPPORTED_PROTOCOL_MAJORS };
 
 function listenerAddress(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+function connectionKeyForLookup(lookup: RunnerConnectionSelector): string {
+  return typeof lookup === "string"
+    ? connectionKey({ kind: "local", runnerId: lookup })
+    : connectionKey({ kind: "tenant", tenantId: lookup.tenantId, runnerId: lookup.runnerId });
+}
+
+function connectionKeyFromIdentity(identity: AuthenticatedRunnerContext): string {
+  return identity.scope.kind === "tenant"
+    ? connectionKey({ kind: "tenant", tenantId: identity.scope.tenantId, runnerId: identity.runnerId })
+    : connectionKey({ kind: "local", runnerId: identity.runnerId });
+}
+
+function connectionKey(input: { readonly kind: "local"; readonly runnerId: string } | { readonly kind: "tenant"; readonly tenantId: string; readonly runnerId: string }): string {
+  return input.kind === "local"
+    ? JSON.stringify(["local", input.runnerId])
+    : JSON.stringify(["tenant", input.tenantId, input.runnerId]);
 }
 
 function capabilityTokens(hello: import("@qualigence/runner-protocol").RunnerHello): readonly string[] {

@@ -2,6 +2,7 @@ export type {
   AuthenticatedRunnerContext,
   RunnerAuthorizationScope,
   RunnerProtocolApplication,
+  RunnerProtocolApplicationResolver,
 } from "./runner-protocol-application.js";
 
 export type {
