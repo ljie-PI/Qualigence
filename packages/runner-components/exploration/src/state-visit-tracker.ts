@@ -1,62 +1,15 @@
-import {
-  canonicalPayloadHash,
-  type ObservationGraph,
-} from "@qualigence/runner-protocol";
+import type { ObservationGraphV1 } from "@qualigence/runner-protocol";
+import { fingerprintObservationGraphV1 } from "./observation-v1-consumer.js";
 
 /**
- * A deterministic, canonical fingerprint of an Observation Graph used to detect
- * revisited states. It reuses the protocol's {@link canonicalPayloadHash} rather
- * than inventing a parallel hashing scheme.
- *
- * Normalization keeps only semantically meaningful state — URL path, and each
- * interactable node's role/name/text/value/disabled flag — and drops everything
- * volatile: the graph id, node ids, capture timestamp, artifact refs, model
- * confidence, and the URL query/hash. Nodes are sorted so DOM reordering does
- * not change the fingerprint, while a genuine semantic or state change does.
+ * A deterministic, canonical fingerprint of an Observation Graph v1 used to
+ * detect revisited states. It validates the graph, reads URL/title semantics only
+ * from the typed redacted web/v1 extension, and hashes a stable projection of v1
+ * core fields and canonical relation semantics while dropping volatile graph ids,
+ * node ids, timestamps, confidence, and evidence refs.
  */
-export function fingerprintObservationGraph(graph: ObservationGraph): string {
-  const nodes = graph.nodes
-    .map((node) => ({
-      role: normalizeText(node.role),
-      name: normalizeText(node.name ?? ""),
-      text: normalizeText(node.text ?? ""),
-      value: normalizeText(node.value ?? ""),
-      disabled: node.disabled === true,
-    }))
-    .sort((a, b) => (canonicalNode(a) < canonicalNode(b) ? -1 : canonicalNode(a) > canonicalNode(b) ? 1 : 0));
-
-  return canonicalPayloadHash({
-    urlPath: normalizeUrlPath(graph.url),
-    title: normalizeText(graph.title ?? ""),
-    nodes,
-  });
-}
-
-function canonicalNode(node: {
-  readonly role: string;
-  readonly name: string;
-  readonly text: string;
-  readonly value: string;
-  readonly disabled: boolean;
-}): string {
-  return `${node.role}\u0000${node.name}\u0000${node.text}\u0000${node.value}\u0000${node.disabled ? "1" : "0"}`;
-}
-
-function normalizeUrlPath(url: string | undefined): string {
-  if (url === undefined || url.length === 0) {
-    return "";
-  }
-  try {
-    return new URL(url).pathname;
-  } catch {
-    // Not an absolute URL — strip any query/hash and keep the path portion.
-    const withoutHash = url.split("#", 1)[0] ?? "";
-    return withoutHash.split("?", 1)[0] ?? "";
-  }
-}
-
-function normalizeText(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
+export function fingerprintObservationGraph(graph: ObservationGraphV1): string {
+  return fingerprintObservationGraphV1(graph);
 }
 
 /** The outcome of recording a state visit. */
@@ -92,7 +45,7 @@ export class StateVisitTracker {
     }
   }
 
-  fingerprintOf(graph: ObservationGraph): string {
+  fingerprintOf(graph: ObservationGraphV1): string {
     return fingerprintObservationGraph(graph);
   }
 

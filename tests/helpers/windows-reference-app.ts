@@ -321,37 +321,39 @@ export class FakeReferenceCompanion implements CompanionClient {
 // LS-08 Skill compiler / replay integration leg
 // ---------------------------------------------------------------------------
 
-import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
 import type {
-  ReplayObservation,
+  ObservationGraphV1,
+  VersionedExtension,
+} from "@qualigence/observation-contracts";
+import type {
   ReplayTarget,
   ResolvedReplayAction,
 } from "@qualigence/skill-replay";
 
 /**
- * Project a captured desktop {@link ObservationGraphV1} into the semantic
- * {@link ReplayObservation} the LS-08 Skill replay controller consumes. Only the
- * cross-platform core (role/name/value) crosses the boundary — a secret node
- * exposes no value, exactly as the Graph guarantees. This proves the Desktop
- * Graph v1 feeds the SAME replay pipeline the Web target uses.
+ * Attach the replay-only semantic claims extension to the captured desktop
+ * {@link ObservationGraphV1}. The Skill replay controller consumes the same v1
+ * graph core as Web replay; claim checkpoints are read through this typed
+ * extension instead of the legacy ReplayObservation side channel.
  */
-export function graphToReplayObservation(
+export function graphWithReplayClaims(
   graph: ObservationGraphV1,
   claims: readonly string[],
-): ReplayObservation {
+): ObservationGraphV1 {
+  if (claims.length === 0) {
+    return graph;
+  }
+  const claimsExtension: VersionedExtension = {
+    type: "skill-replay/v1",
+    version: "1.0",
+    payload: { claims: [...claims] },
+  };
   return {
-    urlPath: `app://${graph.target.targetId}`,
-    nodes: graph.nodes.map((node) => {
-      const base: { role: string; name: string; text?: string } = {
-        role: node.role,
-        name: node.name ?? "",
-      };
-      if (node.value !== undefined) {
-        base.text = node.value;
-      }
-      return base;
-    }),
-    claims: [...claims],
+    ...graph,
+    extensions: {
+      ...graph.extensions,
+      "skill-replay/v1": claimsExtension,
+    },
   };
 }
 
@@ -370,8 +372,8 @@ export class DesktopReferenceReplayTarget implements ReplayTarget {
     private readonly submittedClaimId: string,
   ) {}
 
-  async capture(): Promise<ReplayObservation> {
-    return graphToReplayObservation(this.graph, [...this.claims]);
+  async capture(): Promise<ObservationGraphV1> {
+    return graphWithReplayClaims(this.graph, [...this.claims]);
   }
 
   async execute(action: ResolvedReplayAction): Promise<void> {

@@ -22,7 +22,7 @@ import type {
   ExplorationAttemptProgress,
   ExplorationPolicy,
 } from "@qualigence/mission";
-import { canonicalPayloadHash } from "@qualigence/runner-protocol";
+import { canonicalPayloadHash, observationGraphHash } from "@qualigence/runner-protocol";
 import type {
   BenchmarkRunRecord,
   PersistedAttempt,
@@ -30,6 +30,7 @@ import type {
 import {
   ScenarioExplorationTarget,
   ScenarioWalkAgent,
+  graphForState,
   type ScenarioDefinition,
 } from "./scenario.js";
 
@@ -141,13 +142,50 @@ function sourceBindingHashFor(input: {
     profileSha256: input.profileHash,
     groundTruthSha256: input.truthHash,
     scenario: input.manifestScenario,
-    scenarioDefinition: input.scenarioDefinition,
+    scenarioDefinition: scenarioDefinitionBinding(input.scenarioDefinition),
     repetition: input.repetition,
   });
 }
 
 function policyBindingHashFor(policy: ExplorationPolicy): string {
   return canonicalPayloadHash(policy);
+}
+
+interface ScenarioDefinitionBinding {
+  readonly scenarioId: string;
+  readonly mode: ScenarioDefinition["mode"];
+  readonly seedUrl?: { readonly origin: string; readonly pathname: string };
+  readonly states: readonly {
+    readonly id: string;
+    readonly advanceNodeId: string | null;
+    readonly signals: ScenarioDefinition["states"][number]["signals"];
+    readonly observationGraphSha256: string;
+  }[];
+}
+
+function scenarioDefinitionBinding(definition: ScenarioDefinition): ScenarioDefinitionBinding {
+  return {
+    scenarioId: definition.scenarioId,
+    mode: definition.mode,
+    ...(definition.seedUrl === undefined ? {} : { seedUrl: redactedUrlBinding(definition.seedUrl) }),
+    states: definition.states.map((state) => ({
+      id: state.id,
+      advanceNodeId: state.advanceNodeId,
+      signals: state.signals,
+      observationGraphSha256: observationGraphHash(graphForState(definition.scenarioId, state)),
+    })),
+  };
+}
+
+function redactedUrlBinding(url: string): { readonly origin: string; readonly pathname: string } {
+  const parsed = new URL(url);
+  return { origin: parsed.origin, pathname: parsed.pathname };
+}
+
+function compareStrings(left: string, right: string): number {
+  const normalizedLeft = left.normalize("NFC");
+  const normalizedRight = right.normalize("NFC");
+  return normalizedLeft < normalizedRight ? -1 : normalizedLeft > normalizedRight ? 1 : 0;
 }
 
 function seedBindingHashFor(policy: ExplorationPolicy): string {
@@ -185,7 +223,9 @@ function inputBindingHashFor(input: {
     groundTruthSha256: input.truthHash,
     policyBindingHash: input.policyBindingHash,
     seedBindingHash: input.seedBindingHash,
-    scenarioDefinitions: input.scenarios,
+    scenarioDefinitions: input.scenarios
+      .map((scenario) => scenarioDefinitionBinding(scenario))
+      .sort((left, right) => compareStrings(left.scenarioId, right.scenarioId)),
   });
 }
 

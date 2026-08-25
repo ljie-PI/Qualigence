@@ -10,6 +10,21 @@ export {
 export type { StateVisit } from "./state-visit-tracker.js";
 
 export {
+  findWebV1Semantics,
+  observationGraphPromptView,
+  observationNodeVisibleText,
+  requireWebV1Semantics,
+  validateConsumerObservationGraph,
+  webV1LocationHref,
+} from "./observation-v1-consumer.js";
+
+export type {
+  ObservationGraphPromptView,
+  ObservationNodePromptView,
+  WebV1Semantics,
+} from "./observation-v1-consumer.js";
+
+export {
   AllowAllExplorationPolicyGate,
   DefaultExplorationActionClassifier,
   ExplorationController,

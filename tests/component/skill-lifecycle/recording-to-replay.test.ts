@@ -21,16 +21,18 @@ import type {
   SkillVerificationScope,
 } from "@qualigence/skill";
 import type { RecordingSession } from "@qualigence/recording";
+import { PreV1TraceProjector } from "@qualigence/observation-migration";
+import { validateObservationGraphV1, type ObservationGraph, type ObservationGraphV1 } from "@qualigence/runner-protocol";
 import {
   SkillReplayController,
-  type ReplayObservation,
   type ReplayTarget,
 } from "@qualigence/skill-replay";
 
+const scopeOrigin = "https://shop.example";
 const scope: SkillVerificationScope = {
   projectId: "proj-1",
   targetId: "web-cart",
-  origin: "https://shop.example",
+  origin: scopeOrigin,
 };
 
 const recording: RecordingSession = {
@@ -74,14 +76,46 @@ const proposal: SkillInductionProposal = {
 };
 
 const ADD = { role: "button", name: "Add to cart" };
+const projector = new PreV1TraceProjector();
+
+function projectedReplayGraph(
+  path: string,
+  nodes: readonly { readonly role: string; readonly name: string }[],
+  graphId = `legacy-${path.replace(/[^a-z0-9]+/gi, "-")}`,
+): ObservationGraphV1 {
+  const observation: ObservationGraph = {
+    graphId,
+    url: `${scopeOrigin}${path}?session=legacy-fixture`,
+    title: "Skill lifecycle fixture",
+    capturedAt: "2026-08-01T00:00:00.000Z",
+    artifactRefs: ["recording-graph-ref"],
+    nodes: nodes.map((node, index) => ({
+      id: `${graphId}:node-${index + 1}`,
+      role: node.role,
+      name: node.name,
+      confidence: 1,
+    })),
+  };
+  return validateObservationGraphV1(projector.project({
+    assetId: graphId,
+    kind: "skill",
+    sourceSchemaVersion: "pre-v1-replay-fixture",
+    target: { kind: "web", targetId: scopeOrigin },
+    adapterId: "skill-lifecycle-fixture",
+    sourceKind: "accessibility",
+    observation,
+  }));
+}
 
 class CartTarget implements ReplayTarget {
   private path = "/product";
+  private captures = 0;
   constructor(private readonly variant: "normal" | "dom" = "normal") {}
-  async capture(): Promise<ReplayObservation> {
+  async capture(): Promise<ObservationGraphV1> {
+    this.captures += 1;
     const nodes =
       this.variant === "dom" ? [{ ...ADD, name: "Add to cart" }] : [ADD];
-    return { urlPath: this.path, nodes, claims: [] };
+    return projectedReplayGraph(this.path, nodes, `cart-${this.captures}`);
   }
   async execute(action: { step: { intent: { kind: string } } }): Promise<void> {
     if (action.step.intent.kind === "click") {
@@ -91,8 +125,8 @@ class CartTarget implements ReplayTarget {
 }
 
 class OffTarget implements ReplayTarget {
-  async capture(): Promise<ReplayObservation> {
-    return { urlPath: "/home", nodes: [ADD], claims: [] };
+  async capture(): Promise<ObservationGraphV1> {
+    return projectedReplayGraph("/home", [ADD], "off-target");
   }
   async execute(): Promise<void> {
     throw new Error("must not execute after divergence");

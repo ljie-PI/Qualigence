@@ -22,6 +22,7 @@ import type {
   StructuredModelRequest,
 } from "@qualigence/model-gateway";
 import type { ModelProviderRequest } from "@qualigence/model-provider";
+import type { ObservationGraphV1 } from "@qualigence/runner-protocol";
 import { observationGraphV1, type ObservationGraphV1TestNode } from "../../helpers/observation-graph-v1.js";
 
 describe("model-backed runner components", () => {
@@ -80,6 +81,43 @@ describe("model-backed runner components", () => {
     });
     expect(decision).not.toHaveProperty("selector");
     expect(gateway.requests[0]?.operation).toBe("execution.decision");
+  });
+
+  it("serializes a validated v1 prompt view without raw query values or secret node values", async () => {
+    const gateway = new ScriptedGateway([
+      { action: { kind: "click", nodeId: "node-add" }, reason: "add the item" },
+    ]);
+    const provider = new ModelBackedDecisionProvider(gateway, "test-model");
+
+    await provider.decide({
+      job: job(),
+      observation: observation("before", [
+        { id: "node-add", role: "button", name: "Add to cart", confidence: 1 },
+        { id: "node-secret", role: "textbox", value: "****", sensitivity: "secret", confidence: 1 },
+      ], {
+        extensions: {
+          "web/v1": {
+            type: "web/v1",
+            version: "1.0",
+            payload: {
+              origin: "https://example.test",
+              pathname: "/checkout",
+              title: "Checkout",
+              viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+              query: { token: "[redacted]" },
+            },
+          },
+        },
+      }),
+    });
+
+    const prompt = gateway.requests[0]?.messages[1]?.content ?? "";
+    expect(prompt).toContain("\"schema\":{\"epoch\":\"v1\"");
+    expect(prompt).toContain("\"web\":{\"origin\":\"https://example.test\",\"pathname\":\"/checkout\"");
+    expect(prompt).toContain("\"queryKeys\":[\"token\"]");
+    expect(prompt).not.toContain("[redacted]");
+    expect(prompt).not.toContain("****");
+    expect(prompt).not.toContain("extensions");
   });
 
   it("retains the legacy click proposal for a single immutable click Plan step", async () => {
@@ -795,8 +833,9 @@ function job() {
 function observation(
   graphId: string,
   nodes: readonly ObservationGraphV1TestNode[],
+  overrides: Partial<ObservationGraphV1> = {},
 ) {
-  return observationGraphV1(graphId, nodes);
+  return observationGraphV1(graphId, nodes, overrides);
 }
 
 function verificationContext() {

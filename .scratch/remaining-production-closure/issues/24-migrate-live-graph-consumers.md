@@ -4,7 +4,7 @@
 
 **Blocked by:** 21 — Run the real Reference Model benchmark; 23 — Migrate live Web and Runner producers to Graph v1.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -28,8 +28,11 @@ This ticket owns the consumer migration phase. It moves all listed live model, e
 This is the complete edit scope.
 
 - `packages/{runner-components/model-agent,runner-components/exploration,execution-application,observation-migration}/src`
+- `packages/runner-components/skill-replay/src/**` (maintainer-authorized scope expansion for active Skill replay consumer migration only)
 - `apps/benchmark-runner/src`
 - `tests/{unit/runner-components,unit/execution-application,replay,property}`
+- `tests/helpers/skill-reverifier.ts` and `tests/helpers/windows-reference-app.ts` (maintainer-authorized support fixtures for v1 replay/recompiler/reference-app coverage only)
+- `tests/component/skill-lifecycle/recording-to-replay.test.ts` (maintainer-authorized stale Skill lifecycle replay fixture update only)
 - `.scratch/remaining-production-closure/issues/24-migrate-live-graph-consumers.md`
 - Post-review acceptance only: `tests/e2e/observation-v1/consumer-migration.test.ts`
 
@@ -43,7 +46,7 @@ Resolve conflicts in this order: security/public-contract invariants, architectu
 - Context authority: all ownership, seams, invariants, and verification surfaces in **Affected context paths**.
 - Umbrella authority: `.scratch/remaining-production-closure/spec.md` user stories 35, 38-42, and 68; Implementation Decisions on canonicalization/`web/v1`/candidate status; Testing Decisions on combined model/resolver/exploration/evidence/benchmark/replay coverage and complete matrices.
 - Tracked predecessor authority: `.scratch/remaining-production-closure/issues/21-real-reference-model-benchmark.md` and `.scratch/remaining-production-closure/issues/23-migrate-live-web-producers-v1.md`, together with their merged GitHub PR/check evidence, establish the benchmark and producer behavior inherited here.
-- Current public contracts and tests: `packages/contracts/observation/src/*` and `packages/runner-kernel/src/execution-runtime.ts` (consume, do not edit); `packages/runner-components/model-agent/src/model-agent.ts`; `packages/runner-components/exploration/src/{exploration-controller,state-visit-tracker}.ts`; `packages/execution-application/src/artifact-recording-observer.ts`; `packages/observation-migration/src/{pre-v1-projector,migration-runner,skill-recompiler}.ts`; `apps/benchmark-runner/src/{run,scenario}.ts`; and the consumer/replay tests named here.
+- Current public contracts and tests: `packages/contracts/observation/src/*` and `packages/runner-kernel/src/execution-runtime.ts` (consume, do not edit); `packages/runner-components/model-agent/src/model-agent.ts`; `packages/runner-components/exploration/src/{exploration-controller,state-visit-tracker}.ts`; `packages/runner-components/skill-replay/src/skill-replay-controller.ts`; `packages/execution-application/src/artifact-recording-observer.ts`; `packages/observation-migration/src/{pre-v1-projector,migration-runner,skill-recompiler}.ts`; `apps/benchmark-runner/src/{run,scenario}.ts`; and the consumer/replay tests named here.
 - Ticket-local and GitHub evidence: this ticket's `## Comments` and `## Answer`, merged predecessor and final ticket PRs, required checks, reviewed-head and merge-commit bindings, and any deferred advanced-hardening Issues in `ljie-PI/Qualigence` are the durable execution evidence.
 
 ## Execution protocol
@@ -75,6 +78,15 @@ corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts
 
 Run model, resolver-facing decisions, exploration, evidence decoration, the real benchmark path, and replay together over v1 producer output and projected historical input. Prove deterministic fingerprints/results, preserved evidence provenance, extension-major rejection, and no direct legacy Graph input to a live consumer.
 
+## Comments
+
+### start — 2026-08-25
+
+- Fixed base: `f34e7547c8208dd85425f64992553d4b8d290afc` (`main`/`origin/main` at isolated worktree start).
+- Predecessor merge evidence: Ticket 21 is `resolved` with PR #101 merge commit `219532953a4eb0601b8471a8e510508dbd2c8647` present in current history; Ticket 23 is `resolved` with PR #97 merge commit `b7d087526be47c86950ae0ff1714f68043445a6d` present in current history and PR #98 docs resolution `4e6cc92` on the base branch.
+- Behavior Matrix applicability: applicable; every row in this ticket's matrix governs the stateful/side-effecting consumer migration across model decisions, exploration, evidence decoration, benchmark state, and replay/migration paths. No rows are marked N/A for implementation planning.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review acceptance `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` is intentionally left for the parent after complete-matrix review.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
@@ -96,7 +108,70 @@ Run model, resolver-facing decisions, exploration, evidence decoration, the real
 | Consumer process restarts after durable checkpoint/projection/attempt | `not_started` until resume | Resume from durable state | Acknowledged records remain authoritative | Skip completed state; continue only from safe checkpoint | Restart/resume evidence |
 | Terminal persistence fails for checkpoint, projection, evidence decoration, or benchmark attempt | `started` | Stable store error; no success claim | Atomic rollback/no partial record at the owning seam | Retry exact known write only when safe; never rerun unknown action | Injected failure, rollback, and stopped workflow |
 
-- [ ] All live consumers use v1 fields and typed extension readers.
-- [ ] Artifact decorators use evidence references without losing provenance.
-- [ ] Exploration fingerprints and benchmark state remain deterministic.
-- [ ] Historical pre-v1 decoding remains isolated to migration paths.
+### review-fix — 2026-08-25
+
+- Reviewed head fixed: `3895e54e70b6b1a00c90e3e638377681f701d3b7`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core findings addressed in scope: v1 exploration fingerprints previously hashed secret node value/state, and benchmark `inputSha256`/run identity previously hashed raw `ScenarioDefinition[]` including raw URL query values instead of the existing canonical/redacted `scenarioDefinitionBinding()`/v1 graph-hash path.
+- Fix commit evidence: `6e04ac094f088cd27dfaad919ba88c40d24119db` (`fix(graph): redact v1 fingerprints and benchmark input binding`) updates the fingerprint projection, benchmark input binding, and focused regression tests.
+- Gates run before fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 96 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining active blocker at this reviewed head: Skill replay migration still requires implementation. Maintainer authorization has now expanded this ticket's complete edit scope to `packages/runner-components/skill-replay/src/**` for active Skill replay consumer migration, with directly related `tests/unit/runner-components/skill-replay/**` and `tests/replay/procedure-skill/**` already covered by the existing test-root allowance. The expansion is limited to migrating active Skill replay to `ObservationGraphV1`; it does not authorize Runner Kernel/public Graph contract changes, Web producer changes, repository-wide legacy contraction, package manifests, migrations, or unrelated test roots.
+
+### scope-decision — 2026-08-25
+
+- Maintainer further authorized Ticket 24 to update `tests/helpers/skill-reverifier.ts`, `tests/helpers/windows-reference-app.ts`, and `tests/component/skill-lifecycle/recording-to-replay.test.ts` only as directly affected v1 replay/recompiler/reference-app/Skill lifecycle fixtures. This closes the strict-scope ambiguity raised during review of head `a07278b332b22722f7457c77d2c8886f126bfba0`; it does not authorize additional `tests/helpers/**`, unrelated component tests, package manifests, public Graph contracts, Web producers, migrations, or repository-wide legacy contraction.
+- Remaining acceptance blocker after head `a07278b332b22722f7457c77d2c8886f126bfba0`: add the required post-review acceptance test file `tests/e2e/observation-v1/consumer-migration.test.ts` and update the stale Skill lifecycle component replay fixture to produce validated `ObservationGraphV1` before live replay.
+
+
+### scope-decision implementation - 2026-08-25
+
+- Maintainer scope decision applied at head `b6a20778da50f82a43faf9629fa59b4134ad61e0`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`. Prior reviewed/fix heads remain `3895e54e70b6b1a00c90e3e638377681f701d3b7`, `6e04ac094f088cd27dfaad919ba88c40d24119db`, and `a30cfc4bad92db595a9f7bae976fe9c37334252f`.
+- New in-scope fix commit: `2f49dcb7701d78e99e492ec0610e167b0081c784` (`fix(skill-replay): consume observation graph v1`). Active Skill replay now validates every captured payload as `ObservationGraphV1`, requires typed `web/v1` semantics for web/path replay, reads `claim_satisfied` through a typed `skill-replay/v1` extension, and rejects direct legacy `ReplayObservation` before execution.
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 101 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed. Additional affected check `CI=true corepack pnpm vitest run tests/component/windows-uia/reference-app-pipeline.test.ts` passed (1 file / 10 tests passed, 1 skipped) after updating the shared replay test target to return v1.
+- Remaining risks: no PR has been created or merged; post-review acceptance remains pending after a fresh complete-matrix review; deprecated `ReplayObservation` export remains only as a stale-caller compatibility type and is covered by runtime rejection.
+
+### review2 acceptance fix — 2026-08-25
+
+- Review2 head: `a07278b332b22722f7457c77d2c8886f126bfba0`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Scope decision commit: `6b5db2f6d1e696a96f0dfb6ada1f606ee7e225c9` authorized only `tests/helpers/skill-reverifier.ts`, `tests/helpers/windows-reference-app.ts`, `tests/component/skill-lifecycle/recording-to-replay.test.ts`, and post-review acceptance `tests/e2e/observation-v1/consumer-migration.test.ts` as directly affected fixtures/acceptance.
+- New fix commit: `0693d6f9781d558b3ee566189bbeee447c035752` (`test(graph): add consumer migration acceptance`). It adds the required consumer-migration acceptance file and updates the stale Skill lifecycle component fixture so replay captures project pre-v1 recording input through `PreV1TraceProjector` into validated `ObservationGraphV1` before `SkillReplayController` consumes them.
+- Fix coverage: acceptance now exercises model and verifier prompt consumers, resolver-facing node decisions, artifact evidence decoration/provenance preservation, exploration fingerprint/result determinism over projected historical v1 input, benchmark redacted input binding determinism, active Skill replay over projected historical input, unsupported extension-major rejection, and direct legacy replay rejection before side effects.
+- Gates run: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 101 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm vitest run tests/component/skill-lifecycle/recording-to-replay.test.ts` completed with 1 skipped file / 1 skipped test on Windows due the existing `it.skipIf(process.platform === "win32")` quarantine; `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required; the Skill lifecycle component scenario remains skipped on Windows, so non-Windows execution is represented by typecheck and the migrated fixture source rather than local runtime execution on this host.
+
+### review3 relation-fingerprint fix — 2026-08-25
+
+- Reviewed head fixed: `1aae2c959854d835098007299d28bbc004d07a2f`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core blocker addressed in scope: exploration fingerprints now include canonical/redacted v1 relation and root-node semantics, so relation-only valid graph changes no longer collide while semantic-set ordering stays stable and secret/query-value redaction is preserved.
+- New fix commit: `e1da74588f3dcedd3454eca32f83e63fe453c5ac` (`fix(exploration): include v1 relations in fingerprints`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 102 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
+
+### review4 relation-target-topology fix — 2026-08-25
+
+- Reviewed head fixed: `7bf213a4220835281ec8cb43cdac0e1721dbe7bb`; fixed point remains `f34e7547c8208dd85425f64992553d4b8d290afc`.
+- Core blocker addressed in scope: exploration fingerprints no longer collapse a relation target to only the target node's base redacted identity. Target-node outgoing relation topology now contributes through deterministic, topology-aware semantic identities, preserving volatile node-ID normalization, canonical relation/root/node set ordering, and secret/query-value redaction while avoiding recursive traversal on cycles.
+- New fix commit: `f846e35e48fe5317010a41d223634cac94904561` (`fix(exploration): distinguish v1 relation target topology`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/unit/runner-components/exploration/state-visit-tracker.test.ts` first failed as expected on the added regression before rebuilding package output, then passed after `CI=true corepack pnpm build` (1 file / 12 tests); `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 103 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Remaining risks: no PR has been created or merged; fresh complete-matrix review is still required.
+
+- [x] All live consumers use v1 fields and typed extension readers.
+- [x] Artifact decorators use evidence references without losing provenance.
+- [x] Exploration fingerprints and benchmark state remain deterministic.
+- [x] Historical pre-v1 decoding remains isolated to migration paths.
+
+### final — 2026-08-25
+
+- Reviewed code head: `178c5165b3464187ebe2fa77e9d0327c12ea127d`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/8f921924-28ca-4476-9dce-5c8cc33979a8/ticket24-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/8f921924-28ca-4476-9dce-5c8cc33979a8/ticket24-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/unit/runner-components/model-agent.test.ts tests/unit/runner-components/exploration tests/unit/execution-application/artifact-recording-observer.test.ts tests/replay` passed (13 files / 103 tests); `CI=true corepack pnpm vitest run tests/e2e/observation-v1/consumer-migration.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/107`.
+
+## Answer
+
+Migrated live model, verifier, exploration, evidence decoration, benchmark, and active Skill replay consumers to validated `ObservationGraphV1` and typed extension readers. Historical pre-v1 input is routed through `@qualigence/observation-migration`, direct legacy replay input is rejected before side effects, fingerprints and benchmark identity use canonical/redacted v1 semantics including relation topology, and combined consumer-migration acceptance coverage was added.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/107`
+
+Reviewed code head: `178c5165b3464187ebe2fa77e9d0327c12ea127d`
+
+Final verification: focused Ticket 24 Gate, observation-v1 consumer migration acceptance, `corepack pnpm typecheck`, and `git diff --check` passed.

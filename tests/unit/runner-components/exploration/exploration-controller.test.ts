@@ -32,7 +32,8 @@ import type {
   SkillVerificationScope,
   SignedSkillBundle,
 } from "@qualigence/skill";
-import type { ObservationGraph } from "@qualigence/runner-protocol";
+import type { ObservationGraphV1 } from "@qualigence/runner-protocol";
+import { observationGraphV1 } from "../../../helpers/observation-graph-v1.js";
 
 class FakeClock implements MonotonicClock {
   value = 0;
@@ -80,27 +81,40 @@ function createController(deps: TestControllerDependencies): ExplorationControll
 }
 
 let graphCounter = 0;
-function distinctGraph(): ObservationGraph {
+function distinctGraph(): ObservationGraphV1 {
   graphCounter += 1;
-  return {
-    graphId: `graph-${graphCounter}`,
-    url: `https://shop.example/page-${graphCounter}`,
-    title: `Page ${graphCounter}`,
-    nodes: [{ id: `node-${graphCounter}`, role: "button", name: "Next", confidence: 0.9 }],
-  };
+  return graphAt(`https://shop.example/page-${graphCounter}`, `graph-${graphCounter}`, `Page ${graphCounter}`, [
+    { id: `node-${graphCounter}`, role: "button", name: "Next", confidence: 0.9 },
+  ]);
 }
 
-function fixedGraph(): ObservationGraph {
+function fixedGraph(): ObservationGraphV1 {
   return graphAt("https://shop.example/product");
 }
 
-function graphAt(url: string): ObservationGraph {
-  return {
-    graphId: `graph-${url}`,
-    url,
-    title: "Product",
-    nodes: [{ id: "node-add", role: "button", name: "Add to cart", confidence: 0.9 }],
-  };
+function graphAt(
+  url: string,
+  graphId = `graph-${url}`,
+  title = "Product",
+  nodes = [{ id: "node-add", role: "button", name: "Add to cart", confidence: 0.9 }],
+): ObservationGraphV1 {
+  const parsed = new URL(url);
+  return observationGraphV1(graphId, nodes, {
+    target: { kind: "web", targetId: parsed.origin },
+    extensions: {
+      "web/v1": {
+        type: "web/v1",
+        version: "1.0",
+        payload: {
+          origin: parsed.origin,
+          pathname: parsed.pathname,
+          title,
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+          query: {},
+        },
+      },
+    },
+  });
 }
 
 /** A Target that replays a fixed list of graphs and records every execution. */
@@ -108,12 +122,12 @@ class ScriptedTarget implements ExplorationTarget {
   private index = 0;
   private readonly executed: GroundedExplorationAction[] = [];
 
-  constructor(private readonly graphs: readonly ObservationGraph[]) {}
+  constructor(private readonly graphs: readonly ObservationGraphV1[]) {}
 
-  async capture(): Promise<ObservationGraph> {
+  async capture(): Promise<ObservationGraphV1> {
     const graph = this.graphs[Math.min(this.index, this.graphs.length - 1)];
     this.index += 1;
-    return graph as ObservationGraph;
+    return graph as ObservationGraphV1;
   }
 
   async execute(action: GroundedExplorationAction): Promise<void> {
@@ -150,7 +164,7 @@ class RecoveringTarget extends ScriptedTarget {
   failuresBeforeRecovery = 1;
   recoveries = 0;
 
-  override async capture(): Promise<ObservationGraph> {
+  override async capture(): Promise<ObservationGraphV1> {
     if (this.failuresBeforeRecovery > 0) {
       this.failuresBeforeRecovery -= 1;
       throw new Error("environment unavailable");
@@ -490,7 +504,7 @@ describe("ExplorationController", () => {
     const controller = createController({
       target,
       agent: new ScriptedAgent((context) => {
-        const node = context.graph.nodes[0];
+        const node = context.graph.nodes.find((candidate) => candidate.role === "button");
         selector += 1;
         return act({ kind: "click", nodeId: node?.id ?? "missing", reason: `step-${selector}` });
       }),
@@ -615,7 +629,11 @@ describe("ExplorationController", () => {
     const crashingStore = new CrashAfterSafeCheckpointStore();
     const firstTarget = new ScriptedTarget([distinctGraph(), distinctGraph()]);
     const firstAgent = new ScriptedAgent((context) =>
-      act({ kind: "click", nodeId: context.graph.nodes[0]?.id ?? "missing", reason: "first" }),
+      act({
+        kind: "click",
+        nodeId: context.graph.nodes.find((candidate) => candidate.role === "button")?.id ?? "missing",
+        reason: "first",
+      }),
     );
     const first = createController({
       target: firstTarget,
@@ -670,6 +688,23 @@ describe("ExplorationController", () => {
 
     expect(result.terminalReason).toBe("objective_satisfied");
     expect(target.recoveries).toBe(1);
+  });
+
+  it("rejects observations without required web/v1 before model actions dispatch", async () => {
+    const target = new ScriptedTarget([{ ...fixedGraph(), extensions: {} }]);
+    const agent = new ScriptedAgent(() => act(clickAdd));
+    const controller = createController({
+      target,
+      agent,
+      clock: new FakeClock(),
+    });
+
+    const result = await controller.run(job());
+
+    expect(result.terminalReason).toBe("error");
+    expect(result.errorCode).toBe("ExtensionVersionUnsupported");
+    expect(agent.contexts).toHaveLength(0);
+    expect(target.executedActions()).toHaveLength(0);
   });
 
   it("rejects out-of-origin observations before model actions dispatch", async () => {

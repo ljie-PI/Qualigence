@@ -11,16 +11,29 @@ import type {
   ValidatedModelResult,
 } from "@qualigence/model-provider";
 import type { ExplorationContext } from "@qualigence/exploration";
+import { observationGraphV1 } from "../../../helpers/observation-graph-v1.js";
 
 function context(): ExplorationContext {
   return {
     runId: "run-1",
-    graph: {
-      graphId: "graph-1",
-      url: "https://shop.example/product",
-      title: "Product",
-      nodes: [{ id: "node-add", role: "button", name: "Add to cart", confidence: 0.9 }],
-    },
+    graph: observationGraphV1("graph-1", [
+      { id: "node-add", role: "button", name: "Add to cart", confidence: 0.9 },
+    ], {
+      target: { kind: "web", targetId: "https://shop.example" },
+      extensions: {
+        "web/v1": {
+          type: "web/v1",
+          version: "1.0",
+          payload: {
+            origin: "https://shop.example",
+            pathname: "/product",
+            title: "Product",
+            viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+            query: { ref: "[redacted]" },
+          },
+        },
+      },
+    }),
     visitedFingerprints: ["fp-previous"],
     allowedActionKinds: ["navigate", "click", "input"],
     riskCeiling: "RecoverableMutation",
@@ -78,6 +91,19 @@ describe("ExplorationAgent", () => {
     expect(proposal.decision.status).toBe("act");
     expect(proposal.decision.action?.nodeId).toBe("node-add");
     expect(proposal.tokensUsed).toBe(42);
+  });
+
+  it("serializes only v1 core semantics and redacted web/v1 query keys for the prompt", async () => {
+    const gateway = new ScriptedGateway(actOutput());
+    const agent = new ExplorationAgent(gateway, "test-model");
+
+    await agent.nextAction(context());
+
+    const prompt = gateway.requests[0]?.messages[1]?.content ?? "";
+    expect(prompt).toContain("\"schema\":{\"epoch\":\"v1\"");
+    expect(prompt).toContain("\"queryKeys\":[\"ref\"]");
+    expect(prompt).not.toContain("[redacted]");
+    expect(prompt).not.toContain("url");
   });
 
   it("returns a stop proposal without an action", async () => {

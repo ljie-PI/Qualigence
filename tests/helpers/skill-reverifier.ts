@@ -4,6 +4,7 @@ import {
   type ReplayTarget,
   type ResolvedReplayAction,
 } from "@qualigence/skill-replay";
+import { webReplayGraph } from "../replay/procedure-skill/graph-fixture.js";
 import {
   SkillVerifier,
   TestSkill,
@@ -122,7 +123,7 @@ export class CartTarget implements ReplayTarget {
             { role: "link", name: "Back to catalog" },
           ]
         : [{ role: "button", name: "Add to cart" }];
-    return { urlPath: this.path, nodes, claims: [] };
+    return webReplayGraph(this.path, nodes, { targetId: "web-shop" });
   }
   async execute(action: ResolvedReplayAction): Promise<void> {
     if (action.step.intent.kind === "click") {
@@ -134,14 +135,14 @@ export class CartTarget implements ReplayTarget {
 /** A Target whose duplicated buttons make the semantic locator ambiguous. */
 export class AmbiguousCartTarget implements ReplayTarget {
   async capture() {
-    return {
-      urlPath: "/product/mouse",
-      nodes: [
+    return webReplayGraph(
+      "/product/mouse",
+      [
         { role: "button", name: "Add to cart" },
         { role: "button", name: "Add to cart" },
       ],
-      claims: [],
-    };
+      { targetId: "web-shop" },
+    );
   }
   async execute(): Promise<void> {
     throw new Error("must not execute when the locator is ambiguous");
@@ -151,11 +152,9 @@ export class AmbiguousCartTarget implements ReplayTarget {
 /** A Target parked off the precondition path, forcing a safe divergence. */
 export class OffTarget implements ReplayTarget {
   async capture() {
-    return {
-      urlPath: "/home",
-      nodes: [{ role: "button", name: "Add to cart" }],
-      claims: [],
-    };
+    return webReplayGraph("/home", [{ role: "button", name: "Add to cart" }], {
+      targetId: "web-shop",
+    });
   }
   async execute(): Promise<void> {
     throw new Error("must not execute after divergence");

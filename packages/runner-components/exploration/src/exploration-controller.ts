@@ -12,12 +12,14 @@ import {
   type ProposedExplorationAction,
 } from "@qualigence/mission";
 import {
+  ObservationError,
   canonicalPayloadHash,
-  type ObservationGraph,
-  type ObservationNode,
+  type ObservationGraphV1,
+  type ObservationNodeV1,
 } from "@qualigence/runner-protocol";
 import { ExplorationBudget, type MonotonicClock } from "./exploration-budget.js";
 import { StateVisitTracker } from "./state-visit-tracker.js";
+import { requireWebV1Semantics, validateConsumerObservationGraph, webV1LocationHref } from "./observation-v1-consumer.js";
 import type { RegressionJobResult, RegressionSeed } from "./regression-job.js";
 
 /** The immutable input to one exploration session. */
@@ -45,7 +47,7 @@ export interface ExplorationResult {
 /** The read-only view of the world the model receives. It is never trusted for safety. */
 export interface ExplorationContext {
   readonly runId: string;
-  readonly graph: ObservationGraph;
+  readonly graph: ObservationGraphV1;
   readonly visitedFingerprints: readonly string[];
   readonly allowedActionKinds: readonly string[];
   readonly riskCeiling: ExplorationPolicy["riskCeiling"];
@@ -68,14 +70,14 @@ export interface GroundedExplorationAction {
   readonly kind: ProposedExplorationAction["kind"];
   readonly reason: string;
   readonly risk: ActionRiskLevel;
-  readonly node?: ObservationNode;
+  readonly node?: ObservationNodeV1;
   readonly path?: string;
   readonly valueRef?: string;
 }
 
 /** The live Target under exploration. */
 export interface ExplorationTarget {
-  capture(): Promise<ObservationGraph>;
+  capture(): Promise<ObservationGraphV1>;
   execute(action: GroundedExplorationAction): Promise<void>;
   /** Deterministic environment reset/recovery. It is never used for unknown action outcomes. */
   recover?(): Promise<void>;
@@ -85,8 +87,8 @@ export interface ExplorationTarget {
 export interface ExplorationActionClassifier {
   classify(
     action: ProposedExplorationAction,
-    graph: ObservationGraph,
-    node: ObservationNode | undefined,
+    graph: ObservationGraphV1,
+    node: ObservationNodeV1 | undefined,
   ): ActionRiskLevel;
 }
 
@@ -274,7 +276,12 @@ export class ExplorationController {
       const capture = await this.captureWithRecovery(state);
       if (!capture.ok) return capture.result;
 
-      const graph = capture.graph;
+      const validation = validateLiveGraph(capture.graph);
+      if (!validation.ok) {
+        return this.finish(state, "error", validation.errorCode);
+      }
+
+      const graph = validation.graph;
       const fingerprint = state.tracker.fingerprintOf(graph);
       if (!isGraphOriginAllowed(graph, job.policy)) {
         appendTerminalCheckpoint(state, fingerprint, "policy_denied");
@@ -531,7 +538,7 @@ export class ExplorationController {
 
   private async captureWithRecovery(
     state: RunState,
-  ): Promise<{ readonly ok: true; readonly graph: ObservationGraph } | { readonly ok: false; readonly result: ExplorationResult }> {
+  ): Promise<{ readonly ok: true; readonly graph: ObservationGraphV1 } | { readonly ok: false; readonly result: ExplorationResult }> {
     try {
       return { ok: true, graph: await this.deps.target.capture() };
     } catch {
@@ -608,7 +615,7 @@ type ValidationResult =
  */
 function validateProposal(
   action: ProposedExplorationAction | undefined,
-  graph: ObservationGraph,
+  graph: ObservationGraphV1,
   policy: ExplorationPolicy,
   classifier: ExplorationActionClassifier,
 ): ValidationResult {
@@ -625,7 +632,7 @@ function validateProposal(
     return { ok: false, reason: "policy_denied", errorCode: "OriginViolation" };
   }
 
-  let node: ObservationNode | undefined;
+  let node: ObservationNodeV1 | undefined;
   if (action.kind === "click" || action.kind === "input") {
     if (action.nodeId === undefined) {
       return { ok: false, reason: "no_safe_action", errorCode: "UnknownNode" };
@@ -661,21 +668,37 @@ function validateProposal(
   };
 }
 
-function isGraphOriginAllowed(graph: ObservationGraph, policy: ExplorationPolicy): boolean {
-  if (graph.url === undefined) return false;
-  return isUrlOriginAllowed(graph.url, policy);
+function isGraphOriginAllowed(graph: ObservationGraphV1, policy: ExplorationPolicy): boolean {
+  return policy.allowedOrigins.includes(requireWebV1Semantics(graph).origin);
 }
 
 function isNavigationTargetAllowed(
   action: ProposedExplorationAction,
-  graph: ObservationGraph,
+  graph: ObservationGraphV1,
   policy: ExplorationPolicy,
 ): boolean {
-  if (action.path === undefined || graph.url === undefined) return false;
+  if (action.path === undefined) return false;
   try {
-    return isUrlOriginAllowed(new URL(action.path, graph.url).href, policy);
+    return isUrlOriginAllowed(new URL(action.path, webV1LocationHref(graph)).href, policy);
   } catch {
     return false;
+  }
+}
+
+type LiveGraphValidation =
+  | { readonly ok: true; readonly graph: ObservationGraphV1 }
+  | { readonly ok: false; readonly errorCode: string };
+
+function validateLiveGraph(graph: ObservationGraphV1): LiveGraphValidation {
+  try {
+    const validated = validateConsumerObservationGraph(graph);
+    requireWebV1Semantics(validated);
+    return { ok: true, graph: validated };
+  } catch (error) {
+    if (error instanceof ObservationError) {
+      return { ok: false, errorCode: error.code };
+    }
+    return { ok: false, errorCode: "ObservationSchemaInvalid" };
   }
 }
 

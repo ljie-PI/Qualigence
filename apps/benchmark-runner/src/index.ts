@@ -30,6 +30,7 @@ export {
 
 export type {
   ScenarioDefinition,
+  ScenarioNode,
   ScenarioSignal,
   ScenarioState,
 } from "./scenario.js";
