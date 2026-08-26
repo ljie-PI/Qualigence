@@ -20,6 +20,20 @@ import { validateAppTarget, type AppSession, type AppTarget } from "./app-target
 
 export type LocalActionRisk = "Normal" | "ExternalSideEffect" | "Destructive" | "ProductionForbidden";
 
+export const DESKTOP_COMPANION_TARGET_ADAPTER = "desktop-windows-uia" as const;
+export const DESKTOP_COMPANION_OBSERVATION_EXTENSION = "uia/v1" as const;
+
+export interface CompanionCapabilityProbeRequest {
+  readonly targetAdapter: typeof DESKTOP_COMPANION_TARGET_ADAPTER;
+  readonly observationExtension: typeof DESKTOP_COMPANION_OBSERVATION_EXTENSION;
+}
+
+export interface CompanionCapabilityProbeResponse extends CompanionCapabilityProbeRequest {
+  readonly ready: true;
+  readonly protocolMajor: typeof PROTOCOL_MAJOR;
+  readonly checkedAt: string;
+}
+
 export type DesktopActionResolution = "semantic" | "uia" | "visual" | "coordinate";
 
 export interface ResolvedDesktopActionBase {
@@ -176,6 +190,7 @@ export interface CompanionRequestPayloadByType {
   readonly "session.resume": { readonly runId: string };
   readonly "session.stop": { readonly runId: string };
   readonly "session.close": { readonly runId: string };
+  readonly "companion.probe": CompanionCapabilityProbeRequest;
   readonly "app.launch": { readonly target: AppTarget };
   readonly "app.reset": { readonly sessionId: string };
   readonly "app.shutdown": { readonly sessionId: string };
@@ -235,6 +250,7 @@ export interface CompanionResponsePayloadByType {
   readonly "session.resume": CompanionSessionResponsePayload;
   readonly "session.stop": CompanionSessionResponsePayload;
   readonly "session.close": CompanionSessionResponsePayload;
+  readonly "companion.probe": CompanionCapabilityProbeResponse;
   readonly "app.launch": AppSession;
   readonly "app.reset": { readonly sessionId: string; readonly completedAt: string };
   readonly "app.shutdown": { readonly sessionId: string; readonly completedAt: string };
@@ -303,6 +319,7 @@ export const COMPANION_REQUEST_TYPES: readonly CompanionRequestType[] = [
   "session.resume",
   "session.stop",
   "session.close",
+  "companion.probe",
   "app.launch",
   "app.reset",
   "app.shutdown",
@@ -319,6 +336,7 @@ export const COMPANION_RESPONSE_TYPES: readonly CompanionResponseType[] = [
   "session.resume",
   "session.stop",
   "session.close",
+  "companion.probe",
   "app.launch",
   "app.reset",
   "app.shutdown",
@@ -962,6 +980,46 @@ function parseLifecycleDonePayload(value: unknown): { readonly sessionId: string
   });
 }
 
+export function companionCapabilityProbeRequest(): CompanionCapabilityProbeRequest {
+  return Object.freeze({
+    targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+    observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+  });
+}
+
+export function parseCompanionCapabilityProbeRequest(value: unknown): CompanionCapabilityProbeRequest {
+  const raw = requireRecord(value, "InvalidRequestShape", "companion.probe payload");
+  exactKeys(raw, ["targetAdapter", "observationExtension"], "InvalidRequestShape", "companion.probe.payload");
+  if (raw.targetAdapter !== DESKTOP_COMPANION_TARGET_ADAPTER) {
+    throw new CompanionIpcError("InvalidRequestShape", "companion.probe targetAdapter is not supported");
+  }
+  if (raw.observationExtension !== DESKTOP_COMPANION_OBSERVATION_EXTENSION) {
+    throw new CompanionIpcError("InvalidRequestShape", "companion.probe observationExtension is not supported");
+  }
+  return companionCapabilityProbeRequest();
+}
+
+export function parseCompanionCapabilityProbeResponse(value: unknown): CompanionCapabilityProbeResponse {
+  const raw = requireRecord(value, "InvalidResponseShape", "companion.probe response");
+  exactKeys(raw, ["ready", "protocolMajor", "targetAdapter", "observationExtension", "checkedAt"], "InvalidResponseShape", "companion.probe.response");
+  if (raw.ready !== true) {
+    throw new CompanionIpcError("InvalidResponseShape", "companion.probe ready must be true");
+  }
+  if (raw.protocolMajor !== PROTOCOL_MAJOR) {
+    throw new CompanionIpcError("InvalidResponseShape", "companion.probe protocolMajor must be 1");
+  }
+  const capabilities = parseCompanionCapabilityProbeRequest({
+    targetAdapter: raw.targetAdapter,
+    observationExtension: raw.observationExtension,
+  });
+  return Object.freeze({
+    ready: true,
+    protocolMajor: PROTOCOL_MAJOR,
+    ...capabilities,
+    checkedAt: str(raw.checkedAt, "InvalidResponseShape", "companion.probe.checkedAt", 64),
+  });
+}
+
 function parseResponsePayload<T extends CompanionResponseType>(type: T, payload: unknown): CompanionResponsePayloadByType[T] {
   switch (type) {
     case "handshake.challenge": {
@@ -994,6 +1052,8 @@ function parseResponsePayload<T extends CompanionResponseType>(type: T, payload:
       return parseSessionPayload(payload, "stopped") as CompanionResponsePayloadByType[T];
     case "session.close":
       return parseSessionPayload(payload, "closed") as CompanionResponsePayloadByType[T];
+    case "companion.probe":
+      return parseCompanionCapabilityProbeResponse(payload) as CompanionResponsePayloadByType[T];
     case "app.launch":
       return parseAppSession(payload) as CompanionResponsePayloadByType[T];
     case "app.reset":
@@ -1044,6 +1104,8 @@ function parseRequestPayload<T extends CompanionRequestType>(type: T, payload: u
     case "session.close":
       exactKeys(raw, ["runId"], "InvalidRequestShape", `${type}.payload`);
       return { runId: str(raw.runId, "InvalidRequestShape", "runId", COMPANION_IPC_LIMITS.maxIdLength) } as CompanionRequestPayloadByType[T];
+    case "companion.probe":
+      return parseCompanionCapabilityProbeRequest(raw) as CompanionRequestPayloadByType[T];
     case "app.launch":
       exactKeys(raw, ["target"], "InvalidRequestShape", "app.launch.payload");
       return { target: validateAppTarget(raw.target) } as CompanionRequestPayloadByType[T];

@@ -6,6 +6,8 @@ import {
   COMPANION_IPC_LIMITS,
   parseCompanionRequest,
   desktopActionDigestSha256,
+  DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+  DESKTOP_COMPANION_TARGET_ADAPTER,
   type CompanionRequestEnvelope,
   type CompanionResponse,
   type CompanionResponseType,
@@ -75,6 +77,16 @@ function attachFrameReader(socket: MemorySocket, onFrame: (frame: CompanionReque
 
 function ok(requestId: string, type: CompanionResponseType, payload: unknown): CompanionResponse {
   return { protocolMajor: PROTOCOL_MAJOR, requestId, type, status: "ok", payload } as CompanionResponse;
+}
+
+function probeOk(requestId: string): CompanionResponse {
+  return ok(requestId, "companion.probe", {
+    ready: true,
+    protocolMajor: PROTOCOL_MAJOR,
+    targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+    observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+    checkedAt: "2026-08-01T00:00:00.000Z",
+  });
 }
 
 const target = {
@@ -234,6 +246,50 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
     await expect(client.launch(target)).resolves.toEqual(appSession);
     expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "app.launch"]);
     expect(proofs).toEqual(["qualigence-companion-proof/v1\n1\ncompanion-1\nbm9uY2U=\nrunner-1\n"]);
+    server.destroy();
+  });
+
+  it("sends a concrete post-auth capability probe frame", async () => {
+    const { client, server, seen } = clientWithServer({
+      onFrame(frame, socket) {
+        if (handshakeResponder(frame, socket)) {
+          return;
+        }
+        expect(frame.type).toBe("companion.probe");
+        expect(frame.payload).toEqual({
+          targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+          observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+        });
+        socket.write(encodeFrame(probeOk(frame.requestId)));
+      },
+    });
+
+    await expect(client.probe()).resolves.toBeUndefined();
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "companion.probe"]);
+    server.destroy();
+  });
+
+  it("fails a probe independently after successful authentication without sending app frames", async () => {
+    const { client, server, seen } = clientWithServer({
+      onFrame(frame, socket) {
+        if (handshakeResponder(frame, socket)) {
+          return;
+        }
+        if (frame.type === "companion.probe") {
+          socket.write(encodeFrame({
+            protocolMajor: PROTOCOL_MAJOR,
+            requestId: frame.requestId,
+            type: "companion.probe",
+            status: "error",
+            error: { code: "CompanionUnavailable", safeMessage: "UIA worker is not ready" },
+          }));
+        }
+      },
+    });
+
+    await expect(client.authenticate()).resolves.toBeUndefined();
+    await expect(client.probe()).rejects.toMatchObject({ responseError: { code: "CompanionUnavailable" } });
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "companion.probe"]);
     server.destroy();
   });
 

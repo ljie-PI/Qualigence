@@ -33,6 +33,8 @@ export {
 
 export type {
   LocalActionRisk,
+  CompanionCapabilityProbeRequest,
+  CompanionCapabilityProbeResponse,
   DesktopActionResolution,
   ResolvedDesktopActionBase,
   DesktopValueBinding,
@@ -73,6 +75,8 @@ export type {
 } from "./companion-ipc.js";
 
 export {
+  DESKTOP_COMPANION_TARGET_ADAPTER,
+  DESKTOP_COMPANION_OBSERVATION_EXTENSION,
   COMPANION_REQUEST_TYPES,
   COMPANION_RESPONSE_TYPES,
   COMPANION_IPC_LIMITS,
@@ -95,6 +99,9 @@ export {
   parseCompanionDecision,
   parseLocalActionOutcomeReport,
   parseCompanionUiaSource,
+  companionCapabilityProbeRequest,
+  parseCompanionCapabilityProbeRequest,
+  parseCompanionCapabilityProbeResponse,
   expectedResponseTypeForRequest,
   createCompanionRequestEnvelope,
   parseCompanionStableError,

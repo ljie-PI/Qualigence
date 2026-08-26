@@ -6,6 +6,7 @@ import {
   buildCompanionProofBytes,
   COMPANION_IPC_LIMITS,
   PROTOCOL_MAJOR,
+  companionCapabilityProbeRequest,
   assertDeclaredFrameLength,
   createCompanionRequestEnvelope,
   expectedResponseTypeForRequest,
@@ -240,6 +241,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
 
   async probe(): Promise<void> {
     await this.authenticate();
+    await this.request("companion.probe", companionCapabilityProbeRequest(), this.defaultRequestDeadlineMs);
   }
 
   async launch(target: AppTarget): Promise<AppSession> {

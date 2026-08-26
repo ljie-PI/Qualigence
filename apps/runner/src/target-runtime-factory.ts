@@ -16,6 +16,7 @@ import { ExecutionTargetError } from "@qualigence/runner-kernel";
 import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
 import {
   AppEnvironmentProvider,
+  CompanionResponseError,
   DesktopExecutionError,
   UiaActionExecutor,
   UiaActionResolver,
@@ -35,7 +36,8 @@ export interface TargetRuntimeResourceSet {
 
 export interface DesktopCompanionRuntimeClient extends CompanionClient {
   authenticate?(): Promise<void>;
-  probe?(): Promise<void>;
+  /** Required for Desktop admission: a post-auth capability/readiness frame that can fail independently of authentication. */
+  probe(): Promise<void>;
   close?(): void;
 }
 
@@ -135,7 +137,7 @@ export class TargetRuntimeFactory {
       signal?.throwIfAborted();
       await companion.authenticate?.();
       signal?.throwIfAborted();
-      await companion.probe?.();
+      await companion.probe();
       signal?.throwIfAborted();
       const provider = new AppEnvironmentProvider(companion);
       const session = await provider.launch(target.app);
@@ -143,11 +145,7 @@ export class TargetRuntimeFactory {
       const close = async (): Promise<void> => {
         if (closed) return;
         closed = true;
-        try {
-          await provider.shutdown(session);
-        } finally {
-          companion.close?.();
-        }
+        await provider.shutdown(session);
       };
       try {
         signal?.throwIfAborted();
@@ -179,9 +177,11 @@ function assertWebJob(job: AcceptedExecutionJob): asserts job is AcceptedExecuti
 
 function mapDesktopOpenError(error: unknown, status: ExecutionTargetErrorStatus): Error {
   if (error instanceof ExecutionTargetError) return error;
-  const code = typeof (error as { readonly code?: unknown })?.code === "string"
-    ? String((error as { readonly code: string }).code)
-    : "CompanionUnavailable";
+  const code = error instanceof CompanionResponseError
+    ? error.responseError.code
+    : typeof (error as { readonly code?: unknown })?.code === "string"
+      ? String((error as { readonly code: string }).code)
+      : "CompanionUnavailable";
   if (code === "CompanionUnavailable" || code === "CompanionUnauthenticated" || code === "CompanionIdentityRejected") {
     return new ExecutionTargetError("CompanionUnavailable", "blocked", "Desktop Companion is unavailable");
   }

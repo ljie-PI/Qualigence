@@ -11,6 +11,7 @@ import {
   createCompanionRequestEnvelope,
   expectedResponseTypeForRequest,
   isLocalPermitExpired,
+  parseCompanionCapabilityProbeResponse,
   parseCompanionDecision,
   parseCompanionRequest,
   parseCompanionResponse,
@@ -18,6 +19,9 @@ import {
   parseResolvedDesktopAction,
   validateAppTarget,
   desktopActionDigestSha256,
+  DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+  DESKTOP_COMPANION_TARGET_ADAPTER,
+  companionCapabilityProbeRequest,
   type CompanionResponse,
   type LocalExecutionPermit,
   type ResolvedDesktopAction,
@@ -177,12 +181,13 @@ describe("Companion IPC envelopes", () => {
       request("req-5", "session.resume", { runId: "run-1" }),
       request("req-6", "session.stop", { runId: "run-1" }),
       request("req-7", "session.close", { runId: "run-1" }),
-      request("req-8", "app.launch", { target: validTarget }),
-      request("req-9", "app.reset", { sessionId: "sess-1" }),
-      request("req-10", "app.shutdown", { sessionId: "sess-1" }),
-      request("req-11", "uia.capture", { sessionId: "sess-1", deadlineMs: 2000 }),
-      request("req-12", "permit.request", { request: permitRequest }),
-      request("req-13", "action.execute", executePayload),
+      request("req-8", "companion.probe", companionCapabilityProbeRequest()),
+      request("req-9", "app.launch", { target: validTarget }),
+      request("req-10", "app.reset", { sessionId: "sess-1" }),
+      request("req-11", "app.shutdown", { sessionId: "sess-1" }),
+      request("req-12", "uia.capture", { sessionId: "sess-1", deadlineMs: 2000 }),
+      request("req-13", "permit.request", { request: permitRequest }),
+      request("req-14", "action.execute", executePayload),
     ];
     const parsed = requests.map((r) => parseCompanionRequest(r).type);
     expect(new Set(parsed)).toEqual(new Set(COMPANION_REQUEST_TYPES));
@@ -197,12 +202,13 @@ describe("Companion IPC envelopes", () => {
       parseCompanionResponse(response("req-5", "session.resume", { runId: "run-1", state: "resumed", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
       parseCompanionResponse(response("req-6", "session.stop", { runId: "run-1", state: "stopped", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
       parseCompanionResponse(response("req-7", "session.close", { runId: "run-1", state: "closed", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
-      parseCompanionResponse(response("req-8", "app.launch", appSession)) as CompanionResponse,
-      parseCompanionResponse(response("req-9", "app.reset", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
-      parseCompanionResponse(response("req-10", "app.shutdown", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
-      parseCompanionResponse(response("req-11", "uia.capture", uiaCapture)) as CompanionResponse,
-      parseCompanionResponse(response("req-12", "permit.request", { status: "denied", approvalId: "ap-1", decidedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
-      parseCompanionResponse(response("req-13", "action.execute", { status: "failed", errorCode: "ElementNotFound" })) as CompanionResponse,
+      parseCompanionResponse(response("req-8", "companion.probe", { ready: true, protocolMajor: 1, targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER, observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION, checkedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-9", "app.launch", appSession)) as CompanionResponse,
+      parseCompanionResponse(response("req-10", "app.reset", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-11", "app.shutdown", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-12", "uia.capture", uiaCapture)) as CompanionResponse,
+      parseCompanionResponse(response("req-13", "permit.request", { status: "denied", approvalId: "ap-1", decidedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-14", "action.execute", { status: "failed", errorCode: "ElementNotFound" })) as CompanionResponse,
     ];
     expect(new Set(responses.map((r) => r.type))).toEqual(new Set(COMPANION_RESPONSE_TYPES));
   });
@@ -233,8 +239,38 @@ describe("Companion IPC envelopes", () => {
   it("maps request discriminants to strict response discriminants", () => {
     expect(expectedResponseTypeForRequest("handshake.begin")).toBe("handshake.challenge");
     expect(expectedResponseTypeForRequest("handshake.prove")).toBe("handshake.accepted");
+    expect(expectedResponseTypeForRequest("companion.probe")).toBe("companion.probe");
     expect(expectedResponseTypeForRequest("uia.capture")).toBe("uia.capture");
     expect(createCompanionRequestEnvelope("req", "app.reset", { sessionId: "sess-1" }).payload.sessionId).toBe("sess-1");
+  });
+
+  it("strictly validates the post-auth Desktop readiness/capability probe", () => {
+    expect(createCompanionRequestEnvelope("probe-ok", "companion.probe", companionCapabilityProbeRequest()).payload).toEqual({
+      targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+      observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+    });
+    expect(parseCompanionCapabilityProbeResponse({
+      ready: true,
+      protocolMajor: 1,
+      targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+      observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+      checkedAt: "2026-08-01T00:00:00.000Z",
+    })).toMatchObject({ ready: true, targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER });
+    expect(() => createCompanionRequestEnvelope("probe-unknown", "companion.probe", {
+      ...companionCapabilityProbeRequest(),
+      extra: true,
+    } as never)).toThrow(/known field/);
+    expect(() => createCompanionRequestEnvelope("probe-wrong-adapter", "companion.probe", {
+      targetAdapter: "desktop-fixture",
+      observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+    } as never)).toThrow(/targetAdapter/);
+    expect(() => parseCompanionResponse(response("probe-not-ready", "companion.probe", {
+      ready: false,
+      protocolMajor: 1,
+      targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+      observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+      checkedAt: "2026-08-01T00:00:00.000Z",
+    }))).toThrow(/ready must be true/);
   });
 
   it("builds the exact cross-language Companion proof bytes", () => {

@@ -16,9 +16,12 @@ import {
 import {
   UIA_EXTENSION_TYPE,
   classifyLocalAuthorization,
+  type AppSession,
+  type AppTarget,
 } from "@qualigence/desktop-contracts";
 import { validateObservationGraphV1 } from "@qualigence/observation-contracts";
 import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
+import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
 import { LocalSkillSigner } from "@qualigence/kms-local";
 import {
   SkillCompiler,
@@ -41,9 +44,60 @@ import {
   type ReferenceAppFixture,
   type ReferenceExpectedAction,
 } from "../../helpers/windows-reference-app.js";
+import { TargetRuntimeFactory, type DesktopCompanionRuntimeClient } from "../../../apps/runner/src/target-runtime-factory.js";
 
 const DEADLINE_MS = 5_000;
 const RUN_ID = "run-ref";
+
+class ReusableRuntimeCompanion extends FakeReferenceCompanion implements DesktopCompanionRuntimeClient {
+  authCalls = 0;
+  probeCalls = 0;
+  launchCalls = 0;
+  shutdownCalls = 0;
+  closeCalls = 0;
+
+  async authenticate(): Promise<void> {
+    this.authCalls += 1;
+  }
+
+  async probe(): Promise<void> {
+    this.probeCalls += 1;
+  }
+
+  override async launch(target: AppTarget): Promise<AppSession> {
+    this.launchCalls += 1;
+    return super.launch(target);
+  }
+
+  override async shutdown(sessionId: string): Promise<void> {
+    this.shutdownCalls += 1;
+    await super.shutdown(sessionId);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+  }
+}
+
+function desktopJob(fixture: ReferenceAppFixture, runId: string): AcceptedExecutionJob {
+  return {
+    jobId: `job:${runId}`,
+    runId,
+    projectId: "project-windows",
+    target: { kind: "desktop", app: fixture.appTarget },
+    objective: "exercise the Desktop runtime factory",
+    policy: {
+      policyId: "policy:windows-reference",
+      environment: "isolated_test",
+      allowedOrigins: ["app://windows-reference"],
+      allowedActionKinds: ["click"],
+      maximumRisk: "Normal",
+      explorationAllowed: false,
+      issuedAt: "2026-08-02T00:00:00.000Z",
+      expiresAt: "2026-08-02T00:10:00.000Z",
+    },
+  } as AcceptedExecutionJob;
+}
 
 function permitFor(action: ResolvedDesktopAction, risk: ExecutionRisk): ExecutionPermit {
   const decisionId = `decision:${action.actionId}`;
@@ -99,6 +153,55 @@ describe("Windows-UIA Reference App pipeline (Linux, synthetic UIA)", () => {
         expect(capabilities.has(capability)).toBe(true);
       }
     }
+  });
+
+  it("fails closed before Desktop launch when the Companion readiness probe fails", async () => {
+    const fixture = loadReferenceAppFixture("wpf");
+    const companion = new class extends ReusableRuntimeCompanion {
+      override async probe(): Promise<void> {
+        await super.probe();
+        throw new Error("probe unavailable");
+      }
+    }(fixture.uiaSource);
+    const factory = new TargetRuntimeFactory({
+      config: { headed: false, navigationTimeoutMs: 1_000, actionTimeoutMs: DEADLINE_MS } as never,
+      verifier: { async verify() { return { status: "passed" as const, summary: "not used", claims: [] as const }; } },
+      companion,
+      platform: "win32",
+    });
+
+    await expect(factory.open(desktopJob(fixture, "run-probe-fail"))).rejects.toMatchObject({ errorCode: "CompanionUnavailable" });
+    expect(companion.authCalls).toBe(1);
+    expect(companion.probeCalls).toBe(1);
+    expect(companion.launchCalls).toBe(0);
+    expect(companion.shutdownCalls).toBe(0);
+    expect(companion.closeCalls).toBe(0);
+    expect(companion.capturedCount).toBe(0);
+    expect(companion.consumedPermitCount).toBe(0);
+  });
+
+  it("keeps a probed shared Companion usable across sequential Desktop runtime closes", async () => {
+    const fixture = loadReferenceAppFixture("wpf");
+    const companion = new ReusableRuntimeCompanion(fixture.uiaSource);
+    const factory = new TargetRuntimeFactory({
+      config: { headed: false, navigationTimeoutMs: 1_000, actionTimeoutMs: DEADLINE_MS } as never,
+      verifier: { async verify() { return { status: "passed" as const, summary: "not used", claims: [] as const }; } },
+      companion,
+      platform: "win32",
+    });
+
+    const first = await factory.open(desktopJob(fixture, "run-seq-1"));
+    await first.close();
+    const second = await factory.open(desktopJob(fixture, "run-seq-2"));
+    await second.close();
+
+    expect(companion.authCalls).toBe(2);
+    expect(companion.probeCalls).toBe(2);
+    expect(companion.launchCalls).toBe(2);
+    expect(companion.shutdownCalls).toBe(2);
+    expect(companion.closeCalls).toBe(0);
+    expect(companion.consumedPermitCount).toBe(0);
+    expect(companion.capturedCount).toBe(0);
   });
 
   it.each([["wpf"], ["winui"]] as const)(
