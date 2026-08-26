@@ -222,13 +222,60 @@ describe("Promise owner descriptor integrity", () => {
     ));
   }
 
+  async function observeCustomThenOwner(): Promise<boolean> {
+    return session.withPage(async (page) => page.evaluate((input) => {
+      const epoch = {
+        schedulerRegistrations: 0,
+        pendingSchedulerCallbacks: 0,
+        poisoned: false,
+        processSchedulerCallback: () => undefined,
+      };
+      const state: {
+        active: typeof epoch | null;
+        records: unknown[];
+        poisoned: boolean;
+        schedulerSessionRegistrations: number;
+        retainedSchedulerEpochs: unknown[];
+      } = {
+        active: epoch,
+        records: [],
+        poisoned: false,
+        schedulerSessionRegistrations: 0,
+        retainedSchedulerEpochs: [],
+      };
+      (globalThis as unknown as Record<string, unknown>)[input.stateProperty] = state;
+      const owner = {
+        then() {
+          return "custom-return";
+        },
+      };
+      (globalThis as unknown as Record<string, unknown>).__ticket43CustomThenOwner = owner;
+      const returned = Promise.prototype.catch.call(owner as never, () => "handled") as unknown;
+      state.active = null;
+      if (returned !== "custom-return") throw new Error("custom owner return changed");
+      const registry = (globalThis as unknown as Record<string, {
+        readonly promiseOwners?: readonly { readonly owner: object }[];
+      } | undefined>)[input.runtimeRegistryProperty];
+      return registry?.promiseOwners?.some((record) => record.owner === owner) === true;
+    }, {
+      stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+      runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+    }));
+  }
+
   async function restorePromiseThen(): Promise<void> {
     await session.withPage(async (page) => page.evaluate(() => {
-      const host = globalThis as unknown as Record<string, PropertyDescriptor | undefined>;
+      const host = globalThis as unknown as Record<string, PropertyDescriptor | object | undefined>;
       const descriptor = host.__ticket43OriginalPromiseThenDescriptor;
       if (descriptor !== undefined) {
-        Object.defineProperty(Promise.prototype, "then", descriptor);
+        Object.defineProperty(Promise.prototype, "then", descriptor as PropertyDescriptor);
         delete host.__ticket43OriginalPromiseThenDescriptor;
+      }
+      const trackedPrototypeDescriptor = host.__ticket43OriginalTrackedPrototypeThenDescriptor;
+      const trackedPrototype = host.__ticket43TrackedPrototype;
+      if (trackedPrototypeDescriptor !== undefined && trackedPrototype !== undefined) {
+        Object.defineProperty(trackedPrototype, "then", trackedPrototypeDescriptor as PropertyDescriptor);
+        delete host.__ticket43OriginalTrackedPrototypeThenDescriptor;
       }
       const receiver = (globalThis as unknown as Record<string, Promise<unknown> | undefined>).__ticket43TrackedReceiver;
       if (receiver !== undefined) Object.setPrototypeOf(receiver, Promise.prototype);
@@ -379,19 +426,109 @@ describe("Promise owner descriptor integrity", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   });
 
-  it("fails closed when registry enumeration is incomplete", async () => {
-    await runTrackedPromiseCallbacks(1);
-
-    await expect(observer({
-      afterDomCollection: async (page) => {
+  it("does not trust page-visible owner entry removal, truncation, or compaction to hide descriptor mutation", async () => {
+    await expect(observeCustomThenOwner()).resolves.toBe(true);
+    const capture = observer({
+      afterGraphAssembly: async (page) => {
         await page.evaluate((runtimeRegistryProperty) => {
-          const registry = (globalThis as unknown as Record<string, { promiseOwners?: unknown[] } | undefined>)[runtimeRegistryProperty];
-          if (registry?.promiseOwners !== undefined) delete registry.promiseOwners[0];
+          const registry = (globalThis as unknown as Record<string, { readonly promiseOwners?: unknown[] } | undefined>)[runtimeRegistryProperty];
+          const owners = registry?.promiseOwners;
+          if (owners !== undefined) {
+            try { owners.length = 0; } catch {}
+            try { owners.splice(0, owners.length); } catch {}
+            try { delete owners[0]; } catch {}
+          }
+          const owner = (globalThis as unknown as Record<string, { then: () => string } | undefined>).__ticket43CustomThenOwner;
+          if (owner === undefined) throw new Error("missing custom then owner");
+          Object.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: function ticket43TruncatedRegistryThen() {
+              return "custom-return";
+            },
+          });
         }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
       },
-    }).capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-    expect(() => session.artifactsFor("run-promise-owner:observation:1"))
-      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    });
+
+    try {
+      await expect(capture.capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-promise-owner:observation:1"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    } finally {
+      await restorePromiseThen();
+    }
+  });
+
+  it("does not trust page-visible descriptor record rewrites after owner mutation", async () => {
+    await expect(observeCustomThenOwner()).resolves.toBe(true);
+    const capture = observer({
+      afterGraphAssembly: async (page) => {
+        await page.evaluate((runtimeRegistryProperty) => {
+          const owner = (globalThis as unknown as Record<string, { then: () => string } | undefined>).__ticket43CustomThenOwner;
+          if (owner === undefined) throw new Error("missing custom then owner");
+          Object.defineProperty(owner, "then", {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: function ticket43RewrittenDescriptorThen() {
+              return "custom-return";
+            },
+          });
+          const registry = (globalThis as unknown as Record<string, {
+            readonly promiseOwners?: readonly { readonly owner: object; readonly descriptors: Record<string, Record<string, unknown>> }[];
+          } | undefined>)[runtimeRegistryProperty];
+          const record = registry?.promiseOwners?.find((candidate) => candidate.owner === owner);
+          try {
+            if (record?.descriptors.then !== undefined) record.descriptors.then.value = owner.then;
+          } catch {}
+        }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
+      },
+    });
+
+    try {
+      await expect(capture.capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-promise-owner:observation:1"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    } finally {
+      await restorePromiseThen();
+    }
+  });
+
+  it("does not trust page-visible prototype and method-owner record rewrites after owner mutation", async () => {
+    await observePromiseOwners();
+    const capture = observer({
+      afterGraphAssembly: async (page) => {
+        await page.evaluate((runtimeRegistryProperty) => {
+          const receiver = (globalThis as unknown as Record<string, Promise<unknown>>).__ticket43TrackedReceiver;
+          const replacementPrototype = { then: Promise.prototype.then };
+          Object.setPrototypeOf(receiver, replacementPrototype);
+          const registry = (globalThis as unknown as Record<string, {
+            readonly promiseOwners?: readonly {
+              readonly owner: object;
+              prototype?: object | null;
+              readonly resolvedMethodOwners: Record<string, { present: boolean; owner?: object }>;
+            }[];
+          } | undefined>)[runtimeRegistryProperty];
+          const record = registry?.promiseOwners?.find((candidate) => candidate.owner === receiver);
+          try {
+            if (record !== undefined) record.prototype = replacementPrototype;
+          } catch {}
+          try {
+            if (record !== undefined) record.resolvedMethodOwners.then = { present: true, owner: replacementPrototype };
+          } catch {}
+        }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
+      },
+    });
+
+    try {
+      await expect(capture.capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-promise-owner:observation:1"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    } finally {
+      await restorePromiseThen();
+    }
   });
 
   it("starts a new browser session with an empty owner registry after close", async () => {
