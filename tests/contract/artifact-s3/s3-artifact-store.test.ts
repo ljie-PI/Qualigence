@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -75,7 +76,7 @@ describe.skipIf(!dockerAvailable())("S3ArtifactStore against MinIO", () => {
     expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(manifest.size).toBe(request.bytes.length);
     expect(manifest.relativePath).toBe(
-      `tenant-a/project-a/${manifest.sha256.slice(0, 2)}/${manifest.sha256}`,
+      `tenant-a/project-a/run-1/${manifest.sha256.slice(0, 2)}/${manifest.sha256}`,
     );
 
     const read = await store.read(manifest);
@@ -83,12 +84,16 @@ describe.skipIf(!dockerAvailable())("S3ArtifactStore against MinIO", () => {
     expect(await store.verify(manifest)).toBe(true);
   });
 
-  it("is idempotent for identical content", async () => {
+  it("is idempotent for identical content inside a run-scoped manifest path", async () => {
     const store = newStore();
     const first = await store.write(writeRequest({ artifactId: "a" }));
     const second = await store.write(writeRequest({ artifactId: "b" }));
+    const otherRun = await store.write(writeRequest({ artifactId: "c", runId: "run-2" }));
     expect(second.relativePath).toBe(first.relativePath);
     expect(second.sha256).toBe(first.sha256);
+    expect(otherRun.sha256).toBe(first.sha256);
+    expect(otherRun.relativePath).not.toBe(first.relativePath);
+    expect(otherRun.relativePath.startsWith("tenant-a/project-a/run-2/")).toBe(true);
   });
 
   it("separates identical bytes across tenants", async () => {
@@ -124,7 +129,7 @@ describe.skipIf(!dockerAvailable())("S3ArtifactStore against MinIO", () => {
       runId: "run-1",
       kind: "observation" as const,
       mediaType: "application/json",
-      relativePath: "tenant-a/project-a/00/" + "0".repeat(64),
+      relativePath: "tenant-a/project-a/run-1/00/" + "0".repeat(64),
       sha256: "0".repeat(64),
       size: 4,
       createdAt: fixedClock.now(),
@@ -132,13 +137,42 @@ describe.skipIf(!dockerAvailable())("S3ArtifactStore against MinIO", () => {
     expect(await store.verify(missing)).toBe(false);
   });
 
-  it("rejects unsafe path segments", () => {
+  it("rejects unsafe path segments and cross-scope manifests", async () => {
     expect(() => newStore({ tenantId: "../escape" })).toThrow(
       S3ArtifactStoreError,
     );
     const store = newStore();
-    return expect(
+    await expect(
       store.write(writeRequest({ name: "../../etc/passwd" })),
     ).rejects.toMatchObject({ code: "ArtifactPathRejected" });
+    await expect(
+      store.read({
+        artifactId: "foreign",
+        runId: "run-1",
+        kind: "observation",
+        mediaType: "application/json",
+        relativePath: "tenant-b/project-a/run-1/00/" + "0".repeat(64),
+        sha256: "0".repeat(64),
+        size: 0,
+        createdAt: fixedClock.now(),
+      }),
+    ).rejects.toMatchObject({ code: "ArtifactPathRejected" });
+  });
+
+  it("deletes only the scoped object and keeps deletion failures explicit", async () => {
+    const store = newStore();
+    const manifest = await store.write(writeRequest({ artifactId: "delete-me" }));
+    await store.delete?.(manifest);
+    expect(await store.verify(manifest)).toBe(false);
+
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: manifest.relativePath,
+        Body: new TextEncoder().encode("restored"),
+      }),
+    );
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: manifest.relativePath }));
+    expect(await store.verify(manifest)).toBe(false);
   });
 });

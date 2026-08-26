@@ -11,10 +11,12 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../../core-modules/evidence" },
     { "path": "../../core-modules/intelligence" },
     { "path": "../../core-modules/review" },
     { "path": "../../core-modules/runner-control" },
     { "path": "../../core-modules/skill" },
+    { "path": "../kms-self-hosted" },
     { "path": "../../contracts/runner-protocol" },
     { "path": "../relational-kysely" }
   ]

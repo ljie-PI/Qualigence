@@ -15,11 +15,13 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/artifact-s3": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/core-application": "workspace:*",
     "@qualigence/evidence": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
+    "@qualigence/kms-self-hosted": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",

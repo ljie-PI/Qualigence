@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import {
@@ -10,11 +11,14 @@ import {
   PostgresSchemaError,
   type TenantTransactionProvider,
   PostgresIntelligenceQueue,
+  PostgresSelfHostedKmsKeyStore,
 } from "@qualigence/postgres-runtime";
 import {
   relationalTableNames,
   tenantOwnedTableNames,
 } from "@qualigence/relational-kysely";
+import { SelfHostedKms } from "@qualigence/kms-self-hosted";
+import type { EvidenceKeyScope, RemoteEvidenceCapsuleManifest } from "@qualigence/evidence";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 import {
@@ -24,6 +28,46 @@ import {
 } from "../../helpers/postgres-fixture.js";
 
 const { Client } = pg;
+
+const kmsScope: EvidenceKeyScope = {
+  tenantId: "tenant-kms",
+  caseId: "case-kms",
+  region: "self-hosted",
+  purpose: "investigation",
+};
+
+function kmsManifest(
+  profile: Awaited<ReturnType<SelfHostedKms["encryptionProfile"]>>,
+  capsuleId: string,
+  wrappedDekBase64: string,
+): RemoteEvidenceCapsuleManifest {
+  return {
+    protectedHeader: {
+      schemaVersion: "evidence-capsule-aad/v1",
+      capsuleId,
+      profileId: profile.profileId,
+      payloadSchemaVersion: "evidence-capsule/v1",
+      tenantId: profile.tenantId,
+      caseId: profile.caseId,
+      recipient: profile.recipient,
+      region: profile.region,
+      purpose: profile.purpose,
+      policyId: profile.policyId,
+      contentEncryptionAlgorithm: profile.contentEncryptionAlgorithm,
+      keyWrappingAlgorithm: profile.keyWrappingAlgorithm,
+      wrappingKeyId: profile.wrappingKeyId,
+      plaintextSha256: "0".repeat(64),
+      plaintextBytes: 1,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: profile.expiresAt,
+    },
+    ciphertextSha256: "0".repeat(64),
+    ciphertextBytes: 1,
+    wrappedDekBase64,
+    nonceBase64: "",
+    authTagBase64: "",
+  };
+}
 
 describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
   let fixture: PostgresFixture;
@@ -40,7 +84,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
   });
 
   it("reports the shared logical schema version", async () => {
-    expect(await readSchemaVersion(fixture.adminConfig)).toBe(14);
+    expect(await readSchemaVersion(fixture.adminConfig)).toBe(15);
   });
 
   it("creates every catalogued table", async () => {
@@ -163,6 +207,48 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
     expect(found?.tenant_id).toBe("tenant-a");
   });
 
+  it("persists Self-hosted KMS key versions and capsule revocations across provider restarts", async () => {
+    const rootKey = new Uint8Array(Buffer.alloc(32, 9));
+    const first = new SelfHostedKms({
+      rootKey,
+      keyStore: new PostgresSelfHostedKmsKeyStore(runtime),
+      now: () => "2026-08-01T00:00:00.000Z",
+    });
+    const profile = await first.encryptionProfile(kmsScope);
+    const dek = new Uint8Array(randomBytes(32));
+    const wrapped = await first.wrapDek(profile, dek);
+    const manifest = kmsManifest(profile, "capsule-persisted", wrapped);
+
+    const restarted = new SelfHostedKms({
+      rootKey,
+      keyStore: new PostgresSelfHostedKmsKeyStore(runtime),
+      now: () => "2026-08-01T00:05:00.000Z",
+    });
+    await expect(restarted.unwrapDek({ manifest, ...kmsScope })).resolves.toEqual(dek);
+
+    await restarted.revokeForScope({
+      ...kmsScope,
+      policyId: profile.policyId,
+      keyVersion: profile.wrappingKeyId,
+      capsuleId: "capsule-persisted",
+      occurredAt: "2026-08-01T00:06:00.000Z",
+    }, "ttl_expired");
+
+    const afterRevocationRestart = new SelfHostedKms({
+      rootKey,
+      keyStore: new PostgresSelfHostedKmsKeyStore(runtime),
+      now: () => "2026-08-01T00:07:00.000Z",
+    });
+    await expect(afterRevocationRestart.assertPlaintextAccess({
+      ...kmsScope,
+      policyId: profile.policyId,
+      keyVersion: profile.wrappingKeyId,
+      capsuleId: "capsule-persisted",
+      occurredAt: "2026-08-01T00:07:00.000Z",
+    })).rejects.toMatchObject({ code: "KmsKeyRevoked" });
+    await expect(afterRevocationRestart.unwrapDek({ manifest, ...kmsScope })).rejects.toMatchObject({ code: "KmsKeyRevoked" });
+  });
+
   it("denies DDL to both runtime roles", async () => {
     for (const config of [fixture.serverConfig, fixture.workerConfig]) {
       const client = new Client(config);
@@ -253,7 +339,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
           applied.push(version);
         },
       });
-      expect(applied).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+      expect(applied).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaBehind" });
       await markAuxSchemaCurrent(admin);
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({ code: "SchemaMalformed" });
@@ -524,7 +610,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL runtime schema", () => {
         code: "SchemaMalformed",
       } satisfies Partial<PostgresSchemaError>);
       await client.query(
-        "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (15, 'future', now()::text)",
+        "insert into schema_migrations (version, name, applied_at) values (4, 'exploration-benchmark', now()::text), (16, 'future', now()::text)",
       );
       await client.end();
       await expect(assertPostgresSchemaCurrent(admin, admin.user)).rejects.toMatchObject({

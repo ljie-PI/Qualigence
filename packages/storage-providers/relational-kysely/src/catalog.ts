@@ -974,6 +974,10 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       t("revocation_state"),
       t("revoked_at", false),
       t("revoked_reason", false),
+      t("lifecycle_state"),
+      t("lifecycle_updated_at", false),
+      t("deleted_at", false),
+      t("last_lifecycle_error", false),
       t("created_at"),
       t("expires_at"),
     ],
@@ -986,6 +990,10 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       {
         name: "evidence_capsule_manifests_revocation_state_check",
         predicate: "revocation_state IN ('active', 'revoked')",
+      },
+      {
+        name: "evidence_capsule_manifests_lifecycle_state_check",
+        predicate: "lifecycle_state IN ('active', 'revoking', 'revoked', 'deleting', 'deleted')",
       },
     ],
   },
@@ -1616,6 +1624,52 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "artifact_upload_chunks_size_check", predicate: "size_bytes > 0 AND size_bytes <= 262144" },
     ],
   },
+  // ---- Migration 015: durable Self-hosted KMS state ------------------
+  {
+    name: "self_hosted_kms_key_versions",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: false,
+    columns: [
+      t("tenant_id"),
+      t("scope_id"),
+      t("key_id"),
+      i("revision"),
+      t("public_key_pem"),
+      t("wrapped_private_key_base64"),
+      t("private_key_nonce_base64"),
+      t("private_key_tag_base64"),
+      t("status"),
+      t("created_at"),
+      i("is_primary"),
+    ],
+    primaryKey: ["scope_id", "key_id"],
+    uniques: [
+      { name: "self_hosted_kms_key_versions_scope_revision_unique", columns: ["scope_id", "revision"] },
+    ],
+    foreignKeys: [],
+    checks: [
+      { name: "self_hosted_kms_key_versions_status_check", predicate: "status IN ('active', 'revoked')" },
+      { name: "self_hosted_kms_key_versions_primary_check", predicate: "is_primary IN (0, 1)" },
+    ],
+  },
+  {
+    name: "self_hosted_kms_capsule_revocations",
+    tenantOwned: true,
+    hasNativeTenantColumn: true,
+    workerAccessible: false,
+    columns: [
+      t("tenant_id"),
+      t("capsule_id"),
+      t("scope_id"),
+      t("reason"),
+      t("revoked_at"),
+    ],
+    primaryKey: ["capsule_id"],
+    uniques: [],
+    foreignKeys: [],
+    checks: [],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1633,6 +1687,7 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 12, name: "intelligence-leases-results", tables: tablesFromTo("intelligence_leases", "intelligence_result_inbox") },
   { version: 13, name: "intelligence-result-wakeups-dispositions", tables: tablesFromTo("intelligence_result_wakeups", "intelligence_result_dispositions") },
   { version: 14, name: "artifact-upload", tables: tablesFromTo("artifact_upload_manifests", "artifact_upload_chunks") },
+  { version: 15, name: "evidence-lifecycle", tables: ["self_hosted_kms_key_versions", "self_hosted_kms_capsule_revocations"] },
 ];
 
 function tablesThrough(last: string): readonly string[] {

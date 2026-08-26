@@ -12,7 +12,9 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
+    "@qualigence/kms-self-hosted": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/project-target": "workspace:*",

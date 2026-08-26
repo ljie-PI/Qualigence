@@ -1,14 +1,21 @@
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { ClaimMapper, OidcAuthenticator, RbacAuthorizer, StaticJwksResolver } from "@qualigence/oidc";
 import {
   createPostgresRuntime,
+  PostgresEvidenceLifecycleStore,
   PostgresReviewTaskRepository,
   type TenantTransactionProvider,
 } from "@qualigence/postgres-runtime";
 import { PemCaRunnerCertificateIssuer } from "@qualigence/runner-mtls";
 import { LocalSkillSigner } from "@qualigence/kms-local";
+import { SelfHostedKms } from "@qualigence/kms-self-hosted";
 import type { Clock } from "@qualigence/shared-kernel";
 import type { SkillSigner } from "@qualigence/skill";
+import type { ArtifactStore, EvidenceLifecycleStore } from "@qualigence/evidence";
 import {
   bootstrapServerDatabase,
   buildServer,
@@ -39,6 +46,10 @@ export interface ServerFixture {
   readonly provider: TenantTransactionProvider;
   readonly container: StartedPostgres;
   readonly skillSigner: SkillSigner;
+  readonly artifactDataDir: string;
+  readonly evidenceKms: SelfHostedKms;
+  setEvidenceAuditAvailable(available: boolean): void;
+  setArtifactDeleteAvailable(available: boolean): void;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
   stop(): Promise<void>;
@@ -101,6 +112,24 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caPrivateKeyPem: ca.keyPem,
   });
   const skillSigner = LocalSkillSigner.generate();
+  const evidenceKms = new SelfHostedKms({ rootKey: new Uint8Array(randomBytes(32)), now: fixedClock.now });
+  let evidenceAuditAvailable = true;
+  let artifactDeleteAvailable = true;
+  const evidenceLifecycleStore = (stores: TenantStores, tenantId: string): EvidenceLifecycleStore => {
+    const store = new PostgresEvidenceLifecycleStore(stores.db, tenantId);
+    return {
+      load: (capsuleId) => store.load(capsuleId),
+      transition: (input) => store.transition(input),
+      deleteCiphertext: (capsuleId) => store.deleteCiphertext(capsuleId),
+      record: (event) => {
+        if (!evidenceAuditAvailable) {
+          throw new Error("injected evidence audit failure");
+        }
+        return store.record(event);
+      },
+    };
+  };
+  const artifactDataDir = await mkdtemp(join(process.cwd(), ".tmp-server-artifacts-"));
 
   const deps: ServerDeps = {
     provider,
@@ -110,6 +139,25 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caCertificatePem: ca.certPem,
     clock: fixedClock,
     skillSigner,
+    artifactStore: ({ tenantId, projectId }) => {
+      const store = new LocalArtifactStore(
+        projectId === undefined ? join(artifactDataDir, tenantId) : join(artifactDataDir, tenantId, projectId),
+        fixedClock,
+      );
+      return {
+        write: (request) => store.write(request),
+        read: (manifest) => store.read(manifest),
+        verify: (manifest) => store.verify(manifest),
+        delete: (manifest) => {
+          if (!artifactDeleteAvailable) {
+            throw new Error("injected artifact delete failure");
+          }
+          return store.delete(manifest);
+        },
+      } satisfies ArtifactStore;
+    },
+    evidenceLifecycleStore,
+    evidenceKeyPolicy: evidenceKms,
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
@@ -152,11 +200,20 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     provider,
     container,
     skillSigner,
+    artifactDataDir,
+    evidenceKms,
+    setEvidenceAuditAvailable(available: boolean) {
+      evidenceAuditAvailable = available;
+    },
+    setArtifactDeleteAvailable(available: boolean) {
+      artifactDeleteAvailable = available;
+    },
     token,
     async stop() {
       await app.close();
       await provider.close();
       await container.stop();
+      await rm(artifactDataDir, { recursive: true, force: true });
     },
   };
 }

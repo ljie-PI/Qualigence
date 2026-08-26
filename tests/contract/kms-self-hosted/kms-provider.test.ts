@@ -124,7 +124,7 @@ describe("SelfHostedKms", () => {
   it("stores no plaintext private key material at rest", async () => {
     const { kms, store } = newKms();
     const profile = await kms.encryptionProfile(scopeA);
-    const versions = store.listVersions("tenant-a|case-1|eu|investigation");
+    const versions = await store.listVersions("tenant-a|case-1|eu|investigation");
     expect(versions).toHaveLength(1);
     const version = versions[0]!;
     expect(version.keyId).toBe(profile.wrappingKeyId);
@@ -209,15 +209,15 @@ describe("SelfHostedKms", () => {
     const v1 = await kms.encryptionProfile(scopeA);
     const dek1 = new Uint8Array(randomBytes(32));
     const wrapped1 = await kms.wrapDek(v1, dek1);
-    const before = store.getByKeyId(v1.wrappingKeyId)!;
+    const before = (await store.getByKeyId(v1.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!;
 
     const v2 = await kms.rotate(scopeA);
     expect(v2.wrappingKeyId).not.toBe(v1.wrappingKeyId);
 
-    const after = store.getByKeyId(v1.wrappingKeyId)!;
+    const after = (await store.getByKeyId(v1.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!;
     expect(after.wrappedPrivateKeyBase64).toBe(before.wrappedPrivateKeyBase64);
     expect(after.revision).toBe(1);
-    expect(store.getByKeyId(v2.wrappingKeyId)!.revision).toBe(2);
+    expect((await store.getByKeyId(v2.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!.revision).toBe(2);
 
     const current = await kms.encryptionProfile(scopeA);
     expect(current.wrappingKeyId).toBe(v2.wrappingKeyId);
@@ -229,8 +229,15 @@ describe("SelfHostedKms", () => {
 
   it("fails closed when the KMS is marked unavailable", async () => {
     const { kms } = newKms();
+    const profile = await kms.encryptionProfile(scopeA);
     kms.setAvailable(false);
     await expect(kms.encryptionProfile(scopeA)).rejects.toMatchObject({
+      code: "KmsUnavailable",
+    });
+    await expect(kms.wrapDek(profile, new Uint8Array(randomBytes(32)))).rejects.toMatchObject({
+      code: "KmsUnavailable",
+    });
+    await expect(kms.revoke("capsule-unavailable", "ttl_expired")).rejects.toMatchObject({
       code: "KmsUnavailable",
     });
   });
@@ -251,5 +258,53 @@ describe("SelfHostedKms", () => {
       expect(serialized).not.toContain("PRIVATE KEY");
       expect(serialized).not.toContain(wrapped);
     }
+  });
+
+  it("awaits audit persistence before returning sensitive KMS outputs", async () => {
+    let failAudit = false;
+    const audit: KmsAuditEvent[] = [];
+    const audited = new SelfHostedKms({
+      rootKey,
+      now: () => "2026-08-01T00:00:00.000Z",
+      audit: {
+        async record(event: KmsAuditEvent): Promise<void> {
+          audit.push(event);
+          if (failAudit) throw new Error("audit persistence failed");
+        },
+      },
+    });
+
+    failAudit = true;
+    await expect(audited.encryptionProfile(scopeA)).rejects.toThrow("audit persistence failed");
+    failAudit = false;
+    const profile = await audited.encryptionProfile(scopeA);
+    const dek = new Uint8Array(randomBytes(32));
+
+    failAudit = true;
+    await expect(audited.wrapDek(profile, dek)).rejects.toThrow("audit persistence failed");
+    failAudit = false;
+    const wrapped = await audited.wrapDek(profile, dek);
+    const manifest = manifestFor("capsule-audit", profile.wrappingKeyId, wrapped);
+
+    failAudit = true;
+    await expect(audited.unwrapDek({ manifest, ...scopeA })).rejects.toThrow("audit persistence failed");
+    await expect(audited.unwrapDek({ manifest, ...scopeA, tenantId: "tenant-b" })).rejects.toThrow("audit persistence failed");
+    await expect(audited.assertPlaintextAccess({
+      tenantId: scopeA.tenantId,
+      caseId: scopeA.caseId,
+      region: scopeA.region,
+      purpose: scopeA.purpose,
+      policyId: "evidence-policy/self-hosted-v1",
+      keyVersion: profile.wrappingKeyId,
+      capsuleId: "capsule-audit",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toThrow("audit persistence failed");
+
+    expect(audit.map((event) => `${event.operation}:${event.decision}`)).toEqual(expect.arrayContaining([
+      "profile:allowed",
+      "wrap:allowed",
+      "unwrap:allowed",
+      "unwrap:denied",
+    ]));
   });
 });

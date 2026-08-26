@@ -1,3 +1,7 @@
+import type { ColumnType } from "kysely";
+
+export type WithDefault<T> = ColumnType<T, T | undefined, T>;
+
 export interface SchemaMigrationsTable {
   version: number;
   name: string;
@@ -552,6 +556,10 @@ export interface EvidenceCapsuleManifestsTable {
   revocation_state: string;
   revoked_at: string | null;
   revoked_reason: string | null;
+  lifecycle_state: WithDefault<string>;
+  lifecycle_updated_at: string | null;
+  deleted_at: string | null;
+  last_lifecycle_error: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -605,6 +613,28 @@ export interface EvidenceAuditEventsTable {
   reason_code: string;
   correlation_id: string;
   occurred_at: string;
+}
+
+export interface SelfHostedKmsKeyVersionsTable {
+  tenant_id: string;
+  scope_id: string;
+  key_id: string;
+  revision: number;
+  public_key_pem: string;
+  wrapped_private_key_base64: string;
+  private_key_nonce_base64: string;
+  private_key_tag_base64: string;
+  status: string;
+  created_at: string;
+  is_primary: number;
+}
+
+export interface SelfHostedKmsCapsuleRevocationsTable {
+  tenant_id: string;
+  capsule_id: string;
+  scope_id: string;
+  reason: string;
+  revoked_at: string;
 }
 
 export interface RunnerSessionsTable {
@@ -857,6 +887,8 @@ export interface Database {
   evidence_key_rotations: EvidenceKeyRotationsTable;
   evidence_local_only_records: EvidenceLocalOnlyRecordsTable;
   evidence_audit_events: EvidenceAuditEventsTable;
+  self_hosted_kms_key_versions: SelfHostedKmsKeyVersionsTable;
+  self_hosted_kms_capsule_revocations: SelfHostedKmsCapsuleRevocationsTable;
   runner_sessions: RunnerSessionsTable;
   runner_resume_tokens: RunnerResumeTokensTable;
   execution_leases: ExecutionLeasesTable;

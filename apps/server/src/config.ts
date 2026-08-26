@@ -45,6 +45,17 @@ export interface ServerConfig {
     readonly privateKeyPem: string;
   };
   readonly artifactDataDir: string;
+  readonly artifactS3?: {
+    readonly region: string;
+    readonly endpoint?: string;
+    readonly bucket: string;
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly forcePathStyle: boolean;
+  };
+  readonly evidenceKms?: {
+    readonly rootKey: Uint8Array;
+  };
   readonly objectStorageReadinessUrl?: string;
   readonly skillSigningDataDir?: string;
 }
@@ -59,6 +70,23 @@ function required(name: string, env: NodeJS.ProcessEnv): string {
 
 function fileContents(name: string, env: NodeJS.ProcessEnv): string {
   return readFileSync(required(name, env), "utf8");
+}
+
+function fromFileOrValue(name: string, env: NodeJS.ProcessEnv): string {
+  const filePath = env[`${name}_FILE`];
+  if (filePath !== undefined && filePath.length > 0) {
+    return readFileSync(filePath, "utf8").trim();
+  }
+  return required(name, env);
+}
+
+function optionalFromFileOrValue(name: string, env: NodeJS.ProcessEnv): string | undefined {
+  const filePath = env[`${name}_FILE`];
+  if (filePath !== undefined && filePath.length > 0) {
+    return readFileSync(filePath, "utf8").trim();
+  }
+  const value = env[name];
+  return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function optionalFileContents(name: string, env: NodeJS.ProcessEnv): Buffer | undefined {
@@ -81,6 +109,16 @@ function tenantList(raw: string | undefined, fallback: readonly string[]): reado
   return [...new Set(values)];
 }
 
+function optionalRootKey(env: NodeJS.ProcessEnv): Uint8Array | undefined {
+  const encoded = optionalFromFileOrValue("SERVER_KMS_ROOT_KEY_BASE64", env);
+  if (encoded === undefined) return undefined;
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.byteLength !== 32) {
+    throw new Error("SERVER_KMS_ROOT_KEY_BASE64 must decode to exactly 32 bytes.");
+  }
+  return new Uint8Array(decoded);
+}
+
 /**
  * Read the Server configuration from the environment. The OIDC issuer/audience,
  * JWKS, allowed algorithms and tenant/role claim allowlists are pinned by
@@ -89,6 +127,7 @@ function tenantList(raw: string | undefined, fallback: readonly string[]): reado
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const claimMapper = JSON.parse(fileContents("SERVER_OIDC_CLAIM_MAP_FILE", env)) as ClaimMapperConfig;
   const runnerGrpcEnabled = env.SERVER_RUNNER_GRPC_ENABLED !== "false";
+  const kmsRootKey = optionalRootKey(env);
   const runnerGrpcCert = runnerGrpcEnabled ? optionalFileContents("SERVER_RUNNER_GRPC_TLS_CERT_FILE", env) : undefined;
   const runnerGrpcKey = runnerGrpcEnabled ? optionalFileContents("SERVER_RUNNER_GRPC_TLS_KEY_FILE", env) : undefined;
   if (runnerGrpcEnabled && (runnerGrpcCert === undefined || runnerGrpcKey === undefined)) {
@@ -145,6 +184,19 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       privateKeyPem: fileContents("SERVER_RUNNER_CA_KEY_FILE", env),
     },
     artifactDataDir: env.SERVER_ARTIFACT_DATA_DIR ?? ".qualigence-server/artifacts",
+    ...(env.SERVER_S3_BUCKET === undefined
+      ? {}
+      : {
+          artifactS3: {
+            region: env.SERVER_S3_REGION ?? "us-east-1",
+            ...(env.SERVER_S3_ENDPOINT === undefined ? {} : { endpoint: env.SERVER_S3_ENDPOINT }),
+            bucket: env.SERVER_S3_BUCKET,
+            accessKeyId: fromFileOrValue("SERVER_S3_ACCESS_KEY_ID", env),
+            secretAccessKey: fromFileOrValue("SERVER_S3_SECRET_ACCESS_KEY", env),
+            forcePathStyle: env.SERVER_S3_FORCE_PATH_STYLE !== "false",
+          },
+        }),
+    ...(kmsRootKey === undefined ? {} : { evidenceKms: { rootKey: kmsRootKey } }),
     ...(env.SERVER_OBJECT_STORAGE_READY_URL === undefined
       ? {}
       : { objectStorageReadinessUrl: env.SERVER_OBJECT_STORAGE_READY_URL }),

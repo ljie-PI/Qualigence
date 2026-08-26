@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
+  type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import type {
   ArtifactManifest,
@@ -16,6 +18,7 @@ export type S3ArtifactStoreErrorCode =
   | "ArtifactPathRejected"
   | "ArtifactWriteFailed"
   | "ArtifactReadFailed"
+  | "ArtifactDeleteFailed"
   | "ArtifactHashMismatch";
 
 export class S3ArtifactStoreError extends Error {
@@ -38,6 +41,29 @@ export interface S3ArtifactStoreConfig {
   readonly tenantId: string;
   readonly projectId: string;
   readonly clock: Clock;
+}
+
+export interface S3ArtifactClientConfig {
+  readonly region: string;
+  readonly endpoint?: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly forcePathStyle?: boolean;
+}
+
+export function createS3ArtifactClient(config: S3ArtifactClientConfig): S3Client {
+  const clientConfig: S3ClientConfig = {
+    region: config.region,
+    forcePathStyle: config.forcePathStyle ?? false,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    },
+  };
+  if (config.endpoint !== undefined) {
+    clientConfig.endpoint = config.endpoint;
+  }
+  return new S3Client(clientConfig);
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -66,11 +92,12 @@ function assertSafeSegment(
 /**
  * Content-addressed artifact store backed by an S3-compatible object store.
  *
- * Objects are keyed `<tenant>/<project>/<sha256-prefix>/<sha256>` so that
- * identical bytes are stored idempotently and cross-tenant references cannot
- * collide. Writes put the object first, then re-read its metadata (HEAD) to
- * confirm size and hash before a manifest is returned; a manifest therefore
- * never references bytes that are not durably present and verified.
+ * Objects are keyed `<tenant>/<project>/<run>/<sha256-prefix>/<sha256>` so that
+ * identical bytes are stored idempotently only inside their authorized tenant /
+ * project / Run scope and cross-tenant references cannot collide. Writes put
+ * the object first, then re-read its metadata (HEAD) to confirm size and hash
+ * before a manifest is returned; a manifest therefore never references bytes
+ * that are not durably present and verified.
  */
 export class S3ArtifactStore implements ArtifactStore {
   private readonly client: S3Client;
@@ -95,7 +122,7 @@ export class S3ArtifactStore implements ArtifactStore {
 
     const sha256 = sha256Hex(request.bytes);
     const size = request.bytes.length;
-    const key = this.objectKey(sha256);
+    const key = this.objectKey(sha256, request.runId);
 
     try {
       await this.client.send(
@@ -137,6 +164,7 @@ export class S3ArtifactStore implements ArtifactStore {
   }
 
   async read(manifest: ArtifactManifest): Promise<Uint8Array> {
+    this.assertManifestScope(manifest);
     let bytes: Uint8Array;
     try {
       const response = await this.client.send(
@@ -181,8 +209,37 @@ export class S3ArtifactStore implements ArtifactStore {
     }
   }
 
-  private objectKey(sha256: string): string {
-    return `${this.tenantId}/${this.projectId}/${sha256.slice(0, 2)}/${sha256}`;
+  async delete(manifest: ArtifactManifest): Promise<void> {
+    this.assertManifestScope(manifest);
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: manifest.relativePath,
+        }),
+      );
+    } catch (cause) {
+      throw new S3ArtifactStoreError(
+        "ArtifactDeleteFailed",
+        `Failed to delete artifact ${manifest.artifactId}`,
+        { cause },
+      );
+    }
+  }
+
+  private objectKey(sha256: string, runId: string): string {
+    return `${this.tenantId}/${this.projectId}/${runId}/${sha256.slice(0, 2)}/${sha256}`;
+  }
+
+  private assertManifestScope(manifest: ArtifactManifest): void {
+    assertSafeSegment("run id", manifest.runId);
+    const prefix = `${this.tenantId}/${this.projectId}/${manifest.runId}/`;
+    if (!manifest.relativePath.startsWith(prefix)) {
+      throw new S3ArtifactStoreError(
+        "ArtifactPathRejected",
+        `Artifact ${manifest.artifactId} path is outside its tenant/project/run scope`,
+      );
+    }
   }
 
   private async verifyStoredMetadata(
