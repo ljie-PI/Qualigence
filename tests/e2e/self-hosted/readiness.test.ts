@@ -150,7 +150,8 @@ async function createHarnessContext(): Promise<HarnessContext> {
   const [proxyPort, runnerGrpcPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const runnerCa = createRunnerCa("Qualigence readiness E2E Runner CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
-  const proxy = createSelfSignedServerCertificate("localhost");
+  const proxyCa = createRunnerCa("Qualigence readiness E2E Proxy TLS CA");
+  const proxy = mintServerCertificate(proxyCa, "localhost");
   const secrets = await backupSecretFiles();
   const projectName = `qualigence-ready-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   await writeFile(join(workDir, "runner-ca.crt"), runnerCa.certPem, "utf8");
@@ -164,7 +165,7 @@ async function createHarnessContext(): Promise<HarnessContext> {
     overrideFile: join(workDir, "compose.override.yaml"),
     proxyPort,
     runnerGrpcPort,
-    proxyCaPem: proxy.certPem,
+    proxyCaPem: proxyCa.certPem,
     runnerCa,
     runnerServer,
     proxy,
@@ -592,19 +593,6 @@ function mintServerCertificate(ca: PemPair, commonName: string): PemPair {
       "",
     ].join("\n"));
     openssl(["x509", "-req", "-in", "server.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-sha256", "-out", "server.crt", "-extfile", "server.ext", "-days", "2"]);
-    return { certPem: readFileSync(join(dir, "server.crt"), "utf8"), keyPem: readFileSync(join(dir, "server.key"), "utf8") };
-  });
-}
-
-function createSelfSignedServerCertificate(commonName: string): PemPair {
-  return withOpenSslScratch((dir, openssl) => {
-    openssl([
-      "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
-      "-subj", `/CN=${commonName}`,
-      "-keyout", "server.key",
-      "-out", "server.crt",
-      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ]);
     return { certPem: readFileSync(join(dir, "server.crt"), "utf8"), keyPem: readFileSync(join(dir, "server.key"), "utf8") };
   });
 }

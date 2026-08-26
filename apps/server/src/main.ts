@@ -55,6 +55,7 @@ interface JwksEntry {
 }
 
 const systemClock: Clock = { now: () => new Date().toISOString() };
+const READINESS_PROBE_TIMEOUT_MS = 2_000;
 
 type ArtifactStoreFactory = (scope: {
   readonly tenantId: string;
@@ -300,12 +301,13 @@ export interface ReadinessInput {
   readonly missionDispatchLoops: readonly MissionDispatchLoop[];
   readonly resultConsumerLoop: IntelligenceResultConsumerLoop;
   readonly jwks: JwksResolver;
+  readonly objectStorageProbeTimeoutMs?: number;
 }
 
 export async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
   const checks: ServerReadinessCheck[] = [];
   checks.push(await postgresCheck(input));
-  checks.push(await objectStorageCheck(input.config, input.artifactStore));
+  checks.push(await objectStorageCheck(input.config, input.artifactStore, input.objectStorageProbeTimeoutMs));
   checks.push(await artifactDataPlaneCheck(input.config.artifactDataDir));
   checks.push(kmsCheck(input.config));
   checks.push(await oidcJwksCheck(input.jwks));
@@ -336,13 +338,14 @@ async function postgresCheck(input: ReadinessInput): Promise<ServerReadinessChec
 async function objectStorageCheck(
   config: ServerConfig,
   artifactStore: ArtifactStoreFactory,
+  timeoutMs = READINESS_PROBE_TIMEOUT_MS,
 ): Promise<ServerReadinessCheck> {
   if (config.artifactS3 !== undefined) {
     try {
       await probeArtifactStore(artifactStore({
         tenantId: config.missionDispatch?.tenantIds[0] ?? config.oidc.claimMapper.allowedTenants[0] ?? "readiness",
         projectId: "readiness",
-      }), "server");
+      }), "server", { timeoutMs });
       return { name: "object_storage", status: "pass", safeMessage: "S3 artifact data-plane is writable and readable" };
     } catch (error) {
       return fail("object_storage", "Unavailable", "S3 artifact data-plane probe failed", { error: errorMessage(error) });
@@ -352,7 +355,7 @@ async function objectStorageCheck(
     return fail("object_storage", "NotConfigured", "object storage readiness URL is not configured");
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(config.objectStorageReadinessUrl, { signal: controller.signal });
     if (!response.ok) {
@@ -366,27 +369,64 @@ async function objectStorageCheck(
   }
 }
 
-export async function probeArtifactStore(store: ArtifactStore, owner: "server" | "worker"): Promise<void> {
+export interface ArtifactStoreProbeOptions {
+  readonly timeoutMs?: number;
+}
+
+export async function probeArtifactStore(
+  store: ArtifactStore,
+  owner: "server" | "worker",
+  options: ArtifactStoreProbeOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? READINESS_PROBE_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const withProbeDeadline = <T>(operation: string, promise: Promise<T>): Promise<T> =>
+    withReadinessDeadline(promise, operation, deadline, timeoutMs);
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const expected = Buffer.from(`qualigence-${owner}-object-storage-readiness`, "utf8");
-  const manifest = await store.write({
+  const manifest = await withProbeDeadline("write", store.write({
     artifactId: `readiness-${token}`,
     runId: `readiness-${owner}`,
     name: "object-storage-readiness.txt",
     kind: "other",
     mediaType: "text/plain; charset=utf-8",
     bytes: expected,
-  });
+  }));
   try {
-    const actual = await store.read(manifest);
+    const actual = await withProbeDeadline("read", store.read(manifest));
     if (!Buffer.from(actual).equals(expected)) {
       throw new Error("object storage readiness probe read different bytes");
     }
-    if (!(await store.verify(manifest))) {
+    if (!(await withProbeDeadline("verify", store.verify(manifest)))) {
       throw new Error("object storage readiness probe verification failed");
     }
   } finally {
-    await store.delete?.(manifest);
+    if (store.delete !== undefined) {
+      await withProbeDeadline("delete", store.delete(manifest));
+    }
+  }
+}
+
+async function withReadinessDeadline<T>(
+  promise: Promise<T>,
+  operation: string,
+  deadline: number,
+  timeoutMs: number,
+): Promise<T> {
+  const remainingMs = Math.max(0, deadline - Date.now());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`object storage readiness probe timed out after ${timeoutMs}ms during ${operation}`));
+        }, remainingMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 

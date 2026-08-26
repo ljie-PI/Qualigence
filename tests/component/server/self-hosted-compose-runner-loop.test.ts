@@ -21,7 +21,7 @@ const tempDirs: string[] = [];
 class RecordingArtifactStore implements ArtifactStore {
   readonly operations: string[] = [];
   failRead = false;
-  private bytes = new Map<string, Uint8Array>();
+  protected bytes = new Map<string, Uint8Array>();
 
   async write(request: ArtifactWriteRequest): Promise<ArtifactManifest> {
     this.operations.push("write");
@@ -52,6 +52,14 @@ class RecordingArtifactStore implements ArtifactStore {
   async delete(manifest: ArtifactManifest): Promise<void> {
     this.operations.push("delete");
     this.bytes.delete(manifest.artifactId);
+  }
+}
+
+class StallingArtifactStore extends RecordingArtifactStore {
+  override async write(request: ArtifactWriteRequest): Promise<ArtifactManifest> {
+    this.operations.push("write");
+    this.bytes.set(request.artifactId, request.bytes);
+    return new Promise<ArtifactManifest>(() => undefined);
   }
 }
 
@@ -118,6 +126,34 @@ describe("Self-hosted Server readiness endpoints", () => {
     failing.failRead = true;
     await expect(probeArtifactStore(failing, "server")).rejects.toThrow(/S3 read denied/);
     expect(failing.operations).toEqual(["write", "read", "delete"]);
+  });
+
+  it("returns stable not-ready object-storage evidence when the constructed S3 probe stalls", async () => {
+    const store = new StallingArtifactStore();
+    const started = Date.now();
+    const report = await readinessReport({
+      config: readinessConfig(),
+      provider: {} as never,
+      artifactStore: () => store,
+      runnerGrpcReady: false,
+      missionDispatchLoops: [],
+      resultConsumerLoop: { readiness: () => ({ status: "ready", active: true, aborted: false, inFlight: false, consecutiveFailures: 0, lastSuccessfulObservationAt: "2026-08-26T00:00:00.000Z" }) } as never,
+      jwks: { resolve: async () => undefined, refresh: async () => undefined, readiness: () => ({ status: "ready", keyCount: 1 }) },
+      objectStorageProbeTimeoutMs: 5,
+    });
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "object_storage",
+        status: "fail",
+        code: "Unavailable",
+        details: expect.objectContaining({
+          error: expect.stringContaining("object storage readiness probe timed out after 5ms during write"),
+        }),
+      }),
+    ]));
+    expect(store.operations).toEqual(["write"]);
   });
 
   it("reports object-storage failure and recovery from the configured S3 artifact store, not a MinIO health URL", async () => {
