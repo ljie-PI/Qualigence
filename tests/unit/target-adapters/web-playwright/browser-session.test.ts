@@ -10,6 +10,11 @@ import {
   type WebSessionOptions,
 } from "@qualigence/web-playwright/internal";
 
+function indexFromNodeId(nodeId: string): number {
+  const suffix = Number(nodeId.split("-").at(-1));
+  return Number.isSafeInteger(suffix) ? suffix + 1 : 1;
+}
+
 function baseOptions(
   overrides: Partial<WebSessionOptions> = {},
 ): WebSessionOptions {
@@ -374,7 +379,7 @@ describe("PlaywrightBrowserSession", () => {
       nodeId: "n-sensitive",
       sourceValue: "line-one\r\nline-two\r\n",
     });
-    session.completeSensitiveEvidenceRecord(prepared, ["line-one\nline-two\n"]);
+    session.completeSensitiveEvidenceRecord(prepared, ["line-one\nline-two\n"], [{ markerId: prepared.markerId, maskId: "qm-test-1", backendNodeId: 1 }]);
 
     expect(session.redactSensitiveTargetField(
       [prepared.markerId],
@@ -400,7 +405,7 @@ describe("PlaywrightBrowserSession", () => {
         nodeId,
         sourceValue,
       });
-      session.completeSensitiveEvidenceRecord(prepared, [sourceValue]);
+      session.completeSensitiveEvidenceRecord(prepared, [sourceValue], [{ markerId: prepared.markerId, maskId: `qm-${nodeId}`, backendNodeId: indexFromNodeId(nodeId) }]);
     };
 
     for (let index = 0; index < 100; index += 1) {
@@ -426,7 +431,7 @@ describe("PlaywrightBrowserSession", () => {
       nodeId: "n-form-overflow",
       sourceValue: "a",
     });
-    formOverflowSession.completeSensitiveEvidenceRecord(formOverflow, ["b", "c", "d", "e"]);
+    formOverflowSession.completeSensitiveEvidenceRecord(formOverflow, ["b", "c", "d", "e"], [{ markerId: formOverflow.markerId, maskId: "qm-form-overflow", backendNodeId: 101 }]);
     expect(() => formOverflowSession.assertSensitiveEvidenceAvailable())
       .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
 
@@ -436,8 +441,20 @@ describe("PlaywrightBrowserSession", () => {
       nodeId: "n-form-oversized",
       sourceValue: "a",
     });
-    formOversizedSession.completeSensitiveEvidenceRecord(formOversized, [oversized]);
+    formOversizedSession.completeSensitiveEvidenceRecord(formOversized, [oversized], [{ markerId: formOversized.markerId, maskId: "qm-form-oversized", backendNodeId: 102 }]);
     expect(() => formOversizedSession.assertSensitiveEvidenceAvailable())
+      .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
+  });
+
+  it("fails sensitive evidence closed when host mask snapshots are missing or invalid", () => {
+    const session = new PlaywrightBrowserSession(baseOptions(), fakeLauncher().launcher);
+    const prepared = session.prepareSensitiveEvidenceRecord({
+      navigationGeneration: session.currentNavigationGeneration,
+      nodeId: "n-sensitive",
+      sourceValue: "secret",
+    });
+    session.completeSensitiveEvidenceRecord(prepared, ["secret"], []);
+    expect(() => session.assertSensitiveEvidenceAvailable())
       .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
   });
 

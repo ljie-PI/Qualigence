@@ -30,7 +30,10 @@ import { FileActionValueProvider } from "../../../apps/runner/src/action-value-p
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "../../component/web-execution/fixtures.js";
-import { SENSITIVE_SHADOW_ROOTS_PROPERTY } from "../../../packages/target-adapters/web-playwright/src/sensitive-evidence-authority.js";
+import {
+  SENSITIVE_EVIDENCE_STATE_PROPERTY,
+  SENSITIVE_SHADOW_ROOTS_PROPERTY,
+} from "../../../packages/target-adapters/web-playwright/src/sensitive-evidence-authority.js";
 
 const INPUT_VALUE = "alpha\nbeta\r\ngamma\n";
 const INPUT_BROWSER_VALUE = "alpha\nbeta\ngamma\n";
@@ -516,6 +519,203 @@ describe("production valueRef browser execution", () => {
       stderr.mockRestore();
       await session.close();
     }
+  }, 90_000);
+
+  it("proves second-race failures write no valueRef plaintext through Runner Spool", async () => {
+    const secondRaceSecret = "ticket45-runner-spool-second-race-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 360px; height: 220px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #runner-race-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #runner-race-mirror { position: absolute; left: 30px; top: 120px; width: 240px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Runner Race Secret <input id="runner-race-secret" aria-label="Runner Race Secret" /></label>
+        <div id="runner-race-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('runner-race-secret');
+          const mirror = document.getElementById('runner-race-mirror');
+          input.addEventListener('input', () => {
+            document.title = input.value;
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 Runner second race"),
+    });
+
+    const root = await mkdtemp(join(tmpdir(), "qualigence-ticket45-second-race-spool-"));
+    roots.push(root);
+    await writeFile(join(root, "secret.txt"), secondRaceSecret, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      await chmod(join(root, "secret.txt"), 0o600);
+    }
+    const configFile = join(root, "values.json");
+    await writeFile(configFile, JSON.stringify({ "profile.secondRaceSecret": "secret.txt" }));
+    const valueProvider = await FileActionValueProvider.open({ root, configFile });
+    const spoolFile = join(root, "runner-spool.db");
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
+
+    modelServer = createServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as {
+        readonly messages: readonly { readonly content: string }[];
+        readonly response_format: { readonly json_schema: { readonly name: string } };
+      };
+      const operation = body.response_format.json_schema.name;
+      const output = operation === "execution_verification"
+        ? { status: "passed", summary: "not expected after second race", claims: [] }
+        : decisionFrom(body.messages.at(-1)?.content ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        id: `chatcmpl-ticket45-race-${Date.now()}`,
+        model: "ticket-45-model",
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }));
+    });
+    modelServer.listen(0, "127.0.0.1");
+    await once(modelServer, "listening");
+    const modelAddress = modelServer.address();
+    if (modelAddress === null || typeof modelAddress === "string") throw new Error("Expected model listener.");
+
+    const logs: string[] = [];
+    const batches: ExecutionEventBatch[] = [];
+    const spooledEvents: ExecutionEventBatch["events"][number][] = [];
+    const completions: ExecutionCompletion[] = [];
+    const capturedArtifacts: CapturedArtifact[] = [];
+    let sensitiveScreenshotMutations = 0;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const session: RunnerSession = {
+      welcome: {
+        sessionId: "session-ticket45-second-race-spool",
+        resumeToken: "resume-ticket45-second-race-spool",
+        selectedProtocolMajor: 1,
+        serverVersion: "test",
+        heartbeatIntervalMs: 10_000,
+        leaseDurationMs: 60_000,
+        traceBatchMaximumEvents: 100,
+        traceBatchMaximumBytes: 1_000_000,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 1_000_000,
+      },
+      nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+      accept: async (offerId: string): Promise<ExecutionJobLease> => ({
+        jobId: offerId.replace("offer", "job"),
+        runId: offerId.replace("offer", "run"),
+        leaseToken: `lease-${offerId}`,
+        leaseEpoch: 1,
+        expiresAt: "2099-08-21T00:00:00.000Z",
+      }),
+      renew: async () => { throw new Error("Unexpected lease renewal"); },
+      submit: async (batch: ExecutionEventBatch) => {
+        spooledEvents.push(...await spool!.pending(batch.runId, batch.firstSequenceNumber, {
+          maximumEvents: 100,
+          maximumBytes: 1_000_000,
+        }));
+        batches.push(batch);
+        return {
+          batchId: batch.batchId,
+          runId: batch.runId,
+          nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+        };
+      },
+      complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
+      close: async () => undefined,
+    };
+
+    class SecondRaceTargetAdapter extends HookedWebTargetAdapter {
+      constructor(options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) {
+        super(options, {
+          afterScreenshotCapture: async (page) => {
+            const mutated = await page.evaluate((input) => {
+              const host = globalThis as unknown as Record<string, unknown> & {
+                readonly document: { querySelector(selector: string): { readonly style: { left: string } } | null };
+              };
+              const state = host[input.stateProperty] as { readonly records?: readonly unknown[] } | undefined;
+              if ((state?.records?.length ?? 0) === 0) return false;
+              const element = host.document.querySelector("#runner-race-secret");
+              if (element === null) return false;
+              element.style.left = `${30 + input.call * 7}px`;
+              return true;
+            }, {
+              stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+              call: sensitiveScreenshotMutations + 1,
+            });
+            if (mutated) sensitiveScreenshotMutations += 1;
+          },
+        });
+      }
+
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        const graph = await super.capture(job, signal);
+        capturedArtifacts.push(...await super.captureArtifacts(graph.graphId));
+        return graph;
+      }
+    }
+
+    const config: RunnerConfig = {
+      runnerId: "runner-ticket45-second-race-spool",
+      coreAddress: "unused",
+      authority: "unused",
+      tls: { ca: Buffer.alloc(0), cert: Buffer.alloc(0), key: Buffer.alloc(0) },
+      dataDir: root,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      model: {
+        baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
+        apiKey: "acceptance-api-key",
+        modelName: "ticket-45-model",
+        maximumTokensPerCall: 100,
+      },
+    };
+    const runtime = new RunnerOfferRuntime({
+      config,
+      session,
+      spool,
+      valueProvider,
+      createTarget: (targetOptions) => new SecondRaceTargetAdapter(targetOptions),
+    });
+
+    try {
+      await runtime.run(offer("input", "profile.secondRaceSecret", "Runner Race Secret", "textbox", "ticket45-second-race-spool"));
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    expect(sensitiveScreenshotMutations).toBe(2);
+    expect(completions).toEqual([
+      { jobId: "job-ticket45-second-race-spool", runId: "run-ticket45-second-race-spool", status: "error", errorCode: "SensitiveEvidenceUnavailable" },
+    ]);
+    const trace = batches.flatMap((batch) => batch.events);
+    expect(trace.find((event) => event.runId === "run-ticket45-second-race-spool" && event.stage === "run_completed")?.payload)
+      .toMatchObject({ status: "error", errorCode: "SensitiveEvidenceUnavailable" });
+    expect(JSON.stringify(trace)).not.toContain(secondRaceSecret);
+    expect(JSON.stringify(spooledEvents)).not.toContain(secondRaceSecret);
+    const artifactBytes = Buffer.concat(capturedArtifacts.map((artifact) => Buffer.from(artifact.bytes))).toString("utf8");
+    expect(artifactBytes).not.toContain(secondRaceSecret);
+    await spool.close();
+    spool = undefined;
+    const spoolText = (await readFile(spoolFile)).toString("utf8");
+    expect(JSON.stringify(logs)).not.toContain(secondRaceSecret);
+    expect(spoolText).not.toContain(secondRaceSecret);
+    expect(spoolText).toContain("SensitiveEvidenceUnavailable");
   }, 90_000);
 
   it("fails closed when Promise owner descriptors/prototypes mutate, restore, and re-register at capture boundaries", async () => {

@@ -163,6 +163,34 @@ describe("CDP screenshot masking", () => {
     expect(JSON.stringify(graph)).not.toContain(SECRET);
   }, 60_000);
 
+  it("uses captured WeakMap baseline authority when the page replaces WeakMap before a sensitive action", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    let graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = graph.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        (globalThis as unknown as { WeakMap: unknown }).WeakMap = class HostileWeakMap {
+          get(): readonly string[] { return [secret]; }
+          set(): this { return this; }
+        };
+      }, SECRET);
+    });
+
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, graph);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const mirror = await expectedRectFromCdp(session, "#mirror");
+    graph = await new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, Math.floor((mirror.left + mirror.right) / 2), Math.floor((mirror.top + mirror.bottom) / 2))).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
   it("uses captured Array.from/Set-independent classification when page intrinsics are replaced", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -191,6 +219,29 @@ describe("CDP screenshot masking", () => {
     const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
 
     expect(pixelAt(image, Math.floor((mirror.left + mirror.right) / 2), Math.floor((mirror.top + mirror.bottom) / 2))).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("uses captured CSSStyleDeclaration style reads when style accessors are replaced", async () => {
+    await enterSecret();
+    await session.withPage(async (page) => {
+      await page.evaluate(() => {
+        const host = globalThis as unknown as {
+          readonly CSSStyleDeclaration: { readonly prototype: { getPropertyValue(name: string): string } };
+          readonly Object: typeof Object;
+        };
+        const proto = host.CSSStyleDeclaration.prototype;
+        host.Object.defineProperty(proto, "display", { configurable: true, get: () => "none" });
+        host.Object.defineProperty(proto, "visibility", { configurable: true, get: () => "hidden" });
+        proto.getPropertyValue = () => "none";
+      });
+    });
+
+    const expected = await expectedRectFromCdp(session, "#secret");
+    const graph = await new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, expected.left, expected.top)).toEqual([0, 0, 0, 255]);
     expect(JSON.stringify(graph)).not.toContain(SECRET);
   }, 60_000);
 
@@ -229,6 +280,39 @@ describe("CDP screenshot masking", () => {
 
     expect(pixelAt(image, expected.left, expected.top)).toEqual([0, 0, 0, 255]);
     expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("fails closed when page-mutated classifiedElements redirect the retained mask record to a decoy", async () => {
+    await enterSecret();
+    const observer = new PlaywrightObserver(session, {
+      afterGraphAssembly: async (page) => {
+        await page.evaluate((input) => {
+          type MutableElement = { removeAttribute(name: string): void };
+          const host = globalThis as unknown as Record<string, unknown> & {
+            readonly document: { querySelector(selector: string): MutableElement | null };
+          };
+          const state = host[input.stateProperty] as {
+            records?: { classifiedElements?: unknown[] }[];
+          } | undefined;
+          const secret = host.document.querySelector("#secret");
+          const decoy = host.document.querySelector("#unrelated");
+          const record = state?.records?.[0];
+          if (record?.classifiedElements === undefined || secret === null || decoy === null) {
+            throw new Error("Missing sensitive state.");
+          }
+          record.classifiedElements[0] = decoy;
+          secret.removeAttribute(input.maskAttribute);
+        }, {
+          stateProperty: "__qualigenceSensitiveEvidenceState",
+          maskAttribute: MASK_ATTRIBUTE,
+        });
+      },
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
   it("fails closed when marker attributes are reassigned to a non-sensitive backend node", async () => {

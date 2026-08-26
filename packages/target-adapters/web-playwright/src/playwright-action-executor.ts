@@ -4,7 +4,7 @@ import type {
   AnyResolvedAction,
   ResolvedAction,
 } from "@qualigence/runner-kernel";
-import type { Locator } from "playwright";
+import type { CDPSession, Locator, Page } from "playwright";
 import { ExecutionPermit, isDesktopAction } from "@qualigence/runner-kernel";
 import {
   PlaywrightBrowserSession,
@@ -23,6 +23,7 @@ import {
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   SENSITIVE_TARGET_IDS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
+  type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
 export interface ActionValueProvider {
@@ -342,7 +343,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               if (epochResult?.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
               } else {
-                await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
+                await this.completeInputSensitiveEvidence(page, locator, sensitiveEvidence, epochResult?.maskIds ?? []);
               }
             } catch (error) {
               if (permit.dispatchStarted) {
@@ -394,7 +395,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
               if (epochResult?.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
               } else {
-                await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
+                await this.completeSelectSensitiveEvidence(page, locator, sensitiveEvidence, epochResult?.maskIds ?? []);
               }
             } catch (error) {
               if (permit.dispatchStarted) {
@@ -471,8 +472,10 @@ export class PlaywrightActionExecutor implements ActionExecutor {
   }
 
   private async completeInputSensitiveEvidence(
+    page: Page,
     locator: Locator,
     prepared: PreparedSensitiveEvidenceRecord,
+    maskIds: readonly string[],
   ): Promise<void> {
     try {
       await markSensitiveTarget(locator, prepared.markerId);
@@ -481,15 +484,18 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         this.session.markSensitiveEvidenceUnavailable();
         return;
       }
-      this.session.completeSensitiveEvidenceRecord(prepared, sensitiveInputForms(observed.value));
+      const maskSnapshot = await collectSensitiveMaskSnapshot(page, prepared.markerId, maskIds);
+      this.session.completeSensitiveEvidenceRecord(prepared, sensitiveInputForms(observed.value), maskSnapshot);
     } catch {
       this.session.markSensitiveEvidenceUnavailable();
     }
   }
 
   private async completeSelectSensitiveEvidence(
+    page: Page,
     locator: Locator,
     prepared: PreparedSensitiveEvidenceRecord,
+    maskIds: readonly string[],
   ): Promise<void> {
     try {
       await markSensitiveTarget(locator, prepared.markerId);
@@ -498,11 +504,12 @@ export class PlaywrightActionExecutor implements ActionExecutor {
         this.session.markSensitiveEvidenceUnavailable();
         return;
       }
+      const maskSnapshot = await collectSensitiveMaskSnapshot(page, prepared.markerId, maskIds);
       this.session.completeSensitiveEvidenceRecord(prepared, [
         observed.value,
         observed.selectedOptionValue,
         observed.selectedOptionText,
-      ]);
+      ], maskSnapshot);
     } catch {
       this.session.markSensitiveEvidenceUnavailable();
     }
@@ -605,8 +612,76 @@ function navigationGenerationFailure(
   }
 }
 
-interface PageSensitiveEpochResult {
-  readonly status: "ok" | "failed";
+type PageSensitiveEpochResult =
+  | { readonly status: "ok"; readonly maskIds?: readonly string[] }
+  | { readonly status: "failed" };
+
+async function collectSensitiveMaskSnapshot(
+  page: Page,
+  markerId: string,
+  maskIds: readonly string[],
+): Promise<readonly SensitiveMaskSnapshotEntry[]> {
+  if (maskIds.length === 0 || maskIds.length > MAX_REFLECTED_REGIONS) {
+    throw new Error("Sensitive mask snapshot is unavailable.");
+  }
+  if (maskIds.some((maskId) => !/^[A-Za-z0-9_-]+$/.test(maskId))) {
+    throw new Error("Sensitive mask snapshot is invalid.");
+  }
+  let cdp: CDPSession | undefined;
+  try {
+    cdp = await page.context().newCDPSession(page);
+    await cdp.send("DOM.enable");
+    await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+    const entries: SensitiveMaskSnapshotEntry[] = [];
+    for (const maskId of maskIds) {
+      const nodeId = await uniqueCdpNodeIdForMask(cdp, maskId);
+      const box = await cdp.send("DOM.getBoxModel", { nodeId }).catch(() => undefined);
+      if (box === undefined) continue;
+      const described = await cdp.send("DOM.describeNode", { nodeId }) as {
+        readonly node?: { readonly backendNodeId?: number };
+      };
+      const backendNodeId = described.node?.backendNodeId;
+      if (typeof backendNodeId !== "number" || !Number.isSafeInteger(backendNodeId)) {
+        throw new Error("Sensitive mask backend node is unavailable.");
+      }
+      entries[entries.length] = { markerId, maskId, backendNodeId };
+    }
+    if (entries.length === 0) {
+      throw new Error("Sensitive mask snapshot is empty.");
+    }
+    return entries;
+  } finally {
+    await cdp?.detach().catch(() => undefined);
+  }
+}
+
+async function uniqueCdpNodeIdForMask(cdp: CDPSession, maskId: string): Promise<number> {
+  const search = await cdp.send("DOM.performSearch", {
+    query: `[${SENSITIVE_MASK_ID_ATTRIBUTE}="${maskId}"]`,
+    includeUserAgentShadowDOM: true,
+  }) as { readonly searchId?: string; readonly resultCount?: number };
+  const searchId = search.searchId;
+  const resultCount = search.resultCount;
+  if (typeof searchId !== "string") {
+    throw new Error("Sensitive mask node is unavailable.");
+  }
+  try {
+    if (resultCount !== 1) {
+      throw new Error("Sensitive mask node is unavailable.");
+    }
+    const results = await cdp.send("DOM.getSearchResults", {
+      searchId,
+      fromIndex: 0,
+      toIndex: 1,
+    }) as { readonly nodeIds?: readonly number[] };
+    const nodeId = results.nodeIds?.[0];
+    if (typeof nodeId !== "number" || !Number.isSafeInteger(nodeId)) {
+      throw new Error("Sensitive mask node is unavailable.");
+    }
+    return nodeId;
+  } finally {
+    await cdp.send("DOM.discardSearchResults", { searchId }).catch(() => undefined);
+  }
 }
 
 async function settleSensitiveSchedulerCallbacks(page: { waitForTimeout?: (timeout: number) => Promise<unknown> }): Promise<void> {
@@ -657,6 +732,7 @@ async function beginPageSensitiveActionEpoch(
       classifiedNodes: string[];
       classifiedRegions: string[];
       classifiedElements: Element[];
+      classifiedMaskIds?: string[];
       schedulerRegistrations: number;
       poisoned: boolean;
       observer?: MutationObserver;
@@ -666,6 +742,9 @@ async function beginPageSensitiveActionEpoch(
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly weakMap: WeakMapConstructor;
+      readonly weakMapGet: typeof WeakMap.prototype.get;
+      readonly weakMapSet: typeof WeakMap.prototype.set;
       readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
       readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
       readonly elementGetAttribute: typeof Element.prototype.getAttribute;
@@ -824,6 +903,9 @@ async function beginPageSensitiveActionEpoch(
         candidate.arrayIsArray,
         candidate.objectDefineProperty,
         candidate.reflectApply,
+        candidate.weakMap,
+        candidate.weakMapGet,
+        candidate.weakMapSet,
         candidate.documentQuerySelectorAll,
         candidate.documentFragmentQuerySelectorAll,
         candidate.elementGetAttribute,
@@ -863,6 +945,18 @@ async function beginPageSensitiveActionEpoch(
 
     function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
       return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    }
+
+    function createWeakMap<K extends object, V>(): WeakMap<K, V> {
+      return new dom.weakMap<K, V>();
+    }
+
+    function weakMapGet<K extends object, V>(map: WeakMap<K, V>, key: K): V | undefined {
+      return apply(dom.weakMapGet as (...args: never[]) => V | undefined, map, [key]);
+    }
+
+    function weakMapSet<K extends object, V>(map: WeakMap<K, V>, key: K, value: V): void {
+      apply(dom.weakMapSet as (...args: never[]) => WeakMap<K, V>, map, [key, value]);
     }
 
     function queryDocument(selector: string): Element[] {
@@ -1031,7 +1125,7 @@ async function beginPageSensitiveActionEpoch(
       return values;
     }
     function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, readonly string[]> {
-      const result = new WeakMap<Element, readonly string[]>();
+      const result = createWeakMap<Element, readonly string[]>();
       void document;
       for (const candidate of observableElements()) {
         const matches: string[] = [];
@@ -1040,13 +1134,13 @@ async function beginPageSensitiveActionEpoch(
             if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
           }
         }
-        if (matches.length > 0) result.set(candidate, matches);
+        if (matches.length > 0) weakMapSet(result, candidate, matches);
       }
       return result;
     }
 
     function baselineShadowSensitiveForms(formsToMatch: readonly string[]): WeakMap<Node, readonly string[]> {
-      const result = new WeakMap<Node, readonly string[]>();
+      const result = createWeakMap<Node, readonly string[]>();
       for (const root of shadowRoots()) {
         rememberSensitiveBaseline(result, root, shadowRootValues(root), formsToMatch);
         for (const candidate of queryRoot(root, "*")) {
@@ -1068,7 +1162,7 @@ async function beginPageSensitiveActionEpoch(
           if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
         }
       }
-      if (matches.length > 0) result.set(node, matches);
+      if (matches.length > 0) weakMapSet(result, node, matches);
     }
 
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
@@ -1173,7 +1267,7 @@ async function beginPageSensitiveActionEpoch(
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-        if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
+        if (baselineContainsAll(weakMapGet(epochToUpdate.baseline, candidate), matches)) {
           continue;
         }
         if (!allowClassification) {
@@ -1233,7 +1327,7 @@ async function beginPageSensitiveActionEpoch(
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-          if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
+          if (baselineContainsAll(weakMapGet(epochToUpdate.baseline, candidate), matches)) {
             continue;
           }
           if (!allowClassification) {
@@ -1504,7 +1598,7 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function shadowBaselineAllows(node: Node, epochToUpdate: BrowserSensitiveEpoch, value: string): boolean {
-      return arrayHasString(epochToUpdate.shadowBaseline.get(node) ?? [], value);
+      return arrayHasString(weakMapGet(epochToUpdate.shadowBaseline, node) ?? [], value);
     }
 
     function shadowRootOverflow(): boolean {
@@ -1556,6 +1650,7 @@ async function endPageSensitiveActionEpoch(
         classifiedNodes: string[];
         classifiedRegions: string[];
         classifiedElements?: Element[];
+        classifiedMaskIds?: string[];
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
         inSchedulerCallback?: boolean;
@@ -1570,6 +1665,7 @@ async function endPageSensitiveActionEpoch(
         classifiedNodes?: string[];
         classifiedRegions?: string[];
         classifiedElements?: Element[];
+        classifiedMaskIds?: string[];
         schedulerRegistrations?: number;
         poisoned?: boolean;
         observer?: MutationObserver;
@@ -1585,6 +1681,9 @@ async function endPageSensitiveActionEpoch(
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly weakMap: WeakMapConstructor;
+      readonly weakMapGet: typeof WeakMap.prototype.get;
+      readonly weakMapSet: typeof WeakMap.prototype.set;
       readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
       readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
       readonly elementGetAttribute: typeof Element.prototype.getAttribute;
@@ -1642,6 +1741,7 @@ async function endPageSensitiveActionEpoch(
     element.removeEventListener("change", active.targetCaptureListener, true);
     element.ownerDocument.removeEventListener("input", active.documentBubbleListener, false);
     element.ownerDocument.removeEventListener("change", active.documentBubbleListener, false);
+    const maskIds = input.retainRecord ? assignSensitiveMaskIds(state, active) : [];
     if (input.retainRecord) {
       state.records.push({
         markerId: active.markerId,
@@ -1651,6 +1751,7 @@ async function endPageSensitiveActionEpoch(
         classifiedNodes: active.classifiedNodes,
         classifiedRegions: active.classifiedRegions,
         ...(active.classifiedElements === undefined ? {} : { classifiedElements: active.classifiedElements }),
+        ...(active.classifiedMaskIds === undefined ? {} : { classifiedMaskIds: active.classifiedMaskIds }),
         schedulerRegistrations: active.schedulerRegistrations ?? 0,
         poisoned: active.poisoned,
         ...(retainSchedulerObserver ? { observer: active.observer } : {}),
@@ -1664,7 +1765,7 @@ async function endPageSensitiveActionEpoch(
     }
     const failed = input.retainRecord && (state.poisoned || active.poisoned);
     state.active = null;
-    return { status: failed ? "failed" : "ok" };
+    return failed ? { status: "failed" } : { status: "ok", maskIds };
 
     function nativeDomAuthority(): NativeDomAuthority | undefined {
       const registry = (win as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty];
@@ -1675,6 +1776,9 @@ async function endPageSensitiveActionEpoch(
         candidate.arrayIsArray,
         candidate.objectDefineProperty,
         candidate.reflectApply,
+        candidate.weakMap,
+        candidate.weakMapGet,
+        candidate.weakMapSet,
         candidate.documentQuerySelectorAll,
         candidate.documentFragmentQuerySelectorAll,
         candidate.elementGetAttribute,
@@ -1714,6 +1818,18 @@ async function endPageSensitiveActionEpoch(
 
     function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
       return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    }
+
+    function createWeakMap<K extends object, V>(): WeakMap<K, V> {
+      return new dom.weakMap<K, V>();
+    }
+
+    function weakMapGet<K extends object, V>(map: WeakMap<K, V>, key: K): V | undefined {
+      return apply(dom.weakMapGet as (...args: never[]) => V | undefined, map, [key]);
+    }
+
+    function weakMapSet<K extends object, V>(map: WeakMap<K, V>, key: K, value: V): void {
+      apply(dom.weakMapSet as (...args: never[]) => WeakMap<K, V>, map, [key, value]);
     }
 
     function queryDocument(selector: string): Element[] {
@@ -1869,6 +1985,38 @@ async function endPageSensitiveActionEpoch(
       return true;
     }
 
+    function assignSensitiveMaskIds(
+      stateToUpdate: BrowserSensitiveState,
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+    ): string[] {
+      const maskIds: string[] = [];
+      const elements = epochToUpdate.classifiedElements ?? [];
+      if (elements.length === 0 || elements.length > input.maxMaskRegions) {
+        epochToUpdate.poisoned = true;
+        stateToUpdate.poisoned = true;
+        return maskIds;
+      }
+      let ordinal = 0;
+      for (const candidate of elements) {
+        if (candidate.nodeType !== 1) {
+          epochToUpdate.poisoned = true;
+          stateToUpdate.poisoned = true;
+          return maskIds;
+        }
+        ordinal += 1;
+        const maskId = `qm-${epochToUpdate.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
+        setAttribute(candidate, input.maskAttribute, maskId);
+        if (getAttribute(candidate, input.maskAttribute) !== maskId) {
+          epochToUpdate.poisoned = true;
+          stateToUpdate.poisoned = true;
+          return maskIds;
+        }
+        maskIds[maskIds.length] = maskId;
+      }
+      epochToUpdate.classifiedMaskIds = maskIds;
+      return maskIds;
+    }
+
     function cleanupSensitiveMarkers(markerId: string, classifiedElements: readonly Element[]): void {
       const candidates: Element[] = [];
       for (const candidate of classifiedElements) {
@@ -1912,7 +2060,7 @@ async function endPageSensitiveActionEpoch(
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-        if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) continue;
+        if (baselineContainsAll(weakMapGet(epochToUpdate.baseline, candidate), matches)) continue;
         classifyElement(stateToUpdate, epochToUpdate, candidate);
         if (epochToUpdate.poisoned) return;
       }
@@ -1946,7 +2094,7 @@ async function endPageSensitiveActionEpoch(
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-          if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
+          if (baselineContainsAll(weakMapGet(epochToUpdate.baseline, candidate), matches)) {
             continue;
           }
           if (!allowClassification) {

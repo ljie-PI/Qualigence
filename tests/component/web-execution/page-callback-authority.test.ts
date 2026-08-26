@@ -113,13 +113,6 @@ const callbackInventory: readonly CallbackInventoryEntry[] = [
     authority: ["retirePageSensitiveEvidence"],
     delegates: ["retirePageSensitiveEvidence"],
   },
-  {
-    id: "cdpMaskNodeHasValidatedSensitiveAssociation",
-    file: "playwright-observer.ts",
-    marker: "functionDeclaration: `function(input) {",
-    sensitiveDomAuthority: true,
-    authority: ["Runtime.callFunctionOn", "classifiedElements", "dom.reflectApply", "dom.elementGetAttribute"],
-  },
 ];
 
 const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; readonly label: string }[] = [
@@ -127,6 +120,9 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\bArray\.from\s*\(/g, label: "Array.from(" },
   { pattern: /\bnew\s+Set\b/g, label: "new Set" },
   { pattern: /(^|[^.\w$])Set\s*\(/g, label: "Set(" },
+  { pattern: /\bnew\s+WeakMap\b/g, label: "new WeakMap" },
+  { pattern: /(^|[^.\w$])WeakMap\s*\(/g, label: "WeakMap(" },
+  { pattern: /\bWeakMap\.prototype\b/g, label: "WeakMap.prototype" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.tagName\b/g, label: ".tagName" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.value\b/g, label: ".value" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.textContent\b/g, label: ".textContent" },
@@ -141,6 +137,7 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\b(?:candidate|target|element|node|root|option)\.selectedOptions\b/g, label: ".selectedOptions" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.options\b/g, label: ".options" },
   { pattern: /(^|[^.\w$])getComputedStyle\s*\(/g, label: "getComputedStyle(" },
+  { pattern: /\bstyle\.(?:display|visibility)\b/g, label: "style.display/visibility" },
 ];
 
 const dynamicCallbackConstruction: readonly RegExp[] = [
@@ -207,7 +204,13 @@ describe("page callback authority inventory", () => {
       const parent = node.parentElement;
       const hidden = getComputedStyle(target).display;
       const called = Element.prototype.getAttribute.call(target, 'title');
+      const weak = new WeakMap();
+      const weakCall = WeakMap.prototype.get.call(weak, target);
+      const display = style.display;
+      const visibility = style.visibility;
       if (target[handlerName]) console.log('dynamic');
+      if (target[handlerName, otherName]) console.log('comma dynamic');
+      if (target[...handlerNames]) console.log('spread dynamic');
     `;
     expect(unauthorizedSensitiveReads(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
       ".call(",
@@ -226,8 +229,16 @@ describe("page callback authority inventory", () => {
       ".parentElement",
       ".selectedOptions",
       "getComputedStyle(",
+      "new WeakMap",
+      "WeakMap.prototype",
+      "style.display/visibility",
+      "style.display/visibility",
     ]));
-    expect(unapprovedComputedReads(previouslyCitedAmbientReads)).toContain("[handlerName]");
+    expect(unapprovedComputedReads(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
+      "[handlerName]",
+      "[handlerName, otherName]",
+      "[...handlerNames]",
+    ]));
   });
 
   it("keeps production screenshot masking on CDP/backend-node authority and rejects dynamic callbacks", () => {
@@ -236,9 +247,9 @@ describe("page callback authority inventory", () => {
     expect(observerSource).toContain("Page.getLayoutMetrics");
     expect(observerSource).toContain("DOM.getDocument");
     expect(observerSource).toContain("DOM.performSearch");
-    expect(observerSource).toContain("DOM.resolveNode");
-    expect(observerSource).toContain("Runtime.callFunctionOn");
-    expect(observerSource).toContain("cdpMaskNodeHasValidatedSensitiveAssociation");
+    expect(observerSource).toContain("DOM.describeNode");
+    expect(observerSource).not.toContain("Runtime.callFunctionOn");
+    expect(observerSource).not.toContain("cdpMaskNodeHasValidatedSensitiveAssociation");
     expect(observerSource).toContain("decodePngRgba");
     expect(observerSource).toContain("encodePngRgba");
     for (const pattern of dynamicCallbackConstruction) {
@@ -378,6 +389,7 @@ function unauthorizedSensitiveReads(source: string): string[] {
   for (const pattern of forbiddenSensitiveReadPatterns) {
     for (const match of body.matchAll(new RegExp(pattern.pattern.source, "g"))) {
       if (pattern.label === "Set(" && match[0].includes("NativeSet(")) continue;
+      if (pattern.label === "WeakMap.prototype" && /^\s*readonly\s+\w+:\s+typeof\s+WeakMap\.prototype/m.test(body.slice(Math.max(0, match.index - 40), match.index + match[0].length + 20))) continue;
       findings.push(pattern.label);
     }
   }
@@ -389,13 +401,15 @@ function unauthorizedSensitiveReads(source: string): string[] {
 
 function unapprovedComputedReads(source: string): string[] {
   const body = stripCommentsAndStrings(source);
-  const reads = body.match(/\[[^\]\n]+\]/g) ?? [];
+  const reads = [...body.matchAll(/(?:[A-Za-z0-9_$)\]])\s*(\[[^\]\n]+\])/g)].map((match) => match[1]!);
   return reads.filter((read) => !isApprovedComputedRead(read));
 }
 
 function isApprovedComputedRead(read: string): boolean {
   const content = read.slice(1, -1).trim();
-  if (content === "" || content.includes(",") || content.includes("...") || content.includes("A-Za-z")) return true;
+  if (content === "" || /^[,\s]+$/.test(content)) return true;
+  if (content.includes(",") || content.includes("...")) return false;
+  if (content.includes("A-Za-z")) return true;
   if (/^[A-Za-z0-9_.]+\.length$/.test(content)) return true;
   return approvedComputedReadPatterns.some((pattern) => pattern.test(read));
 }

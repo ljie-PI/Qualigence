@@ -24,6 +24,12 @@ export interface PreparedSensitiveEvidenceRecord {
   readonly sourceValue: string;
 }
 
+export interface SensitiveMaskSnapshotEntry {
+  readonly markerId: string;
+  readonly maskId: string;
+  readonly backendNodeId: number;
+}
+
 export interface SensitiveEvidenceRecordInput {
   readonly navigationGeneration: number;
   readonly dispatchOrdinal: number;
@@ -53,6 +59,7 @@ interface SensitiveEvidenceRecord {
   readonly dispatchOrdinal: number;
   readonly nodeId: string;
   readonly forms: ReadonlySet<string>;
+  readonly maskSnapshot: readonly SensitiveMaskSnapshotEntry[];
 }
 
 const encoder = new TextEncoder();
@@ -89,6 +96,7 @@ export class SensitiveEvidenceAuthority {
   complete(
     prepared: PreparedSensitiveEvidenceRecord,
     observedForms: readonly string[],
+    maskSnapshot: readonly SensitiveMaskSnapshotEntry[],
   ): SensitiveEvidenceAuthorityResult<void> {
     const forms = new Set<string>([prepared.sourceValue]);
     for (const form of observedForms) {
@@ -103,12 +111,21 @@ export class SensitiveEvidenceAuthority {
     if (this.records.size >= MAX_SENSITIVE_RECORDS && !this.records.has(prepared.markerId)) {
       return { status: "failed", reason: "record-limit-exceeded" };
     }
+    if (maskSnapshot.length === 0 || maskSnapshot.length > MAX_REFLECTED_REGIONS) {
+      return { status: "failed", reason: "record-limit-exceeded" };
+    }
+    for (const entry of maskSnapshot) {
+      if (entry.markerId !== prepared.markerId || !isAllowedMaskId(entry.maskId) || !Number.isSafeInteger(entry.backendNodeId)) {
+        return { status: "failed", reason: "record-limit-exceeded" };
+      }
+    }
     this.records.set(prepared.markerId, {
       markerId: prepared.markerId,
       navigationGeneration: prepared.navigationGeneration,
       dispatchOrdinal: prepared.dispatchOrdinal,
       nodeId: prepared.nodeId,
       forms,
+      maskSnapshot: maskSnapshot.map((entry) => ({ ...entry })),
     });
     return { status: "ok" };
   }
@@ -143,6 +160,10 @@ export class SensitiveEvidenceAuthority {
       : { status: "unchanged", value };
   }
 
+  maskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
+    return [...this.records.values()].flatMap((record) => record.maskSnapshot.map((entry) => ({ ...entry })));
+  }
+
   clear(): void {
     this.records.clear();
   }
@@ -150,6 +171,10 @@ export class SensitiveEvidenceAuthority {
 
 function isAllowedForm(value: string): boolean {
   return encoder.encode(value).byteLength <= MAX_FORM_BYTES;
+}
+
+function isAllowedMaskId(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 function carriesSensitiveForm(value: string, forms: ReadonlySet<string>): boolean {

@@ -10,6 +10,7 @@ import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
+  type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
 export type WebTargetErrorCode =
@@ -164,6 +165,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly weakMap: WeakMapConstructor;
+      readonly weakMapGet: typeof WeakMap.prototype.get;
+      readonly weakMapSet: typeof WeakMap.prototype.set;
+      readonly cssStyleDeclarationGetPropertyValue: typeof CSSStyleDeclaration.prototype.getPropertyValue;
       readonly documentGetElementById: typeof Document.prototype.getElementById;
       readonly documentQuerySelector: typeof Document.prototype.querySelector;
       readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
@@ -270,6 +275,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeReflectDeleteProperty: typeof Reflect.deleteProperty = Reflect.deleteProperty;
     const nativeReflectSet: typeof Reflect.set = Reflect.set;
     const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
+    const NativeWeakMap: WeakMapConstructor = WeakMap;
+    const nativeWeakMapPrototypeGet: typeof WeakMap.prototype.get = WeakMap.prototype.get;
+    const nativeWeakMapPrototypeSet: typeof WeakMap.prototype.set = WeakMap.prototype.set;
+    const nativeCssStyleDeclarationGetPropertyValue: typeof CSSStyleDeclaration.prototype.getPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
     const nativeDocumentGetElementById: typeof Document.prototype.getElementById = Document.prototype.getElementById;
     const nativeDocumentQuerySelector: typeof Document.prototype.querySelector = Document.prototype.querySelector;
     const nativeDocumentQuerySelectorAll: typeof Document.prototype.querySelectorAll = Document.prototype.querySelectorAll;
@@ -309,6 +318,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       arrayIsArray: Array.isArray,
       objectDefineProperty: nativeObjectDefineProperty,
       reflectApply: nativeReflectApply,
+      weakMap: NativeWeakMap,
+      weakMapGet: nativeWeakMapPrototypeGet,
+      weakMapSet: nativeWeakMapPrototypeSet,
+      cssStyleDeclarationGetPropertyValue: nativeCssStyleDeclarationGetPropertyValue,
       documentGetElementById: nativeDocumentGetElementById,
       documentQuerySelector: nativeDocumentQuerySelector,
       documentQuerySelectorAll: nativeDocumentQuerySelectorAll,
@@ -368,6 +381,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeReflectDeleteProperty,
       nativeReflectSet,
       nativeReflectSetPrototypeOf,
+      NativeWeakMap,
+      nativeWeakMapPrototypeGet,
+      nativeWeakMapPrototypeSet,
+      nativeCssStyleDeclarationGetPropertyValue,
       nativeDocumentGetElementById,
       nativeDocumentQuerySelector,
       nativeDocumentQuerySelectorAll,
@@ -385,6 +402,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeDomAuthority.arrayIsArray,
       nativeDomAuthority.objectDefineProperty,
       nativeDomAuthority.reflectApply,
+      nativeDomAuthority.weakMap,
+      nativeDomAuthority.weakMapGet,
+      nativeDomAuthority.weakMapSet,
+      nativeDomAuthority.cssStyleDeclarationGetPropertyValue,
       nativeDomAuthority.documentTitleGet,
       nativeDomAuthority.elementShadowRootGet,
       nativeDomAuthority.elementTagNameGet,
@@ -1789,9 +1810,10 @@ export class PlaywrightBrowserSession {
   completeSensitiveEvidenceRecord(
     prepared: PreparedSensitiveEvidenceRecord,
     observedForms: readonly string[],
+    maskSnapshot: readonly SensitiveMaskSnapshotEntry[],
   ): void {
     this.assertNavigationGeneration(prepared.navigationGeneration);
-    const result = this.sensitiveEvidence.complete(prepared, observedForms);
+    const result = this.sensitiveEvidence.complete(prepared, observedForms, maskSnapshot);
     this.cancelSensitiveEvidenceDispatch(prepared);
     if (result.status === "failed") {
       this.markSensitiveEvidenceUnavailable();
@@ -1837,6 +1859,11 @@ export class PlaywrightBrowserSession {
 
   hasPendingSensitiveEvidenceCapture(): boolean {
     return this.pendingSensitiveCapture;
+  }
+
+  sensitiveMaskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.maskSnapshot();
   }
 
   completeSensitiveEvidenceCapture(): void {
