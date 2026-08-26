@@ -4,7 +4,7 @@
 
 **Blocked by:** 40 - Redact causally reflected secret evidence.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -105,11 +105,70 @@ The real Chromium case must exercise causal reflection in open and closed roots,
 
 ## Acceptance
 
-- [ ] Open shadow roots participate in causal Graph/screenshot protection; sensitive closed/unprovable roots fail evidence closed.
-- [ ] Exact 128-root, 1,024-registration-per-epoch, and 4,096-registration-per-session bounds increment before native registration and overflow as `SensitiveEvidenceUnavailable`.
-- [ ] Timer, rAF, microtask, and Promise registrations are bounded and counted before native registration without cancelling or altering application callbacks.
-- [ ] Bound overflow poisons evidence only; callbacks still allocate/register/run according to native behavior.
-- [ ] Runner reconnect/fatal logs contain only closed allowlisted codes, with every unknown mapped to `UnexpectedRunnerError` and no arbitrary message/stack/details.
-- [ ] The Runner log allowlist is exactly the seven existing `RunnerAppError` codes plus `UnexpectedRunnerError`; no structural lookalike or arbitrary string preserves its code.
-- [ ] Ticket 40 causal masking remains green but is not re-claimed as Ticket 41 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] Open shadow roots participate in causal Graph/screenshot protection; sensitive closed/unprovable roots fail evidence closed.
+- [x] Exact 128-root, 1,024-registration-per-epoch, and 4,096-registration-per-session bounds increment before native registration and overflow as `SensitiveEvidenceUnavailable`.
+- [x] Timer, rAF, microtask, and Promise registrations are bounded and counted before native registration without cancelling or altering application callbacks.
+- [x] Bound overflow poisons evidence only; callbacks still allocate/register/run according to native behavior.
+- [x] Runner reconnect/fatal logs contain only closed allowlisted codes, with every unknown mapped to `UnexpectedRunnerError` and no arbitrary message/stack/details.
+- [x] The Runner log allowlist is exactly the seven existing `RunnerAppError` codes plus `UnexpectedRunnerError`; no structural lookalike or arbitrary string preserves its code.
+- [x] Ticket 40 causal masking remains green but is not re-claimed as Ticket 41 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+### start — 2026-08-25
+
+- Fixed base: `3e46233f6acf7733b9b0f77c871b2994ba2c0d67` (`main`, includes Ticket 40 PR #108).
+- Predecessor merge evidence: Ticket 40 is `resolved` with PR #108 and reviewed code head `5183d7916b94e55ec1d89ada0047243b6ecf338e` recorded in `.scratch/remaining-production-closure/issues/40-reflected-secret-evidence-remediation.md`; current base includes that merge.
+- Behavior Matrix applicability: complete matrix in this ticket is applicable. Stateful/side-effecting sensitive evidence, scheduler propagation/accounting, Shadow DOM fail-closed/success boundaries, and Runner logging rows are in scope; Ticket 42 Promise exact semantics/owner hardening, Ticket 45 DOM getter/CDP/PNG hardening, and package/dependency changes remain excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains deferred to the parent/review protocol.
+
+### review-fix — 2026-08-25
+
+- Reviewed head fixed: `1f1f65871555859d82fed592dfc10ee3d6af7339`.
+- Fix commit: `bde8ac9ceb5005a762d7162941a7e11027c95b56` (`Fix Ticket 41 review blockers`).
+- Standards blocker fixed: normalized `tests/component/web-execution/shadow-dom-scheduler-log.test.ts` to LF/no trailing whitespace so `git diff --check` is clean.
+- Spec blocker fixed: shadow-root retention and discovery now fail closed at the 128-root session bound before retaining or observing more than the bounded roots; focused coverage asserts 129 roots retain/observe only 128 and still fail evidence closed after the native input callback runs.
+- Spec blocker fixed: below-bound timer and Promise callbacks registered during the sensitive epoch keep their causal epoch processing after the fixed settle wait, preserving native callback execution/order while allowing delayed open-shadow reflections to be redacted and masked; overflow remains evidence-only poison.
+- Spec blocker fixed: closed/unprovable shadow-root mutation during a sensitive epoch poisons evidence even when the closed root does not expose the registered sensitive form; pre-sensitive closed roots remain ordinary until touched by the sensitive epoch.
+- Gates run/pass on the fix: `corepack pnpm exec tsc -b packages/target-adapters/web-playwright/tsconfig.json apps/runner/tsconfig.json --force`; `CI=true corepack pnpm vitest run tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (9 tests); `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (4 files / 66 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no PR evidence is added pending a fresh complete-matrix review.
+
+### review2-fix — 2026-08-26
+
+- Reviewed head fixed: `049e2df04e364ef848e31a929fb9c3f375aa09c2`.
+- Fix commit: `e3232b7ee734d68638be1180f814828cf543d415` (`Fix Ticket 41 scheduler record blockers`).
+- Standards review2 blocker fixed: nested scheduler registrations made inside a delayed sensitive callback now reuse the retained sensitive scheduler epoch while the delayed callback is running, so inner timer/Promise registrations are counted before native registration and below-bound causal mutations remain redacted/masked instead of failing closed.
+- Spec review2 blocker fixed: after a successful accepted capture, page-side scheduler-backed records and retained scheduler epochs are retired while existing DOM sensitive markers remain available for the accepted/future marked redaction and masking path; later unrelated equal text in the same session no longer globally poisons observation.
+- Focused coverage added: nested delayed timer plus nested Promise registration in `tests/component/web-execution/shadow-dom-scheduler-log.test.ts`, and a post-capture unrelated equal-text capture proving successful observation after scheduler record retirement.
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (4 files / 68 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no PR evidence is added pending a fresh complete-matrix review.
+
+### review3-fix — 2026-08-26
+
+- Reviewed head fixed: `3ebd431518fecaec3bb8899127f864cfcaf600b1`.
+- Fix commit: `801ab6e5436298c5a9dff758155f1cee8162d0a8` (`Fix Ticket 41 retained scheduler blockers`).
+- Standards review3 Critical core blocker fixed: accepted captures no longer retire retained scheduler authority while below-bound delayed callbacks are still pending. Retained epochs now track pending callbacks, early accepted captures leave page-side observers/processors in place, and a later delayed open-shadow reflection remains redacted/masked instead of leaking plaintext.
+- Standards review3 Important core blocker fixed: closed/unprovable shadow-root poisoning now considers the retained scheduler callback context, so a delayed sensitive callback that attaches/touches a closed root fails evidence closed even when the registered sensitive form is not exposed.
+- Prior review2 behavior preserved: once retained registered callbacks have fired/settled and accepted evidence has been captured, scheduler records retire and later unrelated equal text remains ordinary rather than globally poisoning observation; native callback behavior and overflow semantics remain covered.
+- Focused coverage added: early accepted capture before a pending delayed callback fires, followed by later redacted capture; retained delayed callback attaching a closed shadow root without the registered form.
+- Gates run/pass on the fix before commit: `corepack pnpm exec tsc -b packages/target-adapters/web-playwright/tsconfig.json apps/runner/tsconfig.json --force`; `CI=true corepack pnpm vitest run tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (1 file / 13 tests); `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (4 files / 70 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved/PR evidence is added pending a fresh complete-matrix review.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `9286fbce9bda41df7ef017d595febe20ce885e38`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/a4e1465c-4e26-42f4-a141-eb4ae3eda281/ticket41-review3/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/a4e1465c-4e26-42f4-a141-eb4ae3eda281/ticket41-review3/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed. Focused Ticket 41 Gate evidence is recorded in review artifacts and review-fix comments.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/113`.
+
+## Answer
+
+Implemented Ticket 41 Shadow DOM, scheduler, and Runner log remediation. Open shadow roots now participate in causal Graph redaction and screenshot masking, closed/unprovable roots fail evidence closed, scheduler registrations are bounded and counted before native registration while preserving callback execution, overflow poisons evidence without canceling callbacks, and Runner reconnect/fatal logs serialize only safe allowlisted codes.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/113`
+
+Reviewed code head: `9286fbce9bda41df7ef017d595febe20ce885e38`
+
+Final verification: focused Ticket 41 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
