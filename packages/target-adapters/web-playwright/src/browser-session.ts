@@ -97,6 +97,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       readonly originalRequestAnimationFrame: typeof window.requestAnimationFrame;
       readonly originalQueueMicrotask: typeof window.queueMicrotask;
       readonly originalPromiseThen: typeof Promise.prototype.then;
+      readonly originalPromiseCatch: typeof Promise.prototype.catch;
+      readonly originalPromiseFinally: typeof Promise.prototype.finally;
       readonly originalReflectApply: typeof Reflect.apply;
     };
     type PendingSchedulerCallback = {
@@ -140,6 +142,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       originalRequestAnimationFrame: window.requestAnimationFrame,
       originalQueueMicrotask: window.queueMicrotask,
       originalPromiseThen: Promise.prototype.then,
+      originalPromiseCatch: Promise.prototype.catch,
+      originalPromiseFinally: Promise.prototype.finally,
       originalReflectApply: Reflect.apply,
     };
     Object.defineProperty(win, input.shadowRootsProperty, {
@@ -392,26 +396,72 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function callFunction(fn: unknown, thisArg: unknown, args: unknown[]): unknown {
       if (typeof fn !== "function") {
-        throw new TypeError("Promise method is not callable");
+        throw nativeNonCallableThenError(fn);
       }
       return registry.originalReflectApply(fn as (...callArgs: unknown[]) => unknown, thisArg, args);
     }
 
     function promiseSpeciesConstructor(receiver: unknown): PromiseConstructor {
       if (!isObjectLike(receiver)) {
-        throw new TypeError("Promise receiver is not an object");
+        throw nativeFinallyReceiverError(receiver);
       }
       const constructorValue = (receiver as { readonly constructor?: unknown }).constructor;
       if (constructorValue === undefined) return Promise;
       if (!isObjectLike(constructorValue)) {
-        throw new TypeError("Promise constructor is not an object");
+        throw nativePromiseConstructorError(constructorValue);
       }
       const species = (constructorValue as { readonly [Symbol.species]?: unknown })[Symbol.species];
       if (species === undefined || species === null) return Promise;
       if (!isConstructor(species)) {
-        throw new TypeError("Promise species is not a constructor");
+        throw nativePromiseSpeciesError(species);
       }
       return species as PromiseConstructor;
+    }
+
+    function nativeNonCallableThenError(then: unknown): unknown {
+      try {
+        registry.originalPromiseCatch.call({ then }, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise method is not callable");
+    }
+
+    function nativeFinallyReceiverError(receiver: unknown): unknown {
+      try {
+        registry.originalPromiseFinally.call(receiver, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise receiver is not an object");
+    }
+
+    function nativePromiseConstructorError(constructorValue: unknown): unknown {
+      const probe = new Promise((resolve) => resolve(undefined));
+      Object.defineProperty(probe, "constructor", {
+        configurable: true,
+        value: constructorValue,
+      });
+      try {
+        registry.originalPromiseThen.call(probe, undefined, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise constructor is not an object");
+    }
+
+    function nativePromiseSpeciesError(species: unknown): unknown {
+      const probe = new Promise((resolve) => resolve(undefined));
+      Object.defineProperty(probe, "constructor", {
+        configurable: true,
+        value: { [Symbol.species]: species },
+      });
+      try {
+        registry.originalPromiseThen.call(probe, undefined, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise species is not a constructor");
     }
 
     function promiseResolve(C: PromiseConstructor, value: unknown): unknown {

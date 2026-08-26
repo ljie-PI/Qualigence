@@ -269,7 +269,7 @@ async function runPromiseOracle(input: {
       if (value === identity) return { identity: name };
     }
     if (value instanceof Error) {
-      return { errorName: value.name };
+      return { errorName: value.name, errorMessage: value.message };
     }
     if (typeof value === "object" && value !== null) {
       return { objectTag: Object.prototype.toString.call(value) };
@@ -665,6 +665,59 @@ async function runPromiseOracle(input: {
     };
   });
 
+  await runCase("synchronous-type-errors", () => {
+    const log: string[] = [];
+    const nonCallableFinallyReceiver = {
+      get constructor() {
+        log.push("noncallable-constructor");
+        return Promise;
+      },
+      get then() {
+        log.push("noncallable-then");
+        return 1;
+      },
+    };
+    const invalidSpeciesReceiver = {
+      get constructor() {
+        log.push("invalid-constructor");
+        return {
+          get [Symbol.species]() {
+            log.push("invalid-species");
+            return {};
+          },
+        };
+      },
+      get then() {
+        log.push("invalid-then");
+        return Promise.prototype.then;
+      },
+    };
+    const arrowSpeciesReceiver = {
+      get constructor() {
+        log.push("arrow-constructor");
+        return {
+          get [Symbol.species]() {
+            log.push("arrow-species");
+            return () => ({});
+          },
+        };
+      },
+      get then() {
+        log.push("arrow-then");
+        return Promise.prototype.then;
+      },
+    };
+
+    return {
+      log,
+      catchNonCallableThen: synchronousOutcome(() => Promise.prototype.catch.call({ then: 1 }, () => "handled")),
+      finallyNonCallableThen: synchronousOutcome(() => Promise.prototype.finally.call(nonCallableFinallyReceiver, () => "ignored")),
+      finallyPrimitiveReceiver: synchronousOutcome(() => Promise.prototype.finally.call(1, () => "ignored")),
+      finallyInvalidSpecies: synchronousOutcome(() => Promise.prototype.finally.call(invalidSpeciesReceiver, () => "ignored")),
+      finallyArrowSpecies: synchronousOutcome(() => Promise.prototype.finally.call(arrowSpeciesReceiver, () => "ignored")),
+    };
+  });
+
   await runCase("self-resolution-and-unhandled", async () => {
     const log: string[] = [];
     const unhandled: string[] = [];
@@ -749,7 +802,7 @@ async function runPromiseAccounting(input: {
   }
 
   function tagThrown(value: unknown): unknown {
-    return value instanceof Error ? { errorName: value.name } : value;
+    return value instanceof Error ? { errorName: value.name, errorMessage: value.message } : value;
   }
 
   function synchronousOutcome(operation: () => unknown): unknown {
@@ -1044,7 +1097,7 @@ function tagValue(value: unknown, identities: Record<string, unknown>): unknown 
     if (value === identity) return { identity: name };
   }
   if (value instanceof Error) {
-    return { errorName: value.name };
+    return { errorName: value.name, errorMessage: value.message };
   }
   if (typeof value === "object" && value !== null) {
     return { objectTag: Object.prototype.toString.call(value) };
