@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ExecutionPlanPolicyError,
   ExecutionPolicySnapshotError,
@@ -65,7 +66,7 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
         break;
       }
       case "desktop":
-        return { status: "denied", code: "PolicyDenied", message: "DesktopTargetUnsupported" };
+        break;
     }
     if (accepted.plan?.steps.some((step) =>
       step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
@@ -84,7 +85,7 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     const expiresAt = Date.parse(this.policy.expiresAt);
     if (!Number.isFinite(expiresAt)) return denied("PolicyMalformed");
     if (expiresAt <= this.now()) return denied("PolicyExpired");
-    if (!this.policy.allowedOrigins.includes(originOf(context.job))) return denied("TargetOriginDenied");
+    if (context.job.target.kind === "web" && !this.policy.allowedOrigins.includes(originOf(context.job))) return denied("TargetOriginDenied");
     if (this.policy.environment === "production" && this.policy.explorationAllowed) return denied("ProductionExplorationDenied");
 
     const actionKind = action.kind;
@@ -99,8 +100,62 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     if (this.policy.environment === "staging" && (actionKind !== "click" || risk !== "Normal")) {
       return denied("StagingPolicyDenied");
     }
+    if (action.targetKind === "desktop") {
+      return {
+        status: "allowed",
+        reason: "PolicyAllowed",
+        descriptor: {
+          decisionId: `decision:${context.job.runId}:${action.actionId}`,
+          policyId: this.policy.policyId,
+          actionDigestSha256: runnerPolicyActionDigestSha256({
+            runId: context.job.runId,
+            action,
+            decisionId: `decision:${context.job.runId}:${action.actionId}`,
+            policyId: this.policy.policyId,
+            risk,
+            expiresAt: this.policy.expiresAt,
+          }),
+          risk,
+          expiresAt: this.policy.expiresAt,
+        },
+      };
+    }
     return { status: "allowed", reason: "PolicyAllowed" };
   }
+}
+
+export interface RunnerPolicyActionDigestInput {
+  readonly runId: string;
+  readonly action: ResolvedAction;
+  readonly decisionId: string;
+  readonly policyId: string;
+  readonly risk: string;
+  readonly expiresAt: string;
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function runnerPolicyActionDigestSha256(input: RunnerPolicyActionDigestInput): string {
+  return createHash("sha256")
+    .update(canonicalize({
+      schema: "qualigence-runner-policy-action-digest/v1",
+      runId: input.runId,
+      action: input.action,
+      decisionId: input.decisionId,
+      policyId: input.policyId,
+      risk: input.risk,
+      expiresAt: input.expiresAt,
+    }))
+    .digest("hex");
 }
 
 function denied(reason: string): PolicyDecision {

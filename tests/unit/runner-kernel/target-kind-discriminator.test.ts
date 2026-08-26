@@ -68,7 +68,7 @@ describe("targetKind discriminator", () => {
     ).toBe("ExternalSideEffect");
     expect(
       classifyDesktopActionRisk(
-        desktopAction({ kind: "select", option: "Delete" } as Partial<ResolvedDesktopAction>),
+        desktopAction({ kind: "select", valueRef: "choice.delete" } as Partial<ResolvedDesktopAction>),
       ),
     ).toBe("ExternalSideEffect");
     expect(

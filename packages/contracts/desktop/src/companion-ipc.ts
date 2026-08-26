@@ -14,10 +14,25 @@
  * {@link buildCompanionProofBytes}.
  */
 
+import { createHash } from "node:crypto";
 import type { UiaPattern, UiaPatternDescriptor } from "./uia-extension.js";
 import { validateAppTarget, type AppSession, type AppTarget } from "./app-target.js";
 
 export type LocalActionRisk = "Normal" | "ExternalSideEffect" | "Destructive" | "ProductionForbidden";
+
+export const DESKTOP_COMPANION_TARGET_ADAPTER = "desktop-windows-uia" as const;
+export const DESKTOP_COMPANION_OBSERVATION_EXTENSION = "uia/v1" as const;
+
+export interface CompanionCapabilityProbeRequest {
+  readonly targetAdapter: typeof DESKTOP_COMPANION_TARGET_ADAPTER;
+  readonly observationExtension: typeof DESKTOP_COMPANION_OBSERVATION_EXTENSION;
+}
+
+export interface CompanionCapabilityProbeResponse extends CompanionCapabilityProbeRequest {
+  readonly ready: true;
+  readonly protocolMajor: typeof PROTOCOL_MAJOR;
+  readonly checkedAt: string;
+}
 
 export type DesktopActionResolution = "semantic" | "uia" | "visual" | "coordinate";
 
@@ -30,10 +45,21 @@ export interface ResolvedDesktopActionBase {
   readonly uiaPattern?: UiaPattern;
 }
 
+export interface DesktopValueBinding {
+  readonly valueRef: string;
+  readonly valueSha256: string;
+  readonly valueByteLength: number;
+}
+
+export interface DesktopPlaintextValue extends DesktopValueBinding {
+  /** Bounded short-lived plaintext for the authenticated action dispatch frame only. */
+  readonly plaintext: string;
+}
+
 export type ResolvedDesktopAction =
   | (ResolvedDesktopActionBase & { readonly kind: "click" })
   | (ResolvedDesktopActionBase & { readonly kind: "input"; readonly valueRef: string })
-  | (ResolvedDesktopActionBase & { readonly kind: "select"; readonly option: string })
+  | (ResolvedDesktopActionBase & { readonly kind: "select"; readonly valueRef: string })
   | (ResolvedDesktopActionBase & {
       readonly kind: "scroll";
       readonly direction: "up" | "down" | "left" | "right";
@@ -63,6 +89,9 @@ export interface LocalPermitAuthorization {
   readonly actionDigestSha256: string;
   readonly risk: LocalActionRisk;
   readonly expiresAt: string;
+  /** Required on the IPC wire: one-use Runner nonce that the returned Permit must echo and bind. */
+  readonly nonceBase64?: string;
+  readonly valueBinding?: DesktopValueBinding;
 }
 
 export interface LocalPermitRequest {
@@ -92,15 +121,21 @@ export type LocalApprovalDecision =
 
 export interface LocalExecutionPermit {
   readonly permitToken: string;
+  /** Echo of the one-use Runner nonce from LocalPermitAuthorization. */
   readonly nonceBase64: string;
   readonly sessionId: string;
   readonly runId: string;
   readonly actionId: string;
   readonly actionDigestSha256: string;
   readonly graphId: string;
+  /** Required on the IPC wire; optional here only for structural in-memory fakes. */
+  readonly decisionId?: string;
+  /** Required on the IPC wire; optional here only for structural in-memory fakes. */
+  readonly policyId?: string;
   readonly risk: LocalActionRisk;
   readonly issuedAt: string;
   readonly expiresAt: string;
+  readonly valueBinding?: DesktopValueBinding;
 }
 
 export interface CompanionUiaSourceBounds {
@@ -155,6 +190,7 @@ export interface CompanionRequestPayloadByType {
   readonly "session.resume": { readonly runId: string };
   readonly "session.stop": { readonly runId: string };
   readonly "session.close": { readonly runId: string };
+  readonly "companion.probe": CompanionCapabilityProbeRequest;
   readonly "app.launch": { readonly target: AppTarget };
   readonly "app.reset": { readonly sessionId: string };
   readonly "app.shutdown": { readonly sessionId: string };
@@ -165,6 +201,8 @@ export interface CompanionRequestPayloadByType {
     readonly action: ResolvedDesktopAction;
     readonly permit: LocalExecutionPermit;
     readonly deadlineMs: number;
+    /** Present only for Desktop input/select dispatch and never valid in Trace or durable DTOs. */
+    readonly value?: DesktopPlaintextValue;
   };
 }
 
@@ -212,6 +250,7 @@ export interface CompanionResponsePayloadByType {
   readonly "session.resume": CompanionSessionResponsePayload;
   readonly "session.stop": CompanionSessionResponsePayload;
   readonly "session.close": CompanionSessionResponsePayload;
+  readonly "companion.probe": CompanionCapabilityProbeResponse;
   readonly "app.launch": AppSession;
   readonly "app.reset": { readonly sessionId: string; readonly completedAt: string };
   readonly "app.shutdown": { readonly sessionId: string; readonly completedAt: string };
@@ -280,6 +319,7 @@ export const COMPANION_REQUEST_TYPES: readonly CompanionRequestType[] = [
   "session.resume",
   "session.stop",
   "session.close",
+  "companion.probe",
   "app.launch",
   "app.reset",
   "app.shutdown",
@@ -296,6 +336,7 @@ export const COMPANION_RESPONSE_TYPES: readonly CompanionResponseType[] = [
   "session.resume",
   "session.stop",
   "session.close",
+  "companion.probe",
   "app.launch",
   "app.reset",
   "app.shutdown",
@@ -321,6 +362,7 @@ export const COMPANION_IPC_LIMITS = {
   maxTargetNameLength: 512,
   maxSafeSummaryLength: 1024,
   maxDigestLength: 64,
+  maxPlaintextValueBytes: 64 * 1024,
   maxTokenLength: 512,
   maxNonceLength: 512,
   maxErrorMessageLength: 512,
@@ -523,8 +565,8 @@ export function parseResolvedDesktopAction(value: unknown): ResolvedDesktopActio
       exactKeys(raw, ["targetKind", "kind", "actionId", "graphId", "nodeId", "resolution", "uiaPattern", "valueRef"], "InvalidAction", "action");
       return { ...base, kind: "input", valueRef: str(raw.valueRef, "InvalidAction", "action.valueRef", COMPANION_IPC_LIMITS.maxIdLength) };
     case "select":
-      exactKeys(raw, ["targetKind", "kind", "actionId", "graphId", "nodeId", "resolution", "uiaPattern", "option"], "InvalidAction", "action");
-      return { ...base, kind: "select", option: str(raw.option, "InvalidAction", "action.option", COMPANION_IPC_LIMITS.maxSafeSummaryLength) };
+      exactKeys(raw, ["targetKind", "kind", "actionId", "graphId", "nodeId", "resolution", "uiaPattern", "valueRef"], "InvalidAction", "action");
+      return { ...base, kind: "select", valueRef: str(raw.valueRef, "InvalidAction", "action.valueRef", COMPANION_IPC_LIMITS.maxIdLength) };
     case "scroll": {
       exactKeys(raw, ["targetKind", "kind", "actionId", "graphId", "nodeId", "resolution", "uiaPattern", "direction", "amount"], "InvalidAction", "action");
       const direction = raw.direction;
@@ -550,21 +592,143 @@ export function parseResolvedDesktopAction(value: unknown): ResolvedDesktopActio
   }
 }
 
-export function parseLocalPermitAuthorization(value: unknown): LocalPermitAuthorization {
+export function parseDesktopValueBinding(
+  value: unknown,
+  code: CompanionIpcErrorCode = "LocalAuthorizationInvalid",
+): DesktopValueBinding {
+  const raw = requireRecord(value, code, "valueBinding");
+  exactKeys(raw, ["valueRef", "valueSha256", "valueByteLength"], code, "valueBinding");
+  const valueByteLength = int(raw.valueByteLength, code, "valueBinding.valueByteLength");
+  if (valueByteLength < 0 || valueByteLength > COMPANION_IPC_LIMITS.maxPlaintextValueBytes) {
+    throw new CompanionIpcError(
+      code,
+      `valueBinding.valueByteLength must be between 0 and ${COMPANION_IPC_LIMITS.maxPlaintextValueBytes}`,
+    );
+  }
+  return {
+    valueRef: str(raw.valueRef, code, "valueBinding.valueRef", COMPANION_IPC_LIMITS.maxIdLength),
+    valueSha256: str(raw.valueSha256, code, "valueBinding.valueSha256", COMPANION_IPC_LIMITS.maxDigestLength),
+    valueByteLength,
+  };
+}
+
+export function desktopValueBindingForPlaintext(valueRef: string, plaintext: string): DesktopPlaintextValue {
+  const bytes = new TextEncoder().encode(plaintext);
+  if (bytes.byteLength > COMPANION_IPC_LIMITS.maxPlaintextValueBytes) {
+    throw new CompanionIpcError("InvalidAction", `plaintext value exceeds ${COMPANION_IPC_LIMITS.maxPlaintextValueBytes} bytes`);
+  }
+  return Object.freeze({
+    valueRef: str(valueRef, "InvalidAction", "value.valueRef", COMPANION_IPC_LIMITS.maxIdLength),
+    valueSha256: createHash("sha256").update(bytes).digest("hex"),
+    valueByteLength: bytes.byteLength,
+    plaintext,
+  });
+}
+
+export function parseDesktopPlaintextValue(value: unknown): DesktopPlaintextValue {
+  const raw = requireRecord(value, "InvalidAction", "value");
+  exactKeys(raw, ["valueRef", "valueSha256", "valueByteLength", "plaintext"], "InvalidAction", "value");
+  const plaintext = str(raw.plaintext, "InvalidAction", "value.plaintext", COMPANION_IPC_LIMITS.maxPlaintextValueBytes);
+  const parsed = parseDesktopValueBinding({
+    valueRef: raw.valueRef,
+    valueSha256: raw.valueSha256,
+    valueByteLength: raw.valueByteLength,
+  }, "InvalidAction");
+  const expected = desktopValueBindingForPlaintext(parsed.valueRef, plaintext);
+  if (parsed.valueSha256 !== expected.valueSha256 || parsed.valueByteLength !== expected.valueByteLength) {
+    throw new CompanionIpcError("InvalidAction", "value plaintext does not match valueSha256/valueByteLength");
+  }
+  return Object.freeze({ ...parsed, plaintext });
+}
+
+function valueRefForAction(action: ResolvedDesktopAction): string | undefined {
+  return action.kind === "input" || action.kind === "select" ? action.valueRef : undefined;
+}
+
+export function assertDesktopValueBindingMatchesAction(
+  action: ResolvedDesktopAction,
+  binding: DesktopValueBinding | undefined,
+  code: CompanionIpcErrorCode = "LocalAuthorizationInvalid",
+): void {
+  const valueRef = valueRefForAction(action);
+  if (valueRef === undefined) {
+    if (binding !== undefined) throw new CompanionIpcError(code, "non-value Desktop actions must not include a value binding");
+    return;
+  }
+  if (binding === undefined) throw new CompanionIpcError(code, "Desktop input/select actions require a value binding");
+  if (binding.valueRef !== valueRef) throw new CompanionIpcError(code, "valueBinding.valueRef must match action.valueRef");
+}
+
+export interface DesktopActionDigestInput {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly action: ResolvedDesktopAction;
+  readonly decisionId: string;
+  readonly policyId: string;
+  readonly risk: LocalActionRisk;
+  readonly expiresAt: string;
+  readonly nonceBase64: string;
+  readonly valueBinding?: DesktopValueBinding;
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function desktopActionDigestSha256(input: DesktopActionDigestInput): string {
+  assertDesktopValueBindingMatchesAction(input.action, input.valueBinding);
+  return createHash("sha256")
+    .update(canonicalize({
+      schema: "qualigence-desktop-action-digest/v1",
+      sessionId: input.sessionId,
+      runId: input.runId,
+      action: input.action,
+      decisionId: input.decisionId,
+      policyId: input.policyId,
+      risk: input.risk,
+      expiresAt: input.expiresAt,
+      nonceBase64: input.nonceBase64,
+      valueBinding: input.valueBinding,
+    }))
+    .digest("hex");
+}
+
+export function parseLocalPermitAuthorization(value: unknown): LocalPermitAuthorization & { readonly nonceBase64: string } {
   const raw = requireRecord(value, "LocalAuthorizationInvalid", "authorization");
-  exactKeys(raw, ["decisionId", "policyId", "actionDigestSha256", "risk", "expiresAt"], "LocalAuthorizationInvalid", "authorization");
+  exactKeys(
+    raw,
+    ["decisionId", "policyId", "actionDigestSha256", "risk", "expiresAt", "nonceBase64", "valueBinding"],
+    "LocalAuthorizationInvalid",
+    "authorization",
+  );
+  const valueBinding = raw.valueBinding === undefined ? undefined : parseDesktopValueBinding(raw.valueBinding, "LocalAuthorizationInvalid");
   return {
     decisionId: str(raw.decisionId, "LocalAuthorizationInvalid", "authorization.decisionId", COMPANION_IPC_LIMITS.maxIdLength),
     policyId: str(raw.policyId, "LocalAuthorizationInvalid", "authorization.policyId", COMPANION_IPC_LIMITS.maxIdLength),
     actionDigestSha256: str(raw.actionDigestSha256, "LocalAuthorizationInvalid", "authorization.actionDigestSha256", COMPANION_IPC_LIMITS.maxDigestLength),
     risk: requireRisk(raw.risk, "LocalAuthorizationInvalid", "authorization.risk"),
     expiresAt: str(raw.expiresAt, "LocalAuthorizationInvalid", "authorization.expiresAt", 64),
+    nonceBase64: str(raw.nonceBase64, "LocalAuthorizationInvalid", "authorization.nonceBase64", COMPANION_IPC_LIMITS.maxNonceLength),
+    ...(valueBinding === undefined ? {} : { valueBinding }),
   };
 }
 
 export function parseLocalExecutionPermit(value: unknown): LocalExecutionPermit {
   const raw = requireRecord(value, "LocalPermitInvalid", "permit");
-  exactKeys(raw, ["permitToken", "nonceBase64", "sessionId", "runId", "actionId", "actionDigestSha256", "graphId", "risk", "issuedAt", "expiresAt"], "LocalPermitInvalid", "permit");
+  exactKeys(
+    raw,
+    ["permitToken", "nonceBase64", "sessionId", "runId", "actionId", "actionDigestSha256", "graphId", "decisionId", "policyId", "risk", "issuedAt", "expiresAt", "valueBinding"],
+    "LocalPermitInvalid",
+    "permit",
+  );
+  const valueBinding = raw.valueBinding === undefined ? undefined : parseDesktopValueBinding(raw.valueBinding, "LocalPermitInvalid");
   return {
     permitToken: str(raw.permitToken, "LocalPermitInvalid", "permit.permitToken", COMPANION_IPC_LIMITS.maxTokenLength),
     nonceBase64: str(raw.nonceBase64, "LocalPermitInvalid", "permit.nonceBase64", COMPANION_IPC_LIMITS.maxNonceLength),
@@ -573,23 +737,49 @@ export function parseLocalExecutionPermit(value: unknown): LocalExecutionPermit 
     actionId: str(raw.actionId, "LocalPermitInvalid", "permit.actionId", COMPANION_IPC_LIMITS.maxIdLength),
     actionDigestSha256: str(raw.actionDigestSha256, "LocalPermitInvalid", "permit.actionDigestSha256", COMPANION_IPC_LIMITS.maxDigestLength),
     graphId: str(raw.graphId, "LocalPermitInvalid", "permit.graphId", COMPANION_IPC_LIMITS.maxIdLength),
+    decisionId: str(raw.decisionId, "LocalPermitInvalid", "permit.decisionId", COMPANION_IPC_LIMITS.maxIdLength),
+    policyId: str(raw.policyId, "LocalPermitInvalid", "permit.policyId", COMPANION_IPC_LIMITS.maxIdLength),
     risk: requireRisk(raw.risk, "LocalPermitInvalid", "permit.risk"),
     issuedAt: str(raw.issuedAt, "LocalPermitInvalid", "permit.issuedAt", 64),
     expiresAt: str(raw.expiresAt, "LocalPermitInvalid", "permit.expiresAt", 64),
+    ...(valueBinding === undefined ? {} : { valueBinding }),
   };
 }
 
 export function parseLocalPermitRequest(value: unknown): LocalPermitRequest {
   const raw = requireRecord(value, "LocalPermitInvalid", "permit request");
   exactKeys(raw, ["approvalId", "sessionId", "runId", "action", "authorization", "safeSummary", "expiresAt"], "LocalPermitInvalid", "request");
+  const action = parseResolvedDesktopAction(raw.action);
+  const authorization = parseLocalPermitAuthorization(raw.authorization);
+  assertDesktopValueBindingMatchesAction(action, authorization.valueBinding, "LocalPermitInvalid");
+  const sessionId = str(raw.sessionId, "LocalPermitInvalid", "request.sessionId", COMPANION_IPC_LIMITS.maxIdLength);
+  const runId = str(raw.runId, "LocalPermitInvalid", "request.runId", COMPANION_IPC_LIMITS.maxIdLength);
+  const expectedDigest = desktopActionDigestSha256({
+    sessionId,
+    runId,
+    action,
+    decisionId: authorization.decisionId,
+    policyId: authorization.policyId,
+    risk: authorization.risk,
+    expiresAt: authorization.expiresAt,
+    nonceBase64: authorization.nonceBase64,
+    ...(authorization.valueBinding === undefined ? {} : { valueBinding: authorization.valueBinding }),
+  });
+  if (authorization.actionDigestSha256 !== expectedDigest) {
+    throw new CompanionIpcError("LocalPermitInvalid", "authorization.actionDigestSha256 does not match the Desktop action binding");
+  }
+  const requestExpiresAt = str(raw.expiresAt, "LocalPermitInvalid", "request.expiresAt", 64);
+  if (requestExpiresAt !== authorization.expiresAt) {
+    throw new CompanionIpcError("LocalPermitInvalid", "request.expiresAt must match authorization.expiresAt");
+  }
   return {
     approvalId: str(raw.approvalId, "LocalPermitInvalid", "request.approvalId", COMPANION_IPC_LIMITS.maxIdLength),
-    sessionId: str(raw.sessionId, "LocalPermitInvalid", "request.sessionId", COMPANION_IPC_LIMITS.maxIdLength),
-    runId: str(raw.runId, "LocalPermitInvalid", "request.runId", COMPANION_IPC_LIMITS.maxIdLength),
-    action: parseResolvedDesktopAction(raw.action),
-    authorization: parseLocalPermitAuthorization(raw.authorization),
+    sessionId,
+    runId,
+    action,
+    authorization,
     safeSummary: str(raw.safeSummary, "LocalPermitInvalid", "request.safeSummary", COMPANION_IPC_LIMITS.maxSafeSummaryLength),
-    expiresAt: str(raw.expiresAt, "LocalPermitInvalid", "request.expiresAt", 64),
+    expiresAt: requestExpiresAt,
   };
 }
 
@@ -609,6 +799,64 @@ export function parseCompanionDecision(value: unknown): LocalApprovalDecision {
       return { status: raw.status, approvalId, decidedAt };
     default:
       throw new CompanionIpcError("InvalidApprovalDecision", "decision.status is invalid");
+  }
+}
+
+export function assertActionExecutePermitBinding(
+  payloadSessionId: string,
+  action: ResolvedDesktopAction,
+  permit: LocalExecutionPermit,
+): void {
+  assertDesktopValueBindingMatchesAction(action, permit.valueBinding, "LocalPermitInvalid");
+  if (permit.sessionId !== payloadSessionId) {
+    throw new CompanionIpcError("LocalPermitInvalid", "permit.sessionId must match action.execute sessionId");
+  }
+  if (permit.actionId !== action.actionId) {
+    throw new CompanionIpcError("LocalPermitInvalid", "permit.actionId must match action.actionId");
+  }
+  if (permit.graphId !== action.graphId) {
+    throw new CompanionIpcError("LocalPermitInvalid", "permit.graphId must match action.graphId");
+  }
+  if (permit.decisionId === undefined || permit.policyId === undefined) {
+    throw new CompanionIpcError("LocalPermitInvalid", "permit must include decisionId and policyId");
+  }
+  const expectedDigest = desktopActionDigestSha256({
+    sessionId: permit.sessionId,
+    runId: permit.runId,
+    action,
+    decisionId: permit.decisionId,
+    policyId: permit.policyId,
+    risk: permit.risk,
+    expiresAt: permit.expiresAt,
+    nonceBase64: permit.nonceBase64,
+    ...(permit.valueBinding === undefined ? {} : { valueBinding: permit.valueBinding }),
+  });
+  if (permit.actionDigestSha256 !== expectedDigest) {
+    throw new CompanionIpcError("LocalPermitInvalid", "permit.actionDigestSha256 does not match the Desktop action binding");
+  }
+}
+
+export function assertActionExecuteValueBinding(
+  action: ResolvedDesktopAction,
+  permit: LocalExecutionPermit,
+  value: DesktopPlaintextValue | undefined,
+): void {
+  const valueRef = valueRefForAction(action);
+  if (valueRef === undefined) {
+    if (value !== undefined) {
+      throw new CompanionIpcError("InvalidAction", "plaintext value is only allowed for input/select dispatch");
+    }
+    return;
+  }
+  if (value === undefined) throw new CompanionIpcError("InvalidAction", "Desktop input/select dispatch requires plaintext value");
+  if (permit.valueBinding === undefined) throw new CompanionIpcError("LocalPermitInvalid", "permit requires value binding for input/select dispatch");
+  if (
+    value.valueRef !== valueRef ||
+    value.valueRef !== permit.valueBinding.valueRef ||
+    value.valueSha256 !== permit.valueBinding.valueSha256 ||
+    value.valueByteLength !== permit.valueBinding.valueByteLength
+  ) {
+    throw new CompanionIpcError("InvalidAction", "dispatch value does not match the permit value binding");
   }
 }
 
@@ -732,6 +980,46 @@ function parseLifecycleDonePayload(value: unknown): { readonly sessionId: string
   });
 }
 
+export function companionCapabilityProbeRequest(): CompanionCapabilityProbeRequest {
+  return Object.freeze({
+    targetAdapter: DESKTOP_COMPANION_TARGET_ADAPTER,
+    observationExtension: DESKTOP_COMPANION_OBSERVATION_EXTENSION,
+  });
+}
+
+export function parseCompanionCapabilityProbeRequest(value: unknown): CompanionCapabilityProbeRequest {
+  const raw = requireRecord(value, "InvalidRequestShape", "companion.probe payload");
+  exactKeys(raw, ["targetAdapter", "observationExtension"], "InvalidRequestShape", "companion.probe.payload");
+  if (raw.targetAdapter !== DESKTOP_COMPANION_TARGET_ADAPTER) {
+    throw new CompanionIpcError("InvalidRequestShape", "companion.probe targetAdapter is not supported");
+  }
+  if (raw.observationExtension !== DESKTOP_COMPANION_OBSERVATION_EXTENSION) {
+    throw new CompanionIpcError("InvalidRequestShape", "companion.probe observationExtension is not supported");
+  }
+  return companionCapabilityProbeRequest();
+}
+
+export function parseCompanionCapabilityProbeResponse(value: unknown): CompanionCapabilityProbeResponse {
+  const raw = requireRecord(value, "InvalidResponseShape", "companion.probe response");
+  exactKeys(raw, ["ready", "protocolMajor", "targetAdapter", "observationExtension", "checkedAt"], "InvalidResponseShape", "companion.probe.response");
+  if (raw.ready !== true) {
+    throw new CompanionIpcError("InvalidResponseShape", "companion.probe ready must be true");
+  }
+  if (raw.protocolMajor !== PROTOCOL_MAJOR) {
+    throw new CompanionIpcError("InvalidResponseShape", "companion.probe protocolMajor must be 1");
+  }
+  const capabilities = parseCompanionCapabilityProbeRequest({
+    targetAdapter: raw.targetAdapter,
+    observationExtension: raw.observationExtension,
+  });
+  return Object.freeze({
+    ready: true,
+    protocolMajor: PROTOCOL_MAJOR,
+    ...capabilities,
+    checkedAt: str(raw.checkedAt, "InvalidResponseShape", "companion.probe.checkedAt", 64),
+  });
+}
+
 function parseResponsePayload<T extends CompanionResponseType>(type: T, payload: unknown): CompanionResponsePayloadByType[T] {
   switch (type) {
     case "handshake.challenge": {
@@ -764,6 +1052,8 @@ function parseResponsePayload<T extends CompanionResponseType>(type: T, payload:
       return parseSessionPayload(payload, "stopped") as CompanionResponsePayloadByType[T];
     case "session.close":
       return parseSessionPayload(payload, "closed") as CompanionResponsePayloadByType[T];
+    case "companion.probe":
+      return parseCompanionCapabilityProbeResponse(payload) as CompanionResponsePayloadByType[T];
     case "app.launch":
       return parseAppSession(payload) as CompanionResponsePayloadByType[T];
     case "app.reset":
@@ -814,6 +1104,8 @@ function parseRequestPayload<T extends CompanionRequestType>(type: T, payload: u
     case "session.close":
       exactKeys(raw, ["runId"], "InvalidRequestShape", `${type}.payload`);
       return { runId: str(raw.runId, "InvalidRequestShape", "runId", COMPANION_IPC_LIMITS.maxIdLength) } as CompanionRequestPayloadByType[T];
+    case "companion.probe":
+      return parseCompanionCapabilityProbeRequest(raw) as CompanionRequestPayloadByType[T];
     case "app.launch":
       exactKeys(raw, ["target"], "InvalidRequestShape", "app.launch.payload");
       return { target: validateAppTarget(raw.target) } as CompanionRequestPayloadByType[T];
@@ -830,14 +1122,22 @@ function parseRequestPayload<T extends CompanionRequestType>(type: T, payload: u
     case "permit.request":
       exactKeys(raw, ["request"], "InvalidRequestShape", "permit.request.payload");
       return { request: parseLocalPermitRequest(raw.request) } as CompanionRequestPayloadByType[T];
-    case "action.execute":
-      exactKeys(raw, ["sessionId", "action", "permit", "deadlineMs"], "InvalidRequestShape", "action.execute.payload");
+    case "action.execute": {
+      exactKeys(raw, ["sessionId", "action", "permit", "deadlineMs", "value"], "InvalidRequestShape", "action.execute.payload");
+      const action = parseResolvedDesktopAction(raw.action);
+      const permit = parseLocalExecutionPermit(raw.permit);
+      const sessionId = str(raw.sessionId, "InvalidRequestShape", "sessionId", COMPANION_IPC_LIMITS.maxIdLength);
+      assertActionExecutePermitBinding(sessionId, action, permit);
+      const value = raw.value === undefined ? undefined : parseDesktopPlaintextValue(raw.value);
+      assertActionExecuteValueBinding(action, permit, value);
       return {
-        sessionId: str(raw.sessionId, "InvalidRequestShape", "sessionId", COMPANION_IPC_LIMITS.maxIdLength),
-        action: parseResolvedDesktopAction(raw.action),
-        permit: parseLocalExecutionPermit(raw.permit),
+        sessionId,
+        action,
+        permit,
         deadlineMs: requireDeadline(raw.deadlineMs),
+        ...(value === undefined ? {} : { value }),
       } as CompanionRequestPayloadByType[T];
+    }
     default:
       throw new CompanionIpcError("UnknownRequestType", `unhandled request type: ${String(type)}`);
   }

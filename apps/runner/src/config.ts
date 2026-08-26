@@ -22,6 +22,10 @@ export interface RunnerConfig {
   readonly headed: boolean;
   readonly navigationTimeoutMs: number;
   readonly actionTimeoutMs: number;
+  readonly desktopCompanion?: {
+    readonly pipePath: string;
+    readonly expectedCompanionInstanceId?: string;
+  };
 }
 
 function required(name: string, env: NodeJS.ProcessEnv): string {
@@ -64,6 +68,16 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
     headed: env.RUNNER_HEADED === "true",
     navigationTimeoutMs: Number.parseInt(env.RUNNER_NAVIGATION_TIMEOUT_MS ?? "30000", 10),
     actionTimeoutMs: Number.parseInt(env.RUNNER_ACTION_TIMEOUT_MS ?? "15000", 10),
+    ...(env.RUNNER_DESKTOP_COMPANION_PIPE === undefined || env.RUNNER_DESKTOP_COMPANION_PIPE.length === 0
+      ? {}
+      : {
+          desktopCompanion: {
+            pipePath: env.RUNNER_DESKTOP_COMPANION_PIPE,
+            ...(env.RUNNER_DESKTOP_COMPANION_INSTANCE_ID === undefined || env.RUNNER_DESKTOP_COMPANION_INSTANCE_ID.length === 0
+              ? {}
+              : { expectedCompanionInstanceId: env.RUNNER_DESKTOP_COMPANION_INSTANCE_ID }),
+          },
+        }),
   };
 }
 

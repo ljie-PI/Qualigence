@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AppEnvironmentProvider,
@@ -9,12 +8,14 @@ import {
 } from "@qualigence/desktop-windows-uia";
 import {
   ExecutionPermit,
+  runnerPolicyActionDigestSha256,
   type ExecutionPermitDescriptor,
   type ExecutionRisk,
   type ProposedAction,
   type ResolvedDesktopAction,
 } from "@qualigence/runner-kernel";
 import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
+import { desktopActionDigestSha256 } from "@qualigence/desktop-contracts";
 import {
   FakeReferenceCompanion,
   loadReferenceAppFixture,
@@ -24,17 +25,16 @@ import {
 const DEADLINE_MS = 5_000;
 const RUN_ID = "run-approval";
 
-function actionDigest(action: ResolvedDesktopAction): string {
-  return createHash("sha256").update(JSON.stringify(action)).digest("hex");
-}
-
 function permitFor(action: ResolvedDesktopAction, risk: ExecutionRisk): ExecutionPermit {
+  const decisionId = `decision:${action.actionId}`;
+  const policyId = "policy:windows-reference";
+  const expiresAt = "2026-08-02T00:01:00.000Z";
   const descriptor: ExecutionPermitDescriptor = {
-    decisionId: `decision:${action.actionId}`,
-    policyId: "policy:windows-reference",
-    actionDigestSha256: actionDigest(action),
+    decisionId,
+    policyId,
+    actionDigestSha256: runnerPolicyActionDigestSha256({ runId: RUN_ID, action, decisionId, policyId, risk, expiresAt }),
     risk,
-    expiresAt: "2026-08-02T00:01:00.000Z",
+    expiresAt,
   };
   return ExecutionPermit.fromAllowedDecision({
     status: "allowed",
@@ -130,7 +130,18 @@ describe("Windows-UIA local approval + one-time Permit security", () => {
     const resolved = resolveExpected("act-submit");
 
     // Directly broker one Permit and attempt to consume it twice.
-    const digest = actionDigest(resolved);
+    const nonceBase64 = Buffer.from("nonce-replay").toString("base64");
+    const digest = desktopActionDigestSha256({
+      sessionId: (companion as unknown as { launchedSessionId?: string }).launchedSessionId ??
+        "sess:windows-reference-wpf",
+      runId: RUN_ID,
+      action: resolved,
+      decisionId: "decision:replay",
+      policyId: "policy:windows-reference",
+      risk: "Normal",
+      expiresAt: "2026-08-02T00:01:00.000Z",
+      nonceBase64,
+    });
     const request = {
       approvalId: "approval-replay",
       sessionId: (companion as unknown as { launchedSessionId?: string }).launchedSessionId ??
@@ -143,6 +154,7 @@ describe("Windows-UIA local approval + one-time Permit security", () => {
         actionDigestSha256: digest,
         risk: "Normal" as const,
         expiresAt: "2026-08-02T00:01:00.000Z",
+        nonceBase64,
       },
       safeSummary: "click on submitButton",
       expiresAt: "2026-08-02T00:01:00.000Z",
