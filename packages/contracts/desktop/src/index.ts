@@ -75,6 +75,7 @@ export {
   COMPANION_IPC_LIMITS,
   PROTOCOL_MAJOR,
   COMPANION_PROOF_CONTEXT,
+  COMPANION_UIA_PASSWORD_MASK_VALUE,
   CompanionIpcError,
   assertDeclaredFrameLength,
   parseResolvedDesktopAction,

@@ -272,6 +272,108 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
     server.destroy();
   });
 
+  it("times out a stalled proof signer before sending prove or application frames", async () => {
+    const [clientSocket, server] = socketPair();
+    const seen: CompanionRequestEnvelope[] = [];
+    let sawSignatureRequest: (() => void) | undefined;
+    const signatureRequested = new Promise<void>((resolve) => {
+      sawSignatureRequest = resolve;
+    });
+    const stalledSigner: RunnerCertificateProofSigner = {
+      runnerId: "runner-1",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nredacted\n-----END CERTIFICATE-----",
+      certificateSha256Fingerprint: "b".repeat(64),
+      signCompanionProof(): Promise<CompanionProofSignature> {
+        sawSignatureRequest?.();
+        return new Promise(() => undefined);
+      },
+    };
+    attachFrameReader(server, (frame) => {
+      seen.push(frame);
+      if (frame.type === "handshake.begin") {
+        server.write(encodeFrame(ok(frame.requestId, "handshake.challenge", {
+          challengeId: "challenge-1",
+          companionInstanceId: "companion-1",
+          nonceBase64: "bm9uY2U=",
+        })));
+      }
+    });
+    const client = new NamedPipeCompanionClient({
+      pipePath: "\\\\.\\pipe\\qualigence-companion-test",
+      signer: stalledSigner,
+      socketFactory: () => clientSocket,
+      requestIdFactory: () => `req-${seen.length + 1}`,
+      handshakeDeadlineMs: 20,
+      defaultRequestDeadlineMs: 50,
+    });
+
+    const launch = client.launch(target);
+    await signatureRequested;
+    await expect(launch).rejects.toMatchObject({ code: "CompanionRequestTimeout" });
+
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(clientSocket.destroyed).toBe(true);
+    server.destroy();
+  });
+
+  it("fail-stops signer rejection and reconnects instead of reusing the failed connection", async () => {
+    let rejectProof = true;
+    let requestCounter = 0;
+    const connections: Array<{ readonly clientSocket: MemorySocket; readonly server: MemorySocket; readonly seen: CompanionRequestEnvelope[] }> = [];
+    const dynamicSigner: RunnerCertificateProofSigner = {
+      runnerId: "runner-1",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nredacted\n-----END CERTIFICATE-----",
+      certificateSha256Fingerprint: "b".repeat(64),
+      async signCompanionProof(): Promise<CompanionProofSignature> {
+        if (rejectProof) {
+          throw new Error("raw key-profile failure with hunter2 should not leak");
+        }
+        return { signatureBase64: "c2ln", signatureAlgorithm: "ecdsa-p256-sha256" };
+      },
+    };
+    const client = new NamedPipeCompanionClient({
+      pipePath: "\\\\.\\pipe\\qualigence-companion-test",
+      signer: dynamicSigner,
+      socketFactory: () => {
+        const [clientSocket, server] = socketPair();
+        const seen: CompanionRequestEnvelope[] = [];
+        attachFrameReader(server, (frame) => {
+          seen.push(frame);
+          if (handshakeResponder(frame, server)) {
+            return;
+          }
+          server.write(encodeFrame(ok(frame.requestId, "app.launch", appSession)));
+        });
+        connections.push({ clientSocket, server, seen });
+        return clientSocket;
+      },
+      requestIdFactory: () => `req-${++requestCounter}`,
+      handshakeDeadlineMs: 50,
+      defaultRequestDeadlineMs: 50,
+    });
+
+    let rejection: unknown;
+    try {
+      await client.launch(target);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toMatchObject({ code: "CompanionIdentityRejected" });
+    expect(String(rejection)).not.toContain("hunter2");
+    expect(connections[0]?.seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(connections[0]?.clientSocket.destroyed).toBe(true);
+
+    rejectProof = false;
+    await expect(client.launch(target)).resolves.toEqual(appSession);
+
+    expect(connections).toHaveLength(2);
+    expect(connections[0]?.seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(connections[1]?.seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "app.launch"]);
+    for (const connection of connections) {
+      connection.server.destroy();
+    }
+  });
+
   it("rejects close during pending connect and sends zero frames", async () => {
     const [clientSocket, server] = socketPair();
     const seen: CompanionRequestEnvelope[] = [];

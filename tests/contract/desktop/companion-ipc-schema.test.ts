@@ -6,6 +6,7 @@ import {
   COMPANION_IPC_LIMITS,
   COMPANION_REQUEST_TYPES,
   COMPANION_RESPONSE_TYPES,
+  COMPANION_UIA_PASSWORD_MASK_VALUE,
   CompanionIpcError,
   createCompanionRequestEnvelope,
   expectedResponseTypeForRequest,
@@ -234,6 +235,27 @@ describe("Companion IPC envelopes", () => {
   it("rejects a response DTO/variant with malformed fields", () => {
     expect(() => parseCompanionResponse(response("req", "uia.capture", { ...uiaCapture, nodes: [{ ...uiaCapture.nodes[0], isPassword: "false" }] }))).toThrowError(/InvalidResponseShape/);
     expect(() => parseCompanionResponse({ protocolMajor: 1, requestId: "req", type: "action.execute", status: "error", payload: {}, error: { code: "ApplicationError", safeMessage: "bad" } })).toThrowError(/InvalidResponseShape/);
+  });
+
+  it("enforces the fixed UIA password mask on captured password nodes", () => {
+    const maskedPasswordCapture = {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true, value: COMPANION_UIA_PASSWORD_MASK_VALUE }],
+    };
+    const parsed = parseCompanionResponse(response("req", "uia.capture", maskedPasswordCapture));
+    expect(parsed.status).toBe("ok");
+    if (parsed.status === "ok" && parsed.type === "uia.capture") {
+      expect(parsed.payload.nodes[0]?.value).toBe(COMPANION_UIA_PASSWORD_MASK_VALUE);
+    }
+
+    expect(() => parseCompanionResponse(response("req", "uia.capture", {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true, value: "hunter2" }],
+    }))).toThrowError(/password controls must be the fixed UIA password mask token/);
+    expect(() => parseCompanionResponse(response("req", "uia.capture", {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true }],
+    }))).toThrowError(/password controls must be the fixed UIA password mask token/);
   });
 });
 

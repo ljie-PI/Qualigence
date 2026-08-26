@@ -332,6 +332,9 @@ export const PROTOCOL_MAJOR = 1 as const;
 
 export const COMPANION_PROOF_CONTEXT = "qualigence-companion-proof/v1";
 
+/** Fixed native UIA password mask token; password values must never cross IPC in plaintext. */
+export const COMPANION_UIA_PASSWORD_MASK_VALUE = "\u2022\u2022\u2022\u2022";
+
 export type CompanionProofSignatureAlgorithm = "ecdsa-p256-sha256" | "rsa-pss-sha256";
 
 export type CompanionIpcErrorCode =
@@ -654,12 +657,17 @@ function parseUiaNode(value: unknown): CompanionUiaSourceNode {
   if (!Array.isArray(raw.patterns)) {
     throw new CompanionIpcError("InvalidResponseShape", "node.patterns must be an array");
   }
+  const isPassword = bool(raw.isPassword, "InvalidResponseShape", "node.isPassword");
+  const nodeValue = raw.value === undefined ? undefined : str(raw.value, "InvalidResponseShape", "node.value", COMPANION_IPC_LIMITS.maxSafeSummaryLength);
+  if (isPassword && nodeValue !== COMPANION_UIA_PASSWORD_MASK_VALUE) {
+    throw new CompanionIpcError("InvalidResponseShape", "node.value for password controls must be the fixed UIA password mask token");
+  }
   return Object.freeze({
     nodeId: str(raw.nodeId, "InvalidResponseShape", "node.nodeId", COMPANION_IPC_LIMITS.maxIdLength),
     role: str(raw.role, "InvalidResponseShape", "node.role", COMPANION_IPC_LIMITS.maxIdLength),
     controlTypeId: int(raw.controlTypeId, "InvalidResponseShape", "node.controlTypeId"),
     ...(raw.name === undefined ? {} : { name: str(raw.name, "InvalidResponseShape", "node.name", COMPANION_IPC_LIMITS.maxSafeSummaryLength) }),
-    ...(raw.value === undefined ? {} : { value: str(raw.value, "InvalidResponseShape", "node.value", COMPANION_IPC_LIMITS.maxSafeSummaryLength) }),
+    ...(nodeValue === undefined ? {} : { value: nodeValue }),
     ...(raw.automationId === undefined ? {} : { automationId: str(raw.automationId, "InvalidResponseShape", "node.automationId", COMPANION_IPC_LIMITS.maxIdLength) }),
     ...(raw.frameworkId === undefined ? {} : { frameworkId: str(raw.frameworkId, "InvalidResponseShape", "node.frameworkId", COMPANION_IPC_LIMITS.maxIdLength) }),
     ...(raw.className === undefined ? {} : { className: str(raw.className, "InvalidResponseShape", "node.className", COMPANION_IPC_LIMITS.maxIdLength) }),
@@ -668,7 +676,7 @@ function parseUiaNode(value: unknown): CompanionUiaSourceNode {
     isOffscreen: bool(raw.isOffscreen, "InvalidResponseShape", "node.isOffscreen"),
     isKeyboardFocusable: bool(raw.isKeyboardFocusable, "InvalidResponseShape", "node.isKeyboardFocusable"),
     hasKeyboardFocus: bool(raw.hasKeyboardFocus, "InvalidResponseShape", "node.hasKeyboardFocus"),
-    isPassword: bool(raw.isPassword, "InvalidResponseShape", "node.isPassword"),
+    isPassword,
     ...(raw.bounds === undefined ? {} : { bounds: parseUiaBounds(raw.bounds) }),
     patterns: Object.freeze(raw.patterns.map((entry) => parsePatternDescriptor(entry))),
     children: requireStringArray(raw.children, "InvalidResponseShape", "node.children"),

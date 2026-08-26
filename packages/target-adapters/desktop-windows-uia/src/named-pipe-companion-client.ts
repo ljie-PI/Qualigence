@@ -116,6 +116,15 @@ function isProofAlgorithm(value: string): value is CompanionProofSignatureAlgori
   return value === "ecdsa-p256-sha256" || value === "rsa-pss-sha256";
 }
 
+function isCompanionProofSignature(value: unknown): value is CompanionProofSignature {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly signatureBase64?: unknown }).signatureBase64 === "string" &&
+    typeof (value as { readonly signatureAlgorithm?: unknown }).signatureAlgorithm === "string"
+  );
+}
+
 export function assertLocalNamedPipePath(pipePath: string): void {
   const normalized = pipePath.replaceAll("/", "\\");
   if (!/^\\\\[.?]\\pipe\\[^\\]+/.test(normalized)) {
@@ -327,9 +336,9 @@ export class NamedPipeCompanionClient implements CompanionClient {
       nonceBase64: challenge.nonceBase64,
       runnerId: this.signer.runnerId,
     });
-    const signature = await this.raceClosed(this.signer.signCompanionProof(proofBytes));
+    const signature = await this.signCompanionProofBeforeDeadline(proofBytes);
     this.assertCurrentSocket(handshakeSocket);
-    if (!isProofAlgorithm(signature.signatureAlgorithm) || signature.signatureBase64.length === 0) {
+    if (!isCompanionProofSignature(signature) || signature.signatureBase64.length === 0 || !isProofAlgorithm(signature.signatureAlgorithm)) {
       this.failStop(new NamedPipeCompanionClientError("CompanionIdentityRejected", "Runner certificate signer returned an invalid proof"));
       throw new NamedPipeCompanionClientError("CompanionIdentityRejected", "Runner certificate signer returned an invalid proof");
     }
@@ -357,6 +366,61 @@ export class NamedPipeCompanionClient implements CompanionClient {
     }
 
     this.authenticated = true;
+  }
+
+  private async signCompanionProofBeforeDeadline(proofBytes: Uint8Array): Promise<CompanionProofSignature> {
+    this.throwIfClosed();
+    try {
+      return await new Promise<CompanionProofSignature>((resolve, reject) => {
+        let settled = false;
+        const cleanup = (): void => {
+          settled = true;
+          clearTimeout(timer);
+          this.closeWaiters.delete(onClose);
+        };
+        const rejectOnce = (error: unknown): void => {
+          if (settled) {
+            return;
+          }
+          cleanup();
+          reject(error);
+        };
+        const resolveOnce = (signature: CompanionProofSignature): void => {
+          if (settled) {
+            return;
+          }
+          cleanup();
+          resolve(signature);
+        };
+        const onClose = (error: NamedPipeCompanionClientError): void => {
+          rejectOnce(error);
+        };
+        const timer = setTimeout(() => {
+          rejectOnce(new NamedPipeCompanionClientError("CompanionRequestTimeout", "Companion proof signing deadline expired"));
+        }, this.handshakeDeadlineMs);
+
+        this.closeWaiters.add(onClose);
+        Promise.resolve()
+          .then(() => this.signer.signCompanionProof(proofBytes))
+          .then(resolveOnce, rejectOnce);
+      });
+    } catch (error) {
+      const stableError = this.toStableProofSigningError(error);
+      this.failStop(stableError);
+      throw stableError;
+    }
+  }
+
+  private toStableProofSigningError(error: unknown): NamedPipeCompanionClientError {
+    if (error instanceof NamedPipeCompanionClientError) {
+      if (error.code === "CompanionUnavailable" || error.code === "CompanionRequestTimeout") {
+        return error;
+      }
+    }
+    return new NamedPipeCompanionClientError(
+      "CompanionIdentityRejected",
+      "Runner certificate signer failed to produce a Companion proof",
+    );
   }
 
   private async ensureConnected(): Promise<void> {
@@ -392,9 +456,21 @@ export class NamedPipeCompanionClient implements CompanionClient {
     this.authenticated = false;
     this.buffered = Buffer.alloc(0);
     socket.setNoDelay?.(true);
-    socket.on("data", (chunk: Buffer) => this.onData(chunk));
-    socket.on("error", () => this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe error")));
-    socket.on("close", () => this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe closed")));
+    socket.on("data", (chunk: Buffer) => {
+      if (this.socket === socket) {
+        this.onData(chunk);
+      }
+    });
+    socket.on("error", () => {
+      if (this.socket === socket) {
+        this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe error"));
+      }
+    });
+    socket.on("close", () => {
+      if (this.socket === socket) {
+        this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe closed"));
+      }
+    });
 
     if ((socket as { readonly connecting?: boolean }).connecting !== true) {
       this.throwIfClosed();
