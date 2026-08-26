@@ -13,7 +13,22 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ipc::dto::ResolvedDesktopAction;
+use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
+use crate::process::job_object::AppWindowSelector;
+
+/// The AppSession authority the Companion passes into the UIA worker for every
+/// capture/action. The worker must scope all lookup to this root HWND and verify
+/// the owning process before it walks or invokes anything, so a permit for one
+/// AppSession cannot hit unrelated desktop UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiaSessionTarget {
+    pub session_id: String,
+    pub process_id: i32,
+    pub root_window_handle: String,
+    #[serde(default, skip_serializing_if = "AppWindowSelector::is_empty")]
+    pub window_selector: AppWindowSelector,
+}
 
 /// A single UIA pattern availability descriptor, mirrored losslessly from the
 /// native `IUIAutomationElement` pattern set.
@@ -99,11 +114,13 @@ pub enum ActionOutcomeReport {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerRequest {
     Capture {
-        session_id: String,
+        target: UiaSessionTarget,
     },
     Execute {
-        session_id: String,
+        target: UiaSessionTarget,
         action: ResolvedDesktopAction,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<DesktopPlaintextValue>,
     },
     Ping,
 }
@@ -130,6 +147,9 @@ pub enum UiaError {
     /// An action deadline elapsed: the side effect may or may not have occurred,
     /// so it must never be replayed automatically.
     ActionOutcomeUnknown,
+    /// Emergency Stop cancelled an in-flight action before a trusted success
+    /// response could be accepted.
+    EmergencyStopped,
     /// The worker could not be started.
     WorkerUnavailable,
     /// The worker returned a corrupt or unexpected frame.
@@ -143,6 +163,7 @@ impl UiaError {
         match self {
             UiaError::TargetUnresponsive => "TargetUnresponsive",
             UiaError::ActionOutcomeUnknown => "ActionOutcomeUnknown",
+            UiaError::EmergencyStopped => "EmergencyStopped",
             UiaError::WorkerUnavailable => "CompanionUnavailable",
             UiaError::ProtocolCorruption => "UiaElementStale",
             UiaError::Reported(code) => code,

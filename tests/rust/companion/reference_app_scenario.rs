@@ -21,13 +21,16 @@ use companion::ipc::dto::{
     DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind,
 };
 use companion::permit::PermitBinding;
+use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::action::execute_desktop_action;
 use companion::uia::mapping::MASKED_VALUE;
-use companion::uia::protocol::{ActionOutcomeReport, WorkerRequest, WorkerResponse};
+use companion::uia::protocol::{
+    ActionOutcomeReport, UiaSessionTarget, WorkerRequest, WorkerResponse,
+};
 use companion::uia::worker::{synthetic_source, SyntheticUiaCapture, UiaCapture};
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
+    UiaWorkerSupervisor, WorkerCancellationCheckpoint, WorkerError, WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -44,6 +47,7 @@ impl WorkerHandle for ScriptedHandle {
         &mut self,
         _req: &WorkerRequest,
         _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
         self.request_count.fetch_add(1, Ordering::SeqCst);
         match self.responses.pop_front() {
@@ -115,6 +119,15 @@ fn click(action_id: &str, node_id: &str) -> ResolvedDesktopAction {
     }
 }
 
+fn target() -> UiaSessionTarget {
+    UiaSessionTarget {
+        session_id: "sess-ref".into(),
+        process_id: 4242,
+        root_window_handle: "0x10".into(),
+        window_selector: AppWindowSelector::default(),
+    }
+}
+
 fn binding(action_id: &str, risk: Risk) -> PermitBinding {
     PermitBinding {
         session_id: "sess-ref".into(),
@@ -147,7 +160,7 @@ fn companion_with(approver: ScriptedApprover) -> Companion<ManualClock, Scripted
 #[test]
 fn synthetic_reference_capture_masks_secrets_and_preserves_ids() {
     let mut capture = SyntheticUiaCapture::new(4242, "2026-08-02T00:00:00.000Z");
-    let source = capture.capture("sess-ref").expect("capture succeeds");
+    let source = capture.capture(&target()).expect("capture succeeds");
 
     // The reference tree shape the pipeline tests rely on.
     assert_eq!(source.root_node_ids, vec!["window".to_string()]);
@@ -198,7 +211,7 @@ fn a_normal_reference_click_is_brokered_end_to_end() {
     let outcome = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-ref",
+        &target(),
         &click("act-submit", "button"),
         &token,
         &bind,

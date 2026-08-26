@@ -2,18 +2,26 @@
 //! the supervisor's kill-and-rebuild restart behavior (specialist finding W-03).
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
 use companion::clock::ManualClock;
+use companion::ipc::dto::{
+    DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind,
+};
 use companion::permit::{PermitBinding, PermitStore};
+use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::mapping::MASKED_VALUE;
-use companion::uia::protocol::{UiaError, UiaSource, WorkerRequest, WorkerResponse};
-use companion::uia::worker::synthetic_source;
+use companion::uia::protocol::{
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+};
+use companion::uia::worker::{synthetic_source, SyntheticUiaCapture, UiaCapture};
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
+    RequestDeadline, UiaWorkerSupervisor, WorkerCancellation, WorkerCancellationCheckpoint,
+    WorkerError, WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -29,8 +37,13 @@ impl WorkerHandle for ScriptedHandle {
         &mut self,
         req: &WorkerRequest,
         _deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
         self.requests.push(req.clone());
+        if cancellation.is_cancelled() {
+            self.alive = false;
+            return Err(WorkerError::Cancelled);
+        }
         match self.responses.pop_front() {
             Some(Ok(response)) => Ok(response),
             Some(Err(err)) => {
@@ -86,9 +99,30 @@ impl WorkerSpawner for ScriptedSpawner {
     }
 }
 
+fn target(session_id: &str) -> UiaSessionTarget {
+    UiaSessionTarget {
+        session_id: session_id.to_string(),
+        process_id: 4242,
+        root_window_handle: "0x10".to_string(),
+        window_selector: AppWindowSelector::default(),
+    }
+}
+
 fn captured(session_id: &str) -> WorkerResponse {
     WorkerResponse::Captured {
         source: synthetic_source(session_id, 4242, "2026-08-02T00:00:00.000Z"),
+    }
+}
+
+fn click_action(action_id: &str) -> ResolvedDesktopAction {
+    ResolvedDesktopAction {
+        target_kind: TargetKind::Desktop,
+        kind: DesktopActionKind::Click,
+        action_id: action_id.to_string(),
+        graph_id: "graph-1".to_string(),
+        node_id: "button".to_string(),
+        resolution: DesktopResolution::Semantic,
+        uia_pattern: Some("Invoke".to_string()),
     }
 }
 
@@ -114,6 +148,50 @@ fn uia_source_round_trips_through_json_with_masked_password() {
 }
 
 #[test]
+fn worker_request_preserves_app_target_window_selector_fields() {
+    let mut selected = target("sess-1");
+    selected.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    let body = serde_json::to_string(&WorkerRequest::Capture { target: selected })
+        .expect("worker request serializes");
+    assert!(body.contains("titlePattern"));
+    assert!(body.contains("Reference App"));
+    assert!(body.contains("automationId"));
+    assert!(body.contains("MainWindow"));
+}
+
+#[test]
+fn synthetic_worker_enforces_app_target_window_selector_on_capture_and_action() {
+    let mut capture = SyntheticUiaCapture::new(4242, "2026-08-02T00:00:00.000Z");
+    let mut selected = target("sess-1");
+    selected.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    assert!(capture.capture(&selected).is_ok());
+    assert_eq!(
+        capture.execute(&selected, &click_action("act-1"), None),
+        Ok(ActionOutcomeReport::Ok)
+    );
+
+    let mut wrong = selected.clone();
+    wrong.window_selector = AppWindowSelector {
+        title_pattern: Some("Splash".into()),
+        automation_id: Some("SplashWindow".into()),
+    };
+    assert_eq!(
+        capture.capture(&wrong),
+        Err(UiaError::Reported("AppTargetWindowNotFound".into()))
+    );
+    assert_eq!(
+        capture.execute(&wrong, &click_action("act-2"), None),
+        Err(UiaError::Reported("AppTargetWindowNotFound".into()))
+    );
+}
+
+#[test]
 fn a_hung_worker_is_recycled_and_the_replacement_resumes_capture() {
     // Worker #1 hangs on its first capture; worker #2 succeeds.
     let spawner = ScriptedSpawner::new(vec![
@@ -124,7 +202,7 @@ fn a_hung_worker_is_recycled_and_the_replacement_resumes_capture() {
 
     // First capture: the worker hangs, so we get a non-blocking TargetUnresponsive
     // and the child is torn down.
-    let first = supervisor.capture("sess-1", Duration::from_millis(50));
+    let first = supervisor.capture(&target("sess-1"), Duration::from_millis(50));
     assert_eq!(first, Err(UiaError::TargetUnresponsive));
     assert_eq!(supervisor.restart_count(), 1);
     assert!(!supervisor.worker_alive());
@@ -132,11 +210,237 @@ fn a_hung_worker_is_recycled_and_the_replacement_resumes_capture() {
     // Second capture: a fresh worker is spawned lazily and the session resumes
     // without any external restart.
     let second = supervisor
-        .capture("sess-1", Duration::from_millis(50))
+        .capture(&target("sess-1"), Duration::from_millis(50))
         .expect("replacement worker captures");
     assert_eq!(second.session_id, "sess-1");
     assert_eq!(supervisor.spawn_count(), 2);
     assert!(supervisor.worker_alive());
+}
+
+#[test]
+fn emergency_stop_cancels_the_current_worker_without_losing_supervisor_authority() {
+    let spawner = ScriptedSpawner::new(vec![
+        vec![Ok(captured("sess-1"))],
+        vec![Ok(captured("sess-1"))],
+    ]);
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+
+    supervisor
+        .capture(&target("sess-1"), Duration::from_millis(50))
+        .expect("first worker captures");
+    assert!(supervisor.worker_alive());
+
+    supervisor.cancel_in_flight();
+    assert_eq!(supervisor.restart_count(), 1);
+    assert!(!supervisor.worker_alive());
+
+    supervisor
+        .capture(&target("sess-1"), Duration::from_millis(50))
+        .expect("replacement worker captures after stop");
+    assert_eq!(supervisor.spawn_count(), 2);
+}
+
+struct BlockingHandle {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    alive: bool,
+}
+
+impl WorkerHandle for BlockingHandle {
+    fn request(
+        &mut self,
+        _req: &WorkerRequest,
+        _deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.entered.store(true, Ordering::SeqCst);
+        while !cancellation.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.kill();
+        Err(WorkerError::Cancelled)
+    }
+
+    fn kill(&mut self) {
+        self.alive = false;
+        self.killed.store(true, Ordering::SeqCst);
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+struct BlockingSpawner {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+}
+
+impl WorkerSpawner for BlockingSpawner {
+    type Handle = BlockingHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(BlockingHandle {
+            entered: Arc::clone(&self.entered),
+            killed: Arc::clone(&self.killed),
+            alive: true,
+        })
+    }
+}
+
+#[test]
+fn emergency_stop_cancels_an_action_already_waiting_on_the_worker() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(BlockingSpawner {
+        entered: Arc::clone(&entered),
+        killed: Arc::clone(&killed),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let action_supervisor = Arc::clone(&supervisor);
+    let action = std::thread::spawn(move || {
+        action_supervisor.lock().expect("supervisor lock").execute(
+            &target("sess-1"),
+            &click_action("act-in-flight"),
+            None,
+            Duration::from_millis(5_000),
+        )
+    });
+
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        action.join().expect("action thread"),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert!(killed.load(Ordering::SeqCst));
+    assert_eq!(
+        supervisor.lock().expect("supervisor lock").restart_count(),
+        1,
+    );
+}
+
+#[test]
+fn emergency_stop_cancels_a_capture_already_waiting_on_the_worker() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(BlockingSpawner {
+        entered: Arc::clone(&entered),
+        killed: Arc::clone(&killed),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let capture_supervisor = Arc::clone(&supervisor);
+    let checkpoint = cancellation.checkpoint();
+    let capture = std::thread::spawn(move || {
+        capture_supervisor
+            .lock()
+            .expect("supervisor lock")
+            .capture_until(
+                &target("sess-1"),
+                &RequestDeadline::after(Duration::from_millis(5_000)),
+                &checkpoint,
+            )
+    });
+
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        capture.join().expect("capture thread"),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert!(killed.load(Ordering::SeqCst));
+    assert_eq!(
+        supervisor.lock().expect("supervisor lock").restart_count(),
+        1,
+    );
+}
+
+#[test]
+fn expired_capture_deadline_never_dispatches_to_worker() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let spawner = CountingSpawner {
+        request_count: Arc::clone(&request_count),
+    };
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let cancellation = WorkerCancellation::default();
+    let deadline = RequestDeadline::after(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(5));
+
+    assert_eq!(
+        supervisor.capture_until(&target("sess-1"), &deadline, &cancellation.checkpoint()),
+        Err(UiaError::TargetUnresponsive)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn cancelled_capture_never_dispatches_to_worker() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let spawner = CountingSpawner {
+        request_count: Arc::clone(&request_count),
+    };
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let cancellation = WorkerCancellation::default();
+    let checkpoint = cancellation.checkpoint();
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        supervisor.capture_until(
+            &target("sess-1"),
+            &RequestDeadline::after(Duration::from_millis(50)),
+            &checkpoint,
+        ),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+}
+
+struct CountingHandle {
+    request_count: Arc<AtomicUsize>,
+}
+
+impl WorkerHandle for CountingHandle {
+    fn request(
+        &mut self,
+        _req: &WorkerRequest,
+        _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.request_count.fetch_add(1, Ordering::SeqCst);
+        Ok(captured("sess-1"))
+    }
+
+    fn kill(&mut self) {}
+
+    fn is_alive(&self) -> bool {
+        true
+    }
+}
+
+struct CountingSpawner {
+    request_count: Arc<AtomicUsize>,
+}
+
+impl WorkerSpawner for CountingSpawner {
+    type Handle = CountingHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(CountingHandle {
+            request_count: Arc::clone(&self.request_count),
+        })
+    }
 }
 
 #[test]
@@ -148,13 +452,13 @@ fn a_corrupt_frame_recycles_the_worker() {
     let mut supervisor = UiaWorkerSupervisor::new(spawner);
 
     assert_eq!(
-        supervisor.capture("sess-1", Duration::from_millis(50)),
+        supervisor.capture(&target("sess-1"), Duration::from_millis(50)),
         Err(UiaError::TargetUnresponsive)
     );
     assert_eq!(supervisor.restart_count(), 1);
 
     let ok = supervisor
-        .capture("sess-1", Duration::from_millis(50))
+        .capture(&target("sess-1"), Duration::from_millis(50))
         .expect("replacement worker recovers");
     assert_eq!(ok.root_node_ids, vec!["window".to_string()]);
 }
@@ -172,7 +476,7 @@ fn a_worker_crash_does_not_disturb_the_companion_security_core() {
     let spawner = ScriptedSpawner::new(vec![vec![Err(WorkerError::Timeout)]]);
     let mut supervisor = UiaWorkerSupervisor::new(spawner);
     assert_eq!(
-        supervisor.capture("sess-1", Duration::from_millis(10)),
+        supervisor.capture(&target("sess-1"), Duration::from_millis(10)),
         Err(UiaError::TargetUnresponsive)
     );
 
@@ -201,4 +505,24 @@ fn a_worker_crash_does_not_disturb_the_companion_security_core() {
         }
     };
     assert_eq!(companion.authorize_action(&token, &binding), Ok(()));
+}
+
+#[cfg(windows)]
+#[test]
+fn native_uia_worker_child_runs_hidden_role_and_answers_ping() {
+    let worker_exe = std::env::var("CARGO_BIN_EXE_companion")
+        .expect("cargo exposes the companion binary path to this integration test");
+    let mut spawner =
+        companion::uia::worker_supervisor::NativeUiaWorkerSpawner::with_executable(worker_exe);
+    let mut worker = spawner.spawn().expect("spawn native UIA worker child");
+    let cancellation = WorkerCancellation::default();
+    let response = worker
+        .request(
+            &WorkerRequest::Ping,
+            Duration::from_millis(5_000),
+            &cancellation.checkpoint(),
+        )
+        .expect("worker responds before deadline");
+    assert_eq!(response, WorkerResponse::Pong);
+    worker.kill();
 }

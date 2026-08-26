@@ -2,6 +2,10 @@
 
 use std::io::Cursor;
 
+use companion::ipc::dto::{
+    validate_app_target_timeout_ms, validate_deadline_ms, CompanionRequest,
+    MAX_PLAINTEXT_VALUE_BYTES,
+};
 use companion::ipc::server::{
     parse_request, read_frame, write_frame, FrameError, FrameLimits, RequestAdmission,
     RequestProcessError, SessionAdmissionError,
@@ -107,6 +111,24 @@ fn current_envelope_request_variants_parse() {
 }
 
 #[test]
+fn public_deadline_bounds_reject_zero_and_over_max_values() {
+    assert!(validate_deadline_ms(1).is_ok());
+    assert!(validate_deadline_ms(600_000).is_ok());
+    assert!(validate_deadline_ms(0).is_err());
+    assert!(validate_deadline_ms(600_001).is_err());
+}
+
+#[test]
+fn app_target_reset_and_shutdown_timeouts_accept_public_zero_bound() {
+    assert!(validate_app_target_timeout_ms(0).is_ok());
+    assert!(validate_app_target_timeout_ms(600_000).is_ok());
+    assert!(validate_app_target_timeout_ms(600_001).is_err());
+
+    let launch = br#"{"protocolMajor":1,"requestId":"req-zero-timeout","type":"app.launch","payload":{"target":{"targetId":"target-1","platform":"windows","launch":{"executable":"C:\\Windows\\System32\\notepad.exe","args":[]},"process":{"expectedImageName":"notepad.exe","allowedChildImageNames":[]},"window":{},"reset":{"command":"C:\\Windows\\System32\\cmd.exe","args":[],"timeoutMs":0},"shutdown":{"gracefulTimeoutMs":0,"forceAfterTimeout":true}}}}"#;
+    assert!(parse_request(launch).is_ok());
+}
+
+#[test]
 fn concurrent_request_flooding_is_bounded() {
     let admission = RequestAdmission::new(2);
     let g1 = admission.try_admit().expect("first admitted");
@@ -170,4 +192,49 @@ fn request_path_errors_map_to_public_companion_stable_codes() {
         RequestProcessError::Session(SessionAdmissionError::CompanionUnauthenticated).stable_code(),
         "CompanionUnauthenticated"
     );
+}
+
+#[test]
+fn oversized_plaintext_value_binding_and_payloads_are_rejected_at_rust_ipc_boundary() {
+    let oversized = MAX_PLAINTEXT_VALUE_BYTES + 1;
+    let permit_request = format!(
+        r#"{{"protocolMajor":1,"requestId":"req-oversized-binding","type":"permit.request","payload":{{"request":{{"approvalId":"ap-1","sessionId":"sess-1","runId":"run-1","action":{{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","valueRef":"secret-ref"}},"authorization":{{"decisionId":"decision-1","policyId":"policy-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","risk":"ExternalSideEffect","expiresAt":"2026-08-02T00:01:00.000Z","nonceBase64":"nonce","valueBinding":{{"valueRef":"secret-ref","valueSha256":"{}","valueByteLength":{oversized}}}}},"safeSummary":"input value","expiresAt":"2026-08-02T00:01:00.000Z"}}}}}}"#,
+        "0".repeat(64)
+    );
+    assert_eq!(
+        parse_request(permit_request.as_bytes()),
+        Err(FrameError::Malformed)
+    );
+
+    let action_binding = format!(
+        r#"{{"protocolMajor":1,"requestId":"req-oversized-action-binding","type":"action.execute","payload":{{"sessionId":"sess-1","action":{{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","valueRef":"secret-ref"}},"permit":{{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{{"valueRef":"secret-ref","valueSha256":"{}","valueByteLength":{oversized}}}}},"value":{{"valueRef":"secret-ref","valueSha256":"{}","valueByteLength":6,"plaintext":"secret"}},"deadlineMs":5000}}}}"#,
+        "0".repeat(64),
+        "0".repeat(64)
+    );
+    assert_eq!(
+        parse_request(action_binding.as_bytes()),
+        Err(FrameError::Malformed)
+    );
+
+    let oversized_plaintext = "x".repeat(oversized as usize);
+    let action_execute = format!(
+        r#"{{"protocolMajor":1,"requestId":"req-oversized-value","type":"action.execute","payload":{{"sessionId":"sess-1","action":{{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","valueRef":"secret-ref"}},"permit":{{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{{"valueRef":"secret-ref","valueSha256":"{}","valueByteLength":6}}}},"value":{{"valueRef":"secret-ref","valueSha256":"{}","valueByteLength":6,"plaintext":"{oversized_plaintext}"}},"deadlineMs":5000}}}}"#,
+        "0".repeat(64),
+        "0".repeat(64)
+    );
+    assert_eq!(
+        parse_request(action_execute.as_bytes()),
+        Err(FrameError::Malformed)
+    );
+}
+
+#[test]
+fn action_execute_accepts_public_value_ref_field_and_rejects_legacy_value_ref_name() {
+    let public = br#"{"protocolMajor":1,"requestId":"req-value","type":"action.execute","payload":{"sessionId":"sess-1","action":{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","valueRef":"secret-ref"},"permit":{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6}},"value":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6,"plaintext":"secret"},"deadlineMs":5000}}"#;
+    let parsed_public = CompanionRequest::from_slice(public);
+    assert!(parsed_public.is_ok(), "{parsed_public:?}");
+    assert!(parse_request(public).is_ok());
+
+    let legacy = br#"{"protocolMajor":1,"requestId":"req-value","type":"action.execute","payload":{"sessionId":"sess-1","action":{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","value_ref":"secret-ref"},"permit":{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6}},"value":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6,"plaintext":"secret"},"deadlineMs":5000}}"#;
+    assert_eq!(parse_request(legacy), Err(FrameError::Malformed));
 }
