@@ -345,6 +345,114 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when a forged duplicate page record adds target membership outside the host mask snapshot", async () => {
+    await enterSecret();
+    await session.withPage(async (page) => {
+      await page.evaluate((input) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as Record<string, unknown> & {
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const state = host[input.stateProperty] as {
+          records?: Array<{
+            markerId: string;
+            forms?: string[];
+            classifiedElements?: Element[];
+            classifiedMaskIds?: string[];
+          }>;
+        } | undefined;
+        const record = state?.records?.[0];
+        if (record === undefined || record.forms === undefined) throw new Error("Missing sensitive record.");
+        const forged = host.document.createElement("div");
+        forged.id = "forged-sensitive-region";
+        forged.textContent = input.secret;
+        forged.setAttribute("data-qualigence-observe", "true");
+        forged.setAttribute(input.maskAttribute, "qm-forged-duplicate");
+        Object.assign(forged.style, {
+          position: "absolute",
+          left: "30px",
+          top: "150px",
+          width: "240px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        Object.defineProperty(forged, input.targetIdsProperty, {
+          configurable: true,
+          enumerable: false,
+          value: [record.markerId],
+          writable: true,
+        });
+        host.document.body.append(forged);
+        state!.records!.push({
+          markerId: record.markerId,
+          forms: [...record.forms],
+          classifiedElements: [forged],
+          classifiedMaskIds: ["qm-forged-duplicate"],
+        });
+      }, {
+        stateProperty: "__qualigenceSensitiveEvidenceState",
+        targetIdsProperty: "__qualigenceSensitiveTargetIds",
+        maskAttribute: MASK_ATTRIBUTE,
+        secret: SECRET,
+      });
+    });
+
+    await expect(new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("keeps delayed scheduler authority host-held when page code forges an early retirement", async () => {
+    const delayedSecret = "cdp-delayed-scheduler-secret";
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #secret { position: absolute; left: 24px; top: 24px; width: 180px; height: 28px; background: white; color: blue; }
+          #mirror { position: absolute; left: 24px; top: 72px; width: 260px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Delayed Secret <input id="secret" aria-label="Delayed Secret" /></label>
+        <div id="mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('secret');
+          const mirror = document.getElementById('mirror');
+          input.addEventListener('input', () => {
+            setTimeout(() => { mirror.textContent = input.value; }, 75);
+            const state = window.__qualigenceSensitiveEvidenceState;
+            if (state && state.active) state.active.pendingSchedulerCallbacks = 0;
+            Array.prototype.some = () => false;
+          });
+        </script>
+      `, "Delayed scheduler tamper"),
+    });
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => delayedSecret });
+    const before = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = before.nodes.find((node) => node.name === "Delayed Secret");
+    if (email === undefined) throw new Error("Missing Delayed Secret node.");
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.delayed", reason: "test" }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when marker attributes are reassigned to a non-sensitive backend node", async () => {
     await enterSecret();
     const observer = new PlaywrightObserver(session, {

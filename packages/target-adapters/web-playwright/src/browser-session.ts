@@ -10,6 +10,7 @@ import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
+  type SensitiveEvidenceMaskRefreshRequest,
   type SensitiveEvidencePageStateSnapshot,
   type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
@@ -214,6 +215,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly promiseOwnerOverflow?: boolean;
       readonly promiseOwnerValidationFailed?: boolean;
       readonly validatePromiseOwners?: (maxPromiseOwners: number) => PromiseOwnerValidationResult;
+      readonly retainSensitiveSchedulerEpoch?: (epoch: SensitiveSchedulerEpoch) => void;
+      readonly sensitiveSchedulerRegistrationCount?: (epoch: SensitiveSchedulerEpoch) => number;
+      readonly sensitiveSchedulerRetirementStatus?: () => "retired" | "pending" | "unavailable";
       readonly originalAttachShadow: typeof Element.prototype.attachShadow;
       readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
       readonly originalSetTimeout: typeof window.setTimeout;
@@ -237,6 +241,13 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       inSchedulerCallback?: boolean;
       poisoned?: boolean;
       processSchedulerCallback?: () => void;
+    };
+    type SensitiveSchedulerEpochAuthority = {
+      schedulerRegistrations: number;
+      pendingSchedulerCallbacks: number;
+      retainedSchedulerCallbacks: number;
+      inSchedulerCallback: boolean;
+      poisoned: boolean;
     };
     type SensitiveRuntimeState = {
       active?: SensitiveSchedulerEpoch | null;
@@ -433,6 +444,8 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     if (win[input.shadowRootsProperty] !== undefined) return;
     const notifySensitiveEvidenceMutation = (window as unknown as Record<string, unknown>)[input.mutationNotificationFunction];
     const promiseOwnerRecords: PromiseOwnerRecord[] = [];
+    const schedulerEpochAuthority = new NativeWeakMap<SensitiveSchedulerEpoch, SensitiveSchedulerEpochAuthority>();
+    const retainedSensitiveSchedulerEpochs: SensitiveSchedulerEpoch[] = [];
     let promiseOwnerOverflow = false;
     let promiseOwnerValidationFailed = intrinsicAuthorityFailed;
     const registry: SensitiveRuntimeRegistry = {
@@ -475,6 +488,24 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
         configurable: false,
         enumerable: false,
         value: validatePromiseOwnerRecords,
+        writable: false,
+      },
+      retainSensitiveSchedulerEpoch: {
+        configurable: false,
+        enumerable: false,
+        value: retainSensitiveSchedulerEpoch,
+        writable: false,
+      },
+      sensitiveSchedulerRegistrationCount: {
+        configurable: false,
+        enumerable: false,
+        value: sensitiveSchedulerRegistrationCount,
+        writable: false,
+      },
+      sensitiveSchedulerRetirementStatus: {
+        configurable: false,
+        enumerable: false,
+        value: sensitiveSchedulerRetirementStatus,
         writable: false,
       },
     });
@@ -1305,15 +1336,60 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       }
     }
 
+    function schedulerAuthority(epoch: SensitiveSchedulerEpoch): SensitiveSchedulerEpochAuthority {
+      const existing = nativeReflectApply(nativeWeakMapPrototypeGet as (...args: unknown[]) => SensitiveSchedulerEpochAuthority | undefined, schedulerEpochAuthority, [epoch]) as SensitiveSchedulerEpochAuthority | undefined;
+      if (existing !== undefined) return existing;
+      const created: SensitiveSchedulerEpochAuthority = {
+        schedulerRegistrations: typeof epoch.schedulerRegistrations === "number" ? epoch.schedulerRegistrations : 0,
+        pendingSchedulerCallbacks: typeof epoch.pendingSchedulerCallbacks === "number" ? epoch.pendingSchedulerCallbacks : 0,
+        retainedSchedulerCallbacks: typeof epoch.retainedSchedulerCallbacks === "number" ? epoch.retainedSchedulerCallbacks : 0,
+        inSchedulerCallback: epoch.inSchedulerCallback === true,
+        poisoned: epoch.poisoned === true,
+      };
+      nativeReflectApply(nativeWeakMapPrototypeSet as (...args: unknown[]) => WeakMap<SensitiveSchedulerEpoch, SensitiveSchedulerEpochAuthority>, schedulerEpochAuthority, [epoch, created]);
+      return created;
+    }
+
+    function mirrorSchedulerAuthority(epoch: SensitiveSchedulerEpoch, authority: SensitiveSchedulerEpochAuthority): void {
+      epoch.schedulerRegistrations = authority.schedulerRegistrations;
+      epoch.pendingSchedulerCallbacks = authority.pendingSchedulerCallbacks;
+      epoch.retainedSchedulerCallbacks = authority.retainedSchedulerCallbacks;
+      epoch.inSchedulerCallback = authority.inSchedulerCallback;
+      epoch.poisoned = authority.poisoned;
+    }
+
+    function retainSensitiveSchedulerEpoch(epoch: SensitiveSchedulerEpoch): void {
+      schedulerAuthority(epoch);
+      if (!arrayIncludes(retainedSensitiveSchedulerEpochs, epoch)) {
+        arrayPush(retainedSensitiveSchedulerEpochs, epoch);
+      }
+    }
+
+    function sensitiveSchedulerRegistrationCount(epoch: SensitiveSchedulerEpoch): number {
+      return schedulerAuthority(epoch).schedulerRegistrations;
+    }
+
+    function sensitiveSchedulerRetirementStatus(): "retired" | "pending" | "unavailable" {
+      for (let index = 0; index < retainedSensitiveSchedulerEpochs.length; index += 1) {
+        const epoch = retainedSensitiveSchedulerEpochs[index]!;
+        const authority = schedulerAuthority(epoch);
+        if (authority.poisoned || epoch.poisoned === true) return "unavailable";
+        if (authority.pendingSchedulerCallbacks > 0) return "pending";
+      }
+      return "retired";
+    }
+
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
       const state = sensitiveState();
       if (state === undefined) return undefined;
       const epoch = currentSensitiveEpoch(state);
       if (epoch === undefined) return undefined;
+      const authority = schedulerAuthority(epoch);
       state.schedulerSessionRegistrations = (state.schedulerSessionRegistrations ?? 0) + 1;
-      epoch.schedulerRegistrations = (epoch.schedulerRegistrations ?? 0) + 1;
+      authority.schedulerRegistrations += 1;
+      mirrorSchedulerAuthority(epoch, authority);
       if (
-        epoch.schedulerRegistrations > input.maxSchedulerRegistrationsPerEpoch ||
+        authority.schedulerRegistrations > input.maxSchedulerRegistrationsPerEpoch ||
         state.schedulerSessionRegistrations > input.maxSchedulerRegistrationsPerSession
       ) {
         poison(state, epoch);
@@ -1370,7 +1446,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     }
 
     function beginPendingSchedulerCallback(epoch: SensitiveSchedulerEpoch, settles: boolean, retainObjectResult: boolean): PendingSchedulerCallback {
-      epoch.pendingSchedulerCallbacks = (epoch.pendingSchedulerCallbacks ?? 0) + 1;
+      const authority = schedulerAuthority(epoch);
+      authority.pendingSchedulerCallbacks += 1;
+      mirrorSchedulerAuthority(epoch, authority);
       return { settled: false, settles, retainObjectResult, retainedAfterReturn: false };
     }
 
@@ -1382,8 +1460,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       return function sensitiveSchedulerCallback(this: unknown): unknown {
         "use strict";
         const args = nativeReflectApply(nativeArrayPrototypeSlice, arguments, []) as any[];
-        const previous = epoch.inSchedulerCallback === true;
-        epoch.inSchedulerCallback = true;
+        const authority = schedulerAuthority(epoch);
+        const previous = authority.inSchedulerCallback;
+        authority.inSchedulerCallback = true;
+        mirrorSchedulerAuthority(epoch, authority);
         let callbackResult: unknown;
         let callbackCompleted = false;
         try {
@@ -1391,11 +1471,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
           callbackCompleted = true;
           return callbackResult;
         } finally {
-          epoch.inSchedulerCallback = previous;
+          authority.inSchedulerCallback = previous;
           if (callbackCompleted && pending.retainObjectResult && isObjectLike(callbackResult)) {
             pending.retainedAfterReturn = true;
-            epoch.retainedSchedulerCallbacks = (epoch.retainedSchedulerCallbacks ?? 0) + 1;
+            authority.retainedSchedulerCallbacks += 1;
           }
+          mirrorSchedulerAuthority(epoch, authority);
           processSchedulerCallbackEpoch(epoch);
           queuePendingSchedulerSettle(epoch, pending);
         }
@@ -1433,11 +1514,13 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     function settlePendingSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, pending: PendingSchedulerCallback): void {
       if (epoch === undefined || !pending.settles || pending.settled) return;
       pending.settled = true;
+      const authority = schedulerAuthority(epoch);
       if (pending.retainedAfterReturn) {
-        epoch.retainedSchedulerCallbacks = Math.max(0, (epoch.retainedSchedulerCallbacks ?? 0) - 1);
+        authority.retainedSchedulerCallbacks = Math.max(0, authority.retainedSchedulerCallbacks - 1);
         pending.retainedAfterReturn = false;
       }
-      epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
+      authority.pendingSchedulerCallbacks = Math.max(0, authority.pendingSchedulerCallbacks - 1);
+      mirrorSchedulerAuthority(epoch, authority);
     }
 
     function isObjectLike(value: unknown): value is object {
@@ -1452,13 +1535,18 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
 
     function currentSensitiveEpoch(state: SensitiveRuntimeState): SensitiveSchedulerEpoch | undefined {
       const active = state.active;
-      return active !== undefined && active !== null
-        ? active
-        : state.retainedSchedulerEpochs === undefined
-          ? undefined
-          : arrayFind(state.retainedSchedulerEpochs, (candidate) =>
-            candidate.inSchedulerCallback === true || (candidate.retainedSchedulerCallbacks ?? 0) > 0,
-          );
+      if (active !== undefined && active !== null) return active;
+      const retained = arrayFind(retainedSensitiveSchedulerEpochs, (candidate) => {
+        const authority = schedulerAuthority(candidate);
+        return authority.inSchedulerCallback || authority.retainedSchedulerCallbacks > 0;
+      });
+      if (retained !== undefined) return retained;
+      return state.retainedSchedulerEpochs === undefined
+        ? undefined
+        : arrayFind(state.retainedSchedulerEpochs, (candidate) => {
+          const authority = schedulerAuthority(candidate);
+          return authority.inSchedulerCallback || authority.retainedSchedulerCallbacks > 0;
+        });
     }
 
     function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
@@ -1472,7 +1560,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
 
     function poison(state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
       state.poisoned = true;
-      epoch.poisoned = true;
+      const authority = schedulerAuthority(epoch);
+      authority.poisoned = true;
+      mirrorSchedulerAuthority(epoch, authority);
     }
   }, {
     shadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
@@ -1869,6 +1959,29 @@ export class PlaywrightBrowserSession {
   sensitiveMaskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
     this.assertSensitiveEvidenceAvailable();
     return this.sensitiveEvidence.maskSnapshot();
+  }
+
+  pendingSensitiveMaskRefreshRequests(snapshot: SensitiveEvidencePageStateSnapshot): readonly SensitiveEvidenceMaskRefreshRequest[] {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture) return [];
+    const requests = this.sensitiveEvidence.pendingMaskRefreshRequests(snapshot, [...this.pendingSensitiveCaptureMarkers]);
+    if (requests === undefined) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return requests;
+  }
+
+  refreshPendingSensitiveMaskSnapshot(markerId: string, maskSnapshot: readonly SensitiveMaskSnapshotEntry[]): void {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture || !this.pendingSensitiveCaptureMarkers.has(markerId)) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    if (!this.sensitiveEvidence.refreshPendingMaskSnapshot(markerId, maskSnapshot)) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
   }
 
   validatePendingSensitivePageState(snapshot: SensitiveEvidencePageStateSnapshot): void {

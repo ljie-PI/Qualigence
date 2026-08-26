@@ -719,7 +719,7 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).toContain("SensitiveEvidenceUnavailable");
   }, 90_000);
 
-  it("fails closed through Runner Spool when page mutates sensitive records and target ids before capture registration", async () => {
+  it("fails closed through Runner Spool when page forges duplicate sensitive records and target ids before capture registration", async () => {
     const pageStateSecret = "ticket45-runner-spool-page-state-secret";
     fixture = await startFixtureServer({
       "/": htmlDocument(`
@@ -836,22 +836,61 @@ describe("production valueRef browser execution", () => {
         super(options, {
           afterDomCollection: async (page) => {
             const tampered = await page.evaluate((input) => {
-              const host = globalThis as unknown as Record<string, unknown> & {
-                readonly document: { querySelectorAll(selector: string): Iterable<Element> };
+              type MutableElement = Element & {
+                id: string;
+                textContent: string | null;
+                readonly style: Record<string, string>;
+                setAttribute(name: string, value: string): void;
               };
-              const state = host[input.stateProperty] as { records?: { forms?: string[] }[] } | undefined;
-              if ((state?.records?.length ?? 0) === 0) return false;
-              for (const record of state!.records!) {
-                if (Array.isArray(record.forms)) record.forms.length = 0;
-              }
-              for (const element of host.document.querySelectorAll("*")) {
-                const ids = (element as unknown as Record<string, unknown>)[input.targetIdsProperty];
-                if (Array.isArray(ids)) ids.length = 0;
-              }
+              const host = globalThis as unknown as Record<string, unknown> & {
+                readonly document: {
+                  createElement(tagName: string): MutableElement;
+                  readonly body: { append(element: unknown): void };
+                };
+              };
+              const state = host[input.stateProperty] as {
+                records?: Array<{
+                  markerId: string;
+                  forms?: string[];
+                  classifiedElements?: Element[];
+                  classifiedMaskIds?: string[];
+                }>;
+              } | undefined;
+              const record = state?.records?.[0];
+              if (record === undefined || record.forms === undefined) return false;
+              const forged = host.document.createElement("div");
+              forged.id = "forged-page-state-sensitive-region";
+              forged.textContent = input.secret;
+              forged.setAttribute("data-qualigence-observe", "true");
+              forged.setAttribute(input.maskAttribute, "qm-runner-forged-duplicate");
+              Object.assign(forged.style, {
+                position: "absolute",
+                left: "30px",
+                top: "165px",
+                width: "260px",
+                height: "28px",
+                background: "white",
+                color: "blue",
+              });
+              Object.defineProperty(forged, input.targetIdsProperty, {
+                configurable: true,
+                enumerable: false,
+                value: [record.markerId],
+                writable: true,
+              });
+              host.document.body.append(forged);
+              state!.records!.push({
+                markerId: record.markerId,
+                forms: [...record.forms],
+                classifiedElements: [forged],
+                classifiedMaskIds: ["qm-runner-forged-duplicate"],
+              });
               return true;
             }, {
               stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
               targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+              maskAttribute: "data-qualigence-sensitive-mask",
+              secret: pageStateSecret,
             });
             if (tampered) pageStateTamperCount += 1;
           },

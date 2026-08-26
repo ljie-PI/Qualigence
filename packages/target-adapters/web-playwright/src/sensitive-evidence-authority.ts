@@ -38,11 +38,19 @@ export interface SensitiveEvidencePageRecordSnapshot {
   readonly classifiedElementTargetIds: readonly (readonly string[])[];
 }
 
+export interface SensitiveEvidenceObservedElementMembership {
+  readonly maskId?: string;
+  readonly targetIds: readonly string[];
+  readonly maskable: boolean;
+  readonly visible: boolean;
+}
+
 export interface SensitiveEvidencePageStateSnapshot {
   readonly status: "ok" | "failed";
   readonly active: boolean;
   readonly poisoned: boolean;
   readonly records: readonly SensitiveEvidencePageRecordSnapshot[];
+  readonly observedElementMemberships: readonly SensitiveEvidenceObservedElementMembership[];
 }
 
 export interface SensitiveEvidenceRecordInput {
@@ -66,6 +74,11 @@ export interface SensitiveEvidenceAuthorityResult<T> {
 export interface SensitiveEvidenceRedactionResult {
   readonly status: "redacted" | "unchanged" | "unavailable";
   readonly value: string;
+}
+
+export interface SensitiveEvidenceMaskRefreshRequest {
+  readonly markerId: string;
+  readonly maskIds: readonly string[];
 }
 
 interface SensitiveEvidenceRecord {
@@ -195,26 +208,105 @@ export class SensitiveEvidenceAuthority {
     return { status: "unchanged", value };
   }
 
+  pendingMaskRefreshRequests(
+    snapshot: SensitiveEvidencePageStateSnapshot,
+    pendingMarkerIds: readonly string[],
+  ): readonly SensitiveEvidenceMaskRefreshRequest[] | undefined {
+    const validation = this.validatePendingPageStateSnapshot(snapshot, pendingMarkerIds, "allow-extra-masks");
+    if (validation === undefined) return undefined;
+    return validation.refreshRequests;
+  }
+
+  refreshPendingMaskSnapshot(markerId: string, maskSnapshot: readonly SensitiveMaskSnapshotEntry[]): boolean {
+    const record = this.records.get(markerId);
+    if (record === undefined || maskSnapshot.length === 0 || maskSnapshot.length > MAX_REFLECTED_REGIONS) return false;
+    const maskIds = new Set<string>();
+    for (const entry of maskSnapshot) {
+      if (entry.markerId !== markerId || !isAllowedMaskId(entry.maskId) || !Number.isSafeInteger(entry.backendNodeId) || maskIds.has(entry.maskId)) {
+        return false;
+      }
+      maskIds.add(entry.maskId);
+    }
+    this.records.set(markerId, {
+      ...record,
+      maskSnapshot: maskSnapshot.map((entry) => ({ ...entry })),
+    });
+    return true;
+  }
+
   validatePendingPageState(
     snapshot: SensitiveEvidencePageStateSnapshot,
     pendingMarkerIds: readonly string[],
   ): boolean {
-    if (pendingMarkerIds.length === 0) return true;
-    if (snapshot.status !== "ok" || snapshot.active || snapshot.poisoned) return false;
-    for (const markerId of pendingMarkerIds) {
-      const record = this.records.get(markerId);
-      const pageRecord = snapshot.records.find((candidate) => candidate.markerId === markerId);
-      if (record === undefined || pageRecord === undefined) return false;
-      if (!containsAll(pageRecord.forms, record.forms)) return false;
-      const expectedMaskIds = record.maskSnapshot.map((entry) => entry.maskId);
-      if (!sameStringSet(pageRecord.classifiedMaskIds, expectedMaskIds)) return false;
-      if (!sameStringSet(pageRecord.classifiedElementMaskIds.filter((entry): entry is string => entry !== undefined), expectedMaskIds)) return false;
-      if (pageRecord.classifiedElementTargetIds.length !== expectedMaskIds.length) return false;
+    return this.validatePendingPageStateSnapshot(snapshot, pendingMarkerIds, "exact") !== undefined;
+  }
+
+  private validatePendingPageStateSnapshot(
+    snapshot: SensitiveEvidencePageStateSnapshot,
+    pendingMarkerIds: readonly string[],
+    mode: "exact" | "allow-extra-masks",
+  ): { readonly refreshRequests: readonly SensitiveEvidenceMaskRefreshRequest[] } | undefined {
+    if (pendingMarkerIds.length === 0) return { refreshRequests: [] };
+    if (snapshot.status !== "ok" || snapshot.active || snapshot.poisoned) return undefined;
+    const pendingMarkers = new Set(pendingMarkerIds);
+    if (pendingMarkers.size !== pendingMarkerIds.length) return undefined;
+    if (snapshot.records.length !== pendingMarkerIds.length) return undefined;
+    const expectedMaskOwnerById = new Map<string, string>();
+    const acceptedMaskIdsByMarker = new Map<string, readonly string[]>();
+    const seenPageRecords = new Set<string>();
+    const refreshRequests: SensitiveEvidenceMaskRefreshRequest[] = [];
+    for (const pageRecord of snapshot.records) {
+      if (!pendingMarkers.has(pageRecord.markerId) || seenPageRecords.has(pageRecord.markerId)) return undefined;
+      seenPageRecords.add(pageRecord.markerId);
+      const record = this.records.get(pageRecord.markerId);
+      if (record === undefined) return undefined;
+      if (!sameStringSet(pageRecord.forms, [...record.forms])) return undefined;
+      const currentMaskIds = record.maskSnapshot.map((entry) => entry.maskId);
+      const pageElementMaskIds = pageRecord.classifiedElementMaskIds.filter((entry): entry is string => entry !== undefined);
+      if (mode === "exact") {
+        if (!sameStringSet(pageRecord.classifiedMaskIds, currentMaskIds)) return undefined;
+        if (!sameStringSet(pageElementMaskIds, currentMaskIds)) return undefined;
+        acceptedMaskIdsByMarker.set(pageRecord.markerId, currentMaskIds);
+      } else {
+        if (!sameStringSet(pageRecord.classifiedMaskIds, pageElementMaskIds)) return undefined;
+        if (!containsAllStrings(pageRecord.classifiedMaskIds, currentMaskIds)) return undefined;
+        acceptedMaskIdsByMarker.set(pageRecord.markerId, pageRecord.classifiedMaskIds);
+        if (!sameStringSet(pageRecord.classifiedMaskIds, currentMaskIds)) {
+          refreshRequests[refreshRequests.length] = { markerId: pageRecord.markerId, maskIds: pageRecord.classifiedMaskIds };
+        }
+      }
+      const acceptedMaskIds = acceptedMaskIdsByMarker.get(pageRecord.markerId)!;
+      for (const maskId of acceptedMaskIds) {
+        if (expectedMaskOwnerById.has(maskId)) return undefined;
+        expectedMaskOwnerById.set(maskId, pageRecord.markerId);
+      }
+      if (pageRecord.classifiedElementTargetIds.length !== acceptedMaskIds.length) return undefined;
       for (const targetIds of pageRecord.classifiedElementTargetIds) {
-        if (!targetIds.includes(markerId)) return false;
+        if (!targetIds.includes(pageRecord.markerId) || !allKnownMarkers(targetIds, this.records)) return undefined;
       }
     }
-    return true;
+    if (seenPageRecords.size !== pendingMarkerIds.length) return undefined;
+    const observedExpectedMaskIds = new Set<string>();
+    for (const membership of snapshot.observedElementMemberships) {
+      if (!sameStringSet(membership.targetIds, membership.targetIds)) return undefined;
+      const pendingTargetIds = membership.targetIds.filter((targetId) => pendingMarkers.has(targetId));
+      if (pendingTargetIds.length === 0) continue;
+      if (!allKnownMarkers(membership.targetIds, this.records)) return undefined;
+      const markerId = pendingTargetIds[0];
+      if (markerId === undefined || !sameStringSet(pendingTargetIds, [markerId])) return undefined;
+      const acceptedMaskIds = acceptedMaskIdsByMarker.get(markerId);
+      if (acceptedMaskIds === undefined) return undefined;
+      if (!membership.maskable) continue;
+      if (membership.maskId === undefined || !acceptedMaskIds.includes(membership.maskId)) return undefined;
+      const expectedOwner = expectedMaskOwnerById.get(membership.maskId);
+      if (expectedOwner !== markerId) return undefined;
+      if (observedExpectedMaskIds.has(membership.maskId)) return undefined;
+      observedExpectedMaskIds.add(membership.maskId);
+    }
+    for (const maskId of expectedMaskOwnerById.keys()) {
+      if (!observedExpectedMaskIds.has(maskId)) return undefined;
+    }
+    return { refreshRequests };
   }
 
   hasSensitiveMaskId(maskId: string | undefined): boolean {
@@ -242,7 +334,14 @@ function isAllowedMaskId(value: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
-function containsAll(candidates: readonly string[], expected: ReadonlySet<string>): boolean {
+function allKnownMarkers(candidates: readonly string[], records: ReadonlyMap<string, SensitiveEvidenceRecord>): boolean {
+  for (const value of candidates) {
+    if (!records.has(value)) return false;
+  }
+  return true;
+}
+
+function containsAllStrings(candidates: readonly string[], expected: readonly string[]): boolean {
   for (const value of expected) {
     if (!candidates.includes(value)) return false;
   }

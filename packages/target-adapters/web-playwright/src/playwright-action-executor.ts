@@ -1683,6 +1683,11 @@ async function endPageSensitiveActionEpoch(
       schedulerSessionRegistrations?: number;
       retainedSchedulerEpochs?: NonNullable<BrowserSensitiveState["active"]>[];
     };
+    type SensitiveRuntimeRegistry = {
+      readonly nativeDom?: NativeDomAuthority;
+      readonly retainSensitiveSchedulerEpoch?: (epoch: NonNullable<BrowserSensitiveState["active"]>) => void;
+      readonly sensitiveSchedulerRegistrationCount?: (epoch: NonNullable<BrowserSensitiveState["active"]>) => number;
+    };
     type NativeDomAuthority = {
       readonly arrayFrom: typeof Array.from;
       readonly arrayIsArray: typeof Array.isArray;
@@ -1720,7 +1725,8 @@ async function endPageSensitiveActionEpoch(
     };
     const win = element.ownerDocument.defaultView;
     if (win === null) return { status: "failed" };
-    const maybeDom = nativeDomAuthority();
+    const registry = (win as unknown as Record<string, SensitiveRuntimeRegistry | undefined>)[input.runtimeRegistryProperty];
+    const maybeDom = nativeDomAuthority(registry);
     if (maybeDom === undefined) return { status: "failed" };
     const dom: NativeDomAuthority = maybeDom;
     const state = (win as unknown as Record<string, BrowserSensitiveState | undefined>)[input.stateProperty];
@@ -1742,7 +1748,8 @@ async function endPageSensitiveActionEpoch(
       );
     }
     active.inTargetDispatch = false;
-    const retainSchedulerObserver = input.retainRecord && (active.schedulerRegistrations ?? 0) > 0;
+    const schedulerRegistrations = registry?.sensitiveSchedulerRegistrationCount?.(active) ?? active.schedulerRegistrations ?? 0;
+    const retainSchedulerObserver = input.retainRecord && schedulerRegistrations > 0;
     if (!retainSchedulerObserver) active.observer.disconnect();
     element.removeEventListener("input", active.targetCaptureListener, true);
     element.removeEventListener("change", active.targetCaptureListener, true);
@@ -1766,6 +1773,7 @@ async function endPageSensitiveActionEpoch(
       if (retainSchedulerObserver) {
         state.retainedSchedulerEpochs ??= [];
         state.retainedSchedulerEpochs.push(active);
+        registry?.retainSensitiveSchedulerEpoch?.(active);
       }
     } else {
       cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
@@ -1774,9 +1782,8 @@ async function endPageSensitiveActionEpoch(
     state.active = null;
     return failed ? { status: "failed" } : { status: "ok", maskIds };
 
-    function nativeDomAuthority(): NativeDomAuthority | undefined {
-      const registry = (win as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty];
-      const candidate = registry?.nativeDom;
+    function nativeDomAuthority(runtimeRegistry: SensitiveRuntimeRegistry | undefined): NativeDomAuthority | undefined {
+      const candidate = runtimeRegistry?.nativeDom;
       if (candidate === undefined) return undefined;
       const required = [
         candidate.arrayFrom,
