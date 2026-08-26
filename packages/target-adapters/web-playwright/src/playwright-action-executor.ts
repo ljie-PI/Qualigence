@@ -634,7 +634,9 @@ async function collectSensitiveMaskSnapshot(
     await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
     const entries: SensitiveMaskSnapshotEntry[] = [];
     const seenMaskIds = new Set<string>();
-    for (const maskId of maskIds) {
+    const _forOfItems1 = maskIds;
+    for (let _forOfIndex1 = 0; _forOfIndex1 < _forOfItems1.length; _forOfIndex1 += 1) {
+      const maskId = _forOfItems1[_forOfIndex1]!;
       if (seenMaskIds.has(maskId)) throw new Error("Sensitive mask snapshot is incomplete.");
       seenMaskIds.add(maskId);
       const nodeId = await uniqueCdpNodeIdForMask(cdp, maskId);
@@ -883,7 +885,10 @@ async function beginPageSensitiveActionEpoch(
     state.active = activeEpoch;
     classifyElement(element, activeEpoch);
     observeSensitiveMutations(observer, element.ownerDocument);
-    for (const root of shadowRoots()) observeSensitiveMutations(observer, root);
+    const observedShadowRoots = shadowRoots();
+    for (let index = 0; index < observedShadowRoots.length; index += 1) {
+      observeSensitiveMutations(observer, observedShadowRoots[index]!);
+    }
     element.addEventListener("input", activeEpoch.targetCaptureListener, true);
     element.addEventListener("change", activeEpoch.targetCaptureListener, true);
     element.ownerDocument.addEventListener("input", activeEpoch.documentBubbleListener, false);
@@ -947,8 +952,8 @@ async function beginPageSensitiveActionEpoch(
         candidate.shadowRootHostGet,
         candidate.shadowRootModeGet,
       ];
-      for (const fn of required) {
-        if (typeof fn !== "function") return undefined;
+      for (let index = 0; index < required.length; index += 1) {
+        if (typeof required[index] !== "function") return undefined;
       }
       return candidate;
     }
@@ -977,8 +982,19 @@ async function beginPageSensitiveActionEpoch(
       return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
-    function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
-      return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    function arrayFrom<T>(items: ArrayLike<T>): T[] {
+      const length = arrayLikeLength(items);
+      if (length === undefined) throw new Error("Untrusted array-like length.");
+      const result: T[] = [];
+      for (let index = 0; index < length; index += 1) {
+        result[index] = items[index]!;
+      }
+      return result;
+    }
+
+    function arrayLikeLength(items: { readonly length?: unknown }): number | undefined {
+      const length = items.length;
+      return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
     }
 
     function createWeakMap<K extends object, V>(): WeakMap<K, V> {
@@ -1112,14 +1128,18 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function arrayHasString(values: readonly string[], candidate: string): boolean {
-      for (const value of values) {
+      const _forOfItems2 = values;
+      for (let _forOfIndex2 = 0; _forOfIndex2 < _forOfItems2.length; _forOfIndex2 += 1) {
+        const value = _forOfItems2[_forOfIndex2]!;
         if (value === candidate) return true;
       }
       return false;
     }
 
     function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
-      for (const value of values) {
+      const _forOfItems3 = values;
+      for (let _forOfIndex3 = 0; _forOfIndex3 < _forOfItems3.length; _forOfIndex3 += 1) {
+        const value = _forOfItems3[_forOfIndex3]!;
         if (value === candidate) return true;
       }
       return false;
@@ -1143,7 +1163,9 @@ async function beginPageSensitiveActionEpoch(
 
     function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
       if (baseline === undefined) return false;
-      for (const value of matches) {
+      const _forOfItems4 = matches;
+      for (let _forOfIndex4 = 0; _forOfIndex4 < _forOfItems4.length; _forOfIndex4 += 1) {
+        const value = _forOfItems4[_forOfIndex4]!;
         if (!arrayHasString(baseline, value)) return false;
       }
       return true;
@@ -1158,7 +1180,9 @@ async function beginPageSensitiveActionEpoch(
         pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(browserValue));
       }
       if (actionKind === "select" && tagName(target) === "select") {
-        for (const option of selectOptions(target)) {
+        const _forOfItems5 = selectOptions(target);
+        for (let _forOfIndex5 = 0; _forOfIndex5 < _forOfItems5.length; _forOfIndex5 += 1) {
+          const option = _forOfItems5[_forOfIndex5]!;
           if (optionValue(option) === source || optionText(option) === source || optionLabel(option) === source) {
             pushUniqueNonEmpty(values, optionValue(option));
             pushUniqueNonEmpty(values, optionText(option));
@@ -1171,10 +1195,16 @@ async function beginPageSensitiveActionEpoch(
     function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, readonly string[]> {
       const result = createWeakMap<Element, readonly string[]>();
       void document;
-      for (const candidate of observableElements()) {
+      const _forOfItems6 = observableElements();
+      for (let _forOfIndex6 = 0; _forOfIndex6 < _forOfItems6.length; _forOfIndex6 += 1) {
+        const candidate = _forOfItems6[_forOfIndex6]!;
         const matches: string[] = [];
-        for (const value of sensitiveValues(candidate)) {
-          for (const form of formsToMatch) {
+        const _forOfItems7 = sensitiveValues(candidate);
+        for (let _forOfIndex7 = 0; _forOfIndex7 < _forOfItems7.length; _forOfIndex7 += 1) {
+          const value = _forOfItems7[_forOfIndex7]!;
+          const _forOfItems8 = formsToMatch;
+          for (let _forOfIndex8 = 0; _forOfIndex8 < _forOfItems8.length; _forOfIndex8 += 1) {
+            const form = _forOfItems8[_forOfIndex8]!;
             if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
           }
         }
@@ -1185,9 +1215,13 @@ async function beginPageSensitiveActionEpoch(
 
     function baselineShadowSensitiveForms(formsToMatch: readonly string[]): WeakMap<Node, readonly string[]> {
       const result = createWeakMap<Node, readonly string[]>();
-      for (const root of shadowRoots()) {
+      const _forOfItems9 = shadowRoots();
+      for (let _forOfIndex9 = 0; _forOfIndex9 < _forOfItems9.length; _forOfIndex9 += 1) {
+        const root = _forOfItems9[_forOfIndex9]!;
         rememberSensitiveBaseline(result, root, shadowRootValues(root), formsToMatch);
-        for (const candidate of queryRoot(root, "*")) {
+        const _forOfItems10 = queryRoot(root, "*");
+        for (let _forOfIndex10 = 0; _forOfIndex10 < _forOfItems10.length; _forOfIndex10 += 1) {
+          const candidate = _forOfItems10[_forOfIndex10]!;
           rememberSensitiveBaseline(result, candidate, sensitiveValues(candidate), formsToMatch);
         }
       }
@@ -1201,8 +1235,12 @@ async function beginPageSensitiveActionEpoch(
       formsToMatch: readonly string[],
     ): void {
       const matches: string[] = [];
-      for (const value of values) {
-        for (const form of formsToMatch) {
+      const _forOfItems11 = values;
+      for (let _forOfIndex11 = 0; _forOfIndex11 < _forOfItems11.length; _forOfIndex11 += 1) {
+        const value = _forOfItems11[_forOfIndex11]!;
+        const _forOfItems12 = formsToMatch;
+        for (let _forOfIndex12 = 0; _forOfIndex12 < _forOfItems12.length; _forOfIndex12 += 1) {
+          const form = _forOfItems12[_forOfIndex12]!;
           if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
         }
       }
@@ -1211,8 +1249,12 @@ async function beginPageSensitiveActionEpoch(
 
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
       const matches: string[] = [];
-      for (const value of sensitiveValues(candidate)) {
-        for (const form of formsToMatch) {
+      const _forOfItems13 = sensitiveValues(candidate);
+      for (let _forOfIndex13 = 0; _forOfIndex13 < _forOfItems13.length; _forOfIndex13 += 1) {
+        const value = _forOfItems13[_forOfIndex13]!;
+        const _forOfItems14 = formsToMatch;
+        for (let _forOfIndex14 = 0; _forOfIndex14 < _forOfItems14.length; _forOfIndex14 += 1) {
+          const form = _forOfItems14[_forOfIndex14]!;
           if (carriesForm(value, form)) {
             matches[matches.length] = value;
             break;
@@ -1228,7 +1270,9 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
-      for (const listenerType of sensitiveEventTypes(eventType)) {
+      const _forOfItems15 = sensitiveEventTypes(eventType);
+      for (let _forOfIndex15 = 0; _forOfIndex15 < _forOfItems15.length; _forOfIndex15 += 1) {
+        const listenerType = _forOfItems15[_forOfIndex15]!;
         if (hasDelegatedEventListener(listenerType) ||
           hasDelegatedEventHandlerProperty(listenerType)) {
           return true;
@@ -1249,7 +1293,9 @@ async function beginPageSensitiveActionEpoch(
           readonly listener?: unknown;
         }[];
       } | undefined;
-      for (const entry of registry?.listenerTargets ?? []) {
+      const _forOfItems16 = registry?.listenerTargets ?? [];
+      for (let _forOfIndex16 = 0; _forOfIndex16 < _forOfItems16.length; _forOfIndex16 += 1) {
+        const entry = _forOfItems16[_forOfIndex16]!;
         if (entry.type !== listenerType) continue;
         if (isInstrumentationListener(entry.listener)) continue;
         if (isDelegatedEventTarget(entry.target)) return true;
@@ -1259,7 +1305,9 @@ async function beginPageSensitiveActionEpoch(
 
     function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
       const handlerName = `on${listenerType}`;
-      for (const target of delegatedEventPathTargets()) {
+      const _forOfItems17 = delegatedEventPathTargets();
+      for (let _forOfIndex17 = 0; _forOfIndex17 < _forOfItems17.length; _forOfIndex17 += 1) {
+        const target = _forOfItems17[_forOfIndex17]!;
         if (isEventElement(target) && hasAttribute(target, handlerName)) return true;
 
       }
@@ -1307,7 +1355,9 @@ async function beginPageSensitiveActionEpoch(
         poison(epochToUpdate);
         return;
       }
-      for (const candidate of observableElements()) {
+      const _forOfItems18 = observableElements();
+      for (let _forOfIndex18 = 0; _forOfIndex18 < _forOfItems18.length; _forOfIndex18 += 1) {
+        const candidate = _forOfItems18[_forOfIndex18]!;
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -1321,8 +1371,12 @@ async function beginPageSensitiveActionEpoch(
         classifyElement(candidate, epochToUpdate);
         if (epochToUpdate.poisoned) return;
       }
-      for (const root of shadowRoots()) {
-        for (const value of shadowRootValues(root)) {
+      const _forOfItems19 = shadowRoots();
+      for (let _forOfIndex19 = 0; _forOfIndex19 < _forOfItems19.length; _forOfIndex19 += 1) {
+        const root = _forOfItems19[_forOfIndex19]!;
+        const _forOfItems20 = shadowRootValues(root);
+        for (let _forOfIndex20 = 0; _forOfIndex20 < _forOfItems20.length; _forOfIndex20 += 1) {
+          const value = _forOfItems20[_forOfIndex20]!;
           if (!carriesForm(value, epochToUpdate.forms) || shadowBaselineAllows(root, epochToUpdate, value)) {
             continue;
           }
@@ -1335,8 +1389,12 @@ async function beginPageSensitiveActionEpoch(
           return;
         }
         if (shadowRootMode(root) !== "closed") continue;
-        for (const candidate of queryRoot(root, "*")) {
-          for (const value of sensitiveValues(candidate)) {
+        const _forOfItems21 = queryRoot(root, "*");
+        for (let _forOfIndex21 = 0; _forOfIndex21 < _forOfItems21.length; _forOfIndex21 += 1) {
+          const candidate = _forOfItems21[_forOfIndex21]!;
+          const _forOfItems22 = sensitiveValues(candidate);
+          for (let _forOfIndex22 = 0; _forOfIndex22 < _forOfItems22.length; _forOfIndex22 += 1) {
+            const value = _forOfItems22[_forOfIndex22]!;
             if (carriesForm(value, epochToUpdate.forms) && !shadowBaselineAllows(candidate, epochToUpdate, value)) {
               poison(epochToUpdate);
               return;
@@ -1352,7 +1410,9 @@ async function beginPageSensitiveActionEpoch(
       allowClassification: boolean,
     ): void {
       const applicationRecords: MutationRecord[] = [];
-      for (const record of records) {
+      const _forOfItems23 = records;
+      for (let _forOfIndex23 = 0; _forOfIndex23 < _forOfItems23.length; _forOfIndex23 += 1) {
+        const record = _forOfItems23[_forOfIndex23]!;
         if (record.type !== "attributes" || record.attributeName !== input.maskAttribute) {
           applicationRecords[applicationRecords.length] = record;
         }
@@ -1362,12 +1422,16 @@ async function beginPageSensitiveActionEpoch(
         poison(epochToUpdate);
         return;
       }
-      for (const record of applicationRecords) {
+      const _forOfItems24 = applicationRecords;
+      for (let _forOfIndex24 = 0; _forOfIndex24 < _forOfItems24.length; _forOfIndex24 += 1) {
+        const record = _forOfItems24[_forOfIndex24]!;
         if (touchesUnprovableShadowRoot(record)) {
           poison(epochToUpdate);
           return;
         }
-        for (const candidate of mutationCandidateElements(record)) {
+        const _forOfItems25 = mutationCandidateElements(record);
+        for (let _forOfIndex25 = 0; _forOfIndex25 < _forOfItems25.length; _forOfIndex25 += 1) {
+          const candidate = _forOfItems25[_forOfIndex25]!;
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -1386,7 +1450,9 @@ async function beginPageSensitiveActionEpoch(
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes: Node[] = [record.target];
       appendArray(touchedNodes, arrayFrom(record.addedNodes));
-      for (const node of touchedNodes) {
+      const _forOfItems26 = touchedNodes;
+      for (let _forOfIndex26 = 0; _forOfIndex26 < _forOfItems26.length; _forOfIndex26 += 1) {
+        const node = _forOfItems26[_forOfIndex26]!;
         const root = isShadowRootNode(node) ? node : getRootNode(node);
         if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
       }
@@ -1397,7 +1463,11 @@ async function beginPageSensitiveActionEpoch(
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        for (const node of arrayFrom(record.addedNodes)) addNode(node, candidates);
+        const _forOfItems27 = arrayFrom(record.addedNodes);
+        for (let _forOfIndex27 = 0; _forOfIndex27 < _forOfItems27.length; _forOfIndex27 += 1) {
+          const node = _forOfItems27[_forOfIndex27]!;
+          addNode(node, candidates);
+        }
       }
       return candidates;
     }
@@ -1419,7 +1489,9 @@ async function beginPageSensitiveActionEpoch(
     function classifyElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
       classifySingleElement(candidate, epochToUpdate);
       if (epochToUpdate.poisoned) return;
-      for (const ancestor of observedAncestors(candidate)) {
+      const _forOfItems28 = observedAncestors(candidate);
+      for (let _forOfIndex28 = 0; _forOfIndex28 < _forOfItems28.length; _forOfIndex28 += 1) {
+        const ancestor = _forOfItems28[_forOfIndex28]!;
         classifySingleElement(ancestor, epochToUpdate);
         if (epochToUpdate.poisoned) return;
       }
@@ -1468,7 +1540,9 @@ async function beginPageSensitiveActionEpoch(
 
     function observableElements(): Element[] {
       const elements = queryDocument("*");
-      for (const root of shadowRoots()) {
+      const _forOfItems29 = shadowRoots();
+      for (let _forOfIndex29 = 0; _forOfIndex29 < _forOfItems29.length; _forOfIndex29 += 1) {
+        const root = _forOfItems29[_forOfIndex29]!;
         if (shadowRootMode(root) === "open") appendArray(elements, queryRoot(root, "*"));
       }
       return elements;
@@ -1570,7 +1644,9 @@ async function beginPageSensitiveActionEpoch(
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values[values.length] = selectedText;
       }
-      for (const attribute of ["role", "aria-label", "title", "value"] as const) {
+      const _forOfItems30 = ["role", "aria-label", "title", "value"] as const;
+      for (let _forOfIndex30 = 0; _forOfIndex30 < _forOfItems30.length; _forOfIndex30 += 1) {
+        const attribute = _forOfItems30[_forOfIndex30]!;
         const attributeValue = getAttribute(candidate, attribute);
         if (attributeValue !== null && attributeValue !== "") values[values.length] = attributeValue;
       }
@@ -1579,7 +1655,9 @@ async function beginPageSensitiveActionEpoch(
 
     function directText(candidate: Element): string {
       let text = "";
-      for (const node of childNodes(candidate)) {
+      const _forOfItems31 = childNodes(candidate);
+      for (let _forOfIndex31 = 0; _forOfIndex31 < _forOfItems31.length; _forOfIndex31 += 1) {
+        const node = _forOfItems31[_forOfIndex31]!;
         if (isTextNode(node)) text += textData(node);
       }
       return text;
@@ -1588,7 +1666,9 @@ async function beginPageSensitiveActionEpoch(
     function shadowRootValues(root: ShadowRoot): readonly string[] {
       const values: string[] = [];
       let direct = "";
-      for (const node of childNodes(root)) {
+      const _forOfItems32 = childNodes(root);
+      for (let _forOfIndex32 = 0; _forOfIndex32 < _forOfItems32.length; _forOfIndex32 += 1) {
+        const node = _forOfItems32[_forOfIndex32]!;
         if (isTextNode(node)) direct += textData(node);
       }
       if (direct !== "") values[values.length] = direct;
@@ -1618,16 +1698,22 @@ async function beginPageSensitiveActionEpoch(
         pending[pending.length] = root;
         return true;
       };
-      for (const root of registry?.roots ?? []) {
+      const _forOfItems33 = registry?.roots ?? [];
+      for (let _forOfIndex33 = 0; _forOfIndex33 < _forOfItems33.length; _forOfIndex33 += 1) {
+        const root = _forOfItems33[_forOfIndex33]!;
         if (isShadowRootNode(root) && !addRoot(root)) return pending;
       }
-      for (const candidate of queryDocument("*")) {
+      const _forOfItems34 = queryDocument("*");
+      for (let _forOfIndex34 = 0; _forOfIndex34 < _forOfItems34.length; _forOfIndex34 += 1) {
+        const candidate = _forOfItems34[_forOfIndex34]!;
         const candidateShadowRoot = shadowRoot(candidate);
         if (candidateShadowRoot !== null && !addRoot(candidateShadowRoot)) return pending;
       }
       for (let index = 0; index < pending.length; index += 1) {
         const root = pending[index]!;
-        for (const candidate of queryRoot(root, "*")) {
+        const _forOfItems35 = queryRoot(root, "*");
+        for (let _forOfIndex35 = 0; _forOfIndex35 < _forOfItems35.length; _forOfIndex35 += 1) {
+          const candidate = _forOfItems35[_forOfIndex35]!;
           const nestedShadowRoot = shadowRoot(candidate);
           if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
         }
@@ -1641,7 +1727,9 @@ async function beginPageSensitiveActionEpoch(
 
     function carriesForm(value: string, form: string | readonly string[]): boolean {
       const forms = dom.arrayIsArray(form) ? form : [form];
-      for (const candidate of forms) {
+      const _forOfItems36 = forms;
+      for (let _forOfIndex36 = 0; _forOfIndex36 < _forOfItems36.length; _forOfIndex36 += 1) {
+        const candidate = _forOfItems36[_forOfIndex36]!;
         if (value === candidate || (candidate !== "" && stringIncludes(value, candidate))) return true;
       }
       return false;
@@ -1874,7 +1962,9 @@ async function endPageSensitiveActionEpoch(
         candidate.shadowRootHostGet,
         candidate.shadowRootModeGet,
       ];
-      for (const fn of required) {
+      const _forOfItems37 = required;
+      for (let _forOfIndex37 = 0; _forOfIndex37 < _forOfItems37.length; _forOfIndex37 += 1) {
+        const fn = _forOfItems37[_forOfIndex37]!;
         if (typeof fn !== "function") return undefined;
       }
       return candidate;
@@ -1904,8 +1994,19 @@ async function endPageSensitiveActionEpoch(
       return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
-    function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
-      return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    function arrayFrom<T>(items: ArrayLike<T>): T[] {
+      const length = arrayLikeLength(items);
+      if (length === undefined) throw new Error("Untrusted array-like length.");
+      const result: T[] = [];
+      for (let index = 0; index < length; index += 1) {
+        result[index] = items[index]!;
+      }
+      return result;
+    }
+
+    function arrayLikeLength(items: { readonly length?: unknown }): number | undefined {
+      const length = items.length;
+      return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
     }
 
     function createWeakMap<K extends object, V>(): WeakMap<K, V> {
@@ -2048,14 +2149,18 @@ async function endPageSensitiveActionEpoch(
     }
 
     function arrayHasString(values: readonly string[], candidate: string): boolean {
-      for (const value of values) {
+      const _forOfItems38 = values;
+      for (let _forOfIndex38 = 0; _forOfIndex38 < _forOfItems38.length; _forOfIndex38 += 1) {
+        const value = _forOfItems38[_forOfIndex38]!;
         if (value === candidate) return true;
       }
       return false;
     }
 
     function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
-      for (const value of values) {
+      const _forOfItems39 = values;
+      for (let _forOfIndex39 = 0; _forOfIndex39 < _forOfItems39.length; _forOfIndex39 += 1) {
+        const value = _forOfItems39[_forOfIndex39]!;
         if (value === candidate) return true;
       }
       return false;
@@ -2079,7 +2184,9 @@ async function endPageSensitiveActionEpoch(
 
     function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
       if (baseline === undefined) return false;
-      for (const value of matches) {
+      const _forOfItems40 = matches;
+      for (let _forOfIndex40 = 0; _forOfIndex40 < _forOfItems40.length; _forOfIndex40 += 1) {
+        const value = _forOfItems40[_forOfIndex40]!;
         if (!arrayHasString(baseline, value)) return false;
       }
       return true;
@@ -2098,7 +2205,9 @@ async function endPageSensitiveActionEpoch(
         return maskIds;
       }
       let ordinal = 0;
-      for (const candidate of elements) {
+      const _forOfItems41 = elements;
+      for (let _forOfIndex41 = 0; _forOfIndex41 < _forOfItems41.length; _forOfIndex41 += 1) {
+        const candidate = _forOfItems41[_forOfIndex41]!;
         if (candidate.nodeType !== 1) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
@@ -2126,17 +2235,23 @@ async function endPageSensitiveActionEpoch(
 
     function cleanupSensitiveMarkers(markerId: string, classifiedElements: readonly Element[]): void {
       const candidates: Element[] = [];
-      for (const candidate of classifiedElements) {
+      const _forOfItems42 = classifiedElements;
+      for (let _forOfIndex42 = 0; _forOfIndex42 < _forOfItems42.length; _forOfIndex42 += 1) {
+        const candidate = _forOfItems42[_forOfIndex42]!;
         if (!arrayHasIdentity(candidates, candidate)) candidates[candidates.length] = candidate;
       }
       if (!arrayHasIdentity(candidates, element)) candidates[candidates.length] = element;
-      for (const candidate of queryDocument("*")) {
+      const _forOfItems43 = queryDocument("*");
+      for (let _forOfIndex43 = 0; _forOfIndex43 < _forOfItems43.length; _forOfIndex43 += 1) {
+        const candidate = _forOfItems43[_forOfIndex43]!;
         const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
         if (dom.arrayIsArray(ids) && arrayHasString(ids, markerId) && !arrayHasIdentity(candidates, candidate)) {
           candidates[candidates.length] = candidate;
         }
       }
-      for (const candidate of candidates) {
+      const _forOfItems44 = candidates;
+      for (let _forOfIndex44 = 0; _forOfIndex44 < _forOfItems44.length; _forOfIndex44 += 1) {
+        const candidate = _forOfItems44[_forOfIndex44]!;
         removeSensitiveMarker(candidate, markerId);
       }
     }
@@ -2148,7 +2263,9 @@ async function endPageSensitiveActionEpoch(
         return;
       }
       const remaining: string[] = [];
-      for (const id of ids) {
+      const _forOfItems45 = ids;
+      for (let _forOfIndex45 = 0; _forOfIndex45 < _forOfItems45.length; _forOfIndex45 += 1) {
+        const id = _forOfItems45[_forOfIndex45]!;
         if (id !== markerId) remaining[remaining.length] = id;
       }
       if (remaining.length === 0) {
@@ -2163,7 +2280,9 @@ async function endPageSensitiveActionEpoch(
       stateToUpdate: BrowserSensitiveState,
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
     ): void {
-      for (const candidate of queryDocument("*")) {
+      const _forOfItems46 = queryDocument("*");
+      for (let _forOfIndex46 = 0; _forOfIndex46 < _forOfItems46.length; _forOfIndex46 += 1) {
+        const candidate = _forOfItems46[_forOfIndex46]!;
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -2180,7 +2299,9 @@ async function endPageSensitiveActionEpoch(
       allowClassification: boolean,
     ): void {
       const applicationRecords: MutationRecord[] = [];
-      for (const record of records) {
+      const _forOfItems47 = records;
+      for (let _forOfIndex47 = 0; _forOfIndex47 < _forOfItems47.length; _forOfIndex47 += 1) {
+        const record = _forOfItems47[_forOfIndex47]!;
         if (record.type !== "attributes" || record.attributeName !== input.maskAttribute) {
           applicationRecords[applicationRecords.length] = record;
         }
@@ -2191,13 +2312,17 @@ async function endPageSensitiveActionEpoch(
         stateToUpdate.poisoned = true;
         return;
       }
-      for (const record of applicationRecords) {
+      const _forOfItems48 = applicationRecords;
+      for (let _forOfIndex48 = 0; _forOfIndex48 < _forOfItems48.length; _forOfIndex48 += 1) {
+        const record = _forOfItems48[_forOfIndex48]!;
         if (touchesUnprovableShadowRoot(record)) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
           return;
         }
-        for (const candidate of mutationCandidateElements(record)) {
+        const _forOfItems49 = mutationCandidateElements(record);
+        for (let _forOfIndex49 = 0; _forOfIndex49 < _forOfItems49.length; _forOfIndex49 += 1) {
+          const candidate = _forOfItems49[_forOfIndex49]!;
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -2217,7 +2342,9 @@ async function endPageSensitiveActionEpoch(
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes: Node[] = [record.target];
       appendArray(touchedNodes, arrayFrom(record.addedNodes));
-      for (const node of touchedNodes) {
+      const _forOfItems50 = touchedNodes;
+      for (let _forOfIndex50 = 0; _forOfIndex50 < _forOfItems50.length; _forOfIndex50 += 1) {
+        const node = _forOfItems50[_forOfIndex50]!;
         const root = isShadowRootNode(node) ? node : getRootNode(node);
         if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
       }
@@ -2228,7 +2355,11 @@ async function endPageSensitiveActionEpoch(
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        for (const node of arrayFrom(record.addedNodes)) addNode(node, candidates);
+        const _forOfItems51 = arrayFrom(record.addedNodes);
+        for (let _forOfIndex51 = 0; _forOfIndex51 < _forOfItems51.length; _forOfIndex51 += 1) {
+          const node = _forOfItems51[_forOfIndex51]!;
+          addNode(node, candidates);
+        }
       }
       return candidates;
     }
@@ -2249,8 +2380,12 @@ async function endPageSensitiveActionEpoch(
 
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
       const matches: string[] = [];
-      for (const value of sensitiveValues(candidate)) {
-        for (const form of formsToMatch) {
+      const _forOfItems52 = sensitiveValues(candidate);
+      for (let _forOfIndex52 = 0; _forOfIndex52 < _forOfItems52.length; _forOfIndex52 += 1) {
+        const value = _forOfItems52[_forOfIndex52]!;
+        const _forOfItems53 = formsToMatch;
+        for (let _forOfIndex53 = 0; _forOfIndex53 < _forOfItems53.length; _forOfIndex53 += 1) {
+          const form = _forOfItems53[_forOfIndex53]!;
           if (carriesForm(value, form)) {
             matches[matches.length] = value;
             break;
@@ -2268,7 +2403,9 @@ async function endPageSensitiveActionEpoch(
     }
 
     function hasDelegatedListener(eventType: "input" | "select"): boolean {
-      for (const listenerType of sensitiveEventTypes(eventType)) {
+      const _forOfItems54 = sensitiveEventTypes(eventType);
+      for (let _forOfIndex54 = 0; _forOfIndex54 < _forOfItems54.length; _forOfIndex54 += 1) {
+        const listenerType = _forOfItems54[_forOfIndex54]!;
         if (hasDelegatedEventListener(listenerType) ||
           hasDelegatedEventHandlerProperty(listenerType)) {
           return true;
@@ -2289,7 +2426,9 @@ async function endPageSensitiveActionEpoch(
           readonly listener?: unknown;
         }[];
       } | undefined;
-      for (const entry of registry?.listenerTargets ?? []) {
+      const _forOfItems55 = registry?.listenerTargets ?? [];
+      for (let _forOfIndex55 = 0; _forOfIndex55 < _forOfItems55.length; _forOfIndex55 += 1) {
+        const entry = _forOfItems55[_forOfIndex55]!;
         if (entry.type !== listenerType) continue;
         if (isInstrumentationListener(entry.listener)) continue;
         if (isDelegatedEventTarget(entry.target)) return true;
@@ -2299,7 +2438,9 @@ async function endPageSensitiveActionEpoch(
 
     function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
       const handlerName = `on${listenerType}`;
-      for (const target of delegatedEventPathTargets()) {
+      const _forOfItems56 = delegatedEventPathTargets();
+      for (let _forOfIndex56 = 0; _forOfIndex56 < _forOfItems56.length; _forOfIndex56 += 1) {
+        const target = _forOfItems56[_forOfIndex56]!;
         if (isEventElement(target) && hasAttribute(target, handlerName)) return true;
 
       }
@@ -2335,7 +2476,9 @@ async function endPageSensitiveActionEpoch(
     ): void {
       classifySingleElement(stateToUpdate, epochToUpdate, candidate);
       if (epochToUpdate.poisoned) return;
-      for (const ancestor of observedAncestors(candidate)) {
+      const _forOfItems57 = observedAncestors(candidate);
+      for (let _forOfIndex57 = 0; _forOfIndex57 < _forOfItems57.length; _forOfIndex57 += 1) {
+        const ancestor = _forOfItems57[_forOfIndex57]!;
         classifySingleElement(stateToUpdate, epochToUpdate, ancestor);
         if (epochToUpdate.poisoned) return;
       }
@@ -2460,7 +2603,9 @@ async function endPageSensitiveActionEpoch(
       }
       if (actionKind === "select" && tagName(target) === "select") {
         pushUniqueNonEmpty(values, fieldValue(target));
-        for (const option of selectedOptions(target)) {
+        const _forOfItems58 = selectedOptions(target);
+        for (let _forOfIndex58 = 0; _forOfIndex58 < _forOfItems58.length; _forOfIndex58 += 1) {
+          const option = _forOfItems58[_forOfIndex58]!;
           pushUniqueNonEmpty(values, optionValue(option));
           pushUniqueNonEmpty(values, optionText(option));
           pushUniqueNonEmpty(values, optionLabel(option));
@@ -2471,8 +2616,16 @@ async function endPageSensitiveActionEpoch(
 
     function mergeSensitiveForms(current: string[], next: readonly string[]): string[] {
       const merged: string[] = [];
-      for (const value of current) pushUniqueNonEmpty(merged, value);
-      for (const value of next) pushUniqueNonEmpty(merged, value);
+      const _forOfItems59 = current;
+      for (let _forOfIndex59 = 0; _forOfIndex59 < _forOfItems59.length; _forOfIndex59 += 1) {
+        const value = _forOfItems59[_forOfIndex59]!;
+        pushUniqueNonEmpty(merged, value);
+      }
+      const _forOfItems60 = next;
+      for (let _forOfIndex60 = 0; _forOfIndex60 < _forOfItems60.length; _forOfIndex60 += 1) {
+        const value = _forOfItems60[_forOfIndex60]!;
+        pushUniqueNonEmpty(merged, value);
+      }
       return merged;
     }
 
@@ -2512,7 +2665,9 @@ async function endPageSensitiveActionEpoch(
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values[values.length] = selectedText;
       }
-      for (const attribute of ["role", "aria-label", "title", "value"] as const) {
+      const _forOfItems61 = ["role", "aria-label", "title", "value"] as const;
+      for (let _forOfIndex61 = 0; _forOfIndex61 < _forOfItems61.length; _forOfIndex61 += 1) {
+        const attribute = _forOfItems61[_forOfIndex61]!;
         const attributeValue = getAttribute(candidate, attribute);
         if (attributeValue !== null && attributeValue !== "") values[values.length] = attributeValue;
       }
@@ -2521,7 +2676,9 @@ async function endPageSensitiveActionEpoch(
 
     function directText(candidate: Element): string {
       let text = "";
-      for (const node of childNodes(candidate)) {
+      const _forOfItems62 = childNodes(candidate);
+      for (let _forOfIndex62 = 0; _forOfIndex62 < _forOfItems62.length; _forOfIndex62 += 1) {
+        const node = _forOfItems62[_forOfIndex62]!;
         if (isTextNode(node)) text += textData(node);
       }
       return text;
@@ -2570,7 +2727,9 @@ async function markSensitiveTarget(
       const current = host[input.property];
       if (dom.arrayIsArray(current)) {
         let found = false;
-        for (const markerId of current) {
+        const _forOfItems63 = current;
+        for (let _forOfIndex63 = 0; _forOfIndex63 < _forOfItems63.length; _forOfIndex63 += 1) {
+          const markerId = _forOfItems63[_forOfIndex63]!;
           if (markerId === input.markerId) found = true;
         }
         if (!found) current[current.length] = input.markerId;
@@ -2621,7 +2780,9 @@ async function readInputSensitiveForms(locator: Locator): Promise<InputSensitive
       ? ids
       : [];
     function allStrings(values: readonly unknown[]): boolean {
-      for (const entry of values) {
+      const _forOfItems64 = values;
+      for (let _forOfIndex64 = 0; _forOfIndex64 < _forOfItems64.length; _forOfIndex64 += 1) {
+        const entry = _forOfItems64[_forOfIndex64]!;
         if (typeof entry !== "string") return false;
       }
       return true;
@@ -2665,7 +2826,9 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
       ? ids
       : [];
     function allStrings(values: readonly unknown[]): boolean {
-      for (const entry of values) {
+      const _forOfItems65 = values;
+      for (let _forOfIndex65 = 0; _forOfIndex65 < _forOfItems65.length; _forOfIndex65 += 1) {
+        const entry = _forOfItems65[_forOfIndex65]!;
         if (typeof entry !== "string") return false;
       }
       return true;

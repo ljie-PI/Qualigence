@@ -191,7 +191,7 @@ describe("CDP screenshot masking", () => {
     expect(JSON.stringify(graph)).not.toContain(SECRET);
   }, 60_000);
 
-  it("uses captured Array.from/Set-independent classification when page intrinsics are replaced", async () => {
+  it("uses bounded index DOM collection reads when page iteration intrinsics are replaced", async () => {
     session = new PlaywrightBrowserSession(options());
     await session.start();
     const observer = new PlaywrightObserver(session);
@@ -201,12 +201,22 @@ describe("CDP screenshot masking", () => {
     if (email === undefined) throw new Error("Missing Email node.");
     await session.withPage(async (page) => {
       await page.evaluate(() => {
+        const host = globalThis as unknown as {
+          readonly HTMLCollection: { readonly prototype: Record<PropertyKey, unknown> };
+          readonly NodeList: { readonly prototype: Record<PropertyKey, unknown> };
+          Set: unknown;
+        };
+        const emptyIterator = function* emptyIterator(): Generator<unknown, undefined, unknown> {
+          return undefined;
+        };
         Array.from = () => [];
-        (globalThis as unknown as { Set: unknown }).Set = class HostileSet {
+        Object.defineProperty(host.NodeList.prototype, Symbol.iterator, { configurable: true, value: emptyIterator });
+        Object.defineProperty(host.HTMLCollection.prototype, Symbol.iterator, { configurable: true, value: emptyIterator });
+        host.Set = class HostileSet {
           readonly size = 0;
           add(): this { return this; }
           has(): boolean { return false; }
-          [Symbol.iterator](): Iterator<unknown> { return [][Symbol.iterator](); }
+          [Symbol.iterator](): Iterator<unknown> { return emptyIterator(); }
         };
       });
     });
@@ -654,11 +664,13 @@ describe("CDP screenshot masking", () => {
           setAttribute(name: string, value: string): void;
         };
         const host = globalThis as unknown as {
+          readonly String: { readonly prototype: { charCodeAt(index: number): number } };
           readonly document: {
             createElement(tagName: string): MutableElement;
             readonly body: { append(...nodes: unknown[]): void };
           };
         };
+        host.String.prototype.charCodeAt = () => 32;
         const hiddenLabel = host.document.createElement("div");
         hiddenLabel.id = "hidden-value-ref-label";
         hiddenLabel.textContent = secret;

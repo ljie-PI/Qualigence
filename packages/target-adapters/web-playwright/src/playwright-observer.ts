@@ -953,14 +953,14 @@ function collectPageObservation(
     const result: string[] = [];
     let token = "";
     for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-      if (code === 32 || code === 9 || code === 10 || code === 13 || code === 12) {
+      const character = value[index] ?? "";
+      if (character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f") {
         if (token !== "") {
           result[result.length] = token;
           token = "";
         }
       } else {
-        token += value[index]!;
+        token += character;
       }
     }
     if (token !== "") result[result.length] = token;

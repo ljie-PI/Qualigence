@@ -173,6 +173,15 @@ The real Chromium E2E must tamper with own/prototype form, attribute, text, styl
 - Validation after fixes: focused non-E2E Gate passed (6 files, 143 tests); value-ref E2E passed (1 file, 6 tests); `corepack pnpm typecheck` passed; `git diff --check` passed.
 - Matrix notes unchanged for non-core rows: explicit cancel/timeout-before/after-screenshot injection and external Artifact/Spool persistence-failure injection still have no dedicated in-scope hooks and are not marked pass.
 
+### review10 core-fix evidence — 2026-08-26
+
+- Review10 Standards Important blocker fixed in this worktree: `beginPageSensitiveActionEpoch`, `endPageSensitiveActionEpoch`, `markSensitiveTarget`, `readInputSensitiveForms`, and `readSelectSensitiveForms` no longer use `for...of` inside sensitive page callbacks; sensitive DOM collection/list traversal now uses bounded length/index reads. The action-epoch DOM collection cloning helper also avoids captured `Array.from` iterator dispatch by cloning array-like values through bounded index reads.
+- `collectPageObservation` no longer calls ambient `String.prototype.charCodeAt` while parsing `aria-labelledby`; whitespace tokenization now uses bounded string index reads.
+- The static page-callback authority Gate now applies the mutable iteration (`for...of`/`Symbol.iterator`) check to every `sensitiveDomAuthority` callback, preserves the retirement callback iteration check, and rejects a broader set of page-mutable direct String/Array prototype method calls including `charCodeAt`.
+- Added focused regressions for page-mutated DOM collection iterators and `charCodeAt`: component masking coverage now replaces `NodeList.prototype[Symbol.iterator]`/`HTMLCollection.prototype[Symbol.iterator]` while proving sensitive masking still occurs, and the hidden `aria-labelledby` regression replaces `String.prototype.charCodeAt` while still failing closed on valueRef plaintext.
+- Validation after fixes: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/page-callback-authority.test.ts tests/component/web-execution/cdp-screenshot-masking.test.ts` passed (6 files, 151 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` passed (1 file, 10 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Matrix notes unchanged for non-core rows: explicit cancel/timeout-before/after-screenshot injection and external Artifact/Spool persistence-failure injection still have no dedicated in-scope hooks and remain `N/A`; existing Runner/Spool terminal-failure tests still cover adjacent zero-plaintext failure paths.
+
 ## Acceptance
 
 - [ ] Every page callback in Allowed Files is statically inventoried; unresolved callbacks/reads fail, and all sensitive DOM reads use validated captured native authority.

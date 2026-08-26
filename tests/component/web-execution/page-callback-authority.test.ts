@@ -138,8 +138,8 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\b(?:candidate|target|element|node|root|option)\.options\b/g, label: ".options" },
   { pattern: /(^|[^.\w$])getComputedStyle\s*\(/g, label: "getComputedStyle(" },
   { pattern: /\bstyle\.(?:display|visibility)\b/g, label: "style.display/visibility" },
-  { pattern: /\.(?:includes|toLowerCase|trim|replace|normalize)\s*\(/g, label: "mutable String.prototype method" },
-  { pattern: /\.(?:copyWithin|fill|pop|push|reverse|shift|sort|splice|unshift)\s*\(/g, label: "mutable Array.prototype method" },
+  { pattern: /\.(?:at|charAt|charCodeAt|codePointAt|concat|endsWith|includes|indexOf|lastIndexOf|localeCompare|match|matchAll|normalize|padEnd|padStart|repeat|replace|replaceAll|search|slice|split|startsWith|substring|substr|toLocaleLowerCase|toLocaleUpperCase|toLowerCase|toString|toUpperCase|trim|trimEnd|trimStart|valueOf)\s*\(/g, label: "mutable String.prototype method" },
+  { pattern: /\.(?:at|concat|copyWithin|entries|every|fill|filter|find|findIndex|findLast|findLastIndex|flat|flatMap|forEach|includes|indexOf|join|keys|lastIndexOf|map|pop|push|reduce|reduceRight|reverse|shift|slice|some|sort|splice|toLocaleString|toReversed|toSorted|toSpliced|toString|unshift|values|with)\s*\(/g, label: "mutable Array.prototype method" },
 ];
 
 const dynamicCallbackConstruction: readonly RegExp[] = [
@@ -157,6 +157,7 @@ const approvedComputedReadPatterns: readonly RegExp[] = [
   /^\[input\.[A-Za-z0-9_]+\]$/,
   /^\[[0-9]+\]$/,
   /^\[index\]$/,
+  /^\[_forOfIndex\d+\]$/,
   /^\[elementIndex\]$/,
   /^\[recordIndex\]$/,
   /^\[rootIndex\]$/,
@@ -195,17 +196,14 @@ describe("page callback authority inventory", () => {
   });
 
   it("rejects sensitive callbacks that read security-relevant DOM state through mutable ambient APIs", () => {
-    const sensitiveCallbackSources = callbackInventory
-      .filter((entry) => entry.sensitiveDomAuthority)
-      .map(extractInventorySource);
-    for (const source of sensitiveCallbackSources) {
-      expect(unauthorizedSensitiveReads(source)).toEqual([]);
-      expect(unapprovedComputedReads(source)).toEqual([]);
+    for (const entry of callbackInventory.filter((item) => item.sensitiveDomAuthority)) {
+      const source = extractInventorySource(entry);
+      expect(unauthorizedSensitiveReads(source), entry.id).toEqual([]);
+      expect(unapprovedComputedReads(source), entry.id).toEqual([]);
+      expect(unauthorizedMutableIteration(source), entry.id).toEqual([]);
     }
-    for (const entryId of ["collectPageObservation", "retirePageSensitiveEvidence"]) {
-      const pageStateValidationSource = extractInventorySource(callbackInventory.find((entry) => entry.id === entryId)!);
-      expect(unauthorizedMutableIteration(pageStateValidationSource), entryId).toEqual([]);
-    }
+    const pageStateValidationSource = extractInventorySource(callbackInventory.find((entry) => entry.id === "retirePageSensitiveEvidence")!);
+    expect(unauthorizedMutableIteration(pageStateValidationSource), "retirePageSensitiveEvidence").toEqual([]);
 
     const previouslyCitedAmbientReads = `
       const tag = candidate.tagName.toLowerCase();
@@ -230,6 +228,7 @@ describe("page callback authority inventory", () => {
       const normalized = value.normalize('NFC');
       const replaced = value.replace(/secret/g, 'x');
       const matched = value.includes(secret);
+      const code = value.charCodeAt(0);
       values.push(secret);
       values.splice(0, 1);
       values.sort();
@@ -261,6 +260,7 @@ describe("page callback authority inventory", () => {
       "WeakMap.prototype",
       "style.display/visibility",
       "style.display/visibility",
+      "mutable String.prototype method",
       "mutable String.prototype method",
       "mutable String.prototype method",
       "mutable String.prototype method",
