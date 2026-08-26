@@ -132,6 +132,15 @@ Run the built TypeScript client against a separate-process authenticated Named P
 - Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 44 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
 - No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
 
+### review3-fix - 2026-08-26
+
+- Reviewed head fixed: `4d7cd9d1eefbd122763872c941942663b8608722`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review3 Spec core blocker fixed: non-handshake request deadlines now fail-stop/destroy the Companion socket when any inbound response frame bytes are partially buffered, clearing the stale buffer and authenticated state before a later caller can proceed. This prevents truncated bodies from being resumed as part of a later response frame.
+- Contract coverage added for a valid 32-bit frame length followed by only part of the response body: the first request times out, the original socket is destroyed and pending capacity is cleared, and the next caller reconnects/authenticates on a fresh stream instead of reusing stale bytes.
+- Fix commit: `7cf6b87126ff59959eb805e49e81f7c40aeea60f` (`fix ticket 27 partial frame timeout`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
