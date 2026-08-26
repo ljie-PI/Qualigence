@@ -9,7 +9,8 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::ipc::dto::CompanionRequest;
+use crate::ipc::dto::{CompanionRequest, PROTOCOL_MAJOR};
+use crate::ipc::security::AuthenticatedCertificateRunner;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameLimits {
@@ -40,6 +41,80 @@ pub enum FrameError {
     Io,
     /// Too many requests admitted concurrently.
     Overloaded,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionAdmissionError {
+    CompanionUnauthenticated,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RequestProcessError {
+    Frame(FrameError),
+    Session(SessionAdmissionError),
+}
+
+impl RequestProcessError {
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::Frame(FrameError::FrameTooLarge) => "CompanionMessageTooLarge",
+            Self::Frame(FrameError::Truncated) => "CompanionProtocolViolation",
+            Self::Frame(FrameError::Malformed) => "CompanionProtocolViolation",
+            Self::Frame(FrameError::Io) => "CompanionUnavailable",
+            Self::Frame(FrameError::Overloaded) => "CompanionBackpressure",
+            Self::Session(SessionAdmissionError::CompanionUnauthenticated) => {
+                "CompanionUnauthenticated"
+            }
+        }
+    }
+}
+
+impl From<FrameError> for RequestProcessError {
+    fn from(error: FrameError) -> Self {
+        Self::Frame(error)
+    }
+}
+
+impl From<SessionAdmissionError> for RequestProcessError {
+    fn from(error: SessionAdmissionError) -> Self {
+        Self::Session(error)
+    }
+}
+
+#[derive(Default)]
+pub struct AuthenticatedSessionGate {
+    authenticated_runner_id: Option<String>,
+}
+
+impl AuthenticatedSessionGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn accept(&mut self, runner: AuthenticatedCertificateRunner) {
+        self.authenticated_runner_id = Some(runner.runner_id);
+    }
+
+    pub fn clear(&mut self) {
+        self.authenticated_runner_id = None;
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated_runner_id.is_some()
+    }
+
+    pub fn require_authenticated(
+        &self,
+        request: &CompanionRequest,
+    ) -> Result<(), SessionAdmissionError> {
+        if request.payload.is_handshake() {
+            Ok(())
+        } else if self.is_authenticated() {
+            Ok(())
+        } else {
+            Err(SessionAdmissionError::CompanionUnauthenticated)
+        }
+    }
 }
 
 impl From<io::Error> for FrameError {
@@ -87,7 +162,11 @@ pub fn read_request<R: Read>(
 }
 
 pub fn parse_request(body: &[u8]) -> Result<CompanionRequest, FrameError> {
-    serde_json::from_slice::<CompanionRequest>(body).map_err(|_| FrameError::Malformed)
+    let request = CompanionRequest::from_slice(body).map_err(|_| FrameError::Malformed)?;
+    if request.protocol_major != PROTOCOL_MAJOR {
+        return Err(FrameError::Malformed);
+    }
+    Ok(request)
 }
 
 fn read_exact<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), FrameError> {
@@ -102,24 +181,61 @@ fn read_exact<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), FrameError>
 /// beyond `max_concurrent_requests` fails closed with [`FrameError::Overloaded`].
 #[derive(Clone)]
 pub struct RequestAdmission {
+    queued: Arc<AtomicUsize>,
     in_flight: Arc<AtomicUsize>,
+    max_queue_depth: usize,
     max_concurrent: usize,
 }
 
 impl RequestAdmission {
     pub fn new(max_concurrent: usize) -> Self {
+        Self::with_limits(max_concurrent, max_concurrent)
+    }
+
+    pub fn from_frame_limits(limits: &FrameLimits) -> Self {
+        Self::with_limits(limits.max_queue_depth, limits.max_concurrent_requests)
+    }
+
+    pub fn with_limits(max_queue_depth: usize, max_concurrent: usize) -> Self {
         Self {
+            queued: Arc::new(AtomicUsize::new(0)),
             in_flight: Arc::new(AtomicUsize::new(0)),
+            max_queue_depth,
             max_concurrent,
         }
+    }
+
+    pub fn queued(&self) -> usize {
+        self.queued.load(Ordering::SeqCst)
     }
 
     pub fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
     }
 
-    /// Try to admit a request. The returned guard releases the slot on drop.
+    /// Reserve one bounded queue slot before a decoded request waits for a
+    /// worker. The returned guard must be promoted with [`QueuedRequest::try_start`]
+    /// or dropped; either path releases the queue slot.
+    pub fn try_queue(&self) -> Result<QueuedRequest, FrameError> {
+        let prior = self.queued.fetch_add(1, Ordering::SeqCst);
+        if prior >= self.max_queue_depth {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            return Err(FrameError::Overloaded);
+        }
+        Ok(QueuedRequest {
+            admission: self.clone(),
+            queued: true,
+        })
+    }
+
+    /// Try to admit a request without queueing. Existing callers keep the old
+    /// semantics, while server loops that can wait must use [`Self::try_queue`]
+    /// first so both `max_queue_depth` and `max_concurrent_requests` are enforced.
     pub fn try_admit(&self) -> Result<AdmissionGuard, FrameError> {
+        self.try_start_in_flight()
+    }
+
+    fn try_start_in_flight(&self) -> Result<AdmissionGuard, FrameError> {
         let prior = self.in_flight.fetch_add(1, Ordering::SeqCst);
         if prior >= self.max_concurrent {
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -131,6 +247,32 @@ impl RequestAdmission {
     }
 }
 
+pub struct QueuedRequest {
+    admission: RequestAdmission,
+    queued: bool,
+}
+
+impl QueuedRequest {
+    pub fn try_start(mut self) -> Result<AdmissionGuard, FrameError> {
+        let guard = self.admission.try_start_in_flight()?;
+        self.release_queue_slot();
+        Ok(guard)
+    }
+
+    fn release_queue_slot(&mut self) {
+        if self.queued {
+            self.admission.queued.fetch_sub(1, Ordering::SeqCst);
+            self.queued = false;
+        }
+    }
+}
+
+impl Drop for QueuedRequest {
+    fn drop(&mut self) {
+        self.release_queue_slot();
+    }
+}
+
 pub struct AdmissionGuard {
     in_flight: Arc<AtomicUsize>,
 }
@@ -138,5 +280,64 @@ pub struct AdmissionGuard {
 impl Drop for AdmissionGuard {
     fn drop(&mut self) {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Production request-admission path shared by the native pipe session.
+///
+/// This keeps the security gate and queue/concurrency counters on the same path
+/// that reads and admits decoded Companion requests, so the limits are not just
+/// standalone primitives.
+pub struct BoundedRequestProcessor {
+    limits: FrameLimits,
+    admission: RequestAdmission,
+    gate: AuthenticatedSessionGate,
+}
+
+impl BoundedRequestProcessor {
+    pub fn new(limits: FrameLimits) -> Self {
+        Self {
+            limits,
+            admission: RequestAdmission::from_frame_limits(&limits),
+            gate: AuthenticatedSessionGate::new(),
+        }
+    }
+
+    pub fn limits(&self) -> &FrameLimits {
+        &self.limits
+    }
+
+    pub fn admission(&self) -> &RequestAdmission {
+        &self.admission
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.gate.is_authenticated()
+    }
+
+    pub fn accept_runner(&mut self, runner: AuthenticatedCertificateRunner) {
+        self.gate.accept(runner);
+    }
+
+    pub fn clear_session(&mut self) {
+        self.gate.clear();
+    }
+
+    pub fn read_admitted_request<R: Read>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<(CompanionRequest, AdmissionGuard), RequestProcessError> {
+        let request = read_request(reader, &self.limits)?;
+        self.admit_request(request)
+    }
+
+    pub fn admit_request(
+        &mut self,
+        request: CompanionRequest,
+    ) -> Result<(CompanionRequest, AdmissionGuard), RequestProcessError> {
+        let queued = self.admission.try_queue()?;
+        self.gate.require_authenticated(&request)?;
+        let guard = queued.try_start()?;
+        Ok((request, guard))
     }
 }
