@@ -4,7 +4,7 @@
 
 **Blocked by:** 41 - Close Shadow DOM, scheduler, and Runner log gaps.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -107,3 +107,12 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 - [ ] Bound overflow poisons evidence while preserving native registration, callbacks, values, reasons, constructor identities, and invocation order.
 - [ ] Ticket 41 scheduler/Shadow DOM/log behavior remains green but is not re-claimed as Ticket 42 acceptance.
 - [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+### start — 2026-08-26
+
+- Fixed base: `184fb79de67cf821ffd8da8d0d2a86ba1ffae29e` (`main`, merge commit for Ticket 41 PR #113).
+- Predecessor merge evidence: Ticket 41 is `resolved` with PR #113, final reviewed code head `9286fbce9bda41df7ef017d595febe20ce885e38`, and merge commit `184fb79de67cf821ffd8da8d0d2a86ba1ffae29e`; current branch starts from that merge.
+- Behavior Matrix applicability: complete Ticket 42 matrix is applicable. Promise `then`/`catch`/`finally` native transparency, species construction, thenable assimilation, custom receiver methods/accessors, throw/cycle propagation, exact per-application registration accounting, and epoch/session overflow evidence poisoning are in scope. Runner production, owner descriptor registry/snapshot hardening, DOM geometry hardening, package manifests/lockfile, and predecessor Ticket 41 Shadow DOM/scheduler/log acceptance are excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains parent-owned after clean complete-matrix review.
