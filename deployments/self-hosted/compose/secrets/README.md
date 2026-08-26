@@ -12,7 +12,6 @@ Required files:
 - `s3_access_key_id`
 - `s3_secret_access_key`
 - `kms_root_key` (32-byte KMS root key encoded as base64; the Admin CLI also tolerates raw or hex during maintenance)
-- `oidc_jwks.json`
 - `oidc_claim_map.json`
 - `runner_ca_cert.pem`
 - `runner_ca_key.pem`
@@ -21,6 +20,11 @@ Required files:
 - `worker_model_api_key`
 - `tls_cert.pem`
 - `tls_key.pem`
+
+Production JWKS is configured with `QUALIGENCE_OIDC_JWKS_URI` in `.env`; do not
+use a static JWKS secret as a production-ready path. A local `oidc_jwks.json`
+file may be mounted only by explicit non-production test fixtures that also set
+`SERVER_OIDC_ALLOW_STATIC_JWKS_NON_PRODUCTION=true`.
 
 `runner_server_cert.pem` and `runner_server_key.pem` are the TLS identity for
 the dedicated Runner gRPC listener. Sign that certificate with the Runner CA (or

@@ -81,7 +81,8 @@ export class WorkerLoop {
 
   readiness(): WorkerLoopReadiness {
     const aborted = this.active ? false : this.lastOutcome === "aborted";
-    const status = this.active && this.lastError === undefined ? "ready" : "not-ready";
+    const observedSuccessfulCycle = this.lastOutcome === "idle" || this.lastOutcome === "processed";
+    const status = this.active && observedSuccessfulCycle && this.lastError === undefined ? "ready" : "not-ready";
     return {
       status,
       active: this.active,
@@ -204,6 +205,10 @@ export class WorkerLoop {
 
   async run(signal: AbortSignal): Promise<void> {
     this.active = true;
+    this.lastOutcome = undefined;
+    this.lastProgressAt = undefined;
+    this.lastError = undefined;
+    this.consecutiveFailures = 0;
     try {
       while (!signal.aborted) {
         const outcome = await this.runOnce(signal);
@@ -223,8 +228,8 @@ export class WorkerLoop {
 
   private recordOutcome(outcome: WorkerStepOutcome, healthy = true): void {
     this.lastOutcome = outcome;
-    this.lastProgressAt = this.clock.now();
     if (healthy) {
+      this.lastProgressAt = this.clock.now();
       this.lastError = undefined;
       this.consecutiveFailures = 0;
     }

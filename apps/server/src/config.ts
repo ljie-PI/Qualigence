@@ -168,9 +168,14 @@ function oidcJwksConfig(env: NodeJS.ProcessEnv): ServerOidcJwksConfig {
     };
   }
   if (jwksFile !== undefined && jwksFile.length > 0) {
+    if (env.SERVER_OIDC_ALLOW_STATIC_JWKS_NON_PRODUCTION !== "true") {
+      throw new Error(
+        "SERVER_OIDC_JWKS_URI is required for production self-hosted deployments; static JWKS requires SERVER_OIDC_ALLOW_STATIC_JWKS_NON_PRODUCTION=true.",
+      );
+    }
     return { kind: "static", jwksJson: fileContents("SERVER_OIDC_JWKS_FILE", env) };
   }
-  throw new Error("SERVER_OIDC_JWKS_URI or SERVER_OIDC_JWKS_FILE is required.");
+  throw new Error("SERVER_OIDC_JWKS_URI is required for production self-hosted deployments.");
 }
 
 function optionalRootKey(env: NodeJS.ProcessEnv): Uint8Array | undefined {

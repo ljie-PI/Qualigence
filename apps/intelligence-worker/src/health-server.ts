@@ -20,9 +20,8 @@ export interface WorkerHealthServerOptions {
   readonly host: string;
   readonly port: number;
   readonly postgresProbe: () => Promise<void>;
-  readonly objectStorageReadinessUrl?: string;
+  readonly objectStorageProbe: (signal?: AbortSignal) => Promise<void>;
   readonly loopReadiness: () => WorkerLoopReadiness;
-  readonly fetcher?: typeof fetch;
 }
 
 /**
@@ -32,10 +31,8 @@ export interface WorkerHealthServerOptions {
  */
 export class WorkerHealthServer {
   private readonly server: Server;
-  private readonly fetcher: typeof fetch;
 
   constructor(private readonly options: WorkerHealthServerOptions) {
-    this.fetcher = options.fetcher ?? fetch;
     this.server = createServer((request, response) => {
       void this.handle(request.url ?? "/", response);
     });
@@ -60,7 +57,7 @@ export class WorkerHealthServer {
   async readiness(): Promise<WorkerReadinessReport> {
     const checks = [
       await postgresCheck(this.options.postgresProbe),
-      await objectStorageCheck(this.options.objectStorageReadinessUrl, this.fetcher),
+      await objectStorageCheck(this.options.objectStorageProbe),
       workerLoopCheck(this.options.loopReadiness()),
     ];
     return {
@@ -92,23 +89,14 @@ async function postgresCheck(probe: () => Promise<void>): Promise<WorkerReadines
   }
 }
 
-async function objectStorageCheck(
-  readinessUrl: string | undefined,
-  fetcher: typeof fetch,
-): Promise<WorkerReadinessCheck> {
-  if (readinessUrl === undefined) {
-    return fail("object_storage", "NotConfigured", "object storage readiness URL is not configured");
-  }
+async function objectStorageCheck(probe: (signal?: AbortSignal) => Promise<void>): Promise<WorkerReadinessCheck> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetcher(readinessUrl, { signal: controller.signal });
-    if (!response.ok) {
-      return fail("object_storage", "Unavailable", "object storage readiness endpoint is not healthy", { status: response.status });
-    }
-    return { name: "object_storage", status: "pass", safeMessage: "object storage readiness endpoint is healthy" };
+    await probe(controller.signal);
+    return { name: "object_storage", status: "pass", safeMessage: "Worker S3 context data-plane is writable and readable" };
   } catch (error) {
-    return fail("object_storage", "Unavailable", "object storage readiness endpoint failed", { error: errorMessage(error) });
+    return fail("object_storage", "Unavailable", "Worker S3 context data-plane probe failed", { error: errorMessage(error) });
   } finally {
     clearTimeout(timeout);
   }
@@ -121,7 +109,7 @@ function workerLoopCheck(readiness: WorkerLoopReadiness): WorkerReadinessCheck {
     status: pass ? "pass" : "fail",
     ...(pass ? {} : { code: "LoopNotReady" }),
     safeMessage: pass
-      ? "Intelligence Worker lease loop is running"
+      ? "Intelligence Worker lease loop has completed a successful observation cycle"
       : "Intelligence Worker lease loop cannot make progress",
     details: readiness as unknown as Readonly<Record<string, unknown>>,
   };

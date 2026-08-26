@@ -24,7 +24,6 @@ export interface IntelligenceWorkerConfig {
     readonly apiKey: string;
     readonly modelName: string;
   };
-  readonly objectStorageReadinessUrl?: string;
   readonly health: {
     readonly host: string;
     readonly port: number;
@@ -68,7 +67,6 @@ function positiveInteger(raw: string, name: string, maximum: number): number {
  * secret fails fast at startup rather than mid-lease.
  */
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): IntelligenceWorkerConfig {
-  const objectStorageReadinessUrl = optionalFromFileOrValue("WORKER_OBJECT_STORAGE_READY_URL", env);
   return {
     workerId: env.WORKER_ID ?? `worker-${process.pid}`,
     postgres: {
@@ -92,7 +90,6 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): Intellig
       apiKey: fromFileOrValue("WORKER_MODEL_API_KEY", env),
       modelName: required("WORKER_MODEL_NAME", env),
     },
-    ...(objectStorageReadinessUrl === undefined ? {} : { objectStorageReadinessUrl }),
     health: {
       host: env.WORKER_HEALTH_HOST ?? "127.0.0.1",
       port: positiveInteger(env.WORKER_HEALTH_PORT ?? "8081", "WORKER_HEALTH_PORT", 65_535),

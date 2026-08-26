@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { WorkerHealthServer, WorkerLoop } from "@qualigence/intelligence-worker";
+import { WorkerHealthServer } from "../../../apps/intelligence-worker/src/health-server.js";
+import { WorkerLoop, type Clock } from "../../../apps/intelligence-worker/src/worker-loop.js";
 import type { IntelligenceJobStore, IntelligenceResultInbox } from "@qualigence/core-application";
-import type { JobProcessor } from "@qualigence/intelligence-worker";
-import type { Clock } from "@qualigence/intelligence-worker";
+import type { JobProcessor } from "../../../apps/intelligence-worker/src/job-processor.js";
 
 const clock: Clock = {
   now: () => "2026-08-26T00:00:00.000Z",
@@ -49,9 +49,8 @@ describe("Intelligence Worker readiness", () => {
       host: "127.0.0.1",
       port: 0,
       postgresProbe: async () => undefined,
-      objectStorageReadinessUrl: "http://object-storage.ready/healthz",
+      objectStorageProbe: async () => undefined,
       loopReadiness: () => workerLoop.readiness(),
-      fetcher: async () => new Response("ok", { status: 200 }),
     });
 
     await expect(health.readiness()).resolves.toMatchObject({
@@ -63,7 +62,7 @@ describe("Intelligence Worker readiness", () => {
 
     const controller = new AbortController();
     const running = workerLoop.run(controller.signal);
-    await Promise.resolve();
+    await waitFor(() => workerLoop.readiness().status === "ready");
     await expect(health.readiness()).resolves.toMatchObject({
       status: "ready",
       checks: expect.arrayContaining([
@@ -80,7 +79,7 @@ describe("Intelligence Worker readiness", () => {
     const workerLoop = loop();
     const controller = new AbortController();
     const running = workerLoop.run(controller.signal);
-    await Promise.resolve();
+    await waitFor(() => workerLoop.readiness().status === "ready");
 
     let postgresHealthy = false;
     let objectStorageHealthy = false;
@@ -90,9 +89,10 @@ describe("Intelligence Worker readiness", () => {
       postgresProbe: async () => {
         if (!postgresHealthy) throw new Error("postgres down");
       },
-      objectStorageReadinessUrl: "http://object-storage.ready/healthz",
+      objectStorageProbe: async () => {
+        if (!objectStorageHealthy) throw new Error("object storage data-plane down");
+      },
       loopReadiness: () => workerLoop.readiness(),
-      fetcher: async () => new Response(objectStorageHealthy ? "ok" : "no", { status: objectStorageHealthy ? 200 : 503 }),
     });
 
     const failing = await health.readiness();
@@ -109,4 +109,29 @@ describe("Intelligence Worker readiness", () => {
     controller.abort();
     await running;
   });
+
+  it("does not carry a previous successful loop observation across a restart", async () => {
+    const workerLoop = loop();
+    const first = new AbortController();
+    const firstRun = workerLoop.run(first.signal);
+    await waitFor(() => workerLoop.readiness().status === "ready");
+    first.abort();
+    await firstRun;
+    expect(workerLoop.readiness()).toMatchObject({ status: "not-ready", active: false, aborted: true });
+
+    const second = new AbortController();
+    const secondRun = workerLoop.run(second.signal);
+    expect(workerLoop.readiness()).toMatchObject({ status: "not-ready", active: true });
+    await waitFor(() => workerLoop.readiness().status === "ready");
+    second.abort();
+    await secondRun;
+  });
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("condition was not observed before timeout");
+}

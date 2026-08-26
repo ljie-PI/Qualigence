@@ -13,6 +13,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { createS3ArtifactClient, S3ArtifactStore } from "@qualigence/artifact-s3";
+import type { ArtifactStore } from "@qualigence/evidence";
 import { SelfHostedKms } from "@qualigence/kms-self-hosted";
 import { pathToFileURL } from "node:url";
 import { sql } from "kysely";
@@ -58,7 +59,7 @@ const systemClock: Clock = { now: () => new Date().toISOString() };
 type ArtifactStoreFactory = (scope: {
   readonly tenantId: string;
   readonly projectId?: string;
-}) => LocalArtifactStore | S3ArtifactStore;
+}) => ArtifactStore;
 
 function artifactStoreFactory(config: ServerConfig, clock: Clock): ArtifactStoreFactory {
   if (config.artifactS3 !== undefined) {
@@ -230,6 +231,7 @@ export async function main(
     readiness: () => readinessReport({
       config,
       provider,
+      artifactStore,
       runnerGrpcReady,
       missionDispatchLoops,
       resultConsumerLoop,
@@ -290,19 +292,20 @@ export async function main(
   }
 }
 
-interface ReadinessInput {
+export interface ReadinessInput {
   readonly config: ServerConfig;
   readonly provider: ReturnType<typeof createPostgresRuntime>;
+  readonly artifactStore: ArtifactStoreFactory;
   readonly runnerGrpcReady: boolean;
   readonly missionDispatchLoops: readonly MissionDispatchLoop[];
   readonly resultConsumerLoop: IntelligenceResultConsumerLoop;
   readonly jwks: JwksResolver;
 }
 
-async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
+export async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
   const checks: ServerReadinessCheck[] = [];
   checks.push(await postgresCheck(input));
-  checks.push(await objectStorageCheck(input.config.objectStorageReadinessUrl));
+  checks.push(await objectStorageCheck(input.config, input.artifactStore));
   checks.push(await artifactDataPlaneCheck(input.config.artifactDataDir));
   checks.push(kmsCheck(input.config));
   checks.push(await oidcJwksCheck(input.jwks));
@@ -330,14 +333,28 @@ async function postgresCheck(input: ReadinessInput): Promise<ServerReadinessChec
   }
 }
 
-async function objectStorageCheck(readinessUrl: string | undefined): Promise<ServerReadinessCheck> {
-  if (readinessUrl === undefined) {
+async function objectStorageCheck(
+  config: ServerConfig,
+  artifactStore: ArtifactStoreFactory,
+): Promise<ServerReadinessCheck> {
+  if (config.artifactS3 !== undefined) {
+    try {
+      await probeArtifactStore(artifactStore({
+        tenantId: config.missionDispatch?.tenantIds[0] ?? config.oidc.claimMapper.allowedTenants[0] ?? "readiness",
+        projectId: "readiness",
+      }), "server");
+      return { name: "object_storage", status: "pass", safeMessage: "S3 artifact data-plane is writable and readable" };
+    } catch (error) {
+      return fail("object_storage", "Unavailable", "S3 artifact data-plane probe failed", { error: errorMessage(error) });
+    }
+  }
+  if (config.objectStorageReadinessUrl === undefined) {
     return fail("object_storage", "NotConfigured", "object storage readiness URL is not configured");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch(readinessUrl, { signal: controller.signal });
+    const response = await fetch(config.objectStorageReadinessUrl, { signal: controller.signal });
     if (!response.ok) {
       return fail("object_storage", "Unavailable", "object storage readiness endpoint is not healthy", { status: response.status });
     }
@@ -346,6 +363,30 @@ async function objectStorageCheck(readinessUrl: string | undefined): Promise<Ser
     return fail("object_storage", "Unavailable", "object storage readiness endpoint failed", { error: errorMessage(error) });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function probeArtifactStore(store: ArtifactStore, owner: "server" | "worker"): Promise<void> {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const expected = Buffer.from(`qualigence-${owner}-object-storage-readiness`, "utf8");
+  const manifest = await store.write({
+    artifactId: `readiness-${token}`,
+    runId: `readiness-${owner}`,
+    name: "object-storage-readiness.txt",
+    kind: "other",
+    mediaType: "text/plain; charset=utf-8",
+    bytes: expected,
+  });
+  try {
+    const actual = await store.read(manifest);
+    if (!Buffer.from(actual).equals(expected)) {
+      throw new Error("object storage readiness probe read different bytes");
+    }
+    if (!(await store.verify(manifest))) {
+      throw new Error("object storage readiness probe verification failed");
+    }
+  } finally {
+    await store.delete?.(manifest);
   }
 }
 
@@ -412,7 +453,7 @@ function missionDispatchCheck(enabled: boolean, loops: readonly MissionDispatchL
     status: pass ? "pass" : "fail",
     ...(enabled ? {} : { code: "Disabled" }),
     safeMessage: pass
-      ? "mission dispatch loops are running for configured tenants"
+      ? "mission dispatch loops have observed their work source for configured tenants"
       : "mission dispatch loops cannot make progress for every configured tenant",
     details: { loops: readiness },
   };
@@ -428,7 +469,7 @@ function intelligenceResultConsumerCheck(
     status: pass ? "pass" : "fail",
     ...(enabled ? {} : { code: "Disabled" }),
     safeMessage: pass
-      ? "intelligence result consumer loop is running"
+      ? "intelligence result consumer loop has observed its wakeup source"
       : "intelligence result consumer loop cannot make progress",
     details: { ...loop },
   };

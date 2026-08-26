@@ -191,18 +191,26 @@ describe("IntelligenceResultConsumerLoop", () => {
     expect(summary).toMatchObject({ claimed: 1, processed: 0, retried: 1, completed: 0 });
   });
 
-  it("reports readiness only while the loop is active and not aborted", async () => {
+  it("reports readiness only after an active loop successfully observes wakeups", async () => {
+    const scheduled: Array<() => void> = [];
     const loop = new IntelligenceResultConsumerLoop({
       consumerId: "consumer-1",
       wakeups: new FakeWakeups([]),
       consumer: { consumeForTenant: async () => emptySummary },
-      setTimeout: () => ({ timer: true }),
+      setTimeout: (callback) => {
+        scheduled.push(callback);
+        return { timer: true };
+      },
       clearTimeout: () => undefined,
     });
 
     expect(loop.readiness()).toMatchObject({ status: "not-ready", active: false, aborted: false });
     loop.start();
+    expect(loop.readiness()).toMatchObject({ status: "not-ready", active: true, aborted: false });
+    scheduled.shift()?.();
+    await waitFor(() => loop.readiness().status === "ready");
     expect(loop.readiness()).toMatchObject({ status: "ready", active: true, aborted: false });
+    expect(loop.readiness().lastSuccessfulObservationAt).toBeDefined();
     await loop.stop();
     expect(loop.readiness()).toMatchObject({ status: "not-ready", active: false, aborted: true });
   });
@@ -232,3 +240,11 @@ describe("IntelligenceResultConsumerLoop", () => {
     expect(errors).toEqual(["storage unavailable"]);
   });
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("condition was not observed before timeout");
+}

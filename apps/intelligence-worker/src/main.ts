@@ -69,7 +69,7 @@ export async function main(
     postgresProbe: async () => {
       await assertSchema(config.postgres, config.serverPostgresRole);
     },
-    ...(config.objectStorageReadinessUrl === undefined ? {} : { objectStorageReadinessUrl: config.objectStorageReadinessUrl }),
+    objectStorageProbe: () => contextSource.verifyReadiness(),
     loopReadiness: () => loop.readiness(),
   });
 

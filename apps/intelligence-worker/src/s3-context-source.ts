@@ -1,4 +1,4 @@
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { IntelligenceJob } from "@qualigence/intelligence";
 import type {
   BugAnalysisContext,
@@ -43,6 +43,38 @@ export class S3ContextSource implements IntelligenceContextSource {
 
   loadBugAnalysis(job: IntelligenceJob, signal?: AbortSignal): Promise<BugAnalysisContext> {
     return this.load<BugAnalysisContext>(job, signal);
+  }
+
+  async verifyReadiness(signal?: AbortSignal): Promise<void> {
+    throwIfJobProcessingAborted(signal);
+    const key = `.qualigence-readiness/worker-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const expected = Buffer.from("qualigence-worker-object-storage-readiness", "utf8");
+    let wrote = false;
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          Key: key,
+          Body: expected,
+          ContentType: "text/plain; charset=utf-8",
+          Metadata: { owner: "qualigence-intelligence-worker-readiness" },
+        }),
+        signal === undefined ? undefined : { abortSignal: signal },
+      );
+      wrote = true;
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        signal === undefined ? undefined : { abortSignal: signal },
+      );
+      const actual = await response.Body?.transformToByteArray();
+      if (actual === undefined || !Buffer.from(actual).equals(expected)) {
+        throw new Error("object storage readiness probe read different bytes");
+      }
+    } finally {
+      if (wrote) {
+        await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }));
+      }
+    }
   }
 
   private async load<T>(job: IntelligenceJob, signal?: AbortSignal): Promise<T> {

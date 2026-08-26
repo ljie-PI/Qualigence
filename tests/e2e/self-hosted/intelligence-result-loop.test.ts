@@ -58,6 +58,8 @@ describe("Self-hosted Intelligence Result loop", () => {
     try {
       await expect(app.inject({ method: "GET", url: "/readyz" })).resolves.toMatchObject({ statusCode: 503 });
       readyLoop.start();
+      await expect(app.inject({ method: "GET", url: "/readyz" })).resolves.toMatchObject({ statusCode: 503 });
+      await readyLoop.runOnce();
       const ready = await app.inject({ method: "GET", url: "/readyz" });
       expect(ready.statusCode).toBe(200);
       expect(ready.json()).toMatchObject({
