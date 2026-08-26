@@ -546,6 +546,50 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when a later hidden aria-labelledby name source reflects a retired host-known valueRef form", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(...nodes: unknown[]): void };
+          };
+        };
+        const hiddenLabel = host.document.createElement("div");
+        hiddenLabel.id = "hidden-value-ref-label";
+        hiddenLabel.textContent = secret;
+        Object.assign(hiddenLabel.style, { display: "none" });
+        const button = host.document.createElement("button");
+        button.id = "visible-labelled-by-hidden-value-ref";
+        button.textContent = "Continue";
+        button.setAttribute("aria-labelledby", hiddenLabel.id);
+        Object.assign(button.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "120px",
+          height: "28px",
+        });
+        host.document.body.append(hiddenLabel, button);
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when page-mutated retired baseline state whitelists new reflected plaintext", async () => {
     const observer = await enterSecret();
     const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });

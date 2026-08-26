@@ -640,6 +640,110 @@ describe("production valueRef browser execution", () => {
     }
   }, 90_000);
 
+  it("fails closed when a hidden aria-labelledby name source reflects a retired sensitive capture", async () => {
+    const hiddenNameSecret = "ticket45-hidden-accessible-name-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 380px; height: 240px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #hidden-name-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #hidden-name-mirror { position: absolute; left: 30px; top: 120px; width: 240px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Hidden Name Secret <input id="hidden-name-secret" aria-label="Hidden Name Secret" /></label>
+        <div id="hidden-name-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('hidden-name-secret');
+          const mirror = document.getElementById('hidden-name-mirror');
+          input.addEventListener('input', () => {
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 hidden accessible-name reflection"),
+    });
+
+    const session = new PlaywrightBrowserSession({
+      url: fixture.url,
+      expectedOrigin: fixture.origin,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      allowedOrigins: [fixture.origin],
+    });
+    const logs: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      let graph = await observer.capture({ ...e2eJob("hidden-accessible-name"), target: { kind: "web", url: fixture.url } });
+      const target = targetNode(graph, "textbox", "Hidden Name Secret");
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => hiddenNameSecret });
+      const action = await resolver.resolve({ kind: "input", target: { nodeId: target.id }, valueRef: "ticket45.hiddenName", reason: "ticket45 hidden accessible name" }, graph);
+      await expect(executor.execute(action, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+
+      graph = await observer.capture({ ...e2eJob("hidden-accessible-name"), target: { kind: "web", url: fixture.url } });
+      const firstArtifacts = await session.artifactsFor(graph.graphId);
+      assertArtifactJsonRedacted(firstArtifacts, [hiddenNameSecret], ["[redacted]"]);
+      expect(Buffer.from(pngArtifact(firstArtifacts).bytes).toString("utf8")).not.toContain(hiddenNameSecret);
+
+      await session.withPage(async (page) => {
+        await page.evaluate((secret) => {
+          type MutableElement = Element & {
+            id: string;
+            textContent: string | null;
+            readonly style: Record<string, string>;
+            setAttribute(name: string, value: string): void;
+          };
+          const host = globalThis as unknown as {
+            readonly document: {
+              createElement(tagName: string): MutableElement;
+              readonly body: { append(...nodes: unknown[]): void };
+            };
+          };
+          const hiddenLabel = host.document.createElement("div");
+          hiddenLabel.id = "hidden-aria-label-source";
+          hiddenLabel.textContent = secret;
+          Object.assign(hiddenLabel.style, { display: "none" });
+          const button = host.document.createElement("button");
+          button.id = "visible-button-with-hidden-sensitive-name";
+          button.textContent = "Continue";
+          button.setAttribute("aria-labelledby", hiddenLabel.id);
+          Object.assign(button.style, {
+            position: "absolute",
+            left: "30px",
+            top: "170px",
+            width: "120px",
+            height: "28px",
+          });
+          host.document.body.append(hiddenLabel, button);
+        }, hiddenNameSecret);
+      });
+
+      await expect(observer.capture({ ...e2eJob("hidden-accessible-name"), target: { kind: "web", url: fixture.url } }))
+        .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-hidden-accessible-name:observation:3"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+      expect(JSON.stringify(logs)).not.toContain(hiddenNameSecret);
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      await session.close();
+    }
+  }, 90_000);
+
   it("proves second-race failures write no valueRef plaintext through Runner Spool", async () => {
     const secondRaceSecret = "ticket45-runner-spool-second-race-secret";
     fixture = await startFixtureServer({

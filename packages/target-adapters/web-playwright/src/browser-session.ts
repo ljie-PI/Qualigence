@@ -2057,6 +2057,20 @@ export class PlaywrightBrowserSession {
     return result.value;
   }
 
+  redactSensitiveAccessibleNameField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+    sensitiveMaskId?: string,
+  ): string {
+    this.assertSensitiveEvidenceAvailable();
+    const result = this.sensitiveEvidence.redactMetadataField(sensitiveTargetIds, value, sensitiveMaskId);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
+  }
+
   redactSensitiveTitleField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,

@@ -1064,7 +1064,7 @@ function collectPageObservation(
 
   function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, pendingPageRecord: boolean): boolean {
     if (hasSensitiveTargetId(ids, record.markerId)) {
-      if (pendingPageRecord || !isMaskableElement(element) || !isVisible(element)) return true;
+      if (pendingPageRecord || !isMaskableElement(element)) return true;
       const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
       if (maskId !== null && arrayHasString(record.maskIds, maskId)) return true;
     }
@@ -1073,7 +1073,6 @@ function collectPageObservation(
 
   function sensitiveElementCoveredByAnyTrustedMask(element: Element): boolean {
     if (!isMaskableElement(element)) return false;
-    if (!isVisible(element)) return true;
     const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
     if (maskId === null) return false;
     for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
@@ -1454,7 +1453,7 @@ export class PlaywrightObserver implements Observer {
         const raw = captured.candidates.map((candidate) => ({
           role: candidate.role,
           ...(candidate.name === undefined ? {} : {
-            name: this.session.redactSensitiveTargetField(
+            name: this.session.redactSensitiveAccessibleNameField(
               candidate.sensitiveTargetIds,
               candidate.name,
               candidate.sensitiveMaskId,
