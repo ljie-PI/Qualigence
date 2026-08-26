@@ -2,7 +2,11 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 import {
+  MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH,
+  MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION,
+  MAX_SENSITIVE_SHADOW_ROOTS,
   SensitiveEvidenceAuthority,
+  SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
 } from "./sensitive-evidence-authority.js";
@@ -73,24 +77,59 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
   );
 }
 
-async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
+async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
   if (typeof page.addInitScript !== "function") return;
-  await page.addInitScript((propertyName: string) => {
+  await page.addInitScript((input: {
+    readonly shadowRootsProperty: string;
+    readonly evidenceStateProperty: string;
+    readonly maxShadowRoots: number;
+    readonly maxSchedulerRegistrationsPerEpoch: number;
+    readonly maxSchedulerRegistrationsPerSession: number;
+  }) => {
     type SensitiveRuntimeRegistry = {
       readonly roots: ShadowRoot[];
       readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
+      shadowRootOverflow: boolean;
       readonly originalAttachShadow: typeof Element.prototype.attachShadow;
       readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
+      readonly originalSetTimeout: typeof window.setTimeout;
+      readonly originalSetInterval: typeof window.setInterval;
+      readonly originalRequestAnimationFrame: typeof window.requestAnimationFrame;
+      readonly originalQueueMicrotask: typeof window.queueMicrotask;
+      readonly originalPromiseThen: typeof Promise.prototype.then;
+      readonly originalPromiseCatch: typeof Promise.prototype.catch;
+      readonly originalPromiseFinally: typeof Promise.prototype.finally;
+    };
+    type SensitiveSchedulerEpoch = {
+      schedulerRegistrations?: number;
+      pendingSchedulerCallbacks?: number;
+      inSchedulerCallback?: boolean;
+      poisoned?: boolean;
+      processSchedulerCallback?: () => void;
+    };
+    type SensitiveRuntimeState = {
+      active?: SensitiveSchedulerEpoch | null;
+      poisoned?: boolean;
+      schedulerSessionRegistrations?: number;
+      retainedSchedulerEpochs?: SensitiveSchedulerEpoch[];
     };
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
-    if (win[propertyName] !== undefined) return;
+    if (win[input.shadowRootsProperty] !== undefined) return;
     const registry: SensitiveRuntimeRegistry = {
       roots: [],
       listenerTargets: [],
+      shadowRootOverflow: false,
       originalAttachShadow: Element.prototype.attachShadow,
       originalAddEventListener: EventTarget.prototype.addEventListener,
+      originalSetTimeout: window.setTimeout,
+      originalSetInterval: window.setInterval,
+      originalRequestAnimationFrame: window.requestAnimationFrame,
+      originalQueueMicrotask: window.queueMicrotask,
+      originalPromiseThen: Promise.prototype.then,
+      originalPromiseCatch: Promise.prototype.catch,
+      originalPromiseFinally: Promise.prototype.finally,
     };
-    Object.defineProperty(win, propertyName, {
+    Object.defineProperty(win, input.shadowRootsProperty, {
       configurable: false,
       enumerable: false,
       value: registry,
@@ -98,7 +137,21 @@ async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
     });
     Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
       const root = registry.originalAttachShadow.call(this, init);
-      registry.roots.push(root);
+      const state = sensitiveState();
+      const active = state === undefined ? undefined : currentSensitiveEpoch(state);
+      if (init.mode === "closed" && state !== undefined && active !== undefined) {
+        poison(state, active);
+      }
+      if (!registry.roots.includes(root)) {
+        if (registry.roots.length >= input.maxShadowRoots) {
+          registry.shadowRootOverflow = true;
+          if (state !== undefined && active !== undefined) {
+            poison(state, active);
+          }
+          return root;
+        }
+        registry.roots.push(root);
+      }
       return root;
     };
     EventTarget.prototype.addEventListener = function addEventListener(
@@ -114,7 +167,151 @@ async function installSensitiveShadowRootTracker(page: Page): Promise<void> {
       }
       registry.originalAddEventListener.call(this, type, listener, options);
     };
-  }, SENSITIVE_SHADOW_ROOTS_PROPERTY);
+
+    window.setTimeout = function setTimeout(handler: TimerHandler, timeout?: number, ...args: unknown[]): number {
+      const epoch = countSensitiveSchedulerRegistration();
+      const wrapped = typeof handler === "function" && epoch !== undefined
+        ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, true)
+        : handler;
+      poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
+      return (registry.originalSetTimeout as any).apply(window, [
+        wrapped,
+        timeout,
+        ...args,
+      ]) as number;
+    } as typeof window.setTimeout;
+    window.setInterval = function setInterval(handler: TimerHandler, timeout?: number, ...args: unknown[]): number {
+      const epoch = countSensitiveSchedulerRegistration();
+      const wrapped = typeof handler === "function" && epoch !== undefined
+        ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, false)
+        : handler;
+      poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
+      return (registry.originalSetInterval as any).apply(window, [
+        wrapped,
+        timeout,
+        ...args,
+      ]) as number;
+    } as typeof window.setInterval;
+    window.requestAnimationFrame = function requestAnimationFrame(callback: FrameRequestCallback): number {
+      const epoch = countSensitiveSchedulerRegistration();
+      return registry.originalRequestAnimationFrame.call(
+        window,
+        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
+      );
+    };
+    window.queueMicrotask = function queueMicrotask(callback: VoidFunction): void {
+      const epoch = countSensitiveSchedulerRegistration();
+      registry.originalQueueMicrotask.call(
+        window,
+        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
+      );
+    };
+    Promise.prototype.then = function then<TResult1 = unknown, TResult2 = never>(
+      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ): Promise<TResult1 | TResult2> {
+      const fulfilledEpoch = typeof onfulfilled === "function" ? countSensitiveSchedulerRegistration() : undefined;
+      const rejectedEpoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
+      return registry.originalPromiseThen.call(
+        this,
+        fulfilledEpoch === undefined || typeof onfulfilled !== "function" ? onfulfilled : wrapSchedulerCallback(onfulfilled, fulfilledEpoch, true),
+        rejectedEpoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, rejectedEpoch, true),
+      ) as Promise<TResult1 | TResult2>;
+    };
+    Promise.prototype.catch = function promiseCatch<TResult = never>(
+      onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+    ): Promise<unknown | TResult> {
+      const epoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
+      return registry.originalPromiseCatch.call(
+        this,
+        epoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, epoch, true),
+      ) as Promise<unknown | TResult>;
+    };
+    Promise.prototype.finally = function promiseFinally(onfinally?: (() => void) | null): Promise<unknown> {
+      const epoch = typeof onfinally === "function" ? countSensitiveSchedulerRegistration() : undefined;
+      return registry.originalPromiseFinally.call(
+        this,
+        epoch === undefined || typeof onfinally !== "function" ? onfinally : wrapSchedulerCallback(onfinally, epoch, true),
+      ) as Promise<unknown>;
+    };
+
+    function sensitiveState(): SensitiveRuntimeState | undefined {
+      return (window as unknown as Record<string, SensitiveRuntimeState | undefined>)[input.evidenceStateProperty];
+    }
+
+    function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
+      const state = sensitiveState();
+      if (state === undefined) return undefined;
+      const epoch = currentSensitiveEpoch(state);
+      if (epoch === undefined) return undefined;
+      state.schedulerSessionRegistrations = (state.schedulerSessionRegistrations ?? 0) + 1;
+      epoch.schedulerRegistrations = (epoch.schedulerRegistrations ?? 0) + 1;
+      if (
+        epoch.schedulerRegistrations > input.maxSchedulerRegistrationsPerEpoch ||
+        state.schedulerSessionRegistrations > input.maxSchedulerRegistrationsPerSession
+      ) {
+        poison(state, epoch);
+        return undefined;
+      }
+      return epoch;
+    }
+
+    function wrapSchedulerCallback<T extends (...args: any[]) => unknown>(callback: T, epoch: SensitiveSchedulerEpoch, settles: boolean): T {
+      epoch.pendingSchedulerCallbacks = (epoch.pendingSchedulerCallbacks ?? 0) + 1;
+      return function sensitiveSchedulerCallback(this: unknown, ...args: any[]): unknown {
+        const previous = epoch.inSchedulerCallback === true;
+        epoch.inSchedulerCallback = true;
+        try {
+          return callback.apply(this, args);
+        } finally {
+          processSchedulerCallbackEpoch(epoch);
+          registry.originalQueueMicrotask.call(window, () => {
+            try {
+              processSchedulerCallbackEpoch(epoch);
+            } finally {
+              if (settles) {
+                epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
+              }
+              epoch.inSchedulerCallback = previous;
+            }
+          });
+        }
+      } as T;
+    }
+
+    function poisonUnwrappedSensitiveSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, handler: TimerHandler): void {
+      if (epoch === undefined || typeof handler === "function") return;
+      const state = sensitiveState();
+      if (state !== undefined) poison(state, epoch);
+    }
+
+    function currentSensitiveEpoch(state: SensitiveRuntimeState): SensitiveSchedulerEpoch | undefined {
+      const active = state.active;
+      return active !== undefined && active !== null
+        ? active
+        : state.retainedSchedulerEpochs?.find((candidate) => candidate.inSchedulerCallback === true);
+    }
+
+    function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
+      try {
+        epoch.processSchedulerCallback?.();
+      } catch {
+        const state = sensitiveState();
+        if (state !== undefined) poison(state, epoch);
+      }
+    }
+
+    function poison(state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
+      state.poisoned = true;
+      epoch.poisoned = true;
+    }
+  }, {
+    shadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+    evidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
+    maxSchedulerRegistrationsPerEpoch: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH,
+    maxSchedulerRegistrationsPerSession: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION,
+  });
 }
 
 export interface WebSessionOptions {
@@ -541,7 +738,7 @@ export class PlaywrightBrowserSession {
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
 
       const page = await context.newPage();
-      await installSensitiveShadowRootTracker(page);
+      await installSensitiveEvidenceRuntime(page);
       this.page = page;
       page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;

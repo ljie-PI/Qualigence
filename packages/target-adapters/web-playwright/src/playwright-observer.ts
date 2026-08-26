@@ -12,6 +12,7 @@ import {
 import type { Page } from "playwright";
 import type { CapturedArtifact } from "./types.js";
 import {
+  MAX_SENSITIVE_SHADOW_ROOTS,
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_MASK_ID_ATTRIBUTE,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
@@ -89,6 +90,7 @@ interface BrowserObservationCaptureInput {
   readonly sensitiveMaskIdAttribute: string;
   readonly sensitiveEvidenceStateProperty: string;
   readonly sensitiveShadowRootsProperty: string;
+  readonly maxShadowRoots: number;
 }
 
 function browserObservationCaptureInput(): BrowserObservationCaptureInput {
@@ -97,6 +99,7 @@ function browserObservationCaptureInput(): BrowserObservationCaptureInput {
     sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
     sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
     sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+    maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
   };
 }
 
@@ -113,33 +116,43 @@ async function collectAuthorizedPageObservation(
   );
 }
 
+type SensitiveEvidenceRetirement = "retired" | "pending" | "unavailable";
+
 async function retireCapturedSensitiveEvidence(
   page: Page,
   assertCaptureAuthority: () => void,
-): Promise<boolean> {
+): Promise<SensitiveEvidenceRetirement> {
   return readPageValue(
     assertCaptureAuthority,
-    async () => {
-      const result = await page.evaluate(
-        retirePageSensitiveEvidence,
-        SENSITIVE_EVIDENCE_STATE_PROPERTY,
-      );
-      return result === true;
-    },
+    async () => (await page.evaluate(
+      retirePageSensitiveEvidence,
+      SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    )) as SensitiveEvidenceRetirement,
   );
 }
 
-function retirePageSensitiveEvidence(stateProperty: string): boolean {
+function retirePageSensitiveEvidence(stateProperty: string): SensitiveEvidenceRetirement {
   const state = (window as unknown as Record<string, unknown>)[stateProperty] as {
     active?: unknown;
     poisoned?: boolean;
-    records?: unknown[];
+    records?: { readonly observer?: { disconnect(): void } }[];
+    retainedSchedulerEpochs?: { pendingSchedulerCallbacks?: number; processSchedulerCallback?: () => void }[];
   } | undefined;
-  if (state === undefined) return false;
-  if (state.active !== undefined && state.active !== null) return true;
-  if (state.poisoned === true) return true;
+  if (state === undefined) return "retired";
+  if (state.active !== undefined && state.active !== null) return "unavailable";
+  if (state.poisoned === true) return "unavailable";
+  if ((state.retainedSchedulerEpochs ?? []).some((epoch) => (epoch.pendingSchedulerCallbacks ?? 0) > 0)) {
+    return "pending";
+  }
+  for (const record of state.records ?? []) {
+    record.observer?.disconnect();
+  }
+  for (const epoch of state.retainedSchedulerEpochs ?? []) {
+    delete epoch.processSchedulerCallback;
+  }
   state.records = [];
-  return false;
+  state.retainedSchedulerEpochs = [];
+  return "retired";
 }
 
 function collectPageObservation(
@@ -328,6 +341,7 @@ function collectPageObservation(
     if (state.active !== undefined && state.active !== null) return true;
     if (state.poisoned === true) return true;
     const records = state.records ?? [];
+    if (records.length > 0 && shadowRootOverflow()) return true;
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const ids = readSensitiveTargetIds(element);
       for (const record of records) {
@@ -342,15 +356,21 @@ function collectPageObservation(
     for (const root of shadowRoots()) {
       for (const record of records) {
         for (const value of shadowRootValues(root)) {
-          if (carriesForm(value, record.forms) && !shadowBaselineAllows(root, record.markerId, value)) {
-            return true;
+          if (!carriesForm(value, record.forms) || shadowBaselineAllows(root, record.markerId, value)) {
+            continue;
           }
+          if (root.mode === "open" && openRootValueCoveredBySensitiveMarker(root, record.markerId, value)) {
+            continue;
+          }
+          return true;
         }
         for (const element of Array.from(root.querySelectorAll("*"))) {
+          const ids = readSensitiveTargetIds(element);
           for (const value of sensitiveValues(element)) {
-            if (carriesForm(value, record.forms) && !shadowBaselineAllows(element, record.markerId, value)) {
-              return true;
-            }
+            if (!carriesForm(value, record.forms)) continue;
+            if (root.mode === "open" && hasSensitiveTargetId(ids, record.markerId)) continue;
+            if (shadowBaselineAllows(element, record.markerId, value)) continue;
+            return true;
           }
         }
       }
@@ -370,29 +390,66 @@ function collectPageObservation(
     return values;
   }
 
+  function observableElements(selector: string): Element[] {
+    const elements = Array.from(document.querySelectorAll(selector));
+    for (const root of shadowRoots().filter((candidate) => candidate.mode === "open")) {
+      elements.push(...Array.from(root.querySelectorAll(selector)));
+    }
+    return elements;
+  }
+
+  function openRootValueCoveredBySensitiveMarker(root: ShadowRoot, markerId: string, value: string): boolean {
+    if (hasSensitiveTargetId(readSensitiveTargetIds(root.host), markerId)) return true;
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      if (!hasSensitiveTargetId(readSensitiveTargetIds(element), markerId)) continue;
+      if (sensitiveValues(element).some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function shadowRootOverflow(): boolean {
+    const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
+      readonly shadowRootOverflow?: unknown;
+    } | undefined;
+    if (registry?.shadowRootOverflow === true) return true;
+    shadowRoots();
+    return registry?.shadowRootOverflow === true;
+  }
+
   function shadowRoots(): ShadowRoot[] {
     const roots = new Set<ShadowRoot>();
     const pending: ShadowRoot[] = [];
-    const addRoot = (root: ShadowRoot): void => {
-      if (roots.has(root)) return;
-      roots.add(root);
-      pending.push(root);
-    };
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly roots?: readonly unknown[];
+      shadowRootOverflow?: boolean;
     } | undefined;
+    const noteOverflow = (): void => {
+      if (registry !== undefined) registry.shadowRootOverflow = true;
+    };
+    const addRoot = (root: ShadowRoot): boolean => {
+      if (roots.has(root)) return true;
+      if (pending.length >= input.maxShadowRoots) {
+        noteOverflow();
+        return false;
+      }
+      roots.add(root);
+      pending.push(root);
+      return true;
+    };
     for (const root of registry?.roots ?? []) {
-      if (root instanceof ShadowRoot) addRoot(root);
+      if (root instanceof ShadowRoot && !addRoot(root)) return pending;
     }
     for (const element of Array.from(document.querySelectorAll("*"))) {
       const shadowRoot = element.shadowRoot;
-      if (shadowRoot !== null) addRoot(shadowRoot);
+      if (shadowRoot !== null && !addRoot(shadowRoot)) return pending;
     }
     for (let index = 0; index < pending.length; index += 1) {
       const root = pending[index]!;
       for (const element of Array.from(root.querySelectorAll("*"))) {
         const nestedShadowRoot = element.shadowRoot;
-        if (nestedShadowRoot !== null) addRoot(nestedShadowRoot);
+        if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
       }
     }
     return pending;
@@ -400,7 +457,7 @@ function collectPageObservation(
 
   const selector =
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
-  const elements = Array.from(document.querySelectorAll(selector));
+  const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
   const sensitiveMaskIds = new Set<string>();
   const titleElement = document.querySelector("title");
@@ -591,11 +648,12 @@ export class PlaywrightObserver implements Observer {
       }
       assertCaptureAuthority();
       this.session.assertSensitiveEvidenceAvailable();
-      if (
-        this.session.hasPendingSensitiveEvidenceCapture() &&
-        await retireCapturedSensitiveEvidence(page, assertCaptureAuthority)
-      ) {
-        this.session.markSensitiveEvidenceUnavailable();
+      let retirement: SensitiveEvidenceRetirement = "retired";
+      if (this.session.hasPendingSensitiveEvidenceCapture()) {
+        retirement = await retireCapturedSensitiveEvidence(page, assertCaptureAuthority);
+        if (retirement === "unavailable") {
+          this.session.markSensitiveEvidenceUnavailable();
+        }
       }
       this.session.assertSensitiveEvidenceAvailable();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
@@ -603,7 +661,9 @@ export class PlaywrightObserver implements Observer {
         descriptors,
         artifacts,
       }, navigationGeneration);
-      this.session.completeSensitiveEvidenceCapture();
+      if (retirement === "retired") {
+        this.session.completeSensitiveEvidenceCapture();
+      }
       return graph;
     });
   }
