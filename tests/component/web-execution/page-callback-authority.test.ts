@@ -149,6 +149,7 @@ const approvedComputedReadPatterns: readonly RegExp[] = [
   /^\[input\.[A-Za-z0-9_]+\]$/,
   /^\[[0-9]+\]$/,
   /^\[index\]$/,
+  /^\[ordinal\]$/,
   /^\[items\]$/,
   /^\[selector\]$/,
   /^\[name(?:, value)?\]$/,

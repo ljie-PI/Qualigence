@@ -10,6 +10,7 @@ import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
+  type SensitiveEvidencePageStateSnapshot,
   type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
@@ -1555,6 +1556,7 @@ export class PlaywrightBrowserSession {
   private sensitiveEvidenceUnavailable = false;
   private activeSensitiveDispatch: PreparedSensitiveEvidenceRecord | undefined;
   private pendingSensitiveCapture = false;
+  private readonly pendingSensitiveCaptureMarkers = new Set<string>();
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
 
@@ -1820,11 +1822,14 @@ export class PlaywrightBrowserSession {
       return;
     }
     this.pendingSensitiveCapture = true;
+    this.pendingSensitiveCaptureMarkers.clear();
+    this.pendingSensitiveCaptureMarkers.add(prepared.markerId);
   }
 
   markSensitiveEvidenceUnavailable(): void {
     this.activeSensitiveDispatch = undefined;
     this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
     this.sensitiveEvidenceUnavailable = true;
   }
 
@@ -1866,25 +1871,47 @@ export class PlaywrightBrowserSession {
     return this.sensitiveEvidence.maskSnapshot();
   }
 
+  validatePendingSensitivePageState(snapshot: SensitiveEvidencePageStateSnapshot): void {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture) return;
+    if (!this.sensitiveEvidence.validatePendingPageState(snapshot, [...this.pendingSensitiveCaptureMarkers])) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+  }
+
+  sensitiveMaskIdBelongsToAuthority(maskId: string | undefined): boolean {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.hasSensitiveMaskId(maskId);
+  }
+
   completeSensitiveEvidenceCapture(): void {
     this.assertSensitiveEvidenceAvailable();
     this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
   }
 
   redactSensitiveTargetField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
+    sensitiveMaskId?: string,
   ): string {
     this.assertSensitiveEvidenceAvailable();
-    return this.sensitiveEvidence.redactField(sensitiveTargetIds, value);
+    const result = this.sensitiveEvidence.redactField(sensitiveTargetIds, value, sensitiveMaskId);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
   }
 
   redactSensitiveTitleField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
+    sensitiveMaskId?: string,
   ): string {
     this.assertSensitiveEvidenceAvailable();
-    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value);
+    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value, sensitiveMaskId);
     if (result.status === "unavailable") {
       this.markSensitiveEvidenceUnavailable();
       throw sensitiveEvidenceUnavailable();
@@ -2149,6 +2176,7 @@ export class PlaywrightBrowserSession {
     this.sensitiveEvidenceUnavailable = false;
     this.activeSensitiveDispatch = undefined;
     this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
 
     const browser = this.browser;
     this.browser = undefined;

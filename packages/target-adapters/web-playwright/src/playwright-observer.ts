@@ -19,6 +19,7 @@ import {
   SENSITIVE_MASK_ID_ATTRIBUTE,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   SENSITIVE_TARGET_IDS_PROPERTY,
+  type SensitiveEvidencePageStateSnapshot,
   type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
@@ -474,9 +475,11 @@ interface BrowserObservationCandidate extends ObservationCandidate {
 interface BrowserObservationCapture {
   readonly candidates: readonly BrowserObservationCandidate[];
   readonly sensitiveMaskIds: readonly string[];
+  readonly sensitivePageState: SensitiveEvidencePageStateSnapshot;
   readonly viewport: WebViewportV1;
   readonly title?: string;
   readonly titleSensitiveTargetIds?: readonly string[];
+  readonly titleSensitiveMaskId?: string;
   readonly sensitiveEvidenceUnavailable: boolean;
 }
 
@@ -558,6 +561,7 @@ function collectPageObservation(
   const failedPageObservation = (): BrowserObservationCapture => ({
     candidates: [],
     sensitiveMaskIds: [],
+    sensitivePageState: { status: "failed", active: false, poisoned: true, records: [] },
     viewport: { width: 1, height: 1, devicePixelRatio: 1 },
     sensitiveEvidenceUnavailable: true,
   });
@@ -951,8 +955,14 @@ function collectPageObservation(
     return registry?.shadowRootOverflow === true;
   }
 
-  function authoritativeSensitiveMaskIds(): { readonly status: "ok"; readonly ids: readonly string[] } | { readonly status: "failed" } {
+  function pageSensitiveEvidenceState(): { readonly status: "ok"; readonly ids: readonly string[]; readonly snapshot: SensitiveEvidencePageStateSnapshot } | { readonly status: "failed"; readonly ids: readonly string[]; readonly snapshot: SensitiveEvidencePageStateSnapshot } {
+    const failed = (): { readonly status: "failed"; readonly ids: readonly string[]; readonly snapshot: SensitiveEvidencePageStateSnapshot } => ({
+      status: "failed",
+      ids: [],
+      snapshot: { status: "failed", active: false, poisoned: true, records: [] },
+    });
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly active?: unknown;
       readonly records?: readonly {
         readonly markerId: string;
         readonly forms?: readonly string[];
@@ -963,35 +973,76 @@ function collectPageObservation(
       }[];
       readonly poisoned?: boolean;
     } | undefined;
-    if (state === undefined) return { status: "ok", ids: [] };
-    if (state.poisoned === true) return { status: "failed" };
-    const maskIds: string[] = [];
+    if (state === undefined) {
+      return {
+        status: "ok",
+        ids: [],
+        snapshot: { status: "ok", active: false, poisoned: false, records: [] },
+      };
+    }
+    if (state.poisoned === true) return failed();
     const records = state.records ?? [];
-    if (!dom.arrayIsArray(records)) return { status: "failed" };
+    if (!dom.arrayIsArray(records)) return failed();
+    const maskIds: string[] = [];
+    const pageRecords: Array<SensitiveEvidencePageStateSnapshot["records"][number]> = [];
     for (const record of records) {
-      if (record.poisoned === true) return { status: "failed" };
+      if (record.poisoned === true || typeof record.markerId !== "string") return failed();
+      const forms = cloneStringArray(record.forms);
       const elements = record.classifiedElements ?? [];
-      if (!dom.arrayIsArray(elements)) return { status: "failed" };
-      const recordMaskIds = record.classifiedMaskIds;
-      if (!dom.arrayIsArray(recordMaskIds) || recordMaskIds.length !== elements.length) return { status: "failed" };
-      if ((record.classifiedRegions?.length ?? elements.length) > input.maxMaskRegions) return { status: "failed" };
+      const recordMaskIds = cloneStringArray(record.classifiedMaskIds);
+      if (forms === undefined || !dom.arrayIsArray(elements) || recordMaskIds === undefined) return failed();
+      if (recordMaskIds.length !== elements.length) return failed();
+      if ((record.classifiedRegions?.length ?? elements.length) > input.maxMaskRegions) return failed();
+      const classifiedElementMaskIds: (string | undefined)[] = [];
+      const classifiedElementTargetIds: string[][] = [];
       let index = 0;
       for (const element of elements) {
-        if (element.nodeType !== 1) return { status: "failed" };
+        if (element.nodeType !== 1) return failed();
         const root = getRootNode(element);
         if (root !== element.ownerDocument && (!isShadowRootNode(root) || shadowRootMode(root) !== "open")) {
-          return { status: "failed" };
+          return failed();
         }
         const id = recordMaskIds[index];
         index += 1;
-        if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) return { status: "failed" };
+        if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) return failed();
         setAttribute(element, input.sensitiveMaskIdAttribute, id);
-        if (getAttribute(element, input.sensitiveMaskIdAttribute) !== id) return { status: "failed" };
+        const observedMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
+        if (observedMaskId !== id) return failed();
+        classifiedElementMaskIds[classifiedElementMaskIds.length] = observedMaskId;
+        const targetIds = cloneStringArray((element as unknown as Record<string, unknown>)[input.sensitiveTargetIdsProperty]);
+        if (targetIds === undefined) return failed();
+        classifiedElementTargetIds[classifiedElementTargetIds.length] = targetIds;
         pushUniqueString(maskIds, id);
-        if (maskIds.length > input.maxMaskRegions) return { status: "failed" };
+        if (maskIds.length > input.maxMaskRegions) return failed();
       }
+      pageRecords[pageRecords.length] = {
+        markerId: record.markerId,
+        forms,
+        classifiedMaskIds: recordMaskIds,
+        classifiedElementMaskIds,
+        classifiedElementTargetIds,
+      };
     }
-    return { status: "ok", ids: [...maskIds] };
+    return {
+      status: "ok",
+      ids: [...maskIds],
+      snapshot: {
+        status: "ok",
+        active: state.active !== undefined && state.active !== null,
+        poisoned: false,
+        records: pageRecords,
+      },
+    };
+  }
+
+  function cloneStringArray(value: unknown): string[] | undefined {
+    if (!dom.arrayIsArray(value)) return undefined;
+    const result: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") return undefined;
+      result[result.length] = entry;
+    }
+    return result;
   }
 
   function isShadowRootNode(node: Node): node is ShadowRoot {
@@ -1035,12 +1086,12 @@ function collectPageObservation(
     return pending;
   }
 
-  const maskAuthority = authoritativeSensitiveMaskIds();
+  const pageSensitiveState = pageSensitiveEvidenceState();
   const selector =
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
-  const sensitiveMaskIds = maskAuthority.status === "ok" ? maskAuthority.ids : [];
+  const sensitiveMaskIds = pageSensitiveState.status === "ok" ? pageSensitiveState.ids : [];
   const titleElement = queryDocumentOne("title");
 
   for (const element of elements) {
@@ -1109,14 +1160,21 @@ function collectPageObservation(
   return {
     candidates,
     sensitiveMaskIds,
+    sensitivePageState: pageSensitiveState.snapshot,
     viewport: {
       width: Math.max(1, Math.trunc(window.innerWidth)),
       height: Math.max(1, Math.trunc(window.innerHeight)),
       devicePixelRatio: window.devicePixelRatio,
     },
     title: apply(dom.documentTitleGet!, document),
-    ...(titleElement === null ? {} : { titleSensitiveTargetIds: readSensitiveTargetIds(titleElement) }),
-    sensitiveEvidenceUnavailable: maskAuthority.status === "failed" || sensitiveEvidenceUnavailable(),
+    ...(titleElement === null ? {} : {
+      titleSensitiveTargetIds: readSensitiveTargetIds(titleElement),
+      ...(() => {
+        const titleSensitiveMaskId = getAttribute(titleElement, input.sensitiveMaskIdAttribute) ?? undefined;
+        return titleSensitiveMaskId === undefined ? {} : { titleSensitiveMaskId };
+      })(),
+    }),
+    sensitiveEvidenceUnavailable: pageSensitiveState.status === "failed" || sensitiveEvidenceUnavailable(),
   };
   } catch {
     return failedPageObservation();
@@ -1164,6 +1222,7 @@ export class PlaywrightObserver implements Observer {
           this.session.markSensitiveEvidenceUnavailable();
         }
         this.session.assertSensitiveEvidenceAvailable();
+        this.session.validatePendingSensitivePageState(captured.sensitivePageState);
         await this.hooks.afterDomCollection?.(page);
         const preScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
         if (preScreenshotCheck.sensitiveEvidenceUnavailable) {
@@ -1171,28 +1230,33 @@ export class PlaywrightObserver implements Observer {
         }
         assertCaptureAuthority();
         this.session.assertSensitiveEvidenceAvailable();
+        this.session.validatePendingSensitivePageState(preScreenshotCheck.sensitivePageState);
         const raw = captured.candidates.map((candidate) => ({
           role: candidate.role,
           ...(candidate.name === undefined ? {} : {
             name: this.session.redactSensitiveTargetField(
               candidate.sensitiveTargetIds,
               candidate.name,
+              candidate.sensitiveMaskId,
             ),
           }),
           ...(candidate.text === undefined ? {} : {
             text: this.session.redactSensitiveTargetField(
               candidate.sensitiveTargetIds,
               candidate.text,
+              candidate.sensitiveMaskId,
             ),
           }),
           ...(candidate.value === undefined ? {} : {
             value: this.session.redactSensitiveTargetField(
               candidate.sensitiveTargetIds,
               candidate.value,
+              candidate.sensitiveMaskId,
             ),
           }),
           ...(candidate.disabled === undefined ? {} : { disabled: candidate.disabled }),
-          ...(candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0
+          ...(this.session.sensitiveMaskIdBelongsToAuthority(candidate.sensitiveMaskId) ||
+            (candidate.sensitiveTargetIds !== undefined && candidate.sensitiveTargetIds.length > 0)
             ? { sensitive: true }
             : {}),
         }));
@@ -1205,11 +1269,19 @@ export class PlaywrightObserver implements Observer {
           : this.session.redactSensitiveTitleField(
               captured.titleSensitiveTargetIds,
               captured.title,
+              captured.titleSensitiveMaskId,
             );
 
         assertCaptureAuthority();
         await this.hooks.afterGraphAssembly?.(page);
         await this.session.revalidateSensitivePromiseOwners(page, navigationGeneration);
+        if (this.session.hasPendingSensitiveEvidenceCapture()) {
+          const afterGraphAssemblyCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+          if (afterGraphAssemblyCheck.sensitiveEvidenceUnavailable) {
+            this.session.markSensitiveEvidenceUnavailable();
+          }
+          this.session.validatePendingSensitivePageState(afterGraphAssemblyCheck.sensitivePageState);
+        }
 
         const maskSnapshot = this.session.sensitiveMaskSnapshot();
         if (this.session.hasPendingSensitiveEvidenceCapture() && maskSnapshot.length === 0) {
@@ -1237,6 +1309,7 @@ export class PlaywrightObserver implements Observer {
         }
         assertCaptureAuthority();
         this.session.assertSensitiveEvidenceAvailable();
+        this.session.validatePendingSensitivePageState(postScreenshotCheck.sensitivePageState);
         let retirement: SensitiveEvidenceRetirement = "retired";
         if (this.session.hasPendingSensitiveEvidenceCapture()) {
           retirement = await retireCapturedSensitiveEvidence(page, assertCaptureAuthority);

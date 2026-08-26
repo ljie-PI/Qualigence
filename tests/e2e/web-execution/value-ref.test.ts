@@ -33,6 +33,7 @@ import { htmlDocument, startFixtureServer, type FixtureServer } from "../../comp
 import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
+  SENSITIVE_TARGET_IDS_PROPERTY,
 } from "../../../packages/target-adapters/web-playwright/src/sensitive-evidence-authority.js";
 
 const INPUT_VALUE = "alpha\nbeta\r\ngamma\n";
@@ -715,6 +716,207 @@ describe("production valueRef browser execution", () => {
     const spoolText = (await readFile(spoolFile)).toString("utf8");
     expect(JSON.stringify(logs)).not.toContain(secondRaceSecret);
     expect(spoolText).not.toContain(secondRaceSecret);
+    expect(spoolText).toContain("SensitiveEvidenceUnavailable");
+  }, 90_000);
+
+  it("fails closed through Runner Spool when page mutates sensitive records and target ids before capture registration", async () => {
+    const pageStateSecret = "ticket45-runner-spool-page-state-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 360px; height: 220px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #page-state-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #page-state-mirror { position: absolute; left: 30px; top: 120px; width: 240px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Page State Secret <input id="page-state-secret" aria-label="Page State Secret" /></label>
+        <div id="page-state-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('page-state-secret');
+          const mirror = document.getElementById('page-state-mirror');
+          input.addEventListener('input', () => {
+            document.title = input.value;
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 Runner page-state tamper"),
+    });
+
+    const root = await mkdtemp(join(tmpdir(), "qualigence-ticket45-page-state-spool-"));
+    roots.push(root);
+    await writeFile(join(root, "secret.txt"), pageStateSecret, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      await chmod(join(root, "secret.txt"), 0o600);
+    }
+    const configFile = join(root, "values.json");
+    await writeFile(configFile, JSON.stringify({ "profile.pageStateSecret": "secret.txt" }));
+    const valueProvider = await FileActionValueProvider.open({ root, configFile });
+    const spoolFile = join(root, "runner-spool.db");
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
+
+    modelServer = createServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as {
+        readonly messages: readonly { readonly content: string }[];
+        readonly response_format: { readonly json_schema: { readonly name: string } };
+      };
+      const operation = body.response_format.json_schema.name;
+      const output = operation === "execution_verification"
+        ? { status: "passed", summary: "not expected after page-state tamper", claims: [] }
+        : decisionFrom(body.messages.at(-1)?.content ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        id: `chatcmpl-ticket45-page-state-${Date.now()}`,
+        model: "ticket-45-model",
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }));
+    });
+    modelServer.listen(0, "127.0.0.1");
+    await once(modelServer, "listening");
+    const modelAddress = modelServer.address();
+    if (modelAddress === null || typeof modelAddress === "string") throw new Error("Expected model listener.");
+
+    const logs: string[] = [];
+    const batches: ExecutionEventBatch[] = [];
+    const spooledEvents: ExecutionEventBatch["events"][number][] = [];
+    const completions: ExecutionCompletion[] = [];
+    const capturedArtifacts: CapturedArtifact[] = [];
+    let pageStateTamperCount = 0;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const session: RunnerSession = {
+      welcome: {
+        sessionId: "session-ticket45-page-state-spool",
+        resumeToken: "resume-ticket45-page-state-spool",
+        selectedProtocolMajor: 1,
+        serverVersion: "test",
+        heartbeatIntervalMs: 10_000,
+        leaseDurationMs: 60_000,
+        traceBatchMaximumEvents: 100,
+        traceBatchMaximumBytes: 1_000_000,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 1_000_000,
+      },
+      nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+      accept: async (offerId: string): Promise<ExecutionJobLease> => ({
+        jobId: offerId.replace("offer", "job"),
+        runId: offerId.replace("offer", "run"),
+        leaseToken: `lease-${offerId}`,
+        leaseEpoch: 1,
+        expiresAt: "2099-08-21T00:00:00.000Z",
+      }),
+      renew: async () => { throw new Error("Unexpected lease renewal"); },
+      submit: async (batch: ExecutionEventBatch) => {
+        spooledEvents.push(...await spool!.pending(batch.runId, batch.firstSequenceNumber, {
+          maximumEvents: 100,
+          maximumBytes: 1_000_000,
+        }));
+        batches.push(batch);
+        return {
+          batchId: batch.batchId,
+          runId: batch.runId,
+          nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+        };
+      },
+      complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
+      close: async () => undefined,
+    };
+
+    class PageStateTamperTargetAdapter extends HookedWebTargetAdapter {
+      constructor(options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) {
+        super(options, {
+          afterDomCollection: async (page) => {
+            const tampered = await page.evaluate((input) => {
+              const host = globalThis as unknown as Record<string, unknown> & {
+                readonly document: { querySelectorAll(selector: string): Iterable<Element> };
+              };
+              const state = host[input.stateProperty] as { records?: { forms?: string[] }[] } | undefined;
+              if ((state?.records?.length ?? 0) === 0) return false;
+              for (const record of state!.records!) {
+                if (Array.isArray(record.forms)) record.forms.length = 0;
+              }
+              for (const element of host.document.querySelectorAll("*")) {
+                const ids = (element as unknown as Record<string, unknown>)[input.targetIdsProperty];
+                if (Array.isArray(ids)) ids.length = 0;
+              }
+              return true;
+            }, {
+              stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+              targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+            });
+            if (tampered) pageStateTamperCount += 1;
+          },
+        });
+      }
+
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        const graph = await super.capture(job, signal);
+        capturedArtifacts.push(...await super.captureArtifacts(graph.graphId));
+        return graph;
+      }
+    }
+
+    const config: RunnerConfig = {
+      runnerId: "runner-ticket45-page-state-spool",
+      coreAddress: "unused",
+      authority: "unused",
+      tls: { ca: Buffer.alloc(0), cert: Buffer.alloc(0), key: Buffer.alloc(0) },
+      dataDir: root,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      model: {
+        baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
+        apiKey: "acceptance-api-key",
+        modelName: "ticket-45-model",
+        maximumTokensPerCall: 100,
+      },
+    };
+    const runtime = new RunnerOfferRuntime({
+      config,
+      session,
+      spool,
+      valueProvider,
+      createTarget: (targetOptions) => new PageStateTamperTargetAdapter(targetOptions),
+    });
+
+    try {
+      await runtime.run(offer("input", "profile.pageStateSecret", "Page State Secret", "textbox", "ticket45-page-state-spool"));
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    expect(pageStateTamperCount).toBeGreaterThanOrEqual(1);
+    expect(completions).toEqual([
+      { jobId: "job-ticket45-page-state-spool", runId: "run-ticket45-page-state-spool", status: "error", errorCode: "SensitiveEvidenceUnavailable" },
+    ]);
+    const trace = batches.flatMap((batch) => batch.events);
+    expect(trace.find((event) => event.runId === "run-ticket45-page-state-spool" && event.stage === "run_completed")?.payload)
+      .toMatchObject({ status: "error", errorCode: "SensitiveEvidenceUnavailable" });
+    expect(JSON.stringify(trace)).not.toContain(pageStateSecret);
+    expect(JSON.stringify(spooledEvents)).not.toContain(pageStateSecret);
+    const artifactBytes = Buffer.concat(capturedArtifacts.map((artifact) => Buffer.from(artifact.bytes))).toString("utf8");
+    expect(artifactBytes).not.toContain(pageStateSecret);
+    await spool.close();
+    spool = undefined;
+    const spoolText = (await readFile(spoolFile)).toString("utf8");
+    expect(JSON.stringify(logs)).not.toContain(pageStateSecret);
+    expect(spoolText).not.toContain(pageStateSecret);
     expect(spoolText).toContain("SensitiveEvidenceUnavailable");
   }, 90_000);
 

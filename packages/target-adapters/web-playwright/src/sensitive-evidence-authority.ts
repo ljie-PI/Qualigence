@@ -30,6 +30,21 @@ export interface SensitiveMaskSnapshotEntry {
   readonly backendNodeId: number;
 }
 
+export interface SensitiveEvidencePageRecordSnapshot {
+  readonly markerId: string;
+  readonly forms: readonly string[];
+  readonly classifiedMaskIds: readonly string[];
+  readonly classifiedElementMaskIds: readonly (string | undefined)[];
+  readonly classifiedElementTargetIds: readonly (readonly string[])[];
+}
+
+export interface SensitiveEvidencePageStateSnapshot {
+  readonly status: "ok" | "failed";
+  readonly active: boolean;
+  readonly poisoned: boolean;
+  readonly records: readonly SensitiveEvidencePageRecordSnapshot[];
+}
+
 export interface SensitiveEvidenceRecordInput {
   readonly navigationGeneration: number;
   readonly dispatchOrdinal: number;
@@ -114,10 +129,12 @@ export class SensitiveEvidenceAuthority {
     if (maskSnapshot.length === 0 || maskSnapshot.length > MAX_REFLECTED_REGIONS) {
       return { status: "failed", reason: "record-limit-exceeded" };
     }
+    const maskIds = new Set<string>();
     for (const entry of maskSnapshot) {
-      if (entry.markerId !== prepared.markerId || !isAllowedMaskId(entry.maskId) || !Number.isSafeInteger(entry.backendNodeId)) {
+      if (entry.markerId !== prepared.markerId || !isAllowedMaskId(entry.maskId) || !Number.isSafeInteger(entry.backendNodeId) || maskIds.has(entry.maskId)) {
         return { status: "failed", reason: "record-limit-exceeded" };
       }
+      maskIds.add(entry.maskId);
     }
     this.records.set(prepared.markerId, {
       markerId: prepared.markerId,
@@ -133,31 +150,79 @@ export class SensitiveEvidenceAuthority {
   redactField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
-  ): string {
-    return this.redactFieldWithStatus(sensitiveTargetIds, value).value;
+    sensitiveMaskId?: string,
+  ): SensitiveEvidenceRedactionResult {
+    return this.redactFieldWithStatus(sensitiveTargetIds, value, sensitiveMaskId);
   }
 
   redactFieldWithStatus(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
+    sensitiveMaskId?: string,
   ): SensitiveEvidenceRedactionResult {
-    if (sensitiveTargetIds === undefined || sensitiveTargetIds.length === 0) {
-      return { status: "unchanged", value };
+    const trustedMarkerIds = new Set<string>();
+    let maskMatched = false;
+    if (sensitiveMaskId !== undefined) {
+      for (const record of this.records.values()) {
+        if (record.maskSnapshot.some((entry) => entry.maskId === sensitiveMaskId)) {
+          trustedMarkerIds.add(record.markerId);
+          maskMatched = true;
+        }
+      }
     }
     let hasUnknownRecord = false;
-    for (const markerId of sensitiveTargetIds) {
-      const record = this.records.get(markerId);
-      if (record === undefined) {
+    for (const markerId of sensitiveTargetIds ?? []) {
+      if (!this.records.has(markerId)) {
         hasUnknownRecord = true;
         continue;
       }
-      if (carriesSensitiveForm(value, record.forms)) {
+      trustedMarkerIds.add(markerId);
+    }
+    const hasUnknownMaskId = sensitiveMaskId !== undefined && !maskMatched && trustedMarkerIds.size === 0;
+
+    let carriesAnySensitiveForm = false;
+    for (const [markerId, record] of this.records) {
+      if (!carriesSensitiveForm(value, record.forms)) continue;
+      carriesAnySensitiveForm = true;
+      if (trustedMarkerIds.has(markerId)) {
         return { status: "redacted", value: REDACTED_SENSITIVE_TEXT };
       }
     }
-    return hasUnknownRecord
-      ? { status: "unavailable", value }
-      : { status: "unchanged", value };
+
+    if (hasUnknownRecord || (carriesAnySensitiveForm && hasUnknownMaskId)) {
+      return { status: "unavailable", value };
+    }
+    return { status: "unchanged", value };
+  }
+
+  validatePendingPageState(
+    snapshot: SensitiveEvidencePageStateSnapshot,
+    pendingMarkerIds: readonly string[],
+  ): boolean {
+    if (pendingMarkerIds.length === 0) return true;
+    if (snapshot.status !== "ok" || snapshot.active || snapshot.poisoned) return false;
+    for (const markerId of pendingMarkerIds) {
+      const record = this.records.get(markerId);
+      const pageRecord = snapshot.records.find((candidate) => candidate.markerId === markerId);
+      if (record === undefined || pageRecord === undefined) return false;
+      if (!containsAll(pageRecord.forms, record.forms)) return false;
+      const expectedMaskIds = record.maskSnapshot.map((entry) => entry.maskId);
+      if (!sameStringSet(pageRecord.classifiedMaskIds, expectedMaskIds)) return false;
+      if (!sameStringSet(pageRecord.classifiedElementMaskIds.filter((entry): entry is string => entry !== undefined), expectedMaskIds)) return false;
+      if (pageRecord.classifiedElementTargetIds.length !== expectedMaskIds.length) return false;
+      for (const targetIds of pageRecord.classifiedElementTargetIds) {
+        if (!targetIds.includes(markerId)) return false;
+      }
+    }
+    return true;
+  }
+
+  hasSensitiveMaskId(maskId: string | undefined): boolean {
+    if (maskId === undefined) return false;
+    for (const record of this.records.values()) {
+      if (record.maskSnapshot.some((entry) => entry.maskId === maskId)) return true;
+    }
+    return false;
   }
 
   maskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
@@ -175,6 +240,26 @@ function isAllowedForm(value: string): boolean {
 
 function isAllowedMaskId(value: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function containsAll(candidates: readonly string[], expected: ReadonlySet<string>): boolean {
+  for (const value of expected) {
+    if (!candidates.includes(value)) return false;
+  }
+  return true;
+}
+
+function sameStringSet(actual: readonly string[], expected: readonly string[]): boolean {
+  if (actual.length !== expected.length) return false;
+  const seen = new Set<string>();
+  for (const value of actual) {
+    if (seen.has(value)) return false;
+    seen.add(value);
+  }
+  for (const value of expected) {
+    if (!seen.has(value)) return false;
+  }
+  return true;
 }
 
 function carriesSensitiveForm(value: string, forms: ReadonlySet<string>): boolean {

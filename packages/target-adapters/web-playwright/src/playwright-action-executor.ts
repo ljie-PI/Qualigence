@@ -633,10 +633,12 @@ async function collectSensitiveMaskSnapshot(
     await cdp.send("DOM.enable");
     await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
     const entries: SensitiveMaskSnapshotEntry[] = [];
+    const seenMaskIds = new Set<string>();
     for (const maskId of maskIds) {
+      if (seenMaskIds.has(maskId)) throw new Error("Sensitive mask snapshot is incomplete.");
+      seenMaskIds.add(maskId);
       const nodeId = await uniqueCdpNodeIdForMask(cdp, maskId);
-      const box = await cdp.send("DOM.getBoxModel", { nodeId }).catch(() => undefined);
-      if (box === undefined) continue;
+      await cdp.send("DOM.getBoxModel", { nodeId });
       const described = await cdp.send("DOM.describeNode", { nodeId }) as {
         readonly node?: { readonly backendNodeId?: number };
       };
@@ -646,8 +648,8 @@ async function collectSensitiveMaskSnapshot(
       }
       entries[entries.length] = { markerId, maskId, backendNodeId };
     }
-    if (entries.length === 0) {
-      throw new Error("Sensitive mask snapshot is empty.");
+    if (entries.length !== maskIds.length) {
+      throw new Error("Sensitive mask snapshot is incomplete.");
     }
     return entries;
   } finally {
@@ -1389,15 +1391,15 @@ async function beginPageSensitiveActionEpoch(
       const nodeKey = `${input.markerId}:${nodeIdentity(candidate)}`;
       if (!arrayHasString(epochToUpdate.classifiedNodes, nodeKey)) {
         epochToUpdate.classifiedNodes[epochToUpdate.classifiedNodes.length] = nodeKey;
-        epochToUpdate.classifiedElements.push(candidate);
         if (epochToUpdate.classifiedNodes.length > input.maxClassifiedNodes) {
           poison(epochToUpdate);
           return;
         }
       }
       const regionKey = nodeKey;
-      if (!arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
+      if (isMaskableElement(candidate) && !arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
         epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
+        epochToUpdate.classifiedElements.push(candidate);
         if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           poison(epochToUpdate);
           return;
@@ -1438,6 +1440,11 @@ async function beginPageSensitiveActionEpoch(
         tag === "select" ||
         hasAttribute(candidate, "role") ||
         hasAttribute(candidate, "data-qualigence-observe");
+    }
+
+    function isMaskableElement(candidate: Element): boolean {
+      const tag = tagName(candidate);
+      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
     }
 
     function nodeIdentity(candidate: Element): string {
@@ -1991,7 +1998,8 @@ async function endPageSensitiveActionEpoch(
     ): string[] {
       const maskIds: string[] = [];
       const elements = epochToUpdate.classifiedElements ?? [];
-      if (elements.length === 0 || elements.length > input.maxMaskRegions) {
+      if (elements.length === 0 || elements.length > input.maxMaskRegions ||
+        elements.length !== epochToUpdate.classifiedRegions.length) {
         epochToUpdate.poisoned = true;
         stateToUpdate.poisoned = true;
         return maskIds;
@@ -1999,6 +2007,12 @@ async function endPageSensitiveActionEpoch(
       let ordinal = 0;
       for (const candidate of elements) {
         if (candidate.nodeType !== 1) {
+          epochToUpdate.poisoned = true;
+          stateToUpdate.poisoned = true;
+          return maskIds;
+        }
+        const expectedNodeKey = `${epochToUpdate.markerId}:${nodeIdentity(stateToUpdate, candidate)}`;
+        if (epochToUpdate.classifiedRegions[ordinal] !== expectedNodeKey) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
           return maskIds;
@@ -2247,9 +2261,6 @@ async function endPageSensitiveActionEpoch(
       const nodeKey = `${input.markerId}:${nodeIdentity(stateToUpdate, candidate)}`;
       if (!arrayHasString(epochToUpdate.classifiedNodes, nodeKey)) {
         epochToUpdate.classifiedNodes[epochToUpdate.classifiedNodes.length] = nodeKey;
-        if (epochToUpdate.classifiedElements !== undefined) {
-          epochToUpdate.classifiedElements.push(candidate);
-        }
         if (epochToUpdate.classifiedNodes.length > input.maxClassifiedNodes) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
@@ -2257,8 +2268,11 @@ async function endPageSensitiveActionEpoch(
         }
       }
       const regionKey = nodeKey;
-      if (!arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
+      if (isMaskableElement(candidate) && !arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
         epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
+        if (epochToUpdate.classifiedElements !== undefined) {
+          epochToUpdate.classifiedElements.push(candidate);
+        }
         if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
@@ -2292,6 +2306,11 @@ async function endPageSensitiveActionEpoch(
         tag === "select" ||
         hasAttribute(candidate, "role") ||
         hasAttribute(candidate, "data-qualigence-observe");
+    }
+
+    function isMaskableElement(candidate: Element): boolean {
+      const tag = tagName(candidate);
+      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
     }
 
     function nodeIdentity(stateToUpdate: BrowserSensitiveState, candidate: Element): string {

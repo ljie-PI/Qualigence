@@ -315,6 +315,36 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when page state and target id arrays are mutated before graph capture", async () => {
+    await enterSecret();
+    await session.withPage(async (page) => {
+      await page.evaluate((input) => {
+        const host = globalThis as unknown as Record<string, unknown> & {
+          readonly document: { querySelectorAll(selector: string): Iterable<Element> };
+        };
+        const state = host[input.stateProperty] as {
+          records?: { forms?: string[] }[];
+        } | undefined;
+        const record = state?.records?.[0];
+        if (record?.forms === undefined) throw new Error("Missing sensitive record.");
+        record.forms.length = 0;
+        for (const element of host.document.querySelectorAll(`[${input.maskAttribute}]`)) {
+          const ids = (element as unknown as Record<string, unknown>)[input.targetIdsProperty];
+          if (Array.isArray(ids)) ids.length = 0;
+        }
+      }, {
+        stateProperty: "__qualigenceSensitiveEvidenceState",
+        targetIdsProperty: "__qualigenceSensitiveTargetIds",
+        maskAttribute: MASK_ATTRIBUTE,
+      });
+    });
+
+    await expect(new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when marker attributes are reassigned to a non-sensitive backend node", async () => {
     await enterSecret();
     const observer = new PlaywrightObserver(session, {
@@ -340,6 +370,84 @@ describe("CDP screenshot masking", () => {
       },
     });
 
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when a classified region is hidden during host snapshot collection and later becomes visible", async () => {
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #secret { position: absolute; left: 20px; top: 20px; width: 96px; height: 24px; }
+          #mirror { display: none; position: absolute; left: 20px; top: 60px; width: 160px; height: 24px; }
+        </style>
+        <label>Email <input id="secret" aria-label="Email" /></label>
+        <div id="mirror" data-qualigence-observe>Mirror pending</div>
+        <script>
+          const secret = document.getElementById('secret');
+          const mirror = document.getElementById('mirror');
+          secret.addEventListener('input', () => {
+            mirror.textContent = secret.value;
+          });
+        </script>
+      `, "Hidden sensitive region"),
+    });
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const before = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = before.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage(async (page) => {
+      await page.locator("#mirror").evaluate((element) => {
+        (element as unknown as { readonly style: { display: string } }).style.display = "block";
+      });
+    });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when page script mutates active classifiedElements during the input event", async () => {
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <label>Email <input id="secret" aria-label="Email" /></label>
+        <div id="mirror" data-qualigence-observe>Mirror pending</div>
+        <script>
+          const secret = document.getElementById('secret');
+          const mirror = document.getElementById('mirror');
+          secret.addEventListener('input', () => {
+            const state = window.__qualigenceSensitiveEvidenceState;
+            if (state && state.active && Array.isArray(state.active.classifiedElements)) {
+              state.active.classifiedElements.length = 0;
+            }
+            mirror.textContent = secret.value;
+          });
+        </script>
+      `, "Mutated active classified elements"),
+    });
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const before = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = before.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
     await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
     expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
