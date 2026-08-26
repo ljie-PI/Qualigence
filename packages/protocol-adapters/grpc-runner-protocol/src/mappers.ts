@@ -190,7 +190,7 @@ function appTargetToWire(app: AppTarget): Wire {
 }
 
 function hasWireField(wire: Wire, field: string): boolean {
-  return Object.prototype.hasOwnProperty.call(wire, field) && wire[field] !== undefined && wire[field] !== null;
+  return Object.prototype.hasOwnProperty.call(wire, field) && wire[field] !== undefined;
 }
 
 function requireWireField(wire: Wire, field: string, message: string): void {
@@ -199,50 +199,126 @@ function requireWireField(wire: Wire, field: string, message: string): void {
   }
 }
 
+function requireWireObject(wire: Wire, field: string, message: string): Wire {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be an object`);
+  }
+  return value as Wire;
+}
+
+function requireWireString(wire: Wire, field: string, message: string): string {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "string") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a string`);
+  }
+  return value;
+}
+
+function optionalWireString(wire: Wire, field: string, message: string): string | undefined {
+  if (!hasWireField(wire, field)) return undefined;
+  const value = wire[field];
+  if (typeof value !== "string") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a string`);
+  }
+  return value;
+}
+
+function wireStringArray(wire: Wire, field: string, message: string): readonly string[] {
+  if (!hasWireField(wire, field)) return [];
+  const value = wire[field];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be an array of strings`);
+  }
+  return value;
+}
+
+function requireWireNumber(wire: Wire, field: string, message: string): number {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "number") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a number`);
+  }
+  return value;
+}
+
+function requireWireBoolean(wire: Wire, field: string, message: string): boolean {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "boolean") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a boolean`);
+  }
+  return value;
+}
+
 function appTargetFromWire(wire: unknown): AppTarget {
   if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
     throw new RunnerProtocolError("ProtocolViolation", "Desktop TargetRef is missing AppTarget fields");
   }
   const app = wire as Wire;
-  for (const field of ["target_id", "platform", "launch", "process", "window", "reset", "shutdown"] as const) {
-    requireWireField(app, field, `Desktop TargetRef AppTarget is missing ${field}`);
-  }
-  const launch = app.launch as Wire;
-  const process = app.process as Wire;
-  const window = app.window as Wire;
-  const reset = app.reset as Wire;
-  const shutdown = app.shutdown as Wire;
-  requireWireField(launch, "executable", "Desktop TargetRef AppTarget launch.executable is missing");
-  requireWireField(process, "expected_image_name", "Desktop TargetRef AppTarget process.expected_image_name is missing");
-  requireWireField(reset, "command", "Desktop TargetRef AppTarget reset.command is missing");
-  requireWireField(reset, "timeout_ms", "Desktop TargetRef AppTarget reset.timeout_ms is missing");
-  requireWireField(shutdown, "graceful_timeout_ms", "Desktop TargetRef AppTarget shutdown.graceful_timeout_ms is missing");
-  requireWireField(shutdown, "force_after_timeout", "Desktop TargetRef AppTarget shutdown.force_after_timeout is missing");
+  const launch = requireWireObject(app, "launch", "Desktop TargetRef AppTarget launch is missing");
+  const process = requireWireObject(app, "process", "Desktop TargetRef AppTarget process is missing");
+  const window = requireWireObject(app, "window", "Desktop TargetRef AppTarget window is missing");
+  const reset = requireWireObject(app, "reset", "Desktop TargetRef AppTarget reset is missing");
+  const shutdown = requireWireObject(app, "shutdown", "Desktop TargetRef AppTarget shutdown is missing");
+  const workingDirectory = optionalWireString(
+    launch,
+    "working_directory",
+    "Desktop TargetRef AppTarget launch.working_directory is malformed",
+  );
+  const titlePattern = optionalWireString(
+    window,
+    "title_pattern",
+    "Desktop TargetRef AppTarget window.title_pattern is malformed",
+  );
+  const automationId = optionalWireString(
+    window,
+    "automation_id",
+    "Desktop TargetRef AppTarget window.automation_id is malformed",
+  );
   try {
     return validateAppTarget({
-      targetId: app.target_id,
-      platform: app.platform,
+      targetId: requireWireString(app, "target_id", "Desktop TargetRef AppTarget target_id is missing"),
+      platform: requireWireString(app, "platform", "Desktop TargetRef AppTarget platform is missing"),
       launch: {
-        executable: launch.executable,
-        args: asArray<string>(launch.args),
-        ...(launch.working_directory === undefined ? {} : { workingDirectory: launch.working_directory }),
+        executable: requireWireString(launch, "executable", "Desktop TargetRef AppTarget launch.executable is missing"),
+        args: wireStringArray(launch, "args", "Desktop TargetRef AppTarget launch.args is malformed"),
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
       },
       process: {
-        expectedImageName: process.expected_image_name,
-        allowedChildImageNames: asArray<string>(process.allowed_child_image_names),
+        expectedImageName: requireWireString(
+          process,
+          "expected_image_name",
+          "Desktop TargetRef AppTarget process.expected_image_name is missing",
+        ),
+        allowedChildImageNames: wireStringArray(
+          process,
+          "allowed_child_image_names",
+          "Desktop TargetRef AppTarget process.allowed_child_image_names is malformed",
+        ),
       },
       window: {
-        ...(window.title_pattern === undefined ? {} : { titlePattern: window.title_pattern }),
-        ...(window.automation_id === undefined ? {} : { automationId: window.automation_id }),
+        ...(titlePattern === undefined ? {} : { titlePattern }),
+        ...(automationId === undefined ? {} : { automationId }),
       },
       reset: {
-        command: reset.command,
-        args: asArray<string>(reset.args),
-        timeoutMs: asNumber(reset.timeout_ms),
+        command: requireWireString(reset, "command", "Desktop TargetRef AppTarget reset.command is missing"),
+        args: wireStringArray(reset, "args", "Desktop TargetRef AppTarget reset.args is malformed"),
+        timeoutMs: requireWireNumber(reset, "timeout_ms", "Desktop TargetRef AppTarget reset.timeout_ms is missing"),
       },
       shutdown: {
-        gracefulTimeoutMs: asNumber(shutdown.graceful_timeout_ms),
-        forceAfterTimeout: asBoolean(shutdown.force_after_timeout),
+        gracefulTimeoutMs: requireWireNumber(
+          shutdown,
+          "graceful_timeout_ms",
+          "Desktop TargetRef AppTarget shutdown.graceful_timeout_ms is missing",
+        ),
+        forceAfterTimeout: requireWireBoolean(
+          shutdown,
+          "force_after_timeout",
+          "Desktop TargetRef AppTarget shutdown.force_after_timeout is missing",
+        ),
       },
     });
   } catch (error) {

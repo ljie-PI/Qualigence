@@ -5,11 +5,21 @@ import {
   type SchedulingMission,
   type ScheduledMission,
 } from "@qualigence/mission";
-import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
+import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  type AcceptedExecutionJob,
+} from "@qualigence/runner-protocol";
+import { offerFromWire, offerToWire } from "@qualigence/grpc-runner-protocol";
 import { PrdMissionRepositoryTestStub } from "../../../helpers/prd-mission-repository.js";
 
 const WEB_JOB_CAPABILITIES = ["action:click", "model:structured-output", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS, "target:web-playwright"] as const;
-const DESKTOP_JOB_CAPABILITIES = ["action:click", "model:structured-output", "target:desktop-windows-uia"] as const;
+const DESKTOP_COMPILED_CAPABILITIES = ["action:click", "model:structured-output", "target:desktop-windows-uia"] as const;
+const DESKTOP_SCHEDULED_CAPABILITIES = [
+  "action:click",
+  "model:structured-output",
+  ...DESKTOP_UIA_V1_CAPABILITY_TOKENS,
+] as const;
 
 const desktopAppTarget = {
   targetId: "wpf-reference",
@@ -191,7 +201,7 @@ describe("MissionSchedulingService", () => {
       },
       targetVersion: 4,
       targetSnapshotHash: "desktop-target-hash",
-      jobs: mission.jobs.map((job) => ({ ...job, requiredCapabilities: DESKTOP_JOB_CAPABILITIES })),
+      jobs: mission.jobs.map((job) => ({ ...job, requiredCapabilities: DESKTOP_COMPILED_CAPABILITIES })),
     };
     const repository = Object.assign(new PrdMissionRepositoryTestStub(), {
       replayMissionSchedule: vi.fn(async () => undefined),
@@ -211,7 +221,7 @@ describe("MissionSchedulingService", () => {
       logicalJobId: "logical-job-1",
       attemptId: "attempt-1",
       runnerId: "runner-windows",
-      requiredCapabilities: DESKTOP_JOB_CAPABILITIES,
+      requiredCapabilities: DESKTOP_SCHEDULED_CAPABILITIES,
     }));
     expect(created?.job).toEqual(expect.objectContaining({
       jobId: "runner-job-1",
@@ -222,5 +232,11 @@ describe("MissionSchedulingService", () => {
       plan: expect.objectContaining({ missionId: "mission-1", missionRevision: 1, testCaseId: "case-1" }),
     }));
     expect(created?.job.target).toEqual({ kind: "desktop", app: desktopAppTarget });
+    expect(offerFromWire(offerToWire({
+      offerId: "offer-desktop",
+      job: created?.job as AcceptedExecutionJob,
+      requiredCapabilities: created?.requiredCapabilities ?? [],
+      leaseDurationMs: 30_000,
+    })).requiredCapabilities).toEqual(DESKTOP_SCHEDULED_CAPABILITIES);
   });
 });

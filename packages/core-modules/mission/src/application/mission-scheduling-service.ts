@@ -150,6 +150,12 @@ function expectedClaimIds(testCase: TestCase): readonly [string, ...string[]] {
   return [first, ...rest];
 }
 
+const DESKTOP_UIA_V1_REQUIRED_CAPABILITIES = [
+  "target:desktop-windows-uia",
+  "observation:observation-graph/v1",
+  "observation:uia/v1",
+] as const;
+
 function missionTargetRef(
   targetUrl: string,
   configuration: TargetConfiguration,
@@ -160,6 +166,18 @@ function missionTargetRef(
     case "desktop":
       return { kind: "desktop", app: configuration.app };
   }
+}
+
+function requiredCapabilitiesForTarget(
+  requiredCapabilities: readonly string[],
+  target: AcceptedMissionTargetRef,
+): readonly string[] {
+  if (target.kind === "web") return requiredCapabilities;
+  const present = new Set(requiredCapabilities);
+  const missingDesktopCapabilities = DESKTOP_UIA_V1_REQUIRED_CAPABILITIES.filter((token) => !present.has(token));
+  return missingDesktopCapabilities.length === 0
+    ? requiredCapabilities
+    : [...requiredCapabilities, ...missingDesktopCapabilities];
 }
 
 export class MissionSchedulingService {
@@ -190,18 +208,19 @@ export class MissionSchedulingService {
         const attemptId = this.ids.allocateAttemptId();
         const runnerJobId = this.ids.allocateRunnerJobId();
         const runId = this.ids.allocateRunId();
+        const target = missionTargetRef(mission.dispatch.targetUrl, binding.configuration);
         return {
           logicalJobId: logicalJob.jobId,
           attemptId,
           runnerId: binding.runnerId,
-          requiredCapabilities: logicalJob.requiredCapabilities,
+          requiredCapabilities: requiredCapabilitiesForTarget(logicalJob.requiredCapabilities, target),
           testCaseSnapshot: logicalJob.snapshot,
           testCaseSnapshotHash: logicalJob.snapshotHash,
           job: {
             jobId: runnerJobId,
             runId,
             projectId: mission.projectId,
-            target: missionTargetRef(mission.dispatch.targetUrl, binding.configuration),
+            target,
             objective: logicalJob.objective,
             policy: mission.executionPolicy,
             plan: {

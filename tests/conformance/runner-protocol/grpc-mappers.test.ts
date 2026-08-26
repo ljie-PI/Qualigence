@@ -300,6 +300,12 @@ describe("grpc runner protocol mappers", () => {
     ["desktop app missing required fields", { desktop: { app: { target_id: "wpf-reference" } } }],
     ["desktop app missing reset timeout", { desktop: { app: { ...wireDesktopAppTarget(), reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: [] } } } }],
     ["desktop app missing explicit shutdown decision", { desktop: { app: { ...wireDesktopAppTarget(), shutdown: { graceful_timeout_ms: 3000 } } } }],
+    ["desktop launch args is not an array", { desktop: { app: { ...wireDesktopAppTarget(), launch: { ...wireDesktopAppTarget().launch, args: "--fixture default" } } } }],
+    ["desktop process child images is not an array", { desktop: { app: { ...wireDesktopAppTarget(), process: { ...wireDesktopAppTarget().process, allowed_child_image_names: "ReferenceHelper.exe" } } } }],
+    ["desktop reset args is not an array", { desktop: { app: { ...wireDesktopAppTarget(), reset: { ...wireDesktopAppTarget().reset, args: "--clean" } } } }],
+    ["desktop reset timeout is not a number", { desktop: { app: { ...wireDesktopAppTarget(), reset: { ...wireDesktopAppTarget().reset, timeout_ms: "5000" } } } }],
+    ["desktop shutdown force flag is not a boolean", { desktop: { app: { ...wireDesktopAppTarget(), shutdown: { ...wireDesktopAppTarget().shutdown, force_after_timeout: "false" } } } }],
+    ["desktop optional window scalar is malformed", { desktop: { app: { ...wireDesktopAppTarget(), window: { ...wireDesktopAppTarget().window, title_pattern: 42 } } } }],
   ])("rejects malformed TargetRef wire before producing a Job: %s", (_name, target) => {
     expect(() => jobFromWire({
       job_id: "job-bad-target",
