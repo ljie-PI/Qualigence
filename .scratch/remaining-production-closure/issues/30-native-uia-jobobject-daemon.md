@@ -1,8 +1,8 @@
-# 30 — Implement native UIA, Job Object, and Companion daemon
+# 30 â€” Implement native UIA, Job Object, and Companion daemon
 
 **What to build:** Deliver the actual Windows Companion daemon with contained application lifecycle, restartable UIA child, one-use permits, and Emergency Stop.
 
-**Blocked by:** 29 — Implement native Windows Named Pipe authority.
+**Blocked by:** 29 â€” Implement native Windows Named Pipe authority.
 
 **Status:** claimed
 
@@ -130,8 +130,8 @@ Record base/reviewed SHAs in `## Comments`. Review the entire native/contract di
 
 - Reviewed head fixed: `61f815129be5f1720215c21e32737ef22e19e91c`; exact base remains `6a0a0adc0ae35359e137d89163b72bca38c65a51`.
 - Findings addressed in this fix commit: default daemon `action.execute` is now handled on a bounded admitted worker thread while the authenticated pipe loop continues reading control frames; `session.stop`/`session.close` latch every Companion session and signal the worker cancellation token so an in-flight action cannot report success after the stop is observed. Already-issued permits rejected under the Emergency Stop latch now return a stable `EmergencyStopped` action outcome instead of the generic `LocalPermitInvalid` mapping.
-- Findings addressed in this fix commit: Rust-side IPC DTOs and daemon dispatch now enforce the public `1..600000ms` bound for `uia.capture`, `action.execute`, reset helper timeouts, and shutdown graceful timeouts before worker/process dispatch.
+- Findings addressed in this fix commit: Rust-side IPC validation and daemon dispatch now enforce the public `1..600000ms` bound for `uia.capture`, `action.execute`, reset helper timeouts, and shutdown graceful timeouts before worker/process dispatch.
 - Findings addressed in this fix commit: native UIA capture now reports true `SelectionPattern` containers separately from `SelectionItemPattern`, and native `select` execution supports `Selection` containers by selecting a matching descendant `SelectionItem` from the verified AppSession subtree.
-- Fix commit: `3d64b7be0f72fd7320de286d36dcaf9cd5e130b7`.
-- Gates run before the fix commit: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check` (pass), `cargo build --workspace` (pass), `cargo test --workspace` (pass), `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (pass: 5 files, 31 passed, 1 skipped), `CI=true corepack pnpm typecheck` (pass), `git diff --check` (pass). Native E2E prerequisite command `CI=true corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` still fails closed with stable blocker `Windows11Unavailable` because `QUALIGENCE_WINDOWS_UIA_TEST=true`/local native prerequisites were not configured for this run.
+- Fix commits: `3d64b7be0f72fd7320de286d36dcaf9cd5e130b7` and `55a4bc7179666981e99bc181c9a48d6156ea6fbe`.
+- Gates run after the code fix commits: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check` (pass), `cargo build --workspace` (pass), `cargo test --workspace` (pass), `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (pass: 5 files, 31 passed, 1 skipped), `CI=true corepack pnpm typecheck` (pass), `git diff --check` (pass). Native E2E prerequisite command `CI=true corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` still fails closed with stable blocker `Windows11Unavailable` because `QUALIGENCE_WINDOWS_UIA_TEST=true`/local native prerequisites were not configured for this run.
 - Status remains `claimed`; no PR/final evidence is recorded in this review-fix update.
