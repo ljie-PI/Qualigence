@@ -97,6 +97,7 @@ async function captureScreenshotAttempt(
   try {
     cdp = await page.context().newCDPSession(page);
     await cdp.send("DOM.enable");
+    await cdp.send("Runtime.enable").catch(() => undefined);
     await cdp.send("Page.enable").catch(() => undefined);
     const before = await collectCdpMaskGeometry(cdp, maskIds);
     assertCaptureAuthority();
@@ -139,6 +140,9 @@ async function collectCdpMaskGeometry(
     if (nodeIds.length !== 1) throw sensitiveEvidenceUnavailable();
     const nodeId = nodeIds[0];
     if (nodeId === undefined) throw sensitiveEvidenceUnavailable();
+    if (!await cdpMaskNodeHasValidatedSensitiveAssociation(cdp, nodeId, maskId)) {
+      throw sensitiveEvidenceUnavailable();
+    }
     const rect = cdpBorderRect(await cdp.send("DOM.getBoxModel", { nodeId }));
     if (rect.width <= 0 || rect.height <= 0) continue;
     rects.push(rect);
@@ -149,6 +153,60 @@ async function collectCdpMaskGeometry(
     rects,
     viewport,
   };
+}
+
+async function cdpMaskNodeHasValidatedSensitiveAssociation(
+  cdp: CDPSession,
+  nodeId: number,
+  maskId: string,
+): Promise<boolean> {
+  const resolved = await cdp.send("DOM.resolveNode", { nodeId }) as { readonly object?: { readonly objectId?: string } };
+  const objectId = resolved.object?.objectId;
+  if (typeof objectId !== "string") return false;
+  try {
+    const validation = await cdp.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: `function(input) {
+        const element = this;
+        const state = window[input.stateProperty];
+        const registry = window[input.runtimeRegistryProperty];
+        const dom = registry && registry.nativeDom;
+        if (!state || !dom || typeof dom.arrayIsArray !== "function" ||
+          typeof dom.reflectApply !== "function" || typeof dom.elementGetAttribute !== "function") {
+          return false;
+        }
+        const records = state.records;
+        if (!dom.arrayIsArray(records)) return false;
+        for (const record of records) {
+          if (record === null || typeof record !== "object" || typeof record.markerId !== "string") continue;
+          const elements = record.classifiedElements;
+          if (!dom.arrayIsArray(elements)) continue;
+          let ordinal = 0;
+          for (let index = 0; index < elements.length; index += 1) {
+            const classifiedElement = elements[index];
+            const classifiedMaskId = dom.reflectApply(dom.elementGetAttribute, classifiedElement, [input.maskAttribute]);
+            if (classifiedMaskId === null || classifiedMaskId === "") continue;
+            ordinal += 1;
+            if (classifiedElement !== element) continue;
+            const expectedMaskId = "qm-" + record.markerId.replace(/[^A-Za-z0-9_-]/g, "_") + "-" + String(ordinal);
+            return expectedMaskId === input.maskId && classifiedMaskId === input.maskId;
+          }
+        }
+        return false;
+      }`,
+      arguments: [{ value: {
+        maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+        maskId,
+        runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+        stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+      } }],
+      returnByValue: true,
+      silent: true,
+    }) as { readonly exceptionDetails?: unknown; readonly result?: { readonly value?: unknown } };
+    return validation.exceptionDetails === undefined && validation.result?.value === true;
+  } finally {
+    await cdp.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+  }
 }
 
 async function cdpNodeIdsForMask(cdp: CDPSession, maskId: string): Promise<readonly number[]> {
@@ -465,6 +523,7 @@ interface BrowserObservationCaptureInput {
   readonly sensitiveMaskIdAttribute: string;
   readonly sensitiveEvidenceStateProperty: string;
   readonly sensitiveShadowRootsProperty: string;
+  readonly maxMaskRegions: number;
   readonly maxShadowRoots: number;
 }
 
@@ -474,6 +533,7 @@ function browserObservationCaptureInput(): BrowserObservationCaptureInput {
     sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
     sensitiveEvidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
     sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+    maxMaskRegions: MAX_REFLECTED_REGIONS,
     maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
   };
 }
@@ -535,6 +595,7 @@ function collectPageObservation(
 ): BrowserObservationCapture {
   type NativeDomAuthority = {
     readonly arrayFrom: typeof Array.from;
+    readonly arrayIsArray: typeof Array.isArray;
     readonly documentGetElementById: typeof Document.prototype.getElementById;
     readonly documentQuerySelector: typeof Document.prototype.querySelector;
     readonly documentTitleGet: (() => string) | undefined;
@@ -544,6 +605,8 @@ function collectPageObservation(
     readonly elementGetAttribute: typeof Element.prototype.getAttribute;
     readonly elementGetClientRects: typeof Element.prototype.getClientRects;
     readonly elementHasAttribute: typeof Element.prototype.hasAttribute;
+    readonly elementRemoveAttribute: typeof Element.prototype.removeAttribute;
+    readonly elementSetAttribute: typeof Element.prototype.setAttribute;
     readonly elementShadowRootGet: (() => ShadowRoot | null) | undefined;
     readonly elementTagNameGet: (() => string) | undefined;
     readonly htmlElementHiddenGet: (() => boolean) | undefined;
@@ -556,6 +619,7 @@ function collectPageObservation(
     readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
     readonly htmlTextAreaElementValueGet: (() => string) | undefined;
     readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+    readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
     readonly nodeTextContentGet: (() => string | null) | undefined;
     readonly characterDataDataGet: (() => string) | undefined;
     readonly shadowRootHostGet: (() => Element) | undefined;
@@ -576,6 +640,8 @@ function collectPageObservation(
   const arrayFrom = <T>(items: ArrayLike<T> | Iterable<T>): T[] => dom.arrayFrom(items as ArrayLike<T>) as T[];
   const getAttribute = (element: Element, name: string): string | null => dom.elementGetAttribute.call(element, name);
   const hasAttribute = (element: Element, name: string): boolean => dom.elementHasAttribute.call(element, name);
+  const removeAttribute = (element: Element, name: string): void => { dom.elementRemoveAttribute.call(element, name); };
+  const setAttribute = (element: Element, name: string, value: string): void => { dom.elementSetAttribute.call(element, name, value); };
   const queryDocument = (selector: string): Element[] => arrayFrom(dom.documentQuerySelectorAll.call(document, selector));
   const queryDocumentOne = (selector: string): Element | null => dom.documentQuerySelector.call(document, selector);
   const queryRoot = (root: ShadowRoot, selector: string): Element[] => arrayFrom(dom.documentFragmentQuerySelectorAll.call(root, selector));
@@ -583,6 +649,7 @@ function collectPageObservation(
   const tagName = (element: Element): string => dom.elementTagNameGet!.call(element).toLowerCase();
   const textContent = (node: Node): string => dom.nodeTextContentGet!.call(node) ?? "";
   const childNodes = (node: Node): ChildNode[] => arrayFrom(dom.nodeChildNodesGet!.call(node));
+  const getRootNode = (node: Node): Node => dom.nodeGetRootNode.call(node);
   const textData = (node: Text): string => dom.characterDataDataGet!.call(node);
   const shadowRoot = (element: Element): ShadowRoot | null => dom.elementShadowRootGet!.call(element);
   const shadowRootMode = (root: ShadowRoot): ShadowRootMode => dom.shadowRootModeGet!.call(root);
@@ -698,11 +765,22 @@ function collectPageObservation(
   }
 
   function readSensitiveTargetIds(element: Element): readonly string[] {
+    const ids = new Set<string>();
     const value = (element as unknown as Element & Record<string, unknown>)[input.sensitiveTargetIdsProperty];
-    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-      return [];
+    if (dom.arrayIsArray(value) && value.every((entry) => typeof entry === "string")) {
+      for (const markerId of value) ids.add(markerId);
     }
-    return value;
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly records?: readonly { readonly markerId: string; readonly classifiedElements?: readonly Element[] }[];
+    } | undefined;
+    const records = state?.records ?? [];
+    if (dom.arrayIsArray(records)) {
+      for (const record of records) {
+        if (typeof record.markerId !== "string" || !dom.arrayIsArray(record.classifiedElements)) continue;
+        if (record.classifiedElements.includes(element)) ids.add(record.markerId);
+      }
+    }
+    return [...ids];
   }
 
   function sensitiveValues(element: Element): readonly string[] {
@@ -866,6 +944,53 @@ function collectPageObservation(
     return registry?.shadowRootOverflow === true;
   }
 
+  function authoritativeSensitiveMaskIds(): { readonly status: "ok"; readonly ids: readonly string[] } | { readonly status: "failed" } {
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly records?: readonly {
+        readonly markerId: string;
+        readonly forms?: readonly string[];
+        readonly classifiedElements?: readonly Element[];
+        readonly classifiedRegions?: ReadonlySet<string>;
+        readonly poisoned?: boolean;
+      }[];
+      readonly poisoned?: boolean;
+    } | undefined;
+    if (state === undefined) return { status: "ok", ids: [] };
+    if (state.poisoned === true) return { status: "failed" };
+    const maskIds = new Set<string>();
+    const records = state.records ?? [];
+    if (!dom.arrayIsArray(records)) return { status: "failed" };
+    for (const record of records) {
+      if (record.poisoned === true) return { status: "failed" };
+      const elements = record.classifiedElements ?? [];
+      if (!dom.arrayIsArray(elements)) return { status: "failed" };
+      if ((record.classifiedRegions?.size ?? elements.length) > input.maxMaskRegions) return { status: "failed" };
+      let ordinal = 0;
+      for (const element of elements) {
+        if (element.nodeType !== 1) return { status: "failed" };
+        if (!isVisible(element)) {
+          removeAttribute(element, input.sensitiveMaskIdAttribute);
+          continue;
+        }
+        const root = getRootNode(element);
+        if (root !== element.ownerDocument && (!isShadowRootNode(root) || shadowRootMode(root) !== "open")) {
+          return { status: "failed" };
+        }
+        ordinal += 1;
+        const id = `qm-${record.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
+        setAttribute(element, input.sensitiveMaskIdAttribute, id);
+        if (getAttribute(element, input.sensitiveMaskIdAttribute) !== id) return { status: "failed" };
+        maskIds.add(id);
+        if (maskIds.size > input.maxMaskRegions) return { status: "failed" };
+      }
+    }
+    return { status: "ok", ids: [...maskIds] };
+  }
+
+  function isShadowRootNode(node: Node): node is ShadowRoot {
+    return node.nodeType === 11 && "host" in node;
+  }
+
   function shadowRoots(): ShadowRoot[] {
     const roots = new Set<ShadowRoot>();
     const pending: ShadowRoot[] = [];
@@ -887,7 +1012,7 @@ function collectPageObservation(
       return true;
     };
     for (const root of registry?.roots ?? []) {
-      if (root instanceof ShadowRoot && !addRoot(root)) return pending;
+      if (typeof (root as { readonly nodeType?: unknown }).nodeType === "number" && isShadowRootNode(root as Node) && !addRoot(root as ShadowRoot)) return pending;
     }
     for (const element of queryDocument("*")) {
       const root = shadowRoot(element);
@@ -903,20 +1028,18 @@ function collectPageObservation(
     return pending;
   }
 
+  const maskAuthority = authoritativeSensitiveMaskIds();
   const selector =
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
-  const sensitiveMaskIds = new Set<string>();
+  const sensitiveMaskIds = new Set<string>(maskAuthority.status === "ok" ? maskAuthority.ids : []);
   const titleElement = queryDocumentOne("title");
 
   for (const element of elements) {
     const sensitiveTargetIds = readSensitiveTargetIds(element);
     const isSensitiveTarget = sensitiveTargetIds.length > 0;
     const sensitiveMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
-    if (isSensitiveTarget && sensitiveMaskId !== undefined) {
-      sensitiveMaskIds.add(sensitiveMaskId);
-    }
     if (!isVisible(element)) {
       continue;
     }
@@ -986,7 +1109,7 @@ function collectPageObservation(
     },
     title: dom.documentTitleGet!.call(document),
     ...(titleElement === null ? {} : { titleSensitiveTargetIds: readSensitiveTargetIds(titleElement) }),
-    sensitiveEvidenceUnavailable: sensitiveEvidenceUnavailable(),
+    sensitiveEvidenceUnavailable: maskAuthority.status === "failed" || sensitiveEvidenceUnavailable(),
   };
 }
 
@@ -1082,6 +1205,10 @@ export class PlaywrightObserver implements Observer {
           ...(captured.sensitiveMaskIds ?? []),
           ...(preScreenshotCheck.sensitiveMaskIds ?? []),
         ].filter((maskId) => /^[A-Za-z0-9_-]+$/.test(maskId)))];
+        if (this.session.hasPendingSensitiveEvidenceCapture() && maskIds.length === 0) {
+          this.session.markSensitiveEvidenceUnavailable();
+          throw sensitiveEvidenceUnavailable();
+        }
         const screenshotAttempt = await captureScreenshotAttempt(
           page,
           assertCaptureAuthority,

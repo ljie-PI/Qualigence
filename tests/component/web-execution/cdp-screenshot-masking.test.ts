@@ -13,6 +13,7 @@ import {
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
 const SECRET = "cdp-secret@example.test";
+const MASK_ATTRIBUTE = "data-qualigence-sensitive-mask";
 
 const job: AcceptedExecutionJob = {
   jobId: "job-cdp-mask",
@@ -121,6 +122,92 @@ describe("CDP screenshot masking", () => {
     }
     expect(pixelAt(image, Math.floor((unrelated.left + unrelated.right) / 2), Math.floor((unrelated.top + unrelated.bottom) / 2))).toEqual([255, 0, 0, 255]);
     expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("masks when the page removes marker attributes and overrides marker accessors", async () => {
+    await enterSecret();
+    await session.withPage(async (page) => {
+      await page.evaluate((attribute) => {
+        const host = globalThis as unknown as {
+          readonly Element: { readonly prototype: {
+            setAttribute(name: string, value: string): void;
+            hasAttribute(name: string): boolean;
+            removeAttribute(name: string): void;
+          } };
+          readonly document: { querySelectorAll(selector: string): Iterable<unknown> };
+        };
+        const originalSetAttribute = host.Element.prototype.setAttribute;
+        const originalHasAttribute = host.Element.prototype.hasAttribute;
+        const originalRemoveAttribute = host.Element.prototype.removeAttribute;
+        for (const element of host.document.querySelectorAll(`[${attribute}]`)) {
+          originalRemoveAttribute.call(element, attribute);
+        }
+        host.Element.prototype.setAttribute = function setAttribute(name: string, value: string) {
+          if (name === attribute) return undefined;
+          return originalSetAttribute.call(this, name, value);
+        };
+        host.Element.prototype.hasAttribute = function hasAttribute(name: string) {
+          if (name === attribute) return false;
+          return originalHasAttribute.call(this, name);
+        };
+      }, MASK_ATTRIBUTE);
+    });
+
+    const expected = await expectedRectFromCdp(session, "#secret");
+    const graph = await new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, expected.left, expected.top)).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("fails closed when marker attributes are reassigned to a non-sensitive backend node", async () => {
+    await enterSecret();
+    const observer = new PlaywrightObserver(session, {
+      afterGraphAssembly: async (page) => {
+        await page.evaluate((attribute) => {
+          const host = globalThis as unknown as {
+            readonly Element: { readonly prototype: {
+              setAttribute(name: string, value: string): void;
+              removeAttribute(name: string): void;
+            } };
+            readonly document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null };
+          };
+          const originalSetAttribute = host.Element.prototype.setAttribute;
+          const originalRemoveAttribute = host.Element.prototype.removeAttribute;
+          const secret = host.document.querySelector("#secret");
+          const unrelated = host.document.querySelector("#unrelated");
+          if (secret === null || unrelated === null) throw new Error("Missing fixture nodes.");
+          const marker = secret.getAttribute(attribute);
+          if (marker === null) throw new Error("Missing sensitive marker.");
+          originalRemoveAttribute.call(secret, attribute);
+          originalSetAttribute.call(unrelated, attribute, marker);
+        }, MASK_ATTRIBUTE);
+      },
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed with zero accepted bytes when screenshot capture throws", async () => {
+    await enterSecret();
+    let screenshotCalls = 0;
+    await session.withPage(async (page) => {
+      page.screenshot = async () => {
+        screenshotCalls += 1;
+        throw new Error("injected screenshot failure");
+      };
+    });
+
+    await expect(new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+
+    expect(screenshotCalls).toBe(1);
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
   it("performs exactly one bounded full recapture when CDP geometry races", async () => {

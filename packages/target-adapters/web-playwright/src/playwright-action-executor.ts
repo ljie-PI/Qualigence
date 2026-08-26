@@ -661,9 +661,44 @@ async function beginPageSensitiveActionEpoch(
       poisoned: boolean;
       observer?: MutationObserver;
     };
+    type NativeDomAuthority = {
+      readonly arrayFrom: typeof Array.from;
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly objectDefineProperty: typeof Object.defineProperty;
+      readonly reflectApply: typeof Reflect.apply;
+      readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
+      readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
+      readonly elementGetAttribute: typeof Element.prototype.getAttribute;
+      readonly elementHasAttribute: typeof Element.prototype.hasAttribute;
+      readonly elementQuerySelectorAll: typeof Element.prototype.querySelectorAll;
+      readonly elementSetAttribute: typeof Element.prototype.setAttribute;
+      readonly elementShadowRootGet: (() => ShadowRoot | null) | undefined;
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlInputElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlInputElementValueGet: (() => string) | undefined;
+      readonly htmlOptionElementLabelGet: (() => string) | undefined;
+      readonly htmlOptionElementTextGet: (() => string) | undefined;
+      readonly htmlOptionElementValueGet: (() => string) | undefined;
+      readonly htmlSelectElementOptionsGet: (() => HTMLOptionsCollection) | undefined;
+      readonly htmlSelectElementSelectedOptionsGet: (() => HTMLCollectionOf<HTMLOptionElement>) | undefined;
+      readonly htmlSelectElementValueGet: (() => string) | undefined;
+      readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlTextAreaElementValueGet: (() => string) | undefined;
+      readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+      readonly nodeContains: typeof Node.prototype.contains;
+      readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
+      readonly nodeParentElementGet: (() => HTMLElement | null) | undefined;
+      readonly nodeTextContentGet: (() => string | null) | undefined;
+      readonly characterDataDataGet: (() => string) | undefined;
+      readonly shadowRootHostGet: (() => Element) | undefined;
+      readonly shadowRootModeGet: (() => ShadowRootMode) | undefined;
+    };
 
     const win = element.ownerDocument.defaultView;
     if (win === null) return { status: "failed" };
+    const maybeDom = nativeDomAuthority();
+    if (maybeDom === undefined) return { status: "failed" };
+    const dom: NativeDomAuthority = maybeDom;
     const stateHost = win as unknown as Record<string, BrowserSensitiveState | undefined>;
     const existing = stateHost[input.stateProperty];
     const state: BrowserSensitiveState = existing ?? {
@@ -675,7 +710,16 @@ async function beginPageSensitiveActionEpoch(
       schedulerSessionRegistrations: 0,
     };
     state.schedulerSessionRegistrations ??= 0;
-    stateHost[input.stateProperty] = state;
+    if (existing === undefined) {
+      dom.reflectApply(dom.objectDefineProperty, Object, [stateHost, input.stateProperty, {
+        configurable: false,
+        enumerable: false,
+        value: state,
+        writable: false,
+      }]);
+    } else if (existing !== state) {
+      return { status: "failed" };
+    }
     if (state.active !== null && state.active !== undefined) {
       state.poisoned = true;
       return { status: "failed" };
@@ -771,6 +815,171 @@ async function beginPageSensitiveActionEpoch(
       }
     }
 
+    function nativeDomAuthority(): NativeDomAuthority | undefined {
+      const registry = (win as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty];
+      const candidate = registry?.nativeDom;
+      if (candidate === undefined) return undefined;
+      const required = [
+        candidate.arrayFrom,
+        candidate.arrayIsArray,
+        candidate.objectDefineProperty,
+        candidate.reflectApply,
+        candidate.documentQuerySelectorAll,
+        candidate.documentFragmentQuerySelectorAll,
+        candidate.elementGetAttribute,
+        candidate.elementHasAttribute,
+        candidate.elementQuerySelectorAll,
+        candidate.elementSetAttribute,
+        candidate.elementShadowRootGet,
+        candidate.elementTagNameGet,
+        candidate.htmlInputElementPlaceholderGet,
+        candidate.htmlInputElementValueGet,
+        candidate.htmlOptionElementLabelGet,
+        candidate.htmlOptionElementTextGet,
+        candidate.htmlOptionElementValueGet,
+        candidate.htmlSelectElementOptionsGet,
+        candidate.htmlSelectElementSelectedOptionsGet,
+        candidate.htmlSelectElementValueGet,
+        candidate.htmlTextAreaElementPlaceholderGet,
+        candidate.htmlTextAreaElementValueGet,
+        candidate.nodeChildNodesGet,
+        candidate.nodeContains,
+        candidate.nodeGetRootNode,
+        candidate.nodeParentElementGet,
+        candidate.nodeTextContentGet,
+        candidate.characterDataDataGet,
+        candidate.shadowRootHostGet,
+        candidate.shadowRootModeGet,
+      ];
+      return required.every((fn) => typeof fn === "function") ? candidate : undefined;
+    }
+
+    function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
+      return dom.reflectApply(fn, receiver, args as never[]) as T;
+    }
+
+    function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
+      return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    }
+
+    function queryDocument(selector: string): Element[] {
+      return arrayFrom(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
+    }
+
+    function queryRoot(root: ShadowRoot, selector: string): Element[] {
+      return arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+    }
+
+    function queryDescendants(candidate: Element): Element[] {
+      return arrayFrom(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
+    }
+
+    function getAttribute(candidate: Element, name: string): string | null {
+      return apply(dom.elementGetAttribute, candidate, [name]);
+    }
+
+    function hasAttribute(candidate: Element, name: string): boolean {
+      return apply(dom.elementHasAttribute, candidate, [name]);
+    }
+
+    function setAttribute(candidate: Element, name: string, value: string): void {
+      apply(dom.elementSetAttribute, candidate, [name, value]);
+    }
+
+    function tagName(candidate: Element): string {
+      return apply(dom.elementTagNameGet!, candidate).toLowerCase();
+    }
+
+    function childNodes(node: Node): ChildNode[] {
+      return arrayFrom(apply(dom.nodeChildNodesGet!, node));
+    }
+
+    function textContent(node: Node): string {
+      return apply(dom.nodeTextContentGet!, node) ?? "";
+    }
+
+    function textData(node: Text): string {
+      return apply(dom.characterDataDataGet!, node);
+    }
+
+    function getRootNode(node: Node): Node {
+      return apply(dom.nodeGetRootNode, node);
+    }
+
+    function parentElement(node: Node): Element | null {
+      return apply(dom.nodeParentElementGet!, node);
+    }
+
+    function contains(parent: Node, child: Node): boolean {
+      return apply(dom.nodeContains, parent, [child]);
+    }
+
+    function shadowRoot(candidate: Element): ShadowRoot | null {
+      return apply(dom.elementShadowRootGet!, candidate);
+    }
+
+    function shadowRootMode(root: ShadowRoot): ShadowRootMode {
+      return apply(dom.shadowRootModeGet!, root);
+    }
+
+    function shadowRootHost(root: ShadowRoot): Element {
+      return apply(dom.shadowRootHostGet!, root);
+    }
+
+    function inputValue(candidate: Element): string {
+      return apply(dom.htmlInputElementValueGet!, candidate);
+    }
+
+    function inputPlaceholder(candidate: Element): string {
+      return apply(dom.htmlInputElementPlaceholderGet!, candidate);
+    }
+
+    function textareaValue(candidate: Element): string {
+      return apply(dom.htmlTextAreaElementValueGet!, candidate);
+    }
+
+    function textareaPlaceholder(candidate: Element): string {
+      return apply(dom.htmlTextAreaElementPlaceholderGet!, candidate);
+    }
+
+    function selectValue(candidate: Element): string {
+      return apply(dom.htmlSelectElementValueGet!, candidate);
+    }
+
+    function selectOptions(candidate: Element): HTMLOptionElement[] {
+      return arrayFrom(apply(dom.htmlSelectElementOptionsGet!, candidate));
+    }
+
+    function selectedOptions(candidate: Element): HTMLOptionElement[] {
+      return arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
+    }
+
+    function optionValue(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementValueGet!, option);
+    }
+
+    function optionText(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementTextGet!, option);
+    }
+
+    function optionLabel(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementLabelGet!, option);
+    }
+
+    function isElementNode(node: Node): node is Element {
+      return node.nodeType === 1;
+    }
+
+    function isShadowRootNode(node: unknown): node is ShadowRoot {
+      return typeof (node as { readonly nodeType?: unknown }).nodeType === "number" &&
+        (node as { readonly nodeType: number }).nodeType === 11 &&
+        "host" in (node as object);
+    }
+
+    function isTextNode(node: Node): node is Text {
+      return node.nodeType === 3;
+    }
+
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
       const values = new Set<string>([source]);
       if (actionKind === "input") {
@@ -780,12 +989,12 @@ async function beginPageSensitiveActionEpoch(
         values.add(browserValue);
         values.add(normalizeVisibleSensitiveForm(browserValue));
       }
-      if (actionKind === "select" && target instanceof HTMLSelectElement) {
-        for (const option of Array.from(target.options)) {
-          if (option.value === source || option.text === source || option.label === source) {
-            values.add(option.value);
-            values.add(option.text);
-            values.add(option.label);
+      if (actionKind === "select" && tagName(target) === "select") {
+        for (const option of selectOptions(target)) {
+          if (optionValue(option) === source || optionText(option) === source || optionLabel(option) === source) {
+            values.add(optionValue(option));
+            values.add(optionText(option));
+            values.add(optionLabel(option));
           }
         }
       }
@@ -810,7 +1019,7 @@ async function beginPageSensitiveActionEpoch(
       const result = new WeakMap<Node, ReadonlySet<string>>();
       for (const root of shadowRoots()) {
         rememberSensitiveBaseline(result, root, shadowRootValues(root), formsToMatch);
-        for (const candidate of Array.from(root.querySelectorAll("*"))) {
+        for (const candidate of queryRoot(root, "*")) {
           rememberSensitiveBaseline(result, candidate, sensitiveValues(candidate), formsToMatch);
         }
       }
@@ -878,26 +1087,20 @@ async function beginPageSensitiveActionEpoch(
     function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
       const handlerName = `on${listenerType}`;
       for (const target of delegatedEventPathTargets()) {
-        if (target instanceof Element && target.hasAttribute(handlerName)) return true;
-        try {
-          if (typeof (target as unknown as Record<string, unknown>)[handlerName] === "function") {
-            return true;
-          }
-        } catch {
-          return true;
-        }
+        if (isEventElement(target) && hasAttribute(target, handlerName)) return true;
+
       }
       return false;
     }
 
 
     function markInstrumentationListener(listener: EventListener): void {
-      Object.defineProperty(listener, "__qualigenceSensitiveInstrumentation", {
-        configurable: true,
+      apply(dom.objectDefineProperty, Object, [listener, "__qualigenceSensitiveInstrumentation", {
+        configurable: false,
         enumerable: false,
         value: true,
         writable: false,
-      });
+      }]);
     }
 
     function isInstrumentationListener(listener: unknown): boolean {
@@ -909,7 +1112,7 @@ async function beginPageSensitiveActionEpoch(
 
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
-      for (let current = element.parentElement; current !== null; current = current.parentElement) {
+      for (let current = parentElement(element); current !== null; current = parentElement(current)) {
         targets.push(current);
       }
       targets.push(element.ownerDocument);
@@ -920,7 +1123,7 @@ async function beginPageSensitiveActionEpoch(
     function isDelegatedEventTarget(target: unknown): boolean {
       if (target === element) return false;
       if (target === win || target === element.ownerDocument) return true;
-      return target instanceof Node && target.contains(element);
+      return isNodeLike(target) && contains(target, element);
     }
 
     function processCurrentSensitiveMatches(
@@ -950,16 +1153,16 @@ async function beginPageSensitiveActionEpoch(
           if (!carriesForm(value, epochToUpdate.forms) || shadowBaselineAllows(root, epochToUpdate, value)) {
             continue;
           }
-          if (root.mode === "open" && allowClassification) {
-            classifyElement(root.host, epochToUpdate);
+          if (shadowRootMode(root) === "open" && allowClassification) {
+            classifyElement(shadowRootHost(root), epochToUpdate);
             if (epochToUpdate.poisoned) return;
             continue;
           }
           poison(epochToUpdate);
           return;
         }
-        if (root.mode !== "closed") continue;
-        for (const candidate of Array.from(root.querySelectorAll("*"))) {
+        if (shadowRootMode(root) !== "closed") continue;
+        for (const candidate of queryRoot(root, "*")) {
           for (const value of sensitiveValues(candidate)) {
             if (carriesForm(value, epochToUpdate.forms) && !shadowBaselineAllows(candidate, epochToUpdate, value)) {
               poison(epochToUpdate);
@@ -1006,8 +1209,8 @@ async function beginPageSensitiveActionEpoch(
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
       return touchedNodes.some((node) => {
-        const root = node instanceof ShadowRoot ? node : node.getRootNode();
-        return root instanceof ShadowRoot && root.mode !== "open";
+        const root = isShadowRootNode(node) ? node : getRootNode(node);
+        return isShadowRootNode(root) && shadowRootMode(root) !== "open";
       });
     }
 
@@ -1021,9 +1224,9 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function addNode(node: Node, candidates: Element[]): void {
-      if (node instanceof Element) {
+      if (isElementNode(node)) {
         candidates.push(node);
-        candidates.push(...Array.from(node.querySelectorAll("*")));
+        candidates.push(...Array.from(queryDescendants(node)));
         candidates.push(...observedAncestors(node));
         return;
       }
@@ -1044,8 +1247,8 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function classifySingleElement(candidate: Element, epochToUpdate: BrowserSensitiveEpoch): void {
-      const root = candidate.getRootNode();
-      if (root !== candidate.ownerDocument && (!(root instanceof ShadowRoot) || root.mode !== "open")) {
+      const root = getRootNode(candidate);
+      if (root !== candidate.ownerDocument && (!isShadowRootNode(root) || shadowRootMode(root) !== "open")) {
         poison(epochToUpdate);
         return;
       }
@@ -1078,28 +1281,29 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function parentElementAcrossShadow(node: Node): Element | null {
-      if (node.parentElement !== null) return node.parentElement;
-      const root = node.getRootNode();
-      return root instanceof ShadowRoot && root.mode === "open" ? root.host : null;
+      const directParent = parentElement(node);
+      if (directParent !== null) return directParent;
+      const root = getRootNode(node);
+      return isShadowRootNode(root) && shadowRootMode(root) === "open" ? shadowRootHost(root) : null;
     }
 
     function observableElements(): Element[] {
-      const elements = Array.from(element.ownerDocument.querySelectorAll("*"));
-      for (const root of shadowRoots().filter((candidate) => candidate.mode === "open")) {
-        elements.push(...Array.from(root.querySelectorAll("*")));
+      const elements = Array.from(queryDocument("*"));
+      for (const root of shadowRoots().filter((candidate) => shadowRootMode(candidate) === "open")) {
+        elements.push(...queryRoot(root, "*"));
       }
       return elements;
     }
 
     function isObservationCandidate(candidate: Element): boolean {
-      const tag = candidate.tagName.toLowerCase();
+      const tag = tagName(candidate);
       return tag === "button" ||
-        (tag === "a" && candidate.hasAttribute("href")) ||
+        (tag === "a" && hasAttribute(candidate, "href")) ||
         tag === "input" ||
         tag === "textarea" ||
         tag === "select" ||
-        candidate.hasAttribute("role") ||
-        candidate.hasAttribute("data-qualigence-observe");
+        hasAttribute(candidate, "role") ||
+        hasAttribute(candidate, "data-qualigence-observe");
     }
 
     function nodeIdentity(candidate: Element): string {
@@ -1108,76 +1312,102 @@ async function beginPageSensitiveActionEpoch(
       if (typeof existingId === "string") return existingId;
       state.nextNodeOrdinal += 1;
       const nodeId = `qn-${state.nextNodeOrdinal}`;
-      Object.defineProperty(host, "__qualigenceSensitiveNodeIdentity", {
-        configurable: true,
+      apply(dom.objectDefineProperty, Object, [host, "__qualigenceSensitiveNodeIdentity", {
+        configurable: false,
         enumerable: false,
         value: nodeId,
         writable: false,
-      });
+      }]);
       return nodeId;
     }
 
     function markSensitiveElement(candidate: Element, markerId: string): void {
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
-      if (Array.isArray(current)) {
+      if (dom.arrayIsArray(current)) {
         if (!current.includes(markerId)) current.push(markerId);
       } else {
-        Object.defineProperty(host, input.targetIdsProperty, {
-          configurable: true,
+        apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
+          configurable: false,
           enumerable: false,
           value: [markerId],
-          writable: true,
-        });
+          writable: false,
+        }]);
       }
-      if (!candidate.hasAttribute(input.maskAttribute)) {
+      if (!hasAttribute(candidate, input.maskAttribute)) {
         state.nextMaskOrdinal += 1;
-        candidate.setAttribute(input.maskAttribute, `qm-${state.nextMaskOrdinal}`);
+        setAttribute(candidate, input.maskAttribute, `qm-${state.nextMaskOrdinal}`);
       }
     }
 
     function isMarkedSensitive(candidate: Element, markerId: string): boolean {
       const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-      return Array.isArray(ids) && ids.includes(markerId);
+      return dom.arrayIsArray(ids) && ids.includes(markerId);
+    }
+
+    function fieldValue(candidate: Element): string {
+      const tag = tagName(candidate);
+      if (tag === "input") return inputValue(candidate);
+      if (tag === "textarea") return textareaValue(candidate);
+      if (tag === "select") return selectValue(candidate);
+      return "";
+    }
+
+    function fieldPlaceholder(candidate: Element): string {
+      const tag = tagName(candidate);
+      if (tag === "input") return inputPlaceholder(candidate);
+      if (tag === "textarea") return textareaPlaceholder(candidate);
+      return "";
+    }
+
+    function isEventElement(target: unknown): target is Element {
+      return typeof (target as { readonly nodeType?: unknown }).nodeType === "number" &&
+        (target as unknown as { readonly nodeType: number }).nodeType === 1;
+    }
+
+    function isNodeLike(target: unknown): target is Node {
+      return typeof (target as { readonly nodeType?: unknown }).nodeType === "number";
     }
 
     function sensitiveValues(candidate: Element): readonly string[] {
       const values: string[] = [];
       const text = directText(candidate);
       if (text !== "") values.push(text);
-      const observedText = isObservationCandidate(candidate) ? candidate.textContent ?? "" : "";
+      const observedText = isObservationCandidate(candidate) ? textContent(candidate) : "";
       if (observedText !== "" && observedText !== text) values.push(observedText);
-      if (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement) {
-        if (candidate.value !== "") values.push(candidate.value);
-        if (candidate.placeholder !== "") values.push(candidate.placeholder);
+      const tag = tagName(candidate);
+      if (tag === "input" || tag === "textarea") {
+        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        if (fieldPlaceholder(candidate) !== "") values.push(fieldPlaceholder(candidate));
       }
-      if (candidate instanceof HTMLSelectElement) {
-        if (candidate.value !== "") values.push(candidate.value);
-        const selectedText = candidate.selectedOptions.item(0)?.text ?? "";
+      if (tag === "select") {
+        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        const selectedOption = selectedOptions(candidate)[0];
+        const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values.push(selectedText);
       }
       for (const attribute of ["aria-label", "title", "value"] as const) {
-        const attributeValue = candidate.getAttribute(attribute);
+        const attributeValue = getAttribute(candidate, attribute);
         if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
       }
       return values;
     }
 
     function directText(candidate: Element): string {
-      return Array.from(candidate.childNodes)
-        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.data)
+      return childNodes(candidate)
+        .filter((node): node is Text => isTextNode(node))
+        .map((node) => textData(node))
         .join("");
     }
 
     function shadowRootValues(root: ShadowRoot): readonly string[] {
       const values: string[] = [];
-      const direct = Array.from(root.childNodes)
-        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.data)
+      const direct = childNodes(root)
+        .filter((node): node is Text => isTextNode(node))
+        .map((node) => textData(node))
         .join("");
       if (direct !== "") values.push(direct);
-      const fullText = root.textContent ?? "";
+      const fullText = textContent(root);
       if (fullText !== "" && fullText !== direct) values.push(fullText);
       return values;
     }
@@ -1204,16 +1434,16 @@ async function beginPageSensitiveActionEpoch(
         return true;
       };
       for (const root of registry?.roots ?? []) {
-        if (root instanceof ShadowRoot && !addRoot(root)) return pending;
+        if (isShadowRootNode(root) && !addRoot(root)) return pending;
       }
-      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
-        const shadowRoot = candidate.shadowRoot;
-        if (shadowRoot !== null && !addRoot(shadowRoot)) return pending;
+      for (const candidate of queryDocument("*")) {
+        const candidateShadowRoot = shadowRoot(candidate);
+        if (candidateShadowRoot !== null && !addRoot(candidateShadowRoot)) return pending;
       }
       for (let index = 0; index < pending.length; index += 1) {
         const root = pending[index]!;
-        for (const candidate of Array.from(root.querySelectorAll("*"))) {
-          const nestedShadowRoot = candidate.shadowRoot;
+        for (const candidate of queryRoot(root, "*")) {
+          const nestedShadowRoot = shadowRoot(candidate);
           if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
         }
       }
@@ -1225,7 +1455,7 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function carriesForm(value: string, form: string | readonly string[]): boolean {
-      const forms = Array.isArray(form) ? form : [form];
+      const forms = dom.arrayIsArray(form) ? form : [form];
       return forms.some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)));
     }
 
@@ -1306,10 +1536,44 @@ async function endPageSensitiveActionEpoch(
       schedulerSessionRegistrations?: number;
       retainedSchedulerEpochs?: NonNullable<BrowserSensitiveState["active"]>[];
     };
+    type NativeDomAuthority = {
+      readonly arrayFrom: typeof Array.from;
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly objectDefineProperty: typeof Object.defineProperty;
+      readonly reflectApply: typeof Reflect.apply;
+      readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
+      readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
+      readonly elementGetAttribute: typeof Element.prototype.getAttribute;
+      readonly elementHasAttribute: typeof Element.prototype.hasAttribute;
+      readonly elementQuerySelectorAll: typeof Element.prototype.querySelectorAll;
+      readonly elementRemoveAttribute: typeof Element.prototype.removeAttribute;
+      readonly elementSetAttribute: typeof Element.prototype.setAttribute;
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlInputElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlInputElementValueGet: (() => string) | undefined;
+      readonly htmlOptionElementLabelGet: (() => string) | undefined;
+      readonly htmlOptionElementTextGet: (() => string) | undefined;
+      readonly htmlOptionElementValueGet: (() => string) | undefined;
+      readonly htmlSelectElementOptionsGet: (() => HTMLOptionsCollection) | undefined;
+      readonly htmlSelectElementSelectedOptionsGet: (() => HTMLCollectionOf<HTMLOptionElement>) | undefined;
+      readonly htmlSelectElementValueGet: (() => string) | undefined;
+      readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlTextAreaElementValueGet: (() => string) | undefined;
+      readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+      readonly nodeContains: typeof Node.prototype.contains;
+      readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
+      readonly nodeParentElementGet: (() => HTMLElement | null) | undefined;
+      readonly nodeTextContentGet: (() => string | null) | undefined;
+      readonly characterDataDataGet: (() => string) | undefined;
+      readonly shadowRootHostGet: (() => Element) | undefined;
+      readonly shadowRootModeGet: (() => ShadowRootMode) | undefined;
+    };
     const win = element.ownerDocument.defaultView;
-    const state = win === null
-      ? undefined
-      : (win as unknown as Record<string, BrowserSensitiveState | undefined>)[input.stateProperty];
+    if (win === null) return { status: "failed" };
+    const maybeDom = nativeDomAuthority();
+    if (maybeDom === undefined) return { status: "failed" };
+    const dom: NativeDomAuthority = maybeDom;
+    const state = (win as unknown as Record<string, BrowserSensitiveState | undefined>)[input.stateProperty];
     const active = state?.active;
     if (state === undefined || active === null || active === undefined || active.markerId !== input.markerId) {
       if (state !== undefined) state.poisoned = true;
@@ -1358,12 +1622,186 @@ async function endPageSensitiveActionEpoch(
     state.active = null;
     return { status: failed ? "failed" : "ok" };
 
+    function nativeDomAuthority(): NativeDomAuthority | undefined {
+      const registry = (win as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty];
+      const candidate = registry?.nativeDom;
+      if (candidate === undefined) return undefined;
+      const required = [
+        candidate.arrayFrom,
+        candidate.arrayIsArray,
+        candidate.objectDefineProperty,
+        candidate.reflectApply,
+        candidate.documentQuerySelectorAll,
+        candidate.documentFragmentQuerySelectorAll,
+        candidate.elementGetAttribute,
+        candidate.elementHasAttribute,
+        candidate.elementQuerySelectorAll,
+        candidate.elementRemoveAttribute,
+        candidate.elementSetAttribute,
+        candidate.elementTagNameGet,
+        candidate.htmlInputElementPlaceholderGet,
+        candidate.htmlInputElementValueGet,
+        candidate.htmlOptionElementLabelGet,
+        candidate.htmlOptionElementTextGet,
+        candidate.htmlOptionElementValueGet,
+        candidate.htmlSelectElementOptionsGet,
+        candidate.htmlSelectElementSelectedOptionsGet,
+        candidate.htmlSelectElementValueGet,
+        candidate.htmlTextAreaElementPlaceholderGet,
+        candidate.htmlTextAreaElementValueGet,
+        candidate.nodeChildNodesGet,
+        candidate.nodeContains,
+        candidate.nodeGetRootNode,
+        candidate.nodeParentElementGet,
+        candidate.nodeTextContentGet,
+        candidate.characterDataDataGet,
+        candidate.shadowRootHostGet,
+        candidate.shadowRootModeGet,
+      ];
+      return required.every((fn) => typeof fn === "function") ? candidate : undefined;
+    }
+
+    function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
+      return dom.reflectApply(fn, receiver, args as never[]) as T;
+    }
+
+    function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
+      return apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+    }
+
+    function queryDocument(selector: string): Element[] {
+      return arrayFrom(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
+    }
+
+    function queryRoot(root: ShadowRoot, selector: string): Element[] {
+      return arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+    }
+
+    function queryDescendants(candidate: Element): Element[] {
+      return arrayFrom(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
+    }
+
+    function getAttribute(candidate: Element, name: string): string | null {
+      return apply(dom.elementGetAttribute, candidate, [name]);
+    }
+
+    function hasAttribute(candidate: Element, name: string): boolean {
+      return apply(dom.elementHasAttribute, candidate, [name]);
+    }
+
+    function removeAttribute(candidate: Element, name: string): void {
+      apply(dom.elementRemoveAttribute, candidate, [name]);
+    }
+
+    function setAttribute(candidate: Element, name: string, value: string): void {
+      apply(dom.elementSetAttribute, candidate, [name, value]);
+    }
+
+    function tagName(candidate: Element): string {
+      return apply(dom.elementTagNameGet!, candidate).toLowerCase();
+    }
+
+    function childNodes(node: Node): ChildNode[] {
+      return arrayFrom(apply(dom.nodeChildNodesGet!, node));
+    }
+
+    function textContent(node: Node): string {
+      return apply(dom.nodeTextContentGet!, node) ?? "";
+    }
+
+    function textData(node: Text): string {
+      return apply(dom.characterDataDataGet!, node);
+    }
+
+    function getRootNode(node: Node): Node {
+      return apply(dom.nodeGetRootNode, node);
+    }
+
+    function parentElement(node: Node): Element | null {
+      return apply(dom.nodeParentElementGet!, node);
+    }
+
+    function contains(parent: Node, child: Node): boolean {
+      return apply(dom.nodeContains, parent, [child]);
+    }
+
+    function selectOptions(candidate: Element): HTMLOptionElement[] {
+      return arrayFrom(apply(dom.htmlSelectElementOptionsGet!, candidate));
+    }
+
+    function selectedOptions(candidate: Element): HTMLOptionElement[] {
+      return arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
+    }
+
+    function inputValue(candidate: Element): string {
+      return apply(dom.htmlInputElementValueGet!, candidate);
+    }
+
+    function inputPlaceholder(candidate: Element): string {
+      return apply(dom.htmlInputElementPlaceholderGet!, candidate);
+    }
+
+    function textareaValue(candidate: Element): string {
+      return apply(dom.htmlTextAreaElementValueGet!, candidate);
+    }
+
+    function textareaPlaceholder(candidate: Element): string {
+      return apply(dom.htmlTextAreaElementPlaceholderGet!, candidate);
+    }
+
+    function selectValue(candidate: Element): string {
+      return apply(dom.htmlSelectElementValueGet!, candidate);
+    }
+
+    function optionValue(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementValueGet!, option);
+    }
+
+    function optionText(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementTextGet!, option);
+    }
+
+    function optionLabel(option: HTMLOptionElement): string {
+      return apply(dom.htmlOptionElementLabelGet!, option);
+    }
+
+    function shadowRootMode(root: ShadowRoot): ShadowRootMode {
+      return apply(dom.shadowRootModeGet!, root);
+    }
+
+    function shadowRootHost(root: ShadowRoot): Element {
+      return apply(dom.shadowRootHostGet!, root);
+    }
+
+    function isElementNode(node: Node): node is Element {
+      return node.nodeType === 1;
+    }
+
+    function isShadowRootNode(node: unknown): node is ShadowRoot {
+      return typeof (node as { readonly nodeType?: unknown }).nodeType === "number" &&
+        (node as { readonly nodeType: number }).nodeType === 11 &&
+        "host" in (node as object);
+    }
+
+    function isEventElement(target: unknown): target is Element {
+      return typeof (target as { readonly nodeType?: unknown }).nodeType === "number" &&
+        (target as unknown as { readonly nodeType: number }).nodeType === 1;
+    }
+
+    function isNodeLike(target: unknown): target is Node {
+      return typeof (target as { readonly nodeType?: unknown }).nodeType === "number";
+    }
+
+    function isTextNode(node: Node): node is Text {
+      return node.nodeType === 3;
+    }
+
     function cleanupSensitiveMarkers(markerId: string, classifiedElements: readonly Element[]): void {
       const candidates = new Set<Element>(classifiedElements);
       candidates.add(element);
-      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+      for (const candidate of queryDocument("*")) {
         const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-        if (Array.isArray(ids) && ids.includes(markerId)) {
+        if (dom.arrayIsArray(ids) && ids.includes(markerId)) {
           candidates.add(candidate);
         }
       }
@@ -1375,13 +1813,13 @@ async function endPageSensitiveActionEpoch(
     function removeSensitiveMarker(candidate: Element, markerId: string): void {
       const host = candidate as unknown as Element & Record<string, unknown>;
       const ids = host[input.targetIdsProperty];
-      if (!Array.isArray(ids)) {
+      if (!dom.arrayIsArray(ids)) {
         return;
       }
       const remaining = ids.filter((id) => id !== markerId);
       if (remaining.length === 0) {
         delete host[input.targetIdsProperty];
-        candidate.removeAttribute(input.maskAttribute);
+        removeAttribute(candidate, input.maskAttribute);
         return;
       }
       host[input.targetIdsProperty] = remaining;
@@ -1391,7 +1829,7 @@ async function endPageSensitiveActionEpoch(
       stateToUpdate: BrowserSensitiveState,
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
     ): void {
-      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+      for (const candidate of queryDocument("*")) {
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
@@ -1441,8 +1879,8 @@ async function endPageSensitiveActionEpoch(
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
       return touchedNodes.some((node) => {
-        const root = node instanceof ShadowRoot ? node : node.getRootNode();
-        return root instanceof ShadowRoot && root.mode !== "open";
+        const root = isShadowRootNode(node) ? node : getRootNode(node);
+        return isShadowRootNode(root) && shadowRootMode(root) !== "open";
       });
     }
 
@@ -1456,9 +1894,9 @@ async function endPageSensitiveActionEpoch(
     }
 
     function addNode(node: Node, candidates: Element[]): void {
-      if (node instanceof Element) {
+      if (isElementNode(node)) {
         candidates.push(node);
-        candidates.push(...Array.from(node.querySelectorAll("*")));
+        candidates.push(...Array.from(queryDescendants(node)));
         candidates.push(...observedAncestors(node));
         return;
       }
@@ -1517,14 +1955,8 @@ async function endPageSensitiveActionEpoch(
     function hasDelegatedEventHandlerProperty(listenerType: "input" | "change"): boolean {
       const handlerName = `on${listenerType}`;
       for (const target of delegatedEventPathTargets()) {
-        if (target instanceof Element && target.hasAttribute(handlerName)) return true;
-        try {
-          if (typeof (target as unknown as Record<string, unknown>)[handlerName] === "function") {
-            return true;
-          }
-        } catch {
-          return true;
-        }
+        if (isEventElement(target) && hasAttribute(target, handlerName)) return true;
+
       }
       return false;
     }
@@ -1537,7 +1969,7 @@ async function endPageSensitiveActionEpoch(
 
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
-      for (let current = element.parentElement; current !== null; current = current.parentElement) {
+      for (let current = parentElement(element); current !== null; current = parentElement(current)) {
         targets.push(current);
       }
       targets.push(element.ownerDocument);
@@ -1548,7 +1980,7 @@ async function endPageSensitiveActionEpoch(
     function isDelegatedEventTarget(target: unknown): boolean {
       if (target === element) return false;
       if (target === win || target === element.ownerDocument) return true;
-      return target instanceof Node && target.contains(element);
+      return isNodeLike(target) && contains(target, element);
     }
 
     function classifyElement(
@@ -1569,8 +2001,8 @@ async function endPageSensitiveActionEpoch(
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
       candidate: Element,
     ): void {
-      const root = candidate.getRootNode();
-      if (root !== candidate.ownerDocument && (!(root instanceof ShadowRoot) || root.mode !== "open")) {
+      const root = getRootNode(candidate);
+      if (root !== candidate.ownerDocument && (!isShadowRootNode(root) || shadowRootMode(root) !== "open")) {
         epochToUpdate.poisoned = true;
         stateToUpdate.poisoned = true;
         return;
@@ -1608,20 +2040,21 @@ async function endPageSensitiveActionEpoch(
     }
 
     function parentElementAcrossShadow(node: Node): Element | null {
-      if (node.parentElement !== null) return node.parentElement;
-      const root = node.getRootNode();
-      return root instanceof ShadowRoot && root.mode === "open" ? root.host : null;
+      const directParent = parentElement(node);
+      if (directParent !== null) return directParent;
+      const root = getRootNode(node);
+      return isShadowRootNode(root) && shadowRootMode(root) === "open" ? shadowRootHost(root) : null;
     }
 
     function isObservationCandidate(candidate: Element): boolean {
-      const tag = candidate.tagName.toLowerCase();
+      const tag = tagName(candidate);
       return tag === "button" ||
-        (tag === "a" && candidate.hasAttribute("href")) ||
+        (tag === "a" && hasAttribute(candidate, "href")) ||
         tag === "input" ||
         tag === "textarea" ||
         tag === "select" ||
-        candidate.hasAttribute("role") ||
-        candidate.hasAttribute("data-qualigence-observe");
+        hasAttribute(candidate, "role") ||
+        hasAttribute(candidate, "data-qualigence-observe");
     }
 
     function nodeIdentity(stateToUpdate: BrowserSensitiveState, candidate: Element): string {
@@ -1630,12 +2063,12 @@ async function endPageSensitiveActionEpoch(
       if (typeof existingId === "string") return existingId;
       stateToUpdate.nextNodeOrdinal += 1;
       const nodeId = `qn-${stateToUpdate.nextNodeOrdinal}`;
-      Object.defineProperty(host, "__qualigenceSensitiveNodeIdentity", {
-        configurable: true,
+      apply(dom.objectDefineProperty, Object, [host, "__qualigenceSensitiveNodeIdentity", {
+        configurable: false,
         enumerable: false,
         value: nodeId,
         writable: false,
-      });
+      }]);
       return nodeId;
     }
 
@@ -1646,40 +2079,40 @@ async function endPageSensitiveActionEpoch(
     ): void {
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
-      if (Array.isArray(current)) {
+      if (dom.arrayIsArray(current)) {
         if (!current.includes(markerId)) current.push(markerId);
       } else {
-        Object.defineProperty(host, input.targetIdsProperty, {
-          configurable: true,
+        apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
+          configurable: false,
           enumerable: false,
           value: [markerId],
-          writable: true,
-        });
+          writable: false,
+        }]);
       }
-      if (!candidate.hasAttribute(input.maskAttribute)) {
+      if (!hasAttribute(candidate, input.maskAttribute)) {
         stateToUpdate.nextMaskOrdinal += 1;
-        candidate.setAttribute(input.maskAttribute, `qm-${stateToUpdate.nextMaskOrdinal}`);
+        setAttribute(candidate, input.maskAttribute, `qm-${stateToUpdate.nextMaskOrdinal}`);
       }
     }
 
     function isMarkedSensitive(candidate: Element, markerId: string): boolean {
       const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-      return Array.isArray(ids) && ids.includes(markerId);
+      return dom.arrayIsArray(ids) && ids.includes(markerId);
     }
 
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select"): string[] {
       const values = new Set<string>();
-      if (actionKind === "input" && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
-        values.add(target.value);
-        values.add(target.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
-        values.add(normalizeVisibleSensitiveForm(target.value));
+      if (actionKind === "input" && (tagName(target) === "input" || tagName(target) === "textarea")) {
+        values.add(fieldValue(target));
+        values.add(fieldValue(target).replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+        values.add(normalizeVisibleSensitiveForm(fieldValue(target)));
       }
-      if (actionKind === "select" && target instanceof HTMLSelectElement) {
-        values.add(target.value);
-        for (const option of Array.from(target.selectedOptions)) {
-          values.add(option.value);
-          values.add(option.text);
-          values.add(option.label);
+      if (actionKind === "select" && tagName(target) === "select") {
+        values.add(fieldValue(target));
+        for (const option of selectedOptions(target)) {
+          values.add(optionValue(option));
+          values.add(optionText(option));
+          values.add(optionLabel(option));
         }
       }
       return Array.from(values).filter((value) => value !== "");
@@ -1695,32 +2128,49 @@ async function endPageSensitiveActionEpoch(
       return value.normalize("NFC").replace(/\s+/g, " ").trim();
     }
 
+    function fieldValue(candidate: Element): string {
+      const tag = tagName(candidate);
+      if (tag === "input") return inputValue(candidate);
+      if (tag === "textarea") return textareaValue(candidate);
+      if (tag === "select") return selectValue(candidate);
+      return "";
+    }
+
+    function fieldPlaceholder(candidate: Element): string {
+      const tag = tagName(candidate);
+      if (tag === "input") return inputPlaceholder(candidate);
+      if (tag === "textarea") return textareaPlaceholder(candidate);
+      return "";
+    }
+
     function sensitiveValues(candidate: Element): readonly string[] {
       const values: string[] = [];
       const text = directText(candidate);
       if (text !== "") values.push(text);
-      const observedText = isObservationCandidate(candidate) ? candidate.textContent ?? "" : "";
+      const observedText = isObservationCandidate(candidate) ? textContent(candidate) : "";
       if (observedText !== "" && observedText !== text) values.push(observedText);
-      if (candidate instanceof HTMLInputElement || candidate instanceof HTMLTextAreaElement) {
-        if (candidate.value !== "") values.push(candidate.value);
-        if (candidate.placeholder !== "") values.push(candidate.placeholder);
+      const tag = tagName(candidate);
+      if (tag === "input" || tag === "textarea") {
+        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        if (fieldPlaceholder(candidate) !== "") values.push(fieldPlaceholder(candidate));
       }
-      if (candidate instanceof HTMLSelectElement) {
-        if (candidate.value !== "") values.push(candidate.value);
-        const selectedText = candidate.selectedOptions.item(0)?.text ?? "";
+      if (tag === "select") {
+        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        const selectedOption = selectedOptions(candidate)[0];
+        const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values.push(selectedText);
       }
       for (const attribute of ["aria-label", "title", "value"] as const) {
-        const attributeValue = candidate.getAttribute(attribute);
+        const attributeValue = getAttribute(candidate, attribute);
         if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
       }
       return values;
     }
 
     function directText(candidate: Element): string {
-      return Array.from(candidate.childNodes)
-        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
-        .map((node) => node.data)
+      return childNodes(candidate)
+        .filter((node): node is Text => isTextNode(node))
+        .map((node) => textData(node))
         .join("");
     }
 
@@ -1754,26 +2204,33 @@ async function markSensitiveTarget(
 ): Promise<void> {
   await locator.evaluate(
     (element, input) => {
+      type NativeDomAuthority = {
+        readonly arrayIsArray: typeof Array.isArray;
+        readonly objectDefineProperty: typeof Object.defineProperty;
+        readonly reflectApply: typeof Reflect.apply;
+      };
+      const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
+      if (dom === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.objectDefineProperty !== "function" || typeof dom.reflectApply !== "function") {
+        throw new Error("Sensitive DOM authority is unavailable.");
+      }
       const host = element as unknown as Element & Record<string, unknown>;
       const current = host[input.property];
-      if (Array.isArray(current)) {
+      if (dom.arrayIsArray(current)) {
         if (!current.includes(input.markerId)) current.push(input.markerId);
-      } else {
-        Object.defineProperty(host, input.property, {
-          configurable: true,
-          enumerable: false,
-          value: [input.markerId],
-          writable: true,
-        });
+        return;
       }
-      if (!element.hasAttribute(input.maskAttribute)) {
-        element.setAttribute(input.maskAttribute, `qm-${input.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}`);
-      }
+      if (current !== undefined) throw new Error("Sensitive target marker is unavailable.");
+      dom.reflectApply(dom.objectDefineProperty, Object, [host, input.property, {
+        configurable: false,
+        enumerable: false,
+        value: [input.markerId],
+        writable: false,
+      }]);
     },
     {
       property: SENSITIVE_TARGET_IDS_PROPERTY,
       markerId,
-      maskAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
+      runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
     },
   );
 }
@@ -1791,26 +2248,28 @@ interface SelectSensitiveForms extends InputSensitiveForms {
 async function readInputSensitiveForms(locator: Locator): Promise<InputSensitiveForms> {
   return locator.evaluate((element, input) => {
     type NativeDomAuthority = {
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly reflectApply: typeof Reflect.apply;
       readonly elementTagNameGet: (() => string) | undefined;
       readonly htmlInputElementValueGet: (() => string) | undefined;
       readonly htmlTextAreaElementValueGet: (() => string) | undefined;
     };
     const ids = (element as unknown as Element & Record<string, unknown>)[input.property];
-    const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
-      ? ids
-      : [];
     const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
-    if (dom === undefined || dom.elementTagNameGet === undefined) {
+    if (dom === undefined || dom.elementTagNameGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
       throw new Error("Sensitive DOM authority is unavailable.");
     }
-    const tag = dom.elementTagNameGet.call(element).toLowerCase();
+    const sensitiveTargetIds = dom.arrayIsArray(ids) && ids.every((entry) => typeof entry === "string")
+      ? ids
+      : [];
+    const tag = (dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase();
     if (tag === "input") {
       if (dom.htmlInputElementValueGet === undefined) throw new Error("Sensitive input value authority is unavailable.");
-      return { sensitiveTargetIds, value: dom.htmlInputElementValueGet.call(element) };
+      return { sensitiveTargetIds, value: dom.reflectApply(dom.htmlInputElementValueGet, element, []) as string };
     }
     if (tag === "textarea") {
       if (dom.htmlTextAreaElementValueGet === undefined) throw new Error("Sensitive textarea value authority is unavailable.");
-      return { sensitiveTargetIds, value: dom.htmlTextAreaElementValueGet.call(element) };
+      return { sensitiveTargetIds, value: dom.reflectApply(dom.htmlTextAreaElementValueGet, element, []) as string };
     }
     throw new Error("Sensitive target is not an input field.");
   }, {
@@ -1822,6 +2281,8 @@ async function readInputSensitiveForms(locator: Locator): Promise<InputSensitive
 async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensitiveForms> {
   return locator.evaluate((element, input) => {
     type NativeDomAuthority = {
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly reflectApply: typeof Reflect.apply;
       readonly elementTagNameGet: (() => string) | undefined;
       readonly htmlOptionElementTextGet: (() => string) | undefined;
       readonly htmlOptionElementValueGet: (() => string) | undefined;
@@ -1829,27 +2290,27 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
       readonly htmlSelectElementValueGet: (() => string) | undefined;
     };
     const ids = (element as unknown as Element & Record<string, unknown>)[input.property];
-    const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
-      ? ids
-      : [];
     const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
     if (dom === undefined || dom.elementTagNameGet === undefined || dom.htmlSelectElementValueGet === undefined ||
       dom.htmlSelectElementSelectedOptionsGet === undefined || dom.htmlOptionElementValueGet === undefined ||
-      dom.htmlOptionElementTextGet === undefined) {
+      dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
       throw new Error("Sensitive select authority is unavailable.");
     }
-    if (dom.elementTagNameGet.call(element).toLowerCase() !== "select") {
+    const sensitiveTargetIds = dom.arrayIsArray(ids) && ids.every((entry) => typeof entry === "string")
+      ? ids
+      : [];
+    if ((dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase() !== "select") {
       throw new Error("Sensitive select target is not a select field.");
     }
-    const selectedOption = dom.htmlSelectElementSelectedOptionsGet.call(element)[0];
+    const selectedOption = (dom.reflectApply(dom.htmlSelectElementSelectedOptionsGet, element, []) as HTMLCollectionOf<HTMLOptionElement>)[0];
     if (selectedOption === undefined) {
       throw new Error("Sensitive select target has no selected option.");
     }
     return {
       sensitiveTargetIds,
-      value: dom.htmlSelectElementValueGet.call(element),
-      selectedOptionValue: dom.htmlOptionElementValueGet.call(selectedOption),
-      selectedOptionText: dom.htmlOptionElementTextGet.call(selectedOption),
+      value: dom.reflectApply(dom.htmlSelectElementValueGet, element, []) as string,
+      selectedOptionValue: dom.reflectApply(dom.htmlOptionElementValueGet, selectedOption, []) as string,
+      selectedOptionText: dom.reflectApply(dom.htmlOptionElementTextGet, selectedOption, []) as string,
     };
   }, {
     property: SENSITIVE_TARGET_IDS_PROPERTY,

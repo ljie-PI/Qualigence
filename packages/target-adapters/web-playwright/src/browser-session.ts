@@ -161,6 +161,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
     type NativeDomAuthority = {
       readonly arrayFrom: typeof Array.from;
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly objectDefineProperty: typeof Object.defineProperty;
+      readonly reflectApply: typeof Reflect.apply;
       readonly documentGetElementById: typeof Document.prototype.getElementById;
       readonly documentQuerySelector: typeof Document.prototype.querySelector;
       readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
@@ -187,7 +190,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
       readonly htmlTextAreaElementValueGet: (() => string) | undefined;
       readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+      readonly nodeContains: typeof Node.prototype.contains;
       readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
+      readonly nodeParentElementGet: (() => HTMLElement | null) | undefined;
       readonly nodeTextContentGet: (() => string | null) | undefined;
       readonly characterDataDataGet: (() => string) | undefined;
       readonly shadowRootHostGet: (() => Element) | undefined;
@@ -291,7 +296,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeHTMLTextAreaElementPlaceholderGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "placeholder")?.get;
     const nativeHTMLTextAreaElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.get;
     const nativeNodeChildNodesGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "childNodes")?.get;
+    const nativeNodeContains: typeof Node.prototype.contains = Node.prototype.contains;
     const nativeNodeGetRootNode: typeof Node.prototype.getRootNode = Node.prototype.getRootNode;
+    const nativeNodeParentElementGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "parentElement")?.get;
     const nativeNodeTextContentGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "textContent")?.get;
     const nativeCharacterDataDataGet = nativeObjectGetOwnPropertyDescriptor(CharacterData.prototype, "data")?.get;
     const nativeShadowRootHostGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "host")?.get;
@@ -299,6 +306,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeWindowGetComputedStyle: typeof window.getComputedStyle = window.getComputedStyle;
     const nativeDomAuthority = nativeObjectFreeze({
       arrayFrom: Array.from,
+      arrayIsArray: Array.isArray,
+      objectDefineProperty: nativeObjectDefineProperty,
+      reflectApply: nativeReflectApply,
       documentGetElementById: nativeDocumentGetElementById,
       documentQuerySelector: nativeDocumentQuerySelector,
       documentQuerySelectorAll: nativeDocumentQuerySelectorAll,
@@ -325,7 +335,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       htmlTextAreaElementPlaceholderGet: nativeHTMLTextAreaElementPlaceholderGet,
       htmlTextAreaElementValueGet: nativeHTMLTextAreaElementValueGet,
       nodeChildNodesGet: nativeNodeChildNodesGet,
+      nodeContains: nativeNodeContains,
       nodeGetRootNode: nativeNodeGetRootNode,
+      nodeParentElementGet: nativeNodeParentElementGet,
       nodeTextContentGet: nativeNodeTextContentGet,
       characterDataDataGet: nativeCharacterDataDataGet,
       shadowRootHostGet: nativeShadowRootHostGet,
@@ -370,6 +382,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeNodeGetRootNode,
       nativeWindowGetComputedStyle,
       nativeDomAuthority.arrayFrom,
+      nativeDomAuthority.arrayIsArray,
+      nativeDomAuthority.objectDefineProperty,
+      nativeDomAuthority.reflectApply,
       nativeDomAuthority.documentTitleGet,
       nativeDomAuthority.elementShadowRootGet,
       nativeDomAuthority.elementTagNameGet,
@@ -385,6 +400,8 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeDomAuthority.htmlTextAreaElementPlaceholderGet,
       nativeDomAuthority.htmlTextAreaElementValueGet,
       nativeDomAuthority.nodeChildNodesGet,
+      nativeDomAuthority.nodeContains,
+      nativeDomAuthority.nodeParentElementGet,
       nativeDomAuthority.nodeTextContentGet,
       nativeDomAuthority.characterDataDataGet,
       nativeDomAuthority.shadowRootHostGet,

@@ -19,10 +19,13 @@ import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
 import { AesGcmSpoolCrypto, SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { PlaywrightWebTargetAdapter, type CapturedArtifact } from "@qualigence/web-playwright";
 import {
+  PlaywrightActionExecutor,
+  PlaywrightActionResolver,
+  PlaywrightBrowserSession,
   PlaywrightObserver,
-  type PlaywrightBrowserSession,
   type PlaywrightObserverHooks,
 } from "@qualigence/web-playwright/internal";
+import { ExecutionPermit } from "@qualigence/runner-kernel";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
 import { RunnerOfferRuntime } from "../../../apps/runner/src/offer-runtime.js";
@@ -360,6 +363,149 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).not.toContain(`\"text\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
     expect(spoolText).not.toContain(`\"name\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
   }, 60_000);
+
+  it("proves Ticket 45 CDP masking under DOM getter tampering, device scale, clipping, and bounded races", async () => {
+    const ticket45Secret = "ticket45-private-pixel-value";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 320px; height: 260px; font: 16px sans-serif; background: white; }
+          #spacer { height: 100px; }
+          #ticket45-secret { position: absolute; left: -8px; top: 36px; width: 94px; height: 28px; color: rgb(0, 0, 255); background: rgb(255, 255, 255); }
+          #ticket45-unrelated { position: absolute; left: 120px; top: 92px; width: 28px; height: 28px; background: rgb(222, 11, 44); }
+        </style>
+        <div id="spacer"></div>
+        <label>Ticket 45 Secret <input id="ticket45-secret" aria-label="Ticket 45 Secret" /></label>
+        <div id="ticket45-unrelated" data-qualigence-observe>safe-pixel</div>
+        <script>
+          const input = document.getElementById('ticket45-secret');
+          input.addEventListener('input', () => {
+            const actual = input.value;
+            document.title = actual;
+            input.setAttribute('title', actual);
+            Object.defineProperty(input, 'value', { configurable: true, get: () => 'attacker-own-value' });
+            Object.defineProperty(HTMLInputElement.prototype, 'placeholder', { configurable: true, get: () => 'attacker-placeholder' });
+            Object.defineProperty(Node.prototype, 'textContent', { configurable: true, get: () => 'attacker-text', set: () => {} });
+            Element.prototype.getAttribute = function(name) { return name === 'aria-label' || name === 'title' || name === 'data-qualigence-sensitive-mask' ? null : ''; };
+            Element.prototype.hasAttribute = function(name) { return name !== 'data-qualigence-sensitive-mask' && name !== 'title'; };
+            Element.prototype.getBoundingClientRect = function() { return { x: 120, y: 142, left: 120, top: 142, right: 148, bottom: 170, width: 28, height: 28, toJSON: () => ({}) }; };
+            Element.prototype.getClientRects = function() { return [{ x: 120, y: 142, left: 120, top: 142, right: 148, bottom: 170, width: 28, height: 28, toJSON: () => ({}) }]; };
+          });
+        </script>
+      `, "Ticket 45 Chromium proof"),
+    });
+
+    const session = new PlaywrightBrowserSession({
+      url: fixture.url,
+      expectedOrigin: fixture.origin,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      allowedOrigins: [fixture.origin],
+    });
+    const logs: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      await session.start();
+      await session.withPage(async (page) => {
+        await page.setViewportSize({ width: 180, height: 130 });
+        const cdp = await page.context().newCDPSession(page);
+        try {
+          await cdp.send("Emulation.setDeviceMetricsOverride", {
+            width: 180,
+            height: 130,
+            deviceScaleFactor: 2,
+            mobile: false,
+          });
+        } finally {
+          await cdp.detach().catch(() => undefined);
+        }
+      });
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      let graph = await observer.capture({ ...e2eJob("ticket45"), target: { kind: "web", url: fixture.url } });
+      const target = targetNode(graph, "textbox", "Ticket 45 Secret");
+      let secret = ticket45Secret;
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => secret });
+      let action = await resolver.resolve({ kind: "input", target: { nodeId: target.id }, valueRef: "ticket45.secret", reason: "ticket45" }, graph);
+      await expect(executor.execute(action, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+
+      const expected = await expectedRectFromCdp(session, "#ticket45-secret");
+      const unrelated = await expectedRectFromCdp(session, "#ticket45-unrelated");
+      graph = await observer.capture({ ...e2eJob("ticket45"), target: { kind: "web", url: fixture.url } });
+      const artifacts = await session.artifactsFor(graph.graphId);
+      const image = decodePngRgba(pngArtifact(artifacts).bytes);
+      expect(graph.extensions?.["web/v1"]?.payload).toMatchObject({
+        viewport: expect.objectContaining({ devicePixelRatio: expect.any(Number) }),
+      });
+      expect(expected.left).toBe(0);
+      expect(pixelAt(image, Math.floor((expected.left + expected.right) / 2), Math.floor((expected.top + expected.bottom) / 2))).toEqual([0, 0, 0, 255]);
+      void unrelated;
+      expect(pixelAt(image, image.width - 1, image.height - 1)).toEqual([255, 255, 255, 255]);
+      expect(JSON.stringify(graph)).not.toContain(ticket45Secret);
+
+      secret = `${ticket45Secret}-recapture`;
+      action = await resolver.resolve({ kind: "input", target: { nodeId: targetNode(graph, "textbox", "Ticket 45 Secret").id }, valueRef: "ticket45.secret", reason: "ticket45 recapture" }, graph);
+      await expect(executor.execute(action, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+      let screenshotCalls = 0;
+      await session.withPage(async (page) => {
+        const original = page.screenshot.bind(page);
+        page.screenshot = async (options) => {
+          screenshotCalls += 1;
+          return original(options);
+        };
+      });
+      graph = await new PlaywrightObserver(session, {
+        afterScreenshotCapture: async (page) => {
+          if (screenshotCalls === 1) {
+            await page.locator("#ticket45-secret").evaluate((element) => {
+              (element as unknown as { readonly style: { left: string } }).style.left = "4px";
+            });
+          }
+        },
+      }).capture({ ...e2eJob("ticket45"), target: { kind: "web", url: fixture.url } });
+      expect(screenshotCalls).toBe(2);
+      expect(session.artifactsFor(graph.graphId)).toHaveLength(2);
+
+      secret = `${ticket45Secret}-second-race`;
+      action = await resolver.resolve({ kind: "input", target: { nodeId: targetNode(graph, "textbox", "Ticket 45 Secret").id }, valueRef: "ticket45.secret", reason: "ticket45 second race" }, graph);
+      await expect(executor.execute(action, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+      let secondRaceScreenshotCalls = 0;
+      await session.withPage(async (page) => {
+        const original = page.screenshot.bind(page);
+        page.screenshot = async (options) => {
+          secondRaceScreenshotCalls += 1;
+          return original(options);
+        };
+      });
+      await expect(new PlaywrightObserver(session, {
+        afterScreenshotCapture: async (page) => {
+          await page.locator("#ticket45-secret").evaluate((element, call) => {
+            (element as unknown as { readonly style: { left: string } }).style.left = `${8 + call * 6}px`;
+          }, secondRaceScreenshotCalls);
+        },
+      }).capture({ ...e2eJob("ticket45"), target: { kind: "web", url: fixture.url } }))
+        .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(secondRaceScreenshotCalls).toBe(2);
+      expect(JSON.stringify(logs)).not.toContain(ticket45Secret);
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      await session.close();
+    }
+  }, 90_000);
 
   it("fails closed when Promise owner descriptors/prototypes mutate, restore, and re-register at capture boundaries", async () => {
     fixture = await startFixtureServer({
@@ -844,6 +990,26 @@ function ticket43PromiseOwnerHooks(
     : { afterScreenshotCapture: mutateAtBoundary };
 }
 
+function e2eJob(suffix: string): ExecutionJobOffer["job"] {
+  return {
+    jobId: `job-${suffix}`,
+    runId: `run-${suffix}`,
+    projectId: "project-value-ref-e2e",
+    target: { kind: "web", url: fixture!.url },
+    objective: `Exercise ${suffix}`,
+    policy: {
+      policyId: `policy-${suffix}`,
+      environment: "isolated_test",
+      allowedOrigins: [fixture!.origin],
+      allowedActionKinds: ["input"],
+      maximumRisk: "ExternalSideEffect",
+      explorationAllowed: false,
+      issuedAt: "2026-08-21T00:00:00.000Z",
+      expiresAt: "2099-08-21T00:00:00.000Z",
+    },
+  };
+}
+
 function offer(
   kind: "input" | "select",
   valueRef: string,
@@ -950,6 +1116,53 @@ function assertArtifactJsonRedacted(
   }
 }
 
+interface PixelRect {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+async function expectedRectFromCdp(session: PlaywrightBrowserSession, selector: string): Promise<PixelRect> {
+  return session.withPage(async (page) => {
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("DOM.enable");
+      await cdp.send("Page.enable");
+      const metrics = await cdp.send("Page.getLayoutMetrics") as {
+        readonly cssVisualViewport: { readonly pageX: number; readonly pageY: number; readonly clientWidth: number; readonly clientHeight: number };
+      };
+      const document = await cdp.send("DOM.getDocument", { depth: -1, pierce: true }) as { readonly root: { readonly nodeId: number } };
+      const query = await cdp.send("DOM.querySelectorAll", { nodeId: document.root.nodeId, selector }) as { readonly nodeIds: readonly number[] };
+      expect(query.nodeIds).toHaveLength(1);
+      const box = await cdp.send("DOM.getBoxModel", { nodeId: query.nodeIds[0]! }) as { readonly model: { readonly border: readonly number[] } };
+      const screenshot = await page.screenshot({ timeout: 5000 });
+      const image = decodePngRgba(new Uint8Array(screenshot));
+      const xs = [box.model.border[0]!, box.model.border[2]!, box.model.border[4]!, box.model.border[6]!];
+      const ys = [box.model.border[1]!, box.model.border[3]!, box.model.border[5]!, box.model.border[7]!];
+      const scaleX = image.width / metrics.cssVisualViewport.clientWidth;
+      const scaleY = image.height / metrics.cssVisualViewport.clientHeight;
+      return {
+        left: Math.max(0, Math.floor((Math.min(...xs) - metrics.cssVisualViewport.pageX) * scaleX)),
+        top: Math.max(0, Math.floor((Math.min(...ys) - metrics.cssVisualViewport.pageY) * scaleY)),
+        right: Math.min(image.width, Math.ceil((Math.max(...xs) - metrics.cssVisualViewport.pageX) * scaleX)),
+        bottom: Math.min(image.height, Math.ceil((Math.max(...ys) - metrics.cssVisualViewport.pageY) * scaleY)),
+      };
+    } finally {
+      await cdp.detach().catch(() => undefined);
+    }
+  });
+}
+
+function pixelAt(
+  image: { readonly width: number; readonly rgba: Uint8Array },
+  x: number,
+  y: number,
+): readonly [number, number, number, number] {
+  const offset = (y * image.width + x) * 4;
+  return [image.rgba[offset]!, image.rgba[offset + 1]!, image.rgba[offset + 2]!, image.rgba[offset + 3]!];
+}
+
 async function samplePngPixels(
   bytes: Uint8Array,
   points: readonly (readonly [number, number])[],
@@ -961,7 +1174,7 @@ async function samplePngPixels(
   });
 }
 
-function decodePngRgba(bytes: Uint8Array): { readonly width: number; readonly rgba: Uint8Array } {
+function decodePngRgba(bytes: Uint8Array): { readonly width: number; readonly height: number; readonly rgba: Uint8Array } {
   const buffer = Buffer.from(bytes);
   const signature = "89504e470d0a1a0a";
   if (buffer.subarray(0, 8).toString("hex") !== signature) throw new Error("Invalid PNG signature.");
@@ -1023,7 +1236,7 @@ function decodePngRgba(bytes: Uint8Array): { readonly width: number; readonly rg
       rgba[target + 3] = channels === 4 ? scanlines[source + 3]! : 255;
     }
   }
-  return { width, rgba };
+  return { width, height, rgba };
 }
 
 function pngFilterDelta(filter: number, left: number, up: number, upperLeft: number): number {
