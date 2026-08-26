@@ -117,11 +117,14 @@ function validateSensitivePromiseOwnerRegistryInPage(input: {
   }
 }
 
-async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
+const SENSITIVE_EVIDENCE_MUTATION_NOTIFICATION_FUNCTION = "__qualigenceSensitiveEvidenceMutationObserved";
+
+async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationFunction: string): Promise<void> {
   if (typeof page.addInitScript !== "function") return;
   await page.addInitScript((input: {
     readonly shadowRootsProperty: string;
     readonly evidenceStateProperty: string;
+    readonly mutationNotificationFunction: string;
     readonly maxShadowRoots: number;
     readonly maxSchedulerRegistrationsPerEpoch: number;
     readonly maxSchedulerRegistrationsPerSession: number;
@@ -204,8 +207,15 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     };
     const promiseMethods: readonly PromiseMethodName[] = ["then", "catch", "finally"];
     const nativeArrayIsArray: typeof Array.isArray = Array.isArray;
+    const nativeArrayPrototypeFind: typeof Array.prototype.find = Array.prototype.find;
+    const nativeArrayPrototypeIncludes: typeof Array.prototype.includes = Array.prototype.includes;
+    const nativeArrayPrototypeLastIndexOf: typeof Array.prototype.lastIndexOf = Array.prototype.lastIndexOf;
+    const nativeArrayPrototypePush: typeof Array.prototype.push = Array.prototype.push;
     const nativeArrayPrototypeSlice: typeof Array.prototype.slice = Array.prototype.slice;
+    const nativeArrayPrototypeSplice: typeof Array.prototype.splice = Array.prototype.splice;
     const NativeSet = Set;
+    const nativeSetPrototypeAdd: typeof Set.prototype.add = Set.prototype.add;
+    const nativeSetPrototypeHas: typeof Set.prototype.has = Set.prototype.has;
     const nativeObjectAssign: typeof Object.assign = Object.assign;
     const nativeObjectDefineProperties: typeof Object.defineProperties = Object.defineProperties;
     const nativeObjectDefineProperty: typeof Object.defineProperty = Object.defineProperty;
@@ -221,8 +231,15 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
     const intrinsicAuthorityFailed = [
       nativeArrayIsArray,
+      nativeArrayPrototypeFind,
+      nativeArrayPrototypeIncludes,
+      nativeArrayPrototypeLastIndexOf,
+      nativeArrayPrototypePush,
       nativeArrayPrototypeSlice,
+      nativeArrayPrototypeSplice,
       NativeSet,
+      nativeSetPrototypeAdd,
+      nativeSetPrototypeHas,
       nativeObjectAssign,
       nativeObjectDefineProperties,
       nativeObjectDefineProperty,
@@ -239,6 +256,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     ].some((fn) => typeof fn !== "function");
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
+    const notifySensitiveEvidenceMutation = (window as unknown as Record<string, unknown>)[input.mutationNotificationFunction];
     const promiseOwnerRecords: PromiseOwnerRecord[] = [];
     let promiseOwnerOverflow = false;
     let promiseOwnerValidationFailed = intrinsicAuthorityFailed;
@@ -292,7 +310,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       if (init.mode === "closed" && state !== undefined && active !== undefined) {
         poison(state, active);
       }
-      if (!registry.roots.includes(root)) {
+      if (!arrayIncludes(registry.roots, root)) {
         if (registry.roots.length >= input.maxShadowRoots) {
           registry.shadowRootOverflow = true;
           if (state !== undefined && active !== undefined) {
@@ -300,7 +318,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
           }
           return root;
         }
-        registry.roots.push(root);
+        arrayPush(registry.roots, root);
       }
       return root;
     };
@@ -313,7 +331,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         (typeof listener === "function" || typeof listener === "object") &&
         (listener as unknown as Record<string, unknown>).__qualigenceSensitiveInstrumentation === true;
       if ((type === "input" || type === "change") && listener !== null && !isSensitiveInstrumentation) {
-        registry.listenerTargets.push({ type, target: this, listener });
+        arrayPush(registry.listenerTargets, { type, target: this, listener });
       }
       nativeReflectApply(registry.originalAddEventListener, this, [type, listener, options]);
     };
@@ -441,12 +459,12 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     installPromiseOwnerMutationGuards();
 
     function withInternalPromiseThenCall<T>(call: InternalPromiseThenCall, operation: () => T): T {
-      internalPromiseThenCalls.push(call);
+      arrayPush(internalPromiseThenCalls, call);
       try {
         return operation();
       } finally {
-        const index = internalPromiseThenCalls.lastIndexOf(call);
-        if (index !== -1) internalPromiseThenCalls.splice(index, 1);
+        const index = arrayLastIndexOf(internalPromiseThenCalls, call);
+        if (index !== -1) arraySplice(internalPromiseThenCalls, index, 1);
       }
     }
 
@@ -473,7 +491,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         const rejectedMatches = call.onrejected === undefined || call.onrejected === onrejected;
         if (!fulfilledMatches || !rejectedMatches) continue;
         call.consumed = true;
-        if (calls === retainedInternalPromiseThenCalls) calls.splice(index, 1);
+        if (calls === retainedInternalPromiseThenCalls) arraySplice(calls, index, 1);
         return call;
       }
       return undefined;
@@ -482,7 +500,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     function definePromisePrototypeMethod(method: PromiseMethodName, value: unknown): void {
       const descriptor = nativeObjectGetOwnPropertyDescriptor(Promise.prototype, method);
       if (descriptor === undefined || !("value" in descriptor || "writable" in descriptor)) {
-        promiseOwnerValidationFailed = true;
+        latchPromiseOwnerValidationFailure();
         return;
       }
       nativeObjectDefineProperty(Promise.prototype, method, {
@@ -497,9 +515,15 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       replaceDataFunction(Object, "assign", function assign(target: object, source?: unknown): object {
         const sources = nativeReflectApply(nativeArrayPrototypeSlice, arguments, [1]) as unknown[];
         const additionalSources = nativeReflectApply(nativeArrayPrototypeSlice, sources, [1]) as unknown[];
-        const result = nativeObjectAssign(target, source, ...additionalSources);
-        for (const candidate of sources) noteObjectAssignMutation(target, candidate);
-        return result;
+        const approvedPromiseOwnerTarget = isApprovedPromiseOwner(target);
+        try {
+          const result = nativeObjectAssign(target, source, ...additionalSources);
+          noteObjectAssignMutations(target, sources, false);
+          return result;
+        } catch (error) {
+          noteObjectAssignMutations(target, sources, approvedPromiseOwnerTarget);
+          throw error;
+        }
       });
       replaceDataFunction(Object, "defineProperty", function defineProperty<T>(target: T, propertyKey: PropertyKey, attributes: PropertyDescriptor): T {
         const result = nativeObjectDefineProperty(target, propertyKey, attributes);
@@ -507,11 +531,19 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         return result;
       });
       replaceDataFunction(Object, "defineProperties", function defineProperties<T>(target: T, properties: PropertyDescriptorMap & ThisType<unknown>): T {
-        const result = nativeObjectDefineProperties(target, properties);
-        for (const method of promiseMethods) {
-          if (hasOwnProperty(properties, method)) notePromiseOwnerPropertyMutation(target, method);
+        const approvedPromiseOwnerTarget = isApprovedPromiseOwner(target);
+        try {
+          const result = nativeObjectDefineProperties(target, properties);
+          forEachPromiseMethod((method) => {
+            if (hasOwnProperty(properties, method)) notePromiseOwnerPropertyMutation(target, method);
+          });
+          notePromiseOwnerMutationIfSnapshotChanged(target);
+          return result;
+        } catch (error) {
+          notePromiseOwnerMutationIfSnapshotChanged(target);
+          if (approvedPromiseOwnerTarget) notePromiseOwnerMutationIfApproved(target);
+          throw error;
         }
-        return result;
       });
       replaceDataFunction(Object, "setPrototypeOf", function setPrototypeOf<T>(target: T, prototype: object | null): T {
         const result = nativeObjectSetPrototypeOf(target, prototype);
@@ -558,17 +590,33 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       });
     }
 
+    function noteObjectAssignMutations(target: unknown, sources: readonly unknown[], failedAfterPartialMutationBoundary: boolean): void {
+      try {
+        for (let index = 0; index < sources.length; index += 1) {
+          noteObjectAssignMutation(target, sources[index]);
+        }
+        notePromiseOwnerMutationIfSnapshotChanged(target);
+      } catch {
+        notePromiseOwnerMutationIfSnapshotChanged(target);
+        if (failedAfterPartialMutationBoundary) notePromiseOwnerMutationIfApproved(target);
+      }
+    }
+
     function noteObjectAssignMutation(target: unknown, source: unknown): void {
       if (!isObjectLike(source)) return;
-      for (const method of promiseMethods) {
+      forEachPromiseMethod((method) => {
         const descriptor = nativeObjectGetOwnPropertyDescriptor(source, method);
         if (descriptor?.enumerable === true) notePromiseOwnerPropertyMutation(target, method);
-      }
+      });
     }
 
     function notePromiseOwnerPropertyMutation(target: unknown, propertyKey: PropertyKey): void {
       if (!isPromiseMethodName(propertyKey)) return;
       notePromiseOwnerMutation(target);
+    }
+
+    function isApprovedPromiseOwner(target: unknown): boolean {
+      return isObjectLike(target) && findPromiseOwnerRecord(target) !== undefined;
     }
 
     function notePromiseOwnerPrototypeMutation(target: unknown): void {
@@ -578,10 +626,44 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     function notePromiseOwnerMutation(target: unknown): void {
       if (!isObjectLike(target)) return;
       if (findPromiseOwnerRecord(target) === undefined) return;
-      promiseOwnerValidationFailed = true;
+      latchPromiseOwnerValidationFailure();
       const state = sensitiveState();
       const active = state === undefined ? undefined : currentSensitiveEpoch(state);
       if (state !== undefined && active !== undefined) poison(state, active);
+    }
+
+    function notePromiseOwnerMutationIfApproved(target: unknown): void {
+      notePromiseOwnerMutation(target);
+    }
+
+    function notePromiseOwnerMutationIfSnapshotChanged(target: unknown): void {
+      if (!isObjectLike(target)) return;
+      const record = findPromiseOwnerRecord(target);
+      if (record === undefined) return;
+      try {
+        if (!samePromiseOwnerRecord(snapshotPromiseOwner(target), record)) notePromiseOwnerMutation(target);
+      } catch {
+        notePromiseOwnerMutation(target);
+      }
+    }
+
+    function latchPromiseOwnerValidationFailure(): void {
+      promiseOwnerValidationFailed = true;
+      notifyHostSensitiveEvidenceMutation();
+    }
+
+    function notifyHostSensitiveEvidenceMutation(): void {
+      if (typeof notifySensitiveEvidenceMutation !== "function") return;
+      try {
+        const notified = nativeReflectApply(notifySensitiveEvidenceMutation as () => unknown, window, []);
+        if (isObjectLike(notified)) {
+          nativeReflectApply(registry.originalPromiseCatch, notified, [() => undefined]);
+        }
+      } catch {
+        // The host can already be closing when an asynchronous page signal
+        // resolves. Page-local validation remains latched for the current
+        // document and close is the only supported way to clear host state.
+      }
     }
 
     function isPromiseMethodName(propertyKey: PropertyKey): propertyKey is PromiseMethodName {
@@ -590,6 +672,40 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function hasOwnProperty(owner: object, propertyKey: PropertyKey): boolean {
       return nativeReflectApply(nativeObjectPrototypeHasOwnProperty, owner, [propertyKey]) as boolean;
+    }
+
+    function arrayFind<T>(array: readonly T[], predicate: (value: T) => boolean): T | undefined {
+      return nativeReflectApply(nativeArrayPrototypeFind, array, [predicate]) as T | undefined;
+    }
+
+    function arrayIncludes<T>(array: readonly T[], value: T): boolean {
+      return nativeReflectApply(nativeArrayPrototypeIncludes, array, [value]) as boolean;
+    }
+
+    function arrayLastIndexOf<T>(array: readonly T[], value: T): number {
+      return nativeReflectApply(nativeArrayPrototypeLastIndexOf, array, [value]) as number;
+    }
+
+    function arrayPush<T>(array: T[], value: T): void {
+      nativeReflectApply(nativeArrayPrototypePush, array, [value]);
+    }
+
+    function arraySplice<T>(array: T[], start: number, deleteCount: number): void {
+      nativeReflectApply(nativeArrayPrototypeSplice, array, [start, deleteCount]);
+    }
+
+    function setHas<T>(set: Set<T>, value: T): boolean {
+      return nativeReflectApply(nativeSetPrototypeHas, set, [value]) as boolean;
+    }
+
+    function setAdd<T>(set: Set<T>, value: T): void {
+      nativeReflectApply(nativeSetPrototypeAdd, set, [value]);
+    }
+
+    function forEachPromiseMethod(operation: (method: PromiseMethodName) => void): void {
+      for (let index = 0; index < promiseMethods.length; index += 1) {
+        operation(promiseMethods[index]!);
+      }
     }
 
     function sensitiveState(): SensitiveRuntimeState | undefined {
@@ -607,8 +723,11 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       }
       try {
         const owners = traversedMethodOwners(receiver, method);
-        for (const owner of owners) registerPromiseOwner(owner, state, epoch);
+        for (let index = 0; index < owners.length; index += 1) {
+          registerPromiseOwner(owners[index]!, state, epoch);
+        }
       } catch {
+        latchPromiseOwnerValidationFailure();
         poison(state, epoch);
       }
     }
@@ -625,9 +744,9 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const visited = new NativeSet<object>();
       let current: object | null = receiver;
       while (current !== null) {
-        if (visited.has(current)) throw new Error("cyclic-prototype-chain");
-        visited.add(current);
-        owners.push(current);
+        if (setHas(visited, current)) throw new Error("cyclic-prototype-chain");
+        setAdd(visited, current);
+        arrayPush(owners, current);
         if (hasOwnProperty(current, method)) break;
         current = nativeObjectGetPrototypeOf(current);
       }
@@ -636,7 +755,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function registerPromiseOwner(owner: object, state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
       if (intrinsicAuthorityFailed) {
-        promiseOwnerValidationFailed = true;
+        latchPromiseOwnerValidationFailure();
         poison(state, epoch);
         return;
       }
@@ -645,23 +764,24 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       try {
         snapshot = snapshotPromiseOwner(owner);
       } catch {
-        promiseOwnerValidationFailed = true;
+        latchPromiseOwnerValidationFailure();
         poison(state, epoch);
         return;
       }
       if (existingRecord !== undefined) {
         if (!samePromiseOwnerRecord(snapshot, existingRecord)) {
-          promiseOwnerValidationFailed = true;
+          latchPromiseOwnerValidationFailure();
           poison(state, epoch);
         }
         return;
       }
       if (promiseOwnerRecords.length >= input.maxPromiseOwners) {
         promiseOwnerOverflow = true;
+        latchPromiseOwnerValidationFailure();
         poison(state, epoch);
         return;
       }
-      promiseOwnerRecords.push(snapshot);
+      arrayPush(promiseOwnerRecords, snapshot);
     }
 
     function findPromiseOwnerRecord(owner: object): PromiseOwnerRecord | undefined {
@@ -770,8 +890,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const visited = new NativeSet<object>();
       let current: object | null = owner;
       while (current !== null) {
-        if (visited.has(current)) throw new Error("cyclic-prototype-chain");
-        visited.add(current);
+        if (setHas(visited, current)) throw new Error("cyclic-prototype-chain");
+        setAdd(visited, current);
         if (hasOwnProperty(current, method)) {
           return { present: true, owner: current };
         }
@@ -782,7 +902,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function validatePromiseOwnerRecords(maxPromiseOwners: number): PromiseOwnerValidationResult {
       if (promiseOwnerOverflow || promiseOwnerValidationFailed) {
-        promiseOwnerValidationFailed = true;
+        latchPromiseOwnerValidationFailure();
         return { status: "failed", reason: "poisoned" };
       }
       if (promiseOwnerRecords.length > maxPromiseOwners) return failPromiseOwnerValidation("overflow-length");
@@ -792,10 +912,11 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
           if (!(index in promiseOwnerRecords)) return failPromiseOwnerValidation("incomplete-enumeration");
           const record = promiseOwnerRecords[index]!;
           if (!isObjectLike(record) || !isObjectLike(record.owner)) return failPromiseOwnerValidation("invalid-record");
-          if (seen.has(record.owner)) return failPromiseOwnerValidation("duplicate-owner");
-          seen.add(record.owner);
+          if (setHas(seen, record.owner)) return failPromiseOwnerValidation("duplicate-owner");
+          setAdd(seen, record.owner);
           if (nativeObjectGetPrototypeOf(record.owner) !== record.prototype) return failPromiseOwnerValidation("prototype-mismatch");
-          for (const method of promiseMethods) {
+          for (let methodIndex = 0; methodIndex < promiseMethods.length; methodIndex += 1) {
+            const method = promiseMethods[methodIndex]!;
             if (!sameDescriptorSnapshot(snapshotOwnDescriptor(record.owner, method), record.descriptors[method])) {
               return failPromiseOwnerValidation(`${method}-descriptor-mismatch`);
             }
@@ -804,7 +925,6 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
             }
           }
         }
-        if (seen.size !== promiseOwnerRecords.length) return failPromiseOwnerValidation("incomplete-enumeration");
       } catch {
         return failPromiseOwnerValidation("inspection-threw");
       }
@@ -812,7 +932,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     }
 
     function failPromiseOwnerValidation(reason: string): PromiseOwnerValidationResult {
-      promiseOwnerValidationFailed = true;
+      latchPromiseOwnerValidationFailure();
       return { status: "failed", reason };
     }
 
@@ -835,7 +955,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function samePromiseOwnerRecord(left: PromiseOwnerRecord, right: PromiseOwnerRecord): boolean {
       if (left.owner !== right.owner || left.prototype !== right.prototype) return false;
-      for (const method of promiseMethods) {
+      for (let index = 0; index < promiseMethods.length; index += 1) {
+        const method = promiseMethods[index]!;
         if (!sameDescriptorSnapshot(left.descriptors[method], right.descriptors[method])) return false;
         if (!sameResolvedMethodOwner(left.resolvedMethodOwners[method], right.resolvedMethodOwners[method])) return false;
       }
@@ -884,7 +1005,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       epoch: SensitiveSchedulerEpoch | undefined,
     ): void {
       if (!continuation.usedDefaultThen || !isObjectLike(continuation.value)) return;
-      retainedInternalPromiseThenCalls.push({
+      arrayPush(retainedInternalPromiseThenCalls, {
         receiver: continuation.value,
         epoch,
         wrapHandlers: false,
@@ -1152,9 +1273,11 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const active = state.active;
       return active !== undefined && active !== null
         ? active
-        : state.retainedSchedulerEpochs?.find((candidate) =>
-          candidate.inSchedulerCallback === true || (candidate.retainedSchedulerCallbacks ?? 0) > 0,
-        );
+        : state.retainedSchedulerEpochs === undefined
+          ? undefined
+          : arrayFind(state.retainedSchedulerEpochs, (candidate) =>
+            candidate.inSchedulerCallback === true || (candidate.retainedSchedulerCallbacks ?? 0) > 0,
+          );
     }
 
     function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
@@ -1173,6 +1296,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
   }, {
     shadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
     evidenceStateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    mutationNotificationFunction,
     maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
     maxSchedulerRegistrationsPerEpoch: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH,
     maxSchedulerRegistrationsPerSession: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION,
@@ -1627,7 +1751,12 @@ export class PlaywrightBrowserSession {
       context.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
 
       const page = await context.newPage();
-      await installSensitiveEvidenceRuntime(page);
+      if (typeof page.exposeFunction === "function") {
+        await page.exposeFunction(SENSITIVE_EVIDENCE_MUTATION_NOTIFICATION_FUNCTION, () => {
+          this.markSensitiveEvidenceUnavailable();
+        });
+      }
+      await installSensitiveEvidenceRuntime(page, SENSITIVE_EVIDENCE_MUTATION_NOTIFICATION_FUNCTION);
       this.page = page;
       page.on("framenavigated", (frame) => {
         if (frame !== page.mainFrame()) return;

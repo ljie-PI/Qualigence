@@ -44,6 +44,7 @@ describe("immutable first Promise owner snapshots", () => {
   beforeEach(async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument("<main data-qualigence-observe>Promise owner snapshots</main>", "Promise Snapshot"),
+      "/next": htmlDocument("<main data-qualigence-observe>Promise owner snapshots after navigation</main>", "Promise Snapshot Next"),
     });
     session = new PlaywrightBrowserSession(options());
     await session.start();
@@ -230,6 +231,239 @@ describe("immutable first Promise owner snapshots", () => {
     const graph = await observer().capture(job);
     expect(graph.graphId).toBe("run-promise-owner-snapshot:observation:1");
     expect(session.artifactsFor(graph.graphId)).toHaveLength(2);
+  });
+
+  it("records and validates owner snapshots with captured Array and Set intrinsics after page tampering", async () => {
+    const summary = await session.withPage((page) => page.evaluate((input) => {
+      const originalArrayPush = Array.prototype.push;
+      const originalSetHas = Set.prototype.has;
+      const originalSetAdd = Set.prototype.add;
+      const originalSetSize = Object.getOwnPropertyDescriptor(Set.prototype, "size");
+      Array.prototype.push = (() => 0) as typeof Array.prototype.push;
+      Set.prototype.has = (() => true) as typeof Set.prototype.has;
+      Set.prototype.add = function tamperedAdd<T>(this: Set<T>): Set<T> { return this; } as typeof Set.prototype.add;
+      Object.defineProperty(Set.prototype, "size", {
+        configurable: true,
+        get() {
+          throw new Error("ambient Set size is untrusted");
+        },
+      });
+      try {
+        const epoch = {
+          schedulerRegistrations: 0,
+          pendingSchedulerCallbacks: 0,
+          poisoned: false,
+          processSchedulerCallback: () => undefined,
+        };
+        const state: {
+          active: typeof epoch | null;
+          records: unknown[];
+          poisoned: boolean;
+          schedulerSessionRegistrations: number;
+          retainedSchedulerEpochs: unknown[];
+        } = {
+          active: epoch,
+          records: [],
+          poisoned: false,
+          schedulerSessionRegistrations: 0,
+          retainedSchedulerEpochs: [],
+        };
+        (globalThis as unknown as Record<string, unknown>)[input.stateProperty] = state;
+        const owner = {
+          then(onfulfilled?: (value: string) => unknown) {
+            if (typeof onfulfilled === "function") onfulfilled("captured");
+            return "captured-return";
+          },
+        };
+        (globalThis as unknown as Record<string, unknown>).__ticket44Owner = owner;
+        (globalThis as unknown as Record<string, unknown>).__ticket44OriginalThen = owner.then;
+        const returned = Promise.prototype.catch.call(owner as never, () => "handled") as unknown;
+        state.active = null;
+        const registry = (globalThis as unknown as Record<string, {
+          readonly promiseOwners?: readonly { readonly owner: object; readonly descriptors: Record<"then" | "catch" | "finally", { readonly value?: unknown }> }[];
+          readonly validatePromiseOwners?: (maxPromiseOwners: number) => { readonly status: string; readonly reason?: string };
+          readonly promiseOwnerValidationFailed?: boolean;
+        }>)[input.runtimeRegistryProperty];
+        const record = registry?.promiseOwners?.find((candidate) => candidate.owner === owner);
+        const validation = registry?.validatePromiseOwners?.(input.maxPromiseOwners);
+        return {
+          returned,
+          count: registry?.promiseOwners?.length ?? 0,
+          trackedOwner: record?.owner === owner,
+          ownerThenIsOriginal: record?.descriptors.then.value === owner.then,
+          validationStatus: validation?.status,
+          validationFailed: registry?.promiseOwnerValidationFailed === true,
+        };
+      } finally {
+        Array.prototype.push = originalArrayPush;
+        Set.prototype.has = originalSetHas;
+        Set.prototype.add = originalSetAdd;
+        if (originalSetSize === undefined) {
+          delete (Set.prototype as { size?: number }).size;
+        } else {
+          Object.defineProperty(Set.prototype, "size", originalSetSize);
+        }
+      }
+    }, {
+      stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+      runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+      maxPromiseOwners: 256,
+    }));
+
+    expect(summary).toMatchObject({
+      returned: "captured-return",
+      trackedOwner: true,
+      ownerThenIsOriginal: true,
+      validationStatus: "ok",
+      validationFailed: false,
+    });
+    expect(summary.count).toBeGreaterThan(0);
+    const graph = await observer().capture(job);
+    expect(graph.graphId).toBe("run-promise-owner-snapshot:observation:1");
+  });
+
+  it("latches Object.assign partial mutation before a later source throws and direct restoration", async () => {
+    await approveCustomOwner();
+
+    const result = await session.withPage((page) => page.evaluate(() => {
+      const host = globalThis as unknown as {
+        __ticket44Owner?: { then: (onfulfilled?: (value: string) => unknown) => string };
+        __ticket44OriginalThen?: (onfulfilled?: (value: string) => unknown) => string;
+        __ticket44ReplacementThen?: (onfulfilled?: (value: string) => unknown) => string;
+      };
+      const owner = host.__ticket44Owner;
+      const original = host.__ticket44OriginalThen;
+      if (owner === undefined || original === undefined) throw new Error("missing owner");
+      host.__ticket44ReplacementThen = function assignedThen(onfulfilled?: (value: string) => unknown): string {
+        if (typeof onfulfilled === "function") onfulfilled("assigned");
+        return "assigned-return";
+      };
+      const throwingSource = new Proxy({}, {
+        ownKeys() {
+          throw new Error("second source throws after first source mutation");
+        },
+      });
+      let threw = false;
+      try {
+        Object.assign(owner, { then: host.__ticket44ReplacementThen }, throwingSource);
+      } catch {
+        threw = true;
+      }
+      owner.then = original;
+      return {
+        threw,
+        nativeReturn: Promise.prototype.catch.call(owner as never, () => "handled"),
+        restored: owner.then === original,
+      };
+    }));
+
+    expect(result).toEqual({ threw: true, nativeReturn: "original-return", restored: true });
+    const restored = await snapshotSummary();
+    expect(restored).toMatchObject({ validationFailed: true, ownerThenIsOriginal: true });
+    await expect(observer().capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+  });
+
+  it("latches Object.defineProperties partial mutation before a later descriptor throws and direct restoration", async () => {
+    await approveCustomOwner();
+
+    const result = await session.withPage((page) => page.evaluate(() => {
+      const host = globalThis as unknown as {
+        __ticket44Owner?: { then: (onfulfilled?: (value: string) => unknown) => string; blocked?: string };
+        __ticket44OriginalThen?: (onfulfilled?: (value: string) => unknown) => string;
+        __ticket44ReplacementThen?: (onfulfilled?: (value: string) => unknown) => string;
+      };
+      const owner = host.__ticket44Owner;
+      const original = host.__ticket44OriginalThen;
+      if (owner === undefined || original === undefined) throw new Error("missing owner");
+      Object.defineProperty(owner, "blocked", {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: "fixed",
+      });
+      host.__ticket44ReplacementThen = function definedThen(onfulfilled?: (value: string) => unknown): string {
+        if (typeof onfulfilled === "function") onfulfilled("defined");
+        return "defined-return";
+      };
+      const properties = {} as PropertyDescriptorMap;
+      Object.defineProperty(properties, "then", {
+        configurable: true,
+        enumerable: true,
+        value: {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: host.__ticket44ReplacementThen,
+        },
+      });
+      Object.defineProperty(properties, "blocked", {
+        configurable: true,
+        enumerable: true,
+        value: {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: "changed",
+        },
+      });
+      let threw = false;
+      try {
+        Object.defineProperties(owner, properties);
+      } catch {
+        threw = true;
+      }
+      owner.then = original;
+      return {
+        threw,
+        nativeReturn: Promise.prototype.catch.call(owner as never, () => "handled"),
+        restored: owner.then === original,
+      };
+    }));
+
+    expect(result).toEqual({ threw: true, nativeReturn: "original-return", restored: true });
+    const restored = await snapshotSummary();
+    expect(restored).toMatchObject({ validationFailed: true, ownerThenIsOriginal: true });
+    await expect(observer().capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+  });
+
+  it("keeps observed guarded owner mutation latched across same-session navigation and clears it after close", async () => {
+    await approveCustomOwner();
+
+    const nativeReturn = await session.withPage((page) => page.evaluate(() => {
+      const host = globalThis as unknown as {
+        __ticket44Owner?: { then: (onfulfilled?: (value: string) => unknown) => string };
+        __ticket44OriginalThen?: (onfulfilled?: (value: string) => unknown) => string;
+        __ticket44ReplacementThen?: (onfulfilled?: (value: string) => unknown) => string;
+      };
+      const owner = host.__ticket44Owner;
+      const original = host.__ticket44OriginalThen;
+      if (owner === undefined || original === undefined) throw new Error("missing owner");
+      host.__ticket44ReplacementThen = function navigationThen(onfulfilled?: (value: string) => unknown): string {
+        if (typeof onfulfilled === "function") onfulfilled("navigation");
+        return "navigation-return";
+      };
+      Object.defineProperty(owner, "then", {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: host.__ticket44ReplacementThen,
+      });
+      owner.then = original;
+      return Promise.prototype.catch.call(owner as never, () => "handled");
+    }));
+    expect(nativeReturn).toBe("original-return");
+
+    await session.withPage(async (page) => {
+      await page.goto(`${fixture.url}/next`, { waitUntil: "domcontentloaded" });
+    });
+
+    await expect(observer().capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+
+    await session.close();
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const graph = await observer().capture(job);
+    expect(graph.graphId).toBe("run-promise-owner-snapshot:observation:1");
   });
 
   it("latches direct assignment detected by re-registration and never blesses the restored method", async () => {
