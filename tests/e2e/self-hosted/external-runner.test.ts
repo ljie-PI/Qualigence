@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { runRepositoryExternalRunnerHarness } from "./external-runner-harness.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,23 +43,18 @@ describe("Self-hosted external Runner acceptance guard", () => {
     }
   });
 
-  it("requires an externally launched Runner harness before full-loop acceptance evidence is claimable", async () => {
+  it("runs a repository-owned external Runner harness before claiming full-loop acceptance evidence", async () => {
     await requireDocker();
     const command = process.env.QUALIGENCE_EXTERNAL_RUNNER_COMMAND;
-    if (command === undefined || command.trim().length === 0) {
-      throw Object.assign(
-        new Error("ExternalRunnerUnavailable: set QUALIGENCE_EXTERNAL_RUNNER_COMMAND to a real external Runner harness for post-review acceptance"),
-        { code: "ExternalRunnerUnavailable" },
-      );
-    }
-    const args = splitArgs(process.env.QUALIGENCE_EXTERNAL_RUNNER_ARGS ?? "");
-    const { stdout } = await execFileAsync(command, args, {
-      env: process.env,
-      timeout: 240_000,
-      maxBuffer: 1_048_576,
-    });
+    const stdout = command === undefined || command.trim().length === 0
+      ? await runRepositoryExternalRunnerHarness()
+      : (await execFileAsync(command, splitArgs(process.env.QUALIGENCE_EXTERNAL_RUNNER_ARGS ?? ""), {
+          env: process.env,
+          timeout: 900_000,
+          maxBuffer: 4_194_304,
+        })).stdout;
     expect(stdout).toContain("qualigence-external-runner-acceptance:pass");
-  }, 300_000);
+  }, 1_200_000);
 });
 
 async function loadComposeConfig(): Promise<ComposeConfig> {

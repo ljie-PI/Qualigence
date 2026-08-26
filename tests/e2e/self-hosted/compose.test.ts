@@ -300,7 +300,8 @@ describe("Self-hosted Compose topology invariants", () => {
     // The console builds the static-asset Dockerfile and runs no server/worker role.
     expect(console?.build?.dockerfile ?? "").toContain("console.Dockerfile");
     await expect(readConsoleRuntimeImage()).resolves.toContain("caddy:2.8-alpine@sha256:");
-    expect(console?.command ?? undefined).toBeUndefined();
+    expect(console?.command).toEqual(["caddy", "file-server", "--listen", ":8080", "--root", "/srv"]);
+    expect(console?.cap_add).toEqual(["NET_BIND_SERVICE"]);
     expect(composeHealthcheckText(console)).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
     expect(composeHealthcheckText(console)).not.toMatch(/\bnode\b|node -e/);
     // There is no additional Node service for the web console.
@@ -325,13 +326,17 @@ describe("Self-hosted Compose topology invariants", () => {
         "--read-only",
         "--cap-drop",
         "ALL",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--security-opt",
+        "no-new-privileges:true",
         "--network",
         "none",
         "--entrypoint",
         "/bin/sh",
         await readConsoleRuntimeImage(),
         "-ec",
-        "command -v wget",
+        "command -v wget && caddy version >/dev/null",
       ],
       { env: { ...process.env, MSYS_NO_PATHCONV: "1" }, timeout: 60_000 },
     );

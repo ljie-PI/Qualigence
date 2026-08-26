@@ -189,6 +189,9 @@ describe("Self-hosted Docker gate", () => {
     const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
     const consoleSection = composeServiceSection(compose, "console");
     expect(consoleSection).toContain("dockerfile: deployments/self-hosted/docker/console.Dockerfile");
+    expect(consoleSection).toContain("cap_add:");
+    expect(consoleSection).toContain("- NET_BIND_SERVICE");
+    expect(consoleSection).toContain("command: [\"caddy\", \"file-server\", \"--listen\", \":8080\", \"--root\", \"/srv\"]");
     expect(consoleSection).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
     expect(consoleSection).not.toContain("node -e");
   });
