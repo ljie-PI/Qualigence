@@ -78,7 +78,10 @@ interface Ticket43NativeSnapshot {
   readonly summary: Ticket43OwnerSummary;
   readonly mutations: {
     readonly descriptorMutated: boolean;
+    readonly descriptorRestored: boolean;
     readonly prototypeMutated: boolean;
+    readonly prototypeRestored: boolean;
+    readonly reRegistrationRuns: readonly string[];
   };
 }
 
@@ -358,7 +361,7 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).not.toContain(`\"name\":${JSON.stringify(INPUT_BROWSER_VALUE)}`);
   }, 60_000);
 
-  it("fails closed when Promise owner descriptors/prototypes mutate at Graph and Artifact capture boundaries", async () => {
+  it("fails closed when Promise owner descriptors/prototypes mutate, restore, and re-register at capture boundaries", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`
         <style>
@@ -636,7 +639,18 @@ describe("production valueRef browser execution", () => {
         trackedPrototypeThenKind: "data",
       });
       expect(["Promise.prototype", "trackedPrototype"]).toContain(snapshot.summary.trackedReceiverThenOwner);
-      expect(snapshot.mutations).toEqual({ descriptorMutated: true, prototypeMutated: true });
+      expect(snapshot.mutations).toMatchObject({
+        descriptorMutated: true,
+        descriptorRestored: true,
+        prototypeMutated: true,
+        prototypeRestored: true,
+      });
+      expect(snapshot.mutations.reRegistrationRuns).toEqual(expect.arrayContaining([
+        "mutated-descriptor:custom-receiver",
+        "mutated-prototype:tracked-receiver:" + PROMISE_OWNER_SECRET.length,
+        "restored-descriptor:custom-receiver",
+        "restored-prototype:tracked-receiver:" + PROMISE_OWNER_SECRET.length,
+      ]));
     }
 
     const trace = batches.flatMap((batch) => batch.events);
@@ -713,7 +727,7 @@ function ticket43PromiseOwnerHooks(
       }).document;
       const statusText = browserDocument.getElementById("owner-status")?.textContent ?? "";
       const title = browserDocument.title;
-      const mutations = mutateOwners();
+      const mutations = await mutateOwners();
       host.__ticket43MutationApplied = true;
       return {
         phase: "mutated",
@@ -751,21 +765,35 @@ function ticket43PromiseOwnerHooks(
         };
       }
 
-      function mutateOwners(): Ticket43NativeSnapshot["mutations"] {
+      async function mutateOwners(): Promise<Ticket43NativeSnapshot["mutations"]> {
+        const reRegistrationRuns: string[] = [];
+        const customReceiver = host.__ticket43CustomReceiver;
         const trackedPrototype = host.__ticket43TrackedPrototype;
+        const originalTrackedPrototypeThen = trackedPrototype !== null && typeof trackedPrototype === "object"
+          ? Object.getOwnPropertyDescriptor(trackedPrototype, "then")
+          : undefined;
         let descriptorMutated = false;
         if (trackedPrototype !== null && typeof trackedPrototype === "object") {
           Object.defineProperty(trackedPrototype, "then", {
             configurable: true,
             enumerable: false,
             writable: true,
-            value: function ticket43ReplacementThen(this: unknown, onfulfilled?: unknown, onrejected?: unknown) {
+            value: function ticket44ReplacementThen(this: unknown, onfulfilled?: unknown, onrejected?: unknown) {
               return Promise.prototype.then.call(this, onfulfilled as never, onrejected as never);
             },
           });
           descriptorMutated = true;
+          if (customReceiver !== null && typeof customReceiver === "object") {
+            await Promise.prototype.then.call(customReceiver as Promise<string>, (resolved) => {
+              reRegistrationRuns.push(`mutated-descriptor:${resolved}`);
+              return resolved;
+            });
+          }
         }
         const trackedReceiver = host.__ticket43TrackedReceiver;
+        const originalTrackedReceiverPrototype = trackedReceiver !== null && typeof trackedReceiver === "object"
+          ? Object.getPrototypeOf(trackedReceiver)
+          : undefined;
         let prototypeMutated = false;
         if (trackedReceiver !== null && typeof trackedReceiver === "object") {
           const replacementPrototype = Object.create(Promise.prototype) as Record<string, unknown>;
@@ -778,8 +806,32 @@ function ticket43PromiseOwnerHooks(
           Object.setPrototypeOf(trackedReceiver, replacementPrototype);
           host.__ticket43ReplacementPrototype = replacementPrototype;
           prototypeMutated = true;
+          await Promise.prototype.then.call(trackedReceiver as Promise<string>, (resolved) => {
+            reRegistrationRuns.push(`mutated-prototype:${resolved}`);
+            return resolved;
+          });
         }
-        return { descriptorMutated, prototypeMutated };
+        let descriptorRestored = false;
+        if (trackedPrototype !== null && typeof trackedPrototype === "object" && originalTrackedPrototypeThen !== undefined) {
+          Object.defineProperty(trackedPrototype, "then", originalTrackedPrototypeThen);
+          descriptorRestored = true;
+          if (customReceiver !== null && typeof customReceiver === "object") {
+            await Promise.prototype.then.call(customReceiver as Promise<string>, (resolved) => {
+              reRegistrationRuns.push(`restored-descriptor:${resolved}`);
+              return resolved;
+            });
+          }
+        }
+        let prototypeRestored = false;
+        if (trackedReceiver !== null && typeof trackedReceiver === "object" && originalTrackedReceiverPrototype !== undefined) {
+          Object.setPrototypeOf(trackedReceiver, originalTrackedReceiverPrototype);
+          prototypeRestored = true;
+          await Promise.prototype.then.call(trackedReceiver as Promise<string>, (resolved) => {
+            reRegistrationRuns.push(`restored-prototype:${resolved}`);
+            return resolved;
+          });
+        }
+        return { descriptorMutated, descriptorRestored, prototypeMutated, prototypeRestored, reRegistrationRuns };
       }
     }, { boundary, runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY });
     if (snapshot.phase === "pending") {
