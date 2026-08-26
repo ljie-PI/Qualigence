@@ -48,6 +48,39 @@ pub enum SessionAdmissionError {
     CompanionUnauthenticated,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RequestProcessError {
+    Frame(FrameError),
+    Session(SessionAdmissionError),
+}
+
+impl RequestProcessError {
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::Frame(FrameError::FrameTooLarge) => "CompanionFrameTooLarge",
+            Self::Frame(FrameError::Truncated) => "CompanionFrameTruncated",
+            Self::Frame(FrameError::Malformed) => "CompanionProtocolViolation",
+            Self::Frame(FrameError::Io) => "CompanionUnavailable",
+            Self::Frame(FrameError::Overloaded) => "CompanionOverloaded",
+            Self::Session(SessionAdmissionError::CompanionUnauthenticated) => {
+                "CompanionUnauthenticated"
+            }
+        }
+    }
+}
+
+impl From<FrameError> for RequestProcessError {
+    fn from(error: FrameError) -> Self {
+        Self::Frame(error)
+    }
+}
+
+impl From<SessionAdmissionError> for RequestProcessError {
+    fn from(error: SessionAdmissionError) -> Self {
+        Self::Session(error)
+    }
+}
+
 #[derive(Default)]
 pub struct AuthenticatedSessionGate {
     authenticated_runner_id: Option<String>,
@@ -247,5 +280,64 @@ pub struct AdmissionGuard {
 impl Drop for AdmissionGuard {
     fn drop(&mut self) {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Production request-admission path shared by the native pipe session.
+///
+/// This keeps the security gate and queue/concurrency counters on the same path
+/// that reads and admits decoded Companion requests, so the limits are not just
+/// standalone primitives.
+pub struct BoundedRequestProcessor {
+    limits: FrameLimits,
+    admission: RequestAdmission,
+    gate: AuthenticatedSessionGate,
+}
+
+impl BoundedRequestProcessor {
+    pub fn new(limits: FrameLimits) -> Self {
+        Self {
+            limits,
+            admission: RequestAdmission::from_frame_limits(&limits),
+            gate: AuthenticatedSessionGate::new(),
+        }
+    }
+
+    pub fn limits(&self) -> &FrameLimits {
+        &self.limits
+    }
+
+    pub fn admission(&self) -> &RequestAdmission {
+        &self.admission
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.gate.is_authenticated()
+    }
+
+    pub fn accept_runner(&mut self, runner: AuthenticatedCertificateRunner) {
+        self.gate.accept(runner);
+    }
+
+    pub fn clear_session(&mut self) {
+        self.gate.clear();
+    }
+
+    pub fn read_admitted_request<R: Read>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<(CompanionRequest, AdmissionGuard), RequestProcessError> {
+        let request = read_request(reader, &self.limits)?;
+        self.admit_request(request)
+    }
+
+    pub fn admit_request(
+        &mut self,
+        request: CompanionRequest,
+    ) -> Result<(CompanionRequest, AdmissionGuard), RequestProcessError> {
+        let queued = self.admission.try_queue()?;
+        self.gate.require_authenticated(&request)?;
+        let guard = queued.try_start()?;
+        Ok((request, guard))
     }
 }

@@ -9,14 +9,24 @@
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::fmt;
+use std::io::{self, Read, Write};
 use std::iter::once;
+use std::marker::PhantomData;
 use std::mem::{size_of, zeroed};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
+use crate::clock::Clock;
+use crate::ipc::dto::{CompanionRequest, CompanionRequestPayload};
+use crate::ipc::security::{
+    CertificateHandshakeError, CertificateHandshakeVerifier, CompanionProofSignatureAlgorithm,
+};
+use crate::ipc::server::{BoundedRequestProcessor, FrameLimits, RequestProcessError};
+
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_IO_PENDING, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -46,9 +56,9 @@ use windows_sys::Win32::Security::{
     TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX,
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE,
+    FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
@@ -61,7 +71,7 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
     QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows_sys::Win32::System::IO::{CancelIoEx, OVERLAPPED};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 #[link(name = "ntdll")]
 extern "system" {
@@ -199,6 +209,13 @@ impl NamedPipeListener {
         self.handle
     }
 
+    pub fn connection(&self) -> BorrowedPipeConnection<'_> {
+        BorrowedPipeConnection {
+            handle: self.handle,
+            _owner: PhantomData,
+        }
+    }
+
     pub fn connect(&self, timeout_ms: u32) -> Result<(), NativePipeError> {
         let event = OwnedHandle::new(
             unsafe { CreateEventW(null(), 1, 0, null()) },
@@ -252,6 +269,128 @@ impl Drop for NamedPipeListener {
             unsafe {
                 CloseHandle(self.handle);
             }
+        }
+    }
+}
+
+pub struct AdmittedNativeApplicationRequest {
+    pub request: CompanionRequest,
+    _admission: crate::ipc::server::AdmissionGuard,
+}
+
+pub enum NativePipeRequestEvent {
+    ChallengeIssued {
+        request_id: String,
+        challenge_id: String,
+        nonce_base64: String,
+    },
+    Authenticated {
+        request_id: String,
+        runner_id: String,
+        certificate_sha256_fingerprint: String,
+    },
+    ApplicationRequest(AdmittedNativeApplicationRequest),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum NativePipeRequestError {
+    Request(RequestProcessError),
+    Handshake(CertificateHandshakeError),
+}
+
+impl NativePipeRequestError {
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::Request(error) => error.stable_code(),
+            Self::Handshake(_) => "CompanionIdentityRejected",
+        }
+    }
+}
+
+impl From<RequestProcessError> for NativePipeRequestError {
+    fn from(error: RequestProcessError) -> Self {
+        Self::Request(error)
+    }
+}
+
+impl From<CertificateHandshakeError> for NativePipeRequestError {
+    fn from(error: CertificateHandshakeError) -> Self {
+        Self::Handshake(error)
+    }
+}
+
+pub struct NativePipeRequestProcessor<C: Clock> {
+    requests: BoundedRequestProcessor,
+    certificates: CertificateHandshakeVerifier<C>,
+}
+
+impl<C: Clock> NativePipeRequestProcessor<C> {
+    pub fn new(limits: FrameLimits, certificates: CertificateHandshakeVerifier<C>) -> Self {
+        Self {
+            requests: BoundedRequestProcessor::new(limits),
+            certificates,
+        }
+    }
+
+    pub fn admission(&self) -> &crate::ipc::server::RequestAdmission {
+        self.requests.admission()
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.requests.is_authenticated()
+    }
+
+    pub fn disconnect_cleanup(&mut self) {
+        self.requests.clear_session();
+        self.certificates.clear_pending_challenges();
+    }
+
+    pub fn process_next_request<R: Read>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<NativePipeRequestEvent, NativePipeRequestError> {
+        let (request, admission) = self.requests.read_admitted_request(reader)?;
+        let request_id = request.request_id.clone();
+        match &request.payload {
+            CompanionRequestPayload::HandshakeBegin(payload) => {
+                let challenge = self.certificates.begin(
+                    request.protocol_major,
+                    &payload.runner_id,
+                    &payload.certificate_pem,
+                )?;
+                let nonce_base64 = challenge.nonce_base64();
+                Ok(NativePipeRequestEvent::ChallengeIssued {
+                    request_id,
+                    challenge_id: challenge.challenge_id,
+                    nonce_base64,
+                })
+            }
+            CompanionRequestPayload::HandshakeProve(payload) => {
+                let algorithm =
+                    CompanionProofSignatureAlgorithm::parse(&payload.signature_algorithm)
+                        .map_err(CertificateHandshakeError::Certificate)?;
+                let runner = self.certificates.verify_pending_challenge(
+                    &payload.challenge_id,
+                    &payload.companion_instance_id,
+                    &payload.nonce_base64,
+                    &payload.signature_base64,
+                    algorithm,
+                );
+                drop(admission);
+                let runner = runner?;
+                self.requests.accept_runner(runner.clone());
+                Ok(NativePipeRequestEvent::Authenticated {
+                    request_id,
+                    runner_id: runner.runner_id,
+                    certificate_sha256_fingerprint: runner.certificate_sha256_fingerprint,
+                })
+            }
+            _ => Ok(NativePipeRequestEvent::ApplicationRequest(
+                AdmittedNativeApplicationRequest {
+                    request,
+                    _admission: admission,
+                },
+            )),
         }
     }
 }
@@ -969,6 +1108,145 @@ impl Drop for OwnedHandle {
                 CloseHandle(self.0);
             }
         }
+    }
+}
+
+pub struct BorrowedPipeConnection<'a> {
+    handle: HANDLE,
+    _owner: PhantomData<&'a NamedPipeListener>,
+}
+
+impl Read for BorrowedPipeConnection<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        pipe_read_overlapped(self.handle, buf)
+    }
+}
+
+impl Write for BorrowedPipeConnection<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        pipe_write_overlapped(self.handle, buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for OwnedHandle {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        pipe_read_blocking(self.0, buf)
+    }
+}
+
+impl Write for OwnedHandle {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        pipe_write_blocking(self.0, buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn pipe_read_blocking(handle: HANDLE, buf: &mut [u8]) -> io::Result<usize> {
+    let len = buf.len().min(u32::MAX as usize) as u32;
+    let mut transferred = 0u32;
+    let ok = unsafe { ReadFile(handle, buf.as_mut_ptr(), len, &mut transferred, null_mut()) };
+    if ok == 0 {
+        Err(io_error_from_last())
+    } else {
+        Ok(transferred as usize)
+    }
+}
+
+fn pipe_write_blocking(handle: HANDLE, buf: &[u8]) -> io::Result<usize> {
+    let len = buf.len().min(u32::MAX as usize) as u32;
+    let mut transferred = 0u32;
+    let ok = unsafe { WriteFile(handle, buf.as_ptr(), len, &mut transferred, null_mut()) };
+    if ok == 0 {
+        Err(io_error_from_last())
+    } else {
+        Ok(transferred as usize)
+    }
+}
+
+fn pipe_read_overlapped(handle: HANDLE, buf: &mut [u8]) -> io::Result<usize> {
+    let len = buf.len().min(u32::MAX as usize) as u32;
+    let mut transferred = 0u32;
+    let event = io_event()?;
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    overlapped.hEvent = event.raw();
+    let ok = unsafe {
+        ReadFile(
+            handle,
+            buf.as_mut_ptr(),
+            len,
+            &mut transferred,
+            &mut overlapped,
+        )
+    };
+    complete_overlapped(handle, ok, &mut overlapped, transferred)
+}
+
+fn pipe_write_overlapped(handle: HANDLE, buf: &[u8]) -> io::Result<usize> {
+    let len = buf.len().min(u32::MAX as usize) as u32;
+    let mut transferred = 0u32;
+    let event = io_event()?;
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    overlapped.hEvent = event.raw();
+    let ok = unsafe { WriteFile(handle, buf.as_ptr(), len, &mut transferred, &mut overlapped) };
+    complete_overlapped(handle, ok, &mut overlapped, transferred)
+}
+
+fn complete_overlapped(
+    handle: HANDLE,
+    ok: i32,
+    overlapped: &mut OVERLAPPED,
+    immediate_transferred: u32,
+) -> io::Result<usize> {
+    if ok != 0 {
+        return Ok(immediate_transferred as usize);
+    }
+    let code = unsafe { GetLastError() };
+    if code != ERROR_IO_PENDING {
+        return Err(io_error_from_code(code));
+    }
+    let wait = unsafe { WaitForSingleObject(overlapped.hEvent, 5_000) };
+    if wait != WAIT_OBJECT_0 {
+        unsafe {
+            CancelIoEx(handle, overlapped);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "pipe I/O timed out",
+        ));
+    }
+    let mut transferred = 0u32;
+    let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 0) };
+    if ok == 0 {
+        Err(io_error_from_last())
+    } else {
+        Ok(transferred as usize)
+    }
+}
+
+fn io_event() -> io::Result<OwnedHandle> {
+    OwnedHandle::new(
+        unsafe { CreateEventW(null(), 1, 0, null()) },
+        "CreateEventW",
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::Other, error))
+}
+
+fn io_error_from_last() -> io::Error {
+    io_error_from_code(unsafe { GetLastError() })
+}
+
+fn io_error_from_code(code: u32) -> io::Error {
+    if code == ERROR_BROKEN_PIPE {
+        io::Error::new(io::ErrorKind::UnexpectedEof, "named pipe peer disconnected")
+    } else {
+        io::Error::from_raw_os_error(code as i32)
     }
 }
 

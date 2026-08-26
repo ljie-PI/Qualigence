@@ -539,6 +539,10 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         &self.companion_instance_id
     }
 
+    pub fn clear_pending_challenges(&mut self) {
+        self.pending.clear();
+    }
+
     pub fn begin(
         &mut self,
         protocol_major: u8,
@@ -570,6 +574,34 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             challenge_id,
             nonce,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_pending_challenge(
+        &mut self,
+        challenge_id: &str,
+        companion_instance_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: CompanionProofSignatureAlgorithm,
+    ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
+        if self.consumed_challenges.contains(challenge_id) {
+            return Err(CertificateHandshakeError::ReplayedChallenge);
+        }
+        let runner_id = self
+            .pending
+            .get(challenge_id)
+            .ok_or(CertificateHandshakeError::UnknownChallenge)?
+            .runner_id
+            .clone();
+        self.verify(
+            &runner_id,
+            challenge_id,
+            companion_instance_id,
+            nonce_base64,
+            signature_base64,
+            signature_algorithm,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
