@@ -25,7 +25,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 rsa = { version = "0.9", features = ["sha2"] }
 sha1 = "0.10"
 signature = "2"
-x509-parser = "0.17"
+x509-parser = { version = "0.17", features = ["verify"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -35,6 +35,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",

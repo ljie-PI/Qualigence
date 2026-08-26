@@ -8,7 +8,7 @@ use companion::ipc::server::{
 
 fn small_limits() -> FrameLimits {
     FrameLimits {
-        max_frame_bytes: 64,
+        max_frame_bytes: 128,
         max_queue_depth: 4,
         max_concurrent_requests: 2,
     }
@@ -17,7 +17,7 @@ fn small_limits() -> FrameLimits {
 #[test]
 fn a_valid_frame_round_trips() {
     let limits = small_limits();
-    let payload = br#"{"type":"session.pause","runId":"run-1"}"#;
+    let payload = br#"{"protocolMajor":1,"requestId":"req-1","type":"session.pause","payload":{"runId":"run-1"}}"#;
     let mut buffer = Vec::new();
     write_frame(&mut buffer, payload, &limits).expect("write");
 
@@ -61,7 +61,7 @@ fn a_missing_length_prefix_is_rejected() {
 #[test]
 fn writing_an_oversized_payload_is_refused() {
     let limits = small_limits();
-    let payload = vec![0u8; 65];
+    let payload = vec![0u8; 129];
     let mut buffer = Vec::new();
     assert_eq!(
         write_frame(&mut buffer, &payload, &limits),
@@ -71,14 +71,38 @@ fn writing_an_oversized_payload_is_refused() {
 
 #[test]
 fn an_unknown_request_type_is_rejected() {
-    let body = br#"{"type":"session.explode","runId":"run-1"}"#;
+    let body = br#"{"protocolMajor":1,"requestId":"req-1","type":"session.explode","payload":{"runId":"run-1"}}"#;
     assert_eq!(parse_request(body), Err(FrameError::Malformed));
 }
 
 #[test]
-fn a_known_request_type_parses() {
+fn raw_flat_legacy_request_is_rejected() {
     let body = br#"{"type":"uia.capture","sessionId":"sess-1","deadlineMs":2000}"#;
-    assert!(parse_request(body).is_ok());
+    assert_eq!(parse_request(body), Err(FrameError::Malformed));
+}
+
+#[test]
+fn envelope_payload_unknown_fields_are_rejected() {
+    let body = br#"{"protocolMajor":1,"requestId":"req-1","type":"session.pause","payload":{"runId":"run-1","extra":true}}"#;
+    assert_eq!(parse_request(body), Err(FrameError::Malformed));
+}
+
+#[test]
+fn envelope_top_level_unknown_fields_are_rejected() {
+    let body = br#"{"protocolMajor":1,"requestId":"req-1","type":"session.pause","payload":{"runId":"run-1"},"extra":true}"#;
+    assert_eq!(parse_request(body), Err(FrameError::Malformed));
+}
+
+#[test]
+fn current_envelope_request_variants_parse() {
+    let capture = br#"{"protocolMajor":1,"requestId":"req-1","type":"uia.capture","payload":{"sessionId":"sess-1","deadlineMs":2000}}"#;
+    assert!(parse_request(capture).is_ok());
+
+    let probe = br#"{"protocolMajor":1,"requestId":"req-2","type":"companion.probe","payload":{"targetAdapter":"desktop-windows-uia","observationExtension":"uia/v1"}}"#;
+    assert!(parse_request(probe).is_ok());
+
+    let launch = br#"{"protocolMajor":1,"requestId":"req-3","type":"app.launch","payload":{"target":{"targetId":"target-1","platform":"windows","launch":{"executable":"C:\\Windows\\System32\\notepad.exe","args":[]},"process":{"expectedImageName":"notepad.exe","allowedChildImageNames":[]},"window":{},"reset":{"command":"reset","args":[],"timeoutMs":1000},"shutdown":{"gracefulTimeoutMs":1000,"forceAfterTimeout":true}}}}"#;
+    assert!(parse_request(launch).is_ok());
 }
 
 #[test]
@@ -94,4 +118,27 @@ fn concurrent_request_flooding_is_bounded() {
     // Releasing a slot lets a new request through.
     let _g3 = admission.try_admit().expect("admitted after release");
     drop(g2);
+}
+
+#[test]
+fn queued_request_depth_is_bounded_independently_from_in_flight_work() {
+    let limits = FrameLimits {
+        max_frame_bytes: 1024,
+        max_queue_depth: 2,
+        max_concurrent_requests: 1,
+    };
+    let admission = RequestAdmission::from_frame_limits(&limits);
+    let q1 = admission.try_queue().expect("first queued");
+    let q2 = admission.try_queue().expect("second queued");
+    assert_eq!(admission.queued(), 2);
+    assert_eq!(admission.try_queue().err(), Some(FrameError::Overloaded));
+
+    drop(q2);
+    let in_flight = q1.try_start().expect("first starts");
+    assert_eq!(admission.queued(), 0);
+    assert_eq!(admission.in_flight(), 1);
+
+    let q3 = admission.try_queue().expect("queue remains usable");
+    assert_eq!(q3.try_start().err(), Some(FrameError::Overloaded));
+    drop(in_flight);
 }

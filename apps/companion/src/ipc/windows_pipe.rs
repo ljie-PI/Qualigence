@@ -21,6 +21,26 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+use windows_sys::Win32::Security::Cryptography::Catalog::{
+    CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
+    CryptCATAdminEnumCatalogFromHash, CryptCATAdminReleaseCatalogContext,
+    CryptCATAdminReleaseContext, CryptCATCatalogInfoFromContext, CATALOG_INFO,
+};
+use windows_sys::Win32::Security::Cryptography::{
+    CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext,
+    CertGetCertificateContextProperty, CryptMsgClose, CryptMsgGetParam, CryptQueryObject,
+    CERT_CONTEXT, CERT_FIND_SUBJECT_CERT, CERT_INFO, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+    CERT_QUERY_CONTENT_TYPE, CERT_QUERY_ENCODING_TYPE, CERT_QUERY_FORMAT_FLAG_BINARY,
+    CERT_QUERY_FORMAT_TYPE, CERT_QUERY_OBJECT_FILE, CERT_SHA1_HASH_PROP_ID,
+    CMSG_SIGNER_COUNT_PARAM, CMSG_SIGNER_INFO, CMSG_SIGNER_INFO_PARAM,
+};
+use windows_sys::Win32::Security::WinTrust::{
+    WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData,
+    WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_CATALOG_INFO, WINTRUST_DATA,
+    WINTRUST_FILE_INFO, WTD_CHOICE_CATALOG, WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4,
+    WTD_REVOCATION_CHECK_NONE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+    WTD_UICONTEXT_EXECUTE, WTD_UI_NONE,
+};
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenGroups, TokenSessionId, TokenUser, SECURITY_ATTRIBUTES, TOKEN_GROUPS,
     TOKEN_QUERY, TOKEN_USER,
@@ -276,10 +296,9 @@ impl WindowsPeerIdentity {
 
 #[derive(Debug, Clone)]
 pub enum BinarySignaturePolicy {
-    /// Production mode: this module refuses to accept unsigned images. The
-    /// authenticode signer extraction is intentionally an explicit policy seam;
-    /// tests use `AllowUnsignedForNativeTestOnly` because development Rust test
-    /// binaries are not Authenticode-signed.
+    /// Production mode: verify the image's embedded Authenticode signature and
+    /// require one signer certificate SHA-1 thumbprint to match the canonical
+    /// allowlist. Unsigned or untrusted images fail closed.
     RequireAuthenticodeSigner {
         allowed_sha1_thumbprints: HashSet<String>,
     },
@@ -339,15 +358,486 @@ impl WindowsPeerAuthorizer {
             BinarySignaturePolicy::AllowUnsignedForNativeTestOnly => Ok(()),
             BinarySignaturePolicy::RequireAuthenticodeSigner {
                 allowed_sha1_thumbprints,
-            } => {
-                if allowed_sha1_thumbprints.is_empty() {
-                    return Err(NativePipeError::CompanionIdentityRejected);
-                }
-                // The caller supplied a production signing policy, but this
-                // Ticket 29 seam currently requires an allowlisted signer
-                // thumbprint provider to be wired by the daemon. Failing closed
-                // is safer than accepting an unsigned or unverified process.
-                Err(NativePipeError::UnsupportedSignaturePolicy)
+            } => require_authenticode_signer(&identity.image_path, allowed_sha1_thumbprints),
+        }
+    }
+}
+
+fn require_authenticode_signer(
+    image_path: &str,
+    allowed_sha1_thumbprints: &HashSet<String>,
+) -> Result<(), NativePipeError> {
+    if allowed_sha1_thumbprints.is_empty() {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let allowed: HashSet<String> = allowed_sha1_thumbprints
+        .iter()
+        .map(|thumbprint| normalize_thumbprint(thumbprint))
+        .collect();
+    let actual = authenticode_signer_thumbprints_sha1(image_path)?;
+    if actual.iter().any(|thumbprint| allowed.contains(thumbprint)) {
+        Ok(())
+    } else {
+        Err(NativePipeError::CompanionIdentityRejected)
+    }
+}
+
+pub fn authenticode_signer_thumbprints_sha1(
+    image_path: &str,
+) -> Result<HashSet<String>, NativePipeError> {
+    wintrust_signer_thumbprints_sha1(image_path)
+        .or_else(|_| catalog_signer_thumbprints_sha1(image_path))
+}
+
+fn normalize_thumbprint(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != ':')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn wintrust_signer_thumbprints_sha1(image_path: &str) -> Result<HashSet<String>, NativePipeError> {
+    let mut trust = WinTrustVerification::verify(image_path)?;
+    let provider = unsafe { WTHelperProvDataFromStateData(trust.state_handle()) };
+    if provider.is_null() {
+        return Err(NativePipeError::Win32 {
+            operation: "WTHelperProvDataFromStateData",
+            code: 0,
+        });
+    }
+    let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, 0, 0) };
+    if signer.is_null() {
+        return Err(NativePipeError::Win32 {
+            operation: "WTHelperGetProvSignerFromChain",
+            code: 0,
+        });
+    }
+    let cert = unsafe { WTHelperGetProvCertFromChain(signer, 0) };
+    if cert.is_null() {
+        return Err(NativePipeError::Win32 {
+            operation: "WTHelperGetProvCertFromChain",
+            code: 0,
+        });
+    }
+    let cert_context = unsafe { (*cert).pCert };
+    if cert_context.is_null() {
+        return Err(NativePipeError::Win32 {
+            operation: "WinTrustSignerCertContext",
+            code: 0,
+        });
+    }
+    let thumbprint = certificate_sha1_thumbprint(cert_context)?;
+    Ok([thumbprint].into_iter().collect())
+}
+
+fn catalog_signer_thumbprints_sha1(image_path: &str) -> Result<HashSet<String>, NativePipeError> {
+    let mut admin = 0isize;
+    let hash_algorithm = wide("SHA256");
+    let ok = unsafe {
+        CryptCATAdminAcquireContext2(&mut admin, null(), hash_algorithm.as_ptr(), null(), 0)
+    };
+    if ok == 0 || admin == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let admin_guard = CatalogAdminGuard(admin);
+
+    let wide_path = wide(image_path);
+    let file = OwnedHandle::new(
+        unsafe {
+            CreateFileW(
+                wide_path.as_ptr(),
+                FILE_GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        },
+        "CreateFileW",
+    )?;
+
+    let mut hash_len = 0u32;
+    unsafe {
+        CryptCATAdminCalcHashFromFileHandle2(admin, file.raw(), &mut hash_len, null_mut(), 0);
+    }
+    if hash_len == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let mut hash = vec![0u8; hash_len as usize];
+    let ok = unsafe {
+        CryptCATAdminCalcHashFromFileHandle2(admin, file.raw(), &mut hash_len, hash.as_mut_ptr(), 0)
+    };
+    if ok == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+
+    let mut previous_catalog = 0isize;
+    let catalog = unsafe {
+        CryptCATAdminEnumCatalogFromHash(admin, hash.as_ptr(), hash_len, 0, &mut previous_catalog)
+    };
+    if catalog == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let _catalog_guard = CatalogContextGuard {
+        admin: admin_guard.0,
+        catalog,
+    };
+
+    let mut catalog_info = CATALOG_INFO {
+        cbStruct: size_of::<CATALOG_INFO>() as u32,
+        ..CATALOG_INFO::default()
+    };
+    let ok = unsafe { CryptCATCatalogInfoFromContext(catalog, &mut catalog_info, 0) };
+    if ok == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+
+    let member_tag = wide(&hex::encode(&hash));
+    let mut catalog_info_for_trust = WINTRUST_CATALOG_INFO {
+        cbStruct: size_of::<WINTRUST_CATALOG_INFO>() as u32,
+        dwCatalogVersion: 0,
+        pcwszCatalogFilePath: catalog_info.wszCatalogFile.as_ptr(),
+        pcwszMemberTag: member_tag.as_ptr(),
+        pcwszMemberFilePath: wide_path.as_ptr(),
+        hMemberFile: file.raw(),
+        pbCalculatedFileHash: hash.as_mut_ptr(),
+        cbCalculatedFileHash: hash_len,
+        pcCatalogContext: null_mut(),
+        hCatAdmin: admin_guard.0,
+    };
+    let mut data = WINTRUST_DATA {
+        cbStruct: size_of::<WINTRUST_DATA>() as u32,
+        pPolicyCallbackData: null_mut(),
+        pSIPClientData: null_mut(),
+        dwUIChoice: WTD_UI_NONE,
+        fdwRevocationChecks: WTD_REVOKE_NONE,
+        dwUnionChoice: WTD_CHOICE_CATALOG,
+        Anonymous: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA_0 {
+            pCatalog: &mut catalog_info_for_trust,
+        },
+        dwStateAction: WTD_STATEACTION_VERIFY,
+        hWVTStateData: null_mut(),
+        pwszURLReference: null_mut(),
+        dwProvFlags: WTD_REVOCATION_CHECK_NONE | WTD_DISABLE_MD2_MD4,
+        dwUIContext: WTD_UICONTEXT_EXECUTE,
+        pSignatureSettings: null_mut(),
+    };
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    let status =
+        unsafe { WinVerifyTrust(null_mut(), &mut action, &mut data as *mut _ as *mut c_void) };
+    let _state_guard = WinTrustStateGuard {
+        h_state: data.hWVTStateData,
+        action,
+    };
+    if status != 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let provider = unsafe { WTHelperProvDataFromStateData(data.hWVTStateData) };
+    if provider.is_null() {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, 0, 0) };
+    if signer.is_null() {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let cert = unsafe { WTHelperGetProvCertFromChain(signer, 0) };
+    if cert.is_null() || unsafe { (*cert).pCert }.is_null() {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    Ok([certificate_sha1_thumbprint(unsafe { (*cert).pCert })?]
+        .into_iter()
+        .collect())
+}
+
+struct CatalogAdminGuard(isize);
+
+impl Drop for CatalogAdminGuard {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            unsafe {
+                CryptCATAdminReleaseContext(self.0, 0);
+            }
+        }
+    }
+}
+
+struct CatalogContextGuard {
+    admin: isize,
+    catalog: isize,
+}
+
+impl Drop for CatalogContextGuard {
+    fn drop(&mut self) {
+        if self.admin != 0 && self.catalog != 0 {
+            unsafe {
+                CryptCATAdminReleaseCatalogContext(self.admin, self.catalog, 0);
+            }
+        }
+    }
+}
+
+struct WinTrustStateGuard {
+    h_state: HANDLE,
+    action: windows_sys::core::GUID,
+}
+
+impl Drop for WinTrustStateGuard {
+    fn drop(&mut self) {
+        if !self.h_state.is_null() {
+            let mut data = WINTRUST_DATA {
+                cbStruct: size_of::<WINTRUST_DATA>() as u32,
+                dwStateAction: WTD_STATEACTION_CLOSE,
+                hWVTStateData: self.h_state,
+                ..WINTRUST_DATA::default()
+            };
+            unsafe {
+                WinVerifyTrust(
+                    null_mut(),
+                    &mut self.action,
+                    &mut data as *mut _ as *mut c_void,
+                );
+            }
+        }
+    }
+}
+
+struct WinTrustVerification {
+    data: WINTRUST_DATA,
+    action: windows_sys::core::GUID,
+    _file_info: Box<WINTRUST_FILE_INFO>,
+    _wide_path: Vec<u16>,
+}
+
+impl WinTrustVerification {
+    fn verify(image_path: &str) -> Result<Self, NativePipeError> {
+        let wide_path = wide(image_path);
+        let mut file_info = Box::new(WINTRUST_FILE_INFO {
+            cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
+            pcwszFilePath: wide_path.as_ptr(),
+            hFile: null_mut(),
+            pgKnownSubject: null_mut(),
+        });
+        let mut data = WINTRUST_DATA {
+            cbStruct: size_of::<WINTRUST_DATA>() as u32,
+            pPolicyCallbackData: null_mut(),
+            pSIPClientData: null_mut(),
+            dwUIChoice: WTD_UI_NONE,
+            fdwRevocationChecks: WTD_REVOKE_NONE,
+            dwUnionChoice: WTD_CHOICE_FILE,
+            Anonymous: windows_sys::Win32::Security::WinTrust::WINTRUST_DATA_0 {
+                pFile: file_info.as_mut(),
+            },
+            dwStateAction: WTD_STATEACTION_VERIFY,
+            hWVTStateData: null_mut(),
+            pwszURLReference: null_mut(),
+            dwProvFlags: WTD_REVOCATION_CHECK_NONE | WTD_DISABLE_MD2_MD4,
+            dwUIContext: WTD_UICONTEXT_EXECUTE,
+            pSignatureSettings: null_mut(),
+        };
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        let status =
+            unsafe { WinVerifyTrust(null_mut(), &mut action, &mut data as *mut _ as *mut c_void) };
+        if status == 0 {
+            Ok(Self {
+                data,
+                action,
+                _file_info: file_info,
+                _wide_path: wide_path,
+            })
+        } else {
+            Err(NativePipeError::Win32 {
+                operation: "WinVerifyTrust",
+                code: status as u32,
+            })
+        }
+    }
+
+    fn state_handle(&mut self) -> HANDLE {
+        self.data.hWVTStateData
+    }
+}
+
+impl Drop for WinTrustVerification {
+    fn drop(&mut self) {
+        if !self.data.hWVTStateData.is_null() {
+            self.data.dwStateAction = WTD_STATEACTION_CLOSE;
+            unsafe {
+                WinVerifyTrust(
+                    null_mut(),
+                    &mut self.action,
+                    &mut self.data as *mut _ as *mut c_void,
+                );
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn signer_thumbprints_from_embedded_signature(
+    image_path: &str,
+) -> Result<HashSet<String>, NativePipeError> {
+    let wide_path = wide(image_path);
+    let mut encoding: CERT_QUERY_ENCODING_TYPE = 0;
+    let mut content: CERT_QUERY_CONTENT_TYPE = 0;
+    let mut format: CERT_QUERY_FORMAT_TYPE = 0;
+    let mut store = null_mut();
+    let mut message = null_mut();
+    let ok = unsafe {
+        CryptQueryObject(
+            CERT_QUERY_OBJECT_FILE,
+            wide_path.as_ptr() as *const c_void,
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+            CERT_QUERY_FORMAT_FLAG_BINARY,
+            0,
+            &mut encoding,
+            &mut content,
+            &mut format,
+            &mut store,
+            &mut message,
+            null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let _store_guard = CertificateStoreGuard(store);
+    let _message_guard = CryptMessageGuard(message);
+
+    let mut count_size = size_of::<u32>() as u32;
+    let mut signer_count = 0u32;
+    let ok = unsafe {
+        CryptMsgGetParam(
+            message,
+            CMSG_SIGNER_COUNT_PARAM,
+            0,
+            &mut signer_count as *mut _ as *mut c_void,
+            &mut count_size,
+        )
+    };
+    if ok == 0 || signer_count == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+
+    let mut thumbprints = HashSet::new();
+    for index in 0..signer_count {
+        let signer = signer_info(message, index)?;
+        let mut cert_info = CERT_INFO::default();
+        cert_info.Issuer = signer.Issuer;
+        cert_info.SerialNumber = signer.SerialNumber;
+        let cert = unsafe {
+            CertFindCertificateInStore(
+                store,
+                encoding,
+                0,
+                CERT_FIND_SUBJECT_CERT,
+                &cert_info as *const _ as *const c_void,
+                null(),
+            )
+        };
+        if cert.is_null() {
+            continue;
+        }
+        let _cert_guard = CertificateContextGuard(cert);
+        thumbprints.insert(certificate_sha1_thumbprint(cert)?);
+    }
+
+    if thumbprints.is_empty() {
+        Err(NativePipeError::CompanionIdentityRejected)
+    } else {
+        Ok(thumbprints)
+    }
+}
+
+#[allow(dead_code)]
+fn signer_info(message: *mut c_void, index: u32) -> Result<CMSG_SIGNER_INFO, NativePipeError> {
+    let mut size = 0u32;
+    let ok = unsafe {
+        CryptMsgGetParam(
+            message,
+            CMSG_SIGNER_INFO_PARAM,
+            index,
+            null_mut(),
+            &mut size,
+        )
+    };
+    if ok == 0 || size < size_of::<CMSG_SIGNER_INFO>() as u32 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let mut buffer = vec![0u8; size as usize];
+    let ok = unsafe {
+        CryptMsgGetParam(
+            message,
+            CMSG_SIGNER_INFO_PARAM,
+            index,
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut size,
+        )
+    };
+    if ok == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    Ok(unsafe { *(buffer.as_ptr() as *const CMSG_SIGNER_INFO) })
+}
+
+fn certificate_sha1_thumbprint(cert: *const CERT_CONTEXT) -> Result<String, NativePipeError> {
+    let mut size = 0u32;
+    let ok = unsafe {
+        CertGetCertificateContextProperty(cert, CERT_SHA1_HASH_PROP_ID, null_mut(), &mut size)
+    };
+    if ok == 0 || size == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    let mut buffer = vec![0u8; size as usize];
+    let ok = unsafe {
+        CertGetCertificateContextProperty(
+            cert,
+            CERT_SHA1_HASH_PROP_ID,
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut size,
+        )
+    };
+    if ok == 0 {
+        return Err(NativePipeError::CompanionIdentityRejected);
+    }
+    Ok(hex::encode(buffer))
+}
+
+#[allow(dead_code)]
+struct CertificateStoreGuard(windows_sys::Win32::Security::Cryptography::HCERTSTORE);
+
+impl Drop for CertificateStoreGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CertCloseStore(self.0, 0);
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+struct CryptMessageGuard(*mut c_void);
+
+impl Drop for CryptMessageGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CryptMsgClose(self.0);
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+struct CertificateContextGuard(*const CERT_CONTEXT);
+
+impl Drop for CertificateContextGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CertFreeCertificateContext(self.0);
             }
         }
     }

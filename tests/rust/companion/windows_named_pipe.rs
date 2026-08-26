@@ -11,6 +11,8 @@ fn windows_11_native_named_pipe_tests_require_windows() {
 
 #[cfg(windows)]
 mod windows_native {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
     use std::thread;
     use std::time::Duration;
 
@@ -19,10 +21,19 @@ mod windows_native {
     };
     use companion::ipc::server::{parse_request, AuthenticatedSessionGate, FrameError};
     use companion::ipc::windows_pipe::{
-        assert_windows_11_or_newer, connect_client_for_test, current_logon_sid_string,
-        pipe_dacl_sddl_for_logon_sid, pipe_path_for_logon_sid, NamedPipeListener, NativePipeConfig,
-        NativePipeError, WindowsPeerAuthorizer, WindowsPeerPolicy,
+        assert_windows_11_or_newer, authenticode_signer_thumbprints_sha1, connect_client_for_test,
+        current_logon_sid_string, normalize_path_for_comparison, pipe_dacl_sddl_for_logon_sid,
+        pipe_path_for_logon_sid, BinarySignaturePolicy, NamedPipeListener, NativePipeConfig,
+        NativePipeError, WindowsPeerAuthorizer, WindowsPeerIdentity, WindowsPeerPolicy,
     };
+
+    fn signed_system_binary() -> PathBuf {
+        PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string()))
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+    }
 
     fn unique_prefix() -> String {
         format!(
@@ -100,13 +111,17 @@ mod windows_native {
 
     #[test]
     fn request_before_auth_and_malformed_frames_have_stable_fail_closed_errors() {
-        let request =
-            parse_request(br#"{"type":"session.pause","runId":"run-1"}"#).expect("request");
+        let request = parse_request(
+            br#"{"protocolMajor":1,"requestId":"req-1","type":"session.pause","payload":{"runId":"run-1"}}"#,
+        )
+        .expect("request");
         let mut gate = AuthenticatedSessionGate::new();
         assert!(gate.require_authenticated(&request).is_err());
 
         assert_eq!(
-            parse_request(br#"{"type":"unknown"}"#),
+            parse_request(
+                br#"{"protocolMajor":1,"requestId":"req-2","type":"unknown","payload":{}}"#
+            ),
             Err(FrameError::Malformed)
         );
         gate.accept(AuthenticatedCertificateRunner {
@@ -117,6 +132,51 @@ mod windows_native {
         assert_eq!(gate.require_authenticated(&request), Ok(()));
         gate.clear();
         assert!(gate.require_authenticated(&request).is_err());
+    }
+
+    #[test]
+    fn production_authenticode_signer_allowlist_accepts_and_rejects_signed_images() {
+        assert_windows_11_or_newer().expect("Windows11Unavailable");
+        let signed_image = signed_system_binary();
+        let signed_image = signed_image.to_string_lossy().to_string();
+        let thumbprints = authenticode_signer_thumbprints_sha1(&signed_image)
+            .expect("Windows system binary must have an Authenticode signer");
+        let allowed = thumbprints.iter().next().expect("signer").clone();
+
+        let current = WindowsPeerIdentity::for_current_process().expect("identity");
+        let identity = WindowsPeerIdentity {
+            image_path: signed_image.clone(),
+            ..current.clone()
+        };
+        let mut allowed_paths = HashSet::new();
+        allowed_paths.insert(normalize_path_for_comparison(&signed_image));
+        let policy = WindowsPeerPolicy {
+            expected_logon_sid: current.logon_sid,
+            expected_token_user_sid: current.token_user_sid,
+            expected_session_id: current.session_id,
+            allowed_image_paths: allowed_paths.clone(),
+            signature_policy: BinarySignaturePolicy::RequireAuthenticodeSigner {
+                allowed_sha1_thumbprints: [allowed].into_iter().collect(),
+            },
+        };
+        assert_eq!(
+            WindowsPeerAuthorizer::new(policy).authorize(&identity),
+            Ok(())
+        );
+
+        let policy = WindowsPeerPolicy {
+            expected_logon_sid: identity.logon_sid.clone(),
+            expected_token_user_sid: identity.token_user_sid.clone(),
+            expected_session_id: identity.session_id,
+            allowed_image_paths: allowed_paths,
+            signature_policy: BinarySignaturePolicy::RequireAuthenticodeSigner {
+                allowed_sha1_thumbprints: ["00".repeat(20)].into_iter().collect(),
+            },
+        };
+        assert_eq!(
+            WindowsPeerAuthorizer::new(policy).authorize(&identity),
+            Err(NativePipeError::CompanionIdentityRejected)
+        );
     }
 
     #[test]

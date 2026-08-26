@@ -26,69 +26,85 @@ const INSTANCE: &str = "companion-instance-1";
 const DEADLINE_MS: u64 = 5_000;
 
 const ECDSA_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQggfWHS3+/LyrYeDcE
-ZovQ7tp78+a5pQ3kDnmYXGsZhXuhRANCAAT6wsdKIvqbW9usdmjB/z888RPKPEYn
-8glGRXCoqboNPy9q1xvaPv57kx8zr2HDYt5IvczMR4ZSRdweUceYUJUy
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLpkHlViRQ/JRu+f5
+zoJiFJ7jtNK5l0g7+epxAKmzyNahRANCAARLLuvzUOW6FeHl03eam9Z5jMB2CLwA
+9SjDUf/t+ocb1Q3882yfOqpgKOUHmXigPa4ubfMorvsv3CBR4uqHP94Y
 -----END PRIVATE KEY-----"#;
 
 const ECDSA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
-MIIBcjCCARmgAwIBAgIUTOXLZn+Kw9tvTjs2BA5cqNNIsGkwCgYIKoZIzj0EAwIw
-EzERMA8GA1UEAwwIcnVubmVyLTEwHhcNMjYwODI2MDgyMTQ5WhcNMzYwODIzMDgy
-MTQ5WjATMREwDwYDVQQDDAhydW5uZXItMTBZMBMGByqGSM49AgEGCCqGSM49AwEH
-A0IABPrCx0oi+ptb26x2aMH/PzzxE8o8RifyCUZFcKipug0/L2rXG9o+/nuTHzOv
-YcNi3ki9zMxHhlJF3B5Rx5hQlTKjSzBJMBMGA1UdEQQMMAqCCHJ1bm5lci0xMBMG
-A1UdJQQMMAoGCCsGAQUFBwMCMB0GA1UdDgQWBBQxXkpve/un77zjNyXyb6J1WsyV
-nTAKBggqhkjOPQQDAgNHADBEAiBNJdqkqqY3PnA0SuE8f3qeUHsq6j88+xAwPhFL
-sNwAVgIgdcy6zw1dxcWz05gQ4nHk3pu+7zZwclJgdhrRB1S2TOk=
+MIICJjCCAc2gAwIBAgIUTlwcdg0R28tGWcSOPvwTmv1Nx2gwCgYIKoZIzj0EAwIw
+JDEiMCAGA1UEAwwZUXVhbGlnZW5jZSBUZXN0IFJ1bm5lciBDQTAeFw0yNjA4MjYw
+ODUzMjNaFw0zNjA4MjMwODUzMjNaMBMxETAPBgNVBAMMCHJ1bm5lci0xMFkwEwYH
+KoZIzj0CAQYIKoZIzj0DAQcDQgAESy7r81DluhXh5dN3mpvWeYzAdgi8APUow1H/
+7fqHG9UN/PNsnzqqYCjlB5l4oD2uLm3zKK77L9wgUeLqhz/eGKOB7TCB6jAMBgNV
+HRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDAjB1
+BgNVHREEbjBsgghydW5uZXItMYYedXJuOnF1YWxpZ2VuY2U6cnVubmVyOnJ1bm5l
+ci0xhh51cm46cXVhbGlnZW5jZTp0ZW5hbnQ6dGVuYW50LTGGIHVybjpxdWFsaWdl
+bmNlOnByb2plY3Q6cHJvamVjdC0xMB0GA1UdDgQWBBSmTjV1yMrhLbt3kYxXFi0S
+W4TNVzAfBgNVHSMEGDAWgBT9wrZDegq05yv6vcNZRs55b/AFjzAKBggqhkjOPQQD
+AgNHADBEAiAGp3MPTsz5WdGOxTK6xqvZxzQctZlfl/YiogQLuda26wIgbA6yekPk
+khXIzEH9gv0fW/FKFd53I60UDdEfnA158Xc=
 -----END CERTIFICATE-----"#;
 
 const RSA_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDCWZwVSyLisRGf
-PT8Y6hLggwEQfCbJxxn68vdVuHB+4Yh+UexrUZebOBNRGR7PkZBCxTtoSGxqPwDh
-8KdK1bMhaEv4fER7aVW7/I+WgRmYLFrw8okp4ru4JYDtfRkSsEqMSS3gVx9ApfAY
-0+kQUsKg0WUBQ8LxZAKWklU0NyG8sWAf5AqgE33OYxpPkwnDiEhab0s7GBjF3ln4
-wRmhcbcKAUJHza782xHsvA3BNJ9m/GQKCyVswAboXHLm0kwNCBZOKmrLRboFe8e/
-0cT/wqXjYPVX01D/i10cddMXUDTXtBXPdyvVAda0P/2yRnFQVOBJACYpN0DiwXv0
-LqvhSKl7AgMBAAECggEAOQ4Ef83Mgn9X/IcG6IIDI6zh2ZyQ6IiOTHkaeixIvj7o
-iqjzPng4CSXXqeW1gVsq3ic3rwAf77rqP+odup7s1QBg2SRmGFLOi/7zikwBHwba
-dcTF1qmM0V0VMeMZQr7FS9TJ5oO9FYYBa9B+KcAaCgse21Wwu5vQFLMF12vd+B4Z
-WHXEW6QiIAbFDYp8sWbQ6Ylmq9YVOKRdcl45BWcKVcrPtClYNDFqP0Noc5RvHV5H
-jfWUAZjXlLvWYrz/WfYgz0W/3YnkkbeP1GAXvhvJx6P6liA1zlrkQO8QO4bOsA6y
-PILfiwQUYD2+OiRM6lPQhTaEEj6ZNBSLh4KrsogjBQKBgQDoA/WtUr+6WtajSb9Y
-ESwjqC+yECiSKnRBuYXA41HQkguzu5L/apgh1wg7lLIqjaxJz0cLURg4PY96jIA6
-WP5DBjqp0vL3HRH4m8r0omf3CDxpijTxvYgCJ9nPEH3H+zSMv21v5R6fxTO+L72p
-/rNJ+bx13+oICKgT5aJ01y3rPwKBgQDWcN/2kxqQdEMPwfq0PwzlQWPH9iyUVfnk
-GsBT8AO1W8gp4cQVv06l2uhxdayG/M7WCjzH5ROTmCj8Y+Hpets1/83clt+oHxsQ
-WPBU+c/bVrtRzsrSUf2tyZSVBvKmQHDXeoLHGHgW+aoXJ4qHDli4FiDNosTG3TPv
-5Yk9BI7exQKBgFHoE/L8I3NGXj+G6WXNqidsWGokCi6Pjjslo3JUza0z4a2xqlNA
-7jQEFYPzGnKrUQc9hXcZSdOQ5/X7Y8k1YY2HxW3uapeSS6XYWe3C57Dt12XqxIYS
-wtEAAIR47e6LYCHP8nJuEEGW/I1HjU1V/TVAVKfIRHZRmARuLMvSqwNBAoGBAJm0
-eGPmFxFZtEPUN54A335n+1x10IhWg/KDVj4T+KSC8BtNDt7DrFznZtsEjLCI/rye
-w+hIA1s0opQeB+zxubSf8W/e2NtJyH1UMpfGI73FEilWPzy3tkxeA9k6DK0r3XYm
-Ax0wJcvaEpfcKMgbeW4htkuPEtqz7SlT7qXE4Z89AoGAY5KtLAIsE7XTo5vPpyTi
-khudgx+zTyn5MQ92YQlHz0bkejSqvwA9/1rHrnb+vdx7n/qic0zS/NaW+bmcdmCN
-Xx1RW5QyCGEJ3heql/2VrqTjvmzfUXW3v1cF60q/prEipcploGDkkhwxIkwQS7ks
-ZJYz+d9V7Rq2DPiIcXgM4pk=
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7842WC/QANcuF
+dfCuoeiPQhtr9C0IzRfI5R5wBeEj57M0sXYNWKCbrJQj9/UlEqjrUeVIERpu95fD
+jH6v8Dlal/MwQxMpXmicwYsXbdW2aD6HLEqUeMmwUwhWWfbwb2Qi1Xcm0co+UmXx
+jzXDFSTsJdMgIMyXb3yY0GZFCdo4qKnzi4G2ntkhTdb3NVn/Jb7pSsJcDuo2LW8q
+NiGHrXTFii8eDw/xfSBKnRFmgrWPCkccKKD5jQ17zz+8jYCzN3BcZjCKgzR0vRby
+8Obgyg6MIsjm13nrjZQKJG2Y2XVKqrVG3B6s7G4b7PJ+ml5FRtMP0wXH7QXtZsKp
+zfBh34pFAgMBAAECggEABGAqcO6Uzudxtkj1Yj9rOGCX3lbIMJ8DuX3aDE4avHkB
+s02ZW7yvOoiVR1QXvTX2wEm/DoM1bBVwD1GnRmXPlAQbGYnKOamUwmeAGzrHobBC
+GmgF0XiRa303YblE9jqFqIjzNfBm5rYI4QuOOx00J5pG1MXmtXTXQACEDQHqdmyu
+jaNje1dVOP6p4oI9XKrg2PaQ2x7plATjy3tgwjA+clKVEyrp33OtOKoqAF4QpLXx
+bxHQ9f8u5QhodseCrkZWBTmxwozbGpPSWMJqdFjZhbimtXjXM4ZLs539wm/moTbV
+/RtSE6dBduvG85oDjpvB3TXrP5BSVyFwELMOn9y+sQKBgQDvTt9ZDAuGkIigdjDA
+VKCEwU02jRpvDTmy5HjqtPVlqGb7G+4TsHuMxUUhUznthj+tqidbz5ujCVlTs5xs
+8g6zQCp0+TBGu67Bk60JISOu9bdQuQd9F0oZzlAbIiUONbGA2Q+sORKsSUMKdn/r
+22OGiH00cNnYA9ioJBVCRS9tEQKBgQDJD6Vio8+sRrY3Wx6LgPP2sNWvboRIVQsW
+xdCjE3vtSzCkrUXZgLb3VqJdd3vJX1AMlimzmT6917X5mBwUQIGS8ZReR4U9GNUh
+jfMVSKNqxoDfuXG/GzzamYF01HhoZ6frk8rSg7wKBngYX9yB1FZnrGkT/wRuI/ti
+L6Bhcn2Z9QKBgDrthx4cUzI9oQcyU2ro6+YE24iVUm8KKK0eiY/yI4N25nTrOcLr
+cGEHqrA8GEWfC0suXSbEhqStBqwPzHMfX/NP16SaQAMK8EuGm9Nlr63Dn/JmvatV
+8s9L+HnV/J31JtJ9oNhd7XUzTSjkaTeg/G8CaSJir6H7wHwW9o0tEDKhAoGBAJlQ
+uvZKn3NowE3Zx6LtBBtaoLcTeP+HCduloACaPOenbEJGdnrycZKNl2XaVKQrb+kJ
+IGd5NaShtnvLB65RufyJBnAV7X23T940VeYm66XiFCeFSz1E0dSHNXYXBnHmiN9U
+ZVa9aUfjwvQjNQwzFGgdykqbLY+nFGu8kXl9SlV5AoGAVmM9EbDluPUn0yR3RuRm
+6hZjp8kbzLwfBK7kIxcw3rd5MpCUGC2+VBO+lbhhpCRkDoJQuYrV5dJ9Pu8g++jw
+8EXCSlCChzH9IH6tQwf6cHoQXcILDiB7huVAzKZjY8T9z5DVVD7LHAAuNAuUbTS8
+lxPvy2pc7Yu8lHniveE00XQ=
 -----END PRIVATE KEY-----"#;
 
 const RSA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
-MIIDBTCCAe2gAwIBAgIUSVF0+5sft8aA5Sd6Os9VB174wIAwDQYJKoZIhvcNAQEL
-BQAwFTETMBEGA1UEAwwKcnVubmVyLXJzYTAeFw0yNjA4MjYwODIxNTBaFw0zNjA4
-MjMwODIxNTBaMBUxEzARBgNVBAMMCnJ1bm5lci1yc2EwggEiMA0GCSqGSIb3DQEB
-AQUAA4IBDwAwggEKAoIBAQDCWZwVSyLisRGfPT8Y6hLggwEQfCbJxxn68vdVuHB+
-4Yh+UexrUZebOBNRGR7PkZBCxTtoSGxqPwDh8KdK1bMhaEv4fER7aVW7/I+WgRmY
-LFrw8okp4ru4JYDtfRkSsEqMSS3gVx9ApfAY0+kQUsKg0WUBQ8LxZAKWklU0NyG8
-sWAf5AqgE33OYxpPkwnDiEhab0s7GBjF3ln4wRmhcbcKAUJHza782xHsvA3BNJ9m
-/GQKCyVswAboXHLm0kwNCBZOKmrLRboFe8e/0cT/wqXjYPVX01D/i10cddMXUDTX
-tBXPdyvVAda0P/2yRnFQVOBJACYpN0DiwXv0LqvhSKl7AgMBAAGjTTBLMBUGA1Ud
-EQQOMAyCCnJ1bm5lci1yc2EwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0OBBYE
-FE4x0u74J+ossEdymY1defic7uh7MA0GCSqGSIb3DQEBCwUAA4IBAQAY55gMP6r6
-rQrXnToNlN3C7OuGfAWPNfd/Q6zObGeiFnxnizMMhcLIg6l9bhDZzBx+3QHTL+4I
-hRGmd0pciMdv4UfRCtRkUonu6Kp+VS96eGJ95rdwgNLds8UWd1Er/ebEGKQHNUA0
-/tWofDsvu7SR/YUUEwBo0mfbo8lrrfq3wVB1XTfJCaKSH7re9TMitvm2Zs5owNbB
-WOOHxfMtejVf0FPnexp3KL/7s9EtWlv1sCfw/TfJ/MJA9w/70mjqGekCx/sLQWQ1
-2jU8+/bop8WuFv/eHo/c9o9hGISgUP178StV+LykGTdPp+H1crwbLx7I9rRylq6c
-CZ16vEh3Vs9p
+MIIC+TCCAp6gAwIBAgIUTlwcdg0R28tGWcSOPvwTmv1Nx2kwCgYIKoZIzj0EAwIw
+JDEiMCAGA1UEAwwZUXVhbGlnZW5jZSBUZXN0IFJ1bm5lciBDQTAeFw0yNjA4MjYw
+ODUzMjRaFw0zNjA4MjMwODUzMjRaMBUxEzARBgNVBAMMCnJ1bm5lci1yc2EwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7842WC/QANcuFdfCuoeiPQhtr
+9C0IzRfI5R5wBeEj57M0sXYNWKCbrJQj9/UlEqjrUeVIERpu95fDjH6v8Dlal/Mw
+QxMpXmicwYsXbdW2aD6HLEqUeMmwUwhWWfbwb2Qi1Xcm0co+UmXxjzXDFSTsJdMg
+IMyXb3yY0GZFCdo4qKnzi4G2ntkhTdb3NVn/Jb7pSsJcDuo2LW8qNiGHrXTFii8e
+Dw/xfSBKnRFmgrWPCkccKKD5jQ17zz+8jYCzN3BcZjCKgzR0vRby8Obgyg6MIsjm
+13nrjZQKJG2Y2XVKqrVG3B6s7G4b7PJ+ml5FRtMP0wXH7QXtZsKpzfBh34pFAgMB
+AAGjgfEwge4wDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAww
+CgYIKwYBBQUHAwIweQYDVR0RBHIwcIIKcnVubmVyLXJzYYYgdXJuOnF1YWxpZ2Vu
+Y2U6cnVubmVyOnJ1bm5lci1yc2GGHnVybjpxdWFsaWdlbmNlOnRlbmFudDp0ZW5h
+bnQtMYYgdXJuOnF1YWxpZ2VuY2U6cHJvamVjdDpwcm9qZWN0LTEwHQYDVR0OBBYE
+FCqJcUYmM1dTwio2HwX1+IIF/4cUMB8GA1UdIwQYMBaAFP3CtkN6CrTnK/q9w1lG
+znlv8AWPMAoGCCqGSM49BAMCA0kAMEYCIQDIJeGN/4BuPj95iaz3FEIov6KjZyUN
+XfWmTBhW42yw0gIhAK0YkcLIpYYg6HWHgC+i04H3JhxCHVLI2Io7uD1ASfCP
+-----END CERTIFICATE-----"#;
+
+const CA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
+MIIBsTCCAVagAwIBAgIUd4XQSEbTF76koS/80HeYebOZh10wCgYIKoZIzj0EAwIw
+JDEiMCAGA1UEAwwZUXVhbGlnZW5jZSBUZXN0IFJ1bm5lciBDQTAeFw0yNjA4MjYw
+ODUzMjNaFw0zNjA4MjMwODUzMjNaMCQxIjAgBgNVBAMMGVF1YWxpZ2VuY2UgVGVz
+dCBSdW5uZXIgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATKvUOn4Xa5k3qo
+g497Un732k31Crr1Jvz34UAWd3zsidoVSnULPnuChjPZ4HrmWacnHCogmoMG7eue
+fnv8mZYSo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEBMA4GA1UdDwEB/wQEAwIBBjAd
+BgNVHQ4EFgQU/cK2Q3oKtOcr+r3DWUbOeW/wBY8wHwYDVR0jBBgwFoAU/cK2Q3oK
+tOcr+r3DWUbOeW/wBY8wCgYIKoZIzj0EAwIDSQAwRgIhAMV+8OhJBQh8D5uro3as
+mHzX07UK31vFNoS8JMxsdg2wAiEAkhXKJ0LsSqHY3FE1OMRZY8C7tum8bsuPuG4E
+DzQHpEk=
 -----END CERTIFICATE-----"#;
 
 fn verifier(
@@ -108,13 +124,21 @@ fn fingerprint(cert: &str) -> String {
     hex::encode(Sha256::digest(pem_der(cert)))
 }
 
+fn chain(leaf: &str) -> String {
+    format!("{leaf}\n{CA_CERT}")
+}
+
 fn policy(cert: &str, runner_id: &str, san: &str) -> RunnerCertificatePolicy {
-    let fp = fingerprint(cert);
     RunnerCertificatePolicy {
         runner_id: runner_id.to_string(),
-        expected_fingerprint_sha256: fp.clone(),
+        expected_fingerprint_sha256: fingerprint(cert),
         required_san: san.to_string(),
-        trusted_issuer_fingerprint_sha256: Some(fp),
+        required_scope_sans: vec![
+            format!("urn:qualigence:runner:{runner_id}"),
+            "urn:qualigence:tenant:tenant-1".to_string(),
+            "urn:qualigence:project:project-1".to_string(),
+        ],
+        trusted_issuer_fingerprint_sha256: Some(fingerprint(CA_CERT)),
     }
 }
 
@@ -258,7 +282,7 @@ fn certificate_handshake_accepts_ecdsa_p256_client_auth_san_fingerprint_and_proo
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,
@@ -292,7 +316,7 @@ fn certificate_handshake_accepts_rsa_pss_client_auth_san_fingerprint_and_proof()
         vec![policy(RSA_CERT, "runner-rsa", "runner-rsa")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-rsa", RSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-rsa", &chain(RSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,
@@ -325,11 +349,16 @@ fn certificate_handshake_rejects_wrong_fingerprint_san_algorithm_bad_signature_a
         runner_id: "runner-1".to_string(),
         expected_fingerprint_sha256: "0".repeat(64),
         required_san: "runner-1".to_string(),
-        trusted_issuer_fingerprint_sha256: None,
+        required_scope_sans: vec![
+            "urn:qualigence:runner:runner-1".to_string(),
+            "urn:qualigence:tenant:tenant-1".to_string(),
+            "urn:qualigence:project:project-1".to_string(),
+        ],
+        trusted_issuer_fingerprint_sha256: Some(fingerprint(CA_CERT)),
     };
     let mut v = cert_verifier(Arc::clone(&clock), vec![wrong_fingerprint]);
     assert_eq!(
-        v.begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT),
+        v.begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT)),
         Err(CertificateHandshakeError::Certificate(
             CertificateError::FingerprintMismatch
         ))
@@ -340,7 +369,19 @@ fn certificate_handshake_rejects_wrong_fingerprint_san_algorithm_bad_signature_a
         vec![policy(ECDSA_CERT, "runner-1", "other-runner")],
     );
     assert_eq!(
-        v.begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT),
+        v.begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT)),
+        Err(CertificateHandshakeError::Certificate(
+            CertificateError::MissingRunnerSan
+        ))
+    );
+
+    let mut wrong_scope = policy(ECDSA_CERT, "runner-1", "runner-1");
+    wrong_scope
+        .required_scope_sans
+        .push("urn:qualigence:project:not-allowed".to_string());
+    let mut v = cert_verifier(Arc::clone(&clock), vec![wrong_scope]);
+    assert_eq!(
+        v.begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT)),
         Err(CertificateHandshakeError::Certificate(
             CertificateError::MissingRunnerSan
         ))
@@ -350,8 +391,19 @@ fn certificate_handshake_rejects_wrong_fingerprint_san_algorithm_bad_signature_a
         Arc::clone(&clock),
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
+    assert_eq!(
+        v.begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT),
+        Err(CertificateHandshakeError::Certificate(
+            CertificateError::ChainRejected
+        ))
+    );
+
+    let mut v = cert_verifier(
+        Arc::clone(&clock),
+        vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
+    );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,
@@ -390,7 +442,7 @@ fn certificate_handshake_rejects_wrong_fingerprint_san_algorithm_bad_signature_a
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     assert_eq!(
         v.verify(
@@ -415,7 +467,7 @@ fn certificate_challenge_expires_and_binds_instance_nonce_and_runner() {
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,
@@ -436,13 +488,24 @@ fn certificate_challenge_expires_and_binds_instance_nonce_and_runner() {
         ),
         Err(CertificateHandshakeError::CompanionInstanceMismatch)
     );
+    assert_eq!(
+        v.verify(
+            "runner-1",
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::ReplayedChallenge)
+    );
 
     let mut v = cert_verifier(
         Arc::clone(&clock),
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,
@@ -462,13 +525,61 @@ fn certificate_challenge_expires_and_binds_instance_nonce_and_runner() {
         ),
         Err(CertificateHandshakeError::NonceMismatch)
     );
+    assert_eq!(
+        v.verify(
+            "runner-1",
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::ReplayedChallenge)
+    );
 
     let mut v = cert_verifier(
         Arc::clone(&clock),
         vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
     );
     let challenge = v
-        .begin(PROTOCOL_MAJOR, "runner-1", ECDSA_CERT)
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("begin");
+    let proof = proof_bytes(
+        PROTOCOL_MAJOR,
+        INSTANCE,
+        &challenge.nonce_base64(),
+        "runner-1",
+    );
+    let signature = sign_ecdsa(&proof);
+    assert_eq!(
+        v.verify(
+            "runner-2",
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::RunnerMismatch)
+    );
+    assert_eq!(
+        v.verify(
+            "runner-1",
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::ReplayedChallenge)
+    );
+
+    let mut v = cert_verifier(
+        Arc::clone(&clock),
+        vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
+    );
+    let challenge = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
         .expect("begin");
     let proof = proof_bytes(
         PROTOCOL_MAJOR,

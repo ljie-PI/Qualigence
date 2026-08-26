@@ -450,6 +450,7 @@ pub struct RunnerCertificatePolicy {
     pub runner_id: String,
     pub expected_fingerprint_sha256: String,
     pub required_san: String,
+    pub required_scope_sans: Vec<String>,
     pub trusted_issuer_fingerprint_sha256: Option<String>,
 }
 
@@ -586,8 +587,9 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         }
         let pending = self
             .pending
-            .get(challenge_id)
+            .remove(challenge_id)
             .ok_or(CertificateHandshakeError::UnknownChallenge)?;
+        self.consumed_challenges.insert(challenge_id.to_string());
         if pending.runner_id != runner_id {
             return Err(CertificateHandshakeError::RunnerMismatch);
         }
@@ -610,9 +612,6 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             runner_id,
         );
         let certificate = pending.certificate.clone();
-
-        self.pending.remove(challenge_id);
-        self.consumed_challenges.insert(challenge_id.to_string());
 
         if expired {
             return Err(CertificateHandshakeError::Expired);
@@ -648,33 +647,30 @@ pub fn validate_runner_certificate(
         .first()
         .ok_or(CertificateError::MalformedCertificate)?
         .clone();
-    let (_, cert) =
-        X509Certificate::from_der(&der).map_err(|_| CertificateError::MalformedCertificate)?;
+    let certificates = parse_certificate_chain(&chain_der)?;
+    let cert = certificates
+        .first()
+        .ok_or(CertificateError::MalformedCertificate)?;
 
-    if !cert.validity().is_valid() {
-        return Err(CertificateError::ExpiredCertificate);
-    }
-    if !has_client_auth_eku(&cert) {
+    validate_chain_path(&certificates, &chain_der, policy)?;
+
+    if !has_client_auth_eku(cert) {
         return Err(CertificateError::MissingClientAuthEku);
     }
-    if !has_required_san(&cert, &policy.required_san) {
+    if !has_required_san(cert, &policy.required_san)
+        || policy
+            .required_scope_sans
+            .iter()
+            .any(|required| !has_required_san(cert, required))
+    {
         return Err(CertificateError::MissingRunnerSan);
     }
     let fingerprint_sha256 = hex::encode(Sha256::digest(&der));
     if !fingerprint_sha256.eq_ignore_ascii_case(&policy.expected_fingerprint_sha256) {
         return Err(CertificateError::FingerprintMismatch);
     }
-    if let Some(trusted) = &policy.trusted_issuer_fingerprint_sha256 {
-        let chain_has_trust_anchor = chain_der
-            .iter()
-            .map(|entry| hex::encode(Sha256::digest(entry)))
-            .any(|fingerprint| trusted.eq_ignore_ascii_case(&fingerprint));
-        if !chain_has_trust_anchor {
-            return Err(CertificateError::ChainRejected);
-        }
-    }
 
-    let public_key_algorithm = public_key_algorithm(&cert)?;
+    let public_key_algorithm = public_key_algorithm(cert)?;
     Ok(ValidatedRunnerCertificate {
         runner_id: policy.runner_id.clone(),
         fingerprint_sha256,
@@ -740,6 +736,98 @@ fn certificate_chain_der(input: &[u8]) -> Result<Vec<Vec<u8>>, CertificateError>
     } else {
         Ok(vec![input.to_vec()])
     }
+}
+
+fn parse_certificate_chain<'a>(
+    chain_der: &'a [Vec<u8>],
+) -> Result<Vec<X509Certificate<'a>>, CertificateError> {
+    chain_der
+        .iter()
+        .map(|der| {
+            X509Certificate::from_der(der)
+                .map(|(_, cert)| cert)
+                .map_err(|_| CertificateError::MalformedCertificate)
+        })
+        .collect()
+}
+
+fn validate_chain_path(
+    certificates: &[X509Certificate<'_>],
+    chain_der: &[Vec<u8>],
+    policy: &RunnerCertificatePolicy,
+) -> Result<(), CertificateError> {
+    if certificates.is_empty() {
+        return Err(CertificateError::MalformedCertificate);
+    }
+    if certificates
+        .iter()
+        .any(|certificate| !certificate.validity().is_valid())
+    {
+        return Err(CertificateError::ExpiredCertificate);
+    }
+
+    let trusted = policy
+        .trusted_issuer_fingerprint_sha256
+        .as_ref()
+        .ok_or(CertificateError::ChainRejected)?;
+    let trust_anchor = certificates.last().ok_or(CertificateError::ChainRejected)?;
+    let trust_anchor_der = chain_der.last().ok_or(CertificateError::ChainRejected)?;
+    let trust_anchor_fingerprint = hex::encode(Sha256::digest(trust_anchor_der));
+    if !trusted.eq_ignore_ascii_case(&trust_anchor_fingerprint) {
+        return Err(CertificateError::ChainRejected);
+    }
+
+    if certificates.len() == 1 {
+        let cert = &certificates[0];
+        if cert.subject() != cert.issuer() || cert.verify_signature(None).is_err() {
+            return Err(CertificateError::ChainRejected);
+        }
+        return Ok(());
+    }
+
+    for pair in certificates.windows(2) {
+        let subject = &pair[0];
+        let issuer = &pair[1];
+        if subject.issuer() != issuer.subject() {
+            return Err(CertificateError::ChainRejected);
+        }
+        if !is_certificate_authority(issuer)? {
+            return Err(CertificateError::ChainRejected);
+        }
+        if subject
+            .verify_signature(Some(&issuer.tbs_certificate.subject_pki))
+            .is_err()
+        {
+            return Err(CertificateError::ChainRejected);
+        }
+    }
+
+    if trust_anchor.subject() != trust_anchor.issuer()
+        || trust_anchor.verify_signature(None).is_err()
+    {
+        return Err(CertificateError::ChainRejected);
+    }
+    if !is_certificate_authority(trust_anchor)? {
+        return Err(CertificateError::ChainRejected);
+    }
+    Ok(())
+}
+
+fn is_certificate_authority(cert: &X509Certificate<'_>) -> Result<bool, CertificateError> {
+    let basic_constraints = cert
+        .basic_constraints()
+        .map_err(|_| CertificateError::ChainRejected)?
+        .ok_or(CertificateError::ChainRejected)?;
+    if !basic_constraints.value.ca {
+        return Ok(false);
+    }
+    if let Some(key_usage) = cert
+        .key_usage()
+        .map_err(|_| CertificateError::ChainRejected)?
+    {
+        return Ok(key_usage.value.key_cert_sign());
+    }
+    Ok(true)
 }
 
 fn public_key_algorithm(
