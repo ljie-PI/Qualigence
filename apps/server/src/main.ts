@@ -23,6 +23,7 @@ import {
   OperationScopedPostgresRunnerControlStore,
   PostgresEvidenceLifecycleStore,
   PostgresIntelligenceResultWakeupStore,
+  PostgresSelfHostedKmsKeyStore,
   PostgresReviewTaskRepository,
 } from "@qualigence/postgres-runtime";
 import { LocalSkillSigner } from "@qualigence/kms-local";
@@ -107,7 +108,11 @@ export async function main(
   const artifactStore = artifactStoreFactory(config, systemClock);
   const evidenceKms = config.evidenceKms === undefined
     ? undefined
-    : new SelfHostedKms({ rootKey: config.evidenceKms.rootKey, now: systemClock.now });
+    : new SelfHostedKms({
+        rootKey: config.evidenceKms.rootKey,
+        keyStore: new PostgresSelfHostedKmsKeyStore(provider),
+        now: systemClock.now,
+      });
   const shutdown = new AbortController();
   const resultConsumer = new ServerIntelligenceResultConsumer(provider);
   const resultConsumerLoop = new IntelligenceResultConsumerLoop({

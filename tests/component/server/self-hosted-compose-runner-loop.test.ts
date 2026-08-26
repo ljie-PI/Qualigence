@@ -31,6 +31,7 @@ describe("Self-hosted Server readiness endpoints", () => {
       "postgres",
       "object_storage",
       "artifact_data_plane",
+      "kms",
       "runner_grpc",
       "mission_dispatch",
       "intelligence_result_consumer",
@@ -60,6 +61,13 @@ describe("Self-hosted Server configuration", () => {
       SERVER_RUNNER_GRPC_TLS_KEY_FILE: files.runnerServerKey,
       SERVER_TENANT_IDS: "tenant-a, tenant-b, tenant-a",
       SERVER_OBJECT_STORAGE_READY_URL: "http://minio:9000/minio/health/ready",
+      SERVER_S3_ENDPOINT: "http://minio:9000",
+      SERVER_S3_REGION: "us-east-1",
+      SERVER_S3_BUCKET: "qualigence-artifacts",
+      SERVER_S3_ACCESS_KEY_ID_FILE: files.s3AccessKeyId,
+      SERVER_S3_SECRET_ACCESS_KEY_FILE: files.s3SecretAccessKey,
+      SERVER_S3_FORCE_PATH_STYLE: "true",
+      SERVER_KMS_ROOT_KEY_BASE64_FILE: files.kmsRootKey,
       SERVER_ARTIFACT_DATA_DIR: "/var/lib/qualigence/artifacts",
       SERVER_SKILL_SIGNING_DATA_DIR: "/var/lib/qualigence/skill-signing",
       SERVER_OIDC_ISSUER: "https://issuer.example.com",
@@ -83,6 +91,15 @@ describe("Self-hosted Server configuration", () => {
       batchSize: 32,
     });
     expect(config.objectStorageReadinessUrl).toBe("http://minio:9000/minio/health/ready");
+    expect(config.artifactS3).toMatchObject({
+      endpoint: "http://minio:9000",
+      region: "us-east-1",
+      bucket: "qualigence-artifacts",
+      accessKeyId: "minio-access",
+      secretAccessKey: "minio-secret",
+      forcePathStyle: true,
+    });
+    expect(config.evidenceKms?.rootKey.byteLength).toBe(32);
     expect(config.artifactDataDir).toBe("/var/lib/qualigence/artifacts");
     expect(config.skillSigningDataDir).toBe("/var/lib/qualigence/skill-signing");
   });
@@ -185,6 +202,19 @@ describe("Self-hosted Docker gate", () => {
     expect(compose).toContain("server-volume-permissions:\n        condition: service_completed_successfully");
   });
 
+  it("wires the production Server to MinIO/S3 and the Server KMS root-key secret", async () => {
+    const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
+    const serverSection = composeServiceSection(compose, "server");
+    expect(serverSection).toContain("SERVER_S3_ENDPOINT: http://minio:9000");
+    expect(serverSection).toContain("SERVER_S3_BUCKET: qualigence-artifacts");
+    expect(serverSection).toContain("SERVER_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id");
+    expect(serverSection).toContain("SERVER_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key");
+    expect(serverSection).toContain("SERVER_KMS_ROOT_KEY_BASE64_FILE: /run/secrets/kms_root_key");
+    expect(serverSection).toContain("- s3_access_key_id");
+    expect(serverSection).toContain("- s3_secret_access_key");
+    expect(serverSection).toContain("- kms_root_key");
+  });
+
   it("keeps the Console healthcheck compatible with the Caddy runtime image", async () => {
     const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
     const consoleSection = composeServiceSection(compose, "console");
@@ -245,6 +275,9 @@ async function writeConfigFiles(dir: string): Promise<Record<string, string>> {
     runnerCaKey: join(dir, "runner-ca-key.pem"),
     runnerServerCert: join(dir, "runner-server-cert.pem"),
     runnerServerKey: join(dir, "runner-server-key.pem"),
+    s3AccessKeyId: join(dir, "s3-access-key-id"),
+    s3SecretAccessKey: join(dir, "s3-secret-access-key"),
+    kmsRootKey: join(dir, "kms-root-key"),
   };
   await writeFile(paths.jwks, "[]", "utf8");
   await writeFile(paths.claimMap, JSON.stringify({
@@ -257,6 +290,9 @@ async function writeConfigFiles(dir: string): Promise<Record<string, string>> {
   await writeFile(paths.runnerCaKey, "ca-key", "utf8");
   await writeFile(paths.runnerServerCert, "server-cert", "utf8");
   await writeFile(paths.runnerServerKey, "server-key", "utf8");
+  await writeFile(paths.s3AccessKeyId, "minio-access", "utf8");
+  await writeFile(paths.s3SecretAccessKey, "minio-secret", "utf8");
+  await writeFile(paths.kmsRootKey, Buffer.alloc(32, 7).toString("base64"), "utf8");
   return paths;
 }
 

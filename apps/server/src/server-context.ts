@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import type { Clock } from "@qualigence/shared-kernel";
-import type { ArtifactStore, EvidenceLifecycleStore, EvidencePlaintextAccessKeyPolicy, KeyManagementProvider } from "@qualigence/evidence";
+import type { ArtifactStore, EvidenceLifecycleStore, EvidencePlaintextAccessKeyPolicy, EvidenceScopedRevoker, KeyManagementProvider } from "@qualigence/evidence";
 import type {
   PublicApiRole,
   RequestPrincipal,
@@ -81,7 +81,7 @@ export interface ServerDeps {
   readonly skillSigner?: SkillSigner;
   readonly artifactStore?: (scope: { readonly tenantId: string; readonly projectId: string }) => ArtifactStore;
   readonly evidenceLifecycleStore?: (stores: TenantStores, tenantId: string) => EvidenceLifecycleStore;
-  readonly evidenceKeyPolicy?: EvidencePlaintextAccessKeyPolicy & Pick<KeyManagementProvider, "revoke">;
+  readonly evidenceKeyPolicy?: EvidencePlaintextAccessKeyPolicy & Pick<KeyManagementProvider, "revoke"> & Partial<EvidenceScopedRevoker>;
   readonly missionSchedulingIds?: MissionSchedulingIds;
   readonly readiness?: () => ServerReadinessReport | Promise<ServerReadinessReport>;
 }

@@ -157,11 +157,11 @@ describe("shared relational schema catalog", () => {
     } finally { await runtime.close(); }
   });
 
-  it("adds migration-015 Evidence lifecycle columns without adding migration 016", async () => {
+  it("adds migration-015 Evidence lifecycle columns and durable KMS state without adding migration 016", async () => {
     expect(RELATIONAL_SCHEMA_VERSIONS.find(({ version }) => version === 15)).toEqual({
       version: 15,
       name: "evidence-lifecycle",
-      tables: [],
+      tables: ["self_hosted_kms_key_versions", "self_hosted_kms_capsule_revocations"],
     });
     expect(RELATIONAL_SCHEMA_VERSIONS.find(({ version }) => version === 16)).toBeUndefined();
     const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
@@ -169,6 +169,14 @@ describe("shared relational schema catalog", () => {
       expect(await tableColumns(runtime, "evidence_capsule_manifests")).toEqual(expect.arrayContaining([
         "lifecycle_state", "lifecycle_updated_at", "deleted_at", "last_lifecycle_error",
       ]));
+      expect(await tableColumns(runtime, "self_hosted_kms_key_versions")).toEqual([
+        "tenant_id", "scope_id", "key_id", "revision", "public_key_pem",
+        "wrapped_private_key_base64", "private_key_nonce_base64", "private_key_tag_base64",
+        "status", "created_at", "is_primary",
+      ]);
+      expect(await tableColumns(runtime, "self_hosted_kms_capsule_revocations")).toEqual([
+        "tenant_id", "capsule_id", "scope_id", "reason", "revoked_at",
+      ]);
     } finally { await runtime.close(); }
   });
 

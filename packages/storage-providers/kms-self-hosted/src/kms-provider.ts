@@ -85,12 +85,19 @@ export interface StoredKmsKeyVersion {
 
 /** Persistence port for wrapping-key versions (Postgres-backed in production). */
 export interface SelfHostedKmsKeyStore {
-  putVersion(version: StoredKmsKeyVersion): void;
-  listVersions(scopeId: string): readonly StoredKmsKeyVersion[];
-  getByKeyId(keyId: string): StoredKmsKeyVersion | undefined;
-  primaryVersion(scopeId: string): StoredKmsKeyVersion | undefined;
-  setPrimary(scopeId: string, keyId: string): void;
-  markScopeRevoked(scopeId: string): void;
+  putVersion(version: StoredKmsKeyVersion): void | Promise<void>;
+  listVersions(scopeId: string): readonly StoredKmsKeyVersion[] | Promise<readonly StoredKmsKeyVersion[]>;
+  getByKeyId(keyId: string, scopeId: string): StoredKmsKeyVersion | undefined | Promise<StoredKmsKeyVersion | undefined>;
+  primaryVersion(scopeId: string): StoredKmsKeyVersion | undefined | Promise<StoredKmsKeyVersion | undefined>;
+  setPrimary(scopeId: string, keyId: string): void | Promise<void>;
+  markScopeRevoked(scopeId: string): void | Promise<void>;
+  isCapsuleRevoked(scopeId: string, capsuleId: string): boolean | Promise<boolean>;
+  markCapsuleRevoked(input: {
+    readonly scopeId?: string;
+    readonly capsuleId: string;
+    readonly reason: string;
+    readonly occurredAt: string;
+  }): void | Promise<void>;
 }
 
 /** In-memory key store used for tests and single-process deployments. */
@@ -109,8 +116,10 @@ export class InMemoryKmsKeyStore implements SelfHostedKmsKeyStore {
     return this.byScope.get(scopeId) ?? [];
   }
 
-  getByKeyId(keyId: string): StoredKmsKeyVersion | undefined {
-    return this.byKeyId.get(keyId);
+  getByKeyId(keyId: string, scopeId?: string): StoredKmsKeyVersion | undefined {
+    const version = this.byKeyId.get(keyId);
+    if (version === undefined) return undefined;
+    return scopeId === undefined || version.scopeId === scopeId ? version : undefined;
   }
 
   primaryVersion(scopeId: string): StoredKmsKeyVersion | undefined {
@@ -129,6 +138,22 @@ export class InMemoryKmsKeyStore implements SelfHostedKmsKeyStore {
     for (const version of this.byScope.get(scopeId) ?? []) {
       version.status = "revoked";
     }
+  }
+
+  private readonly revokedCapsules = new Set<string>();
+
+  isCapsuleRevoked(scopeId: string, capsuleId: string): boolean {
+    return this.revokedCapsules.has(revocationKey(scopeId, capsuleId)) ||
+      this.revokedCapsules.has(revocationKey(undefined, capsuleId));
+  }
+
+  markCapsuleRevoked(input: {
+    readonly scopeId?: string;
+    readonly capsuleId: string;
+    readonly reason?: string;
+    readonly occurredAt?: string;
+  }): void {
+    this.revokedCapsules.add(revocationKey(input.scopeId, input.capsuleId));
   }
 
   /**
@@ -181,7 +206,6 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
   private readonly rootKey: Uint8Array;
   private readonly store: SelfHostedKmsKeyStore;
   private readonly audit: KmsAuditSink | undefined;
-  private readonly revokedCapsules = new Set<string>();
   private available = true;
   private readonly profile: Required<
     Omit<SelfHostedKmsOptions, "rootKey" | "keyStore" | "audit" | "now">
@@ -223,7 +247,7 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
     input: EvidenceKeyScope,
   ): Promise<EvidenceEncryptionProfile> {
     await this.assertAvailable("profile");
-    const version = this.ensurePrimaryVersion(input);
+    const version = await this.ensurePrimaryVersion(input);
     await this.emit("profile", "allowed", "profile_issued", input, version.keyId);
     return this.buildProfile(input, version);
   }
@@ -233,9 +257,15 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
     dek: Uint8Array,
   ): Promise<string> {
     await this.assertAvailable("wrap");
-    const version = this.store.getByKeyId(profile.wrappingKeyId);
+    const profileScope: EvidenceKeyScope = {
+      tenantId: profile.tenantId,
+      caseId: profile.caseId,
+      region: profile.region,
+      purpose: profile.purpose,
+    };
+    const version = await this.store.getByKeyId(profile.wrappingKeyId, scopeId(profileScope));
     if (version === undefined) {
-      throw await this.deny("wrap", "unknown_key", profile.wrappingKeyId);
+      throw await this.deny("wrap", "unknown_key", profile.wrappingKeyId, scopeId(profileScope));
     }
     if (version.status !== "active") {
       throw await this.revoked("wrap", version);
@@ -274,12 +304,15 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
     };
     const authenticatedScopeId = scopeId(scope);
     const capsuleId = input.manifest.protectedHeader.capsuleId;
-    if (this.revokedCapsules.has(capsuleId)) {
+    if (await this.store.isCapsuleRevoked(authenticatedScopeId, capsuleId)) {
       throw await this.revokedCapsule("unwrap", capsuleId, authenticatedScopeId);
     }
 
     const wrappingKeyId = input.manifest.protectedHeader.wrappingKeyId;
-    const version = this.store.getByKeyId(wrappingKeyId);
+    if (input.manifest.protectedHeader.policyId !== this.profile.policyId) {
+      throw await this.deny("unwrap", "policy_mismatch", wrappingKeyId, authenticatedScopeId, capsuleId);
+    }
+    const version = await this.store.getByKeyId(wrappingKeyId, authenticatedScopeId);
     // The key must belong to the AUTHENTICATED scope. A wrong scope selects no
     // key it is entitled to, so unwrap is impossible rather than merely denied.
     if (version === undefined || version.scopeId !== authenticatedScopeId) {
@@ -321,10 +354,13 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
       purpose: input.purpose,
     };
     const id = scopeId(scope);
-    if (this.revokedCapsules.has(input.capsuleId)) {
+    if (input.policyId !== this.profile.policyId) {
+      throw await this.deny("unwrap", "policy_mismatch", input.keyVersion, id, input.capsuleId);
+    }
+    if (await this.store.isCapsuleRevoked(id, input.capsuleId)) {
       throw await this.revokedCapsule("unwrap", input.capsuleId, id);
     }
-    const version = this.store.getByKeyId(input.keyVersion);
+    const version = await this.store.getByKeyId(input.keyVersion, id);
     if (version === undefined || version.scopeId !== id) {
       throw await this.deny("unwrap", "scope_mismatch", input.keyVersion, id, input.capsuleId);
     }
@@ -337,42 +373,61 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
   /** Append a new immutable key revision and make it the scope's primary. */
   async rotate(input: EvidenceKeyScope): Promise<EvidenceEncryptionProfile> {
     await this.assertAvailable("rotate");
-    const version = this.createVersion(input);
+    const version = await this.createVersion(input);
     await this.emit("rotate", "allowed", "key_rotated", input, version.keyId);
     return this.buildProfile(input, version);
   }
 
-  async revoke(capsuleId: string, _reason: string): Promise<void> {
+  async revoke(capsuleId: string, reason: string): Promise<void> {
     await this.assertAvailable("revoke");
-    this.revokedCapsules.add(capsuleId);
+    const occurredAt = this.profile.now();
+    await this.store.markCapsuleRevoked({ capsuleId, reason, occurredAt });
     await this.emitRaw({
       operation: "revoke",
       decision: "allowed",
       reasonCode: "capsule_revoked",
       capsuleId,
-      occurredAt: this.profile.now(),
+      occurredAt,
     });
+  }
+
+  async revokeForScope(input: EvidencePlaintextAccessCheck, reason: string): Promise<void> {
+    await this.assertAvailable("revoke");
+    const scope: EvidenceKeyScope = {
+      tenantId: input.tenantId,
+      caseId: input.caseId,
+      region: input.region,
+      purpose: input.purpose,
+    };
+    const occurredAt = this.profile.now();
+    await this.store.markCapsuleRevoked({
+      scopeId: scopeId(scope),
+      capsuleId: input.capsuleId,
+      reason,
+      occurredAt,
+    });
+    await this.emit("revoke", "allowed", "capsule_revoked", scope, input.keyVersion, input.capsuleId);
   }
 
   /** Revoke every wrapping-key version for a scope, disabling future unwraps. */
   async revokeScope(input: EvidenceKeyScope, _reason: string): Promise<void> {
     await this.assertAvailable("revoke");
     const id = scopeId(input);
-    this.store.markScopeRevoked(id);
+    await this.store.markScopeRevoked(id);
     await this.emit("revoke", "allowed", "scope_revoked", input);
   }
 
-  private ensurePrimaryVersion(scope: EvidenceKeyScope): StoredKmsKeyVersion {
-    const existing = this.store.primaryVersion(scopeId(scope));
+  private async ensurePrimaryVersion(scope: EvidenceKeyScope): Promise<StoredKmsKeyVersion> {
+    const existing = await this.store.primaryVersion(scopeId(scope));
     if (existing !== undefined) {
       return existing;
     }
     return this.createVersion(scope);
   }
 
-  private createVersion(scope: EvidenceKeyScope): StoredKmsKeyVersion {
+  private async createVersion(scope: EvidenceKeyScope): Promise<StoredKmsKeyVersion> {
     const id = scopeId(scope);
-    const revision = this.store.listVersions(id).length + 1;
+    const revision = (await this.store.listVersions(id)).length + 1;
     const { publicKey, privateKey } = generateKeyPairSync("rsa", {
       modulusLength: RSA_MODULUS_BITS,
     });
@@ -392,8 +447,8 @@ export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAc
       createdAt: this.profile.now(),
       isPrimary: true,
     };
-    this.store.putVersion(version);
-    this.store.setPrimary(id, version.keyId);
+    await this.store.putVersion(version);
+    await this.store.setPrimary(id, version.keyId);
     return version;
   }
 
@@ -593,6 +648,10 @@ function profileMatches(
     expected.contentEncryptionAlgorithm === actual.contentEncryptionAlgorithm &&
     expected.keyWrappingAlgorithm === actual.keyWrappingAlgorithm
   );
+}
+
+function revocationKey(scopeIdValue: string | undefined, capsuleId: string): string {
+  return `${scopeIdValue ?? "*"}\u0000${capsuleId}`;
 }
 
 function scopeId(scope: EvidenceKeyScope): string {

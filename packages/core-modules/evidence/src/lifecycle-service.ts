@@ -19,6 +19,7 @@ export interface EvidenceLifecycleRecord {
   readonly caseId: string;
   readonly region: string;
   readonly purpose: EvidencePurpose;
+  readonly policyId: string;
   readonly keyVersion: string;
   readonly state: EvidenceLifecycleState;
   readonly ciphertextPresent: boolean;
@@ -87,6 +88,7 @@ export interface EvidencePlaintextAccessCheck {
   readonly caseId: string;
   readonly region: string;
   readonly purpose: EvidencePurpose;
+  readonly policyId: string;
   readonly keyVersion: string;
   readonly capsuleId: string;
   readonly occurredAt: string;
@@ -96,10 +98,16 @@ export interface EvidencePlaintextAccessKeyPolicy {
   assertPlaintextAccess(input: EvidencePlaintextAccessCheck): Promise<void>;
 }
 
+export interface EvidenceScopedRevoker {
+  revokeForScope(input: EvidencePlaintextAccessCheck, reason: string): Promise<void>;
+}
+
 export interface AuthorizeEvidenceAccessInput {
   readonly capsuleId: string;
   readonly tenantId: string;
+  readonly caseId: string;
   readonly purpose: EvidencePurpose;
+  readonly policyId: string;
   readonly actor: EvidenceLifecycleActor;
   readonly occurredAt: string;
 }
@@ -134,6 +142,19 @@ export class EvidenceAccessService {
   }
 
   async authorizePlaintext(input: AuthorizeEvidenceAccessInput): Promise<AuthorizeEvidenceAccessResult> {
+    const record = await this.preparePlaintext(input);
+    await this.audit(record, input.actor, "unwrap", "allowed", "plaintext_access", input.occurredAt);
+    return { capsuleId: record.capsuleId, state: record.state, downloadAllowed: true };
+  }
+
+  /**
+   * Validates lifecycle, policy and KMS authority before a caller attempts to
+   * fetch bytes, but intentionally does not write the successful plaintext
+   * audit yet. The caller must call `recordPlaintextAccessAllowed` only after
+   * the bytes are actually available, so storage failures cannot create a false
+   * `unwrap:allowed:plaintext_access` trail.
+   */
+  async preparePlaintext(input: AuthorizeEvidenceAccessInput): Promise<EvidenceLifecycleRecord> {
     const record = await this.loadAndValidateScope(input);
     if (!this.isPlaintextAllowed(record, input.occurredAt)) {
       await this.audit(record, input.actor, "unwrap", "denied", this.denialReason(record, input.occurredAt), input.occurredAt);
@@ -148,6 +169,7 @@ export class EvidenceAccessService {
         caseId: record.caseId,
         region: record.region,
         purpose: record.purpose,
+        policyId: record.policyId,
         keyVersion: record.keyVersion,
         capsuleId: record.capsuleId,
         occurredAt: input.occurredAt,
@@ -158,6 +180,21 @@ export class EvidenceAccessService {
         "EvidenceAccessUnavailable",
         `Evidence KMS access failed for capsule ${input.capsuleId}; refusing plaintext fallback.`,
         { cause },
+      );
+    }
+    return record;
+  }
+
+  async recordPlaintextAccessAllowed(
+    input: AuthorizeEvidenceAccessInput,
+    preparedRecord: EvidenceLifecycleRecord,
+  ): Promise<AuthorizeEvidenceAccessResult> {
+    const record = await this.preparePlaintext(input);
+    if (record.keyVersion !== preparedRecord.keyVersion) {
+      await this.audit(record, input.actor, "unwrap", "denied", "EvidenceKeyChanged", input.occurredAt);
+      throw new EvidenceLifecycleError(
+        "EvidenceAccessDenied",
+        `Evidence capsule ${input.capsuleId} changed before plaintext access could be audited.`,
       );
     }
     await this.audit(record, input.actor, "unwrap", "allowed", "plaintext_access", input.occurredAt);
@@ -181,7 +218,12 @@ export class EvidenceAccessService {
         `Evidence capsule ${input.capsuleId} does not exist.`,
       );
     }
-    if (record.tenantId !== input.tenantId || record.purpose !== input.purpose) {
+    if (
+      record.tenantId !== input.tenantId ||
+      record.caseId !== input.caseId ||
+      record.purpose !== input.purpose ||
+      record.policyId !== input.policyId
+    ) {
       await this.audit(record, input.actor, "unwrap", "denied", "EvidenceScopeMismatch", input.occurredAt);
       throw new EvidenceLifecycleError(
         "EvidenceAccessDenied",
@@ -250,7 +292,7 @@ export class EvidenceAccessService {
 export class EvidenceLifecycleService {
   constructor(
     private readonly store: EvidenceLifecycleStore,
-    private readonly kms: Pick<KeyManagementProvider, "revoke">,
+    private readonly kms: Pick<KeyManagementProvider, "revoke"> & Partial<EvidenceScopedRevoker>,
   ) {}
 
   async deleteEvidence(input: DeleteEvidenceInput): Promise<DeleteEvidenceResult> {
@@ -267,7 +309,20 @@ export class EvidenceLifecycleService {
 
     if (current.state === "revoking") {
       try {
-        await this.kms.revoke(input.capsuleId, input.reason);
+        if (typeof this.kms.revokeForScope === "function") {
+          await this.kms.revokeForScope({
+            tenantId: current.tenantId,
+            caseId: current.caseId,
+            region: current.region,
+            purpose: current.purpose,
+            policyId: current.policyId,
+            keyVersion: current.keyVersion,
+            capsuleId: current.capsuleId,
+            occurredAt: input.occurredAt,
+          }, input.reason);
+        } else {
+          await this.kms.revoke(input.capsuleId, input.reason);
+        }
       } catch (cause) {
         await this.audit(current, input.actor, "revoke", "failed", "EvidenceRevocationFailed", input.occurredAt);
         throw new EvidenceLifecycleError(

@@ -17,6 +17,7 @@ const baseRecord: EvidenceLifecycleRecord = {
   caseId: "case-1",
   region: "self-hosted",
   purpose: "investigation",
+  policyId: "policy-1",
   keyVersion: "key-1",
   state: "active",
   ciphertextPresent: true,
@@ -106,7 +107,9 @@ describe("EvidenceAccessService", () => {
     await expect(access.authorizeMetadata({
       capsuleId: "capsule-1",
       tenantId: "tenant-a",
+      caseId: "case-1",
       purpose: "investigation",
+      policyId: "policy-1",
       actor,
       occurredAt: "2026-08-01T00:00:00.000Z",
     })).resolves.toMatchObject({ downloadAllowed: true });
@@ -123,7 +126,9 @@ describe("EvidenceAccessService", () => {
     await expect(access.authorizeMetadata({
       capsuleId: "capsule-1",
       tenantId: "tenant-a",
+      caseId: "case-1",
       purpose: "investigation",
+      policyId: "policy-1",
       actor,
       occurredAt: "2026-08-01T00:00:00.000Z",
     })).rejects.toMatchObject({ code: "EvidenceAuditUnavailable" });
@@ -136,13 +141,74 @@ describe("EvidenceAccessService", () => {
     await expect(access.authorizePlaintext({
       capsuleId: "capsule-1",
       tenantId: "tenant-a",
+      caseId: "case-1",
       purpose: "investigation",
+      policyId: "policy-1",
       actor,
       occurredAt: "2026-08-01T00:00:00.000Z",
     })).resolves.toMatchObject({ downloadAllowed: true });
     expect(keyPolicy.calls).toBe(1);
     expect(store.audits.map((event) => `${event.operation}:${event.decision}:${event.reasonCode}`)).toEqual([
       "unwrap:allowed:plaintext_access",
+    ]);
+  });
+
+  it("defers the successful plaintext audit until the caller confirms bytes were read", async () => {
+    const store = new MemoryLifecycleStore();
+    const keyPolicy = new AccessKeyPolicy();
+    const access = new EvidenceAccessService(store, keyPolicy);
+    const prepared = await access.preparePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      caseId: "case-1",
+      purpose: "investigation",
+      policyId: "policy-1",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    });
+    expect(prepared).toMatchObject({ capsuleId: "capsule-1", state: "active" });
+    expect(keyPolicy.calls).toBe(1);
+    expect(store.audits).toEqual([]);
+
+    await expect(access.recordPlaintextAccessAllowed({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      caseId: "case-1",
+      purpose: "investigation",
+      policyId: "policy-1",
+      actor,
+      occurredAt: "2026-08-01T00:00:01.000Z",
+    }, prepared)).resolves.toMatchObject({ downloadAllowed: true });
+    expect(keyPolicy.calls).toBe(2);
+    expect(store.audits.map((event) => `${event.operation}:${event.decision}:${event.reasonCode}`)).toEqual([
+      "unwrap:allowed:plaintext_access",
+    ]);
+  });
+
+  it("denies plaintext when case or policy does not match the caller constraints", async () => {
+    const store = new MemoryLifecycleStore();
+    const access = new EvidenceAccessService(store, new AccessKeyPolicy());
+    await expect(access.authorizePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      caseId: "case-other",
+      purpose: "investigation",
+      policyId: "policy-1",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toMatchObject({ code: "EvidenceAccessDenied" });
+    await expect(access.authorizePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      caseId: "case-1",
+      purpose: "investigation",
+      policyId: "policy-other",
+      actor,
+      occurredAt: "2026-08-01T00:00:01.000Z",
+    })).rejects.toMatchObject({ code: "EvidenceAccessDenied" });
+    expect(store.audits.map((event) => `${event.operation}:${event.decision}:${event.reasonCode}`)).toEqual([
+      "unwrap:denied:EvidenceScopeMismatch",
+      "unwrap:denied:EvidenceScopeMismatch",
     ]);
   });
 
@@ -154,7 +220,9 @@ describe("EvidenceAccessService", () => {
     await expect(access.authorizePlaintext({
       capsuleId: "capsule-1",
       tenantId: "tenant-a",
+      caseId: "case-1",
       purpose: "investigation",
+      policyId: "policy-1",
       actor,
       occurredAt: "2026-08-01T00:00:00.000Z",
     })).rejects.toMatchObject({ code: "EvidenceAccessUnavailable" });
@@ -167,7 +235,9 @@ describe("EvidenceAccessService", () => {
     await expect(revokedAccess.authorizePlaintext({
       capsuleId: "capsule-1",
       tenantId: "tenant-a",
+      caseId: "case-1",
       purpose: "investigation",
+      policyId: "policy-1",
       actor,
       occurredAt: "2026-08-01T00:00:00.000Z",
     })).rejects.toMatchObject({ code: "EvidenceAccessDenied" });

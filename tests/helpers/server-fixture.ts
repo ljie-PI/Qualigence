@@ -15,7 +15,7 @@ import { LocalSkillSigner } from "@qualigence/kms-local";
 import { SelfHostedKms } from "@qualigence/kms-self-hosted";
 import type { Clock } from "@qualigence/shared-kernel";
 import type { SkillSigner } from "@qualigence/skill";
-import type { EvidenceLifecycleStore } from "@qualigence/evidence";
+import type { ArtifactStore, EvidenceLifecycleStore } from "@qualigence/evidence";
 import {
   bootstrapServerDatabase,
   buildServer,
@@ -49,6 +49,7 @@ export interface ServerFixture {
   readonly artifactDataDir: string;
   readonly evidenceKms: SelfHostedKms;
   setEvidenceAuditAvailable(available: boolean): void;
+  setArtifactDeleteAvailable(available: boolean): void;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
   stop(): Promise<void>;
@@ -113,6 +114,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
   const skillSigner = LocalSkillSigner.generate();
   const evidenceKms = new SelfHostedKms({ rootKey: new Uint8Array(randomBytes(32)), now: fixedClock.now });
   let evidenceAuditAvailable = true;
+  let artifactDeleteAvailable = true;
   const evidenceLifecycleStore = (stores: TenantStores, tenantId: string): EvidenceLifecycleStore => {
     const store = new PostgresEvidenceLifecycleStore(stores.db, tenantId);
     return {
@@ -137,10 +139,23 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caCertificatePem: ca.certPem,
     clock: fixedClock,
     skillSigner,
-    artifactStore: ({ tenantId, projectId }) => new LocalArtifactStore(
-      projectId === undefined ? join(artifactDataDir, tenantId) : join(artifactDataDir, tenantId, projectId),
-      fixedClock,
-    ),
+    artifactStore: ({ tenantId, projectId }) => {
+      const store = new LocalArtifactStore(
+        projectId === undefined ? join(artifactDataDir, tenantId) : join(artifactDataDir, tenantId, projectId),
+        fixedClock,
+      );
+      return {
+        write: (request) => store.write(request),
+        read: (manifest) => store.read(manifest),
+        verify: (manifest) => store.verify(manifest),
+        delete: (manifest) => {
+          if (!artifactDeleteAvailable) {
+            throw new Error("injected artifact delete failure");
+          }
+          return store.delete(manifest);
+        },
+      } satisfies ArtifactStore;
+    },
     evidenceLifecycleStore,
     evidenceKeyPolicy: evidenceKms,
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
@@ -189,6 +204,9 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     evidenceKms,
     setEvidenceAuditAvailable(available: boolean) {
       evidenceAuditAvailable = available;
+    },
+    setArtifactDeleteAvailable(available: boolean) {
+      artifactDeleteAvailable = available;
     },
     token,
     async stop() {

@@ -124,7 +124,7 @@ describe("SelfHostedKms", () => {
   it("stores no plaintext private key material at rest", async () => {
     const { kms, store } = newKms();
     const profile = await kms.encryptionProfile(scopeA);
-    const versions = store.listVersions("tenant-a|case-1|eu|investigation");
+    const versions = await store.listVersions("tenant-a|case-1|eu|investigation");
     expect(versions).toHaveLength(1);
     const version = versions[0]!;
     expect(version.keyId).toBe(profile.wrappingKeyId);
@@ -209,15 +209,15 @@ describe("SelfHostedKms", () => {
     const v1 = await kms.encryptionProfile(scopeA);
     const dek1 = new Uint8Array(randomBytes(32));
     const wrapped1 = await kms.wrapDek(v1, dek1);
-    const before = store.getByKeyId(v1.wrappingKeyId)!;
+    const before = (await store.getByKeyId(v1.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!;
 
     const v2 = await kms.rotate(scopeA);
     expect(v2.wrappingKeyId).not.toBe(v1.wrappingKeyId);
 
-    const after = store.getByKeyId(v1.wrappingKeyId)!;
+    const after = (await store.getByKeyId(v1.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!;
     expect(after.wrappedPrivateKeyBase64).toBe(before.wrappedPrivateKeyBase64);
     expect(after.revision).toBe(1);
-    expect(store.getByKeyId(v2.wrappingKeyId)!.revision).toBe(2);
+    expect((await store.getByKeyId(v2.wrappingKeyId, "tenant-a|case-1|eu|investigation"))!.revision).toBe(2);
 
     const current = await kms.encryptionProfile(scopeA);
     expect(current.wrappingKeyId).toBe(v2.wrappingKeyId);
@@ -294,6 +294,7 @@ describe("SelfHostedKms", () => {
       caseId: scopeA.caseId,
       region: scopeA.region,
       purpose: scopeA.purpose,
+      policyId: "evidence-policy/self-hosted-v1",
       keyVersion: profile.wrappingKeyId,
       capsuleId: "capsule-audit",
       occurredAt: "2026-08-01T00:00:00.000Z",

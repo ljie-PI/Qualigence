@@ -1005,6 +1005,9 @@ importers:
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../../core-modules/intelligence
+      '@qualigence/kms-self-hosted':
+        specifier: workspace:*
+        version: link:../kms-self-hosted
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../core-modules/mission

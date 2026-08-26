@@ -68,4 +68,5 @@ export type {
   EvidenceLifecycleTransitionResult,
   EvidencePlaintextAccessCheck,
   EvidencePlaintextAccessKeyPolicy,
+  EvidenceScopedRevoker,
 } from "./lifecycle-service.js";

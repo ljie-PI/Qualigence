@@ -259,10 +259,20 @@ services:
       SERVER_RUNNER_GRPC_TLS_CERT_FILE: /run/secrets/runner_server_cert
       SERVER_RUNNER_GRPC_TLS_KEY_FILE: /run/secrets/runner_server_key
       SERVER_OBJECT_STORAGE_READY_URL: http://minio:9000/minio/health/ready
+      SERVER_S3_ENDPOINT: http://minio:9000
+      SERVER_S3_REGION: us-east-1
+      SERVER_S3_BUCKET: qualigence-artifacts
+      SERVER_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id
+      SERVER_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key
+      SERVER_S3_FORCE_PATH_STYLE: "true"
+      SERVER_KMS_ROOT_KEY_BASE64_FILE: /run/secrets/kms_root_key
       SERVER_ARTIFACT_DATA_DIR: /var/lib/qualigence/artifacts
       SERVER_SKILL_SIGNING_DATA_DIR: /var/lib/qualigence/skill-signing
     secrets:
       - pg_server_password
+      - s3_access_key_id
+      - s3_secret_access_key
+      - kms_root_key
       - oidc_jwks
       - oidc_claim_map
       - runner_ca_cert

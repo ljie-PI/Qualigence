@@ -11,7 +11,7 @@ Required files:
 - `pg_worker_password`
 - `s3_access_key_id`
 - `s3_secret_access_key`
-- `kms_root_key`
+- `kms_root_key` (32-byte KMS root key encoded as base64; the Admin CLI also tolerates raw or hex during maintenance)
 - `oidc_jwks.json`
 - `oidc_claim_map.json`
 - `runner_ca_cert.pem`
