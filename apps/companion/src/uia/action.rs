@@ -293,7 +293,30 @@ where
         )
         .map_err(DesktopActionError::Uia);
     prepared.clear_plaintext();
+    if outcome.is_ok() {
+        if cancellation.is_cancelled() || companion_is_emergency_stopped(companion)? {
+            return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
+        }
+    }
     outcome
+}
+
+fn companion_is_emergency_stopped<C, A>(
+    companion: &Arc<Mutex<Companion<C, A>>>,
+) -> Result<bool, DesktopActionError>
+where
+    C: Clock,
+    A: Approver,
+{
+    companion
+        .lock()
+        .map(|companion| {
+            matches!(
+                companion.state(),
+                crate::emergency_stop::ControlState::EmergencyStopped
+            )
+        })
+        .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))
 }
 
 fn cancellation_error_before_permit<C, A>(

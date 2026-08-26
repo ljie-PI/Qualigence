@@ -665,7 +665,19 @@ fn run_daemon() {
                             Err(WorkerError::Timeout) => Err(UiaError::TargetUnresponsive),
                             Err(WorkerError::Cancelled) => Err(UiaError::EmergencyStopped),
                             Err(_) => Err(UiaError::WorkerUnavailable),
-                        };
+                        }
+                        .and_then(|source| {
+                            if cancellation.is_cancelled() {
+                                return Err(UiaError::EmergencyStopped);
+                            }
+                            companion
+                                .lock()
+                                .map_err(|_| UiaError::WorkerUnavailable)
+                                .and_then(|companion| {
+                                    ensure_companion_accepts_uia_work(&*companion)
+                                })?;
+                            Ok(source)
+                        });
                     let _ = match capture_result {
                         Ok(source) => writer.write_ok(
                             &request_id,
