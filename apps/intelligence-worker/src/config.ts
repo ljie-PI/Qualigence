@@ -24,6 +24,10 @@ export interface IntelligenceWorkerConfig {
     readonly apiKey: string;
     readonly modelName: string;
   };
+  readonly health: {
+    readonly host: string;
+    readonly port: number;
+  };
   readonly leaseDurationMs: number;
   readonly idleBackoffMs: number;
 }
@@ -36,13 +40,25 @@ function required(name: string, env: NodeJS.ProcessEnv): string {
   return value;
 }
 
-function fromFileOrValue(name: string, env: NodeJS.ProcessEnv): string {
+function optionalFromFileOrValue(name: string, env: NodeJS.ProcessEnv): string | undefined {
   const fileVar = `${name}_FILE`;
   const filePath = env[fileVar];
   if (filePath !== undefined && filePath.length > 0) {
     return readFileSync(filePath, "utf8").trim();
   }
-  return required(name, env);
+  const value = env[name];
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
+function fromFileOrValue(name: string, env: NodeJS.ProcessEnv): string {
+  return optionalFromFileOrValue(name, env) ?? required(name, env);
+}
+
+function positiveInteger(raw: string, name: string, maximum: number): number {
+  if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(`${name} must be a positive integer.`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > maximum) throw new Error(`${name} exceeds its maximum.`);
+  return value;
 }
 
 /**
@@ -55,7 +71,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): Intellig
     workerId: env.WORKER_ID ?? `worker-${process.pid}`,
     postgres: {
       host: required("WORKER_PG_HOST", env),
-      port: Number.parseInt(env.WORKER_PG_PORT ?? "5432", 10),
+      port: positiveInteger(env.WORKER_PG_PORT ?? "5432", "WORKER_PG_PORT", 65_535),
       database: required("WORKER_PG_DATABASE", env),
       user: required("WORKER_PG_USER", env),
       password: fromFileOrValue("WORKER_PG_PASSWORD", env),
@@ -74,7 +90,11 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): Intellig
       apiKey: fromFileOrValue("WORKER_MODEL_API_KEY", env),
       modelName: required("WORKER_MODEL_NAME", env),
     },
-    leaseDurationMs: Number.parseInt(env.WORKER_LEASE_DURATION_MS ?? "60000", 10),
-    idleBackoffMs: Number.parseInt(env.WORKER_IDLE_BACKOFF_MS ?? "1000", 10),
+    health: {
+      host: env.WORKER_HEALTH_HOST ?? "127.0.0.1",
+      port: positiveInteger(env.WORKER_HEALTH_PORT ?? "8081", "WORKER_HEALTH_PORT", 65_535),
+    },
+    leaseDurationMs: positiveInteger(env.WORKER_LEASE_DURATION_MS ?? "60000", "WORKER_LEASE_DURATION_MS", 300_000),
+    idleBackoffMs: positiveInteger(env.WORKER_IDLE_BACKOFF_MS ?? "1000", "WORKER_IDLE_BACKOFF_MS", 60_000),
   };
 }

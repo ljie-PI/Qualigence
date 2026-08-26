@@ -20,7 +20,7 @@ const ROLE_SATISFIES: Readonly<Record<PublicApiRole, readonly PublicApiRole[]>> 
  */
 export class RbacAuthorizer {
   satisfies(principal: RequestPrincipal, required: PublicApiRole): boolean {
-    return principal.roles.some((role) => ROLE_SATISFIES[role].includes(required));
+    return principal.roles.some((role) => ROLE_SATISFIES[role]?.includes(required) === true);
   }
 
   require(principal: RequestPrincipal, required: PublicApiRole): void {

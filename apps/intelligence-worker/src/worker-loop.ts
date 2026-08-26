@@ -34,6 +34,17 @@ export const systemClock: Clock = {
 
 export type WorkerStepOutcome = "processed" | "idle" | "failed" | "aborted";
 
+export interface WorkerLoopReadiness {
+  readonly status: "ready" | "not-ready";
+  readonly active: boolean;
+  readonly aborted: boolean;
+  readonly inFlight: boolean;
+  readonly lastOutcome?: WorkerStepOutcome;
+  readonly consecutiveFailures: number;
+  readonly lastProgressAt?: string;
+  readonly lastError?: string;
+}
+
 const MINIMUM_RENEWAL_DELAY_MS = 1;
 
 export interface WorkerLoopConfig {
@@ -57,15 +68,47 @@ export interface WorkerLoopConfig {
  */
 export class WorkerLoop {
   private readonly clock: Clock;
+  private active = false;
+  private inFlight = false;
+  private lastOutcome: WorkerStepOutcome | undefined;
+  private consecutiveFailures = 0;
+  private lastProgressAt: string | undefined;
+  private lastError: string | undefined;
 
   constructor(private readonly config: WorkerLoopConfig) {
     this.clock = config.clock ?? systemClock;
   }
 
+  readiness(): WorkerLoopReadiness {
+    const aborted = this.active ? false : this.lastOutcome === "aborted";
+    const observedSuccessfulCycle = this.lastOutcome === "idle" || this.lastOutcome === "processed";
+    const status = this.active && observedSuccessfulCycle && this.lastError === undefined ? "ready" : "not-ready";
+    return {
+      status,
+      active: this.active,
+      aborted,
+      inFlight: this.inFlight,
+      ...(this.lastOutcome === undefined ? {} : { lastOutcome: this.lastOutcome }),
+      consecutiveFailures: this.consecutiveFailures,
+      ...(this.lastProgressAt === undefined ? {} : { lastProgressAt: this.lastProgressAt }),
+      ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
+    };
+  }
+
   async runOnce(signal?: AbortSignal): Promise<WorkerStepOutcome> {
     if (signal?.aborted === true) {
+      this.recordOutcome("aborted");
       return "aborted";
     }
+    this.inFlight = true;
+    try {
+      return await this.runStep(signal);
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async runStep(signal?: AbortSignal): Promise<WorkerStepOutcome> {
     const leased = await this.config.store.lease({
       workerId: this.config.workerId,
       acceptedTypes: this.config.acceptedTypes,
@@ -73,6 +116,7 @@ export class WorkerLoop {
       leaseDurationMs: this.config.leaseDurationMs,
     });
     if (leased === undefined) {
+      this.recordOutcome("idle");
       return "idle";
     }
 
@@ -93,6 +137,7 @@ export class WorkerLoop {
         baseAggregateVersion: job.baseAggregateVersion,
         result,
       });
+      this.recordOutcome("processed");
       return "processed";
     } catch (error) {
       const currentLease = await renewals.stop().catch(() => lease);
@@ -104,9 +149,13 @@ export class WorkerLoop {
         workerId: this.config.workerId,
       });
       if (Boolean(signal?.aborted)) {
+        this.recordOutcome("aborted");
         return "aborted";
       }
+      this.lastError = errorMessage(error);
+      this.consecutiveFailures += 1;
       this.config.onError?.(error);
+      this.recordOutcome("failed", false);
       return "failed";
     }
   }
@@ -155,14 +204,38 @@ export class WorkerLoop {
   }
 
   async run(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      const outcome = await this.runOnce(signal);
-      if (signal.aborted) {
-        return;
+    this.active = true;
+    this.lastOutcome = undefined;
+    this.lastProgressAt = undefined;
+    this.lastError = undefined;
+    this.consecutiveFailures = 0;
+    try {
+      while (!signal.aborted) {
+        const outcome = await this.runOnce(signal);
+        if (signal.aborted) {
+          this.recordOutcome("aborted");
+          return;
+        }
+        if (outcome === "idle") {
+          await this.clock.sleep(this.config.idleBackoffMs, signal);
+        }
       }
-      if (outcome === "idle") {
-        await this.clock.sleep(this.config.idleBackoffMs, signal);
-      }
+      this.recordOutcome("aborted");
+    } finally {
+      this.active = false;
     }
   }
+
+  private recordOutcome(outcome: WorkerStepOutcome, healthy = true): void {
+    this.lastOutcome = outcome;
+    if (healthy) {
+      this.lastProgressAt = this.clock.now();
+      this.lastError = undefined;
+      this.consecutiveFailures = 0;
+    }
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

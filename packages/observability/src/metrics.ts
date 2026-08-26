@@ -7,24 +7,48 @@ export type MetricLabels = Record<string, string>;
  */
 const DISALLOWED_LABELS: readonly string[] = [
   "url",
+  "uri",
   "query",
   "prompt",
   "usertext",
-  "user_text",
+  "plaintext",
   "artifactid",
-  "artifact_id",
+  "artifactkey",
+  "capsuleid",
+  "traceid",
+  "eventid",
+  "runid",
+  "missionid",
+  "projectid",
+  "userid",
+  "subject",
+  "email",
   "token",
+  "authorization",
+  "cookie",
   "secret",
   "password",
+  "apikey",
   "path",
 ];
 
+const SECRET_VALUE = /(?:^|[?&\s])(?:password|passwd|secret|token|api[_-]?key|authorization|cookie)=/i;
+const JWT_VALUE = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
+const MAX_LABEL_VALUE_LENGTH = 80;
+
 function assertLabels(labels: MetricLabels): void {
-  for (const name of Object.keys(labels)) {
-    if (DISALLOWED_LABELS.includes(name.toLowerCase())) {
+  for (const [name, value] of Object.entries(labels)) {
+    if (DISALLOWED_LABELS.includes(normalizeLabelName(name))) {
       throw new Error(`disallowed metric label: ${name}`);
     }
+    if (value.length > MAX_LABEL_VALUE_LENGTH || value.includes("?") || SECRET_VALUE.test(value) || JWT_VALUE.test(value)) {
+      throw new Error(`disallowed metric label value for ${name}`);
+    }
   }
+}
+
+function normalizeLabelName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function seriesKey(labels: MetricLabels): string {

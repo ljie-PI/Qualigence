@@ -1,5 +1,5 @@
 export { WorkerLoop, systemClock } from "./worker-loop.js";
-export type { Clock, WorkerLoopConfig, WorkerStepOutcome } from "./worker-loop.js";
+export type { Clock, WorkerLoopConfig, WorkerLoopReadiness, WorkerStepOutcome } from "./worker-loop.js";
 export { JobProcessingError } from "./job-processor.js";
 export type { JobProcessor, JobProcessingErrorCode } from "./job-processor.js";
 export { InvestigationJobProcessor } from "./investigation-job-processor.js";
@@ -8,3 +8,5 @@ export { S3ContextSource } from "./s3-context-source.js";
 export type { S3ContextSourceConfig } from "./s3-context-source.js";
 export { loadWorkerConfig } from "./config.js";
 export type { IntelligenceWorkerConfig } from "./config.js";
+export { WorkerHealthServer } from "./health-server.js";
+export type { WorkerHealthServerOptions, WorkerReadinessCheck, WorkerReadinessReport } from "./health-server.js";

@@ -2,8 +2,10 @@ import {
   ClaimMapper,
   OidcAuthenticator,
   RbacAuthorizer,
+  RemoteJwksResolver,
   StaticJwksResolver,
   signingKeyFromPem,
+  type JwksResolver,
   type OidcAlgorithm,
   type OidcSigningKey,
 } from "@qualigence/oidc";
@@ -11,6 +13,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { createS3ArtifactClient, S3ArtifactStore } from "@qualigence/artifact-s3";
+import type { ArtifactStore } from "@qualigence/evidence";
 import { SelfHostedKms } from "@qualigence/kms-self-hosted";
 import { pathToFileURL } from "node:url";
 import { sql } from "kysely";
@@ -52,11 +55,12 @@ interface JwksEntry {
 }
 
 const systemClock: Clock = { now: () => new Date().toISOString() };
+const READINESS_PROBE_TIMEOUT_MS = 2_000;
 
 type ArtifactStoreFactory = (scope: {
   readonly tenantId: string;
   readonly projectId?: string;
-}) => LocalArtifactStore | S3ArtifactStore;
+}) => ArtifactStore;
 
 function artifactStoreFactory(config: ServerConfig, clock: Clock): ArtifactStoreFactory {
   if (config.artifactS3 !== undefined) {
@@ -77,6 +81,30 @@ function artifactStoreFactory(config: ServerConfig, clock: Clock): ArtifactStore
   );
 }
 
+function buildJwksResolver(config: ServerConfig): JwksResolver {
+  const jwksConfig = config.oidc.jwks ?? (config.oidc.jwksJson === undefined
+    ? undefined
+    : { kind: "static" as const, jwksJson: config.oidc.jwksJson });
+  if (jwksConfig === undefined) {
+    throw new Error("OIDC JWKS configuration is required");
+  }
+  if (jwksConfig.kind === "remote") {
+    return new RemoteJwksResolver({
+      jwksUri: jwksConfig.jwksUri,
+      allowedAlgorithms: config.oidc.allowedAlgorithms,
+      timeoutMs: jwksConfig.timeoutMs,
+      cacheTtlMs: jwksConfig.cacheTtlMs,
+      rotationCooldownMs: jwksConfig.rotationCooldownMs,
+      clock: systemClock,
+    });
+  }
+  const jwksEntries = JSON.parse(jwksConfig.jwksJson) as readonly JwksEntry[];
+  const keys: OidcSigningKey[] = jwksEntries.map((entry) =>
+    signingKeyFromPem(entry.kid, entry.alg, entry.publicKeyPem),
+  );
+  return new StaticJwksResolver(keys);
+}
+
 /** Boot the Public API Server: wire OIDC/RBAC, PostgreSQL runtime, and the Runner CA. */
 export async function main(
   env: NodeJS.ProcessEnv = process.env,
@@ -86,16 +114,13 @@ export async function main(
   const config = loadConfig(env);
   await assertSchema(config.postgres, config.postgres.user);
 
-  const jwksEntries = JSON.parse(config.oidc.jwksJson) as readonly JwksEntry[];
-  const keys: OidcSigningKey[] = jwksEntries.map((entry) =>
-    signingKeyFromPem(entry.kid, entry.alg, entry.publicKeyPem),
-  );
+  const jwks = buildJwksResolver(config);
 
   const oidc = new OidcAuthenticator({
     issuer: config.oidc.issuer,
     audience: config.oidc.audience,
     allowedAlgorithms: config.oidc.allowedAlgorithms,
-    jwks: new StaticJwksResolver(keys),
+    jwks,
     clock: systemClock,
     claimMapper: new ClaimMapper(config.oidc.claimMapper),
   });
@@ -207,9 +232,11 @@ export async function main(
     readiness: () => readinessReport({
       config,
       provider,
+      artifactStore,
       runnerGrpcReady,
       missionDispatchLoops,
       resultConsumerLoop,
+      jwks,
     }),
   };
 
@@ -266,25 +293,24 @@ export async function main(
   }
 }
 
-interface ReadinessInput {
+export interface ReadinessInput {
   readonly config: ServerConfig;
   readonly provider: ReturnType<typeof createPostgresRuntime>;
+  readonly artifactStore: ArtifactStoreFactory;
   readonly runnerGrpcReady: boolean;
   readonly missionDispatchLoops: readonly MissionDispatchLoop[];
   readonly resultConsumerLoop: IntelligenceResultConsumerLoop;
+  readonly jwks: JwksResolver;
+  readonly objectStorageProbeTimeoutMs?: number;
 }
 
-async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
+export async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
   const checks: ServerReadinessCheck[] = [];
   checks.push(await postgresCheck(input));
-  checks.push(await objectStorageCheck(input.config.objectStorageReadinessUrl));
+  checks.push(await objectStorageCheck(input.config, input.artifactStore, input.objectStorageProbeTimeoutMs));
   checks.push(await artifactDataPlaneCheck(input.config.artifactDataDir));
   checks.push(kmsCheck(input.config));
-  checks.push({
-    name: "oidc_jwks",
-    status: "pass",
-    safeMessage: "OIDC issuer, audience and JWKS were loaded at startup",
-  });
+  checks.push(await oidcJwksCheck(input.jwks));
   checks.push(runnerGrpcCheck(input.config.runnerGrpc?.enabled === true, input.runnerGrpcReady));
   checks.push(missionDispatchCheck(input.config.missionDispatch?.enabled === true, input.missionDispatchLoops));
   checks.push(intelligenceResultConsumerCheck(input.config.intelligenceResultConsumer.enabled, input.resultConsumerLoop.readiness()));
@@ -309,14 +335,29 @@ async function postgresCheck(input: ReadinessInput): Promise<ServerReadinessChec
   }
 }
 
-async function objectStorageCheck(readinessUrl: string | undefined): Promise<ServerReadinessCheck> {
-  if (readinessUrl === undefined) {
+async function objectStorageCheck(
+  config: ServerConfig,
+  artifactStore: ArtifactStoreFactory,
+  timeoutMs = READINESS_PROBE_TIMEOUT_MS,
+): Promise<ServerReadinessCheck> {
+  if (config.artifactS3 !== undefined) {
+    try {
+      await probeArtifactStore(artifactStore({
+        tenantId: config.missionDispatch?.tenantIds[0] ?? config.oidc.claimMapper.allowedTenants[0] ?? "readiness",
+        projectId: "readiness",
+      }), "server", { timeoutMs });
+      return { name: "object_storage", status: "pass", safeMessage: "S3 artifact data-plane is writable and readable" };
+    } catch (error) {
+      return fail("object_storage", "Unavailable", "S3 artifact data-plane probe failed", { error: errorMessage(error) });
+    }
+  }
+  if (config.objectStorageReadinessUrl === undefined) {
     return fail("object_storage", "NotConfigured", "object storage readiness URL is not configured");
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(readinessUrl, { signal: controller.signal });
+    const response = await fetch(config.objectStorageReadinessUrl, { signal: controller.signal });
     if (!response.ok) {
       return fail("object_storage", "Unavailable", "object storage readiness endpoint is not healthy", { status: response.status });
     }
@@ -325,6 +366,67 @@ async function objectStorageCheck(readinessUrl: string | undefined): Promise<Ser
     return fail("object_storage", "Unavailable", "object storage readiness endpoint failed", { error: errorMessage(error) });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export interface ArtifactStoreProbeOptions {
+  readonly timeoutMs?: number;
+}
+
+export async function probeArtifactStore(
+  store: ArtifactStore,
+  owner: "server" | "worker",
+  options: ArtifactStoreProbeOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? READINESS_PROBE_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const withProbeDeadline = <T>(operation: string, promise: Promise<T>): Promise<T> =>
+    withReadinessDeadline(promise, operation, deadline, timeoutMs);
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const expected = Buffer.from(`qualigence-${owner}-object-storage-readiness`, "utf8");
+  const manifest = await withProbeDeadline("write", store.write({
+    artifactId: `readiness-${token}`,
+    runId: `readiness-${owner}`,
+    name: "object-storage-readiness.txt",
+    kind: "other",
+    mediaType: "text/plain; charset=utf-8",
+    bytes: expected,
+  }));
+  try {
+    const actual = await withProbeDeadline("read", store.read(manifest));
+    if (!Buffer.from(actual).equals(expected)) {
+      throw new Error("object storage readiness probe read different bytes");
+    }
+    if (!(await withProbeDeadline("verify", store.verify(manifest)))) {
+      throw new Error("object storage readiness probe verification failed");
+    }
+  } finally {
+    if (store.delete !== undefined) {
+      await withProbeDeadline("delete", store.delete(manifest));
+    }
+  }
+}
+
+async function withReadinessDeadline<T>(
+  promise: Promise<T>,
+  operation: string,
+  deadline: number,
+  timeoutMs: number,
+): Promise<T> {
+  const remainingMs = Math.max(0, deadline - Date.now());
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`object storage readiness probe timed out after ${timeoutMs}ms during ${operation}`));
+        }, remainingMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -343,6 +445,25 @@ async function artifactDataPlaneCheck(artifactDataDir: string): Promise<ServerRe
     return { name: "artifact_data_plane", status: "pass", safeMessage: "artifact data-plane storage is writable and readable" };
   } catch (error) {
     return fail("artifact_data_plane", "Unavailable", "artifact data-plane storage probe failed", { error: errorMessage(error) });
+  }
+}
+
+async function oidcJwksCheck(jwks: JwksResolver): Promise<ServerReadinessCheck> {
+  try {
+    await jwks.refresh?.();
+    const readiness = jwks.readiness?.();
+    const pass = readiness === undefined || readiness.status === "ready";
+    return {
+      name: "oidc_jwks",
+      status: pass ? "pass" : "fail",
+      ...(pass ? {} : { code: "Unavailable" }),
+      safeMessage: pass
+        ? "OIDC JWKS dependency is available with bounded cache/rotation policy"
+        : "OIDC JWKS dependency is not ready",
+      ...(readiness === undefined ? {} : { details: readiness as unknown as Readonly<Record<string, unknown>> }),
+    };
+  } catch (error) {
+    return fail("oidc_jwks", "Unavailable", "OIDC JWKS dependency probe failed", { error: errorMessage(error) });
   }
 }
 
@@ -372,7 +493,7 @@ function missionDispatchCheck(enabled: boolean, loops: readonly MissionDispatchL
     status: pass ? "pass" : "fail",
     ...(enabled ? {} : { code: "Disabled" }),
     safeMessage: pass
-      ? "mission dispatch loops are running for configured tenants"
+      ? "mission dispatch loops have observed their work source for configured tenants"
       : "mission dispatch loops cannot make progress for every configured tenant",
     details: { loops: readiness },
   };
@@ -388,7 +509,7 @@ function intelligenceResultConsumerCheck(
     status: pass ? "pass" : "fail",
     ...(enabled ? {} : { code: "Disabled" }),
     safeMessage: pass
-      ? "intelligence result consumer loop is running"
+      ? "intelligence result consumer loop has observed its wakeup source"
       : "intelligence result consumer loop cannot make progress",
     details: { ...loop },
   };

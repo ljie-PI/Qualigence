@@ -48,6 +48,17 @@ const DEFAULT_REDACT_KEYS: readonly string[] = [
   "certificatepem",
   "clientsecret",
   "client_secret",
+  "plaintext",
+  "usertext",
+  "user_text",
+  "artifactid",
+  "artifact_id",
+  "artifactkey",
+  "artifact_key",
+  "traceid",
+  "trace_id",
+  "capsuleid",
+  "capsule_id",
 ];
 
 // Matches PEM private-key blocks so a private key accidentally logged as a raw
@@ -78,8 +89,8 @@ export class StructuredLogger {
       });
     this.now = options.now ?? (() => new Date().toISOString());
     this.redactKeys = new Set([
-      ...DEFAULT_REDACT_KEYS,
-      ...(options.redactKeys ?? []).map((key) => key.toLowerCase()),
+      ...DEFAULT_REDACT_KEYS.map(normalizeKey),
+      ...(options.redactKeys ?? []).map(normalizeKey),
     ]);
   }
 
@@ -129,7 +140,7 @@ export class StructuredLogger {
     if (value !== null && typeof value === "object") {
       const output: Record<string, unknown> = {};
       for (const [key, inner] of Object.entries(value)) {
-        if (this.redactKeys.has(key.toLowerCase())) {
+        if (this.redactKeys.has(normalizeKey(key))) {
           output[key] = REDACTED;
         } else {
           output[key] = this.redactValue(inner);
@@ -139,4 +150,8 @@ export class StructuredLogger {
     }
     return value;
   }
+}
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }

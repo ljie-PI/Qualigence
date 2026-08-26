@@ -162,6 +162,7 @@ interface ListEnvelope<T> {
 
 interface TestJwtIssuer {
   readonly jwksEntries: readonly { readonly kid: string; readonly alg: "RS256"; readonly publicKeyPem: string }[];
+  readonly jwksDocument: Readonly<Record<string, unknown>>;
   sign(claims: Readonly<Record<string, unknown>>): string;
 }
 
@@ -293,7 +294,7 @@ async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
     pg_worker_password: "qualigence_worker_pw",
     s3_access_key_id: "qualigence-access-key",
     s3_secret_access_key: "qualigence-secret-key",
-    kms_root_key: "0123456789abcdef0123456789abcdef",
+    kms_root_key: Buffer.alloc(32, 7).toString("base64"),
     oidc_jwks: JSON.stringify(ctx.jwt.jwksEntries),
     oidc_claim_map: JSON.stringify({
       tenantClaim: TENANT_CLAIM,
@@ -348,6 +349,11 @@ async function restoreHarnessSecrets(backup: SecretBackup): Promise<void> {
 }
 
 async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
+  await writeFile(join(ctx.workDir, "jwks-server.mjs"), [
+    "import { createServer } from 'node:http';",
+    `const body = ${JSON.stringify(JSON.stringify(ctx.jwt.jwksDocument))};`,
+    "createServer((_request, response) => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(body); }).listen(18082, '127.0.0.1');",
+  ].join("\n"), "utf8");
   await writeFile(join(ctx.workDir, "bootstrap.mjs"), `
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -404,13 +410,15 @@ console.log("external-runner-harness:database-provisioned");
     "    build: !reset null",
     "    working_dir: /workspace",
     "    user: \"1000:1000\"",
-    "    entrypoint: [\"node\", \"/workspace/apps/server/dist/main.js\"]",
-    "    command: !override []",
+    "    entrypoint: [\"/bin/sh\", \"-ec\"]",
+    "    command: !override [\"node /harness/jwks-server.mjs & exec node /workspace/apps/server/dist/main.js\"]",
     "    volumes:",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
     "      - skill_signing_data:/var/lib/qualigence/skill-signing",
     "    environment:",
+    "      SERVER_OIDC_JWKS_URI: http://127.0.0.1:18082/jwks",
     "      SERVER_MISSION_DISPATCH_INTERVAL_MS: \"250\"",
     "      SERVER_MISSION_DISPATCH_INITIAL_BACKOFF_MS: \"50\"",
     "      SERVER_MISSION_DISPATCH_MAXIMUM_BACKOFF_MS: \"1000\"",
@@ -815,6 +823,7 @@ function composeEnv(ctx: HarnessContext): NodeJS.ProcessEnv {
     QUALIGENCE_SITE_ADDRESS: ":443",
     QUALIGENCE_OIDC_ISSUER: API_ISSUER,
     QUALIGENCE_OIDC_AUDIENCE: API_AUDIENCE,
+    QUALIGENCE_OIDC_JWKS_URI: "http://127.0.0.1:18082/jwks",
     QUALIGENCE_MODEL_BASE_URL: ctx.modelServer.baseUrl,
     QUALIGENCE_MODEL_NAME: MODEL_NAME,
     QUALIGENCE_SERVER_PG_ROLE: "qualigence_server",
@@ -1013,8 +1022,10 @@ function createJwtIssuer(): TestJwtIssuer {
   const { privateKey, publicKey }: { readonly privateKey: KeyObject; readonly publicKey: KeyObject } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const kid = "external-runner-acceptance-key";
   const alg = "RS256" as const;
+  const jwk = publicKey.export({ format: "jwk" });
   return {
     jwksEntries: [{ kid, alg, publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString() }],
+    jwksDocument: { keys: [{ ...jwk, kid, alg, use: "sig" }] },
     sign(claims: Readonly<Record<string, unknown>>): string {
       const header = { alg, kid, typ: "JWT" };
       const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;

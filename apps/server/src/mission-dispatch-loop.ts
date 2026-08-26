@@ -123,6 +123,7 @@ export interface MissionDispatchLoopReadiness {
   readonly aborted: boolean;
   readonly inFlight: boolean;
   readonly consecutiveFailures: number;
+  readonly lastSuccessfulObservationAt?: string;
   readonly lastError?: string;
 }
 
@@ -157,6 +158,7 @@ export class MissionDispatchLoop {
   private inFlight: Promise<void> = Promise.resolve();
   private inFlightActive = false;
   private consecutiveFailures = 0;
+  private lastSuccessfulObservationAt: string | undefined;
   private lastError: string | undefined;
 
   constructor(options: MissionDispatchLoopOptions) {
@@ -182,6 +184,9 @@ export class MissionDispatchLoop {
   start(): void {
     if (this.active) return;
     this.active = true;
+    this.lastSuccessfulObservationAt = undefined;
+    this.lastError = undefined;
+    this.consecutiveFailures = 0;
     this.schedule(0);
   }
 
@@ -196,13 +201,14 @@ export class MissionDispatchLoop {
 
   readiness(): MissionDispatchLoopReadiness {
     const aborted = this.signal?.aborted === true;
-    const status = this.active && !aborted && this.lastError === undefined ? "ready" : "not-ready";
+    const status = this.active && !aborted && this.lastSuccessfulObservationAt !== undefined && this.lastError === undefined ? "ready" : "not-ready";
     return {
       status,
       active: this.active,
       aborted,
       inFlight: this.inFlightActive,
       consecutiveFailures: this.consecutiveFailures,
+      ...(this.lastSuccessfulObservationAt === undefined ? {} : { lastSuccessfulObservationAt: this.lastSuccessfulObservationAt }),
       ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
     };
   }
@@ -218,7 +224,7 @@ export class MissionDispatchLoop {
       }
       results.push(await this.dispatch(dispatch));
     }
-    return {
+    const summary = {
       totalPending: dispatches.length,
       attempted: results.filter((result) => result.outcome === "accepted" || result.reason !== "backing_off").length,
       accepted: results.filter((result) => result.outcome === "accepted").length,
@@ -226,6 +232,8 @@ export class MissionDispatchLoop {
       blocked: results.filter((result) => result.outcome === "blocked").length,
       results,
     };
+    this.recordSuccessfulObservation();
+    return summary;
   }
 
   private schedule(delayMs: number): void {
@@ -234,10 +242,7 @@ export class MissionDispatchLoop {
       this.timer = undefined;
       this.inFlightActive = true;
       this.inFlight = this.runOnce()
-        .then(() => {
-          this.consecutiveFailures = 0;
-          this.lastError = undefined;
-        })
+        .then(() => undefined)
         .catch((error: unknown) => {
           this.consecutiveFailures += 1;
           this.lastError = errorMessage(error);
@@ -248,6 +253,12 @@ export class MissionDispatchLoop {
           this.schedule(this.intervalMs);
         });
     }, delayMs);
+  }
+
+  private recordSuccessfulObservation(): void {
+    this.lastSuccessfulObservationAt = this.clock.now();
+    this.consecutiveFailures = 0;
+    this.lastError = undefined;
   }
 
   private async dispatch(dispatch: PendingMissionDispatch): Promise<MissionDispatchResult> {

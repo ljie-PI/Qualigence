@@ -42,6 +42,7 @@ export interface IntelligenceResultConsumerLoopReadiness {
   readonly aborted: boolean;
   readonly inFlight: boolean;
   readonly consecutiveFailures: number;
+  readonly lastSuccessfulObservationAt?: string;
   readonly lastError?: string;
 }
 
@@ -81,6 +82,7 @@ export class IntelligenceResultConsumerLoop {
   private inFlight: Promise<void> = Promise.resolve();
   private inFlightActive = false;
   private consecutiveFailures = 0;
+  private lastSuccessfulObservationAt: string | undefined;
   private lastError: string | undefined;
 
   constructor(options: IntelligenceResultConsumerLoopOptions) {
@@ -111,6 +113,9 @@ export class IntelligenceResultConsumerLoop {
   start(): void {
     if (this.active) return;
     this.active = true;
+    this.lastSuccessfulObservationAt = undefined;
+    this.lastError = undefined;
+    this.consecutiveFailures = 0;
     this.schedule(0);
   }
 
@@ -126,13 +131,14 @@ export class IntelligenceResultConsumerLoop {
 
   readiness(): IntelligenceResultConsumerLoopReadiness {
     const aborted = this.isAborted();
-    const status = this.active && !aborted && this.lastError === undefined ? "ready" : "not-ready";
+    const status = this.active && !aborted && this.lastSuccessfulObservationAt !== undefined && this.lastError === undefined ? "ready" : "not-ready";
     return {
       status,
       active: this.active,
       aborted,
       inFlight: this.inFlightActive,
       consecutiveFailures: this.consecutiveFailures,
+      ...(this.lastSuccessfulObservationAt === undefined ? {} : { lastSuccessfulObservationAt: this.lastSuccessfulObservationAt }),
       ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
     };
   }
@@ -157,16 +163,18 @@ export class IntelligenceResultConsumerLoop {
       batchSize: this.tenantBatchSize,
     });
     const totals = empty();
+    let failed = false;
     for (const claim of claims) {
       totals.claimed += 1;
       if (this.isAborted()) {
         await this.retryClaim(claim, totals, 0, "aborted");
+        failed = true;
         continue;
       }
-      await this.consumeClaim(claim, totals);
+      failed = !(await this.consumeClaim(claim, totals)) || failed;
     }
-    if (this.lastError === undefined) {
-      this.consecutiveFailures = 0;
+    if (!failed && !this.isAborted()) {
+      this.recordSuccessfulObservation();
     }
     return totals;
   }
@@ -193,10 +201,16 @@ export class IntelligenceResultConsumerLoop {
     }, delayMs);
   }
 
+  private recordSuccessfulObservation(): void {
+    this.lastSuccessfulObservationAt = new Date().toISOString();
+    this.consecutiveFailures = 0;
+    this.lastError = undefined;
+  }
+
   private async consumeClaim(
     claim: IntelligenceResultWakeupClaim,
     totals: MutableCycleResult,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const summary = await this.consumer.consumeForTenant(claim.tenantId, {
         batchSize: this.resultBatchSize,
@@ -210,7 +224,7 @@ export class IntelligenceResultConsumerLoop {
       totals.rejected += summary.rejected;
       if (this.isAborted()) {
         await this.retryClaim(claim, totals, 0, "aborted");
-        return;
+        return false;
       }
       if (summary.hasMore || summary.recompute > 0) {
         await this.retryClaim(
@@ -219,11 +233,12 @@ export class IntelligenceResultConsumerLoop {
           summary.hasMore ? 0 : this.currentBackoffMs(),
           summary.hasMore ? "bounded-batch-remaining" : "recompute-reschedulable",
         );
-        return;
+        return true;
       }
       const disposition = await this.wakeups.complete(claim);
       if (disposition === "completed") totals.completed += 1;
       else totals.stale += 1;
+      return true;
     } catch (error) {
       const aborted = this.isAborted() || isAbortError(error);
       if (!aborted) {
@@ -239,6 +254,7 @@ export class IntelligenceResultConsumerLoop {
       if (!aborted) {
         this.consecutiveFailures += 1;
       }
+      return false;
     }
   }
 
