@@ -45,6 +45,7 @@ interface HarnessContext {
   readonly proxyPort: number;
   readonly runnerGrpcPort: number;
   readonly proxyCaPem: string;
+  readonly proxyCertificateChainPem: string;
   readonly runnerCa: PemPair;
   readonly runnerServer: PemPair;
   readonly proxy: PemPair;
@@ -150,14 +151,15 @@ async function createHarnessContext(): Promise<HarnessContext> {
   const [proxyPort, runnerGrpcPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const runnerCa = createRunnerCa("Qualigence readiness E2E Runner CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
-  const proxyCa = createRunnerCa("Qualigence readiness E2E Proxy TLS CA");
-  const proxy = mintServerCertificate(proxyCa, "localhost");
+  const proxyCa = createProxyCertificateAuthority("Qualigence readiness E2E Proxy TLS CA");
+  const proxy = mintProxyServerCertificate(proxyCa, "localhost");
+  const proxyCertificateChainPem = pemBundle(proxy.certPem, proxyCa.certPem);
   const secrets = await backupSecretFiles();
   const projectName = `qualigence-ready-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   await writeFile(join(workDir, "runner-ca.crt"), runnerCa.certPem, "utf8");
   await writeFile(join(workDir, "runner-server.crt"), runnerServer.certPem, "utf8");
   await writeFile(join(workDir, "runner-server.key"), runnerServer.keyPem, "utf8");
-  await writeFile(join(workDir, "proxy.crt"), proxy.certPem, "utf8");
+  await writeFile(join(workDir, "proxy.crt"), proxyCertificateChainPem, "utf8");
   await writeFile(join(workDir, "proxy.key"), proxy.keyPem, "utf8");
   return {
     projectName,
@@ -166,6 +168,7 @@ async function createHarnessContext(): Promise<HarnessContext> {
     proxyPort,
     runnerGrpcPort,
     proxyCaPem: proxyCa.certPem,
+    proxyCertificateChainPem,
     runnerCa,
     runnerServer,
     proxy,
@@ -282,7 +285,7 @@ async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
     runner_server_cert: ctx.runnerServer.certPem,
     runner_server_key: ctx.runnerServer.keyPem,
     worker_model_api_key: "worker-model-api-key",
-    tls_cert: ctx.proxy.certPem,
+    tls_cert: ctx.proxyCertificateChainPem,
     tls_key: ctx.proxy.keyPem,
   };
 
@@ -579,6 +582,40 @@ async function freeTcpPort(): Promise<number> {
   return address.port;
 }
 
+function createProxyCertificateAuthority(commonName: string): PemPair {
+  return withOpenSslScratch((dir, openssl) => {
+    openssl(["genrsa", "-out", "ca.key", "2048"]);
+    openssl([
+      "req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "2",
+      "-subj", `/CN=${commonName}`, "-out", "ca.crt",
+      "-addext", "basicConstraints=critical,CA:TRUE,pathlen:1",
+      "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+      "-addext", "subjectKeyIdentifier=hash",
+    ]);
+    return { certPem: readFileSync(join(dir, "ca.crt"), "utf8"), keyPem: readFileSync(join(dir, "ca.key"), "utf8") };
+  });
+}
+
+function mintProxyServerCertificate(ca: PemPair, commonName: string): PemPair {
+  return withOpenSslScratch((dir, openssl) => {
+    writeFileSync(join(dir, "ca.crt"), ca.certPem);
+    writeFileSync(join(dir, "ca.key"), ca.keyPem);
+    openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "server.key"]);
+    openssl(["req", "-new", "-key", "server.key", "-subj", `/CN=${commonName}`, "-out", "server.csr"]);
+    writeFileSync(join(dir, "server.ext"), [
+      "basicConstraints=critical,CA:FALSE",
+      "keyUsage=critical,digitalSignature,keyEncipherment",
+      "extendedKeyUsage=serverAuth",
+      "subjectAltName=DNS:localhost,IP:127.0.0.1",
+      "subjectKeyIdentifier=hash",
+      "authorityKeyIdentifier=keyid,issuer",
+      "",
+    ].join("\n"));
+    openssl(["x509", "-req", "-in", "server.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-sha256", "-out", "server.crt", "-extfile", "server.ext", "-days", "2"]);
+    return { certPem: readFileSync(join(dir, "server.crt"), "utf8"), keyPem: readFileSync(join(dir, "server.key"), "utf8") };
+  });
+}
+
 function mintServerCertificate(ca: PemPair, commonName: string): PemPair {
   return withOpenSslScratch((dir, openssl) => {
     writeFileSync(join(dir, "ca.crt"), ca.certPem);
@@ -595,6 +632,10 @@ function mintServerCertificate(ca: PemPair, commonName: string): PemPair {
     openssl(["x509", "-req", "-in", "server.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-sha256", "-out", "server.crt", "-extfile", "server.ext", "-days", "2"]);
     return { certPem: readFileSync(join(dir, "server.crt"), "utf8"), keyPem: readFileSync(join(dir, "server.key"), "utf8") };
   });
+}
+
+function pemBundle(...entries: readonly string[]): string {
+  return entries.map((entry) => entry.trim()).join("\n") + "\n";
 }
 
 function withOpenSslScratch<T>(run: (dir: string, openssl: (args: readonly string[]) => Buffer) => T): T {

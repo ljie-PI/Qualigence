@@ -22,7 +22,10 @@ export interface WorkerHealthServerOptions {
   readonly postgresProbe: () => Promise<void>;
   readonly objectStorageProbe: (signal?: AbortSignal) => Promise<void>;
   readonly loopReadiness: () => WorkerLoopReadiness;
+  readonly objectStorageProbeTimeoutMs?: number;
 }
+
+const OBJECT_STORAGE_PROBE_TIMEOUT_MS = 2_000;
 
 /**
  * Small in-process Worker health server. Liveness is deliberately cheap; readiness
@@ -57,7 +60,7 @@ export class WorkerHealthServer {
   async readiness(): Promise<WorkerReadinessReport> {
     const checks = [
       await postgresCheck(this.options.postgresProbe),
-      await objectStorageCheck(this.options.objectStorageProbe),
+      await objectStorageCheck(this.options.objectStorageProbe, this.options.objectStorageProbeTimeoutMs),
       workerLoopCheck(this.options.loopReadiness()),
     ];
     return {
@@ -89,16 +92,28 @@ async function postgresCheck(probe: () => Promise<void>): Promise<WorkerReadines
   }
 }
 
-async function objectStorageCheck(probe: (signal?: AbortSignal) => Promise<void>): Promise<WorkerReadinessCheck> {
+async function objectStorageCheck(
+  probe: (signal?: AbortSignal) => Promise<void>,
+  timeoutMs = OBJECT_STORAGE_PROBE_TIMEOUT_MS,
+): Promise<WorkerReadinessCheck> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await probe(controller.signal);
+    await Promise.race([
+      probe(controller.signal),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Worker S3 context data-plane probe timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
     return { name: "object_storage", status: "pass", safeMessage: "Worker S3 context data-plane is writable and readable" };
   } catch (error) {
     return fail("object_storage", "Unavailable", "Worker S3 context data-plane probe failed", { error: errorMessage(error) });
   } finally {
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 

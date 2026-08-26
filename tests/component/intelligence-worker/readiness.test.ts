@@ -1,5 +1,7 @@
+import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
 import { WorkerHealthServer } from "../../../apps/intelligence-worker/src/health-server.js";
+import { S3ContextSource } from "../../../apps/intelligence-worker/src/s3-context-source.js";
 import { WorkerLoop, type Clock } from "../../../apps/intelligence-worker/src/worker-loop.js";
 import type { IntelligenceJobStore, IntelligenceResultInbox } from "@qualigence/core-application";
 import type { JobProcessor } from "../../../apps/intelligence-worker/src/job-processor.js";
@@ -108,6 +110,69 @@ describe("Intelligence Worker readiness", () => {
 
     controller.abort();
     await running;
+  });
+
+  it("returns stable not-ready instead of hanging when the S3 readiness probe stalls", async () => {
+    const workerLoop = loop();
+    const controller = new AbortController();
+    const running = workerLoop.run(controller.signal);
+    await waitFor(() => workerLoop.readiness().status === "ready");
+
+    let probeSignal: AbortSignal | undefined;
+    const health = new WorkerHealthServer({
+      host: "127.0.0.1",
+      port: 0,
+      postgresProbe: async () => undefined,
+      objectStorageProbe: async (signal) => {
+        probeSignal = signal;
+        await new Promise<void>(() => undefined);
+      },
+      loopReadiness: () => workerLoop.readiness(),
+      objectStorageProbeTimeoutMs: 5,
+    });
+
+    await expect(health.readiness()).resolves.toMatchObject({
+      status: "not-ready",
+      checks: expect.arrayContaining([
+        expect.objectContaining({
+          name: "object_storage",
+          status: "fail",
+          code: "Unavailable",
+          details: expect.objectContaining({ error: expect.stringContaining("timed out") }),
+        }),
+      ]),
+    });
+    expect(probeSignal?.aborted).toBe(true);
+
+    controller.abort();
+    await running;
+  });
+
+  it("passes the readiness AbortSignal through S3 write, read, and cleanup operations", async () => {
+    const source = new S3ContextSource({
+      region: "us-east-1",
+      bucket: "qualigence-artifacts",
+      accessKeyId: "access-key",
+      secretAccessKey: "secret-key",
+      forcePathStyle: true,
+    });
+    const sends: { readonly command: string; readonly signal: AbortSignal | undefined }[] = [];
+    const fakeClient = {
+      send: async (command: unknown, options?: { readonly abortSignal?: AbortSignal }) => {
+        sends.push({ command: command instanceof Object ? command.constructor.name : "unknown", signal: options?.abortSignal });
+        if (command instanceof GetObjectCommand) {
+          return { Body: { transformToByteArray: async () => Buffer.from("qualigence-worker-object-storage-readiness", "utf8") } };
+        }
+        return {};
+      },
+    } as unknown as Pick<S3Client, "send">;
+    (source as unknown as { client: Pick<S3Client, "send"> }).client = fakeClient;
+
+    const controller = new AbortController();
+    await source.verifyReadiness(controller.signal);
+
+    expect(sends.map((send) => send.command)).toEqual(["PutObjectCommand", "GetObjectCommand", "DeleteObjectCommand"]);
+    expect(sends.map((send) => send.signal)).toEqual([controller.signal, controller.signal, controller.signal]);
   });
 
   it("does not carry a previous successful loop observation across a restart", async () => {

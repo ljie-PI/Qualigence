@@ -69,7 +69,7 @@ export async function main(
     postgresProbe: async () => {
       await assertSchema(config.postgres, config.serverPostgresRole);
     },
-    objectStorageProbe: () => contextSource.verifyReadiness(),
+    objectStorageProbe: (signal) => contextSource.verifyReadiness(signal),
     loopReadiness: () => loop.readiness(),
   });
 

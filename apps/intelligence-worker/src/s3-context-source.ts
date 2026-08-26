@@ -49,6 +49,7 @@ export class S3ContextSource implements IntelligenceContextSource {
     throwIfJobProcessingAborted(signal);
     const key = `.qualigence-readiness/worker-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const expected = Buffer.from("qualigence-worker-object-storage-readiness", "utf8");
+    const sendOptions = signal === undefined ? undefined : { abortSignal: signal };
     let wrote = false;
     try {
       await this.client.send(
@@ -59,12 +60,12 @@ export class S3ContextSource implements IntelligenceContextSource {
           ContentType: "text/plain; charset=utf-8",
           Metadata: { owner: "qualigence-intelligence-worker-readiness" },
         }),
-        signal === undefined ? undefined : { abortSignal: signal },
+        sendOptions,
       );
       wrote = true;
       const response = await this.client.send(
         new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
-        signal === undefined ? undefined : { abortSignal: signal },
+        sendOptions,
       );
       const actual = await response.Body?.transformToByteArray();
       if (actual === undefined || !Buffer.from(actual).equals(expected)) {
@@ -72,7 +73,7 @@ export class S3ContextSource implements IntelligenceContextSource {
       }
     } finally {
       if (wrote) {
-        await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }));
+        await this.client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }), sendOptions);
       }
     }
   }
