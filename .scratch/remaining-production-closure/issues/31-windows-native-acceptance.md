@@ -2,13 +2,13 @@
 
 **What to build:** Produce independently reviewed native Windows evidence for the complete Desktop Runner/Companion path.
 
-**Blocked by:** 30 — Implement native UIA, Job Object, and Companion daemon.
+**Blocked by:** 47 — Provide Windows UIA daemon acceptance harness.
 
 **Status:** ready-for-human
 
 ## Tracked scope
 
-This ticket owns native acceptance and is intentionally human-owned. It remains `ready-for-human`: automation may prepare the environment and reports, but it cannot execute, attest, review, or sign the local-console/RDP checklist.
+This ticket owns native acceptance and is intentionally human-owned. It remains `ready-for-human`: automation may prepare the environment and reports, but it cannot execute, attest, review, or sign the local-console/RDP checklist. The required automated native prerequisite is blocked until Ticket 47 provides a real `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` executable.
 
 ## Migration
 
@@ -37,7 +37,7 @@ This is the complete edit/evidence scope:
 - `docs/testing/windows-m3-manual-checklist.md`
 - `artifacts/manual-acceptance/**`
 
-Production code and automated test code are not in scope. Any automated failure that requires such a change returns to ticket 30 or sets this ticket to `needs-info`; it is not fixed here.
+Production code and automated test code are not in scope. Any automated failure that requires such a change returns to ticket 30 or Ticket 47, or sets this ticket to `needs-info`; it is not fixed here.
 
 ## Requirements
 
@@ -69,7 +69,7 @@ The source/test head then receives one exact-base complete-matrix review. Automa
 
 ## Post-review acceptance
 
-- Automated prerequisite: rerun the focused Gate above on the exact reviewed release-candidate commit with `QUALIGENCE_WINDOWS_UIA_TEST=true` for the native WPF/WinUI portions, and retain the reports. Any skip, `Windows11Unavailable`, `CargoUnavailable`, or fixture absence blocks manual sign-off.
+- Automated prerequisite: after Ticket 47 is resolved, rerun the focused Gate above on the exact reviewed release-candidate commit with `QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` set to the real harness executable for the native WPF/WinUI portions, and retain the reports. Any skip, `Windows11Unavailable`, `WindowsUiaPrerequisiteUnavailable`, `CargoUnavailable`, missing harness, or fixture absence blocks manual sign-off.
 - Manual local-console/RDP acceptance: copy the checklist to `artifacts/manual-acceptance/<version>/<date>-windows-m3.md`; execute every applicable section on the exact reviewed commit; record Run/Trace/Artifact references and actual outcomes; complete all Section 16 vetoes; embed the corresponding machine-readable `WindowsChecklistEvidence` JSON; have the executor and an independent reviewer sign Section 17; retain the signed record unchanged.
 - Release evidence handoff: run `Get-FileHash -Algorithm SHA256 "artifacts/manual-acceptance/<version>/<date>-windows-m3.md"`, record the SHA-256 and reviewed commit under this ticket's `## Comments`, and supply that exact path/hash to ticket 34's release manifest and ticket 35's serialized freeze decision. Ticket 31 itself does not publish a release or set Graph v1 to `frozen`.
 
@@ -97,3 +97,7 @@ The ticket remains `ready-for-human` until a human claims execution and remains 
 | Any Section 16 security veto fails/not-run/not-applicable | Boundary according to scenario; release decision is `not_started` | Manual acceptance fails and release/Graph freeze is blocked | Signed failure record is retained, not rewritten as pass | New acceptance only after reviewed fix; old record remains | Failed veto, signatures, linked issue/evidence |
 | Checklist complete but operator/reviewer signature, distinction, metadata, or hash is missing | `not_started` for release use | Evidence invalid; ticket cannot resolve | Unsigned/incomplete record retained as non-acceptance evidence | Complete a new valid record or validly finish the same unsigned draft before signing | Validation report with exact missing fields |
 | Signed evidence persistence/hash verification fails | `outcome_unknown` for acceptance record, release remains `not_started` | Acceptance invalid/blocked | No release manifest may reference it as valid | Recreate and re-execute as necessary; never infer pass from memory | File/hash failure and absent release binding |
+
+## Comments
+
+- blocked - 2026-08-26: Ticket 30 merged the production Companion daemon/UIA/Job Object implementation, but the required native daemon E2E prerequisite cannot run because no real `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` executable exists in the repo or environment. By maintainer direction, Ticket 47 now owns the missing harness. Ticket 31 remains human-owned and cannot proceed to signed local-console/RDP acceptance until Ticket 47 resolves and the automated native prerequisite passes on the exact reviewed commit.
