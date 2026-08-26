@@ -51,6 +51,34 @@ pub fn classify_desktop_action(action: &ResolvedDesktopAction) -> Risk {
     }
 }
 
+/// Whether the policy authorization risk safely covers the Companion's local
+/// action-kind risk classification.
+///
+/// Policy may impose a stricter risk than the intrinsic kind (for example a
+/// normally safe click on a destructive button), which must still reach the
+/// local approval gate. A lower policy risk would understate the local kind risk
+/// and is rejected before a Permit can be minted. `ProductionForbidden` is
+/// deliberately allowed through this comparison so the approval/permit state
+/// machine can fail it closed with the stable forbidden denial path.
+pub fn authorization_risk_covers_action(
+    action: &ResolvedDesktopAction,
+    authorization_risk: Risk,
+) -> bool {
+    if authorization_risk == Risk::ProductionForbidden {
+        return true;
+    }
+    risk_rank(authorization_risk) >= risk_rank(classify_desktop_action(action))
+}
+
+fn risk_rank(risk: Risk) -> u8 {
+    match risk {
+        Risk::Normal => 0,
+        Risk::ExternalSideEffect => 1,
+        Risk::Destructive => 2,
+        Risk::ProductionForbidden => 3,
+    }
+}
+
 /// Failure to broker a desktop action.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DesktopActionError {
@@ -363,6 +391,7 @@ fn permit_matches_action(
         && permit.graph_id == binding.graph_id
         && permit.graph_id == action.graph_id
         && permit.risk == binding.risk
+        && authorization_risk_covers_action(action, permit.risk)
         && !permit.permit_token.is_empty()
         && !permit.nonce_base64.is_empty()
         && !permit.decision_id.is_empty()

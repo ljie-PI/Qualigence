@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
+use crate::process::job_object::AppWindowSelector;
 
 /// The AppSession authority the Companion passes into the UIA worker for every
 /// capture/action. The worker must scope all lookup to this root HWND and verify
@@ -25,6 +26,8 @@ pub struct UiaSessionTarget {
     pub session_id: String,
     pub process_id: i32,
     pub root_window_handle: String,
+    #[serde(default, skip_serializing_if = "AppWindowSelector::is_empty")]
+    pub window_selector: AppWindowSelector,
 }
 
 /// A single UIA pattern availability descriptor, mirrored losslessly from the

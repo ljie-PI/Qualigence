@@ -70,12 +70,12 @@ fn run_daemon() {
     use companion::permit::{IssuedPermit, PermitBinding, PermitStore};
     use companion::process::app_session::{AppSessionManager, AppSessionState};
     use companion::process::job_object::{
-        AppLaunchSpec, LifecycleError, ResetSpec, WindowsDesktopProcessHost,
+        AppLaunchSpec, AppWindowSelector, LifecycleError, ResetSpec, WindowsDesktopProcessHost,
     };
-    use companion::risk::Risk;
     use companion::uia::action::{
-        classify_desktop_action, desktop_action_digest_sha256, ensure_companion_accepts_uia_work,
-        execute_desktop_action_request_before_deadline, DesktopActionError,
+        authorization_risk_covers_action, desktop_action_digest_sha256,
+        ensure_companion_accepts_uia_work, execute_desktop_action_request_before_deadline,
+        DesktopActionError,
     };
     use companion::uia::protocol::{ActionOutcomeReport, UiaError, UiaSessionTarget};
     use companion::uia::worker_supervisor::{
@@ -298,6 +298,7 @@ fn run_daemon() {
                 session_id: state.session_id.clone(),
                 process_id: state.pid as i32,
                 root_window_handle: state.root_window_handle.clone(),
+                window_selector: state.window_selector.clone(),
             })
         }
     }
@@ -704,10 +705,10 @@ fn run_daemon() {
                         frame_limits,
                     );
                 }
-                let local_risk = classify_desktop_action(&permit_request.action);
-                if permit_request.authorization.risk != Risk::ProductionForbidden
-                    && permit_request.authorization.risk != local_risk
-                {
+                if !authorization_risk_covers_action(
+                    &permit_request.action,
+                    permit_request.authorization.risk,
+                ) {
                     return response_writer.write_error(
                         &request_id,
                         "permit.request",
@@ -1057,6 +1058,10 @@ fn run_daemon() {
             working_directory: target.launch.working_directory.clone(),
             expected_image_name: target.process.expected_image_name.clone(),
             allowed_child_image_names: target.process.allowed_child_image_names.clone(),
+            window_selector: AppWindowSelector {
+                title_pattern: target.window.title_pattern.clone(),
+                automation_id: target.window.automation_id.clone(),
+            },
             packaged_cannot_join_job: !matches!(target.platform, DesktopPlatform::Windows),
         }
     }

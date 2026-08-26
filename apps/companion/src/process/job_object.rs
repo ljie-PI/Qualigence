@@ -16,6 +16,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 /// Stable lifecycle errors surfaced to the Runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LifecycleError {
@@ -45,6 +47,49 @@ pub struct HostProcess {
     pub root_window_handle: String,
 }
 
+/// Public AppTarget window selector fields carried into native window binding.
+///
+/// `title_pattern` is matched as a literal substring against the current window
+/// title/name; `automation_id` is matched exactly against UIA AutomationId. The
+/// process host can enforce the title predicate while choosing a top-level HWND,
+/// and the UIA worker enforces both fields before capture/action root binding.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppWindowSelector {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_pattern: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automation_id: Option<String>,
+}
+
+impl AppWindowSelector {
+    pub fn is_empty(&self) -> bool {
+        self.title_pattern.is_none() && self.automation_id.is_none()
+    }
+
+    pub fn matches(&self, title: Option<&str>, automation_id: Option<&str>) -> bool {
+        if let Some(pattern) = self.title_pattern.as_deref() {
+            if !title.map(|value| value.contains(pattern)).unwrap_or(false) {
+                return false;
+            }
+        }
+        if let Some(expected) = self.automation_id.as_deref() {
+            if automation_id != Some(expected) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// A visible top-level window candidate for a process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostWindow {
+    pub handle: String,
+    pub title: Option<String>,
+    pub automation_id: Option<String>,
+}
+
 /// An opaque native Job handle. Its `native_id` is never exposed outside the
 /// Companion; callers only ever see the session's generated `process_group_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +106,7 @@ pub struct AppLaunchSpec {
     pub working_directory: Option<String>,
     pub expected_image_name: String,
     pub allowed_child_image_names: Vec<String>,
+    pub window_selector: AppWindowSelector,
     /// Set by the host allowlist when the target is a packaged / protected app
     /// that cannot join a Job without breakaway.
     pub packaged_cannot_join_job: bool,
@@ -102,6 +148,20 @@ pub trait DesktopProcessHost {
     /// Return a visible root window handle for the process after resume, if one
     /// is available before the caller's launch budget expires.
     fn root_window_handle(&self, pid: u32) -> Option<String>;
+    /// Return a visible root window handle selected with the host-observable
+    /// AppTarget window fields. The UIA worker revalidates the complete selector
+    /// (including AutomationId) before capture/action root binding.
+    fn root_window_handle_for_selector(
+        &self,
+        pid: u32,
+        selector: &AppWindowSelector,
+    ) -> Option<String> {
+        if selector.is_empty() {
+            self.root_window_handle(pid)
+        } else {
+            None
+        }
+    }
     /// Verify the exact process instance is still a member of the tracked Job.
     fn verify_process_in_job(
         &self,
@@ -127,10 +187,14 @@ pub struct FakeDesktopProcessHost {
     jobs: HashMap<u64, bool>,
     /// Observed children keyed by parent pid.
     children: HashMap<u32, Vec<HostProcess>>,
+    /// Visible top-level windows keyed by owning pid, in enumeration order.
+    root_windows: HashMap<u32, Vec<HostWindow>>,
+    next_root_windows: Option<Vec<HostWindow>>,
     /// Ordered operation log for assertions.
     pub ops: Vec<String>,
     /// The last reset spec the host was asked to run.
     pub last_reset: Option<ResetSpec>,
+    next_terminate_job_error: Option<LifecycleError>,
 }
 
 impl Default for FakeDesktopProcessHost {
@@ -148,8 +212,11 @@ impl FakeDesktopProcessHost {
             processes: HashMap::new(),
             jobs: HashMap::new(),
             children: HashMap::new(),
+            root_windows: HashMap::new(),
+            next_root_windows: None,
             ops: Vec::new(),
             last_reset: None,
+            next_terminate_job_error: None,
         }
     }
 
@@ -162,6 +229,23 @@ impl FakeDesktopProcessHost {
     /// Queue observed children for a parent pid (used to exercise the allowlist).
     pub fn set_children(&mut self, parent_pid: u32, children: Vec<HostProcess>) {
         self.children.insert(parent_pid, children);
+    }
+
+    /// Replace the visible top-level window enumeration for a process.
+    pub fn set_root_windows(&mut self, pid: u32, windows: Vec<HostWindow>) {
+        self.root_windows.insert(pid, windows);
+    }
+
+    /// Replace the visible top-level window enumeration for the next process the
+    /// fake host creates. This lets tests model a splash/modal enumerating before
+    /// the intended target window without relying on native UI.
+    pub fn set_next_root_windows(&mut self, windows: Vec<HostWindow>) {
+        self.next_root_windows = Some(windows);
+    }
+
+    /// Make the next Job termination fail without removing Job/process state.
+    pub fn fail_next_terminate_job(&mut self, error: LifecycleError) {
+        self.next_terminate_job_error = Some(error);
     }
 
     /// Whether a pid is currently tracked as alive by the host.
@@ -187,6 +271,17 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
             root_window_handle: format!("0x{:08X}", 0x2000 + pid),
         };
         self.processes.insert(pid, (process.clone(), None));
+        let default_window = HostWindow {
+            handle: process.root_window_handle.clone(),
+            title: Some("Reference App".into()),
+            automation_id: Some("MainWindow".into()),
+        };
+        self.root_windows.insert(
+            pid,
+            self.next_root_windows
+                .take()
+                .unwrap_or_else(|| vec![default_window]),
+        );
         self.ops.push(format!("create_suspended:{pid}"));
         Ok(process)
     }
@@ -228,6 +323,10 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
     }
 
     fn terminate_job(&mut self, job: HostJob) -> Result<(), LifecycleError> {
+        self.ops.push(format!("terminate_job:{}", job.native_id));
+        if let Some(error) = self.next_terminate_job_error.take() {
+            return Err(error);
+        }
         // Only genuine members of THIS job are terminated; unrelated processes
         // and reused PIDs (owner != this job) survive.
         let victims: Vec<u32> = self
@@ -243,14 +342,15 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
             .collect();
         for pid in &victims {
             self.processes.remove(pid);
+            self.root_windows.remove(pid);
         }
         self.jobs.remove(&job.native_id);
-        self.ops.push(format!("terminate_job:{}", job.native_id));
         Ok(())
     }
 
     fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
         self.processes.remove(&pid);
+        self.root_windows.remove(&pid);
         self.ops.push(format!("terminate_process:{pid}"));
         Ok(())
     }
@@ -258,6 +358,9 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
     fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
         self.last_reset = Some(spec.clone());
         self.ops.push(format!("reset:{}", spec.command));
+        if let Some(error) = self.next_terminate_job_error.take() {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -269,9 +372,33 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
     }
 
     fn root_window_handle(&self, pid: u32) -> Option<String> {
-        self.processes
+        self.root_windows
             .get(&pid)
-            .map(|(process, _)| process.root_window_handle.clone())
+            .and_then(|windows| windows.first())
+            .map(|window| window.handle.clone())
+            .or_else(|| {
+                self.processes
+                    .get(&pid)
+                    .map(|(process, _)| process.root_window_handle.clone())
+            })
+    }
+
+    fn root_window_handle_for_selector(
+        &self,
+        pid: u32,
+        selector: &AppWindowSelector,
+    ) -> Option<String> {
+        if selector.is_empty() {
+            return self.root_window_handle(pid);
+        }
+        self.root_windows.get(&pid).and_then(|windows| {
+            windows
+                .iter()
+                .find(|window| {
+                    selector.matches(window.title.as_deref(), window.automation_id.as_deref())
+                })
+                .map(|window| window.handle.clone())
+        })
     }
 
     fn verify_process_in_job(
@@ -302,7 +429,8 @@ mod windows_host {
     use std::ptr::null;
 
     use super::{
-        AppLaunchSpec, DesktopProcessHost, HostJob, HostProcess, LifecycleError, ResetSpec,
+        AppLaunchSpec, AppWindowSelector, DesktopProcessHost, HostJob, HostProcess, LifecycleError,
+        ResetSpec,
     };
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
@@ -323,7 +451,8 @@ mod windows_host {
         CREATE_SUSPENDED, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible,
     };
 
     #[derive(Debug)]
@@ -453,7 +582,7 @@ mod windows_host {
                 }
             };
             let pid = process_info.dwProcessId;
-            let root_window_handle = root_window_handle_for_pid(pid)
+            let root_window_handle = root_window_handle_for_pid(pid, &AppWindowSelector::default())
                 .map(|hwnd| format!("0x{:X}", hwnd as usize))
                 .unwrap_or_else(|| "0x0".to_string());
             self.processes.insert(
@@ -549,11 +678,13 @@ mod windows_host {
         fn terminate_job(&mut self, job: HostJob) -> Result<(), LifecycleError> {
             let handle = self
                 .jobs
-                .remove(&job.native_id)
+                .get(&job.native_id)
                 .ok_or(LifecycleError::HostError)?;
-            unsafe {
-                TerminateJobObject(handle.raw(), 1);
+            let ok = unsafe { TerminateJobObject(handle.raw(), 1) };
+            if ok == 0 {
+                return Err(LifecycleError::HostError);
             }
+            self.jobs.remove(&job.native_id);
             self.processes
                 .retain(|_, process| process.job_id != Some(job.native_id));
             Ok(())
@@ -574,6 +705,7 @@ mod windows_host {
                 expected_image_name: file_name(&spec.command)
                     .unwrap_or_else(|| spec.command.clone()),
                 allowed_child_image_names: Vec::new(),
+                window_selector: AppWindowSelector::default(),
                 packaged_cannot_join_job: false,
             };
             let process = self.create_suspended(&reset_launch)?;
@@ -627,8 +759,16 @@ mod windows_host {
         }
 
         fn root_window_handle(&self, pid: u32) -> Option<String> {
+            self.root_window_handle_for_selector(pid, &AppWindowSelector::default())
+        }
+
+        fn root_window_handle_for_selector(
+            &self,
+            pid: u32,
+            selector: &AppWindowSelector,
+        ) -> Option<String> {
             for _ in 0..20 {
-                if let Some(hwnd) = root_window_handle_for_pid(pid) {
+                if let Some(hwnd) = root_window_handle_for_pid(pid, selector) {
                     return Some(format!("0x{:X}", hwnd as usize));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -726,9 +866,10 @@ mod windows_host {
             .unwrap_or_else(|| exe_file_from_entry(entry));
         let creation_time =
             process_creation_time(process.raw()).unwrap_or_else(|_| "unknown".into());
-        let root_window_handle = root_window_handle_for_pid(entry.th32ProcessID)
-            .map(|hwnd| format!("0x{:X}", hwnd as usize))
-            .unwrap_or_else(|| "0x0".to_string());
+        let root_window_handle =
+            root_window_handle_for_pid(entry.th32ProcessID, &AppWindowSelector::default())
+                .map(|hwnd| format!("0x{:X}", hwnd as usize))
+                .unwrap_or_else(|| "0x0".to_string());
         Some(HostProcess {
             pid: entry.th32ProcessID,
             creation_time,
@@ -783,17 +924,21 @@ mod windows_host {
         Ok(String::from_utf16_lossy(&buffer))
     }
 
-    fn root_window_handle_for_pid(pid: u32) -> Option<HANDLE> {
+    fn root_window_handle_for_pid(pid: u32, selector: &AppWindowSelector) -> Option<HANDLE> {
         #[repr(C)]
-        struct Search {
+        struct Search<'a> {
             pid: u32,
+            selector: &'a AppWindowSelector,
             hwnd: HANDLE,
         }
         unsafe extern "system" fn enum_proc(hwnd: HANDLE, lparam: isize) -> i32 {
-            let search = &mut *(lparam as *mut Search);
+            let search = &mut *(lparam as *mut Search<'_>);
             let mut window_pid = 0u32;
             GetWindowThreadProcessId(hwnd, &mut window_pid);
-            if window_pid == search.pid && IsWindowVisible(hwnd) != 0 {
+            if window_pid == search.pid
+                && IsWindowVisible(hwnd) != 0
+                && window_title_matches(hwnd, search.selector)
+            {
                 search.hwnd = hwnd;
                 0
             } else {
@@ -802,6 +947,7 @@ mod windows_host {
         }
         let mut search = Search {
             pid,
+            selector,
             hwnd: null_mut_handle(),
         };
         unsafe {
@@ -812,6 +958,28 @@ mod windows_host {
         } else {
             Some(search.hwnd)
         }
+    }
+
+    fn window_title_matches(hwnd: HANDLE, selector: &AppWindowSelector) -> bool {
+        let Some(pattern) = selector.title_pattern.as_deref() else {
+            return true;
+        };
+        let title = window_title(hwnd);
+        !title.is_empty() && title.contains(pattern)
+    }
+
+    fn window_title(hwnd: HANDLE) -> String {
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; len as usize + 1];
+        let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+        if copied <= 0 {
+            return String::new();
+        }
+        buffer.truncate(copied as usize);
+        String::from_utf16_lossy(&buffer)
     }
 
     fn null_mut_handle() -> HANDLE {

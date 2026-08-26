@@ -15,10 +15,11 @@ use companion::ipc::dto::{
     LocalExecutionPermit, ResolvedDesktopAction, TargetKind, WindowOperation,
 };
 use companion::permit::{PermitBinding, PermitError, PermitStore};
+use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::action::{
-    classify_desktop_action, desktop_action_digest_sha256, ensure_companion_accepts_uia_work,
-    execute_desktop_action, execute_desktop_action_request,
+    authorization_risk_covers_action, classify_desktop_action, desktop_action_digest_sha256,
+    ensure_companion_accepts_uia_work, execute_desktop_action, execute_desktop_action_request,
     execute_desktop_action_request_before_deadline, DesktopActionError,
 };
 use companion::uia::protocol::{
@@ -185,6 +186,7 @@ fn target() -> UiaSessionTarget {
         session_id: "sess-1".into(),
         process_id: 4242,
         root_window_handle: "0x10".into(),
+        window_selector: AppWindowSelector::default(),
     }
 }
 
@@ -240,6 +242,79 @@ fn desktop_action_risk_classification_matches_the_safety_model() {
         window_operation: WindowOperation::Focus,
     };
     assert_eq!(classify_desktop_action(&focus), Risk::Normal);
+}
+
+#[test]
+fn policy_escalated_click_risk_is_authorized_but_downgrades_are_rejected() {
+    let click = click_action("act-delete-all");
+    assert_eq!(classify_desktop_action(&click), Risk::Normal);
+    assert!(authorization_risk_covers_action(
+        &click,
+        Risk::ExternalSideEffect
+    ));
+    assert!(authorization_risk_covers_action(&click, Risk::Destructive));
+    assert!(authorization_risk_covers_action(
+        &click,
+        Risk::ProductionForbidden
+    ));
+
+    let mut input = click_action("act-input");
+    input.kind = DesktopActionKind::Input {
+        value_ref: "secret-ref".into(),
+    };
+    assert!(!authorization_risk_covers_action(&input, Risk::Normal));
+    assert!(authorization_risk_covers_action(
+        &input,
+        Risk::ExternalSideEffect
+    ));
+    assert!(authorization_risk_covers_action(&input, Risk::Destructive));
+
+    let mut close = click_action("act-close");
+    close.kind = DesktopActionKind::Window {
+        window_operation: WindowOperation::Close,
+    };
+    assert!(!authorization_risk_covers_action(&close, Risk::Normal));
+    assert!(!authorization_risk_covers_action(
+        &close,
+        Risk::ExternalSideEffect
+    ));
+    assert!(authorization_risk_covers_action(&close, Risk::Destructive));
+}
+
+#[test]
+fn approved_policy_escalated_click_consumes_permit_and_executes() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let action = click_action("act-delete-all");
+    let binding = binding_for("act-delete-all", Risk::Destructive);
+    let token = match companion.request_permit(
+        &approval_for("act-delete-all", Risk::Destructive),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(permit) => permit.token,
+        other => panic!("expected policy-escalated permit issue, got {other:?}"),
+    };
+
+    let outcome = execute_desktop_action(
+        &mut companion,
+        &mut supervisor,
+        &target(),
+        &action,
+        &token,
+        &binding,
+        Duration::from_millis(50),
+    )
+    .expect("approved policy-escalated click executes");
+
+    assert_eq!(outcome, ActionOutcomeReport::Ok);
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -847,6 +922,41 @@ fn local_execution_permit(
         expires_at,
         value_binding,
     }
+}
+
+#[test]
+fn action_execute_rejects_understated_permit_risk_before_dispatch() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let mut action = click_action("act-close");
+    action.kind = DesktopActionKind::Window {
+        window_operation: WindowOperation::Close,
+    };
+    action.uia_pattern = Some("Window".to_string());
+    let mut understated = binding_for("act-close", Risk::ExternalSideEffect);
+    let permit = issue_local_execution_permit(&mut companion, &action, &mut understated, None);
+
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            &target(),
+            &action,
+            &permit,
+            None,
+            &understated,
+            Duration::from_millis(50),
+        ),
+        Err(DesktopActionError::BindingMismatch)
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[test]

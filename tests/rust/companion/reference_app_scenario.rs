@@ -21,6 +21,7 @@ use companion::ipc::dto::{
     DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind,
 };
 use companion::permit::PermitBinding;
+use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::action::execute_desktop_action;
 use companion::uia::mapping::MASKED_VALUE;
@@ -123,6 +124,7 @@ fn target() -> UiaSessionTarget {
         session_id: "sess-ref".into(),
         process_id: 4242,
         root_window_handle: "0x10".into(),
+        window_selector: AppWindowSelector::default(),
     }
 }
 

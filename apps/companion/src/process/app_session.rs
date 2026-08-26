@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use crate::process::job_object::{
-    AppLaunchSpec, DesktopProcessHost, HostJob, LifecycleError, ResetSpec,
+    AppLaunchSpec, AppWindowSelector, DesktopProcessHost, HostJob, LifecycleError, ResetSpec,
 };
 use crate::random::random_bytes;
 
@@ -26,6 +26,7 @@ pub struct AppSessionState {
     pub creation_time: String,
     pub image_name: String,
     pub root_window_handle: String,
+    pub window_selector: AppWindowSelector,
     allowed_child_image_names: Vec<String>,
     job: HostJob,
 }
@@ -133,10 +134,17 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             return Err(err);
         }
 
-        let root_window_handle = self
+        let root_window_handle = match self
             .host
-            .root_window_handle(process.pid)
-            .unwrap_or_else(|| process.root_window_handle.clone());
+            .root_window_handle_for_selector(process.pid, &spec.window_selector)
+        {
+            Some(handle) => handle,
+            None if spec.window_selector.is_empty() => process.root_window_handle.clone(),
+            None => {
+                let _ = self.host.terminate_job(job);
+                return Err(LifecycleError::AppLaunchFailed);
+            }
+        };
         let state = AppSessionState {
             session_id: session_id.to_string(),
             process_group_id: hex::encode(random_bytes::<16>()),
@@ -144,6 +152,7 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             creation_time: process.creation_time.clone(),
             image_name: process.image_name.clone(),
             root_window_handle,
+            window_selector: spec.window_selector.clone(),
             allowed_child_image_names: spec.allowed_child_image_names.clone(),
             job,
         };
@@ -212,7 +221,8 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         ) {
             return Err(LifecycleError::AppLifecycleUnsupported);
         }
+        self.host.terminate_job(session.job)?;
         self.sessions.remove(session_id);
-        self.host.terminate_job(session.job)
+        Ok(())
     }
 }

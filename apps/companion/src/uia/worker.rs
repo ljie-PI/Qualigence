@@ -12,6 +12,7 @@
 use crate::ipc::dto::{
     DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, WindowOperation,
 };
+use crate::process::job_object::AppWindowSelector;
 use crate::uia::mapping::{masked_value, role_for_control_type};
 use crate::uia::protocol::{
     ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode,
@@ -51,6 +52,7 @@ impl SyntheticUiaCapture {
 
 impl UiaCapture for SyntheticUiaCapture {
     fn capture(&mut self, target: &UiaSessionTarget) -> Result<UiaSource, UiaError> {
+        synthetic_root_matches_selector(&target.window_selector)?;
         let process_id = if target.process_id == 0 {
             self.process_id
         } else {
@@ -65,10 +67,11 @@ impl UiaCapture for SyntheticUiaCapture {
 
     fn execute(
         &mut self,
-        _target: &UiaSessionTarget,
+        target: &UiaSessionTarget,
         action: &ResolvedDesktopAction,
         value: Option<&DesktopPlaintextValue>,
     ) -> Result<ActionOutcomeReport, UiaError> {
+        synthetic_root_matches_selector(&target.window_selector)?;
         if !action_pattern_is_supported(action) {
             return Err(UiaError::Reported("UiaPatternUnsupported".to_string()));
         }
@@ -85,6 +88,14 @@ impl UiaCapture for SyntheticUiaCapture {
 
 /// Build the deterministic synthetic `uia/v1` source. Also used directly by the
 /// TypeScript golden-payload fixtures via a serialized copy.
+fn synthetic_root_matches_selector(selector: &AppWindowSelector) -> Result<(), UiaError> {
+    if selector.matches(Some("Reference App"), Some("MainWindow")) {
+        Ok(())
+    } else {
+        Err(UiaError::Reported("AppTargetWindowNotFound".to_string()))
+    }
+}
+
 pub fn synthetic_source(session_id: &str, process_id: i32, captured_at: &str) -> UiaSource {
     let window = UiaSourceNode {
         node_id: "window".into(),
@@ -275,8 +286,9 @@ mod windows_uia {
 
     use super::{
         action_pattern_is_supported, masked_value, role_for_control_type, ActionOutcomeReport,
-        DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, UiaCapture, UiaError,
-        UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode, WindowOperation,
+        AppWindowSelector, DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction,
+        UiaCapture, UiaError, UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode,
+        WindowOperation,
     };
     use windows::core::BSTR;
     use windows::Win32::Foundation::{HWND, RECT};
@@ -513,11 +525,52 @@ mod windows_uia {
             &self,
             target: &UiaSessionTarget,
         ) -> Result<IUIAutomationElement, UiaError> {
-            let hwnd = parse_hwnd(&target.root_window_handle)?;
-            let root = unsafe { self.automation.ElementFromHandle(hwnd) }
+            if let Ok(hwnd) = parse_hwnd(&target.root_window_handle) {
+                if let Ok(root) = unsafe { self.automation.ElementFromHandle(hwnd) } {
+                    if verify_process_scope(&root, target.process_id).is_ok()
+                        && element_matches_window_selector(&root, &target.window_selector)?
+                    {
+                        return Ok(root);
+                    }
+                    if target.window_selector.is_empty() {
+                        return Err(UiaError::Reported("UiaAccessDenied".to_string()));
+                    }
+                } else if target.window_selector.is_empty() {
+                    return Err(UiaError::Reported("UiaAccessDenied".to_string()));
+                }
+            } else if target.window_selector.is_empty() {
+                return Err(UiaError::Reported("UiaAccessDenied".to_string()));
+            }
+
+            self.find_matching_top_level_window(target)
+        }
+
+        fn find_matching_top_level_window(
+            &self,
+            target: &UiaSessionTarget,
+        ) -> Result<IUIAutomationElement, UiaError> {
+            let desktop = unsafe { self.automation.GetRootElement() }
                 .map_err(|_| UiaError::Reported("UiaAccessDenied".to_string()))?;
-            verify_process_scope(&root, target.process_id)?;
-            Ok(root)
+            let condition = unsafe { self.automation.CreateTrueCondition() }
+                .map_err(|_| UiaError::TargetUnresponsive)?;
+            let children = unsafe { desktop.FindAll(TreeScope_Children, &condition) }
+                .map_err(|_| UiaError::Reported("AppTargetWindowNotFound".to_string()))?;
+            let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
+            if len > MAX_CAPTURE_NODES {
+                return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+            }
+            for i in 0..len {
+                let Ok(candidate) = (unsafe { children.GetElement(i as i32) }) else {
+                    continue;
+                };
+                if verify_process_scope(&candidate, target.process_id).is_err() {
+                    continue;
+                }
+                if element_matches_window_selector(&candidate, &target.window_selector)? {
+                    return Ok(candidate);
+                }
+            }
+            Err(UiaError::Reported("AppTargetWindowNotFound".to_string()))
         }
 
         fn walk(
@@ -692,6 +745,19 @@ mod windows_uia {
             }
             Err(UiaError::Reported("UiaElementNotFound".to_string()))
         }
+    }
+
+    fn element_matches_window_selector(
+        element: &IUIAutomationElement,
+        selector: &AppWindowSelector,
+    ) -> Result<bool, UiaError> {
+        if selector.is_empty() {
+            return Ok(true);
+        }
+        let title = current_bstr(element, |element| unsafe { element.CurrentName() })?;
+        let automation_id =
+            current_bstr(element, |element| unsafe { element.CurrentAutomationId() })?;
+        Ok(selector.matches(title.as_deref(), automation_id.as_deref()))
     }
 
     fn current_bstr<F>(element: &IUIAutomationElement, f: F) -> Result<Option<String>, UiaError>

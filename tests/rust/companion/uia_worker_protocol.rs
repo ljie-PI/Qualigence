@@ -12,12 +12,13 @@ use companion::ipc::dto::{
     DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind,
 };
 use companion::permit::{PermitBinding, PermitStore};
+use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::mapping::MASKED_VALUE;
 use companion::uia::protocol::{
-    UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
 };
-use companion::uia::worker::synthetic_source;
+use companion::uia::worker::{synthetic_source, SyntheticUiaCapture, UiaCapture};
 use companion::uia::worker_supervisor::{
     RequestDeadline, UiaWorkerSupervisor, WorkerCancellation, WorkerCancellationCheckpoint,
     WorkerError, WorkerHandle, WorkerSpawner,
@@ -103,6 +104,7 @@ fn target(session_id: &str) -> UiaSessionTarget {
         session_id: session_id.to_string(),
         process_id: 4242,
         root_window_handle: "0x10".to_string(),
+        window_selector: AppWindowSelector::default(),
     }
 }
 
@@ -143,6 +145,50 @@ fn uia_source_round_trips_through_json_with_masked_password() {
         .expect("password node present");
     assert!(password.is_password);
     assert_eq!(password.value.as_deref(), Some(MASKED_VALUE));
+}
+
+#[test]
+fn worker_request_preserves_app_target_window_selector_fields() {
+    let mut selected = target("sess-1");
+    selected.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    let body = serde_json::to_string(&WorkerRequest::Capture { target: selected })
+        .expect("worker request serializes");
+    assert!(body.contains("titlePattern"));
+    assert!(body.contains("Reference App"));
+    assert!(body.contains("automationId"));
+    assert!(body.contains("MainWindow"));
+}
+
+#[test]
+fn synthetic_worker_enforces_app_target_window_selector_on_capture_and_action() {
+    let mut capture = SyntheticUiaCapture::new(4242, "2026-08-02T00:00:00.000Z");
+    let mut selected = target("sess-1");
+    selected.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    assert!(capture.capture(&selected).is_ok());
+    assert_eq!(
+        capture.execute(&selected, &click_action("act-1"), None),
+        Ok(ActionOutcomeReport::Ok)
+    );
+
+    let mut wrong = selected.clone();
+    wrong.window_selector = AppWindowSelector {
+        title_pattern: Some("Splash".into()),
+        automation_id: Some("SplashWindow".into()),
+    };
+    assert_eq!(
+        capture.capture(&wrong),
+        Err(UiaError::Reported("AppTargetWindowNotFound".into()))
+    );
+    assert_eq!(
+        capture.execute(&wrong, &click_action("act-2"), None),
+        Err(UiaError::Reported("AppTargetWindowNotFound".into()))
+    );
 }
 
 #[test]

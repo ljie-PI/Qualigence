@@ -5,8 +5,8 @@
 
 use companion::process::app_session::AppSessionManager;
 use companion::process::job_object::{
-    AppLaunchSpec, DesktopProcessHost, FakeDesktopProcessHost, HostProcess, LifecycleError,
-    ResetSpec,
+    AppLaunchSpec, AppWindowSelector, DesktopProcessHost, FakeDesktopProcessHost, HostProcess,
+    HostWindow, LifecycleError, ResetSpec,
 };
 
 fn spec() -> AppLaunchSpec {
@@ -16,6 +16,7 @@ fn spec() -> AppLaunchSpec {
         working_directory: Some("C:/Apps".into()),
         expected_image_name: "ReferenceApp.exe".into(),
         allowed_child_image_names: vec!["ReferenceHelper.exe".into()],
+        window_selector: AppWindowSelector::default(),
         packaged_cannot_join_job: false,
     }
 }
@@ -216,6 +217,72 @@ fn a_packaged_app_that_cannot_join_a_job_fails_as_unsupported() {
 }
 
 #[test]
+fn launch_selects_the_matching_app_target_window_instead_of_first_visible_window() {
+    let mut target = spec();
+    target.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    let mut host = FakeDesktopProcessHost::new();
+    host.set_next_root_windows(vec![
+        HostWindow {
+            handle: "0xSPLASH".into(),
+            title: Some("Loading".into()),
+            automation_id: Some("SplashWindow".into()),
+        },
+        HostWindow {
+            handle: "0xMAIN".into(),
+            title: Some("Reference App - Ready".into()),
+            automation_id: Some("MainWindow".into()),
+        },
+    ]);
+    let mut manager = AppSessionManager::new(host);
+
+    let session = manager
+        .launch("sess-1", &target)
+        .expect("matching window launches");
+    assert_eq!(session.root_window_handle, "0xMAIN");
+    assert_eq!(session.window_selector, target.window_selector);
+}
+
+#[test]
+fn launch_fails_closed_when_no_visible_window_matches_the_app_target_selector() {
+    let mut target = spec();
+    target.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    let mut host = FakeDesktopProcessHost::new();
+    host.set_next_root_windows(vec![HostWindow {
+        handle: "0xSPLASH".into(),
+        title: Some("Loading".into()),
+        automation_id: Some("SplashWindow".into()),
+    }]);
+    let mut manager = AppSessionManager::new(host);
+
+    let result = manager.launch("sess-1", &target);
+    assert!(matches!(result, Err(LifecycleError::AppLaunchFailed)));
+    assert!(manager.session("sess-1").is_none());
+}
+
+#[test]
+fn shutdown_failure_preserves_session_authority_and_running_process() {
+    let mut manager = AppSessionManager::new(FakeDesktopProcessHost::new());
+    let session = manager.launch("sess-1", &spec()).expect("launch succeeds");
+    manager
+        .host_mut()
+        .fail_next_terminate_job(LifecycleError::HostError);
+
+    assert_eq!(manager.shutdown("sess-1"), Err(LifecycleError::HostError));
+    assert!(manager.session("sess-1").is_some());
+    assert!(manager.host().is_running(session.pid));
+
+    manager.shutdown("sess-1").expect("retry succeeds");
+    assert!(manager.session("sess-1").is_none());
+    assert!(!manager.host().is_running(session.pid));
+}
+
+#[test]
 fn reset_uses_the_declared_argv_and_timeout() {
     let mut manager = AppSessionManager::new(FakeDesktopProcessHost::new());
     manager.launch("sess-1", &spec()).expect("launch succeeds");
@@ -233,6 +300,27 @@ fn reset_uses_the_declared_argv_and_timeout() {
         .clone()
         .expect("reset spec recorded");
     assert_eq!(recorded, reset);
+}
+
+#[test]
+fn reset_failure_surfaces_error_and_preserves_session_authority() {
+    let mut manager = AppSessionManager::new(FakeDesktopProcessHost::new());
+    let session = manager.launch("sess-1", &spec()).expect("launch succeeds");
+    manager
+        .host_mut()
+        .fail_next_terminate_job(LifecycleError::HostError);
+    let reset = ResetSpec {
+        command: "C:/Apps/reset.exe".into(),
+        args: vec!["--wipe".into()],
+        timeout_ms: 5_000,
+    };
+
+    assert_eq!(
+        manager.reset("sess-1", &reset),
+        Err(LifecycleError::HostError)
+    );
+    assert!(manager.session("sess-1").is_some());
+    assert!(manager.host().is_running(session.pid));
 }
 
 #[test]
@@ -336,6 +424,7 @@ fn native_windows_host_launches_in_job_and_shutdown_verifies_membership() {
         working_directory: None,
         expected_image_name: "powershell.exe".into(),
         allowed_child_image_names: vec![],
+        window_selector: AppWindowSelector::default(),
         packaged_cannot_join_job: false,
     };
     let mut manager =
