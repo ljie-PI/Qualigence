@@ -345,7 +345,7 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
-  it("fails closed when a forged duplicate page record adds target membership outside the host mask snapshot", async () => {
+  it("fails closed when an own page array iterator hides a forged duplicate page record", async () => {
     await enterSecret();
     await session.withPage(async (page) => {
       await page.evaluate((input) => {
@@ -398,6 +398,14 @@ describe("CDP screenshot masking", () => {
           classifiedElements: [forged],
           classifiedMaskIds: ["qm-forged-duplicate"],
         });
+        const records = state!.records! as unknown as Array<unknown>;
+        Object.defineProperty(records, Symbol.iterator, {
+          configurable: true,
+          value: function* hiddenDuplicateRecordIterator(): Generator<unknown, undefined, unknown> {
+            yield records[0];
+            return undefined;
+          },
+        });
       }, {
         stateProperty: "__qualigenceSensitiveEvidenceState",
         targetIdsProperty: "__qualigenceSensitiveTargetIds",
@@ -409,6 +417,48 @@ describe("CDP screenshot masking", () => {
     await expect(new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
     expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when a later same-page observation reflects a retired host-known valueRef form", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        type MutableElement = {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const reflected = host.document.createElement("div");
+        reflected.id = "later-plaintext-reflection";
+        reflected.textContent = secret;
+        reflected.setAttribute("data-qualigence-observe", "true");
+        Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "240px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        host.document.body.append(reflected);
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 

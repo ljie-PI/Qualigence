@@ -166,6 +166,13 @@ The real Chromium E2E must tamper with own/prototype form, attribute, text, styl
 - Validation after fixes: focused non-E2E Gate passed (6 files, 142 tests); value-ref E2E passed (1 file, 5 tests); `corepack pnpm typecheck` passed; `git diff --check` passed.
 - Matrix notes unchanged for non-core rows: explicit cancel/timeout-before/after-screenshot injection and external Artifact/Spool persistence-failure injection still have no dedicated in-scope hooks and are not marked pass.
 
+### review6 core-fix evidence — 2026-08-26
+
+- Review6 Standards Critical fixed in this worktree: the sensitive observation callback no longer enumerates page-sensitive records/elements/memberships with `for...of` or page-dispatched `@@iterator`; it clones DOM collections and page-owned arrays through bounded index reads, records retired scheduler cleanup through index loops, and the static authority Gate now rejects `for...of`/`Symbol.iterator` in the page-state validation callbacks. Added component and Runner/Spool duplicate-record regressions where an own array iterator hides the forged duplicate record; the capture still fails closed with `SensitiveEvidenceUnavailable` and no accepted artifact/plaintext.
+- Review6 Spec Critical fixed in this worktree: host-held sensitive scan records now remain active until navigation/session reset and are supplied to every authorized page observation. Retired page records are kept only as baseline support, while host records continue DOM-wide sensitive-form scanning after the first accepted capture; a later same-page untrusted reflection of a host-known valueRef form fails closed before Graph/PNG/Artifact registration. Added component and Chromium E2E regressions for a second observation after first capture retirement.
+- Validation after fixes: focused non-E2E Gate passed (6 files, 143 tests); value-ref E2E passed (1 file, 6 tests); `corepack pnpm typecheck` passed; `git diff --check` passed.
+- Matrix notes unchanged for non-core rows: explicit cancel/timeout-before/after-screenshot injection and external Artifact/Spool persistence-failure injection still have no dedicated in-scope hooks and are not marked pass.
+
 ## Acceptance
 
 - [ ] Every page callback in Allowed Files is statically inventoried; unresolved callbacks/reads fail, and all sensitive DOM reads use validated captured native authority.

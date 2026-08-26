@@ -20,6 +20,7 @@ import {
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   SENSITIVE_TARGET_IDS_PROPERTY,
   type SensitiveEvidencePageStateSnapshot,
+  type SensitiveEvidenceScanRecord,
   type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
@@ -528,9 +529,10 @@ interface BrowserObservationCaptureInput {
   readonly sensitiveShadowRootsProperty: string;
   readonly maxMaskRegions: number;
   readonly maxShadowRoots: number;
+  readonly sensitiveRecords: readonly SensitiveEvidenceScanRecord[];
 }
 
-function browserObservationCaptureInput(): BrowserObservationCaptureInput {
+function browserObservationCaptureInput(session: PlaywrightBrowserSession): BrowserObservationCaptureInput {
   return {
     sensitiveTargetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
     sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
@@ -538,10 +540,12 @@ function browserObservationCaptureInput(): BrowserObservationCaptureInput {
     sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
     maxMaskRegions: MAX_REFLECTED_REGIONS,
     maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
+    sensitiveRecords: session.sensitiveEvidenceScanRecords(),
   };
 }
 
 async function collectAuthorizedPageObservation(
+  session: PlaywrightBrowserSession,
   page: Page,
   assertCaptureAuthority: () => void,
 ): Promise<BrowserObservationCapture> {
@@ -549,7 +553,7 @@ async function collectAuthorizedPageObservation(
     assertCaptureAuthority,
     async () => (await page.evaluate(
       collectPageObservation,
-      browserObservationCaptureInput(),
+      browserObservationCaptureInput(session),
     )) as BrowserObservationCapture,
   );
 }
@@ -591,6 +595,7 @@ function retirePageSensitiveEvidence(input: { readonly stateProperty: string; re
     active?: unknown;
     poisoned?: boolean;
     records?: { readonly observer?: { disconnect(): void } }[];
+    retiredRecords?: { readonly observer?: { disconnect(): void } }[];
     retainedSchedulerEpochs?: { processSchedulerCallback?: () => void }[];
   } | undefined;
   const registry = (window as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
@@ -601,12 +606,20 @@ function retirePageSensitiveEvidence(input: { readonly stateProperty: string; re
   if (state.poisoned === true) return "unavailable";
   const schedulerStatus = registry?.sensitiveSchedulerRetirementStatus?.() ?? "unavailable";
   if (schedulerStatus !== "retired") return schedulerStatus;
-  for (const record of state.records ?? []) {
-    record.observer?.disconnect();
+  const records = state.records ?? [];
+  for (let index = 0; index < records.length; index += 1) {
+    records[index]?.observer?.disconnect();
   }
-  for (const epoch of state.retainedSchedulerEpochs ?? []) {
-    delete epoch.processSchedulerCallback;
+  const epochs = state.retainedSchedulerEpochs ?? [];
+  for (let index = 0; index < epochs.length; index += 1) {
+    delete epochs[index]?.processSchedulerCallback;
   }
+  const retiredRecords = state.retiredRecords ?? [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record !== undefined) retiredRecords[retiredRecords.length] = record;
+  }
+  state.retiredRecords = retiredRecords;
   state.records = [];
   state.retainedSchedulerEpochs = [];
   return "retired";
@@ -667,7 +680,24 @@ function collectPageObservation(
   const dom: NativeDomAuthority = nativeDom;
 
   const apply = <T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T => dom.reflectApply(fn, receiver, args as never[]) as T;
-  const arrayFrom = <T>(items: ArrayLike<T> | Iterable<T>): T[] => apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+  const arrayFrom = <T>(items: ArrayLike<T>): T[] => {
+    const length = arrayLikeLength(items);
+    if (length === undefined) throw new Error("Untrusted array-like length.");
+    const result: T[] = [];
+    for (let index = 0; index < length; index += 1) {
+      result[index] = items[index]!;
+    }
+    return result;
+  };
+  const appendArray = <T>(target: T[], items: readonly T[]): void => {
+    for (let index = 0; index < items.length; index += 1) {
+      target[target.length] = items[index]!;
+    }
+  };
+  const arrayLikeLength = (items: { readonly length?: unknown }): number | undefined => {
+    const length = items.length;
+    return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
+  };
   const getAttribute = (element: Element, name: string): string | null => apply(dom.elementGetAttribute, element, [name]);
   const hasAttribute = (element: Element, name: string): boolean => apply(dom.elementHasAttribute, element, [name]);
   const setAttribute = (element: Element, name: string, value: string): void => { apply(dom.elementSetAttribute, element, [name, value]); };
@@ -694,6 +724,9 @@ function collectPageObservation(
   const styleProperty = (style: CSSStyleDeclaration, name: string): string => apply(dom.cssStyleDeclarationGetPropertyValue, style, [name]);
   const weakMapGet = <K extends object, V>(map: WeakMap<K, V>, key: K): V | undefined => apply(dom.weakMapGet as (...args: never[]) => V | undefined, map, [key]);
   const isTag = (element: Element, name: string): boolean => tagName(element) === name;
+  const clonedHostSensitiveRecords = cloneSensitiveScanRecords(input.sensitiveRecords);
+  if (clonedHostSensitiveRecords === undefined) return failedPageObservation();
+  const hostSensitiveRecords: readonly SensitiveEvidenceScanRecord[] = clonedHostSensitiveRecords;
 
   function isVisible(element: Element): boolean {
     const style = apply(dom.windowGetComputedStyle, window, [element]);
@@ -748,7 +781,9 @@ function collectPageObservation(
     const labelledBy = getAttribute(element, "aria-labelledby");
     if (labelledBy) {
       const labels: string[] = [];
-      for (const id of labelledBy.split(/\s+/)) {
+      const labelIds = labelledBy.split(/\s+/);
+      for (let index = 0; index < labelIds.length; index += 1) {
+        const id = labelIds[index]!;
         const node = apply(dom.documentGetElementById, document, [id]);
         if (node !== null) labels[labels.length] = textContent(node);
       }
@@ -797,15 +832,17 @@ function collectPageObservation(
   function readSensitiveTargetIds(element: Element): readonly string[] {
     const ids: string[] = [];
     const value = (element as unknown as Element & Record<string, unknown>)[input.sensitiveTargetIdsProperty];
-    if (dom.arrayIsArray(value) && allStrings(value)) {
-      for (const markerId of value) pushUniqueString(ids, markerId);
+    const targetIds = cloneStringArray(value);
+    if (targetIds !== undefined) {
+      for (let index = 0; index < targetIds.length; index += 1) pushUniqueString(ids, targetIds[index]!);
     }
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly { readonly markerId: string; readonly classifiedElements?: readonly Element[] }[];
     } | undefined;
     const records = state?.records ?? [];
     if (dom.arrayIsArray(records)) {
-      for (const record of records) {
+      for (let index = 0; index < records.length; index += 1) {
+        const record = records[index]!;
         if (typeof record.markerId !== "string" || !dom.arrayIsArray(record.classifiedElements)) continue;
         if (arrayHasIdentity(record.classifiedElements, element)) pushUniqueString(ids, record.markerId);
       }
@@ -813,23 +850,16 @@ function collectPageObservation(
     return ids;
   }
 
-  function allStrings(values: readonly unknown[]): boolean {
-    for (const value of values) {
-      if (typeof value !== "string") return false;
-    }
-    return true;
-  }
-
   function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
-    for (const value of values) {
-      if (value === candidate) return true;
+    for (let index = 0; index < values.length; index += 1) {
+      if (values[index] === candidate) return true;
     }
     return false;
   }
 
   function arrayHasString(values: readonly string[], candidate: string): boolean {
-    for (const value of values) {
-      if (value === candidate) return true;
+    for (let index = 0; index < values.length; index += 1) {
+      if (values[index] === candidate) return true;
     }
     return false;
   }
@@ -861,8 +891,9 @@ function collectPageObservation(
       const selectedText = selected === undefined ? "" : optionText(selected);
       if (selectedText !== "") values.push(selectedText);
     }
-    for (const attribute of ["aria-label", "title", "value"] as const) {
-      const attributeValue = getAttribute(element, attribute);
+    const attributes = ["aria-label", "title", "value"] as const;
+    for (let index = 0; index < attributes.length; index += 1) {
+      const attributeValue = getAttribute(element, attributes[index]!);
       if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
     }
     return values;
@@ -870,14 +901,17 @@ function collectPageObservation(
 
   function directText(element: Element): string {
     let text = "";
-    for (const node of childNodes(element)) {
+    const nodes = childNodes(element);
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index]!;
       if (node.nodeType === 3) text += textData(node as Text);
     }
     return text;
   }
 
   function carriesForm(value: string, forms: readonly string[]): boolean {
-    for (const form of forms) {
+    for (let index = 0; index < forms.length; index += 1) {
+      const form = forms[index]!;
       if (value === form || (form !== "" && value.includes(form))) return true;
     }
     return false;
@@ -889,10 +923,18 @@ function collectPageObservation(
 
   function findRecord<T extends { readonly markerId: string }>(records: readonly T[] | undefined, markerId: string): T | undefined {
     if (records === undefined || !dom.arrayIsArray(records)) return undefined;
-    for (const record of records) {
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index]!;
       if (record.markerId === markerId) return record;
     }
     return undefined;
+  }
+
+  function findPageSensitiveRecord<T extends { readonly markerId: string }>(
+    state: { readonly records?: readonly T[]; readonly retiredRecords?: readonly T[] } | undefined,
+    markerId: string,
+  ): T | undefined {
+    return findRecord(state?.records, markerId) ?? findRecord(state?.retiredRecords, markerId);
   }
 
   function baselineAllows(element: Element, markerId: string, value: string): boolean {
@@ -901,8 +943,12 @@ function collectPageObservation(
         readonly markerId: string;
         readonly baseline?: WeakMap<Element, readonly string[]>;
       }[];
+      readonly retiredRecords?: readonly {
+        readonly markerId: string;
+        readonly baseline?: WeakMap<Element, readonly string[]>;
+      }[];
     } | undefined;
-    const record = findRecord(state?.records, markerId);
+    const record = findPageSensitiveRecord(state, markerId);
     if (record?.baseline === undefined) return false;
     return arrayHasString(weakMapGet(record.baseline, element) ?? [], value);
   }
@@ -913,8 +959,12 @@ function collectPageObservation(
         readonly markerId: string;
         readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
       }[];
+      readonly retiredRecords?: readonly {
+        readonly markerId: string;
+        readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
+      }[];
     } | undefined;
-    const record = findRecord(state?.records, markerId);
+    const record = findPageSensitiveRecord(state, markerId);
     if (record?.shadowBaseline === undefined) return false;
     return arrayHasString(weakMapGet(record.shadowBaseline, node) ?? [], value);
   }
@@ -929,38 +979,52 @@ function collectPageObservation(
         readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
       }[];
     } | undefined;
-    if (state === undefined) return false;
-    if (state.active !== undefined && state.active !== null) return true;
-    if (state.poisoned === true) return true;
-    const records = state.records ?? [];
-    if (records.length > 0 && shadowRootOverflow()) return true;
-    for (const element of queryDocument("*")) {
+    if (state?.active !== undefined && state.active !== null) return true;
+    if (state?.poisoned === true) return true;
+    if (hostSensitiveRecords.length > 0 && shadowRootOverflow()) return true;
+    const documentElements = queryDocument("*");
+    for (let elementIndex = 0; elementIndex < documentElements.length; elementIndex += 1) {
+      const element = documentElements[elementIndex]!;
       const ids = readSensitiveTargetIds(element);
-      for (const record of records) {
-        for (const value of sensitiveValues(element)) {
+      const values = sensitiveValues(element);
+      for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+        const record = hostSensitiveRecords[recordIndex]!;
+        const pendingPageRecord = findRecord(state?.records, record.markerId) !== undefined;
+        for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+          const value = values[valueIndex]!;
           if (!carriesForm(value, record.forms)) continue;
-          if (hasSensitiveTargetId(ids, record.markerId)) continue;
           if (baselineAllows(element, record.markerId, value)) continue;
+          if (sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
           return true;
         }
       }
     }
-    for (const root of shadowRoots()) {
-      for (const record of records) {
-        for (const value of shadowRootValues(root)) {
+    const roots = shadowRoots();
+    for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+      const root = roots[rootIndex]!;
+      for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+        const record = hostSensitiveRecords[recordIndex]!;
+        const pendingPageRecord = findRecord(state?.records, record.markerId) !== undefined;
+        const rootValues = shadowRootValues(root);
+        for (let valueIndex = 0; valueIndex < rootValues.length; valueIndex += 1) {
+          const value = rootValues[valueIndex]!;
           if (!carriesForm(value, record.forms) || shadowBaselineAllows(root, record.markerId, value)) {
             continue;
           }
-          if (shadowRootMode(root) === "open" && openRootValueCoveredBySensitiveMarker(root, record.markerId, value)) {
+          if (shadowRootMode(root) === "open" && openRootValueCoveredBySensitiveMarker(root, record, value, pendingPageRecord)) {
             continue;
           }
           return true;
         }
-        for (const element of queryRoot(root, "*")) {
+        const elements = queryRoot(root, "*");
+        for (let elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+          const element = elements[elementIndex]!;
           const ids = readSensitiveTargetIds(element);
-          for (const value of sensitiveValues(element)) {
+          const values = sensitiveValues(element);
+          for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+            const value = values[valueIndex]!;
             if (!carriesForm(value, record.forms)) continue;
-            if (shadowRootMode(root) === "open" && hasSensitiveTargetId(ids, record.markerId)) continue;
+            if (shadowRootMode(root) === "open" && sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
             if (shadowBaselineAllows(element, record.markerId, value)) continue;
             return true;
           }
@@ -973,7 +1037,9 @@ function collectPageObservation(
   function shadowRootValues(root: ShadowRoot): readonly string[] {
     const values: string[] = [];
     let direct = "";
-    for (const node of childNodes(root)) {
+    const nodes = childNodes(root);
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index]!;
       if (node.nodeType === 3) direct += textData(node as Text);
     }
     if (direct !== "") values[values.length] = direct;
@@ -984,17 +1050,43 @@ function collectPageObservation(
 
   function observableElements(selector: string): Element[] {
     const elements = queryDocument(selector);
-    for (const root of shadowRoots()) {
-      if (shadowRootMode(root) === "open") elements.push(...queryRoot(root, selector));
+    const roots = shadowRoots();
+    for (let index = 0; index < roots.length; index += 1) {
+      const root = roots[index]!;
+      if (shadowRootMode(root) === "open") appendArray(elements, queryRoot(root, selector));
     }
     return elements;
   }
 
-  function openRootValueCoveredBySensitiveMarker(root: ShadowRoot, markerId: string, value: string): boolean {
-    if (hasSensitiveTargetId(readSensitiveTargetIds(shadowRootHost(root)), markerId)) return true;
-    for (const element of queryRoot(root, "*")) {
-      if (!hasSensitiveTargetId(readSensitiveTargetIds(element), markerId)) continue;
-      for (const candidate of sensitiveValues(element)) {
+  function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, pendingPageRecord: boolean): boolean {
+    if (hasSensitiveTargetId(ids, record.markerId)) {
+      if (pendingPageRecord || !isMaskableElement(element) || !isVisible(element)) return true;
+      const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
+      if (maskId !== null && arrayHasString(record.maskIds, maskId)) return true;
+    }
+    return sensitiveElementCoveredByAnyTrustedMask(element);
+  }
+
+  function sensitiveElementCoveredByAnyTrustedMask(element: Element): boolean {
+    if (!isMaskableElement(element) || !isVisible(element)) return true;
+    const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
+    if (maskId === null) return false;
+    for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+      if (arrayHasString(hostSensitiveRecords[recordIndex]!.maskIds, maskId)) return true;
+    }
+    return false;
+  }
+
+  function openRootValueCoveredBySensitiveMarker(root: ShadowRoot, record: SensitiveEvidenceScanRecord, value: string, pendingPageRecord: boolean): boolean {
+    const host = shadowRootHost(root);
+    if (sensitiveElementCoveredByAuthority(host, readSensitiveTargetIds(host), record, pendingPageRecord)) return true;
+    const elements = queryRoot(root, "*");
+    for (let elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+      const element = elements[elementIndex]!;
+      if (!sensitiveElementCoveredByAuthority(element, readSensitiveTargetIds(element), record, pendingPageRecord)) continue;
+      const values = sensitiveValues(element);
+      for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+        const candidate = values[valueIndex]!;
         if (value === candidate || (candidate !== "" && value.includes(candidate))) {
           return true;
         }
@@ -1042,7 +1134,8 @@ function collectPageObservation(
     if (!dom.arrayIsArray(records)) return failed();
     const maskIds: string[] = [];
     const pageRecords: Array<SensitiveEvidencePageStateSnapshot["records"][number]> = [];
-    for (const record of records) {
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const record = records[recordIndex]!;
       if (record.poisoned === true || typeof record.markerId !== "string") return failed();
       const forms = cloneStringArray(record.forms);
       const elements = record.classifiedElements ?? [];
@@ -1052,15 +1145,14 @@ function collectPageObservation(
       if ((record.classifiedRegions?.length ?? elements.length) > input.maxMaskRegions) return failed();
       const classifiedElementMaskIds: (string | undefined)[] = [];
       const classifiedElementTargetIds: string[][] = [];
-      let index = 0;
-      for (const element of elements) {
+      for (let index = 0; index < elements.length; index += 1) {
+        const element = elements[index]!;
         if (element.nodeType !== 1) return failed();
         const root = getRootNode(element);
         if (root !== element.ownerDocument && (!isShadowRootNode(root) || shadowRootMode(root) !== "open")) {
           return failed();
         }
         const id = recordMaskIds[index];
-        index += 1;
         if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) return failed();
         setAttribute(element, input.sensitiveMaskIdAttribute, id);
         const observedMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
@@ -1084,7 +1176,7 @@ function collectPageObservation(
     if (observedElementMemberships === undefined) return failed();
     return {
       status: "ok",
-      ids: [...maskIds],
+      ids: cloneStringArray(maskIds) ?? [],
       snapshot: {
         status: "ok",
         active: state.active !== undefined && state.active !== null,
@@ -1097,7 +1189,9 @@ function collectPageObservation(
 
   function observedSensitiveElementMemberships(): SensitiveEvidencePageStateSnapshot["observedElementMemberships"] | undefined {
     const memberships: Array<SensitiveEvidencePageStateSnapshot["observedElementMemberships"][number]> = [];
-    for (const element of observableElements("*")) {
+    const elements = observableElements("*");
+    for (let index = 0; index < elements.length; index += 1) {
+      const element = elements[index]!;
       const targetIdsValue = (element as unknown as Record<string, unknown>)[input.sensitiveTargetIdsProperty];
       const targetIds = targetIdsValue === undefined ? [] : cloneStringArray(targetIdsValue);
       if (targetIds === undefined) return undefined;
@@ -1116,9 +1210,24 @@ function collectPageObservation(
   function cloneStringArray(value: unknown): string[] | undefined {
     if (!dom.arrayIsArray(value)) return undefined;
     const result: string[] = [];
-    for (const entry of value) {
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = value[index];
       if (typeof entry !== "string") return undefined;
       result[result.length] = entry;
+    }
+    return result;
+  }
+
+  function cloneSensitiveScanRecords(value: unknown): SensitiveEvidenceScanRecord[] | undefined {
+    if (!dom.arrayIsArray(value)) return undefined;
+    const result: SensitiveEvidenceScanRecord[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const record = value[index] as SensitiveEvidenceScanRecord | undefined;
+      if (record === undefined || typeof record.markerId !== "string") return undefined;
+      const forms = cloneStringArray(record.forms);
+      const maskIds = cloneStringArray(record.maskIds);
+      if (forms === undefined || maskIds === undefined) return undefined;
+      result[result.length] = { markerId: record.markerId, forms, maskIds };
     }
     return result;
   }
@@ -1152,17 +1261,21 @@ function collectPageObservation(
       pending[pending.length] = root;
       return true;
     };
-    for (const root of registry?.roots ?? []) {
+    const registeredRoots = registry?.roots ?? [];
+    for (let index = 0; index < registeredRoots.length; index += 1) {
+      const root = registeredRoots[index];
       if (typeof (root as { readonly nodeType?: unknown }).nodeType === "number" && isShadowRootNode(root as Node) && !addRoot(root as ShadowRoot)) return pending;
     }
-    for (const element of queryDocument("*")) {
-      const root = shadowRoot(element);
+    const documentElements = queryDocument("*");
+    for (let index = 0; index < documentElements.length; index += 1) {
+      const root = shadowRoot(documentElements[index]!);
       if (root !== null && !addRoot(root)) return pending;
     }
     for (let index = 0; index < pending.length; index += 1) {
       const root = pending[index]!;
-      for (const element of queryRoot(root, "*")) {
-        const nestedShadowRoot = shadowRoot(element);
+      const rootElements = queryRoot(root, "*");
+      for (let elementIndex = 0; elementIndex < rootElements.length; elementIndex += 1) {
+        const nestedShadowRoot = shadowRoot(rootElements[elementIndex]!);
         if (nestedShadowRoot !== null && !addRoot(nestedShadowRoot)) return pending;
       }
     }
@@ -1177,7 +1290,8 @@ function collectPageObservation(
   const sensitiveMaskIds = pageSensitiveState.status === "ok" ? pageSensitiveState.ids : [];
   const titleElement = queryDocumentOne("title");
 
-  for (const element of elements) {
+  for (let elementIndex = 0; elementIndex < elements.length; elementIndex += 1) {
+    const element = elements[elementIndex]!;
     const sensitiveTargetIds = readSensitiveTargetIds(element);
     const isSensitiveTarget = sensitiveTargetIds.length > 0;
     const sensitiveMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
@@ -1300,7 +1414,7 @@ export class PlaywrightObserver implements Observer {
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         this.session.assertSensitiveEvidenceAvailable();
-        const captured = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+        const captured = await collectAuthorizedPageObservation(this.session, page, assertCaptureAuthority);
         if (captured.sensitiveEvidenceUnavailable) {
           this.session.markSensitiveEvidenceUnavailable();
         }
@@ -1308,7 +1422,7 @@ export class PlaywrightObserver implements Observer {
         await refreshPendingMaskSnapshotFromPageState(this.session, page, captured.sensitivePageState, assertCaptureAuthority);
         this.session.validatePendingSensitivePageState(captured.sensitivePageState);
         await this.hooks.afterDomCollection?.(page);
-        const preScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+        const preScreenshotCheck = await collectAuthorizedPageObservation(this.session, page, assertCaptureAuthority);
         if (preScreenshotCheck.sensitiveEvidenceUnavailable) {
           this.session.markSensitiveEvidenceUnavailable();
         }
@@ -1361,7 +1475,7 @@ export class PlaywrightObserver implements Observer {
         await this.hooks.afterGraphAssembly?.(page);
         await this.session.revalidateSensitivePromiseOwners(page, navigationGeneration);
         if (this.session.hasPendingSensitiveEvidenceCapture()) {
-          const afterGraphAssemblyCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+          const afterGraphAssemblyCheck = await collectAuthorizedPageObservation(this.session, page, assertCaptureAuthority);
           if (afterGraphAssemblyCheck.sensitiveEvidenceUnavailable) {
             this.session.markSensitiveEvidenceUnavailable();
           }
@@ -1389,7 +1503,7 @@ export class PlaywrightObserver implements Observer {
           this.session.markSensitiveEvidenceUnavailable();
           throw sensitiveEvidenceUnavailable();
         }
-        const postScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
+        const postScreenshotCheck = await collectAuthorizedPageObservation(this.session, page, assertCaptureAuthority);
         if (postScreenshotCheck.sensitiveEvidenceUnavailable) {
           this.session.markSensitiveEvidenceUnavailable();
         }

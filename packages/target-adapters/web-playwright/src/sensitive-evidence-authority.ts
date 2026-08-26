@@ -81,6 +81,12 @@ export interface SensitiveEvidenceMaskRefreshRequest {
   readonly maskIds: readonly string[];
 }
 
+export interface SensitiveEvidenceScanRecord {
+  readonly markerId: string;
+  readonly forms: readonly string[];
+  readonly maskIds: readonly string[];
+}
+
 interface SensitiveEvidenceRecord {
   readonly markerId: string;
   readonly navigationGeneration: number;
@@ -319,6 +325,14 @@ export class SensitiveEvidenceAuthority {
 
   maskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
     return [...this.records.values()].flatMap((record) => record.maskSnapshot.map((entry) => ({ ...entry })));
+  }
+
+  scanRecords(): readonly SensitiveEvidenceScanRecord[] {
+    return [...this.records.values()].map((record) => ({
+      markerId: record.markerId,
+      forms: [...record.forms],
+      maskIds: record.maskSnapshot.map((entry) => entry.maskId),
+    }));
   }
 
   clear(): void {

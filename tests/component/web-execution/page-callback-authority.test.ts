@@ -145,10 +145,20 @@ const dynamicCallbackConstruction: readonly RegExp[] = [
   /\beval\s*\(/,
 ];
 
+const forbiddenMutableIterationPatterns: readonly { readonly pattern: RegExp; readonly label: string }[] = [
+  { pattern: /\bfor\s*\([^)]*\bof\b[^)]*\)/g, label: "for...of" },
+  { pattern: /\bSymbol\.iterator\b/g, label: "Symbol.iterator" },
+  { pattern: /\[\s*Symbol\.iterator\s*\]/g, label: "[Symbol.iterator]" },
+];
+
 const approvedComputedReadPatterns: readonly RegExp[] = [
   /^\[input\.[A-Za-z0-9_]+\]$/,
   /^\[[0-9]+\]$/,
   /^\[index\]$/,
+  /^\[elementIndex\]$/,
+  /^\[recordIndex\]$/,
+  /^\[rootIndex\]$/,
+  /^\[valueIndex\]$/,
   /^\[ordinal\]$/,
   /^\[items\]$/,
   /^\[selector\]$/,
@@ -190,6 +200,10 @@ describe("page callback authority inventory", () => {
       expect(unauthorizedSensitiveReads(source)).toEqual([]);
       expect(unapprovedComputedReads(source)).toEqual([]);
     }
+    for (const entryId of ["collectPageObservation", "retirePageSensitiveEvidence"]) {
+      const pageStateValidationSource = extractInventorySource(callbackInventory.find((entry) => entry.id === entryId)!);
+      expect(unauthorizedMutableIteration(pageStateValidationSource), entryId).toEqual([]);
+    }
 
     const previouslyCitedAmbientReads = `
       const tag = candidate.tagName.toLowerCase();
@@ -212,6 +226,9 @@ describe("page callback authority inventory", () => {
       if (target[handlerName]) console.log('dynamic');
       if (target[handlerName, otherName]) console.log('comma dynamic');
       if (target[...handlerNames]) console.log('spread dynamic');
+      for (const record of state.records) console.log(record.markerId);
+      Array.prototype[Symbol.iterator] = function hiddenIterator() { return [][Symbol.iterator](); };
+      const hidden = records[Symbol.iterator]();
     `;
     expect(unauthorizedSensitiveReads(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
       ".call(",
@@ -239,6 +256,11 @@ describe("page callback authority inventory", () => {
       "[handlerName]",
       "[handlerName, otherName]",
       "[...handlerNames]",
+    ]));
+    expect(unauthorizedMutableIteration(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
+      "for...of",
+      "Symbol.iterator",
+      "[Symbol.iterator]",
     ]));
   });
 
@@ -396,6 +418,15 @@ function unauthorizedSensitiveReads(source: string): string[] {
   }
   for (const pattern of dynamicCallbackConstruction) {
     if (pattern.test(body)) findings.push(pattern.source.includes("Function") ? "new Function" : "eval(");
+  }
+  return findings;
+}
+
+function unauthorizedMutableIteration(source: string): string[] {
+  const body = stripCommentsAndStrings(source);
+  const findings: string[] = [];
+  for (const pattern of forbiddenMutableIterationPatterns) {
+    if (new RegExp(pattern.pattern.source, "g").test(body)) findings.push(pattern.label);
   }
   return findings;
 }

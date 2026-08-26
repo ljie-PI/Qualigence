@@ -12,6 +12,7 @@ import {
   type PreparedSensitiveEvidenceRecord,
   type SensitiveEvidenceMaskRefreshRequest,
   type SensitiveEvidencePageStateSnapshot,
+  type SensitiveEvidenceScanRecord,
   type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
@@ -1961,6 +1962,11 @@ export class PlaywrightBrowserSession {
     return this.sensitiveEvidence.maskSnapshot();
   }
 
+  sensitiveEvidenceScanRecords(): readonly SensitiveEvidenceScanRecord[] {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.scanRecords();
+  }
+
   pendingSensitiveMaskRefreshRequests(snapshot: SensitiveEvidencePageStateSnapshot): readonly SensitiveEvidenceMaskRefreshRequest[] {
     this.assertSensitiveEvidenceAvailable();
     if (!this.pendingSensitiveCapture) return [];
@@ -2000,6 +2006,14 @@ export class PlaywrightBrowserSession {
 
   completeSensitiveEvidenceCapture(): void {
     this.assertSensitiveEvidenceAvailable();
+    this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
+  }
+
+  private resetSensitiveEvidenceForNavigation(): void {
+    this.sensitiveEvidence.clear();
+    this.sensitiveEvidenceUnavailable = false;
+    this.activeSensitiveDispatch = undefined;
     this.pendingSensitiveCapture = false;
     this.pendingSensitiveCaptureMarkers.clear();
   }
@@ -2088,6 +2102,7 @@ export class PlaywrightBrowserSession {
         if (frame !== page.mainFrame()) return;
         this.invalidateObservations();
         this.navigationGeneration += 1;
+        this.resetSensitiveEvidenceForNavigation();
         try {
           if (!this.isTargetOrigin(frame.url())) this.crossOriginNavigationCount += 1;
         } catch {
@@ -2285,11 +2300,7 @@ export class PlaywrightBrowserSession {
     if (context) {
       await context.close().catch(record);
     }
-    this.sensitiveEvidence.clear();
-    this.sensitiveEvidenceUnavailable = false;
-    this.activeSensitiveDispatch = undefined;
-    this.pendingSensitiveCapture = false;
-    this.pendingSensitiveCaptureMarkers.clear();
+    this.resetSensitiveEvidenceForNavigation();
 
     const browser = this.browser;
     this.browser = undefined;
