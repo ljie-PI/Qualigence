@@ -141,7 +141,7 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             Some(handle) => handle,
             None if spec.window_selector.is_empty() => process.root_window_handle.clone(),
             None => {
-                let _ = self.host.terminate_job(job);
+                self.cleanup_resumed_failed_launch(job, process.pid)?;
                 return Err(LifecycleError::AppLaunchFailed);
             }
         };
@@ -158,6 +158,25 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         };
         self.sessions.insert(session_id.to_string(), state.clone());
         Ok(state)
+    }
+
+    fn cleanup_resumed_failed_launch(
+        &mut self,
+        job: HostJob,
+        pid: u32,
+    ) -> Result<(), LifecycleError> {
+        match self.host.terminate_job(job) {
+            Ok(()) => Ok(()),
+            Err(first_error) => {
+                let process_result = self.host.terminate_process(pid);
+                let retry_result = self.host.terminate_job(job);
+                if process_result.is_ok() && retry_result.is_ok() {
+                    Ok(())
+                } else {
+                    Err(first_error)
+                }
+            }
+        }
     }
 
     /// Verify that every observed child is in the declared allowlist. Returns the

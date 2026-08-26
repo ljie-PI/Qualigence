@@ -266,6 +266,43 @@ fn launch_fails_closed_when_no_visible_window_matches_the_app_target_selector() 
 }
 
 #[test]
+fn launch_selector_miss_retries_cleanup_after_job_termination_failure() {
+    let mut target = spec();
+    target.window_selector = AppWindowSelector {
+        title_pattern: Some("Reference App".into()),
+        automation_id: Some("MainWindow".into()),
+    };
+    let mut host = FakeDesktopProcessHost::new();
+    host.set_next_root_windows(vec![HostWindow {
+        handle: "0xSPLASH".into(),
+        title: Some("Loading".into()),
+        automation_id: Some("SplashWindow".into()),
+    }]);
+    host.fail_next_terminate_job(LifecycleError::HostError);
+    let mut manager = AppSessionManager::new(host);
+
+    let result = manager.launch("sess-1", &target);
+
+    assert!(matches!(result, Err(LifecycleError::AppLaunchFailed)));
+    assert!(manager.session("sess-1").is_none());
+    assert!(!manager.host().is_running(1000));
+    assert_eq!(
+        manager
+            .host()
+            .ops
+            .iter()
+            .filter(|op| op.starts_with("terminate_job"))
+            .count(),
+        2
+    );
+    assert!(manager
+        .host()
+        .ops
+        .iter()
+        .any(|op| op == "terminate_process:1000"));
+}
+
+#[test]
 fn shutdown_failure_preserves_session_authority_and_running_process() {
     let mut manager = AppSessionManager::new(FakeDesktopProcessHost::new());
     let session = manager.launch("sess-1", &spec()).expect("launch succeeds");
