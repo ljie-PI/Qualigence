@@ -4,7 +4,7 @@
 
 **Blocked by:** 29 â€” Implement native Windows Named Pipe authority.
 
-**Status:** claimed
+**Status:** needs-info
 
 ## Tracked scope
 
@@ -166,3 +166,11 @@ Record base/reviewed SHAs in `## Comments`. Review the entire native/contract di
 - Fix commit: `e5250b4fac66abbde765bf9a4f631d0b0d25ffd8`. Selector-miss launch cleanup now retries through direct tracked-process termination plus a second Job termination attempt when the first `terminate_job` call fails, and a focused lifecycle regression covers the injected first-termination failure without retaining a session or running process.
 - Gates run before the code fix commit: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check` (pass), `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace` (pass), `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace` (pass), `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (pass: 5 files, 31 passed, 1 skipped), `CI=true corepack pnpm typecheck` (pass), and `git diff --check` (pass). Native E2E prerequisite command `CI=true corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` failed closed with stable blocker `Windows11Unavailable` because `QUALIGENCE_WINDOWS_UIA_TEST=true`/local native WPF+WinUI prerequisites were not configured for this run.
 - Status remains `claimed`; no PR/final evidence is recorded in this review-fix update.
+
+
+### post-review-acceptance-blocked - 2026-08-26
+
+- Reviewed code/test head: `5324a6eaea1501c22fbecdd188051047b5e67244`. Complete-matrix review reported no core blockers: `Q:/Qualigence/.pi-subagents/artifacts/outputs/b646caa3-7f17-4328-98e1-b71dac74bdfd/ticket30-review6/standards.md` and `Q:/Qualigence/.pi-subagents/artifacts/outputs/b646caa3-7f17-4328-98e1-b71dac74bdfd/ticket30-review6/spec.md`.
+- Final focused Gates passed at the reviewed head: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace`, `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (5 files, 31 passed, 1 skipped), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Post-review native acceptance could not complete in this environment. With `QUALIGENCE_WINDOWS_UIA_TEST=true`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario` passed (3 tests), but `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts tests/e2e/windows/companion-daemon.test.ts` failed closed: the component real-UIA placeholder reported `real Windows 11 UIA capture must be run manually by an operator`, and `tests/e2e/windows/companion-daemon.test.ts` reported `WindowsUiaPrerequisiteUnavailable: set QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS to the native daemon WPF/WinUI driver harness`. A non-opt-in E2E run also reports stable `Windows11Unavailable`.
+- Status set to `needs-info`: code review is clean, but Ticket 30 is not PR-/closure-ready until a real Windows 11 interactive native daemon harness path is provided and the required post-review WPF/WinUI E2E passes. No final/PR evidence is recorded.
