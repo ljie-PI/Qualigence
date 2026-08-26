@@ -119,6 +119,27 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
           });
         </script>
       `, "Delayed Scheduler"),
+      "/pending-delayed-scheduler": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 420px; height: 220px; }
+          #host { position: absolute; left: 10px; top: 10px; width: 220px; height: 34px; }
+          label { display: block; margin-top: 120px; }
+        </style>
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          shadow.innerHTML = '<span data-qualigence-observe id="mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          document.querySelector('input').addEventListener('input', event => {
+            const value = event.target.value;
+            window.callbackRuns = [];
+            setTimeout(() => {
+              window.callbackRuns.push('late-timer');
+              shadow.getElementById('mirror').textContent = value;
+            }, 250);
+          });
+        </script>
+      `, "Pending Delayed Scheduler"),
       "/nested-delayed-scheduler": htmlDocument(`
         <style>
           html, body { margin: 0; width: 420px; height: 240px; }
@@ -196,6 +217,20 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
           });
         </script>
       `, "Closed Shadow Touched"),
+      "/delayed-closed-shadow-touched": htmlDocument(`
+        <div id="host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          document.querySelector('input').addEventListener('input', () => {
+            setTimeout(() => {
+              const shadow = document.getElementById('host').attachShadow({ mode: 'closed' });
+              const mirror = document.createElement('span');
+              mirror.textContent = 'opaque delayed mutation without the registered form';
+              shadow.appendChild(mirror);
+            }, 75);
+          });
+        </script>
+      `, "Delayed Closed Shadow Touched"),
       "/epoch-overflow": htmlDocument(`
         <div id="mirror" data-qualigence-observe>waiting</div>
         <label>Email <input aria-label="Email" /></label>
@@ -328,6 +363,30 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     ]);
   }, 60_000);
 
+  it("retains scheduler authority across an early accepted capture until a pending delayed callback fires", async () => {
+    const { observer, resolver, executor } = await wire("/pending-delayed-scheduler");
+    const url = `${fixture.origin}/pending-delayed-scheduler`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reflect after an early accepted capture",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const early = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(JSON.stringify(early)).not.toContain(SECRET);
+
+    await session.withPage((page) => page.waitForTimeout(300));
+    const late = await observer.capture({ ...job, target: { kind: "web", url } });
+
+    expect(late.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(JSON.stringify(late)).not.toContain(SECRET);
+    await expect(session.withPage((page) => page.evaluate(() => (globalThis as unknown as { callbackRuns: string[] }).callbackRuns)))
+      .resolves.toEqual(["late-timer"]);
+  }, 60_000);
+
   it("propagates sensitive scheduler state to nested delayed timer and Promise registrations", async () => {
     const { observer, resolver, executor } = await wire("/nested-delayed-scheduler");
     const url = `${fixture.origin}/nested-delayed-scheduler`;
@@ -432,6 +491,23 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     }, before);
 
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+  }, 60_000);
+
+  it("fails evidence closed when a retained delayed scheduler callback touches a closed root", async () => {
+    const { observer, resolver, executor } = await wire("/delayed-closed-shadow-touched");
+    const url = `${fixture.origin}/delayed-closed-shadow-touched`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "touch an opaque closed root in a delayed scheduler callback",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage((page) => page.waitForTimeout(125));
     await expect(observer.capture({ ...job, target: { kind: "web", url } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
   }, 60_000);

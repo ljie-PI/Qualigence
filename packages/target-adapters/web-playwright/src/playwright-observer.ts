@@ -116,32 +116,34 @@ async function collectAuthorizedPageObservation(
   );
 }
 
+type SensitiveEvidenceRetirement = "retired" | "pending" | "unavailable";
+
 async function retireCapturedSensitiveEvidence(
   page: Page,
   assertCaptureAuthority: () => void,
-): Promise<boolean> {
+): Promise<SensitiveEvidenceRetirement> {
   return readPageValue(
     assertCaptureAuthority,
-    async () => {
-      const result = await page.evaluate(
-        retirePageSensitiveEvidence,
-        SENSITIVE_EVIDENCE_STATE_PROPERTY,
-      );
-      return result === true;
-    },
+    async () => (await page.evaluate(
+      retirePageSensitiveEvidence,
+      SENSITIVE_EVIDENCE_STATE_PROPERTY,
+    )) as SensitiveEvidenceRetirement,
   );
 }
 
-function retirePageSensitiveEvidence(stateProperty: string): boolean {
+function retirePageSensitiveEvidence(stateProperty: string): SensitiveEvidenceRetirement {
   const state = (window as unknown as Record<string, unknown>)[stateProperty] as {
     active?: unknown;
     poisoned?: boolean;
     records?: { readonly observer?: { disconnect(): void } }[];
-    retainedSchedulerEpochs?: { processSchedulerCallback?: () => void }[];
+    retainedSchedulerEpochs?: { pendingSchedulerCallbacks?: number; processSchedulerCallback?: () => void }[];
   } | undefined;
-  if (state === undefined) return false;
-  if (state.active !== undefined && state.active !== null) return true;
-  if (state.poisoned === true) return true;
+  if (state === undefined) return "retired";
+  if (state.active !== undefined && state.active !== null) return "unavailable";
+  if (state.poisoned === true) return "unavailable";
+  if ((state.retainedSchedulerEpochs ?? []).some((epoch) => (epoch.pendingSchedulerCallbacks ?? 0) > 0)) {
+    return "pending";
+  }
   for (const record of state.records ?? []) {
     record.observer?.disconnect();
   }
@@ -150,7 +152,7 @@ function retirePageSensitiveEvidence(stateProperty: string): boolean {
   }
   state.records = [];
   state.retainedSchedulerEpochs = [];
-  return false;
+  return "retired";
 }
 
 function collectPageObservation(
@@ -646,11 +648,12 @@ export class PlaywrightObserver implements Observer {
       }
       assertCaptureAuthority();
       this.session.assertSensitiveEvidenceAvailable();
-      if (
-        this.session.hasPendingSensitiveEvidenceCapture() &&
-        await retireCapturedSensitiveEvidence(page, assertCaptureAuthority)
-      ) {
-        this.session.markSensitiveEvidenceUnavailable();
+      let retirement: SensitiveEvidenceRetirement = "retired";
+      if (this.session.hasPendingSensitiveEvidenceCapture()) {
+        retirement = await retireCapturedSensitiveEvidence(page, assertCaptureAuthority);
+        if (retirement === "unavailable") {
+          this.session.markSensitiveEvidenceUnavailable();
+        }
       }
       this.session.assertSensitiveEvidenceAvailable();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
@@ -658,7 +661,9 @@ export class PlaywrightObserver implements Observer {
         descriptors,
         artifacts,
       }, navigationGeneration);
-      this.session.completeSensitiveEvidenceCapture();
+      if (retirement === "retired") {
+        this.session.completeSensitiveEvidenceCapture();
+      }
       return graph;
     });
   }

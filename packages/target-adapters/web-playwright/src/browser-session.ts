@@ -102,6 +102,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     };
     type SensitiveSchedulerEpoch = {
       schedulerRegistrations?: number;
+      pendingSchedulerCallbacks?: number;
       inSchedulerCallback?: boolean;
       poisoned?: boolean;
       processSchedulerCallback?: () => void;
@@ -137,14 +138,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
       const root = registry.originalAttachShadow.call(this, init);
       const state = sensitiveState();
-      const active = state?.active;
-      if (init.mode === "closed" && state !== undefined && active !== undefined && active !== null) {
+      const active = state === undefined ? undefined : currentSensitiveEpoch(state);
+      if (init.mode === "closed" && state !== undefined && active !== undefined) {
         poison(state, active);
       }
       if (!registry.roots.includes(root)) {
         if (registry.roots.length >= input.maxShadowRoots) {
           registry.shadowRootOverflow = true;
-          if (state !== undefined && active !== undefined && active !== null) {
+          if (state !== undefined && active !== undefined) {
             poison(state, active);
           }
           return root;
@@ -169,16 +170,24 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     window.setTimeout = function setTimeout(handler: TimerHandler, timeout?: number, ...args: unknown[]): number {
       const epoch = countSensitiveSchedulerRegistration();
+      const wrapped = typeof handler === "function" && epoch !== undefined
+        ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, true)
+        : handler;
+      poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
       return (registry.originalSetTimeout as any).apply(window, [
-        typeof handler === "function" && epoch !== undefined ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch) : handler,
+        wrapped,
         timeout,
         ...args,
       ]) as number;
     } as typeof window.setTimeout;
     window.setInterval = function setInterval(handler: TimerHandler, timeout?: number, ...args: unknown[]): number {
       const epoch = countSensitiveSchedulerRegistration();
+      const wrapped = typeof handler === "function" && epoch !== undefined
+        ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, false)
+        : handler;
+      poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
       return (registry.originalSetInterval as any).apply(window, [
-        typeof handler === "function" && epoch !== undefined ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch) : handler,
+        wrapped,
         timeout,
         ...args,
       ]) as number;
@@ -187,14 +196,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const epoch = countSensitiveSchedulerRegistration();
       return registry.originalRequestAnimationFrame.call(
         window,
-        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch),
+        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
       );
     };
     window.queueMicrotask = function queueMicrotask(callback: VoidFunction): void {
       const epoch = countSensitiveSchedulerRegistration();
       registry.originalQueueMicrotask.call(
         window,
-        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch),
+        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
       );
     };
     Promise.prototype.then = function then<TResult1 = unknown, TResult2 = never>(
@@ -205,8 +214,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const rejectedEpoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
       return registry.originalPromiseThen.call(
         this,
-        fulfilledEpoch === undefined || typeof onfulfilled !== "function" ? onfulfilled : wrapSchedulerCallback(onfulfilled, fulfilledEpoch),
-        rejectedEpoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, rejectedEpoch),
+        fulfilledEpoch === undefined || typeof onfulfilled !== "function" ? onfulfilled : wrapSchedulerCallback(onfulfilled, fulfilledEpoch, true),
+        rejectedEpoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, rejectedEpoch, true),
       ) as Promise<TResult1 | TResult2>;
     };
     Promise.prototype.catch = function promiseCatch<TResult = never>(
@@ -215,14 +224,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const epoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
       return registry.originalPromiseCatch.call(
         this,
-        epoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, epoch),
+        epoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, epoch, true),
       ) as Promise<unknown | TResult>;
     };
     Promise.prototype.finally = function promiseFinally(onfinally?: (() => void) | null): Promise<unknown> {
       const epoch = typeof onfinally === "function" ? countSensitiveSchedulerRegistration() : undefined;
       return registry.originalPromiseFinally.call(
         this,
-        epoch === undefined || typeof onfinally !== "function" ? onfinally : wrapSchedulerCallback(onfinally, epoch),
+        epoch === undefined || typeof onfinally !== "function" ? onfinally : wrapSchedulerCallback(onfinally, epoch, true),
       ) as Promise<unknown>;
     };
 
@@ -233,10 +242,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
       const state = sensitiveState();
       if (state === undefined) return undefined;
-      const active = state.active;
-      const epoch = active !== undefined && active !== null
-        ? active
-        : state.retainedSchedulerEpochs?.find((candidate) => candidate.inSchedulerCallback === true);
+      const epoch = currentSensitiveEpoch(state);
       if (epoch === undefined) return undefined;
       state.schedulerSessionRegistrations = (state.schedulerSessionRegistrations ?? 0) + 1;
       epoch.schedulerRegistrations = (epoch.schedulerRegistrations ?? 0) + 1;
@@ -250,7 +256,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       return epoch;
     }
 
-    function wrapSchedulerCallback<T extends (...args: any[]) => unknown>(callback: T, epoch: SensitiveSchedulerEpoch): T {
+    function wrapSchedulerCallback<T extends (...args: any[]) => unknown>(callback: T, epoch: SensitiveSchedulerEpoch, settles: boolean): T {
+      epoch.pendingSchedulerCallbacks = (epoch.pendingSchedulerCallbacks ?? 0) + 1;
       return function sensitiveSchedulerCallback(this: unknown, ...args: any[]): unknown {
         const previous = epoch.inSchedulerCallback === true;
         epoch.inSchedulerCallback = true;
@@ -262,11 +269,27 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
             try {
               processSchedulerCallbackEpoch(epoch);
             } finally {
+              if (settles) {
+                epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
+              }
               epoch.inSchedulerCallback = previous;
             }
           });
         }
       } as T;
+    }
+
+    function poisonUnwrappedSensitiveSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, handler: TimerHandler): void {
+      if (epoch === undefined || typeof handler === "function") return;
+      const state = sensitiveState();
+      if (state !== undefined) poison(state, epoch);
+    }
+
+    function currentSensitiveEpoch(state: SensitiveRuntimeState): SensitiveSchedulerEpoch | undefined {
+      const active = state.active;
+      return active !== undefined && active !== null
+        ? active
+        : state.retainedSchedulerEpochs?.find((candidate) => candidate.inSchedulerCallback === true);
     }
 
     function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
