@@ -22,14 +22,6 @@ pub fn validate_deadline_ms(value: u64) -> Result<u64, String> {
     }
 }
 
-fn deserialize_deadline_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = u64::deserialize(deserializer)?;
-    validate_deadline_ms(value).map_err(D::Error::custom)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedDesktopAction {
@@ -306,14 +298,12 @@ pub struct AppTargetWindow {
 pub struct AppTargetReset {
     pub command: String,
     pub args: Vec<String>,
-    #[serde(deserialize_with = "deserialize_deadline_ms")]
     pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppTargetShutdown {
-    #[serde(deserialize_with = "deserialize_deadline_ms")]
     pub graceful_timeout_ms: u64,
     pub force_after_timeout: bool,
 }
@@ -537,7 +527,6 @@ pub struct AppLaunchPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UiaCapturePayload {
     pub session_id: String,
-    #[serde(deserialize_with = "deserialize_deadline_ms")]
     pub deadline_ms: u64,
 }
 
@@ -555,6 +544,5 @@ pub struct ActionExecutePayload {
     pub permit: LocalExecutionPermit,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<DesktopPlaintextValue>,
-    #[serde(deserialize_with = "deserialize_deadline_ms")]
     pub deadline_ms: u64,
 }

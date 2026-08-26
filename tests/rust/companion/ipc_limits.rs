@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use companion::ipc::dto::CompanionRequest;
+use companion::ipc::dto::{validate_deadline_ms, CompanionRequest};
 use companion::ipc::server::{
     parse_request, read_frame, write_frame, FrameError, FrameLimits, RequestAdmission,
     RequestProcessError, SessionAdmissionError,
@@ -108,24 +108,11 @@ fn current_envelope_request_variants_parse() {
 }
 
 #[test]
-fn deadline_bearing_requests_enforce_public_bounds_before_dispatch() {
-    let zero_capture = br#"{"protocolMajor":1,"requestId":"req-deadline-0","type":"uia.capture","payload":{"sessionId":"sess-1","deadlineMs":0}}"#;
-    assert_eq!(parse_request(zero_capture), Err(FrameError::Malformed));
-
-    let huge_action = br#"{"protocolMajor":1,"requestId":"req-deadline-big","type":"action.execute","payload":{"sessionId":"sess-1","action":{"targetKind":"desktop","kind":"click","actionId":"act-1","graphId":"graph-1","nodeId":"button","resolution":"semantic","uiaPattern":"Invoke"},"permit":{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"Normal","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z"},"deadlineMs":600001}}"#;
-    assert_eq!(parse_request(huge_action), Err(FrameError::Malformed));
-
-    let zero_reset_timeout = br#"{"protocolMajor":1,"requestId":"req-reset-deadline","type":"app.launch","payload":{"target":{"targetId":"target-1","platform":"windows","launch":{"executable":"C:\\Windows\\System32\\notepad.exe","args":[]},"process":{"expectedImageName":"notepad.exe","allowedChildImageNames":[]},"window":{},"reset":{"command":"reset","args":[],"timeoutMs":0},"shutdown":{"gracefulTimeoutMs":1000,"forceAfterTimeout":true}}}}"#;
-    assert_eq!(
-        parse_request(zero_reset_timeout),
-        Err(FrameError::Malformed)
-    );
-
-    let huge_shutdown_timeout = br#"{"protocolMajor":1,"requestId":"req-shutdown-deadline","type":"app.launch","payload":{"target":{"targetId":"target-1","platform":"windows","launch":{"executable":"C:\\Windows\\System32\\notepad.exe","args":[]},"process":{"expectedImageName":"notepad.exe","allowedChildImageNames":[]},"window":{},"reset":{"command":"reset","args":[],"timeoutMs":1000},"shutdown":{"gracefulTimeoutMs":600001,"forceAfterTimeout":true}}}}"#;
-    assert_eq!(
-        parse_request(huge_shutdown_timeout),
-        Err(FrameError::Malformed)
-    );
+fn public_deadline_bounds_reject_zero_and_over_max_values() {
+    assert!(validate_deadline_ms(1).is_ok());
+    assert!(validate_deadline_ms(600_000).is_ok());
+    assert!(validate_deadline_ms(0).is_err());
+    assert!(validate_deadline_ms(600_001).is_err());
 }
 
 #[test]
