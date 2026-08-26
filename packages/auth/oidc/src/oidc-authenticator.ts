@@ -211,6 +211,13 @@ function decodeSegment(segment: string): unknown {
   return JSON.parse(json);
 }
 
+function requireJwtObjectSegment(value: unknown, segmentName: "header" | "payload"): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new OidcError("TokenMalformed", `token ${segmentName} must be a JSON object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
 /**
  * Independently validates an OIDC access token: signature against the resolved
  * JWKS key, an allowlisted algorithm, exact issuer/audience, expiry/not-before,
@@ -242,14 +249,16 @@ export class OidcAuthenticator {
     }
     const [headerSegment, payloadSegment, signatureSegment] = parts as [string, string, string];
 
-    let header: JwtHeader;
-    let claims: JwtClaims;
+    let decodedHeader: unknown;
+    let decodedClaims: unknown;
     try {
-      header = decodeSegment(headerSegment) as JwtHeader;
-      claims = decodeSegment(payloadSegment) as JwtClaims;
+      decodedHeader = decodeSegment(headerSegment);
+      decodedClaims = decodeSegment(payloadSegment);
     } catch {
       throw new OidcError("TokenMalformed", "token segments are not valid base64url JSON");
     }
+    const header = requireJwtObjectSegment(decodedHeader, "header") as JwtHeader;
+    const claims = requireJwtObjectSegment(decodedClaims, "payload") as JwtClaims;
 
     const alg = header.alg;
     if (alg === undefined || !this.allowed.has(alg as OidcAlgorithm)) {

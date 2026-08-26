@@ -58,6 +58,32 @@ function tokenClaims(overrides: Record<string, unknown> = {}): Record<string, un
   });
 }
 
+function encodeJwtJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function compactJwt(header: unknown, payload: unknown): string {
+  return `${encodeJwtJson(header)}.${encodeJwtJson(payload)}.${Buffer.from("signature").toString("base64url")}`;
+}
+
+async function expectTokenMalformedOidcError(promise: Promise<unknown>): Promise<void> {
+  try {
+    await promise;
+    throw new Error("expected malformed token rejection");
+  } catch (error) {
+    expect(error).toBeInstanceOf(OidcError);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect((error as OidcError).code).toBe("TokenMalformed");
+  }
+}
+
+const malformedJwtObjectCases: readonly (readonly [string, unknown])[] = [
+  ["null", null],
+  ["array", []],
+  ["string", "not-an-object"],
+  ["number", 42],
+];
+
 async function startJwksServer(currentJwks: () => unknown, status = () => 200): Promise<string> {
   const server = createServer((_request, response) => {
     response.writeHead(status(), { "content-type": "application/json" });
@@ -198,6 +224,24 @@ describe("OidcAuthenticator", () => {
       authenticator.authenticate(`${forgedHeader}.${payload}.`),
     ).rejects.toMatchObject({ code: "AlgorithmNotAllowed" });
   });
+
+  it.each(malformedJwtObjectCases)(
+    "rejects a JWT header that parses to %s as a stable OIDC error",
+    async (_name, header) => {
+      const { authenticator } = makeAuthenticator();
+      await expectTokenMalformedOidcError(authenticator.authenticate(compactJwt(header, tokenClaims())));
+    },
+  );
+
+  it.each(malformedJwtObjectCases)(
+    "rejects a JWT payload that parses to %s as a stable OIDC error",
+    async (_name, payload) => {
+      const { authenticator, issuer } = makeAuthenticator();
+      await expectTokenMalformedOidcError(
+        authenticator.authenticate(compactJwt({ alg: issuer.alg, kid: issuer.kid, typ: "JWT" }, payload)),
+      );
+    },
+  );
 
   it("rejects an unknown tenant claim (fail closed)", async () => {
     const { authenticator, issuer } = makeAuthenticator();
