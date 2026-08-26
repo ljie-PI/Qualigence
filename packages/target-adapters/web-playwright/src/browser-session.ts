@@ -173,7 +173,6 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       readonly originalPromiseThen: typeof Promise.prototype.then;
       readonly originalPromiseCatch: typeof Promise.prototype.catch;
       readonly originalPromiseFinally: typeof Promise.prototype.finally;
-      readonly originalReflectApply: typeof Reflect.apply;
     };
     type PendingSchedulerCallback = {
       settled: boolean;
@@ -204,11 +203,45 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       consumed: boolean;
     };
     const promiseMethods: readonly PromiseMethodName[] = ["then", "catch", "finally"];
+    const nativeArrayIsArray: typeof Array.isArray = Array.isArray;
+    const nativeArrayPrototypeSlice: typeof Array.prototype.slice = Array.prototype.slice;
+    const NativeSet = Set;
+    const nativeObjectAssign: typeof Object.assign = Object.assign;
+    const nativeObjectDefineProperties: typeof Object.defineProperties = Object.defineProperties;
+    const nativeObjectDefineProperty: typeof Object.defineProperty = Object.defineProperty;
+    const nativeObjectFreeze: typeof Object.freeze = Object.freeze;
+    const nativeObjectGetOwnPropertyDescriptor: typeof Object.getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+    const nativeObjectGetPrototypeOf: typeof Object.getPrototypeOf = Object.getPrototypeOf;
+    const nativeObjectSetPrototypeOf: typeof Object.setPrototypeOf = Object.setPrototypeOf;
+    const nativeObjectPrototypeHasOwnProperty: typeof Object.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
+    const nativeReflectApply: typeof Reflect.apply = Reflect.apply;
+    const nativeReflectDefineProperty: typeof Reflect.defineProperty = Reflect.defineProperty;
+    const nativeReflectDeleteProperty: typeof Reflect.deleteProperty = Reflect.deleteProperty;
+    const nativeReflectSet: typeof Reflect.set = Reflect.set;
+    const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
+    const intrinsicAuthorityFailed = [
+      nativeArrayIsArray,
+      nativeArrayPrototypeSlice,
+      NativeSet,
+      nativeObjectAssign,
+      nativeObjectDefineProperties,
+      nativeObjectDefineProperty,
+      nativeObjectFreeze,
+      nativeObjectGetOwnPropertyDescriptor,
+      nativeObjectGetPrototypeOf,
+      nativeObjectSetPrototypeOf,
+      nativeObjectPrototypeHasOwnProperty,
+      nativeReflectApply,
+      nativeReflectDefineProperty,
+      nativeReflectDeleteProperty,
+      nativeReflectSet,
+      nativeReflectSetPrototypeOf,
+    ].some((fn) => typeof fn !== "function");
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
     const promiseOwnerRecords: PromiseOwnerRecord[] = [];
     let promiseOwnerOverflow = false;
-    let promiseOwnerValidationFailed = false;
+    let promiseOwnerValidationFailed = intrinsicAuthorityFailed;
     const registry: SensitiveRuntimeRegistry = {
       roots: [],
       listenerTargets: [],
@@ -222,9 +255,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       originalPromiseThen: Promise.prototype.then,
       originalPromiseCatch: Promise.prototype.catch,
       originalPromiseFinally: Promise.prototype.finally,
-      originalReflectApply: Reflect.apply,
     };
-    Object.defineProperties(registry, {
+    nativeObjectDefineProperties(registry, {
       promiseOwners: {
         configurable: false,
         enumerable: false,
@@ -247,14 +279,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         writable: false,
       },
     });
-    Object.defineProperty(win, input.shadowRootsProperty, {
+    nativeObjectDefineProperty(win, input.shadowRootsProperty, {
       configurable: false,
       enumerable: false,
       value: registry,
       writable: false,
     });
     Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
-      const root = registry.originalAttachShadow.call(this, init);
+      const root = nativeReflectApply(registry.originalAttachShadow, this, [init]) as ShadowRoot;
       const state = sensitiveState();
       const active = state === undefined ? undefined : currentSensitiveEpoch(state);
       if (init.mode === "closed" && state !== undefined && active !== undefined) {
@@ -283,7 +315,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       if ((type === "input" || type === "change") && listener !== null && !isSensitiveInstrumentation) {
         registry.listenerTargets.push({ type, target: this, listener });
       }
-      registry.originalAddEventListener.call(this, type, listener, options);
+      nativeReflectApply(registry.originalAddEventListener, this, [type, listener, options]);
     };
 
     window.setTimeout = function setTimeout(handler: TimerHandler, timeout?: number, ...args: unknown[]): number {
@@ -292,7 +324,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, true)
         : handler;
       poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
-      return (registry.originalSetTimeout as any).apply(window, [
+      return nativeReflectApply(registry.originalSetTimeout as (...callArgs: unknown[]) => number, window, [
         wrapped,
         timeout,
         ...args,
@@ -304,7 +336,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         ? wrapSchedulerCallback(handler as (...callbackArgs: unknown[]) => unknown, epoch, false)
         : handler;
       poisonUnwrappedSensitiveSchedulerCallback(epoch, handler);
-      return (registry.originalSetInterval as any).apply(window, [
+      return nativeReflectApply(registry.originalSetInterval as (...callArgs: unknown[]) => number, window, [
         wrapped,
         timeout,
         ...args,
@@ -312,16 +344,18 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     } as typeof window.setInterval;
     window.requestAnimationFrame = function requestAnimationFrame(callback: FrameRequestCallback): number {
       const epoch = countSensitiveSchedulerRegistration();
-      return registry.originalRequestAnimationFrame.call(
+      return nativeReflectApply(
+        registry.originalRequestAnimationFrame,
         window,
-        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
-      );
+        [epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true)],
+      ) as number;
     };
     window.queueMicrotask = function queueMicrotask(callback: VoidFunction): void {
       const epoch = countSensitiveSchedulerRegistration();
-      registry.originalQueueMicrotask.call(
+      nativeReflectApply(
+        registry.originalQueueMicrotask,
         window,
-        epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
+        [epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true)],
       );
     };
     const internalPromiseThenCalls: InternalPromiseThenCall[] = [];
@@ -343,10 +377,10 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         ? { onfulfilled, onrejected }
         : wrapPromiseReactionHandlers(onfulfilled, onrejected, epoch);
       try {
-        return registry.originalPromiseThen.call(
+        return nativeReflectApply(
+          registry.originalPromiseThen,
           this,
-          handlers.onfulfilled,
-          handlers.onrejected,
+          [handlers.onfulfilled, handlers.onrejected],
         ) as Promise<TResult1 | TResult2>;
       } catch (error) {
         if ("pending" in handlers && handlers.pending !== undefined) {
@@ -355,8 +389,9 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         throw error;
       }
     };
-    Promise.prototype.then = instrumentedPromiseThen;
-    Promise.prototype.catch = function promiseCatch<TResult = never>(
+    definePromisePrototypeMethod("then", instrumentedPromiseThen);
+    const instrumentedPromiseCatch = function promiseCatch<TResult = never>(
+      this: unknown,
       onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
     ): Promise<unknown | TResult> {
       "use strict";
@@ -364,7 +399,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       registerPromiseMethodAuthority(this, "catch", epoch);
       return invokePromiseThen(this, undefined, onrejected, epoch, true) as Promise<unknown | TResult>;
     };
-    Promise.prototype.finally = function promiseFinally(onfinally?: (() => void) | null): Promise<unknown> {
+    definePromisePrototypeMethod("catch", instrumentedPromiseCatch);
+    const instrumentedPromiseFinally = function promiseFinally(this: unknown, onfinally?: (() => void) | null): Promise<unknown> {
       "use strict";
       const receiver = this;
       const epoch = countSensitiveSchedulerRegistration();
@@ -401,6 +437,8 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         throw error;
       }
     };
+    definePromisePrototypeMethod("finally", instrumentedPromiseFinally);
+    installPromiseOwnerMutationGuards();
 
     function withInternalPromiseThenCall<T>(call: InternalPromiseThenCall, operation: () => T): T {
       internalPromiseThenCalls.push(call);
@@ -441,6 +479,119 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       return undefined;
     }
 
+    function definePromisePrototypeMethod(method: PromiseMethodName, value: unknown): void {
+      const descriptor = nativeObjectGetOwnPropertyDescriptor(Promise.prototype, method);
+      if (descriptor === undefined || !("value" in descriptor || "writable" in descriptor)) {
+        promiseOwnerValidationFailed = true;
+        return;
+      }
+      nativeObjectDefineProperty(Promise.prototype, method, {
+        configurable: descriptor.configurable === true,
+        enumerable: descriptor.enumerable === true,
+        writable: descriptor.writable === true,
+        value,
+      });
+    }
+
+    function installPromiseOwnerMutationGuards(): void {
+      replaceDataFunction(Object, "assign", function assign(target: object, source?: unknown): object {
+        const sources = nativeReflectApply(nativeArrayPrototypeSlice, arguments, [1]) as unknown[];
+        const additionalSources = nativeReflectApply(nativeArrayPrototypeSlice, sources, [1]) as unknown[];
+        const result = nativeObjectAssign(target, source, ...additionalSources);
+        for (const candidate of sources) noteObjectAssignMutation(target, candidate);
+        return result;
+      });
+      replaceDataFunction(Object, "defineProperty", function defineProperty<T>(target: T, propertyKey: PropertyKey, attributes: PropertyDescriptor): T {
+        const result = nativeObjectDefineProperty(target, propertyKey, attributes);
+        notePromiseOwnerPropertyMutation(target, propertyKey);
+        return result;
+      });
+      replaceDataFunction(Object, "defineProperties", function defineProperties<T>(target: T, properties: PropertyDescriptorMap & ThisType<unknown>): T {
+        const result = nativeObjectDefineProperties(target, properties);
+        for (const method of promiseMethods) {
+          if (hasOwnProperty(properties, method)) notePromiseOwnerPropertyMutation(target, method);
+        }
+        return result;
+      });
+      replaceDataFunction(Object, "setPrototypeOf", function setPrototypeOf<T>(target: T, prototype: object | null): T {
+        const result = nativeObjectSetPrototypeOf(target, prototype);
+        notePromiseOwnerPrototypeMutation(target);
+        return result;
+      });
+      replaceDataFunction(Reflect, "defineProperty", function defineProperty(target: object, propertyKey: PropertyKey, attributes: PropertyDescriptor): boolean {
+        const changed = nativeReflectDefineProperty(target, propertyKey, attributes);
+        if (changed) notePromiseOwnerPropertyMutation(target, propertyKey);
+        return changed;
+      });
+      replaceDataFunction(Reflect, "deleteProperty", function deleteProperty(target: object, propertyKey: PropertyKey): boolean {
+        const changed = nativeReflectDeleteProperty(target, propertyKey);
+        if (changed) notePromiseOwnerPropertyMutation(target, propertyKey);
+        return changed;
+      });
+      replaceDataFunction(Reflect, "set", function set(target: object, propertyKey: PropertyKey, value: unknown): boolean {
+        const hasReceiver = arguments.length >= 4;
+        const receiver = hasReceiver ? arguments[3] : undefined;
+        const changed = hasReceiver
+          ? nativeReflectSet(target, propertyKey, value, receiver)
+          : nativeReflectSet(target, propertyKey, value);
+        if (changed) {
+          notePromiseOwnerPropertyMutation(target, propertyKey);
+          if (hasReceiver) notePromiseOwnerPropertyMutation(receiver, propertyKey);
+        }
+        return changed;
+      });
+      replaceDataFunction(Reflect, "setPrototypeOf", function setPrototypeOf(target: object, prototype: object | null): boolean {
+        const changed = nativeReflectSetPrototypeOf(target, prototype);
+        if (changed) notePromiseOwnerPrototypeMutation(target);
+        return changed;
+      });
+    }
+
+    function replaceDataFunction(owner: object, propertyKey: PropertyKey, value: unknown): void {
+      const descriptor = nativeObjectGetOwnPropertyDescriptor(owner, propertyKey);
+      if (descriptor === undefined || !("value" in descriptor || "writable" in descriptor)) return;
+      nativeObjectDefineProperty(owner, propertyKey, {
+        configurable: descriptor.configurable === true,
+        enumerable: descriptor.enumerable === true,
+        writable: descriptor.writable === true,
+        value,
+      });
+    }
+
+    function noteObjectAssignMutation(target: unknown, source: unknown): void {
+      if (!isObjectLike(source)) return;
+      for (const method of promiseMethods) {
+        const descriptor = nativeObjectGetOwnPropertyDescriptor(source, method);
+        if (descriptor?.enumerable === true) notePromiseOwnerPropertyMutation(target, method);
+      }
+    }
+
+    function notePromiseOwnerPropertyMutation(target: unknown, propertyKey: PropertyKey): void {
+      if (!isPromiseMethodName(propertyKey)) return;
+      notePromiseOwnerMutation(target);
+    }
+
+    function notePromiseOwnerPrototypeMutation(target: unknown): void {
+      notePromiseOwnerMutation(target);
+    }
+
+    function notePromiseOwnerMutation(target: unknown): void {
+      if (!isObjectLike(target)) return;
+      if (findPromiseOwnerRecord(target) === undefined) return;
+      promiseOwnerValidationFailed = true;
+      const state = sensitiveState();
+      const active = state === undefined ? undefined : currentSensitiveEpoch(state);
+      if (state !== undefined && active !== undefined) poison(state, active);
+    }
+
+    function isPromiseMethodName(propertyKey: PropertyKey): propertyKey is PromiseMethodName {
+      return propertyKey === "then" || propertyKey === "catch" || propertyKey === "finally";
+    }
+
+    function hasOwnProperty(owner: object, propertyKey: PropertyKey): boolean {
+      return nativeReflectApply(nativeObjectPrototypeHasOwnProperty, owner, [propertyKey]) as boolean;
+    }
+
     function sensitiveState(): SensitiveRuntimeState | undefined {
       return (window as unknown as Record<string, SensitiveRuntimeState | undefined>)[input.evidenceStateProperty];
     }
@@ -466,34 +617,43 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       // Production sensitive-evidence epochs created by the action executor carry
       // `records`. Counter-only oracle epochs intentionally omit it so Ticket 42
       // native Promise trap/order tests remain side-effect-free.
-      return Array.isArray((state as { readonly records?: unknown }).records);
+      return nativeArrayIsArray((state as { readonly records?: unknown }).records);
     }
 
     function traversedMethodOwners(receiver: object, method: PromiseMethodName): object[] {
       const owners: object[] = [];
-      const visited = new Set<object>();
+      const visited = new NativeSet<object>();
       let current: object | null = receiver;
       while (current !== null) {
         if (visited.has(current)) throw new Error("cyclic-prototype-chain");
         visited.add(current);
         owners.push(current);
-        if (Object.prototype.hasOwnProperty.call(current, method)) break;
-        current = Object.getPrototypeOf(current);
+        if (hasOwnProperty(current, method)) break;
+        current = nativeObjectGetPrototypeOf(current);
       }
       return owners;
     }
 
     function registerPromiseOwner(owner: object, state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
-      const existingIndex = promiseOwnerRecords.findIndex((record) => record.owner === owner);
+      if (intrinsicAuthorityFailed) {
+        promiseOwnerValidationFailed = true;
+        poison(state, epoch);
+        return;
+      }
+      const existingRecord = findPromiseOwnerRecord(owner);
       let snapshot: PromiseOwnerRecord;
       try {
         snapshot = snapshotPromiseOwner(owner);
       } catch {
+        promiseOwnerValidationFailed = true;
         poison(state, epoch);
         return;
       }
-      if (existingIndex !== -1) {
-        promiseOwnerRecords[existingIndex] = snapshot;
+      if (existingRecord !== undefined) {
+        if (!samePromiseOwnerRecord(snapshot, existingRecord)) {
+          promiseOwnerValidationFailed = true;
+          poison(state, epoch);
+        }
         return;
       }
       if (promiseOwnerRecords.length >= input.maxPromiseOwners) {
@@ -504,20 +664,28 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       promiseOwnerRecords.push(snapshot);
     }
 
+    function findPromiseOwnerRecord(owner: object): PromiseOwnerRecord | undefined {
+      for (let index = 0; index < promiseOwnerRecords.length; index += 1) {
+        const record = promiseOwnerRecords[index];
+        if (record?.owner === owner) return record;
+      }
+      return undefined;
+    }
+
     function snapshotPromiseOwner(owner: object): PromiseOwnerRecord {
-      const descriptors = Object.freeze({
-        then: Object.freeze(snapshotOwnDescriptor(owner, "then")),
-        catch: Object.freeze(snapshotOwnDescriptor(owner, "catch")),
-        finally: Object.freeze(snapshotOwnDescriptor(owner, "finally")),
+      const descriptors = nativeObjectFreeze({
+        then: nativeObjectFreeze(snapshotOwnDescriptor(owner, "then")),
+        catch: nativeObjectFreeze(snapshotOwnDescriptor(owner, "catch")),
+        finally: nativeObjectFreeze(snapshotOwnDescriptor(owner, "finally")),
       });
-      const resolvedMethodOwners = Object.freeze({
-        then: Object.freeze(snapshotResolvedMethodOwner(owner, "then")),
-        catch: Object.freeze(snapshotResolvedMethodOwner(owner, "catch")),
-        finally: Object.freeze(snapshotResolvedMethodOwner(owner, "finally")),
+      const resolvedMethodOwners = nativeObjectFreeze({
+        then: nativeObjectFreeze(snapshotResolvedMethodOwner(owner, "then")),
+        catch: nativeObjectFreeze(snapshotResolvedMethodOwner(owner, "catch")),
+        finally: nativeObjectFreeze(snapshotResolvedMethodOwner(owner, "finally")),
       });
-      return Object.freeze({
+      return nativeObjectFreeze({
         owner,
-        prototype: Object.getPrototypeOf(owner),
+        prototype: nativeObjectGetPrototypeOf(owner),
         descriptors,
         resolvedMethodOwners,
       });
@@ -528,22 +696,22 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       for (let index = 0; index < promiseOwnerRecords.length; index += 1) {
         records[index] = clonePromiseOwnerRecord(promiseOwnerRecords[index]!);
       }
-      return Object.freeze(records);
+      return nativeObjectFreeze(records);
     }
 
     function clonePromiseOwnerRecord(record: PromiseOwnerRecord): PromiseOwnerRecord {
-      return Object.freeze({
+      return nativeObjectFreeze({
         owner: record.owner,
         prototype: record.prototype,
-        descriptors: Object.freeze({
-          then: Object.freeze(cloneDescriptorSnapshot(record.descriptors.then)),
-          catch: Object.freeze(cloneDescriptorSnapshot(record.descriptors.catch)),
-          finally: Object.freeze(cloneDescriptorSnapshot(record.descriptors.finally)),
+        descriptors: nativeObjectFreeze({
+          then: nativeObjectFreeze(cloneDescriptorSnapshot(record.descriptors.then)),
+          catch: nativeObjectFreeze(cloneDescriptorSnapshot(record.descriptors.catch)),
+          finally: nativeObjectFreeze(cloneDescriptorSnapshot(record.descriptors.finally)),
         }),
-        resolvedMethodOwners: Object.freeze({
-          then: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.then)),
-          catch: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.catch)),
-          finally: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.finally)),
+        resolvedMethodOwners: nativeObjectFreeze({
+          then: nativeObjectFreeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.then)),
+          catch: nativeObjectFreeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.catch)),
+          finally: nativeObjectFreeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.finally)),
         }),
       });
     }
@@ -576,7 +744,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     }
 
     function snapshotOwnDescriptor(owner: object, method: PromiseMethodName): DescriptorSnapshot {
-      const descriptor = Object.getOwnPropertyDescriptor(owner, method);
+      const descriptor = nativeObjectGetOwnPropertyDescriptor(owner, method);
       if (descriptor === undefined) return { present: false };
       if ("value" in descriptor || "writable" in descriptor) {
         return {
@@ -599,15 +767,15 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     }
 
     function snapshotResolvedMethodOwner(owner: object, method: PromiseMethodName): ResolvedMethodOwnerSnapshot {
-      const visited = new Set<object>();
+      const visited = new NativeSet<object>();
       let current: object | null = owner;
       while (current !== null) {
         if (visited.has(current)) throw new Error("cyclic-prototype-chain");
         visited.add(current);
-        if (Object.prototype.hasOwnProperty.call(current, method)) {
+        if (hasOwnProperty(current, method)) {
           return { present: true, owner: current };
         }
-        current = Object.getPrototypeOf(current);
+        current = nativeObjectGetPrototypeOf(current);
       }
       return { present: false };
     }
@@ -618,7 +786,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         return { status: "failed", reason: "poisoned" };
       }
       if (promiseOwnerRecords.length > maxPromiseOwners) return failPromiseOwnerValidation("overflow-length");
-      const seen = new Set<object>();
+      const seen = new NativeSet<object>();
       try {
         for (let index = 0; index < promiseOwnerRecords.length; index += 1) {
           if (!(index in promiseOwnerRecords)) return failPromiseOwnerValidation("incomplete-enumeration");
@@ -626,7 +794,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
           if (!isObjectLike(record) || !isObjectLike(record.owner)) return failPromiseOwnerValidation("invalid-record");
           if (seen.has(record.owner)) return failPromiseOwnerValidation("duplicate-owner");
           seen.add(record.owner);
-          if (Object.getPrototypeOf(record.owner) !== record.prototype) return failPromiseOwnerValidation("prototype-mismatch");
+          if (nativeObjectGetPrototypeOf(record.owner) !== record.prototype) return failPromiseOwnerValidation("prototype-mismatch");
           for (const method of promiseMethods) {
             if (!sameDescriptorSnapshot(snapshotOwnDescriptor(record.owner, method), record.descriptors[method])) {
               return failPromiseOwnerValidation(`${method}-descriptor-mismatch`);
@@ -663,6 +831,15 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       if (left.present !== right.present) return false;
       if (!left.present || !right.present) return true;
       return left.owner === right.owner;
+    }
+
+    function samePromiseOwnerRecord(left: PromiseOwnerRecord, right: PromiseOwnerRecord): boolean {
+      if (left.owner !== right.owner || left.prototype !== right.prototype) return false;
+      for (const method of promiseMethods) {
+        if (!sameDescriptorSnapshot(left.descriptors[method], right.descriptors[method])) return false;
+        if (!sameResolvedMethodOwner(left.resolvedMethodOwners[method], right.resolvedMethodOwners[method])) return false;
+      }
+      return true;
     }
 
     function invokePromiseThen(
@@ -723,7 +900,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       if (typeof fn !== "function") {
         throw nativeNonCallableThenError(fn);
       }
-      return registry.originalReflectApply(fn as (...callArgs: unknown[]) => unknown, thisArg, args);
+      return nativeReflectApply(fn as (...callArgs: unknown[]) => unknown, thisArg, args);
     }
 
     function promiseSpeciesConstructor(receiver: unknown): PromiseConstructor {
@@ -745,7 +922,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function nativeNonCallableThenError(then: unknown): unknown {
       try {
-        registry.originalPromiseCatch.call({ then }, undefined);
+        nativeReflectApply(registry.originalPromiseCatch, { then }, [undefined]);
       } catch (error) {
         return error;
       }
@@ -754,7 +931,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function nativeFinallyReceiverError(receiver: unknown): unknown {
       try {
-        registry.originalPromiseFinally.call(receiver, undefined);
+        nativeReflectApply(registry.originalPromiseFinally, receiver, [undefined]);
       } catch (error) {
         return error;
       }
@@ -763,12 +940,12 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function nativePromiseConstructorError(constructorValue: unknown): unknown {
       const probe = new Promise((resolve) => resolve(undefined));
-      Object.defineProperty(probe, "constructor", {
+      nativeObjectDefineProperty(probe, "constructor", {
         configurable: true,
         value: constructorValue,
       });
       try {
-        registry.originalPromiseThen.call(probe, undefined, undefined);
+        nativeReflectApply(registry.originalPromiseThen, probe, [undefined, undefined]);
       } catch (error) {
         return error;
       }
@@ -777,12 +954,12 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function nativePromiseSpeciesError(species: unknown): unknown {
       const probe = new Promise((resolve) => resolve(undefined));
-      Object.defineProperty(probe, "constructor", {
+      nativeObjectDefineProperty(probe, "constructor", {
         configurable: true,
         value: { [Symbol.species]: species },
       });
       try {
-        registry.originalPromiseThen.call(probe, undefined, undefined);
+        nativeReflectApply(registry.originalPromiseThen, probe, [undefined, undefined]);
       } catch (error) {
         return error;
       }
@@ -902,13 +1079,13 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     ): T {
       return function sensitiveSchedulerCallback(this: unknown): unknown {
         "use strict";
-        const args = Array.prototype.slice.call(arguments) as any[];
+        const args = nativeReflectApply(nativeArrayPrototypeSlice, arguments, []) as any[];
         const previous = epoch.inSchedulerCallback === true;
         epoch.inSchedulerCallback = true;
         let callbackResult: unknown;
         let callbackCompleted = false;
         try {
-          callbackResult = callback.apply(this, args);
+          callbackResult = nativeReflectApply(callback, this, args);
           callbackCompleted = true;
           return callbackResult;
         } finally {
@@ -935,7 +1112,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         queueMicrotaskAfterPromiseAssimilation(settle);
         return;
       }
-      registry.originalQueueMicrotask.call(window, settle);
+      nativeReflectApply(registry.originalQueueMicrotask, window, [settle]);
     }
 
     function queueMicrotaskAfterPromiseAssimilation(callback: () => void): void {
@@ -946,9 +1123,9 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
           callback();
           return;
         }
-        registry.originalQueueMicrotask.call(window, step);
+        nativeReflectApply(registry.originalQueueMicrotask, window, [step]);
       };
-      registry.originalQueueMicrotask.call(window, step);
+      nativeReflectApply(registry.originalQueueMicrotask, window, [step]);
     }
 
     function settlePendingSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, pending: PendingSchedulerCallback): void {

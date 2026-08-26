@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AcceptedExecutionJob, ObservationGraphV1 } from "@qualigence/runner-protocol";
+import type { AcceptedExecutionJob } from "@qualigence/runner-protocol";
 import {
   PlaywrightBrowserSession,
   PlaywrightObserver,
@@ -352,9 +352,9 @@ describe("Promise owner descriptor integrity", () => {
     }
   });
 
-  it("accepts an exact restored current descriptor before immediate validation", async () => {
+  it("rejects an exact restored descriptor after first approval", async () => {
     await runTrackedPromiseCallbacks(1);
-    const graph = await observer({
+    const capture = observer({
       afterDomCollection: async (page) => {
         await page.evaluate(() => {
           const descriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
@@ -363,10 +363,11 @@ describe("Promise owner descriptor integrity", () => {
           Object.defineProperty(Promise.prototype, "then", descriptor);
         });
       },
-    }).capture(job) as ObservationGraphV1;
+    });
 
-    expect(graph.graphId).toBe("run-promise-owner:observation:1");
-    expect(session.artifactsFor(graph.graphId)).toHaveLength(2);
+    await expect(capture.capture(job)).rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-promise-owner:observation:1"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   });
 
   it("poisons evidence on the 257th distinct observed receiver while Promise callbacks still run", async () => {
