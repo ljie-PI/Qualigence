@@ -627,6 +627,7 @@ async function beginPageSensitiveActionEpoch(
       nextNodeOrdinal: number;
       nextMaskOrdinal: number;
       schedulerSessionRegistrations: number;
+      retainedSchedulerEpochs?: BrowserSensitiveEpoch[];
     };
     type BrowserSensitiveEpoch = {
       markerId: string;
@@ -1302,6 +1303,7 @@ async function endPageSensitiveActionEpoch(
       nextNodeOrdinal: number;
       nextMaskOrdinal: number;
       schedulerSessionRegistrations?: number;
+      retainedSchedulerEpochs?: NonNullable<BrowserSensitiveState["active"]>[];
     };
     const win = element.ownerDocument.defaultView;
     const state = win === null
@@ -1342,6 +1344,10 @@ async function endPageSensitiveActionEpoch(
         poisoned: active.poisoned,
         ...(retainSchedulerObserver ? { observer: active.observer } : {}),
       });
+      if (retainSchedulerObserver) {
+        state.retainedSchedulerEpochs ??= [];
+        state.retainedSchedulerEpochs.push(active);
+      }
     } else {
       cleanupSensitiveMarkers(active.markerId, active.classifiedElements ?? []);
     }

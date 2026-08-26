@@ -110,6 +110,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       active?: SensitiveSchedulerEpoch | null;
       poisoned?: boolean;
       schedulerSessionRegistrations?: number;
+      retainedSchedulerEpochs?: SensitiveSchedulerEpoch[];
     };
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
@@ -231,8 +232,12 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
 
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
       const state = sensitiveState();
-      const epoch = state?.active;
-      if (state === undefined || epoch === undefined || epoch === null) return undefined;
+      if (state === undefined) return undefined;
+      const active = state.active;
+      const epoch = active !== undefined && active !== null
+        ? active
+        : state.retainedSchedulerEpochs?.find((candidate) => candidate.inSchedulerCallback === true);
+      if (epoch === undefined) return undefined;
       state.schedulerSessionRegistrations = (state.schedulerSessionRegistrations ?? 0) + 1;
       epoch.schedulerRegistrations = (epoch.schedulerRegistrations ?? 0) + 1;
       if (

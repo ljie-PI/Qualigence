@@ -136,20 +136,20 @@ function retirePageSensitiveEvidence(stateProperty: string): boolean {
   const state = (window as unknown as Record<string, unknown>)[stateProperty] as {
     active?: unknown;
     poisoned?: boolean;
-    records?: { readonly observer?: { disconnect(): void }; readonly schedulerRegistrations?: number }[];
+    records?: { readonly observer?: { disconnect(): void } }[];
+    retainedSchedulerEpochs?: { processSchedulerCallback?: () => void }[];
   } | undefined;
   if (state === undefined) return false;
   if (state.active !== undefined && state.active !== null) return true;
   if (state.poisoned === true) return true;
-  const retainedSchedulerRecords = [];
   for (const record of state.records ?? []) {
-    if ((record.schedulerRegistrations ?? 0) > 0) {
-      retainedSchedulerRecords.push(record);
-      continue;
-    }
     record.observer?.disconnect();
   }
-  state.records = retainedSchedulerRecords;
+  for (const epoch of state.retainedSchedulerEpochs ?? []) {
+    delete epoch.processSchedulerCallback;
+  }
+  state.records = [];
+  state.retainedSchedulerEpochs = [];
   return false;
 }
 

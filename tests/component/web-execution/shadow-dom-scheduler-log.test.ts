@@ -119,6 +119,57 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
           });
         </script>
       `, "Delayed Scheduler"),
+      "/nested-delayed-scheduler": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 420px; height: 240px; }
+          #timer-host { position: absolute; left: 10px; top: 10px; width: 220px; height: 34px; }
+          #promise-host { position: absolute; left: 10px; top: 58px; width: 220px; height: 34px; }
+          label { display: block; margin-top: 140px; }
+        </style>
+        <div id="timer-host"></div>
+        <div id="promise-host"></div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const timerShadow = document.getElementById('timer-host').attachShadow({ mode: 'open' });
+          timerShadow.innerHTML = '<span data-qualigence-observe id="timer-mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          const promiseShadow = document.getElementById('promise-host').attachShadow({ mode: 'open' });
+          promiseShadow.innerHTML = '<span data-qualigence-observe id="promise-mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          document.querySelector('input').addEventListener('input', event => {
+            const value = event.target.value;
+            window.callbackRuns = [];
+            setTimeout(() => {
+              window.callbackRuns.push('outer-timer');
+              setTimeout(() => {
+                window.callbackRuns.push('nested-timer');
+                timerShadow.getElementById('timer-mirror').textContent = value;
+              }, 0);
+              Promise.resolve().then(() => {
+                window.callbackRuns.push('nested-promise');
+                promiseShadow.getElementById('promise-mirror').textContent = value;
+              });
+            }, 75);
+          });
+        </script>
+      `, "Nested Delayed Scheduler"),
+      "/post-capture-equal-text": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 420px; height: 240px; }
+          #host { position: absolute; left: 10px; top: 10px; width: 220px; height: 34px; }
+          #late { position: absolute; left: 10px; top: 58px; width: 220px; height: 34px; }
+          label { display: block; margin-top: 140px; }
+        </style>
+        <div id="host"></div>
+        <div id="late" data-qualigence-observe>ordinary</div>
+        <label>Email <input aria-label="Email" /></label>
+        <script>
+          const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+          shadow.innerHTML = '<span data-qualigence-observe id="mirror" style="display:block;width:220px;height:34px;background:rgb(250,250,250);color:white;font:16px sans-serif">waiting</span>';
+          document.querySelector('input').addEventListener('input', event => {
+            const value = event.target.value;
+            setTimeout(() => { shadow.getElementById('mirror').textContent = value; }, 0);
+          });
+        </script>
+      `, "Post Capture Equal Text"),
       "/closed-shadow": htmlDocument(`
         <div id="host"></div>
         <label>Email <input aria-label="Email" /></label>
@@ -275,6 +326,60 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
       [0, 0, 0, 255],
       [0, 0, 0, 255],
     ]);
+  }, 60_000);
+
+  it("propagates sensitive scheduler state to nested delayed timer and Promise registrations", async () => {
+    const { observer, resolver, executor } = await wire("/nested-delayed-scheduler");
+    const url = `${fixture.origin}/nested-delayed-scheduler`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "reflect through nested delayed scheduler callbacks",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage((page) => page.waitForTimeout(150));
+    const after = await observer.capture({ ...job, target: { kind: "web", url } });
+
+    expect(after.nodes.filter((node) => node.name === "[redacted]" || node.value === "[redacted]").length).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(after)).not.toContain(SECRET);
+    const callbackRuns = await session.withPage((page) => page.evaluate(() => (globalThis as unknown as { callbackRuns: string[] }).callbackRuns));
+    expect(callbackRuns).toEqual(expect.arrayContaining(["outer-timer", "nested-timer", "nested-promise"]));
+    expect(callbackRuns.indexOf("outer-timer")).toBeLessThan(callbackRuns.indexOf("nested-timer"));
+    expect(callbackRuns.indexOf("outer-timer")).toBeLessThan(callbackRuns.indexOf("nested-promise"));
+    const png = session.artifactsFor(after.graphId).find((artifact) => artifact.mediaType === "image/png");
+    expect(png).toBeDefined();
+    expect(await samplePngPixels(session, png!.bytes, [[20, 20], [20, 68]])).toEqual([
+      [0, 0, 0, 255],
+      [0, 0, 0, 255],
+    ]);
+  }, 60_000);
+
+  it("does not let a retired scheduler record poison later unrelated equal text", async () => {
+    const { observer, resolver, executor } = await wire("/post-capture-equal-text");
+    const url = `${fixture.origin}/post-capture-equal-text`;
+    const before = await observer.capture({ ...job, target: { kind: "web", url } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "capture scheduler reflection before unrelated equal text",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await session.withPage((page) => page.waitForTimeout(50));
+    const accepted = await observer.capture({ ...job, target: { kind: "web", url } });
+    expect(accepted.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(JSON.stringify(accepted)).not.toContain(SECRET);
+
+    await session.withPage((page) => page.locator("#late").evaluate((element, value) => {
+      Reflect.set(element, "textContent", value);
+    }, SECRET));
+    await expect(observer.capture({ ...job, target: { kind: "web", url } })).resolves.toEqual(expect.objectContaining({
+      graphId: expect.any(String),
+    }));
   }, 60_000);
 
   it("masks an open shadow root host when direct shadow text reflects sensitive content", async () => {
