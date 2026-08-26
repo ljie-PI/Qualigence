@@ -4,7 +4,7 @@
 
 **Blocked by:** 40 - Redact causally reflected secret evidence.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -105,14 +105,14 @@ The real Chromium case must exercise causal reflection in open and closed roots,
 
 ## Acceptance
 
-- [ ] Open shadow roots participate in causal Graph/screenshot protection; sensitive closed/unprovable roots fail evidence closed.
-- [ ] Exact 128-root, 1,024-registration-per-epoch, and 4,096-registration-per-session bounds increment before native registration and overflow as `SensitiveEvidenceUnavailable`.
-- [ ] Timer, rAF, microtask, and Promise registrations are bounded and counted before native registration without cancelling or altering application callbacks.
-- [ ] Bound overflow poisons evidence only; callbacks still allocate/register/run according to native behavior.
-- [ ] Runner reconnect/fatal logs contain only closed allowlisted codes, with every unknown mapped to `UnexpectedRunnerError` and no arbitrary message/stack/details.
-- [ ] The Runner log allowlist is exactly the seven existing `RunnerAppError` codes plus `UnexpectedRunnerError`; no structural lookalike or arbitrary string preserves its code.
-- [ ] Ticket 40 causal masking remains green but is not re-claimed as Ticket 41 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] Open shadow roots participate in causal Graph/screenshot protection; sensitive closed/unprovable roots fail evidence closed.
+- [x] Exact 128-root, 1,024-registration-per-epoch, and 4,096-registration-per-session bounds increment before native registration and overflow as `SensitiveEvidenceUnavailable`.
+- [x] Timer, rAF, microtask, and Promise registrations are bounded and counted before native registration without cancelling or altering application callbacks.
+- [x] Bound overflow poisons evidence only; callbacks still allocate/register/run according to native behavior.
+- [x] Runner reconnect/fatal logs contain only closed allowlisted codes, with every unknown mapped to `UnexpectedRunnerError` and no arbitrary message/stack/details.
+- [x] The Runner log allowlist is exactly the seven existing `RunnerAppError` codes plus `UnexpectedRunnerError`; no structural lookalike or arbitrary string preserves its code.
+- [x] Ticket 40 causal masking remains green but is not re-claimed as Ticket 41 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
 
 ## Comments
 
@@ -154,3 +154,21 @@ The real Chromium case must exercise causal reflection in open and closed roots,
 - Focused coverage added: early accepted capture before a pending delayed callback fires, followed by later redacted capture; retained delayed callback attaching a closed shadow root without the registered form.
 - Gates run/pass on the fix before commit: `corepack pnpm exec tsc -b packages/target-adapters/web-playwright/tsconfig.json apps/runner/tsconfig.json --force`; `CI=true corepack pnpm vitest run tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (1 file / 13 tests); `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts` (4 files / 70 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test); `CI=true corepack pnpm typecheck`; `git diff --check`.
 - Status remains `claimed`; no resolved/PR evidence is added pending a fresh complete-matrix review.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `9286fbce9bda41df7ef017d595febe20ce885e38`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/a4e1465c-4e26-42f4-a141-eb4ae3eda281/ticket41-review3/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/a4e1465c-4e26-42f4-a141-eb4ae3eda281/ticket41-review3/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed. Focused Ticket 41 Gate evidence is recorded in review artifacts and review-fix comments.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/113`.
+
+## Answer
+
+Implemented Ticket 41 Shadow DOM, scheduler, and Runner log remediation. Open shadow roots now participate in causal Graph redaction and screenshot masking, closed/unprovable roots fail evidence closed, scheduler registrations are bounded and counted before native registration while preserving callback execution, overflow poisons evidence without canceling callbacks, and Runner reconnect/fatal logs serialize only safe allowlisted codes.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/113`
+
+Reviewed code head: `9286fbce9bda41df7ef017d595febe20ce885e38`
+
+Final verification: focused Ticket 41 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
