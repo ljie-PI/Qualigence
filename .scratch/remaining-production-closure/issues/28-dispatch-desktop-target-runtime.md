@@ -4,7 +4,7 @@
 
 **Blocked by:** 27 — Implement the TypeScript Companion client.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -63,16 +63,16 @@ This authorization is limited to the minimal Desktop value binding/plaintext dis
 
 ## Requirements
 
-- [ ] Runner advertises Desktop capability only after Companion authentication and capability probe.
-- [ ] Web/Desktop actions cannot cross target executors.
-- [ ] Desktop Permit binds action, decision, policy, session, run, valueRef/hash/length, expiry, and nonce.
-- [ ] Companion failure yields stable capability/unavailable outcomes before side effects.
-- [ ] `TargetRuntimeFactory.open(job)` returns one closeable Observer/Resolver/ActionExecutor/Verifier resource set selected exhaustively by Target kind.
-- [ ] Web retains Playwright behavior; Desktop requires Windows, the authenticated Companion, `AppEnvironmentProvider`, `WindowsDesktopAdapter`, `UiaActionResolver`, and `UiaActionExecutor`.
-- [ ] Desktop launch completes before capture; every partial or successful open is closed in `finally`, and cleanup failure cannot turn a failed execution into success.
-- [ ] Runner resolves Desktop `valueRef` only at the last responsible moment, binds SHA-256 and byte length into the action/Permit digest, sends only bounded short-lived plaintext, and never records plaintext in Trace, Finding, logs, DTOs, or durable Spool.
-- [ ] Unsupported platform, missing adapter, failed capability probe, unauthenticated/disconnected Companion, and incompatible action kind fail as `CapabilityMismatch` or `CompanionUnavailable`; none falls back to Web or synthetic UIA.
-- [ ] Timeout after action dispatch is `ActionOutcomeUnknown`, terminal for that action, and never automatically replayed with a new Permit.
+- [x] Runner advertises Desktop capability only after Companion authentication and capability probe.
+- [x] Web/Desktop actions cannot cross target executors.
+- [x] Desktop Permit binds action, decision, policy, session, run, valueRef/hash/length, expiry, and nonce.
+- [x] Companion failure yields stable capability/unavailable outcomes before side effects.
+- [x] `TargetRuntimeFactory.open(job)` returns one closeable Observer/Resolver/ActionExecutor/Verifier resource set selected exhaustively by Target kind.
+- [x] Web retains Playwright behavior; Desktop requires Windows, the authenticated Companion, `AppEnvironmentProvider`, `WindowsDesktopAdapter`, `UiaActionResolver`, and `UiaActionExecutor`.
+- [x] Desktop launch completes before capture; every partial or successful open is closed in `finally`, and cleanup failure cannot turn a failed execution into success.
+- [x] Runner resolves Desktop `valueRef` only at the last responsible moment, binds SHA-256 and byte length into the action/Permit digest, sends only bounded short-lived plaintext, and never records plaintext in Trace, Finding, logs, DTOs, or durable Spool.
+- [x] Unsupported platform, missing adapter, failed capability probe, unauthenticated/disconnected Companion, and incompatible action kind fail as `CapabilityMismatch` or `CompanionUnavailable`; none falls back to Web or synthetic UIA.
+- [x] Timeout after action dispatch is `ActionOutcomeUnknown`, terminal for that action, and never automatically replayed with a new Permit.
 
 ## Focused Gate
 
@@ -196,3 +196,20 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
   - Passed: `CI=true corepack pnpm typecheck`.
   - Passed: `git diff --check`.
 - No PR was created. Because the E2E test file changed after the clean review, Ticket 28 remains `claimed` and needs a fresh complete-matrix review before final PR/acceptance.
+
+### final - 2026-08-26
+
+- Reviewed code/test head: `e255a7b1fe3459ebf06ec58c107fe112c76be530`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/4343cf26-5283-4161-b7f6-16773fc32702/ticket28-review4/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/4343cf26-5283-4161-b7f6-16773fc32702/ticket28-review4/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/windows/desktop-runner.test.ts` (1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 32 passed / 2 skipped), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 53 tests), `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` (1 file / 48 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: pending creation.
+
+## Answer
+
+Implemented Ticket 28 Desktop Target Runtime composition. Runner now selects Web or Desktop resources through `TargetRuntimeFactory`, preserves Web Playwright behavior, gates Desktop capability on authenticated/probed Companion readiness, opens Desktop sessions through the TypeScript Windows UIA adapter stack, binds Desktop Permit/action requests to action/decision/policy/session/run/valueRef/hash/length/expiry/nonce, resolves plaintext only at dispatch, prevents Web fallback/synthetic UIA, closes opened resources in `finally`, and terminalizes post-dispatch failures as `ActionOutcomeUnknown`. The post-review Windows Desktop Runner E2E proves the TypeScript Runner/Companion boundary with a separate-process authenticated Companion fixture; native Windows/Rust/manual evidence remains downstream scope.
+
+Pull request: pending creation.
+
+Reviewed code/test head: `e255a7b1fe3459ebf06ec58c107fe112c76be530`
+
+Final verification: focused Ticket 28 Gate, Desktop contract suite, offer-runtime regression suite, Windows Desktop Runner E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
