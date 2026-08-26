@@ -15,6 +15,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 
+/// The AppSession authority the Companion passes into the UIA worker for every
+/// capture/action. The worker must scope all lookup to this root HWND and verify
+/// the owning process before it walks or invokes anything, so a permit for one
+/// AppSession cannot hit unrelated desktop UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiaSessionTarget {
+    pub session_id: String,
+    pub process_id: i32,
+    pub root_window_handle: String,
+}
+
 /// A single UIA pattern availability descriptor, mirrored losslessly from the
 /// native `IUIAutomationElement` pattern set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,10 +111,10 @@ pub enum ActionOutcomeReport {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerRequest {
     Capture {
-        session_id: String,
+        target: UiaSessionTarget,
     },
     Execute {
-        session_id: String,
+        target: UiaSessionTarget,
         action: ResolvedDesktopAction,
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<DesktopPlaintextValue>,

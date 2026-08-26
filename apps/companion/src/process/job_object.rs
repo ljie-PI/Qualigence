@@ -308,15 +308,19 @@ mod windows_host {
         CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
         WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
         JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, GetExitCodeProcess, GetProcessTimes, QueryFullProcessImageNameW,
-        ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION,
-        STARTUPINFOW,
+        CreateProcessW, GetExitCodeProcess, GetProcessTimes, OpenProcess,
+        QueryFullProcessImageNameW, ResumeThread, TerminateProcess, WaitForSingleObject,
+        CREATE_SUSPENDED, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
@@ -415,17 +419,39 @@ mod windows_host {
                 return Err(LifecycleError::AppLaunchFailed);
             }
 
-            let process = OwnedHandle::new(process_info.hProcess)?;
-            let thread = OwnedHandle::new(process_info.hThread)?;
-            let image_path = canonical_process_image_path(process.raw())?;
+            let process = match OwnedHandle::new(process_info.hProcess) {
+                Ok(process) => process,
+                Err(error) => {
+                    close_partial_process_handles(&process_info);
+                    return Err(error);
+                }
+            };
+            let thread = match OwnedHandle::new(process_info.hThread) {
+                Ok(thread) => thread,
+                Err(error) => {
+                    terminate_and_wait(process.raw());
+                    return Err(error);
+                }
+            };
+            let image_path = match canonical_process_image_path(process.raw()) {
+                Ok(image_path) => image_path,
+                Err(error) => {
+                    terminate_and_wait(process.raw());
+                    return Err(error);
+                }
+            };
             let image_name = file_name(&image_path).unwrap_or_else(|| image_path.clone());
             if !image_name.eq_ignore_ascii_case(&spec.expected_image_name) {
-                unsafe {
-                    TerminateProcess(process.raw(), 1);
-                }
+                terminate_and_wait(process.raw());
                 return Err(LifecycleError::AppLaunchFailed);
             }
-            let creation_time = process_creation_time(process.raw())?;
+            let creation_time = match process_creation_time(process.raw()) {
+                Ok(creation_time) => creation_time,
+                Err(error) => {
+                    terminate_and_wait(process.raw());
+                    return Err(error);
+                }
+            };
             let pid = process_info.dwProcessId;
             let root_window_handle = root_window_handle_for_pid(pid)
                 .map(|hwnd| format!("0x{:X}", hwnd as usize))
@@ -516,8 +542,8 @@ mod windows_host {
             }
         }
 
-        fn list_children(&self, _pid: u32) -> Vec<HostProcess> {
-            Vec::new()
+        fn list_children(&self, pid: u32) -> Vec<HostProcess> {
+            list_child_processes(pid)
         }
 
         fn terminate_job(&mut self, job: HostJob) -> Result<(), LifecycleError> {
@@ -535,9 +561,7 @@ mod windows_host {
 
         fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
             if let Some(process) = self.processes.remove(&pid) {
-                unsafe {
-                    TerminateProcess(process.process.raw(), 1);
-                }
+                terminate_and_wait(process.process.raw());
             }
             Ok(())
         }
@@ -553,10 +577,27 @@ mod windows_host {
                 packaged_cannot_join_job: false,
             };
             let process = self.create_suspended(&reset_launch)?;
-            let job = self.create_job()?;
-            self.set_kill_on_close(job)?;
-            self.assign_to_job(job, process.pid)?;
-            self.resume(process.pid)?;
+            let job = match self.create_job() {
+                Ok(job) => job,
+                Err(error) => {
+                    let _ = self.terminate_process(process.pid);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.set_kill_on_close(job) {
+                let _ = self.terminate_process(process.pid);
+                let _ = self.terminate_job(job);
+                return Err(error);
+            }
+            if let Err(error) = self.assign_to_job(job, process.pid) {
+                let _ = self.terminate_process(process.pid);
+                let _ = self.terminate_job(job);
+                return Err(error);
+            }
+            if let Err(error) = self.resume(process.pid) {
+                let _ = self.terminate_job(job);
+                return Err(error);
+            }
             let handle = self
                 .processes
                 .get(&process.pid)
@@ -628,6 +669,81 @@ mod windows_host {
         } else {
             Some(code)
         }
+    }
+
+    fn terminate_and_wait(process: HANDLE) {
+        unsafe {
+            TerminateProcess(process, 1);
+            WaitForSingleObject(process, 5_000);
+        }
+    }
+
+    fn close_partial_process_handles(info: &PROCESS_INFORMATION) {
+        unsafe {
+            if !info.hProcess.is_null() && info.hProcess != INVALID_HANDLE_VALUE {
+                TerminateProcess(info.hProcess, 1);
+                WaitForSingleObject(info.hProcess, 5_000);
+                CloseHandle(info.hProcess);
+            }
+            if !info.hThread.is_null() && info.hThread != INVALID_HANDLE_VALUE {
+                CloseHandle(info.hThread);
+            }
+        }
+    }
+
+    fn list_child_processes(parent_pid: u32) -> Vec<HostProcess> {
+        let snapshot =
+            match OwnedHandle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) {
+                Ok(snapshot) => snapshot,
+                Err(_) => return Vec::new(),
+            };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..unsafe { zeroed() }
+        };
+        let mut children = Vec::new();
+        let mut ok = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
+        while ok != 0 {
+            if entry.th32ParentProcessID == parent_pid {
+                if let Some(child) = child_process_from_entry(&entry) {
+                    children.push(child);
+                }
+            }
+            ok = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
+        }
+        children
+    }
+
+    fn child_process_from_entry(entry: &PROCESSENTRY32W) -> Option<HostProcess> {
+        let process = OwnedHandle::new(unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID)
+        })
+        .ok()?;
+        let image_path = canonical_process_image_path(process.raw()).ok();
+        let image_name = image_path
+            .as_deref()
+            .and_then(file_name)
+            .unwrap_or_else(|| exe_file_from_entry(entry));
+        let creation_time =
+            process_creation_time(process.raw()).unwrap_or_else(|_| "unknown".into());
+        let root_window_handle = root_window_handle_for_pid(entry.th32ProcessID)
+            .map(|hwnd| format!("0x{:X}", hwnd as usize))
+            .unwrap_or_else(|| "0x0".to_string());
+        Some(HostProcess {
+            pid: entry.th32ProcessID,
+            creation_time,
+            image_name,
+            root_window_handle,
+        })
+    }
+
+    fn exe_file_from_entry(entry: &PROCESSENTRY32W) -> String {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|ch| *ch == 0)
+            .unwrap_or(entry.szExeFile.len());
+        String::from_utf16_lossy(&entry.szExeFile[..end])
     }
 
     fn process_creation_time(process: HANDLE) -> Result<String, LifecycleError> {

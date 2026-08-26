@@ -62,6 +62,26 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         self.sessions.get(session_id)
     }
 
+    /// Return a session only after rechecking the tracked PID + creation time +
+    /// image + Job membership. Capture/action callers use this so UIA authority
+    /// cannot survive PID reuse, image replacement, or Job escape.
+    pub fn verified_session(&self, session_id: &str) -> Result<&AppSessionState, LifecycleError> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or(LifecycleError::SessionNotFound)?;
+        if self.host.verify_process_in_job(
+            session.job,
+            session.pid,
+            &session.creation_time,
+            &session.image_name,
+        ) {
+            Ok(session)
+        } else {
+            Err(LifecycleError::AppLifecycleUnsupported)
+        }
+    }
+
     /// Launch a target under a kill-on-close Job.
     ///
     /// Ordering is load-bearing: create suspended → create job → kill-on-close →

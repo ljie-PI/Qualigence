@@ -14,18 +14,18 @@ use crate::ipc::dto::{
 };
 use crate::uia::mapping::{masked_value, role_for_control_type};
 use crate::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSource, UiaSourceNode,
+    ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode,
 };
 
 /// The isolated UIA FFI seam. Implementations own native COM objects; the
 /// supervisor and worker loop never touch COM directly.
 pub trait UiaCapture {
-    /// Capture the current desktop subtree for `session_id`.
-    fn capture(&mut self, session_id: &str) -> Result<UiaSource, UiaError>;
-    /// Execute a resolved desktop action against the live UI tree.
+    /// Capture the current desktop subtree for an authorized AppSession target.
+    fn capture(&mut self, target: &UiaSessionTarget) -> Result<UiaSource, UiaError>;
+    /// Execute a resolved desktop action against the authorized AppSession tree.
     fn execute(
         &mut self,
-        session_id: &str,
+        target: &UiaSessionTarget,
         action: &ResolvedDesktopAction,
         value: Option<&DesktopPlaintextValue>,
     ) -> Result<ActionOutcomeReport, UiaError>;
@@ -50,17 +50,22 @@ impl SyntheticUiaCapture {
 }
 
 impl UiaCapture for SyntheticUiaCapture {
-    fn capture(&mut self, session_id: &str) -> Result<UiaSource, UiaError> {
+    fn capture(&mut self, target: &UiaSessionTarget) -> Result<UiaSource, UiaError> {
+        let process_id = if target.process_id == 0 {
+            self.process_id
+        } else {
+            target.process_id
+        };
         Ok(synthetic_source(
-            session_id,
-            self.process_id,
+            &target.session_id,
+            process_id,
             &self.captured_at,
         ))
     }
 
     fn execute(
         &mut self,
-        _session_id: &str,
+        _target: &UiaSessionTarget,
         action: &ResolvedDesktopAction,
         value: Option<&DesktopPlaintextValue>,
     ) -> Result<ActionOutcomeReport, UiaError> {
@@ -231,8 +236,8 @@ pub fn run_worker_stdio<C: UiaCapture>(capture: &mut C) -> Result<(), UiaError> 
         let request: crate::uia::protocol::WorkerRequest =
             serde_json::from_slice(&frame).map_err(|_| UiaError::ProtocolCorruption)?;
         let response = match request {
-            crate::uia::protocol::WorkerRequest::Capture { session_id } => {
-                match capture.capture(&session_id) {
+            crate::uia::protocol::WorkerRequest::Capture { target } => {
+                match capture.capture(&target) {
                     Ok(source) => crate::uia::protocol::WorkerResponse::Captured { source },
                     Err(error) => crate::uia::protocol::WorkerResponse::Error {
                         message: error.code().to_string(),
@@ -240,11 +245,11 @@ pub fn run_worker_stdio<C: UiaCapture>(capture: &mut C) -> Result<(), UiaError> 
                 }
             }
             crate::uia::protocol::WorkerRequest::Execute {
-                session_id,
+                target,
                 action,
                 mut value,
             } => {
-                let response = match capture.execute(&session_id, &action, value.as_ref()) {
+                let response = match capture.execute(&target, &action, value.as_ref()) {
                     Ok(outcome) => crate::uia::protocol::WorkerResponse::Executed { outcome },
                     Err(error) => crate::uia::protocol::WorkerResponse::Error {
                         message: error.code().to_string(),
@@ -271,10 +276,10 @@ mod windows_uia {
     use super::{
         action_pattern_is_supported, masked_value, role_for_control_type, ActionOutcomeReport,
         DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, UiaCapture, UiaError,
-        UiaPatternDescriptor, UiaSource, UiaSourceNode, WindowOperation,
+        UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode, WindowOperation,
     };
     use windows::core::BSTR;
-    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
@@ -291,6 +296,7 @@ mod windows_uia {
 
     const MAX_CAPTURE_NODES: usize = 512;
     const MAX_CAPTURE_DEPTH: usize = 16;
+    const MAX_PROPERTY_BYTES: usize = 16 * 1024;
 
     struct ComMta;
 
@@ -333,13 +339,12 @@ mod windows_uia {
     }
 
     impl UiaCapture for WindowsUiaCapture {
-        fn capture(&mut self, session_id: &str) -> Result<UiaSource, UiaError> {
-            let root = unsafe { self.automation.GetRootElement() }
-                .map_err(|_| UiaError::TargetUnresponsive)?;
+        fn capture(&mut self, target: &UiaSessionTarget) -> Result<UiaSource, UiaError> {
+            let root = self.root_for_target(target)?;
             let mut nodes = Vec::new();
-            self.walk(&root, 0, &mut nodes)?;
+            self.walk(target, &root, 0, &mut nodes)?;
             Ok(UiaSource {
-                session_id: session_id.to_string(),
+                session_id: target.session_id.clone(),
                 captured_at: now_iso_like(),
                 root_node_ids: nodes
                     .first()
@@ -351,18 +356,18 @@ mod windows_uia {
 
         fn execute(
             &mut self,
-            _session_id: &str,
+            target: &UiaSessionTarget,
             action: &ResolvedDesktopAction,
             value: Option<&DesktopPlaintextValue>,
         ) -> Result<ActionOutcomeReport, UiaError> {
             if !action_pattern_is_supported(action) {
                 return Err(UiaError::Reported("UiaPatternUnsupported".to_string()));
             }
-            let target = self.find_element(&action.node_id)?;
+            let element = self.find_element(target, &action.node_id)?;
             match &action.kind {
                 DesktopActionKind::Click => {
                     let pattern = unsafe {
-                        target
+                        element
                             .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
                     }
                     .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
@@ -377,7 +382,7 @@ mod windows_uia {
                         return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
                     }
                     let pattern = unsafe {
-                        target.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                        element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
                     }
                     .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
                     let text = BSTR::from(value.plaintext.as_str());
@@ -386,7 +391,7 @@ mod windows_uia {
                 }
                 DesktopActionKind::Select { .. } => {
                     let pattern = unsafe {
-                        target.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
                             UIA_SelectionItemPatternId,
                         )
                     }
@@ -396,7 +401,7 @@ mod windows_uia {
                 }
                 DesktopActionKind::Scroll { direction, amount } => {
                     let pattern = unsafe {
-                        target
+                        element
                             .GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
                     }
                     .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
@@ -439,11 +444,19 @@ mod windows_uia {
                         .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
                 }
                 DesktopActionKind::Window { window_operation } => match window_operation {
-                    WindowOperation::Focus => unsafe { target.SetFocus() }
-                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?,
+                    WindowOperation::Focus => {
+                        let _pattern = unsafe {
+                            element.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                                UIA_WindowPatternId,
+                            )
+                        }
+                        .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                        unsafe { element.SetFocus() }
+                            .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                    }
                     WindowOperation::Minimize => {
                         let pattern = unsafe {
-                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                            element.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
                                 UIA_WindowPatternId,
                             )
                         }
@@ -453,7 +466,7 @@ mod windows_uia {
                     }
                     WindowOperation::Restore => {
                         let pattern = unsafe {
-                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                            element.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
                                 UIA_WindowPatternId,
                             )
                         }
@@ -463,7 +476,7 @@ mod windows_uia {
                     }
                     WindowOperation::Close => {
                         let pattern = unsafe {
-                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                            element.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
                                 UIA_WindowPatternId,
                             )
                         }
@@ -478,8 +491,20 @@ mod windows_uia {
     }
 
     impl WindowsUiaCapture {
+        fn root_for_target(
+            &self,
+            target: &UiaSessionTarget,
+        ) -> Result<IUIAutomationElement, UiaError> {
+            let hwnd = parse_hwnd(&target.root_window_handle)?;
+            let root = unsafe { self.automation.ElementFromHandle(hwnd) }
+                .map_err(|_| UiaError::Reported("UiaAccessDenied".to_string()))?;
+            verify_process_scope(&root, target.process_id)?;
+            Ok(root)
+        }
+
         fn walk(
             &self,
+            target: &UiaSessionTarget,
             element: &IUIAutomationElement,
             depth: usize,
             nodes: &mut Vec<UiaSourceNode>,
@@ -494,30 +519,34 @@ mod windows_uia {
             let is_password = unsafe { element.CurrentIsPassword() }
                 .map(|value| value.as_bool())
                 .unwrap_or(false);
+            let process_id = unsafe { element.CurrentProcessId() }.unwrap_or_default();
+            if target.process_id != 0 && process_id != target.process_id {
+                return Err(UiaError::Reported("UiaAccessDenied".to_string()));
+            }
             let value = if is_password {
                 masked_value(true, None)
             } else {
-                current_value(element)
+                current_value(element)?
             };
             let rect = unsafe { element.CurrentBoundingRectangle() }.ok();
             let mut node = UiaSourceNode {
                 node_id: node_id.clone(),
                 role: role_for_control_type(control_type),
                 control_type_id: control_type,
-                name: current_bstr(element, |element| unsafe { element.CurrentName() }),
+                name: current_bstr(element, |element| unsafe { element.CurrentName() })?,
                 value,
                 automation_id: current_bstr(element, |element| unsafe {
                     element.CurrentAutomationId()
-                }),
+                })?,
                 framework_id: current_bstr(element, |element| unsafe {
                     element.CurrentFrameworkId()
-                }),
-                class_name: current_bstr(element, |element| unsafe { element.CurrentClassName() }),
+                })?,
+                class_name: current_bstr(element, |element| unsafe { element.CurrentClassName() })?,
                 native_window_handle: unsafe { element.CurrentNativeWindowHandle() }
                     .ok()
                     .filter(|hwnd| !hwnd.is_invalid())
                     .map(|hwnd| format!("0x{:X}", hwnd.0 as usize)),
-                process_id: unsafe { element.CurrentProcessId() }.unwrap_or_default(),
+                process_id,
                 is_offscreen: unsafe { element.CurrentIsOffscreen() }
                     .map(|value| value.as_bool())
                     .unwrap_or(false),
@@ -540,48 +569,63 @@ mod windows_uia {
                     .map_err(|_| UiaError::TargetUnresponsive)?;
                 if let Ok(children) = unsafe { element.FindAll(TreeScope_Children, &condition) } {
                     let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
-                    for i in 0..len.min(MAX_CAPTURE_NODES.saturating_sub(nodes.len())) {
+                    if len > MAX_CAPTURE_NODES.saturating_sub(nodes.len()) {
+                        return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+                    }
+                    for i in 0..len {
                         if let Ok(child) = unsafe { children.GetElement(i as i32) } {
-                            let child_id = self.walk(&child, depth + 1, nodes)?;
+                            let child_id = self.walk(target, &child, depth + 1, nodes)?;
                             node.children.push(child_id);
                         }
                     }
                 }
+            } else if has_children(element, &self.automation)? {
+                return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
             }
             nodes[index] = node;
             Ok(node_id)
         }
 
-        fn find_element(&self, node_id: &str) -> Result<IUIAutomationElement, UiaError> {
-            let root = unsafe { self.automation.GetRootElement() }
-                .map_err(|_| UiaError::TargetUnresponsive)?;
+        fn find_element(
+            &self,
+            target: &UiaSessionTarget,
+            node_id: &str,
+        ) -> Result<IUIAutomationElement, UiaError> {
+            let root = self.root_for_target(target)?;
             let mut cursor = 0usize;
-            self.find_by_generated_id(&root, node_id, &mut cursor, 0)
+            let found = self.find_by_generated_id(target, &root, node_id, &mut cursor, 0)?;
+            verify_process_scope(&found, target.process_id)?;
+            Ok(found)
         }
 
         fn find_by_generated_id(
             &self,
+            target: &UiaSessionTarget,
             element: &IUIAutomationElement,
             wanted: &str,
             cursor: &mut usize,
             depth: usize,
         ) -> Result<IUIAutomationElement, UiaError> {
+            if depth > MAX_CAPTURE_DEPTH || *cursor >= MAX_CAPTURE_NODES {
+                return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+            }
+            verify_process_scope(element, target.process_id)?;
             let current_id = format!("uia-{cursor}");
             *cursor += 1;
             if current_id == wanted {
                 return Ok(element.clone());
             }
-            if depth >= MAX_CAPTURE_DEPTH || *cursor >= MAX_CAPTURE_NODES {
-                return Err(UiaError::Reported("UiaElementNotFound".to_string()));
-            }
             let condition = unsafe { self.automation.CreateTrueCondition() }
                 .map_err(|_| UiaError::TargetUnresponsive)?;
             if let Ok(children) = unsafe { element.FindAll(TreeScope_Children, &condition) } {
                 let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
-                for i in 0..len.min(MAX_CAPTURE_NODES.saturating_sub(*cursor)) {
+                if len > MAX_CAPTURE_NODES.saturating_sub(*cursor) {
+                    return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+                }
+                for i in 0..len {
                     if let Ok(child) = unsafe { children.GetElement(i as i32) } {
                         if let Ok(found) =
-                            self.find_by_generated_id(&child, wanted, cursor, depth + 1)
+                            self.find_by_generated_id(target, &child, wanted, cursor, depth + 1)
                         {
                             return Ok(found);
                         }
@@ -592,32 +636,81 @@ mod windows_uia {
         }
     }
 
-    fn current_bstr<F>(element: &IUIAutomationElement, f: F) -> Option<String>
+    fn current_bstr<F>(element: &IUIAutomationElement, f: F) -> Result<Option<String>, UiaError>
     where
         F: FnOnce(&IUIAutomationElement) -> windows::core::Result<BSTR>,
     {
-        f(element).ok().and_then(|bstr| {
-            let value = String::try_from(&bstr).ok()?;
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        })
+        match f(element) {
+            Ok(bstr) => bounded_optional_string(String::try_from(&bstr).unwrap_or_default()),
+            Err(_) => Ok(None),
+        }
     }
 
-    fn current_value(element: &IUIAutomationElement) -> Option<String> {
+    fn current_value(element: &IUIAutomationElement) -> Result<Option<String>, UiaError> {
         let pattern =
             unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
-                .ok()?;
-        unsafe { pattern.CurrentValue() }.ok().and_then(|bstr| {
-            let value = String::try_from(&bstr).ok()?;
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        })
+                .ok();
+        let Some(pattern) = pattern else {
+            return Ok(None);
+        };
+        match unsafe { pattern.CurrentValue() } {
+            Ok(bstr) => bounded_optional_string(String::try_from(&bstr).unwrap_or_default()),
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn parse_hwnd(value: &str) -> Result<HWND, UiaError> {
+        let trimmed = value.trim();
+        let hex = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+            .unwrap_or(trimmed);
+        let raw = usize::from_str_radix(hex, 16)
+            .or_else(|_| trimmed.parse::<usize>())
+            .map_err(|_| UiaError::Reported("UiaAccessDenied".to_string()))?;
+        if raw == 0 {
+            return Err(UiaError::Reported("UiaAccessDenied".to_string()));
+        }
+        Ok(HWND(raw as *mut std::ffi::c_void))
+    }
+
+    fn verify_process_scope(
+        element: &IUIAutomationElement,
+        expected_process_id: i32,
+    ) -> Result<(), UiaError> {
+        if expected_process_id == 0 {
+            return Ok(());
+        }
+        let process_id = unsafe { element.CurrentProcessId() }
+            .map_err(|_| UiaError::Reported("UiaAccessDenied".to_string()))?;
+        if process_id == expected_process_id {
+            Ok(())
+        } else {
+            Err(UiaError::Reported("UiaAccessDenied".to_string()))
+        }
+    }
+
+    fn has_children(
+        element: &IUIAutomationElement,
+        automation: &IUIAutomation,
+    ) -> Result<bool, UiaError> {
+        let condition = unsafe { automation.CreateTrueCondition() }
+            .map_err(|_| UiaError::TargetUnresponsive)?;
+        Ok(unsafe { element.FindAll(TreeScope_Children, &condition) }
+            .ok()
+            .and_then(|children| unsafe { children.Length() }.ok())
+            .map(|len| len > 0)
+            .unwrap_or(false))
+    }
+
+    fn bounded_optional_string(value: String) -> Result<Option<String>, UiaError> {
+        if value.is_empty() {
+            Ok(None)
+        } else if value.as_bytes().len() > MAX_PROPERTY_BYTES {
+            Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()))
+        } else {
+            Ok(Some(value))
+        }
     }
 
     fn rect_to_bounds(rect: RECT) -> crate::uia::protocol::UiaBounds {

@@ -19,7 +19,9 @@ use companion::uia::action::{
     classify_desktop_action, desktop_action_digest_sha256, execute_desktop_action,
     execute_desktop_action_request, DesktopActionError,
 };
-use companion::uia::protocol::{ActionOutcomeReport, UiaError, WorkerRequest, WorkerResponse};
+use companion::uia::protocol::{
+    ActionOutcomeReport, UiaError, UiaSessionTarget, WorkerRequest, WorkerResponse,
+};
 use companion::uia::worker_supervisor::{
     UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
 };
@@ -111,6 +113,14 @@ fn click_action(action_id: &str) -> ResolvedDesktopAction {
     }
 }
 
+fn target() -> UiaSessionTarget {
+    UiaSessionTarget {
+        session_id: "sess-1".into(),
+        process_id: 4242,
+        root_window_handle: "0x10".into(),
+    }
+}
+
 fn binding_for(action_id: &str, risk: Risk) -> PermitBinding {
     PermitBinding {
         session_id: "sess-1".into(),
@@ -187,7 +197,7 @@ fn a_brokered_action_consumes_its_permit_then_reaches_the_worker() {
     let outcome = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-1",
+        &target(),
         &click_action("act-1"),
         &token,
         &binding,
@@ -203,7 +213,7 @@ fn a_brokered_action_consumes_its_permit_then_reaches_the_worker() {
     let replay = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-1",
+        &target(),
         &click_action("act-1"),
         &token,
         &binding,
@@ -238,7 +248,7 @@ fn a_rejected_permit_never_reaches_the_worker() {
     let result = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-1",
+        &target(),
         &click_action("act-1"),
         "forged-token",
         &binding,
@@ -303,7 +313,7 @@ fn an_emergency_stop_blocks_a_brokered_action_before_the_worker() {
     let result = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-1",
+        &target(),
         &click_action("act-1"),
         &token,
         &binding,
@@ -339,7 +349,7 @@ fn an_action_timeout_is_a_non_replayable_unknown_outcome() {
     let result = execute_desktop_action(
         &mut companion,
         &mut supervisor,
-        "sess-1",
+        &target(),
         &click_action("act-1"),
         &token,
         &binding,
@@ -463,7 +473,7 @@ fn action_execute_revalidates_value_digest_before_consuming_or_dispatching() {
         execute_desktop_action_request(
             &mut companion,
             &mut supervisor,
-            "sess-1",
+            &target(),
             &action,
             &bad_permit,
             Some(bad_value),
@@ -486,7 +496,7 @@ fn action_execute_revalidates_value_digest_before_consuming_or_dispatching() {
         execute_desktop_action_request(
             &mut companion,
             &mut supervisor,
-            "sess-1",
+            &target(),
             &action,
             &good_permit,
             Some(good_value),
@@ -524,7 +534,7 @@ fn unsupported_uia_pattern_is_reported_without_fallback() {
         execute_desktop_action(
             &mut companion,
             &mut supervisor,
-            "sess-1",
+            &target(),
             &action,
             &token,
             &binding,

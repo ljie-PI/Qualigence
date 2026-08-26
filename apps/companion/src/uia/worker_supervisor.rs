@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 use crate::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaSource, WorkerRequest, WorkerResponse,
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
 };
 
 /// A transport failure while talking to a worker child.
@@ -102,6 +102,13 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         }
     }
 
+    /// Emergency Stop cancellation hook: kill the current worker child immediately
+    /// and latch future work at the Companion permit layer. The App Job remains
+    /// owned by the main process and is not torn down by worker cancellation.
+    pub fn cancel_in_flight(&mut self) {
+        self.recycle_worker();
+    }
+
     fn dispatch(
         &mut self,
         req: &WorkerRequest,
@@ -123,9 +130,13 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
     /// Capture the desktop subtree, killing + rebuilding the worker on timeout,
     /// exit or protocol corruption and returning a stable error instead of ever
     /// blocking the Companion.
-    pub fn capture(&mut self, session_id: &str, deadline: Duration) -> Result<UiaSource, UiaError> {
+    pub fn capture(
+        &mut self,
+        target: &UiaSessionTarget,
+        deadline: Duration,
+    ) -> Result<UiaSource, UiaError> {
         let req = WorkerRequest::Capture {
-            session_id: session_id.to_string(),
+            target: target.clone(),
         };
         match self.dispatch(&req, deadline) {
             Ok(WorkerResponse::Captured { source }) => Ok(source),
@@ -148,17 +159,17 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
     /// worker is rebuilt for the next request.
     pub fn execute(
         &mut self,
-        session_id: &str,
+        target: &UiaSessionTarget,
         action: &ResolvedDesktopAction,
-        value: Option<DesktopPlaintextValue>,
+        value: Option<&DesktopPlaintextValue>,
         deadline: Duration,
     ) -> Result<ActionOutcomeReport, UiaError> {
-        let req = WorkerRequest::Execute {
-            session_id: session_id.to_string(),
+        let mut req = WorkerRequest::Execute {
+            target: target.clone(),
             action: action.clone(),
-            value,
+            value: value.cloned(),
         };
-        match self.dispatch(&req, deadline) {
+        let result = match self.dispatch(&req, deadline) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
             Ok(_) => {
@@ -170,7 +181,18 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
                 Err(UiaError::ActionOutcomeUnknown)
             }
             Err(WorkerError::Spawn) => Err(UiaError::WorkerUnavailable),
-        }
+        };
+        clear_request_plaintext(&mut req);
+        result
+    }
+}
+
+fn clear_request_plaintext(req: &mut WorkerRequest) {
+    if let WorkerRequest::Execute {
+        value: Some(value), ..
+    } = req
+    {
+        value.plaintext.clear();
     }
 }
 
@@ -223,10 +245,32 @@ mod native_child {
                 .spawn()
                 .map_err(|_| WorkerError::Spawn)?;
 
-            let stdin = child.stdin.take().ok_or(WorkerError::Spawn)?;
-            let stdout = child.stdout.take().ok_or(WorkerError::Spawn)?;
-            let job = WorkerJob::create()?;
-            job.assign_child(&child)?;
+            let stdin = match child.stdin.take() {
+                Some(stdin) => stdin,
+                None => {
+                    kill_and_wait_child(&mut child);
+                    return Err(WorkerError::Spawn);
+                }
+            };
+            let stdout = match child.stdout.take() {
+                Some(stdout) => stdout,
+                None => {
+                    kill_and_wait_child(&mut child);
+                    return Err(WorkerError::Spawn);
+                }
+            };
+            let job = match WorkerJob::create() {
+                Ok(job) => job,
+                Err(error) => {
+                    kill_and_wait_child(&mut child);
+                    return Err(error);
+                }
+            };
+            if let Err(error) = job.assign_child(&child) {
+                job.terminate();
+                kill_and_wait_child(&mut child);
+                return Err(error);
+            }
             Ok(NativeUiaWorkerHandle {
                 child,
                 stdin,
@@ -303,6 +347,11 @@ mod native_child {
         fn is_alive(&self) -> bool {
             self.alive
         }
+    }
+
+    fn kill_and_wait_child(child: &mut Child) {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     fn read_worker_response<R: Read>(reader: &mut R) -> Result<WorkerResponse, WorkerError> {

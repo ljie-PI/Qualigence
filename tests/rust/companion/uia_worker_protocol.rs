@@ -10,7 +10,9 @@ use companion::clock::ManualClock;
 use companion::permit::{PermitBinding, PermitStore};
 use companion::risk::Risk;
 use companion::uia::mapping::MASKED_VALUE;
-use companion::uia::protocol::{UiaError, UiaSource, WorkerRequest, WorkerResponse};
+use companion::uia::protocol::{
+    UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+};
 use companion::uia::worker::synthetic_source;
 use companion::uia::worker_supervisor::{
     UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
@@ -86,6 +88,14 @@ impl WorkerSpawner for ScriptedSpawner {
     }
 }
 
+fn target(session_id: &str) -> UiaSessionTarget {
+    UiaSessionTarget {
+        session_id: session_id.to_string(),
+        process_id: 4242,
+        root_window_handle: "0x10".to_string(),
+    }
+}
+
 fn captured(session_id: &str) -> WorkerResponse {
     WorkerResponse::Captured {
         source: synthetic_source(session_id, 4242, "2026-08-02T00:00:00.000Z"),
@@ -124,7 +134,7 @@ fn a_hung_worker_is_recycled_and_the_replacement_resumes_capture() {
 
     // First capture: the worker hangs, so we get a non-blocking TargetUnresponsive
     // and the child is torn down.
-    let first = supervisor.capture("sess-1", Duration::from_millis(50));
+    let first = supervisor.capture(&target("sess-1"), Duration::from_millis(50));
     assert_eq!(first, Err(UiaError::TargetUnresponsive));
     assert_eq!(supervisor.restart_count(), 1);
     assert!(!supervisor.worker_alive());
@@ -132,11 +142,34 @@ fn a_hung_worker_is_recycled_and_the_replacement_resumes_capture() {
     // Second capture: a fresh worker is spawned lazily and the session resumes
     // without any external restart.
     let second = supervisor
-        .capture("sess-1", Duration::from_millis(50))
+        .capture(&target("sess-1"), Duration::from_millis(50))
         .expect("replacement worker captures");
     assert_eq!(second.session_id, "sess-1");
     assert_eq!(supervisor.spawn_count(), 2);
     assert!(supervisor.worker_alive());
+}
+
+#[test]
+fn emergency_stop_cancels_the_current_worker_without_losing_supervisor_authority() {
+    let spawner = ScriptedSpawner::new(vec![
+        vec![Ok(captured("sess-1"))],
+        vec![Ok(captured("sess-1"))],
+    ]);
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+
+    supervisor
+        .capture(&target("sess-1"), Duration::from_millis(50))
+        .expect("first worker captures");
+    assert!(supervisor.worker_alive());
+
+    supervisor.cancel_in_flight();
+    assert_eq!(supervisor.restart_count(), 1);
+    assert!(!supervisor.worker_alive());
+
+    supervisor
+        .capture(&target("sess-1"), Duration::from_millis(50))
+        .expect("replacement worker captures after stop");
+    assert_eq!(supervisor.spawn_count(), 2);
 }
 
 #[test]
@@ -148,13 +181,13 @@ fn a_corrupt_frame_recycles_the_worker() {
     let mut supervisor = UiaWorkerSupervisor::new(spawner);
 
     assert_eq!(
-        supervisor.capture("sess-1", Duration::from_millis(50)),
+        supervisor.capture(&target("sess-1"), Duration::from_millis(50)),
         Err(UiaError::TargetUnresponsive)
     );
     assert_eq!(supervisor.restart_count(), 1);
 
     let ok = supervisor
-        .capture("sess-1", Duration::from_millis(50))
+        .capture(&target("sess-1"), Duration::from_millis(50))
         .expect("replacement worker recovers");
     assert_eq!(ok.root_node_ids, vec!["window".to_string()]);
 }
@@ -172,7 +205,7 @@ fn a_worker_crash_does_not_disturb_the_companion_security_core() {
     let spawner = ScriptedSpawner::new(vec![vec![Err(WorkerError::Timeout)]]);
     let mut supervisor = UiaWorkerSupervisor::new(spawner);
     assert_eq!(
-        supervisor.capture("sess-1", Duration::from_millis(10)),
+        supervisor.capture(&target("sess-1"), Duration::from_millis(10)),
         Err(UiaError::TargetUnresponsive)
     );
 

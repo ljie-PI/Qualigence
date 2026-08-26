@@ -19,7 +19,7 @@ use crate::ipc::dto::{
 };
 use crate::permit::{PermitBinding, PermitError};
 use crate::risk::Risk;
-use crate::uia::protocol::{ActionOutcomeReport, UiaError};
+use crate::uia::protocol::{ActionOutcomeReport, UiaError, UiaSessionTarget};
 use crate::uia::worker::action_pattern_is_supported;
 use crate::uia::worker_supervisor::{UiaWorkerSupervisor, WorkerSpawner};
 use crate::Companion;
@@ -70,7 +70,7 @@ pub enum DesktopActionError {
 pub fn execute_desktop_action<C, A, S>(
     companion: &mut Companion<C, A>,
     supervisor: &mut UiaWorkerSupervisor<S>,
-    session_id: &str,
+    target: &UiaSessionTarget,
     action: &ResolvedDesktopAction,
     permit_token: &str,
     binding: &PermitBinding,
@@ -81,6 +81,10 @@ where
     A: Approver,
     S: WorkerSpawner,
 {
+    if target.session_id != binding.session_id {
+        return Err(DesktopActionError::BindingMismatch);
+    }
+
     if !action_pattern_is_supported(action) {
         return Err(DesktopActionError::Uia(UiaError::Reported(
             "UiaPatternUnsupported".to_string(),
@@ -92,7 +96,7 @@ where
         .map_err(DesktopActionError::Permit)?;
 
     supervisor
-        .execute(session_id, action, None, deadline)
+        .execute(target, action, None, deadline)
         .map_err(DesktopActionError::Uia)
 }
 
@@ -102,7 +106,7 @@ where
 pub fn execute_desktop_action_request<C, A, S>(
     companion: &mut Companion<C, A>,
     supervisor: &mut UiaWorkerSupervisor<S>,
-    session_id: &str,
+    target: &UiaSessionTarget,
     action: &ResolvedDesktopAction,
     permit: &LocalExecutionPermit,
     mut value: Option<DesktopPlaintextValue>,
@@ -114,7 +118,7 @@ where
     A: Approver,
     S: WorkerSpawner,
 {
-    if !permit_matches_action(session_id, action, permit, binding)
+    if !permit_matches_action(&target.session_id, action, permit, binding)
         || !value_matches_permit(action, permit, value.as_ref())
     {
         clear_plaintext(&mut value);
@@ -136,9 +140,8 @@ where
         return consume.map(|_| ActionOutcomeReport::Ok);
     }
 
-    let dispatch_value = value.clone();
     let outcome = supervisor
-        .execute(session_id, action, dispatch_value, deadline)
+        .execute(target, action, value.as_ref(), deadline)
         .map_err(DesktopActionError::Uia);
     clear_plaintext(&mut value);
     outcome
