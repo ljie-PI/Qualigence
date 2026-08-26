@@ -4,7 +4,7 @@
 
 **Blocked by:** 10 — Persist Self-hosted Run, Trace, and completion; 16 — Expand multi-step Plan and action contracts.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -116,3 +116,7 @@ Run reconnect/resume against real object storage.
 - The affected context documents listed above, especially separate large-object transfer, hash verification, durable ACK, append-only Trace, lost-lease bounds, and tenant isolation.
 - `packages/contracts/runner-protocol/src/**`, its protobuf schema, `packages/core-modules/evidence/src/persistence-ports.ts`, and `packages/runner-components/runner-spool/src/**`.
 - The protocol, Spool, Artifact provider, PostgreSQL, and Runner tests named by the focused Gate.
+
+## Comments
+
+- start: base SHA `cff217f68f0b3bcaffe517aaed11e3e302abb964`; behavior matrix applies in full because resumable Artifact manifest/chunk/ACK upload is stateful, side-effecting, retrying, concurrent, timeout/unknown-outcome-sensitive, lost-owner-sensitive, restart-sensitive, and terminal-ACK-sensitive; planned Gates: `CI=true corepack pnpm vitest run tests/conformance/runner-protocol tests/contract/runner-spool tests/contract/artifact-fs tests/contract/artifact-s3 tests/contract/postgres/artifact-upload.test.ts tests/unit/runner/trace-upload-pump.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.

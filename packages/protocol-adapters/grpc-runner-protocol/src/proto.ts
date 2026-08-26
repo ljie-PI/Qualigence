@@ -78,6 +78,8 @@ export interface RunnerFrameWire {
   renew_lease?: Record<string, unknown>;
   event_batch?: Record<string, unknown>;
   complete_execution?: Record<string, unknown>;
+  register_artifact_manifest?: Record<string, unknown>;
+  upload_artifact_chunk?: Record<string, unknown>;
 }
 
 /** Wire (snake_case) envelope for every Server-originated frame. */
@@ -92,4 +94,6 @@ export interface ServerFrameWire {
   event_ack?: Record<string, unknown>;
   trace_gap?: Record<string, unknown>;
   trace_integrity_violation?: Record<string, unknown>;
+  artifact_manifest_ack?: Record<string, unknown>;
+  artifact_chunk_ack?: Record<string, unknown>;
 }

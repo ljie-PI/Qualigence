@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARTIFACT_CHUNK_SIZE_BYTES,
   DESKTOP_UIA_V1_CAPABILITY_TOKENS,
   OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
   OBSERVATION_GRAPH_V1_SCHEMA,
@@ -8,6 +9,9 @@ import {
   capabilities,
 } from "@qualigence/runner-protocol";
 import type {
+  ArtifactChunkUpload,
+  ArtifactManifestRegistration,
+  ArtifactUploadAck,
   ExecutionEventAck,
   ExecutionEventBatch,
   ExecutionJobLease,
@@ -17,6 +21,12 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import {
+  artifactChunkUploadFromWire,
+  artifactChunkUploadToWire,
+  artifactManifestRegistrationFromWire,
+  artifactManifestRegistrationToWire,
+  artifactUploadAckFromWire,
+  artifactUploadAckToWire,
   decodeWireMessage,
   encodeWireMessage,
   eventAckFromWire,
@@ -473,5 +483,52 @@ describe("grpc runner protocol mappers", () => {
       nextExpectedSequenceNumber: 2,
     };
     expect(wireRoundTrip("ExecutionEventAck", eventAckToWire, eventAckFromWire, ack)).toEqual(ack);
+  });
+
+  it("round-trips Artifact manifest registration, chunk upload, and ACK through the protobuf wire", () => {
+    const registration: ArtifactManifestRegistration = {
+      jobId: "job-1",
+      runId: "run-attempt-1",
+      leaseEpoch: 2,
+      leaseToken: "lease-secret",
+      manifest: {
+        artifactId: "artifact-1",
+        tenantId: "tenant-a",
+        projectId: "project-1",
+        runId: "run-attempt-1",
+        sizeBytes: 3,
+        sha256: "0".repeat(64),
+        mediaType: "application/octet-stream",
+        sensitivity: "internal",
+        chunkSizeBytes: ARTIFACT_CHUNK_SIZE_BYTES,
+        totalChunks: 1,
+      },
+    };
+    expect(wireRoundTrip("RegisterArtifactManifest", artifactManifestRegistrationToWire, artifactManifestRegistrationFromWire, registration)).toEqual(registration);
+
+    const upload: ArtifactChunkUpload = {
+      jobId: "job-1",
+      runId: "run-attempt-1",
+      leaseEpoch: 2,
+      leaseToken: "lease-secret",
+      chunk: {
+        artifactId: "artifact-1",
+        tenantId: "tenant-a",
+        projectId: "project-1",
+        runId: "run-attempt-1",
+        offset: 0,
+        bytes: new Uint8Array([1, 2, 3]),
+        sha256: "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+      },
+    };
+    expect(wireRoundTrip("UploadArtifactChunk", artifactChunkUploadToWire, artifactChunkUploadFromWire, upload)).toEqual(upload);
+
+    const ack: ArtifactUploadAck = {
+      artifactId: "artifact-1",
+      runId: "run-attempt-1",
+      missingRanges: [{ offset: 262_144, length: 3 }],
+      acknowledged: false,
+    };
+    expect(wireRoundTrip("ArtifactUploadAck", artifactUploadAckToWire, artifactUploadAckFromWire, ack)).toEqual(ack);
   });
 });

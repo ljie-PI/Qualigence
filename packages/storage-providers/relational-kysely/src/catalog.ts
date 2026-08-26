@@ -1557,6 +1557,65 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       { name: "intelligence_result_dispositions_status_check", predicate: "status IN ('applied', 'duplicate', 'rejected', 'recompute')" },
     ],
   },
+  // ---- Migration 014: resumable artifact upload ----------------------
+  {
+    name: "artifact_upload_manifests",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("artifact_id"),
+      t("project_id"),
+      t("run_id"),
+      t("job_id"),
+      i("size_bytes"),
+      t("sha256"),
+      t("media_type"),
+      t("sensitivity"),
+      i("chunk_size_bytes"),
+      i("total_chunks"),
+      t("registered_by_runner_id"),
+      i("registered_lease_epoch"),
+      t("status"),
+      t("relative_path", false),
+      t("created_at"),
+      t("verified_at", false),
+    ],
+    primaryKey: ["artifact_id"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["run_id"], references: { table: "execution_runs", columns: ["run_id"] } },
+    ],
+    checks: [
+      { name: "artifact_upload_manifests_status_check", predicate: "status IN ('registered', 'verified')" },
+      { name: "artifact_upload_manifests_size_check", predicate: "size_bytes >= 0" },
+      { name: "artifact_upload_manifests_chunk_size_check", predicate: "chunk_size_bytes = 262144" },
+      { name: "artifact_upload_manifests_total_chunks_check", predicate: "total_chunks >= 0" },
+    ],
+  },
+  {
+    name: "artifact_upload_chunks",
+    tenantOwned: true,
+    hasNativeTenantColumn: false,
+    workerAccessible: false,
+    columns: [
+      t("artifact_id"),
+      i("offset_bytes"),
+      i("size_bytes"),
+      t("sha256"),
+      b("bytes", true),
+      t("created_at"),
+    ],
+    primaryKey: ["artifact_id", "offset_bytes"],
+    uniques: [],
+    foreignKeys: [
+      { columns: ["artifact_id"], references: { table: "artifact_upload_manifests", columns: ["artifact_id"] } },
+    ],
+    checks: [
+      { name: "artifact_upload_chunks_offset_check", predicate: "offset_bytes >= 0" },
+      { name: "artifact_upload_chunks_size_check", predicate: "size_bytes > 0 AND size_bytes <= 262144" },
+    ],
+  },
 ];
 
 export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
@@ -1573,6 +1632,7 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 11, name: "exploration-attempt-progress", tables: tablesFromTo("exploration_attempt_progress", "exploration_live_checkpoints") },
   { version: 12, name: "intelligence-leases-results", tables: tablesFromTo("intelligence_leases", "intelligence_result_inbox") },
   { version: 13, name: "intelligence-result-wakeups-dispositions", tables: tablesFromTo("intelligence_result_wakeups", "intelligence_result_dispositions") },
+  { version: 14, name: "artifact-upload", tables: tablesFromTo("artifact_upload_manifests", "artifact_upload_chunks") },
 ];
 
 function tablesThrough(last: string): readonly string[] {

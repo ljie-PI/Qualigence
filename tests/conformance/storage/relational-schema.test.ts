@@ -44,12 +44,12 @@ describe("shared relational schema catalog", () => {
   });
 
   it("agrees with the SQLite runtime on the logical schema version", () => {
-    expect(SUPPORTED_SCHEMA_VERSION).toBe(13);
+    expect(SUPPORTED_SCHEMA_VERSION).toBe(14);
   });
 
   it("assigns every relational table to one sequential released schema version", () => {
     expect(RELATIONAL_SCHEMA_VERSIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
     expect(RELATIONAL_SCHEMA_VERSIONS.flatMap((migration) => migration.tables)).toEqual(
       relationalTableNames(),
@@ -132,6 +132,27 @@ describe("shared relational schema catalog", () => {
         "tenant_id", "idempotency_key", "job_id", "result_hash", "status",
         "code", "reason", "aggregate_type", "aggregate_id", "new_version",
         "summary", "follow_up_job_id", "created_at",
+      ]);
+    } finally { await runtime.close(); }
+  });
+
+  it("assigns Artifact upload manifests and chunks to migration 014", async () => {
+    expect(RELATIONAL_SCHEMA_VERSIONS.find(({ version }) => version === 14)).toEqual({
+      version: 14,
+      name: "artifact-upload",
+      tables: ["artifact_upload_manifests", "artifact_upload_chunks"],
+    });
+    const runtime = await SqliteRuntime.open({ filename, busyTimeoutMs: 5_000 });
+    try {
+      expect(await runtime.schemaVersion()).toBe(SUPPORTED_SCHEMA_VERSION);
+      expect(await tableColumns(runtime, "artifact_upload_manifests")).toEqual([
+        "artifact_id", "project_id", "run_id", "job_id", "size_bytes", "sha256",
+        "media_type", "sensitivity", "chunk_size_bytes", "total_chunks",
+        "registered_by_runner_id", "registered_lease_epoch", "status", "relative_path",
+        "created_at", "verified_at",
+      ]);
+      expect(await tableColumns(runtime, "artifact_upload_chunks")).toEqual([
+        "artifact_id", "offset_bytes", "size_bytes", "sha256", "bytes", "created_at",
       ]);
     } finally { await runtime.close(); }
   });

@@ -3,7 +3,7 @@ import type BetterSqlite3 from "better-sqlite3";
 /**
  * Current spool schema version, tracked via SQLite's `PRAGMA user_version`.
  */
-export const SPOOL_SCHEMA_VERSION = 1;
+export const SPOOL_SCHEMA_VERSION = 2;
 
 export interface SpoolMigration {
   readonly version: number;
@@ -45,7 +45,37 @@ const migration001: SpoolMigration = {
   },
 };
 
-const MIGRATIONS: readonly SpoolMigration[] = [migration001];
+const migration002: SpoolMigration = {
+  version: 2,
+  apply(db) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS spool_artifact_manifests (
+        artifact_id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        chunk_size_bytes INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS spool_artifact_chunks (
+        artifact_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        offset_bytes INTEGER NOT NULL,
+        bytes BLOB NOT NULL,
+        sha256 TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, offset_bytes),
+        FOREIGN KEY (artifact_id) REFERENCES spool_artifact_manifests(artifact_id) ON DELETE CASCADE
+      );
+    `);
+  },
+};
+
+const MIGRATIONS: readonly SpoolMigration[] = [migration001, migration002];
 
 /**
  * Apply any pending schema migrations to the spool database. Migrations are

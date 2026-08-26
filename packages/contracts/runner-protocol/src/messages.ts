@@ -9,6 +9,9 @@
 
 import type {
   AcceptedExecutionJob,
+  ArtifactUploadChunk,
+  ArtifactUploadManifest,
+  ArtifactUploadProgress,
   ExecutionCompletion,
   ExecutionJobId,
   RunId,
@@ -115,6 +118,24 @@ export interface ExecutionEventAck {
   readonly runId: RunId;
   readonly nextExpectedSequenceNumber: number;
 }
+
+export interface ArtifactManifestRegistration {
+  readonly jobId: ExecutionJobId;
+  readonly runId: RunId;
+  readonly leaseEpoch: number;
+  readonly leaseToken: string;
+  readonly manifest: ArtifactUploadManifest;
+}
+
+export interface ArtifactChunkUpload {
+  readonly jobId: ExecutionJobId;
+  readonly runId: RunId;
+  readonly leaseEpoch: number;
+  readonly leaseToken: string;
+  readonly chunk: ArtifactUploadChunk;
+}
+
+export type ArtifactUploadAck = ArtifactUploadProgress;
 
 /**
  * The server's response to a submitted Trace batch. A gap asks the Runner to

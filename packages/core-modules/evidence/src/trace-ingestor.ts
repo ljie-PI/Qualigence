@@ -4,7 +4,7 @@ import type {
   TraceEvent,
   TraceEventSubmission,
 } from "@qualigence/runner-protocol";
-import type { FindingReference } from "./persistence-ports.js";
+import type { ArtifactReferenceAuthority, FindingReference } from "./persistence-ports.js";
 import {
   canonicalPayloadHash,
   canonicalTraceEventHash,
@@ -34,6 +34,11 @@ export type TraceIngestResult =
       readonly status: "integrity_violation";
       readonly code: "TraceIntegrityViolation";
       readonly existingPayloadHash: string;
+    }
+  | {
+      readonly status: "artifact_unacknowledged";
+      readonly code: "ArtifactUnacknowledged";
+      readonly missingArtifactIds: readonly string[];
     };
 
 export type FindingIngestResult =
@@ -61,7 +66,10 @@ export interface TraceStore {
 }
 
 export class TraceIngestor {
-  constructor(private readonly store: TraceStore) {}
+  constructor(
+    private readonly store: TraceStore,
+    private readonly artifacts?: ArtifactReferenceAuthority,
+  ) {}
 
   async ingest(submission: TraceEventSubmission): Promise<TraceIngestResult> {
     const { payloadHash: declaredPayloadHash, ...hashInput } = submission;
@@ -76,12 +84,50 @@ export class TraceIngestor {
       };
     }
 
+    const referencedArtifactIds = artifactRefs(submission);
+    if (referencedArtifactIds.length > 0 && this.artifacts !== undefined) {
+      const acknowledged = await this.artifacts.acknowledgedArtifactIds(submission.runId, referencedArtifactIds);
+      const missing = referencedArtifactIds.filter((artifactId) => !acknowledged.has(artifactId));
+      if (missing.length > 0) {
+        return {
+          status: "artifact_unacknowledged",
+          code: "ArtifactUnacknowledged",
+          missingArtifactIds: missing,
+        };
+      }
+    }
+
     return this.store.appendTraceEvent(submission);
   }
 
   async ingestFinding(finding: FindingEnvelope): Promise<FindingIngestResult> {
     return this.store.appendFinding(finding, canonicalPayloadHash(finding));
   }
+}
+
+function artifactRefs(event: TraceEventSubmission): readonly string[] {
+  const refs = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value === "string" && value.length > 0) refs.add(value);
+  };
+  const addArray = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(add);
+  };
+
+  if (event.stage === "finding") {
+    addArray(event.payload.evidenceRefs);
+  }
+  if (event.stage === "observation") {
+    const payload = event.payload as {
+      readonly evidenceRefs?: readonly string[];
+      readonly artifactRefs?: readonly string[];
+      readonly nodes?: readonly { readonly evidenceRefs?: readonly string[] }[];
+    };
+    addArray(payload.evidenceRefs);
+    addArray(payload.artifactRefs);
+    for (const node of payload.nodes ?? []) addArray(node.evidenceRefs);
+  }
+  return [...refs].sort();
 }
 
 export class InMemoryTraceStore implements TraceStore {

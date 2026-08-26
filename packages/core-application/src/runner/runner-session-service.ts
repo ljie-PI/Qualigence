@@ -185,6 +185,12 @@ export class RunnerSessionService {
             runId: batch.runId,
             nextExpectedSequenceNumber: result.expectedSequenceNumber,
           };
+        case "artifact_unacknowledged":
+          throw new CoreApplicationError(
+            "ArtifactUnacknowledged",
+            `trace references unacknowledged artifact(s) for run ${batch.runId}`,
+            { details: { runId: batch.runId, sequenceNumber: event.sequenceNumber, artifactIds: result.missingArtifactIds } },
+          );
         case "hash_mismatch":
         case "integrity_violation":
           throw new CoreApplicationError(

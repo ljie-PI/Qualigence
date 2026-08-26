@@ -1,157 +1,165 @@
-import { afterEach, describe, expect, it } from "vitest";
-import type {
-  ExecutionEventAck,
-  ExecutionEventBatch,
-} from "@qualigence/runner-protocol";
-import { SqliteRunnerSpool, type RunnerSpool } from "@qualigence/runner-spool";
-import type { TraceEventInput } from "@qualigence/runner-kernel";
-import { RunnerAppError } from "../../../apps/runner/src/errors.js";
-import { SpoolingTraceRecorder } from "../../../apps/runner/src/spooling-trace-recorder.js";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  TraceUploadPump,
-  type TraceBatchSubmitter,
-} from "../../../apps/runner/src/trace-upload-pump.js";
-import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
+  ARTIFACT_CHUNK_SIZE_BYTES,
+  canonicalPayloadHash,
+  type ArtifactUploadAck,
+  type ArtifactUploadChunk,
+  type ArtifactUploadManifest,
+  type ExecutionEventBatch,
+  type ExecutionJobLease,
+  type TraceEvent,
+} from "@qualigence/runner-protocol";
+import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import { ArtifactUploadPump, TraceUploadPump } from "@qualigence/runner";
 
-const RUN_ID = "run-1";
-const LIMIT = { maximumEvents: 100, maximumBytes: 1_000_000 };
+let root: string;
 
-/** A Core-side cursor: acknowledges contiguous batches, optionally failing. */
-class RecordingCore implements TraceBatchSubmitter {
-  private nextExpected = 1;
-  readonly accepted: number[] = [];
-  readonly events: ExecutionEventBatch["events"][number][] = [];
-  failNext = false;
-
-  async submit(batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
-    if (this.failNext) {
-      this.failNext = false;
-      throw new RunnerAppError("TransportError", "connection dropped mid-batch");
-    }
-    for (const event of batch.events) {
-      if (event.sequenceNumber >= this.nextExpected) {
-        this.accepted.push(event.sequenceNumber);
-        this.events.push(event);
-        this.nextExpected = event.sequenceNumber + 1;
-      }
-    }
-    return {
-      batchId: batch.batchId,
-      runId: batch.runId,
-      nextExpectedSequenceNumber: this.nextExpected,
-    };
-  }
-}
-
-let openSpools: SqliteRunnerSpool[] = [];
-
-async function newSpool(): Promise<RunnerSpool> {
-  const spool = await SqliteRunnerSpool.open({ databaseFile: ":memory:" });
-  openSpools.push(spool);
-  return spool;
-}
-
-async function recordThreeEvents(spool: RunnerSpool): Promise<void> {
-  const recorder = new SpoolingTraceRecorder(spool);
-  await recorder.append({
-    runId: RUN_ID,
-    stage: "observation",
-    payload: observationGraphV1("graph-before"),
-  });
-  await recorder.append({
-    runId: RUN_ID,
-    stage: "decision",
-    payload: {
-      kind: "click",
-      target: { nodeId: "node-a" },
-      reason: "first action",
-    },
-  });
-  await recorder.append({
-    runId: RUN_ID,
-    stage: "run_completed",
-    payload: { status: "passed" },
-  });
-}
+beforeEach(async () => {
+  root = await mkdtemp(join(process.cwd(), ".tmp-runner-pump-"));
+});
 
 afterEach(async () => {
-  await Promise.all(openSpools.map((spool) => spool.close()));
-  openSpools = [];
+  await rm(root, { recursive: true, force: true });
 });
 
 describe("TraceUploadPump", () => {
-  it("preserves stepIndex through the production recorder and durable spool", async () => {
-    const spool = await newSpool();
-    const recorder = new SpoolingTraceRecorder(spool);
-    await recorder.append({
-      runId: RUN_ID,
-      stepIndex: 2,
-      stage: "decision",
-      payload: { kind: "click", target: { nodeId: "node-a" }, reason: "third step" },
-    });
-    const core = new RecordingCore();
+  it("acks the spool only after Core acknowledges the submitted batch", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "trace.db") });
+    await spool.append(event(1));
+    const submitted: ExecutionEventBatch[] = [];
+    const pump = new TraceUploadPump(spool, {
+      submit: async (batch) => {
+        submitted.push(batch);
+        return { batchId: batch.batchId, runId: batch.runId, nextExpectedSequenceNumber: 2 };
+      },
+    }, "run-1", { maximumEvents: 10, maximumBytes: 4096 }, () => "batch-1");
 
-    await new TraceUploadPump(spool, core, RUN_ID, LIMIT).drain();
-
-    expect(core.events).toHaveLength(1);
-    expect(core.events[0]).toMatchObject({ stepIndex: 2, stage: "decision" });
+    await expect(pump.pumpOnce()).resolves.toEqual({ submitted: 1, done: true });
+    expect(submitted).toHaveLength(1);
+    expect(await spool.pending("run-1", 1, { maximumEvents: 10, maximumBytes: 4096 })).toEqual([]);
+    await spool.close();
   });
 
-  it("rejects legacy observation payloads before they enter the spool", async () => {
-    const spool = await newSpool();
-    const recorder = new SpoolingTraceRecorder(spool);
+  it("leaves unacknowledged Trace durable when submit fails", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "trace-fail.db") });
+    await spool.append(event(1));
+    const pump = new TraceUploadPump(spool, {
+      submit: async () => {
+        throw new Error("network lost");
+      },
+    }, "run-1", { maximumEvents: 10, maximumBytes: 4096 });
 
-    await expect(recorder.append({
-      runId: RUN_ID,
-      stage: "observation",
-      payload: { graphId: "legacy-graph", nodes: [] },
-    } as unknown as TraceEventInput)).rejects.toThrow();
-
-    await expect(spool.usage()).resolves.toMatchObject({ events: 0 });
-  });
-
-  it("drains every spooled event to Core in order and clears the spool", async () => {
-    const spool = await newSpool();
-    await recordThreeEvents(spool);
-    const core = new RecordingCore();
-
-    await new TraceUploadPump(spool, core, RUN_ID, LIMIT).drain();
-
-    expect(core.accepted).toEqual([1, 2, 3]);
-    expect((await spool.usage()).events).toBe(0);
-  });
-
-  it("loses no accepted event when the connection drops mid-drain and replays on reconnect", async () => {
-    const spool = await newSpool();
-    await recordThreeEvents(spool);
-    const core = new RecordingCore();
-    core.failNext = true;
-
-    // Simulated disconnect: the submit throws, so nothing is acknowledged.
-    await expect(
-      new TraceUploadPump(spool, core, RUN_ID, LIMIT).drain(),
-    ).rejects.toBeInstanceOf(RunnerAppError);
-
-    expect(core.accepted).toEqual([]);
-    expect((await spool.usage()).events).toBe(3);
-
-    // Reconnect and replay from the durable spool: no event lost, none dropped.
-    await new TraceUploadPump(spool, core, RUN_ID, LIMIT).drain();
-
-    expect(core.accepted).toEqual([1, 2, 3]);
-    expect((await spool.usage()).events).toBe(0);
-  });
-
-  it("does not re-submit events already past the Core cursor", async () => {
-    const spool = await newSpool();
-    await recordThreeEvents(spool);
-    const core = new RecordingCore();
-
-    const pump = new TraceUploadPump(spool, core, RUN_ID, LIMIT);
-    await pump.drain();
-    // A redundant drain after full acknowledgement is a no-op.
-    await pump.drain();
-
-    expect(core.accepted).toEqual([1, 2, 3]);
+    await expect(pump.pumpOnce()).rejects.toThrow("network lost");
+    expect(await spool.pending("run-1", 1, { maximumEvents: 10, maximumBytes: 4096 })).toEqual([event(1)]);
+    await spool.close();
   });
 });
+
+describe("ArtifactUploadPump", () => {
+  it("resumes from server missing ranges and removes the artifact after durable ACK", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "artifact.db") });
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const manifest = manifestFor(bytes);
+    const chunk = chunkFor(manifest, bytes);
+    await spool.saveArtifactManifest(manifest);
+    await spool.saveArtifactChunk(chunk);
+    await spool.close();
+
+    const reopened = await SqliteRunnerSpool.open({ databaseFile: join(root, "artifact.db") });
+    const calls: string[] = [];
+    const pump = new ArtifactUploadPump(reopened, {
+      registerArtifactManifest: async () => {
+        calls.push("manifest");
+        return { artifactId: manifest.artifactId, runId: manifest.runId, acknowledged: false, missingRanges: [{ offset: 0, length: bytes.length }] };
+      },
+      uploadArtifactChunk: async (upload) => {
+        calls.push(`chunk:${upload.chunk.offset}`);
+        return { artifactId: manifest.artifactId, runId: manifest.runId, acknowledged: true, missingRanges: [] };
+      },
+    }, lease());
+
+    await expect(pump.drain("run-1")).resolves.toEqual({ artifacts: 1, acknowledged: 1 });
+    expect(calls).toEqual(["manifest", "chunk:0"]);
+    expect(await reopened.pendingArtifactManifests("run-1")).toEqual([]);
+    expect(await reopened.pendingArtifactChunks("run-1", "artifact-1", [{ offset: 0, length: bytes.length }])).toEqual([]);
+    await reopened.close();
+  });
+
+  it("keeps unacknowledged artifact chunks durable when upload fails", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "artifact-fail.db") });
+    const bytes = new Uint8Array([5, 6, 7]);
+    const manifest = manifestFor(bytes);
+    const chunk = chunkFor(manifest, bytes);
+    await spool.saveArtifactManifest(manifest);
+    await spool.saveArtifactChunk(chunk);
+    const pump = new ArtifactUploadPump(spool, {
+      registerArtifactManifest: async (): Promise<ArtifactUploadAck> => ({ artifactId: manifest.artifactId, runId: manifest.runId, acknowledged: false, missingRanges: [{ offset: 0, length: bytes.length }] }),
+      uploadArtifactChunk: async () => { throw new Error("lost after manifest"); },
+    }, lease());
+
+    await expect(pump.drain("run-1")).rejects.toThrow("lost after manifest");
+    expect(await spool.pendingArtifactManifests("run-1")).toEqual([manifest]);
+    expect(await spool.pendingArtifactChunks("run-1", "artifact-1", [{ offset: 0, length: bytes.length }])).toEqual([chunk]);
+    await spool.close();
+  });
+});
+
+function event(sequenceNumber: number): TraceEvent {
+  const payload = { status: "ok" as const };
+  return {
+    protocolVersion: "runner-protocol/v1",
+    schemaVersion: "trace-event/v1",
+    messageId: `msg-${sequenceNumber}`,
+    idempotencyKey: `idem-${sequenceNumber}`,
+    runId: "run-1",
+    sequenceNumber,
+    stage: "action_executed",
+    occurredAt: "2026-08-01T00:00:00.000Z",
+    payloadHash: canonicalPayloadHash(payload),
+    payload,
+  };
+}
+
+function manifestFor(bytes: Uint8Array): ArtifactUploadManifest {
+  return {
+    artifactId: "artifact-1",
+    tenantId: "tenant-a",
+    projectId: "project-a",
+    runId: "run-1",
+    sizeBytes: bytes.length,
+    sha256: sha256(bytes),
+    mediaType: "application/octet-stream",
+    sensitivity: "internal",
+    chunkSizeBytes: ARTIFACT_CHUNK_SIZE_BYTES,
+    totalChunks: 1,
+  };
+}
+
+function chunkFor(manifest: ArtifactUploadManifest, bytes: Uint8Array): ArtifactUploadChunk {
+  return {
+    artifactId: manifest.artifactId,
+    tenantId: manifest.tenantId,
+    projectId: manifest.projectId,
+    runId: manifest.runId,
+    offset: 0,
+    bytes,
+    sha256: sha256(bytes),
+  };
+}
+
+function lease(): ExecutionJobLease {
+  return {
+    jobId: "job-run-1",
+    runId: "run-1",
+    leaseToken: "lease-token",
+    leaseEpoch: 1,
+    expiresAt: "2026-08-01T00:01:00.000Z",
+  };
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}

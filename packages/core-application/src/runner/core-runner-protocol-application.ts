@@ -2,9 +2,13 @@ import type {
   AuthenticatedRunnerContext,
   RunnerProtocolApplication,
 } from "@qualigence/runner-control";
+import { ArtifactUploadError, type ArtifactUploadService } from "@qualigence/evidence";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
+  ArtifactChunkUpload,
+  ArtifactManifestRegistration,
+  ArtifactUploadAck,
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -26,6 +30,8 @@ export type CoreApplicationErrorCode =
   | "ProtocolVersionMismatch"
   | "RunnerResumeRejected"
   | "TraceIntegrityViolation"
+  | "ArtifactUnacknowledged"
+  | "ArtifactUploadRejected"
   | "UnknownSession"
   | "UnknownOffer"
   | "UnknownRun"
@@ -62,6 +68,7 @@ export interface CoreRunnerProtocolApplicationOptions {
   readonly ownership: RunOwnershipService;
   readonly recordRun?: (job: AcceptedExecutionJob) => Promise<void>;
   readonly completionSink?: RunCompletionSink;
+  readonly artifactUploads?: ArtifactUploadService;
 }
 
 export interface RunCompletionSink {
@@ -85,6 +92,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   readonly ownership: RunOwnershipService;
   private readonly recordRun: ((job: AcceptedExecutionJob) => Promise<void>) | undefined;
   private readonly completionSink: RunCompletionSink | undefined;
+  private readonly artifactUploads: ArtifactUploadService | undefined;
   private readonly offersByJob = new Map<string, CanonicalOffer>();
   private readonly offersByRun = new Map<string, CanonicalOffer>();
   private processing: Promise<void> = Promise.resolve();
@@ -95,6 +103,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     this.ownership = options.ownership;
     this.recordRun = options.recordRun;
     this.completionSink = options.completionSink;
+    this.artifactUploads = options.artifactUploads;
   }
 
   openSession(
@@ -133,6 +142,53 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
 
   ingest(sessionId: string, batch: ExecutionEventBatch): Promise<ExecutionEventAck> {
     return this.serialize(() => this.sessions.ingest(sessionId, batch));
+  }
+
+  registerArtifactManifest(
+    sessionId: string,
+    registration: ArtifactManifestRegistration,
+  ): Promise<ArtifactUploadAck> {
+    return this.serialize(async () => {
+      const session = this.requireSession(sessionId);
+      await this.requireOwner(sessionId, registration.runId);
+      const lease = {
+        jobId: registration.jobId,
+        runId: registration.runId,
+        leaseEpoch: registration.leaseEpoch,
+        leaseToken: registration.leaseToken,
+        expiresAt: new Date(0).toISOString(),
+      };
+      if (!await this.ownership.mayStartAction(lease)) {
+        throw new CoreApplicationError("LeaseLost", `lease for run ${registration.runId} no longer authorizes new artifact manifests`);
+      }
+      const job = await this.ownership.jobOf(registration.runId);
+      if (job === undefined || job.jobId !== registration.jobId || job.projectId !== registration.manifest.projectId) {
+        throw new CoreApplicationError("RunIdentityMismatch", `artifact manifest for run ${registration.runId} does not match durable job provenance`);
+      }
+      return this.requireArtifactUploads().registerManifest({
+        identity: {
+          tenantId: tenantIdFor(session.identity),
+          projectId: job.projectId,
+          runnerId: session.identity.runnerId,
+        },
+        jobId: registration.jobId,
+        leaseEpoch: registration.leaseEpoch,
+        manifest: registration.manifest,
+      }).catch(mapArtifactUploadError);
+    });
+  }
+
+  uploadArtifactChunk(
+    sessionId: string,
+    upload: ArtifactChunkUpload,
+  ): Promise<ArtifactUploadAck> {
+    return this.serialize(async () => {
+      const session = this.requireSession(sessionId);
+      return this.requireArtifactUploads().uploadChunk({
+        identity: { runnerId: session.identity.runnerId },
+        chunk: upload.chunk,
+      }).catch(mapArtifactUploadError);
+    });
   }
 
   complete(
@@ -226,6 +282,13 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     await sink.complete({ identity: session.identity, jobId: authoritative.jobId, runId: authoritative.runId, completion: authoritative });
   }
 
+  private requireArtifactUploads(): ArtifactUploadService {
+    if (this.artifactUploads === undefined) {
+      throw new CoreApplicationError("ArtifactUploadRejected", "artifact upload is not configured");
+    }
+    return this.artifactUploads;
+  }
+
   private serialize<TResult>(operation: () => Promise<TResult> | TResult): Promise<TResult> {
     const result = this.processing.then(operation);
     this.processing = result.then(
@@ -234,4 +297,19 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     );
     return result;
   }
+}
+
+function tenantIdFor(identity: AuthenticatedRunnerContext): string {
+  return identity.scope.kind === "tenant" ? identity.scope.tenantId : "local";
+}
+
+function mapArtifactUploadError(error: unknown): never {
+  if (error instanceof ArtifactUploadError) {
+    throw new CoreApplicationError(
+      "ArtifactUploadRejected",
+      error.message,
+      { cause: error, details: { artifactCode: error.code } },
+    );
+  }
+  throw error;
 }

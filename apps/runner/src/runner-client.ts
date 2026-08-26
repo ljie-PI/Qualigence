@@ -10,6 +10,7 @@ import type {
 import type { RunnerSpool, SpoolBatchLimit } from "@qualigence/runner-spool";
 import { RunnerAppError } from "./errors.js";
 import type { LeasedJobExecutor } from "./job-executor.js";
+import { ArtifactUploadPump, type ArtifactUploadSubmitter } from "./artifact-upload-pump.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
 
 export interface RunnerClientDependencies {
@@ -75,6 +76,11 @@ export class RunnerClient {
       undefined,
       async ({ completion, signal: finalizationSignal, currentLease }) => {
         finalized = true;
+        await new ArtifactUploadPump(
+          this.deps.spool,
+          artifactSubmitter(session),
+          currentLease(),
+        ).drain(offer.job.runId, finalizationSignal);
         await new TraceUploadPump(
           this.deps.spool,
           session,
@@ -86,6 +92,7 @@ export class RunnerClient {
       },
     );
     if (!finalized) {
+      await new ArtifactUploadPump(this.deps.spool, artifactSubmitter(session), result.lease).drain(offer.job.runId);
       await this.drain(offer.job.runId);
       await session.complete(result.lease, result.completion);
     }
@@ -124,4 +131,14 @@ export class RunnerClient {
       maximumBytes: session.welcome.traceBatchMaximumBytes,
     };
   }
+}
+
+function artifactSubmitter(session: RunnerSession): ArtifactUploadSubmitter {
+  if (session.registerArtifactManifest === undefined || session.uploadArtifactChunk === undefined) {
+    throw new RunnerAppError("TransportError", "active session does not support artifact upload");
+  }
+  return {
+    registerArtifactManifest: session.registerArtifactManifest.bind(session),
+    uploadArtifactChunk: session.uploadArtifactChunk.bind(session),
+  };
 }

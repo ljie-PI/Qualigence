@@ -46,6 +46,34 @@ export interface ArtifactManifestsTable {
   created_at: string;
 }
 
+export interface ArtifactUploadManifestsTable {
+  artifact_id: string;
+  project_id: string;
+  run_id: string;
+  job_id: string;
+  size_bytes: number;
+  sha256: string;
+  media_type: string;
+  sensitivity: string;
+  chunk_size_bytes: number;
+  total_chunks: number;
+  registered_by_runner_id: string;
+  registered_lease_epoch: number;
+  status: string;
+  relative_path: string | null;
+  created_at: string;
+  verified_at: string | null;
+}
+
+export interface ArtifactUploadChunksTable {
+  artifact_id: string;
+  offset_bytes: number;
+  size_bytes: number;
+  sha256: string;
+  bytes: Uint8Array;
+  created_at: string;
+}
+
 export interface ModelInvocationsTable {
   invocation_id: string;
   run_id: string;
@@ -784,6 +812,8 @@ export interface Database {
   findings: FindingsTable;
   artifact_manifests: ArtifactManifestsTable;
   model_invocations: ModelInvocationsTable;
+  artifact_upload_manifests: ArtifactUploadManifestsTable;
+  artifact_upload_chunks: ArtifactUploadChunksTable;
   prd_documents: PrdDocumentsTable;
   test_plan_revisions: TestPlanRevisionsTable;
   expected_claims: ExpectedClaimsTable;

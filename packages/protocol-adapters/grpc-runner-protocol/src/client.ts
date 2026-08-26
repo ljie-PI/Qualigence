@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import type {
+  ArtifactChunkUpload,
+  ArtifactManifestRegistration,
+  ArtifactUploadAck,
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -15,6 +18,9 @@ import { RunnerProtocolError } from "./errors.js";
 import type { RunnerProtocolErrorCode } from "./errors.js";
 import {
   acceptOfferToWire,
+  artifactChunkUploadToWire,
+  artifactManifestRegistrationToWire,
+  artifactUploadAckFromWire,
   capabilityMismatchFromWire,
   completionToWire,
   eventAckFromWire,
@@ -51,6 +57,8 @@ const APPLICATION_ERROR_CODES: ReadonlySet<string> = new Set<RunnerProtocolError
   "UnknownSession",
   "ProtocolVersionMismatch",
   "TraceIntegrityViolation",
+  "ArtifactUnacknowledged",
+  "ArtifactUploadRejected",
   "ProtocolViolation",
   "CapabilityMismatch",
   "TlsPeerRejected",
@@ -216,6 +224,14 @@ class ClientRunnerSession implements RunnerSession {
       this.resolvePending(frame.correlation_id, eventAckFromWire(frame.event_ack));
       return;
     }
+    if (frame.artifact_manifest_ack !== undefined) {
+      this.resolvePending(frame.correlation_id, artifactUploadAckFromWire(frame.artifact_manifest_ack));
+      return;
+    }
+    if (frame.artifact_chunk_ack !== undefined) {
+      this.resolvePending(frame.correlation_id, artifactUploadAckFromWire(frame.artifact_chunk_ack));
+      return;
+    }
     if (frame.trace_gap !== undefined) {
       const gap = traceGapFromWire(frame.trace_gap);
       this.rejectPending(
@@ -273,6 +289,22 @@ class ClientRunnerSession implements RunnerSession {
     } finally {
       release();
     }
+  }
+
+  registerArtifactManifest(registration: ArtifactManifestRegistration): Promise<ArtifactUploadAck> {
+    const correlationId = `${registration.runId}:${registration.manifest.artifactId}:manifest`;
+    return this.request<ArtifactUploadAck>(correlationId, {
+      correlation_id: correlationId,
+      register_artifact_manifest: artifactManifestRegistrationToWire(registration),
+    });
+  }
+
+  uploadArtifactChunk(upload: ArtifactChunkUpload): Promise<ArtifactUploadAck> {
+    const correlationId = `${upload.runId}:${upload.chunk.artifactId}:${upload.chunk.offset}`;
+    return this.request<ArtifactUploadAck>(correlationId, {
+      correlation_id: correlationId,
+      upload_artifact_chunk: artifactChunkUploadToWire(upload),
+    });
   }
 
   complete(lease: ExecutionJobLease, result: ExecutionCompletion): Promise<void> {

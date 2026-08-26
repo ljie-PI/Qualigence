@@ -11,6 +11,9 @@ import type { Deferred } from "./async.js";
 import { RunnerProtocolError } from "./errors.js";
 import {
   acceptOfferFromWire,
+  artifactChunkUploadFromWire,
+  artifactManifestRegistrationFromWire,
+  artifactUploadAckToWire,
   completionFromWire,
   eventAckToWire,
   eventBatchFromWire,
@@ -539,6 +542,22 @@ class ServerRunnerConnection implements RunnerConnectionPort {
       this.call.write({ correlation_id: frame.correlation_id, lease: leaseToWire(lease) });
       return;
     }
+    if (frame.register_artifact_manifest !== undefined) {
+      const ack = await this.application.registerArtifactManifest(
+        this.sessionId,
+        artifactManifestRegistrationFromWire(frame.register_artifact_manifest as Record<string, unknown>),
+      );
+      this.call.write({ correlation_id: frame.correlation_id, artifact_manifest_ack: artifactUploadAckToWire(ack) });
+      return;
+    }
+    if (frame.upload_artifact_chunk !== undefined) {
+      const ack = await this.application.uploadArtifactChunk(
+        this.sessionId,
+        artifactChunkUploadFromWire(frame.upload_artifact_chunk as Record<string, unknown>),
+      );
+      this.call.write({ correlation_id: frame.correlation_id, artifact_chunk_ack: artifactUploadAckToWire(ack) });
+      return;
+    }
     if (frame.complete_execution !== undefined) {
       const completion = completionFromWire(frame.complete_execution as Record<string, unknown>);
       const lease = this.lastLeases.get(completion.runId);
@@ -589,7 +608,7 @@ function errorCode(error: unknown): string {
 function failApplicationCall(call: Duplex, error: unknown): void {
   const code = errorCode(error);
   const status =
-    code === "LeaseLost" || code === "RunIdentityMismatch"
+    code === "LeaseLost" || code === "RunIdentityMismatch" || code === "ArtifactUnacknowledged" || code === "ArtifactUploadRejected"
       ? grpc.status.FAILED_PRECONDITION
       : grpc.status.INVALID_ARGUMENT;
   failCall(call, status, code);
