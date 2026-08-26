@@ -146,3 +146,21 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
   - Passed: `git diff --check`.
 - Additional non-required diagnostic: `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` currently has 4 expectation failures in existing offer-runtime unit coverage around Desktop missing-capability expectation and delayed terminal Trace drain observations; the required Ticket 28 focused Gate above is clean, but these unit expectations should be reconciled during review/fix if promoted as core coverage.
 - No PR was created. Ticket 28 remains `claimed` and ready for complete-matrix review of this implementation head.
+
+### review-fix - 2026-08-26
+
+- Reviewed head fixed: `d341415dd2533267161e4d40d7a76efaab6eb004` (complete-matrix Standards/Spec review blockers from `ticket28-review`).
+- Fix commit: `3212c0d35b51deed963c2580ad2ca0253d1ecf05` (`fix(ticket-28): close desktop matrix blockers`).
+- Findings fixed:
+  - Desktop capability advertisement now requires the Windows Named Pipe Companion to authenticate and run a concrete `probe()` seam before startup advertises Desktop; `RunnerOfferRuntime` no longer derives Desktop readiness solely from `companion !== undefined`.
+  - Desktop Permit/action binding now includes nonce in the authorization digest, strict `action.execute` parsing verifies payload session, permit session/run/action/graph/digest/nonce/action/value binding, and Runner policy descriptors no longer use placeholder digests.
+  - `UiaActionExecutor.execute` resolves hash/length before approval without retaining plaintext, re-resolves bounded plaintext immediately before dispatch, verifies the approved binding still matches, and calls `permit.assertAuthorizedForDispatch(signal)` immediately before `companion.execute(...)`.
+  - Startup terminal Trace/lease renewal behavior in `tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` is reconciled; delayed terminal Trace drain now renews/aborts as the existing core tests require.
+  - Prior out-of-scope edits to `packages/contracts/runner-protocol/src/index.ts` and `tests/helpers/windows-reference-app.ts` were removed from the current total diff against fixed base `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e`.
+- Gates after the fix commit:
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 30 passed / 2 skipped).
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 50 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` (1 file / 48 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- No PR was created. Ticket 28 remains `claimed` and ready for a fresh complete-matrix review of the current head.
