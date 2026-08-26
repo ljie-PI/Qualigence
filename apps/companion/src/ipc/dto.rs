@@ -3,6 +3,7 @@
 //! exactly (tag field `type`). Deserialization is the Rust authority that rejects
 //! unknown request types and malformed frames before any dispatch.
 
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 use crate::risk::Risk;
@@ -221,12 +222,25 @@ struct RawCompanionRequestEnvelope {
     payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompanionRequest {
     pub protocol_major: u8,
     pub request_id: String,
     pub payload: CompanionRequestPayload,
+}
+
+impl Serialize for CompanionRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("CompanionRequest", 4)?;
+        state.serialize_field("protocolMajor", &self.protocol_major)?;
+        state.serialize_field("requestId", &self.request_id)?;
+        state.serialize_field("type", self.request_type())?;
+        self.payload.serialize_payload_field(&mut state)?;
+        state.end()
+    }
 }
 
 impl CompanionRequest {
@@ -323,6 +337,28 @@ impl CompanionRequestPayload {
             Self::UiaCapture(_) => "uia.capture",
             Self::PermitRequest(_) => "permit.request",
             Self::ActionExecute(_) => "action.execute",
+        }
+    }
+
+    fn serialize_payload_field<S>(&self, state: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeStruct,
+    {
+        match self {
+            Self::HandshakeBegin(payload) => state.serialize_field("payload", payload),
+            Self::HandshakeProve(payload) => state.serialize_field("payload", payload),
+            Self::SessionShow(payload) => state.serialize_field("payload", payload),
+            Self::SessionPause(payload) => state.serialize_field("payload", payload),
+            Self::SessionResume(payload) => state.serialize_field("payload", payload),
+            Self::SessionStop(payload) => state.serialize_field("payload", payload),
+            Self::SessionClose(payload) => state.serialize_field("payload", payload),
+            Self::CompanionProbe(payload) => state.serialize_field("payload", payload),
+            Self::AppLaunch(payload) => state.serialize_field("payload", payload),
+            Self::AppReset(payload) => state.serialize_field("payload", payload),
+            Self::AppShutdown(payload) => state.serialize_field("payload", payload),
+            Self::UiaCapture(payload) => state.serialize_field("payload", payload),
+            Self::PermitRequest(payload) => state.serialize_field("payload", payload),
+            Self::ActionExecute(payload) => state.serialize_field("payload", payload),
         }
     }
 
