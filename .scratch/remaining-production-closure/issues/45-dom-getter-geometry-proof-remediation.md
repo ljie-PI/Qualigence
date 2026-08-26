@@ -4,7 +4,7 @@
 
 **Blocked by:** 44 - Freeze first approved Promise owner snapshots.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -112,6 +112,15 @@ The real Chromium E2E must tamper with own/prototype form, attribute, text, styl
 | Cancel/timeout after screenshot dispatch | `outcome_unknown` | No Artifact accepted without complete post-capture authority validation | Zero or fully validated masked bytes only | Apply one-recapture bound; never replay action | Cancellation race and sink scan |
 | Session close/restart | `started` if CDP session existed | CDP/intrinsic/owner authority is released; fresh session recaptures | No page/backend references cross session | New authorized action/capture required | Cleanup/restart evidence |
 | Artifact/Spool persistence fails after validated masking | `outcome_unknown` for terminal evidence | Existing persistence failure; never fall back to unmasked bytes | No unsafe durable bytes | Retry only validated masked bytes under existing persistence rules | Sink failure and raw-byte scan |
+
+## Comments
+
+### start — 2026-08-26
+
+- Fixed base: `9156a7be33f0349cf9c6e3b65167bb6cc92e1ec1` (`ticket-45-dom-getter-geometry-proof` dedicated worktree; base/main head supplied by task).
+- Predecessor Ticket 44 evidence: resolved in `.scratch/remaining-production-closure/issues/44-freeze-promise-owner-snapshots.md` with reviewed code/test head `5bcbbf95c6180e00f7e0f73afece761ec6885408`, PR #121, and final focused/E2E/typecheck/diff-check evidence. Ticket 45 inherits immutable Promise owner snapshots and captured Promise intrinsic authority without re-claiming Promise acceptance.
+- Behavior Matrix applicability: complete Ticket 45 matrix is applicable. Rows cover static page-callback inventory, captured native DOM descriptor authority for sensitive DOM reads, getter/style/visibility/Shadow DOM tampering, CDP/backend-node screenshot geometry including scroll/viewport/device scale/clipping, 256-region/geometry/PNG failure paths, one bounded full recapture, second-race terminal `SensitiveEvidenceUnavailable`, no pre-dispatch geometry work, cancellation/session cleanup, and persistence fail-closed behavior. Migrations, Runner production files, package/lock changes unless production PNG decoding requires them, unrelated adapters, unrelated roots, and Graph freeze are excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/page-callback-authority.test.ts tests/component/web-execution/cdp-screenshot-masking.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Complete-matrix review and post-review Chromium E2E (`CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`) remain pending after implementation.
 
 ## Acceptance
 
