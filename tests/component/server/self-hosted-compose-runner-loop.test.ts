@@ -172,6 +172,15 @@ describe("Self-hosted Server configuration", () => {
 });
 
 describe("Self-hosted Docker gate", () => {
+  it("declares a root-only Compose permission prep service before non-root Server startup", async () => {
+    const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
+    expect(compose).toContain("server-volume-permissions:");
+    expect(compose).toContain('user: "0:0"');
+    expect(compose).toContain("network_mode: none");
+    expect(compose).toContain("chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(compose).toContain("server-volume-permissions:\n        condition: service_completed_successfully");
+  });
+
   it("requires Docker explicitly and classifies absence as DockerUnavailable instead of skipping", async () => {
     await expect(requireDocker()).resolves.toBeUndefined();
   });

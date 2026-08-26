@@ -43,6 +43,12 @@ This is the multi-tenant Team stack — **not** the M1 single-tenant
 - Skill-signing state uses the durable `skill_signing_data` named volume mounted
   at `/var/lib/qualigence/skill-signing`, so Server startup satisfies the
   read-only root filesystem constraint and survives container restart.
+- Before the non-root, read-only Server starts, the one-shot
+  `server-volume-permissions` Compose service runs as root with no network or
+  public ports. It mounts only `artifactdata` and `skill_signing_data`, creates
+  the Server state directories, and chowns them to the image's `node` user so
+  Artifact ACK bytes and skill-signing keys are writable without widening the
+  Server runtime privileges.
 - The Console is a **static asset image** (Vite `dist/` served by Caddy), never
   a Node process.
 
@@ -81,7 +87,7 @@ cp .env.example .env                 # edit non-secret config
 
 docker compose run --rm migrate      # provision schema + forced RLS + roles
 docker compose run --rm doctor       # verify DB/RLS/S3/KMS/Server health
-docker compose up -d                 # start postgres, minio, server, worker, console, proxy
+docker compose up -d                 # first runs server-volume-permissions, then starts postgres, minio, server, worker, console, proxy
 ```
 
 Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness,
@@ -91,7 +97,8 @@ Readiness is intentionally stronger than liveness: Server readiness checks
 PostgreSQL, object-storage reachability, the actual durable Runner Artifact
 data-plane volume, Runner gRPC, Mission dispatch loops, and the Intelligence
 Result consumer; Compose healthchecks also probe Worker, Console, and proxy
-dependencies.
+dependencies. If the named volumes are recreated, `docker compose up` reruns the
+permission-prep dependency before Server startup.
 
 ## Backup, restore & upgrade runbook
 

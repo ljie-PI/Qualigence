@@ -8,6 +8,8 @@ const execFileAsync = promisify(execFile);
 
 const composeDir = join(process.cwd(), "deployments", "self-hosted", "compose");
 const composeFile = join(composeDir, "compose.yaml");
+const runtimePermissionProbeImage =
+  "node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7";
 
 /**
  * The environment the Compose file requires (all non-secret). Secrets are file
@@ -25,12 +27,17 @@ const composeEnv = {
 interface ComposeService {
   image?: string;
   command?: unknown;
+  entrypoint?: unknown;
+  user?: string;
   read_only?: boolean;
   security_opt?: string[];
   cap_drop?: string[];
+  cap_add?: string[];
+  network_mode?: string;
   ports?: unknown[];
   tmpfs?: string[];
   volumes?: unknown[];
+  depends_on?: Record<string, { condition?: string; required?: boolean }>;
   environment?: Record<string, string>;
   secrets?: Array<{ source: string; target: string }>;
   deploy?: { resources?: { limits?: { cpus?: unknown; memory?: unknown; pids?: unknown } } };
@@ -102,6 +109,119 @@ describe("Self-hosted Compose topology invariants", () => {
     expect(server?.tmpfs ?? []).not.toContain("/var/lib/qualigence/artifacts");
     expect(server?.tmpfs ?? []).not.toContain("/var/lib/qualigence/skill-signing");
   });
+
+  it("prepares Server state volume permissions before non-root Server startup", () => {
+    const prep = config.services["server-volume-permissions"];
+    const server = config.services.server;
+    expect(prep, "server-volume-permissions service is missing").toBeDefined();
+    expect(prep?.user).toBe("0:0");
+    expect(prep?.read_only).toBe(true);
+    expect(prep?.security_opt).toContain("no-new-privileges:true");
+    expect(prep?.cap_drop).toContain("ALL");
+    expect(prep?.cap_add).toEqual(["CHOWN"]);
+    expect(prep?.network_mode).toBe("none");
+    expect(prep?.ports ?? []).toEqual([]);
+    expect(prep?.secrets ?? []).toEqual([]);
+    const commandText = Array.isArray(prep?.command) ? prep?.command.join("\n") : String(prep?.command ?? "");
+    expect(commandText).toContain("chown -R 1000:1000");
+    expect(commandText).toContain("/var/lib/qualigence/artifacts");
+    expect(commandText).toContain("/var/lib/qualigence/skill-signing");
+    const volumes = (prep?.volumes ?? []) as Array<{ source?: string; target?: string }>;
+    expect(volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "artifactdata",
+          target: "/var/lib/qualigence/artifacts",
+        }),
+        expect.objectContaining({
+          source: "skill_signing_data",
+          target: "/var/lib/qualigence/skill-signing",
+        }),
+      ]),
+    );
+    expect(volumes).toHaveLength(2);
+    expect(server?.depends_on?.["server-volume-permissions"]?.condition).toBe("service_completed_successfully");
+  });
+
+  it("makes fresh Server state volumes writable by uid/gid 1000 under a read-only runtime", async () => {
+    const suffix = `${process.pid}_${Date.now()}`;
+    const artifactVolume = `qualigence_artifact_permission_probe_${suffix}`;
+    const signingVolume = `qualigence_signing_permission_probe_${suffix}`;
+    const dockerEnv = { ...process.env, MSYS_NO_PATHCONV: "1" };
+    const mountArgs = [
+      "--mount",
+      `type=volume,source=${artifactVolume},target=/var/lib/qualigence/artifacts`,
+      "--mount",
+      `type=volume,source=${signingVolume},target=/var/lib/qualigence/skill-signing`,
+    ];
+
+    try {
+      await execFileAsync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--read-only",
+          "--user",
+          "0:0",
+          "--cap-drop",
+          "ALL",
+          "--cap-add",
+          "CHOWN",
+          "--network",
+          "none",
+          ...mountArgs,
+          "--entrypoint",
+          "/bin/sh",
+          runtimePermissionProbeImage,
+          "-ec",
+          [
+            "install -d -m 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+            "chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+            "chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+          ].join(" && "),
+        ],
+        { env: dockerEnv, timeout: 60_000 },
+      );
+
+      const { stdout } = await execFileAsync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--read-only",
+          "--user",
+          "1000:1000",
+          "--cap-drop",
+          "ALL",
+          "--network",
+          "none",
+          ...mountArgs,
+          "--entrypoint",
+          "/bin/sh",
+          runtimePermissionProbeImage,
+          "-ec",
+          [
+            "touch /var/lib/qualigence/artifacts/probe",
+            "touch /var/lib/qualigence/skill-signing/probe",
+            "stat -c '%u:%g %a %n' /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing /var/lib/qualigence/artifacts/probe /var/lib/qualigence/skill-signing/probe",
+          ].join(" && "),
+        ],
+        { env: dockerEnv, timeout: 60_000 },
+      );
+
+      expect(stdout).toContain("1000:1000 770 /var/lib/qualigence/artifacts");
+      expect(stdout).toContain("1000:1000 770 /var/lib/qualigence/skill-signing");
+      expect(stdout).toContain("1000:1000 644 /var/lib/qualigence/artifacts/probe");
+      expect(stdout).toContain("1000:1000 644 /var/lib/qualigence/skill-signing/probe");
+    } finally {
+      await Promise.all(
+        [artifactVolume, signingVolume].map((volume) =>
+          execFileAsync("docker", ["volume", "rm", "-f", volume], { timeout: 15_000 }).catch(() => undefined),
+        ),
+      );
+    }
+  }, 120_000);
 
   it("hardens the runtime application containers", () => {
     for (const name of ["server", "worker", "console"]) {

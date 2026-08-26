@@ -206,10 +206,34 @@ services:
     volumes:
       - backups:/var/lib/qualigence/backups
 
+  server-volume-permissions:
+    <<: [*node-image, *hardening]
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -d -m 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+    network_mode: none
+    cap_add:
+      - CHOWN
+    volumes:
+      - artifactdata:/var/lib/qualigence/artifacts
+      - skill_signing_data:/var/lib/qualigence/skill-signing
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+          pids: 64
+
   server:
     <<: [*node-image, *hardening]
     command: ["server"]
     depends_on:
+      server-volume-permissions:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       minio:

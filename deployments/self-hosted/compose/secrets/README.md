@@ -27,3 +27,8 @@ the dedicated Runner gRPC listener. Sign that certificate with the Runner CA (or
 another CA bundle trusted by enrolled Runners) and include a DNS/IP SAN matching
 the hostname Runners use. Do not route Runner gRPC through the Caddy TLS
 terminator; the Server must receive the Runner client certificate over mTLS.
+
+The `server-volume-permissions` one-shot mounts no secrets. It touches only the
+`artifactdata` and `skill_signing_data` named volumes before Server startup so
+the non-root Server can write Artifact ACK bytes and skill-signing keys while
+keeping all secret material file-mounted under `/run/secrets`.
