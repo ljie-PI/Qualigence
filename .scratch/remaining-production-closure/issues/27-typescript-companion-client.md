@@ -121,6 +121,17 @@ Run the built TypeScript client against a separate-process authenticated Named P
 - Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 41 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed).
 - No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
 
+### review2-fix - 2026-08-26
+
+- Reviewed head fixed: `5559846d246f40b059a4b8295230fbc984136d03`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review2 core blockers fixed from the Standards/Spec complete-matrix artifacts:
+  - TypeScript IPC `uia.capture` response validation now exports and enforces the native fixed UIA password mask token (`••••`) for `isPassword: true` nodes, rejects plaintext/unmasked or absent password values at the contract seam, and keeps non-password values unchanged;
+  - Companion proof signing now races the Runner mTLS signer against the handshake deadline, maps signer/key-profile rejection to a stable non-secret `CompanionIdentityRejected`, fail-stops/destroys the connection on signer timeout or rejection, clears handshake state, and sends no `handshake.prove` or application frame after a stalled or failed signer;
+  - stale socket `data`/`error`/`close` callbacks from a failed connection are ignored after fail-stop so a later reconnect cannot reuse or be killed by the rejected connection.
+- Fix commit: `6b2435051e08745022b2b6029503e512e5a90c92` (`fix ticket 27 review2 core blockers`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 44 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
