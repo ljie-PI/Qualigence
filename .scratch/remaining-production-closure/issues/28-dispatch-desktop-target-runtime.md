@@ -164,3 +164,20 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
   - Passed: `CI=true corepack pnpm typecheck`.
   - Passed: `git diff --check`.
 - No PR was created. Ticket 28 remains `claimed` and ready for a fresh complete-matrix review of the current head.
+
+### review2-fix - 2026-08-26
+
+- Reviewed head fixed: `f1682dbba498c834c1959baae371d6352ba967a7` (review2 Standards/Spec remaining core blockers from `ticket28-review2`).
+- Fix commit: `9350647a17ebe4078a179ff0da4a77d681cce748` (`fix(ticket-28): probe and retain desktop companion`).
+- Findings fixed:
+  - `NamedPipeCompanionClient.probe()` now sends a concrete post-auth `companion.probe` IPC request with strict Desktop target-adapter/UIA observation-extension validation instead of returning after `authenticate()` only; malformed/not-ready/mismatched probe responses fail closed independently of authentication.
+  - Desktop runtime open requires the Companion probe before launch, so probe failure remains before target launch/action side effects and maps to `CompanionUnavailable`/capability failure semantics.
+  - Per-runtime Desktop cleanup shuts down the launched app session but no longer closes the shared startup `NamedPipeCompanionClient`; the Runner-owned client remains usable while advertised, and final process shutdown still owns `companion.close()`.
+  - Focused tests now cover strict probe request/response validation, the Named Pipe post-auth probe frame and independent probe failure, probe-failed runtime open with zero launch side effects, and sequential Desktop runtime open/close reuse without closing the shared Companion.
+- Gates after the fix commit:
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 32 passed / 2 skipped).
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 53 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` (1 file / 48 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- No PR was created. Ticket 28 remains `claimed` and ready for a fresh complete-matrix review of the current head.
