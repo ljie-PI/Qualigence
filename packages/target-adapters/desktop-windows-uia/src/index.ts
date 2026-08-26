@@ -14,6 +14,17 @@ export {
   type UiaCaptureRequest,
 } from "./companion-client.js";
 
+export {
+  NamedPipeCompanionClient,
+  NamedPipeCompanionClientError,
+  CompanionResponseError,
+  assertLocalNamedPipePath,
+  type CompanionProofSignature,
+  type NamedPipeCompanionClientErrorCode,
+  type NamedPipeCompanionClientOptions,
+  type RunnerCertificateProofSigner,
+} from "./named-pipe-companion-client.js";
+
 export { AppEnvironmentProvider } from "./app-environment-provider.js";
 
 export {

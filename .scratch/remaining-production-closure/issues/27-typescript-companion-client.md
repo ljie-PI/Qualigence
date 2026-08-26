@@ -4,7 +4,7 @@
 
 **Blocked by:** 26 — Add Desktop Target protocol.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -30,6 +30,8 @@ This is the complete edit scope.
 - `tests/contract/desktop/**`
 - `.scratch/remaining-production-closure/issues/27-typescript-companion-client.md`
 - Post-review acceptance only: `tests/e2e/windows/companion-client.test.ts`
+
+Maintainer/user-authorized narrow continuation scope expansion (2026-08-26): `tests/type/desktop-contracts.types.ts` may be edited only to align the compile-time public `CompanionRequest` contract with the Ticket 27 envelope request shape `{ protocolMajor, requestId, type, payload }`. This authorization does not permit reintroducing a legacy raw DTO `CompanionRequest` union or weakening the public IPC envelope contract.
 
 No app composition, package manifest, lockfile, Runner Kernel, Runner Protocol, Rust Companion, Windows component fixture, or other E2E file is in scope.
 
@@ -79,6 +81,33 @@ corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts
 ```
 
 Run the built TypeScript client against a separate-process authenticated Named Pipe contract fixture. Prove real framing/correlation/deadlines/handshake and negative disconnect/partial/oversized/flood cases. This is explicitly not native Companion, ACL, OS peer-token, UIA, process, or release evidence.
+
+## Comments
+
+### start - 2026-08-26
+
+- Fixed base: `cff217f68f0b3bcaffe517aaed11e3e302abb964` (`ticket-27-typescript-companion-client`, based on current `main` and including merged Ticket 26 PR #112).
+- Predecessor evidence: Ticket 26 is `resolved` with PR #112; reviewed code head `fcd5b2926a20f428ce0009da704022144bb80ea9`, merged in `cff217f68f0b3bcaffe517aaed11e3e302abb964`, and final verification evidence are recorded in `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md` and are present in this worktree base.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs the TypeScript Companion IPC envelope, proof-byte contract, local Named Pipe framing, authentication ordering, bounded correlation/deadline registry, validation, backpressure, and fail-stop close behavior. The terminal persistence row remains N/A because this client owns no durable persistence.
+- Planned focused non-E2E Gate: `CI=true corepack pnpm vitest run tests/contract/desktop`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Scope guard: implementation is limited to `packages/{contracts/desktop,target-adapters/desktop-windows-uia}/src`, `tests/contract/desktop/**`, and this ticket evidence. No app composition, package manifest, lockfile, Runner Kernel, Runner Protocol, Rust Companion, Windows component fixture, or E2E file is in scope for this implementation pass.
+
+### blocked - 2026-08-26
+
+- In-scope implementation reached a safe point: `CompanionRequest` is now the Ticket 27 envelope-only public type, `CompanionResponse` is a bounded discriminated union with validators, the proof byte-vector contract is frozen, and `NamedPipeCompanionClient` implements local Named Pipe endpoint validation, 32-bit BE framing, bounded in-flight correlation, handshake proof signing through an injected Runner certificate signer, deadlines, and fail-stop handling for malformed/oversized/correlation violations.
+- Temporary compatibility note: an earlier local iteration kept `CompanionRequest = CompanionRequestEnvelope | LegacyCompanionRequestPayload` only to avoid touching the existing type test outside scope. Per supervisor direction, that compatibility union was removed because it weakens Ticket 27's public request contract. The legacy raw helper was also removed from the public desktop-contract export surface; `CompanionRequest` is envelope-only.
+- Focused contract/diff evidence now passes within the authorized scope: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 36 tests) and `git diff --check`.
+- Root typecheck is blocked by the pre-existing compile-time type test outside Ticket 27's Allowed Files still constructing the old raw `CompanionRequest` shape:
+  - `tests/type/desktop-contracts.types.ts(73,3): error TS2353: Object literal may only specify known properties, and 'sessionId' does not exist in type 'CompanionRequest'.`
+- Minimal scope expansion needed: authorize a narrow update to `tests/type/desktop-contracts.types.ts` so the compile-time contract test constructs the new `{ protocolMajor: 1, requestId, type, payload }` Companion request envelope and keeps the runner-protocol re-export assertion. No production code outside `packages/contracts/desktop/src` or `packages/target-adapters/desktop-windows-uia/src` is needed.
+- Hard exclusions preserved: no app composition, package manifest, lockfile, Runner Kernel, Runner Protocol source, Rust Companion, Windows component fixture, or E2E file was edited.
+
+### continuation - 2026-08-26
+
+- Maintainer/user authorization recorded under `## Allowed Files` for the single additional type-test file `tests/type/desktop-contracts.types.ts` only.
+- The compile-time desktop contract test now constructs `CompanionRequest` through the public `{ protocolMajor, requestId, type, payload }` envelope and asserts legacy raw DTOs plus mismatched request/response payloads are rejected at the public type boundary.
+- Focused non-E2E Gate is clean on this continuation: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 36 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- No PR was created. Ticket 27 is ready for exact-head complete-matrix review before any post-review acceptance fixture or PR work.
 
 ## Behavior Matrix
 

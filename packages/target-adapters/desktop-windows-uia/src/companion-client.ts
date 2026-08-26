@@ -52,7 +52,13 @@ export type DesktopExecutionErrorCode =
   | "LocalPermitTimedOut"
   | "EmergencyStopped"
   | "ActionOutcomeUnknown"
-  | "ActionFailed";
+  | "ActionFailed"
+  | "CompanionUnavailable"
+  | "CompanionUnauthenticated"
+  | "CompanionProtocolViolation"
+  | "CompanionRequestTimeout"
+  | "CompanionBackpressure"
+  | "CompanionIdentityRejected";
 
 /** A stable, non-secret desktop execution failure surfaced to the Runner. */
 export class DesktopExecutionError extends Error {
