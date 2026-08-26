@@ -11,10 +11,12 @@ import {
   loadOrCreateSpoolKey,
   SqliteRunnerSpool,
   type RunnerSpool,
+  type SpoolResumeTokenRecord,
 } from "@qualigence/runner-spool";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
 import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
+import { replayPendingRuns } from "./replay-recovery.js";
 
 async function openSpool(config: RunnerConfig): Promise<SqliteRunnerSpool> {
   await mkdir(config.dataDir, { recursive: true });
@@ -45,6 +47,17 @@ async function runOffer(
     ...(config.tenantId === undefined ? {} : { tenantId: config.tenantId }),
     ...(valueProvider === undefined ? {} : { valueProvider }),
   }).run(offer, signal);
+}
+
+async function loadResumeToken(spool: RunnerSpool): Promise<SpoolResumeTokenRecord | undefined> {
+  return spool.loadResumeToken?.();
+}
+
+async function saveResumeToken(spool: RunnerSpool, session: RunnerSession): Promise<void> {
+  await spool.saveResumeToken?.({
+    sessionId: session.welcome.sessionId,
+    resumeToken: session.welcome.resumeToken,
+  });
 }
 
 async function main(): Promise<void> {
@@ -81,11 +94,13 @@ async function main(): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  let resumeToken: string | undefined;
-  let session = await clientPort.connect(makeHello());
+  let resumeToken: string | undefined = (await loadResumeToken(spool))?.resumeToken;
+  let session = await clientPort.connect(makeHello(resumeToken));
   resumeToken = session.welcome.resumeToken;
+  await saveResumeToken(spool, session);
+  const recoveredRuns = await replayPendingRuns(session, spool, abort.signal);
   process.stdout.write(
-    `${JSON.stringify({ event: "runner.ready", runnerId: config.runnerId, sessionId: session.welcome.sessionId })}\n`,
+    `${JSON.stringify({ event: "runner.ready", runnerId: config.runnerId, sessionId: session.welcome.sessionId, recoveredRuns: recoveredRuns.length })}\n`,
   );
 
   while (!stopping) {
@@ -96,13 +111,19 @@ async function main(): Promise<void> {
       if (stopping) {
         break;
       }
-      // A transport failure loses no spooled Trace: reconnect with the rotating
-      // resume token and continue; the Spool replays on the next drain.
+      // A transport failure loses no spooled uploads: reconnect with the
+      // rotating resume token, then replay already-spooled Artifacts before
+      // Trace without re-executing actions or inferring completion.
       process.stderr.write(
         `${JSON.stringify({ event: "runner.reconnecting", error: String(error) })}\n`,
       );
       session = await clientPort.connect(makeHello(resumeToken));
       resumeToken = session.welcome.resumeToken;
+      await saveResumeToken(spool, session);
+      const recoveredRuns = await replayPendingRuns(session, spool, abort.signal);
+      process.stdout.write(
+        `${JSON.stringify({ event: "runner.recovered", recoveredRuns: recoveredRuns.length })}\n`,
+      );
     }
   }
 

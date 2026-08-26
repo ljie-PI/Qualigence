@@ -14,7 +14,7 @@ import {
   type TraceEvent,
 } from "@qualigence/runner-protocol";
 import { AesGcmSpoolCrypto, SqliteRunnerSpool } from "@qualigence/runner-spool";
-import { ArtifactUploadPump, RunnerClient, SpoolingArtifactObserver, TraceUploadPump } from "@qualigence/runner";
+import { ArtifactUploadPump, RunnerClient, replayPendingRuns, SpoolingArtifactObserver, TraceUploadPump } from "@qualigence/runner";
 import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
 let root: string;
@@ -63,7 +63,7 @@ describe("TraceUploadPump", () => {
 describe("SpoolingArtifactObserver", () => {
   it("writes generated artifact manifests and chunks to the Runner Spool before Trace can reference them", async () => {
     const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "artifact-observer.db") });
-    const graph = observationGraphV1("graph-1", [{ id: "node-1", role: "document", confidence: 1 }]);
+    const graph = observationGraphV1("graph-1", [{ id: "node-1", role: "document", confidence: 1, evidenceRefs: ["graph-1.png"] }], { evidenceRefs: ["graph-1.png"] });
     const bytes = new Uint8Array([10, 11, 12]);
     const observer = new SpoolingArtifactObserver({
       observer: { capture: async () => graph },
@@ -81,9 +81,37 @@ describe("SpoolingArtifactObserver", () => {
       policy: { policyId: "policy", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2026-08-01T00:01:00.000Z" },
     });
 
-    expect(captured.evidenceRefs).toContain("graph-1.png");
-    expect(await spool.pendingArtifactManifests("run-1")).toMatchObject([{ artifactId: "graph-1.png", tenantId: "tenant-a", projectId: "project-a", runId: "run-1" }]);
-    expect(await spool.pendingArtifactChunks("run-1", "graph-1.png", [{ offset: 0, length: bytes.length }])).toMatchObject([{ artifactId: "graph-1.png", offset: 0 }]);
+    const [artifactId] = captured.evidenceRefs;
+    expect(artifactId).toMatch(/^run-[a-f0-9]{16}-artifact-[a-f0-9]{32}\.png$/);
+    expect(artifactId).not.toBe("graph-1.png");
+    expect(captured.evidenceRefs).not.toContain("graph-1.png");
+    expect(captured.nodes.find((node) => node.id === "node-1")?.evidenceRefs).toEqual([artifactId]);
+    expect(await spool.pendingArtifactManifests("run-1")).toMatchObject([{ artifactId, tenantId: "tenant-a", projectId: "project-a", runId: "run-1" }]);
+    expect(await spool.pendingArtifactChunks("run-1", artifactId!, [{ offset: 0, length: bytes.length }])).toMatchObject([{ artifactId, offset: 0 }]);
+    await spool.close();
+  });
+
+  it("uses a deterministic run-bound Artifact ID namespace so a later Run with the same captured filename does not collide", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "artifact-observer-noncollision.db") });
+    const graph = observationGraphV1("graph-1", [{ id: "node-1", role: "document", confidence: 1 }]);
+    const bytes = new Uint8Array([10, 11, 12]);
+    const observer = new SpoolingArtifactObserver({
+      observer: { capture: async () => graph },
+      source: { captureArtifacts: async () => [{ name: "1.png", mediaType: "image/png", bytes }] },
+      spool,
+      tenantId: "tenant-a",
+    });
+
+    const first = await observer.capture(job("run-1"));
+    const second = await observer.capture(job("run-2"));
+    const firstArtifactId = first.evidenceRefs[0]!;
+    const secondArtifactId = second.evidenceRefs[0]!;
+
+    expect(firstArtifactId).not.toBe(secondArtifactId);
+    expect(firstArtifactId).not.toBe("1.png");
+    expect(secondArtifactId).not.toBe("1.png");
+    expect(await spool.pendingArtifactManifests("run-1")).toMatchObject([{ artifactId: firstArtifactId, runId: "run-1" }]);
+    expect(await spool.pendingArtifactManifests("run-2")).toMatchObject([{ artifactId: secondArtifactId, runId: "run-2" }]);
     await spool.close();
   });
 });
@@ -132,6 +160,51 @@ describe("RunnerClient replay", () => {
     await client.replay("run-1");
 
     expect(calls).toEqual(["artifact:manifest", "artifact:chunk", "trace:1"]);
+    await spool.close();
+  });
+});
+
+describe("Standalone Runner recovery", () => {
+  it("enumerates pending runs after restart and replays artifacts before Trace using the persisted lease", async () => {
+    const databaseFile = join(root, "standalone-restart.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const bytes = new Uint8Array([3, 4, 5]);
+    const manifest = manifestFor(bytes);
+    const chunk = chunkFor(manifest, bytes);
+    const first = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    await first.saveLease(lease());
+    await first.saveResumeToken({ sessionId: "session-1", resumeToken: "resume-secret" });
+    await first.saveArtifactManifest(manifest);
+    await first.saveArtifactChunk(chunk);
+    await first.append(event(1));
+    await first.close();
+
+    const reopened = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    expect(await reopened.loadResumeToken()).toEqual({ sessionId: "session-1", resumeToken: "resume-secret" });
+    expect(await reopened.pendingRunIds()).toEqual(["run-1"]);
+    const calls: string[] = [];
+    const session = sessionForReplay(manifest, bytes, calls);
+
+    await expect(replayPendingRuns(session, reopened)).resolves.toEqual(["run-1"]);
+
+    expect(calls).toEqual(["artifact:manifest", "artifact:chunk", "trace:1"]);
+    expect(await reopened.pendingRunIds()).toEqual([]);
+    await reopened.close();
+  });
+
+  it("refuses to advance Trace for a pending Artifact run without a persisted lease", async () => {
+    const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "standalone-missing-lease.db") });
+    const bytes = new Uint8Array([3, 4, 5]);
+    const manifest = manifestFor(bytes);
+    await spool.saveArtifactManifest(manifest);
+    await spool.saveArtifactChunk(chunkFor(manifest, bytes));
+    await spool.append(event(1));
+    const calls: string[] = [];
+
+    await expect(replayPendingRuns(sessionForReplay(manifest, bytes, calls), spool)).rejects.toThrow("without a persisted lease");
+
+    expect(calls).toEqual([]);
+    expect(await spool.pending("run-1", 1, { maximumEvents: 10, maximumBytes: 4096 })).toEqual([event(1)]);
     await spool.close();
   });
 });
@@ -185,6 +258,17 @@ describe("ArtifactUploadPump", () => {
   });
 });
 
+function job(runId: string) {
+  return {
+    jobId: `job-${runId}`,
+    runId,
+    projectId: "project-a",
+    target: { kind: "web", url: "https://example.test" } as const,
+    objective: "observe",
+    policy: { policyId: "policy", environment: "isolated_test" as const, allowedOrigins: ["https://example.test"], allowedActionKinds: ["click" as const], maximumRisk: "Normal" as const, explorationAllowed: false, issuedAt: "2026-08-01T00:00:00.000Z", expiresAt: "2026-08-01T00:01:00.000Z" },
+  };
+}
+
 function event(sequenceNumber: number): TraceEvent {
   const payload = { status: "ok" as const };
   return {
@@ -235,6 +319,33 @@ function lease(): ExecutionJobLease {
     leaseToken: "lease-token",
     leaseEpoch: 1,
     expiresAt: "2026-08-01T00:01:00.000Z",
+  };
+}
+
+function sessionForReplay(
+  manifest: ArtifactUploadManifest,
+  bytes: Uint8Array,
+  calls: string[],
+) {
+  return {
+    welcome: { ...welcome(), sessionId: "session-1", resumeToken: "resume-1" },
+    nextOffer: async () => { throw new Error("unused"); },
+    accept: async () => lease(),
+    renew: async () => lease(),
+    registerArtifactManifest: async () => {
+      calls.push("artifact:manifest");
+      return { artifactId: manifest.artifactId, runId: manifest.runId, acknowledged: false, missingRanges: [{ offset: 0, length: bytes.length }] };
+    },
+    uploadArtifactChunk: async () => {
+      calls.push("artifact:chunk");
+      return { artifactId: manifest.artifactId, runId: manifest.runId, acknowledged: true, missingRanges: [] };
+    },
+    submit: async (batch: ExecutionEventBatch) => {
+      calls.push(`trace:${batch.firstSequenceNumber}`);
+      return { batchId: batch.batchId, runId: batch.runId, nextExpectedSequenceNumber: 2 };
+    },
+    complete: async () => undefined,
+    close: async () => undefined,
   };
 }
 

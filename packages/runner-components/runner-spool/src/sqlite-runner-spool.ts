@@ -7,7 +7,9 @@ import { RunnerSpoolError } from "./errors.js";
 import { migrateSpool } from "./migrations.js";
 import {
   SPOOL_LEASE_SCHEMA_VERSION,
+  SPOOL_RESUME_SCHEMA_VERSION,
   type EncryptedLeaseSecret,
+  type EncryptedResumeSecret,
   type SpoolCrypto,
 } from "./spool-crypto.js";
 
@@ -52,6 +54,9 @@ export interface RunnerSpool {
   acknowledge(runId: string, nextExpectedSequenceNumber: number): Promise<void>;
   saveLease?(record: SpoolLeaseRecord): Promise<void>;
   loadLeaseForRun?(runId: string): Promise<SpoolLeaseRecord | undefined>;
+  saveResumeToken?(record: SpoolResumeTokenRecord): Promise<void>;
+  loadResumeToken?(): Promise<SpoolResumeTokenRecord | undefined>;
+  pendingRunIds?(): Promise<readonly string[]>;
   saveArtifactManifest?(manifest: ArtifactUploadManifest): Promise<void>;
   saveArtifactChunk?(chunk: ArtifactUploadChunk): Promise<void>;
   pendingArtifactManifests?(runId: string): Promise<readonly ArtifactUploadManifest[]>;
@@ -78,6 +83,11 @@ export interface SpoolLeaseRecord {
   readonly leaseToken: string;
 }
 
+export interface SpoolResumeTokenRecord {
+  readonly sessionId: string;
+  readonly resumeToken: string;
+}
+
 export interface SpoolUsage {
   readonly bytes: number;
   readonly events: number;
@@ -102,6 +112,14 @@ interface LeaseRow {
   readonly run_id: string;
   readonly lease_epoch: number;
   readonly expires_at: string;
+  readonly schema_version: string;
+  readonly encrypted_token: Buffer;
+  readonly token_nonce: Buffer;
+  readonly token_tag: Buffer;
+}
+
+interface ResumeTokenRow {
+  readonly session_id: string;
   readonly schema_version: string;
   readonly encrypted_token: Buffer;
   readonly token_nonce: Buffer;
@@ -189,6 +207,7 @@ export class SqliteRunnerSpool implements RunnerSpool {
     // again; drop the unreadable metadata but keep the Trace intact.
     if (options.crypto === undefined) {
       connection.prepare("DELETE FROM spool_leases").run();
+      connection.prepare("DELETE FROM spool_resume_tokens").run();
     }
 
     return spool;
@@ -412,6 +431,19 @@ export class SqliteRunnerSpool implements RunnerSpool {
     remove();
   }
 
+  async pendingRunIds(): Promise<readonly string[]> {
+    this.assertOpen();
+    const rows = this.connection
+      .prepare(
+        `SELECT run_id FROM spool_events
+         UNION
+         SELECT run_id FROM spool_artifact_manifests
+         ORDER BY run_id`,
+      )
+      .all() as Array<{ readonly run_id: string }>;
+    return rows.map((row) => row.run_id);
+  }
+
   async usage(): Promise<SpoolUsage> {
     this.assertOpen();
     const row = this.connection
@@ -498,6 +530,59 @@ export class SqliteRunnerSpool implements RunnerSpool {
       .get(runId) as LeaseRow | undefined;
     if (row === undefined || row.job_id === undefined) return undefined;
     return this.decryptLeaseRow(row.job_id, row);
+  }
+
+  async saveResumeToken(record: SpoolResumeTokenRecord): Promise<void> {
+    this.assertOpen();
+    const crypto = this.requireCrypto();
+    const encrypted = await crypto.encryptResume({
+      schemaVersion: SPOOL_RESUME_SCHEMA_VERSION,
+      sessionId: record.sessionId,
+      secret: record.resumeToken,
+    });
+    this.connection
+      .prepare(
+        `INSERT INTO spool_resume_tokens
+           (id, session_id, schema_version, encrypted_token, token_nonce, token_tag, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           session_id = excluded.session_id,
+           schema_version = excluded.schema_version,
+           encrypted_token = excluded.encrypted_token,
+           token_nonce = excluded.token_nonce,
+           token_tag = excluded.token_tag,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        record.sessionId,
+        encrypted.schemaVersion,
+        encrypted.ciphertext,
+        encrypted.nonce,
+        encrypted.tag,
+        this.clock.now(),
+      );
+  }
+
+  async loadResumeToken(): Promise<SpoolResumeTokenRecord | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT session_id, schema_version, encrypted_token, token_nonce, token_tag
+           FROM spool_resume_tokens WHERE id = 1`,
+      )
+      .get() as ResumeTokenRow | undefined;
+    if (row === undefined) return undefined;
+    const encrypted: EncryptedResumeSecret = {
+      schemaVersion: row.schema_version,
+      sessionId: row.session_id,
+      nonce: row.token_nonce,
+      ciphertext: row.encrypted_token,
+      tag: row.token_tag,
+    };
+    return {
+      sessionId: row.session_id,
+      resumeToken: await this.requireCrypto().decryptResume(encrypted),
+    };
   }
 
   private async decryptLeaseRow(jobId: string, row: LeaseRow): Promise<SpoolLeaseRecord> {

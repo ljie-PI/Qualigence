@@ -131,6 +131,20 @@ describe("SqliteRunnerSpool", () => {
     await spool.close();
   });
 
+  it("enumerates runs with pending durable Trace after a restart", async () => {
+    const databaseFile = join(root, "spool.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const spool = await openSpool(databaseFile, crypto);
+    await spool.append(event(1));
+    await spool.close();
+
+    const reopened = await openSpool(databaseFile, crypto);
+    expect(await reopened.pendingRunIds()).toEqual(["r"]);
+    await reopened.acknowledge("r", 2);
+    expect(await reopened.pendingRunIds()).toEqual([]);
+    await reopened.close();
+  });
+
   it("recovers spooled events in order after a restart", async () => {
     const databaseFile = join(root, "spool.db");
     const crypto = new AesGcmSpoolCrypto(randomBytes(32));
@@ -154,16 +168,30 @@ describe("SqliteRunnerSpool", () => {
     await spool.close();
   });
 
-  it("never writes the lease secret to disk in plaintext", async () => {
+  it("saves and loads an encrypted resume token for restart recovery", async () => {
+    const databaseFile = join(root, "spool.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const spool = await openSpool(databaseFile, crypto);
+    await spool.saveResumeToken({ sessionId: "session-1", resumeToken: "resume-secret-value" });
+    await spool.close();
+
+    const reopened = await openSpool(databaseFile, crypto);
+    expect(await reopened.loadResumeToken()).toEqual({ sessionId: "session-1", resumeToken: "resume-secret-value" });
+    await reopened.close();
+  });
+
+  it("never writes lease or resume secrets to disk in plaintext", async () => {
     const databaseFile = join(root, "spool.db");
     const crypto = new AesGcmSpoolCrypto(randomBytes(32));
     const spool = await openSpool(databaseFile, crypto);
     await spool.append(event(1));
     await spool.saveLease(lease("lease-secret-value"));
+    await spool.saveResumeToken({ sessionId: "session-1", resumeToken: "resume-secret-value" });
     await spool.close();
 
     const bytes = await readFile(databaseFile);
     expect(bytes.includes(Buffer.from("lease-secret-value"))).toBe(false);
+    expect(bytes.includes(Buffer.from("resume-secret-value"))).toBe(false);
   });
 
   it("detects a flipped authentication tag as an integrity violation", async () => {

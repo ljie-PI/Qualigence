@@ -3,6 +3,7 @@ export type RunnerSpoolErrorCode =
   | "SpoolCapacityExceeded"
   | "SpoolIntegrityViolation"
   | "SpoolLeaseIntegrityViolation"
+  | "SpoolResumeIntegrityViolation"
   | "SpoolKeyUnavailable"
   | "SpoolKeyInvalid";
 

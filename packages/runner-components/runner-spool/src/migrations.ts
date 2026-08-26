@@ -3,7 +3,7 @@ import type BetterSqlite3 from "better-sqlite3";
 /**
  * Current spool schema version, tracked via SQLite's `PRAGMA user_version`.
  */
-export const SPOOL_SCHEMA_VERSION = 2;
+export const SPOOL_SCHEMA_VERSION = 3;
 
 export interface SpoolMigration {
   readonly version: number;
@@ -75,7 +75,24 @@ const migration002: SpoolMigration = {
   },
 };
 
-const MIGRATIONS: readonly SpoolMigration[] = [migration001, migration002];
+const migration003: SpoolMigration = {
+  version: 3,
+  apply(db) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS spool_resume_tokens (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        session_id TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        encrypted_token BLOB NOT NULL,
+        token_nonce BLOB NOT NULL,
+        token_tag BLOB NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  },
+};
+
+const MIGRATIONS: readonly SpoolMigration[] = [migration001, migration002, migration003];
 
 /**
  * Apply any pending schema migrations to the spool database. Migrations are

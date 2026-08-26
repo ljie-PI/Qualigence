@@ -41,20 +41,29 @@ export class SpoolingArtifactObserver implements Observer {
     const graph = validateCapturedGraph(await this.options.observer.capture(job, signal));
     signal?.throwIfAborted();
     const artifacts = await this.options.source.captureArtifacts(graph.graphId);
-    const artifactRefs: string[] = [];
+    const artifactRefs = new Map<string, string>();
     for (const artifact of artifacts) {
       signal?.throwIfAborted();
-      const artifactId = artifact.name;
+      const artifactId = artifactIdFor(job.runId, artifact);
       await saveArtifact(this.options.spool, manifestFor({ artifactId, tenantId: this.options.tenantId, projectId: job.projectId, runId: job.runId, artifact }));
       for (const chunk of chunksFor({ artifactId, tenantId: this.options.tenantId, projectId: job.projectId, runId: job.runId, bytes: artifact.bytes })) {
         await saveArtifactChunk(this.options.spool, chunk);
       }
-      artifactRefs.push(artifactId);
+      artifactRefs.set(artifact.name, artifactId);
     }
-    if (artifactRefs.length === 0) return graph;
+    if (artifactRefs.size === 0) return graph;
     return validateCapturedGraph({
       ...graph,
-      evidenceRefs: [...new Set([...graph.evidenceRefs, ...artifactRefs])],
+      nodes: graph.nodes.map((node) => ({
+        ...node,
+        evidenceRefs: rewriteRefs(node.evidenceRefs, artifactRefs),
+      })),
+      evidenceRefs: [
+        ...new Set([
+          ...rewriteRefs(graph.evidenceRefs, artifactRefs),
+          ...artifactRefs.values(),
+        ]),
+      ],
     });
   }
 }
@@ -115,6 +124,28 @@ function chunksFor(input: {
     });
   }
   return chunks;
+}
+
+function rewriteRefs(refs: readonly string[], artifactRefs: ReadonlyMap<string, string>): readonly string[] {
+  return [...new Set(refs.map((ref) => artifactRefs.get(ref) ?? ref))];
+}
+
+function artifactIdFor(runId: string, artifact: RawCapturedArtifact): string {
+  const contentSha = sha256(artifact.bytes);
+  const runNamespace = sha256(Buffer.from(runId, "utf8")).slice(0, 16);
+  const identityHash = sha256(Buffer.from(`${runId}\0${artifact.name}\0${contentSha}`, "utf8")).slice(0, 32);
+  return `run-${runNamespace}-artifact-${identityHash}${extensionFor(artifact)}`;
+}
+
+function extensionFor(artifact: RawCapturedArtifact): string {
+  switch (artifact.mediaType) {
+    case "image/png":
+      return ".png";
+    case "application/json":
+      return ".json";
+    default:
+      return "";
+  }
 }
 
 function validateCapturedGraph(graph: ObservationGraphV1): ObservationGraphV1 {

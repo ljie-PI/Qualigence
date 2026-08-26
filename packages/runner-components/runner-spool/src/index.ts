@@ -12,9 +12,13 @@ export {
 export {
   AesGcmSpoolCrypto,
   SPOOL_LEASE_SCHEMA_VERSION,
+  SPOOL_RESUME_SCHEMA_VERSION,
   type EncryptedLeaseSecret,
+  type EncryptedResumeSecret,
   type LeaseAssociatedData,
   type LeaseSecretInput,
+  type ResumeAssociatedData,
+  type ResumeSecretInput,
   type SpoolCrypto,
 } from "./spool-crypto.js";
 
@@ -32,6 +36,7 @@ export {
   type SpoolBatchLimit,
   type SpoolCapacityState,
   type SpoolLeaseRecord,
+  type SpoolResumeTokenRecord,
   type SpoolUsage,
   type SqliteRunnerSpoolOptions,
 } from "./sqlite-runner-spool.js";
