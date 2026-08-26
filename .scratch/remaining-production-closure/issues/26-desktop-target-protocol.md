@@ -150,3 +150,17 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
   - Passed: `git diff --check`.
 - Post-review acceptance remains N/A for Ticket 26: no external/component E2E is allocated to this ticket, and Desktop runtime execution plus target-runtime composition remain Ticket 28. The focused Gate continues to cover AppTarget validation, project-target compatibility, Mission scheduling construction, Runner Protocol schema/mappers/round trips, malformed oneof handling, and unchanged Web protocol behavior.
 - Ready for a fresh complete-matrix review of the whole Ticket 26 diff from fixed point `05e05ebd762a9222b5fc031503c29612424d0105` after this compatibility-fix commit is recorded.
+
+### complete-matrix blocker fix 2 - 2026-08-26
+
+- Reviewed head fixed: `8901d6f0396f09b78271e9f42ac19a5f2b00c865` from the Ticket 26 complete-matrix review over fixed point `05e05ebd762a9222b5fc031503c29612424d0105`.
+- Fix commit: `4b25a1dcf486d31897137aa43d9d91afefc48616` (`fix(ticket-26): align desktop protocol admission`).
+- Fixed core blocker 1: Desktop Mission scheduling now augments Desktop `ScheduleMissionJob.requiredCapabilities` at the authorized `mission-scheduling-service.ts` construction seam with the complete Runner Protocol Desktop admission set: `target:desktop-windows-uia`, `observation:observation-graph/v1`, and `observation:uia/v1`. Web job capability behavior is unchanged. Unit coverage now starts from the existing Mission-produced Desktop target token and proves the scheduled Desktop offer is accepted by the Runner Protocol mapper without missing Graph/UIA requirements.
+- Fixed core blocker 2: Desktop wire `AppTarget` mapping now rejects malformed Desktop scalar/repeated fields instead of coercing them to empty arrays, zero, or false. Negative conformance coverage rejects malformed Desktop repeated fields (`launch.args`, `process.allowed_child_image_names`, `reset.args`), malformed scalar fields (`reset.timeout_ms`, `shutdown.force_after_timeout`, optional window scalar), and existing missing-field cases before producing a Job.
+- Gates run after the fix commit's code/test diff:
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol` (14 files / 174 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts` (3 files / 67 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- Post-review acceptance remains N/A for Ticket 26: no external/component E2E is allocated to this ticket, no PR evidence is being added here, and Desktop runtime execution plus Target Runtime composition remain Ticket 28 scope. This fix only aligns Mission-produced Desktop protocol requirements and fail-closed Desktop wire parsing within Ticket 26's allowed/authorized files.
+- Ready for a fresh complete-matrix review of the whole Ticket 26 diff from fixed point `05e05ebd762a9222b5fc031503c29612424d0105` after this blocker-fix evidence commit is recorded.
