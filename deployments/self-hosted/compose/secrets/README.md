@@ -29,6 +29,7 @@ the hostname Runners use. Do not route Runner gRPC through the Caddy TLS
 terminator; the Server must receive the Runner client certificate over mTLS.
 
 The `server-volume-permissions` one-shot mounts no secrets. It touches only the
-`artifactdata` and `skill_signing_data` named volumes before Server startup so
-the non-root Server can write Artifact ACK bytes and skill-signing keys while
-keeping all secret material file-mounted under `/run/secrets`.
+`artifactdata` and `skill_signing_data` named volumes before Server startup, and
+its idempotent permission repair does not require mounting secret files. The
+non-root Server can write Artifact ACK bytes and skill-signing keys while all
+secret material remains file-mounted under `/run/secrets`.

@@ -212,7 +212,8 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        install -d -m 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        mkdir -p /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chown 0:0 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
         chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
         chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
     network_mode: none

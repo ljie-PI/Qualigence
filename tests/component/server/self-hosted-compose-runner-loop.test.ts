@@ -177,7 +177,11 @@ describe("Self-hosted Docker gate", () => {
     expect(compose).toContain("server-volume-permissions:");
     expect(compose).toContain('user: "0:0"');
     expect(compose).toContain("network_mode: none");
+    expect(compose).toContain("chown 0:0 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(compose).toContain("chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
     expect(compose).toContain("chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(compose.indexOf("chown 0:0")).toBeLessThan(compose.indexOf("chmod 0770"));
+    expect(compose.indexOf("chmod 0770")).toBeLessThan(compose.indexOf("chown -R 1000:1000"));
     expect(compose).toContain("server-volume-permissions:\n        condition: service_completed_successfully");
   });
 

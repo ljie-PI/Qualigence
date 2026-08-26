@@ -45,10 +45,12 @@ This is the multi-tenant Team stack — **not** the M1 single-tenant
   read-only root filesystem constraint and survives container restart.
 - Before the non-root, read-only Server starts, the one-shot
   `server-volume-permissions` Compose service runs as root with no network or
-  public ports. It mounts only `artifactdata` and `skill_signing_data`, creates
-  the Server state directories, and chowns them to the image's `node` user so
-  Artifact ACK bytes and skill-signing keys are writable without widening the
-  Server runtime privileges.
+  public ports and only the `CHOWN` capability. It mounts only `artifactdata`
+  and `skill_signing_data`, creates the Server state directories, temporarily
+  restores directory ownership to root so mode correction is permitted, then
+  chowns them back to the image's `node` user. The preparation is idempotent for
+  retained volumes, so Artifact ACK bytes and skill-signing keys stay writable
+  without widening the Server runtime privileges.
 - The Console is a **static asset image** (Vite `dist/` served by Caddy), never
   a Node process.
 
@@ -97,8 +99,8 @@ Readiness is intentionally stronger than liveness: Server readiness checks
 PostgreSQL, object-storage reachability, the actual durable Runner Artifact
 data-plane volume, Runner gRPC, Mission dispatch loops, and the Intelligence
 Result consumer; Compose healthchecks also probe Worker, Console, and proxy
-dependencies. If the named volumes are recreated, `docker compose up` reruns the
-permission-prep dependency before Server startup.
+dependencies. Every `docker compose up` reruns the idempotent permission-prep
+dependency against retained or recreated named volumes before Server startup.
 
 ## Backup, restore & upgrade runbook
 
