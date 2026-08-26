@@ -408,15 +408,47 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       }
       const species = (constructorValue as { readonly [Symbol.species]?: unknown })[Symbol.species];
       if (species === undefined || species === null) return Promise;
-      if (typeof species !== "function") {
+      if (!isConstructor(species)) {
         throw new TypeError("Promise species is not a constructor");
       }
       return species as PromiseConstructor;
     }
 
     function promiseResolve(C: PromiseConstructor, value: unknown): unknown {
-      const resolve = (C as { readonly resolve?: unknown }).resolve;
-      return callFunction(resolve, C, [value]);
+      if (isObjectLike(value) && value instanceof Promise && (value as { readonly constructor?: unknown }).constructor === C) {
+        return value;
+      }
+      let resolveCapability: unknown;
+      let rejectCapability: unknown;
+      let executorCalled = false;
+      const promise = new (C as unknown as new (executor: (resolve: unknown, reject: unknown) => void) => unknown)((resolve, reject) => {
+        if (executorCalled) {
+          throw new TypeError("Promise capability executor was already invoked");
+        }
+        executorCalled = true;
+        resolveCapability = resolve;
+        rejectCapability = reject;
+      });
+      if (typeof resolveCapability !== "function" || typeof rejectCapability !== "function") {
+        throw new TypeError("Promise capability functions are not callable");
+      }
+      callFunction(resolveCapability, undefined, [value]);
+      return promise;
+    }
+
+    function isConstructor(value: unknown): boolean {
+      if (typeof value !== "function") return false;
+      try {
+        const constructorProbe = new Proxy(value as new () => object, {
+          construct() {
+            return {};
+          },
+        });
+        new constructorProbe();
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {

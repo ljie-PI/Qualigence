@@ -22,6 +22,7 @@ interface AccountingResult {
   readonly customCatchDelegatesThen: RegistrationSnapshot;
   readonly customFinallyDelegatesThen: RegistrationSnapshot;
   readonly invalidSpeciesThrowCleanup: RegistrationSnapshot;
+  readonly invalidArrowSpeciesFinallyCleanup: RegistrationSnapshot;
   readonly nestedApplicationThen: RegistrationSnapshot;
   readonly epochBoundary: RegistrationSnapshot;
   readonly epochOverflow: RegistrationSnapshot;
@@ -179,6 +180,14 @@ describe("native Promise oracle for sensitive instrumentation", () => {
       pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: [],
+      settlement: { status: "threw", reason: { errorName: "TypeError" } },
+    });
+    expect(accounting.invalidArrowSpeciesFinallyCleanup).toMatchObject({
+      epochRegistrations: 1,
+      sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["species"],
       settlement: { status: "threw", reason: { errorName: "TypeError" } },
     });
     expect(accounting.nestedApplicationThen).toMatchObject({
@@ -370,6 +379,14 @@ async function runPromiseOracle(input: {
         return {};
       },
     });
+    class ArrowSpeciesSub<T> extends Promise<T> {}
+    Object.defineProperty(ArrowSpeciesSub, Symbol.species, {
+      configurable: true,
+      get() {
+        log.push("arrow-species");
+        return () => ({});
+      },
+    });
 
     const defaultResult = new DefaultSub<string>((resolve) => resolve("default")).then((value) => value);
     const baseThenResult = new BaseSpeciesSub<string>((resolve) => resolve("base")).then((value) => value);
@@ -384,6 +401,7 @@ async function runPromiseOracle(input: {
     const invalidThenResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).then((value) => value));
     const invalidCatchResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((_resolve, reject) => reject("invalid")).catch((reason) => reason));
     const invalidFinallyResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).finally(() => undefined));
+    const invalidArrowFinallyResult = synchronousOutcome(() => new ArrowSpeciesSub<string>((resolve) => resolve("invalid-arrow")).finally(() => undefined));
 
     await Promise.all([
       defaultResult,
@@ -419,7 +437,84 @@ async function runPromiseOracle(input: {
         then: invalidThenResult,
         catch: invalidCatchResult,
         finally: invalidFinallyResult,
+        arrowFinally: invalidArrowFinallyResult,
       },
+    };
+  });
+
+  await runCase("finally-promise-resolve-semantics", async () => {
+    const log: string[] = [];
+    const baseResolveReason = { name: "base-resolve-getter" };
+    const originalResolve = Object.getOwnPropertyDescriptor(Promise, "resolve");
+    Object.defineProperty(Promise, "resolve", {
+      configurable: true,
+      get() {
+        log.push("base-resolve-get");
+        throw baseResolveReason;
+      },
+    });
+    let base: Awaited<ReturnType<typeof settlement>>;
+    try {
+      base = await settlement(new Promise<string>((resolve) => resolve("base-original")).finally(() => {
+        log.push("base-finally");
+        return "ignored";
+      }));
+    } finally {
+      if (originalResolve === undefined) {
+        delete (Promise as unknown as { resolve?: unknown }).resolve;
+      } else {
+        Object.defineProperty(Promise, "resolve", originalResolve);
+      }
+    }
+
+    class StaticResolveRejectSub<T> extends Promise<T> {}
+    Object.defineProperty(StaticResolveRejectSub, Symbol.species, {
+      configurable: true,
+      get() {
+        log.push("reject-species");
+        return StaticResolveRejectSub;
+      },
+    });
+    Object.defineProperty(StaticResolveRejectSub, "resolve", {
+      configurable: true,
+      get() {
+        log.push("reject-resolve-get");
+        return () => {
+          log.push("reject-resolve-call");
+          return new StaticResolveRejectSub((_resolve, reject) => reject("custom-reject"));
+        };
+      },
+    });
+    const staticReject = await settlement(new StaticResolveRejectSub<string>((resolve) => resolve("static-original")).finally(() => {
+      log.push("reject-finally");
+      return "ignored";
+    }));
+
+    class StaticResolveThrowSub<T> extends Promise<T> {}
+    Object.defineProperty(StaticResolveThrowSub, Symbol.species, {
+      configurable: true,
+      get() {
+        log.push("throw-species");
+        return StaticResolveThrowSub;
+      },
+    });
+    Object.defineProperty(StaticResolveThrowSub, "resolve", {
+      configurable: true,
+      value() {
+        log.push("throw-resolve-call");
+        throw new Error("custom-resolve-throw");
+      },
+    });
+    const staticThrow = await settlement(new StaticResolveThrowSub<string>((resolve) => resolve("throw-original")).finally(() => {
+      log.push("throw-finally");
+      return "ignored";
+    }));
+
+    return {
+      log,
+      base: tagSettlement(base, { baseResolveReason }),
+      staticReject: tagSettlement(staticReject),
+      staticThrow: tagSettlement(staticThrow),
     };
   });
 
@@ -838,6 +933,21 @@ async function runPromiseAccounting(input: {
       });
       const outcome = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).then((value) => value));
       return { callbackRuns: [], settlement: outcome };
+    }),
+    invalidArrowSpeciesFinallyCleanup: await measure(() => {
+      const callbackRuns: string[] = [];
+      class ArrowSpeciesSub<T> extends Promise<T> {}
+      Object.defineProperty(ArrowSpeciesSub, Symbol.species, {
+        configurable: true,
+        get() {
+          callbackRuns.push("species");
+          return () => ({});
+        },
+      });
+      const outcome = synchronousOutcome(() => new ArrowSpeciesSub<string>((resolve) => resolve("invalid-arrow")).finally(() => {
+        callbackRuns.push("finally");
+      }));
+      return { callbackRuns, settlement: outcome };
     }),
     nestedApplicationThen: await measure(() => {
       const callbackRuns: string[] = [];
