@@ -4,7 +4,7 @@
 
 **Blocked by:** 26 — Add Desktop Target protocol.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -171,7 +171,24 @@ Run the built TypeScript client against a separate-process authenticated Named P
 | Pipe process/client restarts | `not_started` until fresh connect | New unauthenticated session | Old in-memory challenges/requests are gone | Fresh challenge/auth required; callers receive failure for old pending operations | Restart evidence and no proof/request replay |
 | Terminal response persistence fails | `not_started` | N/A: TypeScript client owns no durable persistence | N/A | Owning Runtime/Companion persistence is downstream | N/A reason recorded in review |
 
-- [ ] Request/response unions validate all fields, request IDs, frame sizes, order, deadlines, and unknown variants.
-- [ ] Authentication proves Runner certificate possession and binds protocol/instance/nonce/Runner identity.
-- [ ] No app/capture/permit/action request is admitted before authentication.
-- [ ] Disconnect, timeout, partial, oversized, flood, and correlation errors fail closed.
+- [x] Request/response unions validate all fields, request IDs, frame sizes, order, deadlines, and unknown variants.
+- [x] Authentication proves Runner certificate possession and binds protocol/instance/nonce/Runner identity.
+- [x] No app/capture/permit/action request is admitted before authentication.
+- [x] Disconnect, timeout, partial, oversized, flood, and correlation errors fail closed.
+
+### final - 2026-08-26
+
+- Reviewed code/test head: `6874749192c4da480c71aa6a3a121a9e02a67f8d`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/820a071d-01e4-4cd0-8c7a-23b86416496c/ticket27-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/820a071d-01e4-4cd0-8c7a-23b86416496c/ticket27-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts` (1 file / 4 tests), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/116`.
+
+## Answer
+
+Implemented the TypeScript Companion client. Desktop contracts now use envelope-only Companion request/response IPC with strict validators, exact proof bytes, password-mask enforcement, stable errors, bounded local Named Pipe framing, correlated request/response handling, handshake authentication through the Runner certificate signer, deadline/backpressure limits, and fail-stop behavior for malformed, oversized, partial, unknown, and correlation failures. The production TypeScript `NamedPipeCompanionClient` sits behind the existing `CompanionClient` port and authenticates before app/capture/permit/action requests. The post-review Windows separate-process E2E proves the built client over a real local Named Pipe contract fixture; native Companion ACL/peer/UIA/process evidence remains downstream scope.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/116`
+
+Reviewed code/test head: `6874749192c4da480c71aa6a3a121a9e02a67f8d`
+
+Final verification: focused Ticket 27 Gate, Windows Companion client E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
