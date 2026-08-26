@@ -4,7 +4,7 @@
 
 **Blocked by:** 42 - Preserve native Promise semantics with exact causal accounting.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -135,9 +135,26 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 
 ## Acceptance
 
-- [ ] Every observed Promise receiver/traversed owner is retained in a fixed-bound, identity-deduplicated, completely enumerable registry.
-- [ ] The registry holds at most 256 distinct owners, stores exact prototype and all three complete own-descriptor states including absence, and overflows as `SensitiveEvidenceUnavailable`.
-- [ ] Exact `then`/`catch`/`finally` descriptors, owner identities, and prototype identities are revalidated immediately before Graph return and immediately before Artifact return.
-- [ ] Mutation, inspection failure, incomplete enumeration, and overflow fail evidence closed without altering native Promise/application behavior.
-- [ ] Ticket 42 native Promise semantics/accounting remains green but is not re-claimed as Ticket 43 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] Every observed Promise receiver/traversed owner is retained in a fixed-bound, identity-deduplicated, completely enumerable registry.
+- [x] The registry holds at most 256 distinct owners, stores exact prototype and all three complete own-descriptor states including absence, and overflows as `SensitiveEvidenceUnavailable`.
+- [x] Exact `then`/`catch`/`finally` descriptors, owner identities, and prototype identities are revalidated immediately before Graph return and immediately before Artifact return.
+- [x] Mutation, inspection failure, incomplete enumeration, and overflow fail evidence closed without altering native Promise/application behavior.
+- [x] Ticket 42 native Promise semantics/accounting remains green but is not re-claimed as Ticket 43 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `57547dce98cae1b43788856a8573dbcf0c14e6a6`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/534d4ca0-4fcc-429f-ae07-4480888c5fa9/ticket43-review4/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/534d4ca0-4fcc-429f-ae07-4480888c5fa9/ticket43-review4/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (4 files / 35 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: pending creation.
+
+## Answer
+
+Implemented Ticket 43 Promise owner descriptor revalidation. Sensitive Promise instrumentation now retains a closure-private, identity-deduplicated, bounded registry of observed Promise receivers/prototype owners and exact `then`/`catch`/`finally` descriptor/prototype/method-owner snapshots. The observer revalidates the full authoritative registry immediately before Graph return and again before Artifact/observation registration, failing evidence closed on mutation, overflow, inspection failure, or incomplete/tampered enumeration while preserving native Promise behavior. Post-review Chromium E2E now exercises multiple owner registrations and descriptor/prototype mutations at Graph and Artifact capture boundaries and verifies no unsafe evidence is accepted after failed revalidation.
+
+Pull request: pending creation.
+
+Reviewed code/test head: `57547dce98cae1b43788856a8573dbcf0c14e6a6`
+
+Final verification: focused Ticket 43 Gate, Chromium valueRef/Promise-owner E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
