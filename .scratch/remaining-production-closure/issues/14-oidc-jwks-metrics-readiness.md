@@ -4,14 +4,14 @@
 
 **Blocked by:** 13 — Wire Evidence API, S3, and enterprise KMS.
 
-**Status:** claimed
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
-- [ ] Remote JWKS uses bounded timeout/cache/rotation and approved algorithms with fail-closed issuer/audience/tenant/role mapping.
-- [ ] Metrics/OTLP exclude secrets and high-cardinality evidence content.
-- [ ] Live/ready endpoints reflect constructed dependencies and loop health, not static proxy responses.
-- [ ] Clean-review deployment tests prove dependency failures and recovery transitions.
+- [x] Remote JWKS uses bounded timeout/cache/rotation and approved algorithms with fail-closed issuer/audience/tenant/role mapping.
+- [x] Metrics/OTLP exclude secrets and high-cardinality evidence content.
+- [x] Live/ready endpoints reflect constructed dependencies and loop health, not static proxy responses.
+- [x] Clean-review deployment tests prove dependency failures and recovery transitions.
 
 ## Tracked scope
 
@@ -110,3 +110,23 @@ Prove dependency failure and recovery transitions through Server, Worker, Consol
   - `corepack pnpm vitest run tests/contract/auth/oidc.test.ts tests/unit/observability tests/component/server tests/component/intelligence-worker tests/component/web-console/oidc-flow.test.ts`
   - `corepack pnpm typecheck`
   - `git diff --check`
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `1a0835e01b3287355b29e6c08fad3ef3bb149bbf`.
+- Complete-matrix review6 clean:
+  - Standards: `Q:/Qualigence/.pi-subagents/artifacts/outputs/0fcd6879-b061-4009-83ba-566cc44dfe6f/ticket14-review6/standards.md`
+  - Spec: `Q:/Qualigence/.pi-subagents/artifacts/outputs/0fcd6879-b061-4009-83ba-566cc44dfe6f/ticket14-review6/spec.md`
+- Final focused non-E2E Gate on the reviewed head passed: `CI=true corepack pnpm vitest run tests/contract/auth/oidc.test.ts tests/unit/observability tests/component/server tests/component/intelligence-worker tests/component/web-console/oidc-flow.test.ts` — 9 files / 123 tests.
+- Required post-review acceptance passed on the reviewed head: `CI=true corepack pnpm vitest run tests/e2e/self-hosted/readiness.test.ts` — 1 file / 1 Docker Compose readiness failure/recovery test. The E2E proves Server, Worker, Console, and public proxy healthy readiness; MinIO failure causes Server/Worker object-storage and proxy not-ready; recovery returns all surfaces to ready/healthy. HTTPS verification remains enabled with per-run test CA material.
+- `CI=true corepack pnpm typecheck` passed on the reviewed head.
+- `git diff --check` passed on the reviewed head and before this documentation-only evidence commit.
+- Final evidence commit is documentation-only relative to the reviewed code/test head. Pull request: pending creation.
+
+## Answer
+
+Completed Ticket 14: Self-hosted OIDC/JWKS, observability, and readiness now use bounded remote JWKS resolution, fail-closed issuer/audience/tenant/role mapping, redacted/bounded telemetry surfaces, and dependency-backed readiness for Server, Worker, Console, and proxy. Production Compose no longer silently relies on static JWKS, object-storage readiness probes the constructed S3 data plane with bounded deadlines, and required loops only report ready after current progress evidence. The self-hosted readiness E2E now exercises healthy, failure, and recovery transitions through the real Docker Compose topology.
+
+Reviewed code/test head: `1a0835e01b3287355b29e6c08fad3ef3bb149bbf`.
+
+Final validation: focused non-E2E Gate, readiness Docker E2E, `corepack pnpm typecheck`, and `git diff --check` passed. Complete-matrix review6 has no Critical or Important core blockers.
