@@ -1220,7 +1220,7 @@ fn run_daemon() {
                 "AppResetFailed",
                 limits,
             ),
-            LifecycleError::AppLaunchFailed | LifecycleError::HostError => write_error(
+            LifecycleError::AppLaunchFailed => write_error(
                 connection,
                 request_id,
                 response_type,
@@ -1228,6 +1228,21 @@ fn run_daemon() {
                 "AppLaunchFailed",
                 limits,
             ),
+            LifecycleError::HostError => {
+                let stable_message = match response_type {
+                    "app.reset" => "AppResetFailed",
+                    "app.shutdown" => "AppShutdownFailed",
+                    _ => "AppLaunchFailed",
+                };
+                write_error(
+                    connection,
+                    request_id,
+                    response_type,
+                    "ApplicationError",
+                    stable_message,
+                    limits,
+                )
+            }
         }
     }
 
