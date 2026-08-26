@@ -137,3 +137,14 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 - Fix commit: `e7d88d8665ed0b6bdaafb11ed83fb315709f3989` (`Fix Ticket 42 review2 Promise transparency blockers`).
 - Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
 - Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### review3-fix — 2026-08-26
+
+- Reviewed head fixed: `dfdb3cef2391744c2df48868d5b950e0f037da0a`.
+- Review3 core blockers fixed: manual `Promise.prototype.finally` no longer reads or calls public/application-overridable `C.resolve` while assimilating `finally` handler results. The helper now uses a PromiseCapability-style construction path for native `PromiseResolve(C, result)` behavior and preserves the same-constructor Promise short-circuit.
+- Review3 core blockers fixed: function-valued but non-constructor `Symbol.species` values now throw before native `then` can observe species a second time, matching native arrow-function species timing while preserving prior invalid-species pending cleanup.
+- Native oracle/accounting coverage expanded: paired Chromium oracle now covers base `Promise.resolve` getter throws, subclass species static `resolve` getter returning a rejected promise, subclass species static `resolve` function throws, and arrow-function species; accounting covers arrow-species `finally` synchronous throw cleanup.
+- Prior fixes preserved: Proxy trap-order transparency, accessor default-then counted once, custom receiver methods counted additionally, synchronous throw pending cleanup, epoch/session overflow bounds, and no Ticket43+ owner-registry/snapshot/DOM-geometry scope creep.
+- Fix commit: `092a0a65257bb993576763af4b4d28b98f6aa8ee` (`Fix Ticket 42 review3 Promise finally semantics`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
