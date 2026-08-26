@@ -17,6 +17,8 @@ interface AccountingResult {
   readonly catchCall: RegistrationSnapshot;
   readonly finallyReturningPromise: RegistrationSnapshot;
   readonly finallyThenableNestedRegistration: RegistrationSnapshot;
+  readonly catchAccessorDefaultThen: RegistrationSnapshot;
+  readonly finallyAccessorDefaultThen: RegistrationSnapshot;
   readonly customCatchDelegatesThen: RegistrationSnapshot;
   readonly customFinallyDelegatesThen: RegistrationSnapshot;
   readonly invalidSpeciesThrowCleanup: RegistrationSnapshot;
@@ -138,6 +140,22 @@ describe("native Promise oracle for sensitive instrumentation", () => {
       poisoned: false,
       callbackRuns: ["finally", "thenable", "nested"],
       settlement: { status: "fulfilled", value: "original" },
+    });
+    expect(accounting.catchAccessorDefaultThen).toMatchObject({
+      epochRegistrations: 1,
+      sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["get-then", "caught"],
+      settlement: { status: "fulfilled", value: "handled" },
+    });
+    expect(accounting.finallyAccessorDefaultThen).toMatchObject({
+      epochRegistrations: 1,
+      sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["get-then", "finally"],
+      settlement: { status: "fulfilled", value: "accessor-finally" },
     });
     expect(accounting.customCatchDelegatesThen).toMatchObject({
       epochRegistrations: 2,
@@ -519,6 +537,27 @@ async function runPromiseOracle(input: {
     });
     const throwingReturn = synchronousOutcome(() => throwingReceiver.catch(() => "handled"), { accessorReason });
 
+    function proxyTrapOutcome(method: "catch" | "finally"): unknown {
+      const proxyLog: string[] = [];
+      const target = Promise.resolve("proxy");
+      const proxy = new Proxy(target, {
+        get(targetValue, property, receiver) {
+          proxyLog.push(`get:${String(property)}`);
+          return Reflect.get(targetValue, property, receiver);
+        },
+        getOwnPropertyDescriptor(targetValue, property) {
+          proxyLog.push(`gopd:${String(property)}`);
+          return Reflect.getOwnPropertyDescriptor(targetValue, property);
+        },
+        getPrototypeOf(targetValue) {
+          proxyLog.push("gpo");
+          return Reflect.getPrototypeOf(targetValue);
+        },
+      });
+      const outcome = synchronousOutcome(() => Promise.prototype[method].call(proxy, () => "proxy-handled"));
+      return { log: proxyLog, outcome };
+    }
+
     return {
       log,
       catchReturn,
@@ -526,6 +565,8 @@ async function runPromiseOracle(input: {
       delegatedCatch: tagSettlement(await settlement(delegatedCatchReturn)),
       delegatedFinally: tagSettlement(await settlement(delegatedFinallyReturn)),
       throwingReturn,
+      proxyCatch: proxyTrapOutcome("catch"),
+      proxyFinally: proxyTrapOutcome("finally"),
     };
   });
 
@@ -720,6 +761,37 @@ async function runPromiseAccounting(input: {
           await new Promise((resolve) => setTimeout(resolve, 0));
         },
       };
+    }),
+    catchAccessorDefaultThen: await measure(() => {
+      const callbackRuns: string[] = [];
+      const receiver = Promise.reject("boom") as Promise<string> & { then: Promise<string>["then"] };
+      Object.defineProperty(receiver, "then", {
+        configurable: true,
+        get() {
+          callbackRuns.push("get-then");
+          return Promise.prototype.then;
+        },
+      });
+      const promise = receiver.catch(() => {
+        callbackRuns.push("caught");
+        return "handled";
+      });
+      return { callbackRuns, promise };
+    }),
+    finallyAccessorDefaultThen: await measure(() => {
+      const callbackRuns: string[] = [];
+      const receiver = Promise.resolve("accessor-finally") as Promise<string> & { then: Promise<string>["then"] };
+      Object.defineProperty(receiver, "then", {
+        configurable: true,
+        get() {
+          callbackRuns.push("get-then");
+          return Promise.prototype.then;
+        },
+      });
+      const promise = receiver.finally(() => {
+        callbackRuns.push("finally");
+      });
+      return { callbackRuns, promise };
     }),
     customCatchDelegatesThen: await measure(() => {
       const callbackRuns: string[] = [];
