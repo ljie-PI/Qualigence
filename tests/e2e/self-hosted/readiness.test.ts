@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { request as httpsRequest } from "node:https";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,6 @@ const REPO_ROOT = process.cwd();
 const COMPOSE_DIR = join(REPO_ROOT, "deployments", "self-hosted", "compose");
 const COMPOSE_FILE = join(COMPOSE_DIR, "compose.yaml");
 const COMPOSE_ENV_FILE = join(COMPOSE_DIR, ".env.example");
-const COMPOSE_SECRETS_DIR = join(COMPOSE_DIR, "secrets");
 const NODE_RUNTIME_IMAGE = "node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7";
 const JWKS_PORT = 18082;
 const READINESS_TIMEOUT_MS = 300_000;
@@ -49,11 +48,6 @@ interface HarnessContext {
   readonly runnerCa: PemPair;
   readonly runnerServer: PemPair;
   readonly proxy: PemPair;
-  readonly secrets: SecretBackup;
-}
-
-interface SecretBackup {
-  readonly entries: readonly { readonly path: string; readonly previous?: Buffer }[];
 }
 
 interface CommandResult {
@@ -100,7 +94,6 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
   afterAll(async () => {
     if (ctx !== undefined) {
       await compose(ctx, ["down", "-v", "--remove-orphans", "--timeout", "10"], 180_000).catch(() => undefined);
-      await restoreHarnessSecrets(ctx.secrets).catch(() => undefined);
       await rm(ctx.workDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }, 240_000);
@@ -154,7 +147,6 @@ async function createHarnessContext(): Promise<HarnessContext> {
   const proxyCa = createProxyCertificateAuthority("Qualigence readiness E2E Proxy TLS CA");
   const proxy = mintProxyServerCertificate(proxyCa, "localhost");
   const proxyCertificateChainPem = pemBundle(proxy.certPem, proxyCa.certPem);
-  const secrets = await backupSecretFiles();
   const projectName = `qualigence-ready-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   await writeFile(join(workDir, "runner-ca.crt"), runnerCa.certPem, "utf8");
   await writeFile(join(workDir, "runner-server.crt"), runnerServer.certPem, "utf8");
@@ -172,7 +164,6 @@ async function createHarnessContext(): Promise<HarnessContext> {
     runnerCa,
     runnerServer,
     proxy,
-    secrets,
   };
 }
 
@@ -262,11 +253,16 @@ console.log("readiness-e2e:database-provisioned");
     "    ports: !override",
     `      - \"127.0.0.1:${ctx.proxyPort}:443\"`,
     "",
+    "secrets:",
+    ...Object.entries(SECRET_FILE_NAMES).flatMap(([secretName, fileName]) => [
+      `  ${secretName}:`,
+      `    file: ${JSON.stringify(composePath(join(ctx.workDir, fileName)))}`,
+    ]),
+    "",
   ].join("\n"), "utf8");
 }
 
 async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
-  await mkdir(COMPOSE_SECRETS_DIR, { recursive: true });
   const secretValues: Record<string, string> = {
     pg_admin_password: "qualigence_admin_pw",
     pg_server_password: "qualigence_server_pw",
@@ -290,7 +286,7 @@ async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
   };
 
   for (const [name, value] of Object.entries(secretValues)) {
-    await writeFile(join(COMPOSE_SECRETS_DIR, secretFileName(name)), value, "utf8");
+    await writeFile(secretPath(ctx, name), value, "utf8");
   }
 }
 
@@ -490,32 +486,10 @@ function composeEnv(ctx: HarnessContext): NodeJS.ProcessEnv {
   };
 }
 
-async function backupSecretFiles(): Promise<SecretBackup> {
-  const entries = await Promise.all(Object.values(SECRET_FILE_NAMES).map(async (fileName) => {
-    const path = join(COMPOSE_SECRETS_DIR, fileName);
-    try {
-      return { path, previous: await readFile(path) };
-    } catch {
-      return { path };
-    }
-  }));
-  return { entries };
-}
-
-async function restoreHarnessSecrets(backup: SecretBackup): Promise<void> {
-  for (const entry of backup.entries) {
-    if (entry.previous === undefined) {
-      await rm(entry.path, { force: true });
-      continue;
-    }
-    await writeFile(entry.path, entry.previous);
-  }
-}
-
-function secretFileName(name: string): string {
+function secretPath(ctx: HarnessContext, name: string): string {
   const fileName = SECRET_FILE_NAMES[name];
   if (fileName === undefined) throw new Error(`Unknown Compose secret ${name}`);
-  return fileName;
+  return join(ctx.workDir, fileName);
 }
 
 async function httpsText(url: string, ca: string): Promise<{ readonly status: number; readonly body: string }> {

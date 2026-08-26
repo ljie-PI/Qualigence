@@ -332,6 +332,35 @@ describe("Self-hosted Server configuration", () => {
     expect(config.skillSigningDataDir).toBe("/var/lib/qualigence/skill-signing");
   });
 
+  it("rejects an OIDC claim-map file that maps to an unsupported Public API role", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qualigence-server-config-"));
+    tempDirs.push(dir);
+    const files = await writeConfigFiles(dir);
+    const claimMapFile = files.claimMap;
+    if (claimMapFile === undefined) throw new Error("claim-map test file path was not created");
+    await writeFile(claimMapFile, JSON.stringify({
+      tenantClaim: "tenant",
+      rolesClaim: "roles",
+      allowedTenants: ["tenant-a"],
+      roleMap: { owner: "owner" },
+    }), "utf8");
+
+    expect(() => loadServerConfig({
+      SERVER_RUNNER_GRPC_ENABLED: "false",
+      SERVER_PG_HOST: "postgres",
+      SERVER_PG_DATABASE: "qualigence",
+      SERVER_PG_USER: "qualigence_server",
+      SERVER_PG_PASSWORD: "server_pw",
+      SERVER_OIDC_ISSUER: "https://issuer.example.com",
+      SERVER_OIDC_AUDIENCE: "qualigence-self-hosted",
+      SERVER_OIDC_JWKS_FILE: files.jwks,
+      SERVER_OIDC_ALLOW_STATIC_JWKS_NON_PRODUCTION: "true",
+      SERVER_OIDC_CLAIM_MAP_FILE: claimMapFile,
+      SERVER_RUNNER_CA_CERT_FILE: files.runnerCaCert,
+      SERVER_RUNNER_CA_KEY_FILE: files.runnerCaKey,
+    })).toThrow(/Invalid SERVER_OIDC_CLAIM_MAP_FILE: .*unsupported Public API role/);
+  });
+
   it("cleans up the HTTP listener when Runner gRPC startup fails after HTTP bind", async () => {
     const dir = await mkdtemp(join(tmpdir(), "qualigence-server-startup-cleanup-"));
     tempDirs.push(dir);

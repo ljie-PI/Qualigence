@@ -213,6 +213,13 @@ describe("OidcAuthenticator", () => {
     ).rejects.toMatchObject({ code: "RoleNotAllowed" });
   });
 
+  it("rejects a claim-map config that maps into an unsupported Public API role", () => {
+    expect(() => new ClaimMapper({
+      ...claimMapperConfig,
+      roleMap: { "qualigence:owner": "owner" } as unknown as ClaimMapperConfig["roleMap"],
+    })).toThrow(/unsupported Public API role/);
+  });
+
   it("rejects malformed subject and role claims (fail closed)", async () => {
     const { authenticator, issuer } = makeAuthenticator();
     await expect(
@@ -258,5 +265,11 @@ describe("RbacAuthorizer", () => {
     } catch (error) {
       expect((error as OidcError).code).toBe("Forbidden");
     }
+  });
+
+  it("fails closed instead of throwing TypeError if an unsafe role reaches the RBAC boundary", () => {
+    const unsafePrincipal = principal(["owner"] as unknown as RequestPrincipal["roles"]);
+    expect(rbac.satisfies(unsafePrincipal, "viewer")).toBe(false);
+    expect(() => rbac.require(unsafePrincipal, "viewer")).toThrowError(OidcError);
   });
 });

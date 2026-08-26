@@ -1,6 +1,6 @@
 export { OidcError, isForbidden } from "./errors.js";
 export type { OidcErrorCode } from "./errors.js";
-export { ClaimMapper } from "./claim-mapper.js";
+export { ClaimMapper, parseClaimMapperConfig } from "./claim-mapper.js";
 export type { ClaimMapperConfig } from "./claim-mapper.js";
 export {
   OidcAuthenticator,

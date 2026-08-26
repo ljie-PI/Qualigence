@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
-import type { ClaimMapperConfig, OidcAlgorithm } from "@qualigence/oidc";
+import { parseClaimMapperConfig, type ClaimMapperConfig, type OidcAlgorithm } from "@qualigence/oidc";
 
 export type ServerOidcJwksConfig =
   | { readonly kind: "static"; readonly jwksJson: string }
@@ -155,6 +155,22 @@ function tenantList(raw: string | undefined, fallback: readonly string[]): reado
   return [...new Set(values)];
 }
 
+function parseClaimMapFile(env: NodeJS.ProcessEnv): ClaimMapperConfig {
+  const raw = fileContents("SERVER_OIDC_CLAIM_MAP_FILE", env);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error("SERVER_OIDC_CLAIM_MAP_FILE must contain valid JSON", { cause });
+  }
+  try {
+    return parseClaimMapperConfig(parsed, "SERVER_OIDC_CLAIM_MAP_FILE");
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`Invalid SERVER_OIDC_CLAIM_MAP_FILE: ${message}`, { cause });
+  }
+}
+
 function oidcJwksConfig(env: NodeJS.ProcessEnv): ServerOidcJwksConfig {
   const jwksUri = optionalFromFileOrValue("SERVER_OIDC_JWKS_URI", env);
   const jwksFile = env.SERVER_OIDC_JWKS_FILE;
@@ -194,7 +210,7 @@ function optionalRootKey(env: NodeJS.ProcessEnv): Uint8Array | undefined {
  * configuration so a forged or unmapped token fails closed.
  */
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  const claimMapper = JSON.parse(fileContents("SERVER_OIDC_CLAIM_MAP_FILE", env)) as ClaimMapperConfig;
+  const claimMapper = parseClaimMapFile(env);
   const allowedAlgorithms = parseAlgorithms(env.SERVER_OIDC_ALGORITHMS ?? "RS256");
   const jwks = oidcJwksConfig(env);
   const runnerGrpcEnabled = env.SERVER_RUNNER_GRPC_ENABLED !== "false";
