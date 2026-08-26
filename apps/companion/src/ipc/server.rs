@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::ipc::dto::CompanionRequest;
+use crate::ipc::security::AuthenticatedCertificateRunner;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameLimits {
@@ -40,6 +41,47 @@ pub enum FrameError {
     Io,
     /// Too many requests admitted concurrently.
     Overloaded,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionAdmissionError {
+    CompanionUnauthenticated,
+}
+
+#[derive(Default)]
+pub struct AuthenticatedSessionGate {
+    authenticated_runner_id: Option<String>,
+}
+
+impl AuthenticatedSessionGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn accept(&mut self, runner: AuthenticatedCertificateRunner) {
+        self.authenticated_runner_id = Some(runner.runner_id);
+    }
+
+    pub fn clear(&mut self) {
+        self.authenticated_runner_id = None;
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated_runner_id.is_some()
+    }
+
+    pub fn require_authenticated(
+        &self,
+        request: &CompanionRequest,
+    ) -> Result<(), SessionAdmissionError> {
+        match request {
+            CompanionRequest::HandshakeBegin { .. } | CompanionRequest::HandshakeProve { .. } => {
+                Ok(())
+            }
+            _ if self.is_authenticated() => Ok(()),
+            _ => Err(SessionAdmissionError::CompanionUnauthenticated),
+        }
+    }
 }
 
 impl From<io::Error> for FrameError {

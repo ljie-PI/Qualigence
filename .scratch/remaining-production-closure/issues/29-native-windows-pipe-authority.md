@@ -4,7 +4,7 @@
 
 **Blocked by:** 28 — Dispatch Desktop Jobs through Target Runtime.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -96,3 +96,23 @@ Record the base SHA and each reviewed head in `## Comments`. Every review covers
 | Disconnect after an application request is dispatched | `outcome_unknown` for that request | Connection loss; caller classifies action uncertainty | Pipe server does not fabricate outcome or persist business success | Never automatically replay a side-effecting request | Correlated dispatch count and absent duplicate |
 | Server/process restart | `not_started` for old sessions | Old connection invalid; new authentication required | All in-memory nonces/sessions are lost safely | No resume token or challenge survives restart | Restart test proving old proof/session rejection |
 | Terminal persistence failure | N/A: this ticket owns no durable terminal/business store | N/A | Authentication state is intentionally process-local | N/A | Review records this row N/A for the stated ownership reason |
+
+## Comments
+
+### start - 2026-08-26
+
+- Fixed base: `5f6ee13e8cb9bfcd8e0f401e9d3bccd3a1782199` (`main` after Ticket 28 PR #118 merge), verified as the current worktree head before edits.
+- Predecessor evidence: Ticket 28 is `resolved`; PR #118 merged as `5f6ee13e8cb9bfcd8e0f401e9d3bccd3a1782199`; reviewed code/test head `e255a7b1fe3459ebf06ec58c107fe112c76be530`; final Ticket 28 gates recorded in `.scratch/remaining-production-closure/issues/28-dispatch-desktop-target-runtime.md` passed, including `tests/e2e/windows/desktop-runner.test.ts`, focused Vitest suites, `corepack pnpm typecheck`, and `git diff --check`.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs native Windows Named Pipe listener/DACL/first-instance/local-only admission, peer PID/token/logon/session/image/signature admission, certificate chain/EKU/SAN/fingerprint/private-key proof, one-use challenge lifecycle, authenticated request ordering, bounded frames/queues/concurrency/deadlines, disconnect/timeout/restart cleanup, and no durable terminal-store ownership.
+- Planned focused Gate: `cargo fmt --check`, `cargo build --workspace`, `cargo test --workspace`, `CI=true corepack pnpm vitest run tests/contract/desktop/named-pipe-client.test.ts` (or closest current named-pipe desktop contract if absent), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Scope guard: implementation is limited to the Ticket 29 Allowed Files. UIA worker/Job Object daemon production completion (Ticket 30), manual Windows native acceptance (Ticket 31), Runner Protocol/storage/public contract changes, and any files outside the allowed list require explicit maintainer authorization before editing.
+
+### implementation - 2026-08-26
+
+- Implemented the Windows Named Pipe IPC authority seam under `apps/companion/src/ipc/windows_pipe.rs`: Windows 11 guard, current-logon-SID pipe naming, explicit SDDL DACL for LocalSystem plus current logon SID, `FILE_FLAG_FIRST_PIPE_INSTANCE`, `FILE_FLAG_OVERLAPPED`, `PIPE_REJECT_REMOTE_CLIENTS`, bounded buffers, overlapped connect timeout/cancel, `GetNamedPipeClientProcessId`, token user SID/logon SID/session verification, canonical image allowlist checks, and stable non-secret error codes.
+- Replaced the prior Windows `NamedPipePeer` unsupported placeholder with a PID-capable adapter and kept full Windows SID/session/image admission in the native pipe module.
+- Added production mTLS-certificate challenge verification primitives: 256-bit one-use/expiring nonces, exact Ticket 27 proof bytes, certificate PEM/chain fingerprint policy, expiry, clientAuth EKU, Runner SAN, configured fingerprint, ECDSA P-256/SHA-256 and RSA-PSS/SHA-256 proof verification, replay and instance/nonce binding rejection.
+- Tightened Rust IPC DTO parsing for current Desktop value-binding/action-execute fields and added authenticated-session gating so non-handshake requests before proof produce `CompanionUnauthenticated` without dispatch.
+- Added native Rust coverage in `tests/rust/companion/windows_named_pipe.rs`, updated `ipc_acl.rs` and `handshake.rs`, and added `tests/e2e/windows/named-pipe-authority.test.ts` to execute the native Windows Rust suite through Vitest.
+- Validation evidence in this worktree: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check` passed; `cargo build --workspace` passed; `cargo test --workspace` passed; `CI=true corepack pnpm vitest run tests/contract/desktop/named-pipe-companion-client.test.ts` passed as the closest current named-pipe desktop contract because `tests/contract/desktop/named-pipe-client.test.ts` is absent; `CI=true corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts` passed; `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
+- Note: the default shell PATH lacked a `cargo-fmt` shim even though the pinned Rust 1.96.1 toolchain's `cargo-fmt.exe` and `rustfmt.exe` exist under `/q/.tools/Scoop/apps/rust/1.96.1/bin`; the recorded fmt gate was run with that directory prepended to PATH.

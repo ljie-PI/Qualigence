@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::risk::Risk;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedDesktopAction {
     pub target_kind: TargetKind,
     #[serde(flatten)]
@@ -35,7 +35,7 @@ pub enum DesktopActionKind {
         value_ref: String,
     },
     Select {
-        option: String,
+        value_ref: String,
     },
     Scroll {
         direction: ScrollDirection,
@@ -84,17 +84,37 @@ pub enum DesktopResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalPermitAuthorization {
     pub decision_id: String,
     pub policy_id: String,
     pub action_digest_sha256: String,
     pub risk: Risk,
     pub expires_at: String,
+    pub nonce_base64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_binding: Option<DesktopValueBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopValueBinding {
+    pub value_ref: String,
+    pub value_sha256: String,
+    pub value_byte_length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopPlaintextValue {
+    pub value_ref: String,
+    pub value_sha256: String,
+    pub value_byte_length: u64,
+    pub plaintext: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalExecutionPermit {
     pub permit_token: String,
     pub nonce_base64: String,
@@ -103,13 +123,17 @@ pub struct LocalExecutionPermit {
     pub action_id: String,
     pub action_digest_sha256: String,
     pub graph_id: String,
+    pub decision_id: String,
+    pub policy_id: String,
     pub risk: Risk,
     pub issued_at: String,
     pub expires_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_binding: Option<DesktopValueBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalPermitRequest {
     pub approval_id: String,
     pub session_id: String,
@@ -123,7 +147,7 @@ pub struct LocalPermitRequest {
 /// The Companion IPC request union. `type` is the discriminant; any value not in
 /// this set fails deserialization (unknown request type rejected).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum CompanionRequest {
     #[serde(rename = "handshake.begin", rename_all = "camelCase")]
     HandshakeBegin {
@@ -134,7 +158,10 @@ pub enum CompanionRequest {
     #[serde(rename = "handshake.prove", rename_all = "camelCase")]
     HandshakeProve {
         challenge_id: String,
+        companion_instance_id: String,
+        nonce_base64: String,
         signature_base64: String,
+        signature_algorithm: String,
     },
     #[serde(rename = "session.show", rename_all = "camelCase")]
     SessionShow { run_id: String, target_name: String },
@@ -162,6 +189,8 @@ pub enum CompanionRequest {
         session_id: String,
         action: ResolvedDesktopAction,
         permit: LocalExecutionPermit,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<DesktopPlaintextValue>,
         deadline_ms: u64,
     },
 }

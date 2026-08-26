@@ -1,22 +1,20 @@
-//! IPC peer-identity verification and the certificate-style challenge-response
+//! IPC peer-identity verification and the certificate challenge-response
 //! handshake.
 //!
-//! # Transport abstraction (Windows Named Pipe vs. Linux Unix socket)
+//! The production Windows target authenticates a Runner in two layers before any
+//! application request is admitted:
 //!
-//! The frozen design targets a Windows Named Pipe whose DACL is scoped to the
-//! current logon SID, whose client PID is verified with
-//! `GetNamedPipeClientProcessId`, and whose token user SID / interactive session
-//! are checked. That is genuinely OS-enforced peer identity — but it is not
-//! testable on this Linux sandbox.
+//! 1. the Named Pipe listener is a first-instance, local-only endpoint whose
+//!    DACL is scoped to the current logon SID and LocalSystem; after accept the
+//!    Companion re-reads the client's PID, token SID, logon SID, interactive
+//!    session and canonical image path; and
+//! 2. the Runner proves possession of its enrolled mTLS private key by signing a
+//!    one-use 256-bit nonce over the exact Ticket 27 byte vector
+//!    `qualigence-companion-proof/v1\n{protocolMajor}\n{companionInstanceId}\n{nonceBase64}\n{runnerId}\n`.
 //!
-//! To keep the security model *genuinely enforced and testable* without stubbing
-//! it out, peer identity is abstracted behind [`PeerCredentialSource`]. The
-//! portable, test-exercised implementation reads Unix-domain-socket peer
-//! credentials (`SO_PEERCRED` on Linux, `getpeereid` elsewhere) and enforces that
-//! the connecting process runs as the *same* uid as the Companion — the direct
-//! analogue of the Windows "same logon SID" DACL check. The Windows Named Pipe
-//! implementation is reserved for the real target (PR-26); the enforcement logic
-//! ([`PeerAuthorizer`]) is transport-independent and shared by both.
+//! Portable Unix peer-credential helpers remain only to keep the transport-
+//! independent state machines testable on non-Windows hosts. The Windows native
+//! peer implementation lives in [`crate::ipc::windows_pipe`].
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -24,7 +22,17 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use p256::ecdsa::{Signature as EcdsaSignature, VerifyingKey as EcdsaVerifyingKey};
+use rsa::pkcs8::DecodePublicKey;
+use rsa::pss::{Signature as RsaPssSignature, VerifyingKey as RsaPssVerifyingKey};
+use rsa::RsaPublicKey;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
+use signature::hazmat::PrehashVerifier;
+use x509_parser::extensions::{GeneralName, ParsedExtension};
+use x509_parser::pem::parse_x509_pem;
+use x509_parser::prelude::*;
 
 use crate::clock::Clock;
 use crate::random::random_bytes;
@@ -50,9 +58,7 @@ pub enum IdentityError {
 }
 
 /// Enforces that a connecting peer runs as the same local user as the Companion.
-/// This is the transport-independent equivalent of the Windows logon-SID DACL
-/// check: on the real target the DACL already excludes other users, and this is
-/// the belt-and-suspenders re-verification after accept.
+/// This is the portable analogue of the Windows logon-SID DACL check.
 pub struct PeerAuthorizer {
     expected_uid: u32,
 }
@@ -147,29 +153,46 @@ impl PeerCredentialSource for std::os::unix::net::UnixStream {
     }
 }
 
-/// Reserved Windows Named Pipe peer-identity implementation. On the real target
-/// (PR-26) this uses `GetNamedPipeClientProcessId` plus token SID / interactive
-/// session checks. It is intentionally not implemented in this sandbox build.
+/// Windows Named Pipe peer-identity adapter. Full SID/session/image admission is
+/// exposed by [`crate::ipc::windows_pipe`]; this compatibility adapter replaces
+/// the former `Unsupported` placeholder for callers that only need the peer PID.
 #[cfg(windows)]
-pub struct NamedPipePeer;
+pub struct NamedPipePeer {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl NamedPipePeer {
+    pub fn new(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
+        Self { handle }
+    }
+}
 
 #[cfg(windows)]
 impl PeerCredentialSource for NamedPipePeer {
     fn peer_identity(&self) -> io::Result<PeerIdentity> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Windows Named Pipe peer identity is wired in PR-26",
-        ))
+        let mut pid = 0u32;
+        let ok = unsafe {
+            windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(self.handle, &mut pid)
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(PeerIdentity {
+            pid: pid as i32,
+            uid: 0,
+            gid: 0,
+        })
     }
 }
 
 // --- Certificate-style challenge-response handshake ---------------------------
 
-const HANDSHAKE_DOMAIN: &[u8] = b"qualigence-companion-handshake/v1\0";
+const COMPANION_PROOF_CONTEXT: &str = "qualigence-companion-proof/v1";
 
 /// A Runner registration: the runnerId bound to the public key whose SHA-256
-/// fingerprint the Companion trusts. In production this is derived from the
-/// LS-05/LS-11 client certificate; here it is the equivalent Ed25519 identity.
+/// fingerprint the Companion trusts. This Ed25519 helper is portable test-only;
+/// Windows production admission uses [`CertificateHandshakeVerifier`] below.
 #[derive(Clone)]
 pub struct RunnerRegistration {
     pub runner_id: String,
@@ -213,10 +236,8 @@ pub enum HandshakeError {
     WrongProtocol,
 }
 
-/// Verifies Runner identity via a nonce the Runner must sign with its registered
-/// private key. A single reported fingerprint is never accepted as possession
-/// proof: the signature over `{protocolMajor, companionInstanceId, nonce,
-/// runnerId}` is verified against the registered key.
+/// Verifies the portable Ed25519 test identity via a nonce. Use
+/// [`CertificateHandshakeVerifier`] for the production Runner mTLS profile.
 pub struct HandshakeVerifier<C: Clock> {
     protocol_major: u8,
     companion_instance_id: String,
@@ -250,21 +271,19 @@ impl<C: Clock> HandshakeVerifier<C> {
         }
     }
 
-    /// The exact bytes a Runner must sign. Length-prefixed so no field boundary
-    /// is ambiguous.
+    /// The exact Ticket 27 byte vector a Runner must sign.
     pub fn message_to_sign(
         protocol_major: u8,
         companion_instance_id: &str,
         nonce: &[u8],
         runner_id: &str,
     ) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(HANDSHAKE_DOMAIN.len() + 64 + nonce.len());
-        msg.extend_from_slice(HANDSHAKE_DOMAIN);
-        msg.push(protocol_major);
-        push_field(&mut msg, companion_instance_id.as_bytes());
-        push_field(&mut msg, nonce);
-        push_field(&mut msg, runner_id.as_bytes());
-        msg
+        proof_bytes(
+            protocol_major,
+            companion_instance_id,
+            &BASE64.encode(nonce),
+            runner_id,
+        )
     }
 
     /// Begin a handshake for `runner_id`, minting a single-use nonce challenge.
@@ -332,13 +351,11 @@ impl<C: Clock> HandshakeVerifier<C> {
         let signature_bytes = BASE64
             .decode(signature_base64)
             .map_err(|_| HandshakeError::MalformedSignature)?;
-        let signature = Signature::from_slice(&signature_bytes)
+        let signature = Ed25519Signature::from_slice(&signature_bytes)
             .map_err(|_| HandshakeError::MalformedSignature)?;
 
         let signature_ok = key.verify(&message, &signature).is_ok();
 
-        // Consume the challenge exactly once regardless of the outcome, so a
-        // failed or expired attempt cannot be retried against the same nonce.
         self.pending.remove(challenge_id);
         self.consumed_challenges.insert(challenge_id.to_string());
 
@@ -352,14 +369,7 @@ impl<C: Clock> HandshakeVerifier<C> {
     }
 }
 
-fn push_field(buffer: &mut Vec<u8>, field: &[u8]) {
-    buffer.extend_from_slice(&(field.len() as u32).to_be_bytes());
-    buffer.extend_from_slice(field);
-}
-
-/// The Runner side of the handshake. In production the Runner is the TypeScript
-/// process signing with its client-certificate key; this Ed25519 signer is the
-/// portable equivalent used to prove and to test the Companion's verification.
+/// The Runner side of the portable Ed25519 test handshake.
 pub struct RunnerSigner {
     signing_key: SigningKey,
     pub runner_id: String,
@@ -408,4 +418,377 @@ impl RunnerSigner {
         let signature = self.signing_key.sign(&message);
         BASE64.encode(signature.to_bytes())
     }
+}
+
+// --- Production certificate/mTLS-key handshake --------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompanionProofSignatureAlgorithm {
+    EcdsaP256Sha256,
+    RsaPssSha256,
+}
+
+impl CompanionProofSignatureAlgorithm {
+    pub fn parse(value: &str) -> Result<Self, CertificateError> {
+        match value {
+            "ecdsa-p256-sha256" => Ok(Self::EcdsaP256Sha256),
+            "rsa-pss-sha256" => Ok(Self::RsaPssSha256),
+            _ => Err(CertificateError::UnsupportedKeyAlgorithm),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::EcdsaP256Sha256 => "ecdsa-p256-sha256",
+            Self::RsaPssSha256 => "rsa-pss-sha256",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerCertificatePolicy {
+    pub runner_id: String,
+    pub expected_fingerprint_sha256: String,
+    pub required_san: String,
+    pub trusted_issuer_fingerprint_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedRunnerCertificate {
+    pub runner_id: String,
+    pub fingerprint_sha256: String,
+    pub public_key_algorithm: CompanionProofSignatureAlgorithm,
+    pub der: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertificateError {
+    MalformedCertificate,
+    ExpiredCertificate,
+    MissingClientAuthEku,
+    MissingRunnerSan,
+    FingerprintMismatch,
+    ChainRejected,
+    UnsupportedKeyAlgorithm,
+    SignatureAlgorithmMismatch,
+    MalformedSignature,
+    BadSignature,
+}
+
+struct PendingCertificateChallenge {
+    runner_id: String,
+    nonce_base64: String,
+    issued_monotonic_ms: u64,
+    certificate: ValidatedRunnerCertificate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedCertificateRunner {
+    pub runner_id: String,
+    pub certificate_sha256_fingerprint: String,
+    pub signature_algorithm: CompanionProofSignatureAlgorithm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CertificateHandshakeError {
+    UnknownRunner,
+    UnknownChallenge,
+    RunnerMismatch,
+    CompanionInstanceMismatch,
+    NonceMismatch,
+    ReplayedChallenge,
+    Expired,
+    WrongProtocol,
+    Certificate(CertificateError),
+}
+
+pub struct CertificateHandshakeVerifier<C: Clock> {
+    protocol_major: u8,
+    companion_instance_id: String,
+    policies: HashMap<String, RunnerCertificatePolicy>,
+    pending: HashMap<String, PendingCertificateChallenge>,
+    consumed_challenges: HashSet<String>,
+    clock: Arc<C>,
+    deadline_ms: u64,
+}
+
+impl<C: Clock> CertificateHandshakeVerifier<C> {
+    pub fn new(
+        protocol_major: u8,
+        companion_instance_id: impl Into<String>,
+        policies: impl IntoIterator<Item = RunnerCertificatePolicy>,
+        clock: Arc<C>,
+        deadline_ms: u64,
+    ) -> Self {
+        Self {
+            protocol_major,
+            companion_instance_id: companion_instance_id.into(),
+            policies: policies
+                .into_iter()
+                .map(|p| (p.runner_id.clone(), p))
+                .collect(),
+            pending: HashMap::new(),
+            consumed_challenges: HashSet::new(),
+            clock,
+            deadline_ms,
+        }
+    }
+
+    pub fn companion_instance_id(&self) -> &str {
+        &self.companion_instance_id
+    }
+
+    pub fn begin(
+        &mut self,
+        protocol_major: u8,
+        runner_id: &str,
+        certificate_pem: &str,
+    ) -> Result<Challenge, CertificateHandshakeError> {
+        if protocol_major != self.protocol_major {
+            return Err(CertificateHandshakeError::WrongProtocol);
+        }
+        let policy = self
+            .policies
+            .get(runner_id)
+            .ok_or(CertificateHandshakeError::UnknownRunner)?;
+        let certificate = validate_runner_certificate(certificate_pem, policy)
+            .map_err(CertificateHandshakeError::Certificate)?;
+        let challenge_id = BASE64.encode(random_bytes::<16>());
+        let nonce = random_bytes::<32>();
+        let nonce_base64 = BASE64.encode(nonce);
+        self.pending.insert(
+            challenge_id.clone(),
+            PendingCertificateChallenge {
+                runner_id: runner_id.to_string(),
+                nonce_base64,
+                issued_monotonic_ms: self.clock.monotonic_ms(),
+                certificate,
+            },
+        );
+        Ok(Challenge {
+            challenge_id,
+            nonce,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify(
+        &mut self,
+        runner_id: &str,
+        challenge_id: &str,
+        companion_instance_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: CompanionProofSignatureAlgorithm,
+    ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
+        if self.consumed_challenges.contains(challenge_id) {
+            return Err(CertificateHandshakeError::ReplayedChallenge);
+        }
+        let pending = self
+            .pending
+            .get(challenge_id)
+            .ok_or(CertificateHandshakeError::UnknownChallenge)?;
+        if pending.runner_id != runner_id {
+            return Err(CertificateHandshakeError::RunnerMismatch);
+        }
+        if companion_instance_id != self.companion_instance_id {
+            return Err(CertificateHandshakeError::CompanionInstanceMismatch);
+        }
+        if nonce_base64 != pending.nonce_base64 {
+            return Err(CertificateHandshakeError::NonceMismatch);
+        }
+
+        let expired = self
+            .clock
+            .monotonic_ms()
+            .saturating_sub(pending.issued_monotonic_ms)
+            > self.deadline_ms;
+        let proof = proof_bytes(
+            self.protocol_major,
+            &self.companion_instance_id,
+            &pending.nonce_base64,
+            runner_id,
+        );
+        let certificate = pending.certificate.clone();
+
+        self.pending.remove(challenge_id);
+        self.consumed_challenges.insert(challenge_id.to_string());
+
+        if expired {
+            return Err(CertificateHandshakeError::Expired);
+        }
+        verify_certificate_signature(&certificate, &proof, signature_base64, signature_algorithm)
+            .map_err(CertificateHandshakeError::Certificate)?;
+        Ok(AuthenticatedCertificateRunner {
+            runner_id: certificate.runner_id,
+            certificate_sha256_fingerprint: certificate.fingerprint_sha256,
+            signature_algorithm,
+        })
+    }
+}
+
+pub fn proof_bytes(
+    protocol_major: u8,
+    companion_instance_id: &str,
+    nonce_base64: &str,
+    runner_id: &str,
+) -> Vec<u8> {
+    format!(
+        "{COMPANION_PROOF_CONTEXT}\n{protocol_major}\n{companion_instance_id}\n{nonce_base64}\n{runner_id}\n"
+    )
+    .into_bytes()
+}
+
+pub fn validate_runner_certificate(
+    certificate_pem: &str,
+    policy: &RunnerCertificatePolicy,
+) -> Result<ValidatedRunnerCertificate, CertificateError> {
+    let chain_der = certificate_chain_der(certificate_pem.as_bytes())?;
+    let der = chain_der
+        .first()
+        .ok_or(CertificateError::MalformedCertificate)?
+        .clone();
+    let (_, cert) =
+        X509Certificate::from_der(&der).map_err(|_| CertificateError::MalformedCertificate)?;
+
+    if !cert.validity().is_valid() {
+        return Err(CertificateError::ExpiredCertificate);
+    }
+    if !has_client_auth_eku(&cert) {
+        return Err(CertificateError::MissingClientAuthEku);
+    }
+    if !has_required_san(&cert, &policy.required_san) {
+        return Err(CertificateError::MissingRunnerSan);
+    }
+    let fingerprint_sha256 = hex::encode(Sha256::digest(&der));
+    if !fingerprint_sha256.eq_ignore_ascii_case(&policy.expected_fingerprint_sha256) {
+        return Err(CertificateError::FingerprintMismatch);
+    }
+    if let Some(trusted) = &policy.trusted_issuer_fingerprint_sha256 {
+        let chain_has_trust_anchor = chain_der
+            .iter()
+            .map(|entry| hex::encode(Sha256::digest(entry)))
+            .any(|fingerprint| trusted.eq_ignore_ascii_case(&fingerprint));
+        if !chain_has_trust_anchor {
+            return Err(CertificateError::ChainRejected);
+        }
+    }
+
+    let public_key_algorithm = public_key_algorithm(&cert)?;
+    Ok(ValidatedRunnerCertificate {
+        runner_id: policy.runner_id.clone(),
+        fingerprint_sha256,
+        public_key_algorithm,
+        der,
+    })
+}
+
+pub fn verify_certificate_signature(
+    certificate: &ValidatedRunnerCertificate,
+    proof_bytes: &[u8],
+    signature_base64: &str,
+    signature_algorithm: CompanionProofSignatureAlgorithm,
+) -> Result<(), CertificateError> {
+    if signature_algorithm != certificate.public_key_algorithm {
+        return Err(CertificateError::SignatureAlgorithmMismatch);
+    }
+    let (_, cert) = X509Certificate::from_der(&certificate.der)
+        .map_err(|_| CertificateError::MalformedCertificate)?;
+    let spki_der = cert.public_key().raw;
+    let signature_bytes = BASE64
+        .decode(signature_base64)
+        .map_err(|_| CertificateError::MalformedSignature)?;
+    match signature_algorithm {
+        CompanionProofSignatureAlgorithm::EcdsaP256Sha256 => {
+            let key = EcdsaVerifyingKey::from_public_key_der(spki_der)
+                .map_err(|_| CertificateError::UnsupportedKeyAlgorithm)?;
+            let sig = EcdsaSignature::from_der(&signature_bytes)
+                .or_else(|_| EcdsaSignature::from_slice(&signature_bytes))
+                .map_err(|_| CertificateError::MalformedSignature)?;
+            key.verify(proof_bytes, &sig)
+                .map_err(|_| CertificateError::BadSignature)
+        }
+        CompanionProofSignatureAlgorithm::RsaPssSha256 => {
+            let key = RsaPublicKey::from_public_key_der(spki_der)
+                .map_err(|_| CertificateError::UnsupportedKeyAlgorithm)?;
+            let verifying_key = RsaPssVerifyingKey::<Sha256>::new(key);
+            let sig = RsaPssSignature::try_from(signature_bytes.as_slice())
+                .map_err(|_| CertificateError::MalformedSignature)?;
+            let digest = Sha256::digest(proof_bytes);
+            verifying_key
+                .verify_prehash(&digest, &sig)
+                .map_err(|_| CertificateError::BadSignature)
+        }
+    }
+}
+
+fn certificate_chain_der(input: &[u8]) -> Result<Vec<Vec<u8>>, CertificateError> {
+    if input.starts_with(b"-----BEGIN") {
+        let mut rest = input;
+        let mut chain = Vec::new();
+        while rest.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            let (remaining, pem) =
+                parse_x509_pem(rest).map_err(|_| CertificateError::MalformedCertificate)?;
+            chain.push(pem.contents.to_vec());
+            rest = remaining;
+        }
+        if chain.is_empty() {
+            Err(CertificateError::MalformedCertificate)
+        } else {
+            Ok(chain)
+        }
+    } else {
+        Ok(vec![input.to_vec()])
+    }
+}
+
+fn public_key_algorithm(
+    cert: &X509Certificate<'_>,
+) -> Result<CompanionProofSignatureAlgorithm, CertificateError> {
+    let oid = cert.public_key().algorithm.algorithm.to_id_string();
+    match oid.as_str() {
+        // id-ecPublicKey. Ticket 29 accepts only ECDSA P-256/SHA-256. The
+        // verifier rejects non-P-256 keys when importing the SPKI.
+        "1.2.840.10045.2.1" => Ok(CompanionProofSignatureAlgorithm::EcdsaP256Sha256),
+        // rsaEncryption. The proof scheme is RSA-PSS/SHA-256 even when the
+        // certificate SPKI uses the generic RSA OID.
+        "1.2.840.113549.1.1.1" => Ok(CompanionProofSignatureAlgorithm::RsaPssSha256),
+        _ => Err(CertificateError::UnsupportedKeyAlgorithm),
+    }
+}
+
+fn has_client_auth_eku(cert: &X509Certificate<'_>) -> bool {
+    for ext in cert.extensions() {
+        if let ParsedExtension::ExtendedKeyUsage(eku) = ext.parsed_extension() {
+            if eku.client_auth {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_required_san(cert: &X509Certificate<'_>, required: &str) -> bool {
+    for ext in cert.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+            for name in &san.general_names {
+                match name {
+                    GeneralName::DNSName(value)
+                    | GeneralName::URI(value)
+                    | GeneralName::RFC822Name(value) => {
+                        if value.eq_ignore_ascii_case(required) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
+}
+
+#[allow(dead_code)]
+fn _sha1_hex_for_legacy_diagnostics(bytes: &[u8]) -> String {
+    hex::encode(Sha1::digest(bytes))
 }
