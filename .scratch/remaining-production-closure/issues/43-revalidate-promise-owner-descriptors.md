@@ -116,6 +116,14 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 - Gates run for the fix: `CI=true corepack pnpm typecheck` (passed), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (passed, 4 files / 35 tests), and `git diff --check` (passed).
 - Status remains `claimed`; complete-matrix review and post-review Chromium E2E remain pending. No PR/final evidence was created.
 
+
+### post-review-e2e — 2026-08-26
+
+- Clean complete-matrix review authority for the acceptance start point: reviewed head `d4b2fb8d53003d4114bdb7b2ce12f32ad98d8d9c`, fixed point/base `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e`, with no core blockers in review2 Standards/Spec artifacts.
+- Post-review Chromium E2E initially failed because the inherited Runner Spool now requires encrypted lease storage. The E2E was updated only to open `SqliteRunnerSpool` with `AesGcmSpoolCrypto(randomBytes(32))`, matching the production/recent test harness requirement without changing product code.
+- Acceptance and regression validation passed after the E2E harness fix: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (4 files / 35 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Status remains `claimed`; no final/PR evidence is added yet. A fresh complete-matrix review remains required because the post-review E2E file changed after the clean review head.
+
 ## Acceptance
 
 - [ ] Every observed Promise receiver/traversed owner is retained in a fixed-bound, identity-deduplicated, completely enumerable registry.

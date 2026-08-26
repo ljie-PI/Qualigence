@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { once } from "node:events";
 import { inflateSync } from "node:zlib";
@@ -15,7 +16,7 @@ import {
   type ObservationGraphV1,
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
-import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import { AesGcmSpoolCrypto, SqliteRunnerSpool } from "@qualigence/runner-spool";
 import { PlaywrightWebTargetAdapter, type CapturedArtifact } from "@qualigence/web-playwright";
 import { FileActionValueProvider } from "../../../apps/runner/src/action-value-provider.js";
 import type { RunnerConfig } from "../../../apps/runner/src/config.js";
@@ -112,7 +113,10 @@ describe("production valueRef browser execution", () => {
     }));
     const valueProvider = await FileActionValueProvider.open({ root, configFile });
     const spoolFile = join(root, "runner-spool.db");
-    spool = await SqliteRunnerSpool.open({ databaseFile: spoolFile });
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
 
     const modelRequests: unknown[] = [];
     modelServer = createServer(async (request, response) => {
