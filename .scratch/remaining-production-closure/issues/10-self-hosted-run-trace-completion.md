@@ -4,14 +4,14 @@
 
 **Blocked by:** 09 — Resolve tenant-bound Runner applications.
 
-**Status:** claimed
+**Status:** resolved
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
-- [ ] PostgreSQL Run/Trace/Finding-reference behavior matches SQLite contracts under forced RLS.
-- [ ] Completion requires exact tenant/project/run/logical-job/attempt/Runner-job/hash provenance.
-- [ ] Canonical duplicate is stable; conflicting or nonvisible provenance writes nothing.
-- [ ] Failure injection proves all linked terminal projections commit or roll back together.
+- [x] PostgreSQL Run/Trace/Finding-reference behavior matches SQLite contracts under forced RLS.
+- [x] Completion requires exact tenant/project/run/logical-job/attempt/Runner-job/hash provenance.
+- [x] Canonical duplicate is stable; conflicting or nonvisible provenance writes nothing.
+- [x] Failure injection proves all linked terminal projections commit or roll back together.
 
 ## Tracked scope
 
@@ -113,3 +113,21 @@ Prove the atomic terminal Run, attempt, logical Job, and Mission projection.
 - review-fix: reviewed head `d48026ad65513af6cd88c876a20bc937eab59ce4`; fixed Ticket 10 core blockers for exact Self-hosted completion provenance validation (tenant/project/run/logical-job/attempt/Runner-job/Runner/hash identities), stale Console Run-route workflow expectations, and missing post-review Run Trace completion E2E. Fix commit `64be4d80a4798c1672853d22d360e3a92e6993f1`. Verification run before the fix commit: `corepack pnpm build` passed; `CI=true corepack pnpm vitest run tests/contract/postgres/self-hosted-completion.test.ts` passed (15 tests); `CI=true corepack pnpm vitest run tests/component/web-console/workflow.test.ts` passed (2 tests); `CI=true corepack pnpm vitest run tests/e2e/self-hosted/run-trace-completion.test.ts` passed (2 tests); `CI=true corepack pnpm vitest run tests/contract/runner-control tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/sqlite/sqlite-record-stores.test.ts tests/contract/postgres/postgres-trace-store.test.ts tests/contract/postgres/postgres-run-store.test.ts tests/contract/postgres/self-hosted-completion.test.ts tests/contract/public-api/api-v1.test.ts` passed (10 files / 121 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed. Not resolved; no PR evidence added.
 - review2-fix: reviewed head `408bdc95d7c1c96da3974b0f18e8a655c0b1f631`; fixed remaining Ticket 10 core blocker by selecting `missions.project_id` in the Self-hosted completion projection and requiring it to match the accepted Job and `mission_execution_provenance.project_id` before terminal Mission projection. Added focused negative coverage for a corrupted persisted `missions.project_id` proving stable provenance-conflict rollback/zero-write behavior. Fix commit `dc672577e41d7077a7d2bc234fbee390da6ab869`. Verification run before documentation evidence update: `CI=true corepack pnpm build` passed; `CI=true corepack pnpm vitest run tests/contract/postgres/self-hosted-completion.test.ts` passed (1 file / 16 tests) after local package build refreshed `dist`; `CI=true corepack pnpm vitest run tests/contract/runner-control tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/sqlite/sqlite-record-stores.test.ts tests/contract/postgres/postgres-trace-store.test.ts tests/contract/postgres/postgres-run-store.test.ts tests/contract/postgres/self-hosted-completion.test.ts tests/contract/public-api/api-v1.test.ts` passed (10 files / 122 tests); `CI=true corepack pnpm vitest run tests/component/web-console/workflow.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm vitest run tests/e2e/self-hosted/run-trace-completion.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed. Not resolved; no PR evidence added.
 - review3-fix: reviewed head `23909c53a3e68b0531235974bb80863014dce4cd`; fixed Ticket 10 core blockers for concurrent terminal Mission projection across different Runs in the same Mission and for `PostgresRunStore.complete` zero-row terminal update races. The projection now serializes on the Mission row before linked terminal writes and Mission status truth calculation; PostgreSQL completion coverage now exercises two Runs in one Mission completing concurrently/restart-style and verifies terminal Mission truth. `PostgresRunStore.complete` now checks the terminal `UPDATE ... WHERE status = 'running'` row count, rereads canonical Run terminal state on a lost race, returns duplicate for the same terminal, and throws `PostgresRunStoreError` for conflicting terminal state; PostgreSQL contract coverage exercises duplicate and conflicting concurrent winners. Fix commit `9e3adf02becc2bce7c696b34d3aa6ff61890e876`. Verification run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/runner-control tests/contract/sqlite/sqlite-trace-store.test.ts tests/contract/sqlite/sqlite-record-stores.test.ts tests/contract/postgres/postgres-trace-store.test.ts tests/contract/postgres/postgres-run-store.test.ts tests/contract/postgres/self-hosted-completion.test.ts tests/contract/public-api/api-v1.test.ts` passed (10 files / 125 tests); `CI=true corepack pnpm vitest run tests/e2e/self-hosted/run-trace-completion.test.ts` passed (1 file / 2 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed. Not resolved; no PR evidence added.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `5b2dfa973585c3fe4c6d80e0a6c44309a07d7a55`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/b70ee8ef-f624-4d94-a51f-a1318633185b/ticket10-review3/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/b70ee8ef-f624-4d94-a51f-a1318633185b/ticket10-review3/spec.md`).
+- Final verification: focused Ticket 10 Gate, self-hosted Run Trace completion E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/111`.
+
+## Answer
+
+Implemented Self-hosted Run/Trace persistence and completion closure. PostgreSQL Run and Trace stores now match provider contracts under tenant scope, Run/Trace Public API reads are tenant/RBAC-scoped, Self-hosted Runner completion atomically projects Run, attempt, logical Job, and Mission terminal state with exact provenance validation, duplicates/conflicts/nonvisible provenance are stable, and rollback/E2E coverage proves atomicity.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/111`
+
+Reviewed code head: `5b2dfa973585c3fe4c6d80e0a6c44309a07d7a55`
+
+Final verification: focused Ticket 10 Gate, self-hosted Run Trace completion E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
