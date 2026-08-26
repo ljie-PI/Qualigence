@@ -281,6 +281,13 @@ async function applySelfHostedCompletionProjection(
     throw new RunnerControlStoreError("Self-hosted completion attempt is not accepted", "CompletionIdentityMismatch");
   }
 
+  const lockedMission = await lockMissionProjectionRow(
+    db,
+    tenantId,
+    row.attempt_mission_id,
+    row.attempt_mission_revision,
+  );
+
   await db
     .updateTable("execution_runs")
     .set({ status: runStatus, completed_at: input.completedAt, error_code: runErrorCode })
@@ -313,7 +320,7 @@ async function applySelfHostedCompletionProjection(
     tenantId,
     row.attempt_mission_id,
     row.attempt_mission_revision,
-    row.stop_on_blocked === 1,
+    lockedMission.stop_on_blocked === 1,
   );
   await db
     .updateTable("missions")
@@ -403,6 +410,27 @@ async function loadCompletionProjectionRow(
     .where("mission_job_attempts.run_id", "=", runId)
     .where("mission_job_attempts.runner_job_id", "=", runnerJobId)
     .executeTakeFirst();
+}
+
+async function lockMissionProjectionRow(
+  db: Transaction<PostgresDatabase>,
+  tenantId: string,
+  missionId: string,
+  missionRevision: number,
+): Promise<{ readonly status: string; readonly stop_on_blocked: number }> {
+  const result = await sql<{ readonly status: string; readonly stop_on_blocked: number }>`
+    select status, stop_on_blocked
+    from missions
+    where tenant_id = ${tenantId}
+      and mission_id = ${missionId}
+      and revision = ${missionRevision}
+    for update
+  `.execute(db);
+  const row = result.rows[0];
+  if (row === undefined) {
+    throw new RunnerControlStoreError("Self-hosted completion Mission projection is not visible", "CompletionIdentityMismatch");
+  }
+  return row;
 }
 
 async function missionStatusAfterCompletion(

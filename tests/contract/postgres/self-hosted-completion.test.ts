@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "kysely";
 import {
   canonicalPayloadHash,
   type AcceptedExecutionJob,
@@ -170,6 +171,64 @@ describe.skipIf(!dockerAvailable())("Self-hosted Run completion projection", () 
     });
   });
 
+  it("serializes concurrent terminal projections for different Runs in the same Mission", async () => {
+    const first = selfHostedAttempt("concurrent-a", {
+      missionId: "mission-concurrent",
+      projectId: "project-concurrent",
+    });
+    const second = selfHostedAttempt("concurrent-b", {
+      missionId: first.missionId,
+      projectId: first.job.projectId,
+    });
+    await seedAttempt(runtime, TENANT_ID, first);
+    await seedAdditionalAttempt(runtime, TENANT_ID, second);
+    const store = projectedStore(runtime);
+    await store.grantLease(lease(first.job));
+    await store.grantLease(lease(second.job));
+
+    const missionLocked = deferred();
+    const releaseMission = deferred();
+    const missionLock = runtime.withTenant(TENANT_ID, async ({ db }) => {
+      await sql`
+        select status
+        from missions
+        where tenant_id = ${TENANT_ID}
+          and mission_id = ${first.missionId}
+          and revision = ${first.missionRevision}
+        for update
+      `.execute(db);
+      missionLocked.resolve();
+      await releaseMission.promise;
+    });
+    await missionLocked.promise;
+
+    const completions = Promise.all([
+      store.completeLease(completionInput(first.job, passed(first.job))),
+      store.completeLease(completionInput(second.job, passed(second.job))),
+    ]);
+    await delay(100);
+    releaseMission.resolve();
+
+    await expect(missionLock).resolves.toBeUndefined();
+    await expect(completions).resolves.toEqual([{ outcome: "completed" }, { outcome: "completed" }]);
+    await expect(snapshot(runtime, TENANT_ID, first)).resolves.toMatchObject({
+      runStatus: "passed",
+      attemptStatus: "passed",
+      logicalJobStatus: "completed",
+      missionStatus: "completed",
+      completions: 1,
+      leaseCompletedAt: CHECKED_AT,
+    });
+    await expect(snapshot(runtime, TENANT_ID, second)).resolves.toMatchObject({
+      runStatus: "passed",
+      attemptStatus: "passed",
+      logicalJobStatus: "completed",
+      missionStatus: "completed",
+      completions: 1,
+      leaseCompletedAt: CHECKED_AT,
+    });
+  });
+
   it("does not disclose or write a completion for a nonvisible tenant", async () => {
     const seed = selfHostedAttempt("tenant-hidden");
     await seedAttempt(runtime, "tenant-visible", seed);
@@ -201,12 +260,21 @@ function projectedStore(provider: TenantTransactionProvider): OperationScopedPos
   return new OperationScopedPostgresRunnerControlStore(provider, TENANT_ID, { projectSelfHostedCompletion: true });
 }
 
-function selfHostedAttempt(name: string, overrides: Partial<Pick<SeededAttempt, "acceptedJobHash">> = {}): SeededAttempt {
-  const job = acceptedJob(name);
+function selfHostedAttempt(
+  name: string,
+  overrides: Partial<Pick<SeededAttempt, "acceptedJobHash" | "missionId" | "missionRevision">> & { readonly projectId?: string } = {},
+): SeededAttempt {
+  const missionId = overrides.missionId ?? `mission-${name}`;
+  const missionRevision = overrides.missionRevision ?? 1;
+  const job = acceptedJob(name, {
+    missionId,
+    missionRevision,
+    projectId: overrides.projectId ?? `project-${name}`,
+  });
   return {
     tenantId: TENANT_ID,
-    missionId: `mission-${name}`,
-    missionRevision: 1,
+    missionId,
+    missionRevision,
     logicalJobId: `logical-${name}`,
     attemptId: `attempt-${name}`,
     runnerId: "runner-1",
@@ -259,12 +327,20 @@ async function insertAlternateAttempt(
 async function seedAttempt(provider: TenantTransactionProvider, tenantId: string, seed: SeededAttempt): Promise<void> {
   await provider.withTenant(tenantId, async ({ db }) => {
     await db.insertInto("missions").values({ tenant_id: tenantId, mission_id: seed.missionId, revision: seed.missionRevision, project_id: seed.job.projectId, plan_id: `plan-${seed.missionId}`, prd_id: `prd-${seed.missionId}`, prd_revision: 1, target_id: `target-${seed.missionId}`, compiled_hash: `compiled-${seed.missionId}`, status: "running", dispatch_json: "{}", stop_on_blocked: 1 } as never).execute();
-    await db.insertInto("execution_jobs").values({ tenant_id: tenantId, job_id: seed.logicalJobId, mission_id: seed.missionId, mission_revision: seed.missionRevision, test_case_id: seed.job.plan?.testCaseId ?? `case-${seed.missionId}`, objective: seed.job.objective, required_capabilities_json: JSON.stringify(["target:web-playwright"]), source_refs_json: "[]", snapshot_hash: `snapshot-${seed.missionId}`, snapshot_json: JSON.stringify({ id: seed.job.plan?.testCaseId ?? `case-${seed.missionId}`, objective: seed.job.objective }), idempotency_key: `logical-${seed.missionId}`, status: "queued" } as never).execute();
-    await db.insertInto("execution_runs").values({ tenant_id: tenantId, run_id: seed.job.runId, job_id: seed.job.jobId, target_kind: "web", objective: seed.job.objective, status: "running", next_sequence_number: 1, created_at: CREATED_AT, completed_at: null, error_code: null } as never).execute();
-    await db.insertInto("mission_job_attempts").values({ tenant_id: tenantId, attempt_id: seed.attemptId, mission_id: seed.missionId, mission_revision: seed.missionRevision, logical_job_id: seed.logicalJobId, runner_job_id: seed.job.jobId, run_id: seed.job.runId, status: "accepted", created_at: CREATED_AT } as never).execute();
-    await db.insertInto("runner_execution_jobs").values({ tenant_id: tenantId, runner_job_id: seed.job.jobId, attempt_id: seed.attemptId, runner_id: seed.runnerId, accepted_job_json: JSON.stringify(seed.job), accepted_job_hash: seed.acceptedJobHash, created_at: CREATED_AT } as never).execute();
-    await db.insertInto("mission_execution_provenance").values({ tenant_id: tenantId, attempt_id: seed.attemptId, project_id: seed.job.projectId, mission_id: seed.missionId, mission_revision: seed.missionRevision, mission_compiled_hash: `compiled-${seed.missionId}`, mission_snapshot_json: JSON.stringify({ missionId: seed.missionId }), logical_job_id: seed.logicalJobId, test_case_snapshot_json: JSON.stringify({ id: seed.job.plan?.testCaseId ?? `case-${seed.missionId}`, objective: seed.job.objective }), test_case_snapshot_hash: `snapshot-${seed.missionId}`, plan_id: `plan-${seed.missionId}`, plan_version: 1, plan_snapshot_hash: `plan-hash-${seed.missionId}`, plan_snapshot_json: JSON.stringify({ planId: `plan-${seed.missionId}` }), target_id: `target-${seed.missionId}`, target_version: 1, target_snapshot_hash: `target-hash-${seed.missionId}`, target_snapshot_json: JSON.stringify({ targetId: `target-${seed.missionId}` }), runner_id: seed.runnerId, policy_json: JSON.stringify(seed.job.policy), policy_hash: canonicalPayloadHash(seed.job.policy), created_at: CREATED_AT } as never).execute();
+    await insertAttemptRows(db, tenantId, seed);
   });
+}
+
+async function seedAdditionalAttempt(provider: TenantTransactionProvider, tenantId: string, seed: SeededAttempt): Promise<void> {
+  await provider.withTenant(tenantId, ({ db }) => insertAttemptRows(db, tenantId, seed));
+}
+
+async function insertAttemptRows(db: RuntimeStores["db"], tenantId: string, seed: SeededAttempt): Promise<void> {
+  await db.insertInto("execution_jobs").values({ tenant_id: tenantId, job_id: seed.logicalJobId, mission_id: seed.missionId, mission_revision: seed.missionRevision, test_case_id: seed.job.plan?.testCaseId ?? `case-${seed.missionId}`, objective: seed.job.objective, required_capabilities_json: JSON.stringify(["target:web-playwright"]), source_refs_json: "[]", snapshot_hash: `snapshot-${seed.logicalJobId}`, snapshot_json: JSON.stringify({ id: seed.job.plan?.testCaseId ?? `case-${seed.logicalJobId}`, objective: seed.job.objective }), idempotency_key: `logical-${seed.logicalJobId}`, status: "queued" } as never).execute();
+  await db.insertInto("execution_runs").values({ tenant_id: tenantId, run_id: seed.job.runId, job_id: seed.job.jobId, target_kind: "web", objective: seed.job.objective, status: "running", next_sequence_number: 1, created_at: CREATED_AT, completed_at: null, error_code: null } as never).execute();
+  await db.insertInto("mission_job_attempts").values({ tenant_id: tenantId, attempt_id: seed.attemptId, mission_id: seed.missionId, mission_revision: seed.missionRevision, logical_job_id: seed.logicalJobId, runner_job_id: seed.job.jobId, run_id: seed.job.runId, status: "accepted", created_at: CREATED_AT } as never).execute();
+  await db.insertInto("runner_execution_jobs").values({ tenant_id: tenantId, runner_job_id: seed.job.jobId, attempt_id: seed.attemptId, runner_id: seed.runnerId, accepted_job_json: JSON.stringify(seed.job), accepted_job_hash: seed.acceptedJobHash, created_at: CREATED_AT } as never).execute();
+  await db.insertInto("mission_execution_provenance").values({ tenant_id: tenantId, attempt_id: seed.attemptId, project_id: seed.job.projectId, mission_id: seed.missionId, mission_revision: seed.missionRevision, mission_compiled_hash: `compiled-${seed.missionId}`, mission_snapshot_json: JSON.stringify({ missionId: seed.missionId }), logical_job_id: seed.logicalJobId, test_case_snapshot_json: JSON.stringify({ id: seed.job.plan?.testCaseId ?? `case-${seed.logicalJobId}`, objective: seed.job.objective }), test_case_snapshot_hash: `snapshot-${seed.logicalJobId}`, plan_id: `plan-${seed.missionId}`, plan_version: 1, plan_snapshot_hash: `plan-hash-${seed.missionId}`, plan_snapshot_json: JSON.stringify({ planId: `plan-${seed.missionId}` }), target_id: `target-${seed.missionId}`, target_version: 1, target_snapshot_hash: `target-hash-${seed.missionId}`, target_snapshot_json: JSON.stringify({ targetId: `target-${seed.missionId}` }), runner_id: seed.runnerId, policy_json: JSON.stringify(seed.job.policy), policy_hash: canonicalPayloadHash(seed.job.policy), created_at: CREATED_AT } as never).execute();
 }
 
 function lease(job: AcceptedExecutionJob) {
@@ -293,15 +369,18 @@ function passed(job: AcceptedExecutionJob): ExecutionCompletion {
   return { jobId: job.jobId, runId: job.runId, status: "passed" };
 }
 
-function acceptedJob(name: string): AcceptedExecutionJob {
+function acceptedJob(
+  name: string,
+  overrides: { readonly missionId?: string; readonly missionRevision?: number; readonly projectId?: string } = {},
+): AcceptedExecutionJob {
   return {
     jobId: `runner-job-${name}`,
     runId: `run-${name}`,
-    projectId: `project-${name}`,
+    projectId: overrides.projectId ?? `project-${name}`,
     target: { kind: "web", url: "https://example.test/" },
     objective: "verify checkout",
     policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: CREATED_AT, expiresAt: EXPIRES_AT },
-    plan: { missionId: `mission-${name}`, missionRevision: 1, testCaseId: `case-${name}`, steps: [{ kind: "navigate", path: "/checkout" }, { kind: "verify", claimIds: ["claim-1"] as [string] }], expectedClaimIds: ["claim-1"] as [string], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 } },
+    plan: { missionId: overrides.missionId ?? `mission-${name}`, missionRevision: overrides.missionRevision ?? 1, testCaseId: `case-${name}`, steps: [{ kind: "navigate", path: "/checkout" }, { kind: "verify", claimIds: ["claim-1"] as [string] }], expectedClaimIds: ["claim-1"] as [string], budget: { maximumStepsPerJob: 2, maximumWallClockMs: 30_000, maximumModelTokens: 1_000 } },
   };
 }
 
@@ -324,4 +403,16 @@ async function snapshot(provider: TenantTransactionProvider, tenantId: string, s
       leaseCompletedAt: leaseRow?.completed_at ?? null,
     };
   });
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

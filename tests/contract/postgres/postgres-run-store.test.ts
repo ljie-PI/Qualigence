@@ -63,6 +63,81 @@ describe.skipIf(!dockerAvailable())("PostgresRunStore", () => {
       await expect(runs.complete("shared-run", passedAt("2026-08-01T00:05:00.000Z"))).rejects.toBeInstanceOf(PostgresRunStoreError);
     });
   });
+
+  it("rereads canonical terminal state when a concurrent terminal update wins", async () => {
+    const runId = "run-concurrent-duplicate";
+    const terminal = passedAt("2026-08-01T00:05:00.000Z");
+    await runtime.withTenant(TENANT_ID, async ({ db }) => {
+      await new PostgresRunStore(db, TENANT_ID).create(runningRun(runId));
+    });
+    const winnerUpdated = deferred();
+    const releaseWinner = deferred();
+    const winner = runtime.withTenant(TENANT_ID, async ({ db }) => {
+      const result = await db
+        .updateTable("execution_runs")
+        .set({ status: terminal.status, completed_at: terminal.completedAt, error_code: terminal.errorCode ?? null })
+        .where("tenant_id", "=", TENANT_ID)
+        .where("run_id", "=", runId)
+        .where("status", "=", "running")
+        .executeTakeFirst();
+      expect(result.numUpdatedRows).toBe(1n);
+      winnerUpdated.resolve();
+      await releaseWinner.promise;
+    });
+    await winnerUpdated.promise;
+
+    const loser = runtime.withTenant(TENANT_ID, async ({ db }) => new PostgresRunStore(db, TENANT_ID).complete(runId, terminal));
+    await delay(100);
+    releaseWinner.resolve();
+
+    await expect(winner).resolves.toBeUndefined();
+    await expect(loser).resolves.toBe("duplicate");
+    await runtime.withTenant(TENANT_ID, async ({ db }) => {
+      await expect(new PostgresRunStore(db, TENANT_ID).get(runId)).resolves.toMatchObject({
+        runId,
+        status: "passed",
+        completedAt: terminal.completedAt,
+      });
+    });
+  });
+
+  it("throws a terminal conflict when a concurrent terminal update wins differently", async () => {
+    const runId = "run-concurrent-conflict";
+    const winnerTerminal: RunTerminalUpdate = { status: "error", completedAt: "2026-08-01T00:05:00.000Z", errorCode: "RunnerCrashed" };
+    await runtime.withTenant(TENANT_ID, async ({ db }) => {
+      await new PostgresRunStore(db, TENANT_ID).create(runningRun(runId));
+    });
+    const winnerUpdated = deferred();
+    const releaseWinner = deferred();
+    const winner = runtime.withTenant(TENANT_ID, async ({ db }) => {
+      const result = await db
+        .updateTable("execution_runs")
+        .set({ status: winnerTerminal.status, completed_at: winnerTerminal.completedAt, error_code: winnerTerminal.errorCode ?? null })
+        .where("tenant_id", "=", TENANT_ID)
+        .where("run_id", "=", runId)
+        .where("status", "=", "running")
+        .executeTakeFirst();
+      expect(result.numUpdatedRows).toBe(1n);
+      winnerUpdated.resolve();
+      await releaseWinner.promise;
+    });
+    await winnerUpdated.promise;
+
+    const loser = runtime.withTenant(TENANT_ID, async ({ db }) => new PostgresRunStore(db, TENANT_ID).complete(runId, passedAt("2026-08-01T00:09:00.000Z")));
+    await delay(100);
+    releaseWinner.resolve();
+
+    await expect(winner).resolves.toBeUndefined();
+    await expect(loser).rejects.toBeInstanceOf(PostgresRunStoreError);
+    await runtime.withTenant(TENANT_ID, async ({ db }) => {
+      await expect(new PostgresRunStore(db, TENANT_ID).get(runId)).resolves.toMatchObject({
+        runId,
+        status: "error",
+        completedAt: winnerTerminal.completedAt,
+        errorCode: winnerTerminal.errorCode,
+      });
+    });
+  });
 });
 
 function runningRun(runId: string): ExecutionRunRecord {
@@ -79,4 +154,16 @@ function runningRun(runId: string): ExecutionRunRecord {
 
 function passedAt(at: string): RunTerminalUpdate {
   return { status: "passed", completedAt: at };
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

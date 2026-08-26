@@ -70,7 +70,7 @@ export class PostgresRunStore implements RunStore {
     const targetErrorCode = terminal.errorCode ?? null;
 
     if (row.status === "running") {
-      await this.db
+      const result = await this.db
         .updateTable("execution_runs")
         .set({
           status: terminal.status,
@@ -80,8 +80,47 @@ export class PostgresRunStore implements RunStore {
         .where("tenant_id", "=", this.tenantId)
         .where("run_id", "=", runId)
         .where("status", "=", "running")
-        .execute();
-      return "completed";
+        .executeTakeFirst();
+      if (result.numUpdatedRows > 0n) {
+        return "completed";
+      }
+      const raced = await this.readTerminalState(runId);
+      return this.observedTerminalOutcome(runId, terminal, raced, targetErrorCode);
+    }
+
+    return this.observedTerminalOutcome(runId, terminal, row, targetErrorCode);
+  }
+
+  async get(runId: RunId): Promise<ExecutionRunRecord | undefined> {
+    const row = await this.db
+      .selectFrom("execution_runs")
+      .selectAll()
+      .where("tenant_id", "=", this.tenantId)
+      .where("run_id", "=", runId)
+      .executeTakeFirst();
+    return row === undefined ? undefined : runRecord(row);
+  }
+
+  private async readTerminalState(runId: RunId): Promise<RunStateRow | undefined> {
+    return this.db
+      .selectFrom("execution_runs")
+      .select(["status", "completed_at", "error_code"])
+      .where("tenant_id", "=", this.tenantId)
+      .where("run_id", "=", runId)
+      .executeTakeFirst();
+  }
+
+  private observedTerminalOutcome(
+    runId: RunId,
+    terminal: RunTerminalUpdate,
+    row: RunStateRow | undefined,
+    targetErrorCode: string | null,
+  ): "duplicate" {
+    if (row === undefined) {
+      throw new PostgresRunStoreError(
+        "RunTerminalConflict",
+        `cannot complete unknown run ${runId}`,
+      );
     }
 
     const sameTerminal =
@@ -99,16 +138,6 @@ export class PostgresRunStore implements RunStore {
     );
   }
 
-  async get(runId: RunId): Promise<ExecutionRunRecord | undefined> {
-    const row = await this.db
-      .selectFrom("execution_runs")
-      .selectAll()
-      .where("tenant_id", "=", this.tenantId)
-      .where("run_id", "=", runId)
-      .executeTakeFirst();
-    return row === undefined ? undefined : runRecord(row);
-  }
-
   async list(): Promise<readonly ExecutionRunRecord[]> {
     const rows = await this.db
       .selectFrom("execution_runs")
@@ -119,6 +148,12 @@ export class PostgresRunStore implements RunStore {
       .execute();
     return rows.map(runRecord);
   }
+}
+
+interface RunStateRow {
+  readonly status: string;
+  readonly completed_at: string | null;
+  readonly error_code: string | null;
 }
 
 function runRecord(row: {
