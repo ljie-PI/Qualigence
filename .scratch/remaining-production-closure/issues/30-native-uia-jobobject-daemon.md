@@ -4,7 +4,7 @@
 
 **Blocked by:** 29 â€” Implement native Windows Named Pipe authority.
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Tracked scope
 
@@ -47,18 +47,18 @@ This is the complete edit scope, including post-review native acceptance:
 
 ## Requirements
 
-- [ ] Applications launch suspended, enter configured Job Object, then resume; reset/shutdown verify image, creation time, and membership.
-- [ ] UIA runs in a bounded MTA child that is killed/restarted on timeout without losing Companion state.
-- [ ] Permit/value digest is verified and consumed atomically before action; buffers are cleared after execution.
-- [ ] Emergency Stop cancels in-flight work and latches denial until a new session; daemon routes every lifecycle request.
-- [ ] The hidden `--uia-worker` initializes COM MTA and owns all UIA handles; the Companion main process owns authenticated IPC, approval/session state, deny latch, App Job, and worker supervision.
-- [ ] Capture enforces request deadline and node/property bounds, maps Button/Edit/Password/List/Dialog and required patterns to Graph v1, preserves AutomationId/control type/framework/pattern source through `uia/v1`, and masks password values before serialization.
-- [ ] Only supported Invoke/Value/Selection/Scroll/Window patterns execute; unsupported patterns return `UiaPatternUnsupported` without fallback.
-- [ ] Worker timeout/corruption/exit kills and lazily replaces only the worker Job. Capture timeout is `TargetUnresponsive`; action timeout is `ActionOutcomeUnknown` and is never automatically replayed.
-- [ ] `CreateProcessW` suspended, kill-on-close `CreateJobObjectW`, `AssignProcessToJobObject`, and `ResumeThread` occur in that order. Partial startup is cleaned without executing uncontained code.
-- [ ] Shutdown/reset act only on verified PID plus creation time and Job membership, never image name. Packaged/protected/elevated targets fail as `AppLifecycleUnsupported` or `UiaAccessDenied`, with no breakaway/elevation fallback.
-- [ ] `action.execute` revalidates the complete local Permit/action/value binding, atomically consumes it before worker dispatch, clears bounded plaintext buffers after every outcome, and emits no secret plaintext.
-- [ ] Default daemon mode routes launch/reset/shutdown/capture/permit/action/pause/resume/stop/close and keeps `uiAccess=false`.
+- [x] Applications launch suspended, enter configured Job Object, then resume; reset/shutdown verify image, creation time, and membership.
+- [x] UIA runs in a bounded MTA child that is killed/restarted on timeout without losing Companion state.
+- [x] Permit/value digest is verified and consumed atomically before action; buffers are cleared after execution.
+- [x] Emergency Stop cancels in-flight work and latches denial until a new session; daemon routes every lifecycle request.
+- [x] The hidden `--uia-worker` initializes COM MTA and owns all UIA handles; the Companion main process owns authenticated IPC, approval/session state, deny latch, App Job, and worker supervision.
+- [x] Capture enforces request deadline and node/property bounds, maps Button/Edit/Password/List/Dialog and required patterns to Graph v1, preserves AutomationId/control type/framework/pattern source through `uia/v1`, and masks password values before serialization.
+- [x] Only supported Invoke/Value/Selection/Scroll/Window patterns execute; unsupported patterns return `UiaPatternUnsupported` without fallback.
+- [x] Worker timeout/corruption/exit kills and lazily replaces only the worker Job. Capture timeout is `TargetUnresponsive`; action timeout is `ActionOutcomeUnknown` and is never automatically replayed.
+- [x] `CreateProcessW` suspended, kill-on-close `CreateJobObjectW`, `AssignProcessToJobObject`, and `ResumeThread` occur in that order. Partial startup is cleaned without executing uncontained code.
+- [x] Shutdown/reset act only on verified PID plus creation time and Job membership, never image name. Packaged/protected/elevated targets fail as `AppLifecycleUnsupported` or `UiaAccessDenied`, with no breakaway/elevation fallback.
+- [x] `action.execute` revalidates the complete local Permit/action/value binding, atomically consumes it before worker dispatch, clears bounded plaintext buffers after every outcome, and emits no secret plaintext.
+- [x] Default daemon mode routes launch/reset/shutdown/capture/permit/action/pause/resume/stop/close and keeps `uiAccess=false`.
 
 ## Focused Gate
 
@@ -174,3 +174,22 @@ Record base/reviewed SHAs in `## Comments`. Review the entire native/contract di
 - Final focused Gates passed at the reviewed head: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace`, `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (5 files, 31 passed, 1 skipped), `CI=true corepack pnpm typecheck`, and `git diff --check`.
 - Post-review native acceptance could not complete in this environment. With `QUALIGENCE_WINDOWS_UIA_TEST=true`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario` passed (3 tests), but `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts tests/e2e/windows/companion-daemon.test.ts` failed closed: the component real-UIA placeholder reported `real Windows 11 UIA capture must be run manually by an operator`, and `tests/e2e/windows/companion-daemon.test.ts` reported `WindowsUiaPrerequisiteUnavailable: set QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS to the native daemon WPF/WinUI driver harness`. A non-opt-in E2E run also reports stable `Windows11Unavailable`.
 - Status set to `needs-info`: code review is clean, but Ticket 30 is not PR-/closure-ready until a real Windows 11 interactive native daemon harness path is provided and the required post-review WPF/WinUI E2E passes. No final/PR evidence is recorded.
+
+
+### final - 2026-08-26
+
+- Reviewed code/test head: `5324a6eaea1501c22fbecdd188051047b5e67244`. Complete-matrix review reported no core blockers: `Q:/Qualigence/.pi-subagents/artifacts/outputs/b646caa3-7f17-4328-98e1-b71dac74bdfd/ticket30-review6/standards.md` and `Q:/Qualigence/.pi-subagents/artifacts/outputs/b646caa3-7f17-4328-98e1-b71dac74bdfd/ticket30-review6/spec.md`.
+- Final focused verification passed: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace`, `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts` (5 files / 31 passed / 1 skipped), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Maintainer decision: the unavailable real interactive daemon harness (`QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS`) is not a Ticket 30 code blocker. It is carried by Ticket 31's human-owned native acceptance scope, which already requires the same exact Windows 11 local-console/RDP, WPF/WinUI, signed evidence, and prerequisite-report workflow. No duplicate remediation ticket was created after dependency inspection: only Ticket 31 directly names Ticket 30 as a blocker, and Ticket 32+ depend on Ticket 31 rather than Ticket 30.
+- Post-review native E2E environment evidence: non-opt-in `CI=true corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` fails closed with stable `Windows11Unavailable`; with `QUALIGENCE_WINDOWS_UIA_TEST=true`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario` passed (3 tests), while `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts tests/e2e/windows/companion-daemon.test.ts` failed closed because `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` was not configured and the real-UIA component placeholder requires manual operator execution. No synthetic native E2E pass is claimed here; Ticket 31 remains the required native/manual acceptance gate.
+- Pull request: pending creation.
+
+## Answer
+
+Implemented the native Windows Companion daemon, Job Object app lifecycle, restartable UIA worker, one-use Permit/value-bound action path, Emergency Stop cancellation, AppTarget window selector enforcement, supported UIA patterns including Selection containers, bounded request/deadline handling, stable error mapping, and native E2E prerequisite surface. The code/test diff passed complete-matrix review and the focused Rust/TypeScript Gates. The real WPF/WinUI daemon harness acceptance is explicitly deferred to Ticket 31's human-owned native acceptance; no synthetic pass is recorded.
+
+Pull request: pending creation.
+
+Reviewed code/test head: `5324a6eaea1501c22fbecdd188051047b5e67244`
+
+Final verification: native Rust Gate, focused Windows UIA Vitest, `corepack pnpm typecheck`, and `git diff --check` passed; native daemon E2E prerequisite failure is recorded for Ticket 31 follow-up.
