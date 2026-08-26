@@ -100,23 +100,38 @@ where
         .map_err(DesktopActionError::Uia)
 }
 
-/// Execute an `action.execute` IPC request. This revalidates the complete local
-/// Permit/action/value envelope before atomically consuming the one-use Permit,
-/// then clears any plaintext buffer after every outcome.
-pub fn execute_desktop_action_request<C, A, S>(
+/// A validated action request whose Permit has been atomically consumed before
+/// the caller may dispatch it to the UIA worker.
+pub struct PreparedDesktopActionRequest {
+    pub value: Option<DesktopPlaintextValue>,
+}
+
+impl PreparedDesktopActionRequest {
+    pub fn clear_plaintext(&mut self) {
+        clear_plaintext(&mut self.value);
+    }
+}
+
+impl Drop for PreparedDesktopActionRequest {
+    fn drop(&mut self) {
+        self.clear_plaintext();
+    }
+}
+
+/// Revalidate an `action.execute` IPC request and atomically consume its
+/// one-use Permit. Callers that need concurrent daemon control handling can drop
+/// their Companion lock after this returns and before blocking on the worker.
+pub fn prepare_desktop_action_request<C, A>(
     companion: &mut Companion<C, A>,
-    supervisor: &mut UiaWorkerSupervisor<S>,
     target: &UiaSessionTarget,
     action: &ResolvedDesktopAction,
     permit: &LocalExecutionPermit,
     mut value: Option<DesktopPlaintextValue>,
     binding: &PermitBinding,
-    deadline: Duration,
-) -> Result<ActionOutcomeReport, DesktopActionError>
+) -> Result<PreparedDesktopActionRequest, DesktopActionError>
 where
     C: Clock,
     A: Approver,
-    S: WorkerSpawner,
 {
     if !permit_matches_action(&target.session_id, action, permit, binding)
         || !value_matches_permit(action, permit, value.as_ref())
@@ -135,15 +150,39 @@ where
     let consume = companion
         .authorize_action(&permit.permit_token, binding)
         .map_err(DesktopActionError::Permit);
-    if consume.is_err() {
+    if let Err(error) = consume {
         clear_plaintext(&mut value);
-        return consume.map(|_| ActionOutcomeReport::Ok);
+        return Err(error);
     }
 
+    Ok(PreparedDesktopActionRequest { value })
+}
+
+/// Execute an `action.execute` IPC request. This revalidates the complete local
+/// Permit/action/value envelope before atomically consuming the one-use Permit,
+/// then clears any plaintext buffer after every outcome.
+pub fn execute_desktop_action_request<C, A, S>(
+    companion: &mut Companion<C, A>,
+    supervisor: &mut UiaWorkerSupervisor<S>,
+    target: &UiaSessionTarget,
+    action: &ResolvedDesktopAction,
+    permit: &LocalExecutionPermit,
+    value: Option<DesktopPlaintextValue>,
+    binding: &PermitBinding,
+    deadline: Duration,
+) -> Result<ActionOutcomeReport, DesktopActionError>
+where
+    C: Clock,
+    A: Approver,
+    S: WorkerSpawner,
+{
+    let mut prepared =
+        prepare_desktop_action_request(companion, target, action, permit, value, binding)?;
+
     let outcome = supervisor
-        .execute(target, action, value.as_ref(), deadline)
+        .execute(target, action, prepared.value.as_ref(), deadline)
         .map_err(DesktopActionError::Uia);
-    clear_plaintext(&mut value);
+    clear_plaintext(&mut prepared.value);
     outcome
 }
 

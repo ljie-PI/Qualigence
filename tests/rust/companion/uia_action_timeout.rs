@@ -23,7 +23,7 @@ use companion::uia::protocol::{
     ActionOutcomeReport, UiaError, UiaSessionTarget, WorkerRequest, WorkerResponse,
 };
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
+    UiaWorkerSupervisor, WorkerCancellationCheckpoint, WorkerError, WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -41,6 +41,7 @@ impl WorkerHandle for ScriptedHandle {
         &mut self,
         _req: &WorkerRequest,
         _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
         self.request_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -319,12 +320,57 @@ fn an_emergency_stop_blocks_a_brokered_action_before_the_worker() {
         &binding,
         Duration::from_millis(50),
     );
-    assert!(matches!(result, Err(DesktopActionError::Permit(_))));
+    assert_eq!(
+        result,
+        Err(DesktopActionError::Permit(PermitError::EmergencyStopped))
+    );
     assert_eq!(
         request_count.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "an emergency-stopped action must never reach the worker"
     );
+}
+
+#[test]
+fn action_execute_after_emergency_stop_surfaces_the_stable_latch_reason() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let action = click_action("act-stop");
+    let mut binding = binding_for("act-stop", Risk::Normal);
+    let permit = local_execution_permit("permit-stop".to_string(), &action, &binding, None);
+    binding.action_digest_sha256 = permit.action_digest_sha256.clone();
+    let token =
+        match companion.request_permit(&approval_for("act-stop", Risk::Normal), binding.clone()) {
+            PermitRequestOutcome::Issued(issued) => issued.token,
+            other => panic!("expected permit issue, got {other:?}"),
+        };
+    let permit = LocalExecutionPermit {
+        permit_token: token,
+        ..permit
+    };
+
+    companion.emergency_stop();
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            &target(),
+            &action,
+            &permit,
+            None,
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Err(DesktopActionError::Permit(PermitError::EmergencyStopped))
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -370,6 +416,15 @@ fn input_action(action_id: &str, value_ref: &str) -> ResolvedDesktopAction {
         value_ref: value_ref.to_string(),
     };
     action.uia_pattern = Some("Value".to_string());
+    action
+}
+
+fn select_action(action_id: &str, value_ref: &str, uia_pattern: &str) -> ResolvedDesktopAction {
+    let mut action = click_action(action_id);
+    action.kind = DesktopActionKind::Select {
+        value_ref: value_ref.to_string(),
+    };
+    action.uia_pattern = Some(uia_pattern.to_string());
     action
 }
 
@@ -500,6 +555,66 @@ fn action_execute_revalidates_value_digest_before_consuming_or_dispatching() {
             &action,
             &good_permit,
             Some(good_value),
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn selection_pattern_container_select_is_permit_bound_and_dispatched() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let action = select_action("act-select", "role-ref", "Selection");
+    let mut binding = binding_for("act-select", Risk::ExternalSideEffect);
+    let value_binding = DesktopValueBinding {
+        value_ref: "role-ref".to_string(),
+        value_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+            .to_string(),
+        value_byte_length: 6,
+    };
+    let permit = local_execution_permit(
+        "permit-select".to_string(),
+        &action,
+        &binding,
+        Some(value_binding.clone()),
+    );
+    binding.action_digest_sha256 = permit.action_digest_sha256.clone();
+    let token = match companion.request_permit(
+        &approval_for("act-select", Risk::ExternalSideEffect),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(issued) => issued.token,
+        other => panic!("expected permit issue, got {other:?}"),
+    };
+    let permit = LocalExecutionPermit {
+        permit_token: token,
+        ..permit
+    };
+    let value = DesktopPlaintextValue {
+        value_ref: "role-ref".to_string(),
+        value_sha256: value_binding.value_sha256,
+        value_byte_length: value_binding.value_byte_length,
+        plaintext: "secret".to_string(),
+    };
+
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            &target(),
+            &action,
+            &permit,
+            Some(value),
             &binding,
             Duration::from_millis(50),
         ),

@@ -144,6 +144,9 @@ pub enum UiaError {
     /// An action deadline elapsed: the side effect may or may not have occurred,
     /// so it must never be replayed automatically.
     ActionOutcomeUnknown,
+    /// Emergency Stop cancelled an in-flight action before a trusted success
+    /// response could be accepted.
+    EmergencyStopped,
     /// The worker could not be started.
     WorkerUnavailable,
     /// The worker returned a corrupt or unexpected frame.
@@ -157,6 +160,7 @@ impl UiaError {
         match self {
             UiaError::TargetUnresponsive => "TargetUnresponsive",
             UiaError::ActionOutcomeUnknown => "ActionOutcomeUnknown",
+            UiaError::EmergencyStopped => "EmergencyStopped",
             UiaError::WorkerUnavailable => "CompanionUnavailable",
             UiaError::ProtocolCorruption => "UiaElementStale",
             UiaError::Reported(code) => code,

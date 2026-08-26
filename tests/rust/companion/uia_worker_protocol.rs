@@ -2,11 +2,15 @@
 //! the supervisor's kill-and-rebuild restart behavior (specialist finding W-03).
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
 use companion::clock::ManualClock;
+use companion::ipc::dto::{
+    DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind,
+};
 use companion::permit::{PermitBinding, PermitStore};
 use companion::risk::Risk;
 use companion::uia::mapping::MASKED_VALUE;
@@ -15,7 +19,8 @@ use companion::uia::protocol::{
 };
 use companion::uia::worker::synthetic_source;
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
+    UiaWorkerSupervisor, WorkerCancellation, WorkerCancellationCheckpoint, WorkerError,
+    WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -31,8 +36,13 @@ impl WorkerHandle for ScriptedHandle {
         &mut self,
         req: &WorkerRequest,
         _deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
         self.requests.push(req.clone());
+        if cancellation.is_cancelled() {
+            self.alive = false;
+            return Err(WorkerError::Cancelled);
+        }
         match self.responses.pop_front() {
             Some(Ok(response)) => Ok(response),
             Some(Err(err)) => {
@@ -99,6 +109,18 @@ fn target(session_id: &str) -> UiaSessionTarget {
 fn captured(session_id: &str) -> WorkerResponse {
     WorkerResponse::Captured {
         source: synthetic_source(session_id, 4242, "2026-08-02T00:00:00.000Z"),
+    }
+}
+
+fn click_action(action_id: &str) -> ResolvedDesktopAction {
+    ResolvedDesktopAction {
+        target_kind: TargetKind::Desktop,
+        kind: DesktopActionKind::Click,
+        action_id: action_id.to_string(),
+        graph_id: "graph-1".to_string(),
+        node_id: "button".to_string(),
+        resolution: DesktopResolution::Semantic,
+        uia_pattern: Some("Invoke".to_string()),
     }
 }
 
@@ -170,6 +192,92 @@ fn emergency_stop_cancels_the_current_worker_without_losing_supervisor_authority
         .capture(&target("sess-1"), Duration::from_millis(50))
         .expect("replacement worker captures after stop");
     assert_eq!(supervisor.spawn_count(), 2);
+}
+
+struct BlockingHandle {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    alive: bool,
+}
+
+impl WorkerHandle for BlockingHandle {
+    fn request(
+        &mut self,
+        _req: &WorkerRequest,
+        _deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.entered.store(true, Ordering::SeqCst);
+        while !cancellation.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.kill();
+        Err(WorkerError::Cancelled)
+    }
+
+    fn kill(&mut self) {
+        self.alive = false;
+        self.killed.store(true, Ordering::SeqCst);
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+struct BlockingSpawner {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+}
+
+impl WorkerSpawner for BlockingSpawner {
+    type Handle = BlockingHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(BlockingHandle {
+            entered: Arc::clone(&self.entered),
+            killed: Arc::clone(&self.killed),
+            alive: true,
+        })
+    }
+}
+
+#[test]
+fn emergency_stop_cancels_an_action_already_waiting_on_the_worker() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(BlockingSpawner {
+        entered: Arc::clone(&entered),
+        killed: Arc::clone(&killed),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let action_supervisor = Arc::clone(&supervisor);
+    let action = std::thread::spawn(move || {
+        action_supervisor.lock().expect("supervisor lock").execute(
+            &target("sess-1"),
+            &click_action("act-in-flight"),
+            None,
+            Duration::from_millis(5_000),
+        )
+    });
+
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        action.join().expect("action thread"),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert!(killed.load(Ordering::SeqCst));
+    assert_eq!(
+        supervisor.lock().expect("supervisor lock").restart_count(),
+        1,
+    );
 }
 
 #[test]
@@ -244,8 +352,13 @@ fn native_uia_worker_child_runs_hidden_role_and_answers_ping() {
     let mut spawner =
         companion::uia::worker_supervisor::NativeUiaWorkerSpawner::with_executable(worker_exe);
     let mut worker = spawner.spawn().expect("spawn native UIA worker child");
+    let cancellation = WorkerCancellation::default();
     let response = worker
-        .request(&WorkerRequest::Ping, Duration::from_millis(5_000))
+        .request(
+            &WorkerRequest::Ping,
+            Duration::from_millis(5_000),
+            &cancellation.checkpoint(),
+        )
         .expect("worker responds before deadline");
     assert_eq!(response, WorkerResponse::Pong);
     worker.kill();

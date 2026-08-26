@@ -29,7 +29,7 @@ use companion::uia::protocol::{
 };
 use companion::uia::worker::{synthetic_source, SyntheticUiaCapture, UiaCapture};
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
+    UiaWorkerSupervisor, WorkerCancellationCheckpoint, WorkerError, WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -46,6 +46,7 @@ impl WorkerHandle for ScriptedHandle {
         &mut self,
         _req: &WorkerRequest,
         _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
         self.request_count.fetch_add(1, Ordering::SeqCst);
         match self.responses.pop_front() {

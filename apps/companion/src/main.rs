@@ -47,21 +47,25 @@ fn run_uia_worker() {
 #[cfg(windows)]
 fn run_daemon() {
     use std::collections::{HashMap, HashSet};
+    use std::io;
     use std::io::Write;
-    use std::sync::Arc;
+    use std::ptr::null;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread::JoinHandle;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
     use companion::clock::SystemClock;
     use companion::ipc::dto::{
-        AppTarget, CompanionRequest, CompanionRequestPayload, DesktopPlatform,
+        validate_deadline_ms, ActionExecutePayload, AppTarget, CompanionRequestPayload,
+        DesktopPlatform,
     };
     use companion::ipc::security::{CertificateHandshakeVerifier, RunnerCertificatePolicy};
     use companion::ipc::server::{write_frame, FrameLimits};
     use companion::ipc::windows_pipe::{
-        normalize_path_for_comparison, BinarySignaturePolicy, NamedPipeListener, NativePipeConfig,
-        NativePipeError, NativePipeRequestEvent, NativePipeRequestProcessor, WindowsPeerAuthorizer,
-        WindowsPeerIdentity, WindowsPeerPolicy,
+        normalize_path_for_comparison, AdmittedNativeApplicationRequest, BinarySignaturePolicy,
+        NamedPipeListener, NativePipeConfig, NativePipeError, NativePipeRequestEvent,
+        NativePipeRequestProcessor, WindowsPeerAuthorizer, WindowsPeerIdentity, WindowsPeerPolicy,
     };
     use companion::permit::{IssuedPermit, PermitBinding, PermitStore};
     use companion::process::app_session::{AppSessionManager, AppSessionState};
@@ -70,51 +74,221 @@ fn run_daemon() {
     };
     use companion::risk::Risk;
     use companion::uia::action::{
-        classify_desktop_action, desktop_action_digest_sha256, execute_desktop_action_request,
+        classify_desktop_action, desktop_action_digest_sha256, prepare_desktop_action_request,
         DesktopActionError,
     };
     use companion::uia::protocol::{ActionOutcomeReport, UiaError, UiaSessionTarget};
-    use companion::uia::worker_supervisor::{NativeUiaWorkerSpawner, UiaWorkerSupervisor};
+    use companion::uia::worker_supervisor::{
+        NativeUiaWorkerSpawner, UiaWorkerSupervisor, WorkerCancellation,
+    };
     use companion::{Companion, PermitRequestOutcome};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
     type DaemonCompanion = Companion<SystemClock, ScriptedApprover>;
 
     struct DaemonState {
         clock: Arc<SystemClock>,
         sessions: AppSessionManager<WindowsDesktopProcessHost>,
-        companions: HashMap<String, DaemonCompanion>,
+        companions: HashMap<String, Arc<Mutex<DaemonCompanion>>>,
         reset_specs: HashMap<String, ResetSpec>,
-        supervisor: UiaWorkerSupervisor<NativeUiaWorkerSpawner>,
+        supervisor: Arc<Mutex<UiaWorkerSupervisor<NativeUiaWorkerSpawner>>>,
+        worker_cancellation: WorkerCancellation,
+    }
+
+    #[derive(Clone)]
+    struct SharedResponseWriter {
+        handle: usize,
+        lock: Arc<Mutex<()>>,
+    }
+
+    impl SharedResponseWriter {
+        fn new(handle: HANDLE) -> Self {
+            Self {
+                handle: handle as usize,
+                lock: Arc::new(Mutex::new(())),
+            }
+        }
+
+        fn write_ok(
+            &self,
+            request_id: &str,
+            response_type: &str,
+            payload: serde_json::Value,
+            limits: &FrameLimits,
+        ) -> Result<(), companion::ipc::server::FrameError> {
+            let mut writer = self.locked();
+            write_ok(&mut writer, request_id, response_type, payload, limits)
+        }
+
+        fn write_error(
+            &self,
+            request_id: &str,
+            response_type: &str,
+            code: &str,
+            safe_message: &str,
+            limits: &FrameLimits,
+        ) -> Result<(), companion::ipc::server::FrameError> {
+            let mut writer = self.locked();
+            write_error(
+                &mut writer,
+                request_id,
+                response_type,
+                code,
+                safe_message,
+                limits,
+            )
+        }
+
+        fn write_action_outcome(
+            &self,
+            request_id: &str,
+            outcome: ActionOutcomeReport,
+            limits: &FrameLimits,
+        ) -> Result<(), companion::ipc::server::FrameError> {
+            let mut writer = self.locked();
+            write_action_outcome(&mut writer, request_id, outcome, limits)
+        }
+
+        fn write_lifecycle_error(
+            &self,
+            request_id: &str,
+            response_type: &str,
+            error: LifecycleError,
+            limits: &FrameLimits,
+        ) -> Result<(), companion::ipc::server::FrameError> {
+            let mut writer = self.locked();
+            write_lifecycle_error(&mut writer, request_id, response_type, error, limits)
+        }
+
+        fn write_uia_error(
+            &self,
+            request_id: &str,
+            response_type: &str,
+            error: UiaError,
+            limits: &FrameLimits,
+        ) -> Result<(), companion::ipc::server::FrameError> {
+            let mut writer = self.locked();
+            write_uia_error(&mut writer, request_id, response_type, error, limits)
+        }
+
+        fn locked(&self) -> RawPipeWriter<'_> {
+            RawPipeWriter {
+                handle: self.handle as HANDLE,
+                _guard: self.lock.lock().expect("pipe response writer poisoned"),
+            }
+        }
+    }
+
+    struct RawPipeWriter<'a> {
+        handle: HANDLE,
+        _guard: MutexGuard<'a, ()>,
+    }
+
+    impl Write for RawPipeWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let len = buf.len().min(u32::MAX as usize) as u32;
+            let event = unsafe { CreateEventW(null(), 1, 0, null()) };
+            if event.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let mut transferred = 0u32;
+            let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+            overlapped.hEvent = event;
+            let ok = unsafe {
+                WriteFile(
+                    self.handle,
+                    buf.as_ptr(),
+                    len,
+                    &mut transferred,
+                    &mut overlapped,
+                )
+            };
+            let result = complete_pipe_write(self.handle, ok, &mut overlapped, transferred);
+            unsafe {
+                CloseHandle(event);
+            }
+            result
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn complete_pipe_write(
+        handle: HANDLE,
+        ok: i32,
+        overlapped: &mut OVERLAPPED,
+        immediate_transferred: u32,
+    ) -> io::Result<usize> {
+        if ok != 0 {
+            return Ok(immediate_transferred as usize);
+        }
+        let code = unsafe { GetLastError() };
+        if code != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+        let wait = unsafe { WaitForSingleObject(overlapped.hEvent, 5_000) };
+        if wait != WAIT_OBJECT_0 {
+            unsafe {
+                CancelIoEx(handle, overlapped);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pipe response write timed out",
+            ));
+        }
+        let mut transferred = 0u32;
+        let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 0) };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(transferred as usize)
+        }
     }
 
     impl DaemonState {
         fn new(clock: Arc<SystemClock>) -> Self {
+            let supervisor = UiaWorkerSupervisor::new(NativeUiaWorkerSpawner::new());
+            let worker_cancellation = supervisor.cancellation_handle();
             Self {
                 clock,
                 sessions: AppSessionManager::new(WindowsDesktopProcessHost::new()),
                 companions: HashMap::new(),
                 reset_specs: HashMap::new(),
-                supervisor: UiaWorkerSupervisor::new(NativeUiaWorkerSpawner::new()),
+                supervisor: Arc::new(Mutex::new(supervisor)),
+                worker_cancellation,
             }
         }
 
-        fn companion_for(&mut self, session_id: &str, run_id: &str) -> &mut DaemonCompanion {
+        fn companion_for(&mut self, session_id: &str, run_id: &str) -> Arc<Mutex<DaemonCompanion>> {
             let clock = Arc::clone(&self.clock);
-            self.companions
-                .entry(session_id.to_string())
-                .or_insert_with(|| {
-                    let approver = if std::env::var("QUALIGENCE_COMPANION_TEST_APPROVE_ALL")
-                        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-                        .unwrap_or(false)
-                    {
-                        ScriptedApprover::always(ApprovalOutcome::Approved)
-                    } else {
-                        ScriptedApprover::always(ApprovalOutcome::TimedOut)
-                    };
-                    let approval = ApprovalState::new(run_id.to_string(), approver);
-                    let permits = PermitStore::new(clock, 30_000);
-                    Companion::new(session_id.to_string(), approval, permits)
-                })
+            Arc::clone(
+                self.companions
+                    .entry(session_id.to_string())
+                    .or_insert_with(|| {
+                        let approver = if std::env::var("QUALIGENCE_COMPANION_TEST_APPROVE_ALL")
+                            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                            .unwrap_or(false)
+                        {
+                            ScriptedApprover::always(ApprovalOutcome::Approved)
+                        } else {
+                            ScriptedApprover::always(ApprovalOutcome::TimedOut)
+                        };
+                        let approval = ApprovalState::new(run_id.to_string(), approver);
+                        let permits = PermitStore::new(clock, 30_000);
+                        Arc::new(Mutex::new(Companion::new(
+                            session_id.to_string(),
+                            approval,
+                            permits,
+                        )))
+                    }),
+            )
         }
 
         fn target_for(&self, session_id: &str) -> Result<UiaSessionTarget, LifecycleError> {
@@ -167,6 +341,8 @@ fn run_daemon() {
         }
 
         let mut connection = listener.connection();
+        let response_writer = SharedResponseWriter::new(listener.raw_handle());
+        let mut action_threads: Vec<JoinHandle<()>> = Vec::new();
         let verifier = CertificateHandshakeVerifier::new(
             companion::ipc::dto::PROTOCOL_MAJOR,
             companion_instance_id.clone(),
@@ -179,8 +355,7 @@ fn run_daemon() {
             let event = match processor.process_next_request(&mut connection) {
                 Ok(event) => event,
                 Err(error) => {
-                    let _ = write_error(
-                        &mut connection,
+                    let _ = response_writer.write_error(
                         "unknown",
                         "companion.probe",
                         error.stable_code(),
@@ -188,16 +363,17 @@ fn run_daemon() {
                         &frame_limits,
                     );
                     processor.disconnect_cleanup();
+                    cancel_worker_for_stop(&state);
                     break;
                 }
             };
+            action_threads.retain(|handle| !handle.is_finished());
             let write_result = match event {
                 NativePipeRequestEvent::ChallengeIssued {
                     request_id,
                     challenge_id,
                     nonce_base64,
-                } => write_ok(
-                    &mut connection,
+                } => response_writer.write_ok(
                     &request_id,
                     "handshake.challenge",
                     serde_json::json!({
@@ -211,8 +387,7 @@ fn run_daemon() {
                     request_id,
                     runner_id,
                     certificate_sha256_fingerprint,
-                } => write_ok(
-                    &mut connection,
+                } => response_writer.write_ok(
                     &request_id,
                     "handshake.accepted",
                     serde_json::json!({
@@ -226,33 +401,40 @@ fn run_daemon() {
                 NativePipeRequestEvent::ApplicationRequest(admitted) => {
                     dispatch_application_request(
                         &mut state,
-                        admitted.request,
-                        &mut connection,
+                        admitted,
+                        &response_writer,
                         &frame_limits,
+                        &mut action_threads,
                     )
                 }
             };
             if write_result.is_err() {
                 processor.disconnect_cleanup();
+                cancel_worker_for_stop(&state);
                 break;
             }
         }
+        cancel_worker_for_stop(&state);
+        for handle in action_threads {
+            let _ = handle.join();
+        }
     }
 
-    fn dispatch_application_request<W: Write>(
+    fn dispatch_application_request(
         state: &mut DaemonState,
-        request: CompanionRequest,
-        connection: &mut W,
+        admitted: AdmittedNativeApplicationRequest,
+        response_writer: &SharedResponseWriter,
         frame_limits: &FrameLimits,
+        action_threads: &mut Vec<JoinHandle<()>>,
     ) -> Result<(), companion::ipc::server::FrameError> {
+        let request = admitted.request.clone();
         let request_id = request.request_id.clone();
         match request.payload {
             CompanionRequestPayload::CompanionProbe(payload) => {
                 if payload.target_adapter != "desktop-windows-uia"
                     || payload.observation_extension != "uia/v1"
                 {
-                    return write_error(
-                        connection,
+                    return response_writer.write_error(
                         &request_id,
                         "companion.probe",
                         "CapabilityMismatch",
@@ -260,8 +442,7 @@ fn run_daemon() {
                         frame_limits,
                     );
                 }
-                write_ok(
-                    connection,
+                response_writer.write_ok(
                     &request_id,
                     "companion.probe",
                     serde_json::json!({
@@ -274,19 +455,19 @@ fn run_daemon() {
                     frame_limits,
                 )
             }
-            CompanionRequestPayload::SessionShow(payload) => write_ok(
-                connection,
+            CompanionRequestPayload::SessionShow(payload) => response_writer.write_ok(
                 &request_id,
                 "session.show",
                 session_payload(&payload.run_id, "shown"),
                 frame_limits,
             ),
             CompanionRequestPayload::SessionPause(payload) => {
-                for companion in state.companions.values_mut() {
-                    companion.pause();
+                for companion in state.companions.values() {
+                    if let Ok(mut companion) = companion.lock() {
+                        companion.pause();
+                    }
                 }
-                write_ok(
-                    connection,
+                response_writer.write_ok(
                     &request_id,
                     "session.pause",
                     session_payload(&payload.run_id, "paused"),
@@ -294,11 +475,12 @@ fn run_daemon() {
                 )
             }
             CompanionRequestPayload::SessionResume(payload) => {
-                for companion in state.companions.values_mut() {
-                    companion.resume();
+                for companion in state.companions.values() {
+                    if let Ok(mut companion) = companion.lock() {
+                        companion.resume();
+                    }
                 }
-                write_ok(
-                    connection,
+                response_writer.write_ok(
                     &request_id,
                     "session.resume",
                     session_payload(&payload.run_id, "resumed"),
@@ -306,12 +488,13 @@ fn run_daemon() {
                 )
             }
             CompanionRequestPayload::SessionStop(payload) => {
-                for companion in state.companions.values_mut() {
-                    companion.emergency_stop();
+                for companion in state.companions.values() {
+                    if let Ok(mut companion) = companion.lock() {
+                        companion.emergency_stop();
+                    }
                 }
-                state.supervisor.cancel_in_flight();
-                write_ok(
-                    connection,
+                cancel_worker_for_stop(state);
+                response_writer.write_ok(
                     &request_id,
                     "session.stop",
                     session_payload(&payload.run_id, "stopped"),
@@ -319,12 +502,13 @@ fn run_daemon() {
                 )
             }
             CompanionRequestPayload::SessionClose(payload) => {
-                for companion in state.companions.values_mut() {
-                    companion.emergency_stop();
+                for companion in state.companions.values() {
+                    if let Ok(mut companion) = companion.lock() {
+                        companion.emergency_stop();
+                    }
                 }
-                state.supervisor.cancel_in_flight();
-                write_ok(
-                    connection,
+                cancel_worker_for_stop(state);
+                response_writer.write_ok(
                     &request_id,
                     "session.close",
                     session_payload(&payload.run_id, "closed"),
@@ -336,6 +520,15 @@ fn run_daemon() {
                     "app-{}",
                     hex::encode(companion::random::random_bytes::<16>())
                 );
+                if !target_deadlines_are_valid(&payload.target) {
+                    return response_writer.write_error(
+                        &request_id,
+                        "app.launch",
+                        "CompanionProtocolViolation",
+                        "InvalidDeadline",
+                        frame_limits,
+                    );
+                }
                 let spec = launch_spec(&payload.target);
                 match state.sessions.launch(&session_id, &spec) {
                     Ok(session) => {
@@ -343,16 +536,14 @@ fn run_daemon() {
                             .reset_specs
                             .insert(session_id.clone(), reset_spec(&payload.target));
                         let _ = state.companion_for(&session_id, "");
-                        write_ok(
-                            connection,
+                        response_writer.write_ok(
                             &request_id,
                             "app.launch",
                             app_session_payload(&session),
                             frame_limits,
                         )
                     }
-                    Err(error) => write_lifecycle_error(
-                        connection,
+                    Err(error) => response_writer.write_lifecycle_error(
                         &request_id,
                         "app.launch",
                         error,
@@ -362,8 +553,7 @@ fn run_daemon() {
             }
             CompanionRequestPayload::AppReset(payload) => {
                 let Some(reset) = state.reset_specs.get(&payload.session_id).cloned() else {
-                    return write_error(
-                        connection,
+                    return response_writer.write_error(
                         &request_id,
                         "app.reset",
                         "ApplicationError",
@@ -372,15 +562,13 @@ fn run_daemon() {
                     );
                 };
                 match state.sessions.reset(&payload.session_id, &reset) {
-                    Ok(()) => write_ok(
-                        connection,
+                    Ok(()) => response_writer.write_ok(
                         &request_id,
                         "app.reset",
                         lifecycle_done_payload(&payload.session_id),
                         frame_limits,
                     ),
-                    Err(error) => write_lifecycle_error(
-                        connection,
+                    Err(error) => response_writer.write_lifecycle_error(
                         &request_id,
                         "app.reset",
                         error,
@@ -393,16 +581,14 @@ fn run_daemon() {
                     Ok(()) => {
                         state.companions.remove(&payload.session_id);
                         state.reset_specs.remove(&payload.session_id);
-                        write_ok(
-                            connection,
+                        response_writer.write_ok(
                             &request_id,
                             "app.shutdown",
                             lifecycle_done_payload(&payload.session_id),
                             frame_limits,
                         )
                     }
-                    Err(error) => write_lifecycle_error(
-                        connection,
+                    Err(error) => response_writer.write_lifecycle_error(
                         &request_id,
                         "app.shutdown",
                         error,
@@ -411,9 +597,17 @@ fn run_daemon() {
                 }
             }
             CompanionRequestPayload::UiaCapture(payload) => {
+                let Some(deadline) = checked_deadline(payload.deadline_ms) else {
+                    return response_writer.write_error(
+                        &request_id,
+                        "uia.capture",
+                        "CompanionProtocolViolation",
+                        "InvalidDeadline",
+                        frame_limits,
+                    );
+                };
                 if let Err(error) = state.sessions.verify_children(&payload.session_id) {
-                    return write_lifecycle_error(
-                        connection,
+                    return response_writer.write_lifecycle_error(
                         &request_id,
                         "uia.capture",
                         error,
@@ -423,8 +617,7 @@ fn run_daemon() {
                 let target = match state.target_for(&payload.session_id) {
                     Ok(target) => target,
                     Err(error) => {
-                        return write_lifecycle_error(
-                            connection,
+                        return response_writer.write_lifecycle_error(
                             &request_id,
                             "uia.capture",
                             error,
@@ -432,28 +625,30 @@ fn run_daemon() {
                         )
                     }
                 };
-                match state
-                    .supervisor
-                    .capture(&target, Duration::from_millis(payload.deadline_ms))
-                {
-                    Ok(source) => write_ok(
-                        connection,
+                let capture_result = match state.supervisor.lock() {
+                    Ok(mut supervisor) => supervisor.capture(&target, deadline),
+                    Err(_) => Err(UiaError::WorkerUnavailable),
+                };
+                match capture_result {
+                    Ok(source) => response_writer.write_ok(
                         &request_id,
                         "uia.capture",
                         serde_json::to_value(source).unwrap_or(serde_json::Value::Null),
                         frame_limits,
                     ),
-                    Err(error) => {
-                        write_uia_error(connection, &request_id, "uia.capture", error, frame_limits)
-                    }
+                    Err(error) => response_writer.write_uia_error(
+                        &request_id,
+                        "uia.capture",
+                        error,
+                        frame_limits,
+                    ),
                 }
             }
             CompanionRequestPayload::PermitRequest(payload) => {
                 let permit_request = payload.request;
                 let session_id = permit_request.session_id.clone();
                 if state.sessions.session(&session_id).is_none() {
-                    return write_error(
-                        connection,
+                    return response_writer.write_error(
                         &request_id,
                         "permit.request",
                         "ApplicationError",
@@ -465,8 +660,7 @@ fn run_daemon() {
                 if permit_request.authorization.risk != Risk::ProductionForbidden
                     && permit_request.authorization.risk != local_risk
                 {
-                    return write_error(
-                        connection,
+                    return response_writer.write_error(
                         &request_id,
                         "permit.request",
                         "PolicyDenied",
@@ -486,8 +680,7 @@ fn run_daemon() {
                     permit_request.authorization.value_binding.as_ref(),
                 );
                 if expected_digest != permit_request.authorization.action_digest_sha256 {
-                    return write_error(
-                        connection,
+                    return response_writer.write_error(
                         &request_id,
                         "permit.request",
                         "PolicyDenied",
@@ -511,12 +704,21 @@ fn run_daemon() {
                     risk: permit_request.authorization.risk,
                     safe_summary: permit_request.safe_summary.clone(),
                 };
-                let outcome = state
-                    .companion_for(&session_id, &permit_request.run_id)
-                    .request_permit(&approval, binding);
+                let companion = state.companion_for(&session_id, &permit_request.run_id);
+                let outcome = match companion.lock() {
+                    Ok(mut companion) => companion.request_permit(&approval, binding),
+                    Err(_) => {
+                        return response_writer.write_error(
+                            &request_id,
+                            "permit.request",
+                            "ApplicationError",
+                            "CompanionUnavailable",
+                            frame_limits,
+                        );
+                    }
+                };
                 match outcome {
-                    PermitRequestOutcome::Issued(permit) => write_ok(
-                        connection,
+                    PermitRequestOutcome::Issued(permit) => response_writer.write_ok(
                         &request_id,
                         "permit.request",
                         issued_permit_payload(
@@ -526,8 +728,7 @@ fn run_daemon() {
                         ),
                         frame_limits,
                     ),
-                    PermitRequestOutcome::Rejected(decision) => write_ok(
-                        connection,
+                    PermitRequestOutcome::Rejected(decision) => response_writer.write_ok(
                         &request_id,
                         "permit.request",
                         serde_json::json!({
@@ -540,9 +741,17 @@ fn run_daemon() {
                 }
             }
             CompanionRequestPayload::ActionExecute(payload) => {
+                let Some(deadline) = checked_deadline(payload.deadline_ms) else {
+                    return response_writer.write_error(
+                        &request_id,
+                        "action.execute",
+                        "CompanionProtocolViolation",
+                        "InvalidDeadline",
+                        frame_limits,
+                    );
+                };
                 if let Err(error) = state.sessions.verify_children(&payload.session_id) {
-                    return write_lifecycle_error(
-                        connection,
+                    return response_writer.write_lifecycle_error(
                         &request_id,
                         "action.execute",
                         error,
@@ -552,8 +761,7 @@ fn run_daemon() {
                 let target = match state.target_for(&payload.session_id) {
                     Ok(target) => target,
                     Err(error) => {
-                        return write_lifecycle_error(
-                            connection,
+                        return response_writer.write_lifecycle_error(
                             &request_id,
                             "action.execute",
                             error,
@@ -569,9 +777,8 @@ fn run_daemon() {
                     graph_id: payload.permit.graph_id.clone(),
                     risk: payload.permit.risk,
                 };
-                let Some(companion) = state.companions.get_mut(&payload.session_id) else {
-                    return write_error(
-                        connection,
+                let Some(companion) = state.companions.get(&payload.session_id).cloned() else {
+                    return response_writer.write_error(
                         &request_id,
                         "action.execute",
                         "ApplicationError",
@@ -579,40 +786,27 @@ fn run_daemon() {
                         frame_limits,
                     );
                 };
-                match execute_desktop_action_request(
-                    companion,
-                    &mut state.supervisor,
-                    &target,
-                    &payload.action,
-                    &payload.permit,
-                    payload.value,
-                    &binding,
-                    Duration::from_millis(payload.deadline_ms),
-                ) {
-                    Ok(outcome) => {
-                        write_action_outcome(connection, &request_id, outcome, frame_limits)
-                    }
-                    Err(DesktopActionError::Uia(UiaError::ActionOutcomeUnknown)) => write_error(
-                        connection,
-                        &request_id,
-                        "action.execute",
-                        "ActionOutcomeUnknown",
-                        "ActionOutcomeUnknown",
-                        frame_limits,
-                    ),
-                    Err(error) => write_error(
-                        connection,
-                        &request_id,
-                        "action.execute",
-                        "ApplicationError",
-                        action_error_message(&error),
-                        frame_limits,
-                    ),
-                }
+                let supervisor = Arc::clone(&state.supervisor);
+                let cancellation = state.worker_cancellation.checkpoint();
+                let writer = response_writer.clone();
+                let limits = *frame_limits;
+                action_threads.push(std::thread::spawn(move || {
+                    let _admitted = admitted;
+                    let result = execute_action_after_admission(
+                        companion,
+                        supervisor,
+                        cancellation,
+                        target,
+                        payload,
+                        binding,
+                        deadline,
+                    );
+                    let _ = write_action_execute_result(&writer, &request_id, result, &limits);
+                }));
+                Ok(())
             }
             CompanionRequestPayload::HandshakeBegin(_)
-            | CompanionRequestPayload::HandshakeProve(_) => write_error(
-                connection,
+            | CompanionRequestPayload::HandshakeProve(_) => response_writer.write_error(
                 &request_id,
                 "handshake.accepted",
                 "CompanionProtocolViolation",
@@ -621,6 +815,134 @@ fn run_daemon() {
             ),
         }?;
         Ok(())
+    }
+
+    fn execute_action_after_admission(
+        companion: Arc<Mutex<DaemonCompanion>>,
+        supervisor: Arc<Mutex<UiaWorkerSupervisor<NativeUiaWorkerSpawner>>>,
+        cancellation: companion::uia::worker_supervisor::WorkerCancellationCheckpoint,
+        target: UiaSessionTarget,
+        payload: ActionExecutePayload,
+        binding: PermitBinding,
+        deadline: Duration,
+    ) -> Result<ActionOutcomeReport, DesktopActionError> {
+        let ActionExecutePayload {
+            session_id: _,
+            action,
+            permit,
+            value,
+            deadline_ms: _,
+        } = payload;
+        let mut prepared = {
+            let mut companion = companion
+                .lock()
+                .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))?;
+            prepare_desktop_action_request(
+                &mut *companion,
+                &target,
+                &action,
+                &permit,
+                value,
+                &binding,
+            )?
+        };
+
+        if companion_is_emergency_stopped(&companion)? {
+            prepared.clear_plaintext();
+            return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
+        }
+
+        let outcome = {
+            let mut supervisor = supervisor
+                .lock()
+                .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))?;
+            if companion_is_emergency_stopped(&companion)? {
+                prepared.clear_plaintext();
+                return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
+            }
+            supervisor
+                .execute_with_cancellation(
+                    &target,
+                    &action,
+                    prepared.value.as_ref(),
+                    deadline,
+                    &cancellation,
+                )
+                .map_err(DesktopActionError::Uia)
+        };
+        prepared.clear_plaintext();
+
+        if companion_is_emergency_stopped(&companion)? {
+            return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
+        }
+
+        outcome
+    }
+
+    fn companion_is_emergency_stopped(
+        companion: &Arc<Mutex<DaemonCompanion>>,
+    ) -> Result<bool, DesktopActionError> {
+        companion
+            .lock()
+            .map(|companion| {
+                matches!(
+                    companion.state(),
+                    companion::emergency_stop::ControlState::EmergencyStopped
+                )
+            })
+            .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))
+    }
+
+    fn write_action_execute_result(
+        writer: &SharedResponseWriter,
+        request_id: &str,
+        result: Result<ActionOutcomeReport, DesktopActionError>,
+        frame_limits: &FrameLimits,
+    ) -> Result<(), companion::ipc::server::FrameError> {
+        match result {
+            Ok(outcome) => writer.write_action_outcome(request_id, outcome, frame_limits),
+            Err(DesktopActionError::Uia(UiaError::ActionOutcomeUnknown)) => writer.write_error(
+                request_id,
+                "action.execute",
+                "ActionOutcomeUnknown",
+                "ActionOutcomeUnknown",
+                frame_limits,
+            ),
+            Err(DesktopActionError::Permit(companion::permit::PermitError::EmergencyStopped))
+            | Err(DesktopActionError::Uia(UiaError::EmergencyStopped)) => writer
+                .write_action_outcome(
+                    request_id,
+                    ActionOutcomeReport::Failed {
+                        error_code: "EmergencyStopped".to_string(),
+                    },
+                    frame_limits,
+                ),
+            Err(error) => writer.write_error(
+                request_id,
+                "action.execute",
+                "ApplicationError",
+                action_error_message(&error),
+                frame_limits,
+            ),
+        }
+    }
+
+    fn checked_deadline(deadline_ms: u64) -> Option<Duration> {
+        validate_deadline_ms(deadline_ms)
+            .ok()
+            .map(Duration::from_millis)
+    }
+
+    fn cancel_worker_for_stop(state: &DaemonState) {
+        state.worker_cancellation.cancel_in_flight();
+        if let Ok(mut supervisor) = state.supervisor.try_lock() {
+            supervisor.cancel_in_flight();
+        }
+    }
+
+    fn target_deadlines_are_valid(target: &AppTarget) -> bool {
+        checked_deadline(target.reset.timeout_ms).is_some()
+            && checked_deadline(target.shutdown.graceful_timeout_ms).is_some()
     }
 
     fn authorize_peer(listener: &NamedPipeListener) -> Result<(), NativePipeError> {
@@ -894,10 +1216,10 @@ fn run_daemon() {
         error: UiaError,
         limits: &FrameLimits,
     ) -> Result<(), companion::ipc::server::FrameError> {
-        let code = if matches!(error, UiaError::ActionOutcomeUnknown) {
-            "ActionOutcomeUnknown"
-        } else {
-            "ApplicationError"
+        let code = match error {
+            UiaError::ActionOutcomeUnknown => "ActionOutcomeUnknown",
+            UiaError::EmergencyStopped => "ApplicationError",
+            _ => "ApplicationError",
         };
         write_error(
             connection,
@@ -911,6 +1233,9 @@ fn run_daemon() {
 
     fn action_error_message(error: &DesktopActionError) -> &str {
         match error {
+            DesktopActionError::Permit(companion::permit::PermitError::EmergencyStopped) => {
+                "EmergencyStopped"
+            }
             DesktopActionError::Permit(_) => "LocalPermitInvalid",
             DesktopActionError::BindingMismatch => "LocalPermitBindingMismatch",
             DesktopActionError::Uia(error) => error.code(),

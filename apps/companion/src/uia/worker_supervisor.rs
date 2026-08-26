@@ -12,6 +12,8 @@
 //! traits, so the real same-binary child-process transport (Windows) and the
 //! portable fake used by the Linux test-suite share the exact restart logic.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
@@ -24,6 +26,8 @@ use crate::uia::protocol::{
 pub enum WorkerError {
     /// The worker did not respond before the monotonic deadline (a hung COM call).
     Timeout,
+    /// Emergency Stop cancelled the in-flight request and killed the worker.
+    Cancelled,
     /// The worker process exited / the channel closed.
     Closed,
     /// The worker produced an oversized or malformed frame.
@@ -32,13 +36,51 @@ pub enum WorkerError {
     Spawn,
 }
 
+/// Cloneable cancellation signal shared between daemon control handling and the
+/// thread currently blocked in a worker request. It lets Emergency Stop cancel a
+/// hung COM call without taking the supervisor lock that the request owns.
+#[derive(Clone, Default)]
+pub struct WorkerCancellation {
+    epoch: Arc<AtomicU64>,
+}
+
+impl WorkerCancellation {
+    pub fn cancel_in_flight(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn checkpoint(&self) -> WorkerCancellationCheckpoint {
+        WorkerCancellationCheckpoint {
+            cancellation: self.clone(),
+            epoch: self.epoch.load(Ordering::SeqCst),
+        }
+    }
+
+    pub fn is_cancelled_since(&self, snapshot: u64) -> bool {
+        self.epoch.load(Ordering::SeqCst) != snapshot
+    }
+}
+
+pub struct WorkerCancellationCheckpoint {
+    cancellation: WorkerCancellation,
+    epoch: u64,
+}
+
+impl WorkerCancellationCheckpoint {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled_since(self.epoch)
+    }
+}
+
 /// A live handle to one worker child.
 pub trait WorkerHandle {
-    /// Send `req` and block until a response or the monotonic `deadline` elapses.
+    /// Send `req` and block until a response, cancellation, or the monotonic
+    /// `deadline` elapses.
     fn request(
         &mut self,
         req: &WorkerRequest,
         deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError>;
     /// Forcibly terminate the worker (its private Job on Windows).
     fn kill(&mut self);
@@ -58,6 +100,7 @@ pub struct UiaWorkerSupervisor<S: WorkerSpawner> {
     worker: Option<S::Handle>,
     restarts: u32,
     spawns: u32,
+    cancellation: WorkerCancellation,
 }
 
 impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
@@ -67,7 +110,12 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             worker: None,
             restarts: 0,
             spawns: 0,
+            cancellation: WorkerCancellation::default(),
         }
+    }
+
+    pub fn cancellation_handle(&self) -> WorkerCancellation {
+        self.cancellation.clone()
     }
 
     /// Number of times a worker was terminated and scheduled for rebuild.
@@ -106,6 +154,7 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
     /// and latch future work at the Companion permit layer. The App Job remains
     /// owned by the main process and is not torn down by worker cancellation.
     pub fn cancel_in_flight(&mut self) {
+        self.cancellation.cancel_in_flight();
         self.recycle_worker();
     }
 
@@ -114,9 +163,19 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         req: &WorkerRequest,
         deadline: Duration,
     ) -> Result<WorkerResponse, WorkerError> {
+        let cancellation = self.cancellation.checkpoint();
+        self.dispatch_with_cancellation(req, deadline, &cancellation)
+    }
+
+    fn dispatch_with_cancellation(
+        &mut self,
+        req: &WorkerRequest,
+        deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
         self.ensure_worker()?;
         let worker = self.worker.as_mut().expect("worker ensured");
-        match worker.request(req, deadline) {
+        match worker.request(req, deadline, cancellation) {
             Ok(response) => Ok(response),
             Err(err) => {
                 // Any transport failure recycles ONLY the child worker; the
@@ -145,7 +204,9 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
                 self.recycle_worker();
                 Err(UiaError::ProtocolCorruption)
             }
-            Err(WorkerError::Timeout) => Err(UiaError::TargetUnresponsive),
+            Err(WorkerError::Timeout) | Err(WorkerError::Cancelled) => {
+                Err(UiaError::TargetUnresponsive)
+            }
             Err(WorkerError::Closed) | Err(WorkerError::Corrupt) => {
                 Err(UiaError::TargetUnresponsive)
             }
@@ -164,12 +225,24 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         value: Option<&DesktopPlaintextValue>,
         deadline: Duration,
     ) -> Result<ActionOutcomeReport, UiaError> {
+        let cancellation = self.cancellation.checkpoint();
+        self.execute_with_cancellation(target, action, value, deadline, &cancellation)
+    }
+
+    pub fn execute_with_cancellation(
+        &mut self,
+        target: &UiaSessionTarget,
+        action: &ResolvedDesktopAction,
+        value: Option<&DesktopPlaintextValue>,
+        deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<ActionOutcomeReport, UiaError> {
         let mut req = WorkerRequest::Execute {
             target: target.clone(),
             action: action.clone(),
             value: value.cloned(),
         };
-        let result = match self.dispatch(&req, deadline) {
+        let result = match self.dispatch_with_cancellation(&req, deadline, cancellation) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
             Ok(_) => {
@@ -177,6 +250,7 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
                 Err(UiaError::ProtocolCorruption)
             }
             Err(WorkerError::Timeout) => Err(UiaError::ActionOutcomeUnknown),
+            Err(WorkerError::Cancelled) => Err(UiaError::EmergencyStopped),
             Err(WorkerError::Closed) | Err(WorkerError::Corrupt) => {
                 Err(UiaError::ActionOutcomeUnknown)
             }
@@ -202,9 +276,12 @@ mod native_child {
     use std::os::windows::io::AsRawHandle;
     use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
     use std::sync::{mpsc, Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    use super::{WorkerError, WorkerHandle, WorkerRequest, WorkerResponse, WorkerSpawner};
+    use super::{
+        WorkerCancellationCheckpoint, WorkerError, WorkerHandle, WorkerRequest, WorkerResponse,
+        WorkerSpawner,
+    };
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -289,11 +366,17 @@ mod native_child {
         alive: bool,
     }
 
+    // The worker process/job handles are owned behind the daemon supervisor
+    // mutex. The only cross-thread cancellation path is the atomic cancellation
+    // token; native handle mutation still happens through the supervisor owner.
+    unsafe impl Send for NativeUiaWorkerHandle {}
+
     impl WorkerHandle for NativeUiaWorkerHandle {
         fn request(
             &mut self,
             req: &WorkerRequest,
             deadline: Duration,
+            cancellation: &WorkerCancellationCheckpoint,
         ) -> Result<WorkerResponse, WorkerError> {
             let body = serde_json::to_vec(req).map_err(|_| WorkerError::Corrupt)?;
             crate::ipc::server::write_frame(
@@ -320,19 +403,36 @@ mod native_child {
                 let _ = tx.send(result);
             });
 
-            match rx.recv_timeout(deadline) {
-                Ok(Ok(response)) => Ok(response),
-                Ok(Err(err)) => {
-                    self.alive = false;
-                    Err(err)
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+            let started_at = Instant::now();
+            loop {
+                if cancellation.is_cancelled() {
                     self.kill();
-                    Err(WorkerError::Timeout)
+                    return Err(WorkerError::Cancelled);
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    self.alive = false;
-                    Err(WorkerError::Closed)
+                let elapsed = started_at.elapsed();
+                if elapsed >= deadline {
+                    self.kill();
+                    return Err(WorkerError::Timeout);
+                }
+                let remaining = deadline.saturating_sub(elapsed);
+                let wait_for = remaining.min(Duration::from_millis(25));
+                match rx.recv_timeout(wait_for) {
+                    Ok(Ok(response)) => {
+                        if cancellation.is_cancelled() {
+                            self.kill();
+                            return Err(WorkerError::Cancelled);
+                        }
+                        return Ok(response);
+                    }
+                    Ok(Err(err)) => {
+                        self.alive = false;
+                        return Err(err);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        self.alive = false;
+                        return Err(WorkerError::Closed);
+                    }
                 }
             }
         }
@@ -368,6 +468,8 @@ mod native_child {
     struct WorkerJob {
         handle: HANDLE,
     }
+
+    unsafe impl Send for WorkerJob {}
 
     impl WorkerJob {
         fn create() -> Result<Self, WorkerError> {

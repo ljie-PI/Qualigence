@@ -286,12 +286,13 @@ mod windows_uia {
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation8, IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern,
-        IUIAutomationScrollPattern, IUIAutomationSelectionItemPattern, IUIAutomationValuePattern,
-        IUIAutomationWindowPattern, ScrollAmount_LargeDecrement, ScrollAmount_LargeIncrement,
-        ScrollAmount_NoAmount, ScrollAmount_SmallDecrement, ScrollAmount_SmallIncrement,
-        TreeScope_Children, UIA_InvokePatternId, UIA_ScrollPatternId, UIA_SelectionItemPatternId,
-        UIA_ValuePatternId, UIA_WindowPatternId, WindowVisualState_Minimized,
-        WindowVisualState_Normal,
+        IUIAutomationScrollPattern, IUIAutomationSelectionItemPattern,
+        IUIAutomationSelectionPattern, IUIAutomationValuePattern, IUIAutomationWindowPattern,
+        ScrollAmount_LargeDecrement, ScrollAmount_LargeIncrement, ScrollAmount_NoAmount,
+        ScrollAmount_SmallDecrement, ScrollAmount_SmallIncrement, TreeScope_Children,
+        TreeScope_Descendants, UIA_InvokePatternId, UIA_ScrollPatternId,
+        UIA_SelectionItemPatternId, UIA_SelectionPatternId, UIA_ValuePatternId,
+        UIA_WindowPatternId, WindowVisualState_Minimized, WindowVisualState_Normal,
     };
 
     const MAX_CAPTURE_NODES: usize = 512;
@@ -389,15 +390,32 @@ mod windows_uia {
                     unsafe { pattern.SetValue(&text) }
                         .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
                 }
-                DesktopActionKind::Select { .. } => {
-                    let pattern = unsafe {
-                        element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                            UIA_SelectionItemPatternId,
-                        )
+                DesktopActionKind::Select { value_ref } => {
+                    let Some(value) = value else {
+                        return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
+                    };
+                    if &value.value_ref != value_ref {
+                        return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
                     }
-                    .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
-                    unsafe { pattern.Select() }
-                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                    match action.uia_pattern.as_deref() {
+                        Some("Selection") => {
+                            self.select_descendant_from_container(
+                                target,
+                                &element,
+                                &value.plaintext,
+                            )?;
+                        }
+                        _ => {
+                            let pattern = unsafe {
+                                element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                                    UIA_SelectionItemPatternId,
+                                )
+                            }
+                            .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                            unsafe { pattern.Select() }
+                                .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                        }
+                    }
                 }
                 DesktopActionKind::Scroll { direction, amount } => {
                     let pattern = unsafe {
@@ -598,6 +616,46 @@ mod windows_uia {
             Ok(found)
         }
 
+        fn select_descendant_from_container(
+            &self,
+            target: &UiaSessionTarget,
+            container: &IUIAutomationElement,
+            requested_value: &str,
+        ) -> Result<(), UiaError> {
+            let _selection = unsafe {
+                container
+                    .GetCurrentPatternAs::<IUIAutomationSelectionPattern>(UIA_SelectionPatternId)
+            }
+            .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+            let condition = unsafe { self.automation.CreateTrueCondition() }
+                .map_err(|_| UiaError::TargetUnresponsive)?;
+            let children = unsafe { container.FindAll(TreeScope_Descendants, &condition) }
+                .map_err(|_| UiaError::Reported("UiaElementNotFound".to_string()))?;
+            let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
+            if len > MAX_CAPTURE_NODES {
+                return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+            }
+            for i in 0..len {
+                let Ok(child) = (unsafe { children.GetElement(i as i32) }) else {
+                    continue;
+                };
+                verify_process_scope(&child, target.process_id)?;
+                if !element_matches_selection_value(&child, requested_value)? {
+                    continue;
+                }
+                let pattern = unsafe {
+                    child.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                }
+                .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                unsafe { pattern.Select() }
+                    .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                return Ok(());
+            }
+            Err(UiaError::Reported("UiaElementNotFound".to_string()))
+        }
+
         fn find_by_generated_id(
             &self,
             target: &UiaSessionTarget,
@@ -657,6 +715,22 @@ mod windows_uia {
             Ok(bstr) => bounded_optional_string(String::try_from(&bstr).unwrap_or_default()),
             Err(_) => Ok(None),
         }
+    }
+
+    fn element_matches_selection_value(
+        element: &IUIAutomationElement,
+        requested_value: &str,
+    ) -> Result<bool, UiaError> {
+        let name = current_bstr(element, |element| unsafe { element.CurrentName() })?;
+        if name.as_deref() == Some(requested_value) {
+            return Ok(true);
+        }
+        let automation_id =
+            current_bstr(element, |element| unsafe { element.CurrentAutomationId() })?;
+        if automation_id.as_deref() == Some(requested_value) {
+            return Ok(true);
+        }
+        Ok(current_value(element)?.as_deref() == Some(requested_value))
     }
 
     fn parse_hwnd(value: &str) -> Result<HWND, UiaError> {
@@ -748,6 +822,12 @@ mod windows_uia {
         .is_ok()
         {
             patterns.push(pattern("SelectionItem", true, None));
+        }
+        if unsafe {
+            element.GetCurrentPatternAs::<IUIAutomationSelectionPattern>(UIA_SelectionPatternId)
+        }
+        .is_ok()
+        {
             patterns.push(pattern("Selection", true, None));
         }
         if unsafe { element.GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId) }

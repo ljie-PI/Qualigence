@@ -4,12 +4,15 @@ import {
   UiaActionExecutor,
   UiaActionResolver,
   WindowsDesktopAdapter,
+  type ActionOutcomeReport,
+  type DesktopActionExecuteRequest,
 } from "@qualigence/desktop-windows-uia";
 import {
   ExecutionPermit,
   runnerPolicyActionDigestSha256,
   type ExecutionPermitDescriptor,
   type ExecutionRisk,
+  type AnyProposedAction,
   type ProposedAction,
   type ResolvedDesktopAction,
 } from "@qualigence/runner-kernel";
@@ -18,6 +21,8 @@ import {
   classifyLocalAuthorization,
   type AppSession,
   type AppTarget,
+  type LocalApprovalDecision,
+  type LocalPermitRequest,
 } from "@qualigence/desktop-contracts";
 import { validateObservationGraphV1 } from "@qualigence/observation-contracts";
 import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
@@ -76,6 +81,29 @@ class ReusableRuntimeCompanion extends FakeReferenceCompanion implements Desktop
 
   close(): void {
     this.closeCalls += 1;
+  }
+}
+
+class ValueBindingReferenceCompanion extends FakeReferenceCompanion {
+  executeRequest: DesktopActionExecuteRequest | undefined;
+
+  override async requestPermit(request: LocalPermitRequest): Promise<LocalApprovalDecision> {
+    const decision = await super.requestPermit(request);
+    if (decision.status !== "approved") {
+      return decision;
+    }
+    return {
+      ...decision,
+      permit: {
+        ...decision.permit,
+        ...(request.authorization.valueBinding === undefined ? {} : { valueBinding: request.authorization.valueBinding }),
+      },
+    };
+  }
+
+  override async execute(request: DesktopActionExecuteRequest): Promise<ActionOutcomeReport> {
+    this.executeRequest = request;
+    return super.execute(request);
   }
 }
 
@@ -259,6 +287,37 @@ describe("Windows-UIA Reference App pipeline (Linux, synthetic UIA)", () => {
       expect(companion.executedActions[0]?.nodeId).toBe("submitButton");
       // Exactly one one-time Permit was minted and consumed for the action.
       expect(companion.consumedPermitCount).toBe(1);
+    },
+  );
+
+  it.each([["wpf"], ["winui"]] as const)(
+    "resolves and brokers a UIA SelectionPattern container select on the %s fixture",
+    async (technology) => {
+      const fixture = loadReferenceAppFixture(technology);
+      const companion = new ValueBindingReferenceCompanion(fixture.uiaSource);
+      const session = await new AppEnvironmentProvider(companion).launch(fixture.appTarget);
+      const graph = await captureGraph(companion, session.sessionId);
+
+      const resolved = new UiaActionResolver().resolve(
+        { kind: "select", target: { nodeId: "roleCombo" }, valueRef: "role-ref", reason: "choose role" } as AnyProposedAction,
+        graph,
+        { actionId: "act-role-select" },
+      );
+      expect(resolved.uiaPattern).toBe("Selection");
+
+      const executor = new UiaActionExecutor(companion, {
+        sessionId: session.sessionId,
+        runId: RUN_ID,
+        deadlineMs: DEADLINE_MS,
+        valueProvider: { async resolve() { return "Administrator"; } },
+      });
+      const outcome = await executor.execute(resolved, permitFor(resolved, "ExternalSideEffect"));
+
+      expect(outcome).toEqual({ status: "ok" });
+      expect(companion.executeRequest?.action.uiaPattern).toBe("Selection");
+      expect(companion.executeRequest?.value?.valueRef).toBe("role-ref");
+      expect(companion.executeRequest?.value?.plaintext).toBe("Administrator");
+      expect(companion.executedActions[0]?.nodeId).toBe("roleCombo");
     },
   );
 
