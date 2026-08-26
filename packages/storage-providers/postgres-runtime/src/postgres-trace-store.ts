@@ -1,23 +1,19 @@
 import type {
+  FindingAppendResult,
+  TraceAppendResult,
+  TraceStore,
+} from "@qualigence/evidence";
+import type {
   FindingEnvelope,
   RunId,
   TraceEvent,
 } from "@qualigence/runner-protocol";
+import type { Kysely, Transaction } from "kysely";
+
 export interface PostgresTraceClock {
   now(): string;
 }
 
-type TraceAppendResult =
-  | { readonly status: "accepted"; readonly nextSequenceNumber: number }
-  | { readonly status: "duplicate"; readonly nextSequenceNumber: number }
-  | { readonly status: "sequence_gap"; readonly code: "SequenceGap"; readonly expectedSequenceNumber: number }
-  | { readonly status: "integrity_violation"; readonly code: "TraceIntegrityViolation"; readonly existingPayloadHash: string };
-
-type FindingAppendResult =
-  | { readonly status: "accepted" }
-  | { readonly status: "duplicate" }
-  | { readonly status: "integrity_violation"; readonly code: "FindingIntegrityViolation"; readonly existingPayloadHash: string };
-import type { Kysely, Transaction } from "kysely";
 import type { PostgresDatabase } from "./postgres-database.js";
 
 /**
@@ -26,7 +22,7 @@ import type { PostgresDatabase } from "./postgres-database.js";
  * for operation-scoped RLS transactions rather than retaining a long-lived
  * transaction-backed instance.
  */
-export class PostgresTraceStore {
+export class PostgresTraceStore implements TraceStore {
   constructor(
     private readonly db: Kysely<PostgresDatabase> | Transaction<PostgresDatabase>,
     private readonly tenantId: string,

@@ -85,6 +85,18 @@ async function readReviewTask(
   }
 }
 
+async function seedRunApiRows(fx: ServerFixture, tenantId: string): Promise<void> {
+  await fx.provider.withTenant(tenantId, async ({ db }) => {
+    await db.insertInto("missions").values({ tenant_id: tenantId, mission_id: `api-mission-${tenantId}`, revision: 1, project_id: `api-project-${tenantId}`, plan_id: `api-plan-${tenantId}`, prd_id: `api-prd-${tenantId}`, prd_revision: 1, target_id: `api-target-${tenantId}`, compiled_hash: `api-compiled-${tenantId}`, status: "running", dispatch_json: "{}", stop_on_blocked: 1 } as never).execute();
+    await db.insertInto("execution_jobs").values({ tenant_id: tenantId, job_id: `api-logical-${tenantId}`, mission_id: `api-mission-${tenantId}`, mission_revision: 1, test_case_id: `api-case-${tenantId}`, objective: "API run read", required_capabilities_json: "[]", source_refs_json: "[]", snapshot_hash: `api-snapshot-${tenantId}`, snapshot_json: "{}", idempotency_key: `api-logical-${tenantId}`, status: "queued" } as never).execute();
+    await db.insertInto("execution_runs").values({ tenant_id: tenantId, run_id: `api-run-${tenantId}`, job_id: `api-runner-job-${tenantId}`, target_kind: "web", objective: "API run read", status: "running", next_sequence_number: 2, created_at: "2026-08-23T00:00:00.000Z", completed_at: null, error_code: null } as never).execute();
+    await db.insertInto("mission_job_attempts").values({ tenant_id: tenantId, attempt_id: `api-attempt-${tenantId}`, mission_id: `api-mission-${tenantId}`, mission_revision: 1, logical_job_id: `api-logical-${tenantId}`, runner_job_id: `api-runner-job-${tenantId}`, run_id: `api-run-${tenantId}`, status: "accepted", created_at: "2026-08-23T00:00:00.000Z" } as never).execute();
+    await db.insertInto("trace_events").values({ tenant_id: tenantId, run_id: `api-run-${tenantId}`, sequence_number: 1, message_id: `api-message-${tenantId}`, idempotency_key: `api-trace-${tenantId}`, stage: "observation", occurred_at: "2026-08-23T00:00:01.000Z", payload_hash: "a".repeat(64), envelope_json: "{}" } as never).execute();
+    await db.insertInto("findings").values({ tenant_id: tenantId, finding_id: `finding-${tenantId}`, run_id: `api-run-${tenantId}`, payload_hash: "b".repeat(64), envelope_json: "{}", created_at: "2026-08-23T00:00:02.000Z" } as never).execute();
+    await db.insertInto("artifact_manifests").values({ tenant_id: tenantId, artifact_id: `artifact-${tenantId}`, run_id: `api-run-${tenantId}`, kind: "screenshot", media_type: "image/png", relative_path: `api-run-${tenantId}/screen.png`, sha256: "c".repeat(64), size_bytes: 16, created_at: "2026-08-23T00:00:03.000Z" } as never).execute();
+  });
+}
+
 function skillVersion(skillId: string, version: number, state: ProcedureSkillVersion["state"], recordingId = recording.recordingId): ProcedureSkillVersion {
   const base: ProcedureSkillVersion = {
     skillId,
@@ -323,6 +335,35 @@ describe("Public API v1 contract", () => {
       const token = fx.token("tenant-b", ["viewer"]);
       const response = await fetch(url("/v1/test-plans/plan-1"), { headers: { authorization: `Bearer ${token}` } });
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe("Run and Trace API", () => {
+    it("returns tenant-scoped Run summaries, finding references, artifact references, and Trace events", async () => {
+      await seedRunApiRows(fx, "tenant-a");
+      await seedRunApiRows(fx, "tenant-b");
+      const token = fx.token("tenant-a", ["viewer"]);
+      const headers = { authorization: `Bearer ${token}` };
+
+      const list = await fetch(url("/v1/runs"), { headers });
+      expect(list.status).toBe(200);
+      const listed = await list.json() as { items: { runId: string; missionId?: string; findingIds: string[]; evidenceRefs: string[] }[] };
+      const apiRun = listed.items.find((run) => run.runId === "api-run-tenant-a");
+      expect(apiRun).toEqual({ runId: "api-run-tenant-a", missionId: "api-mission-tenant-a", status: "running", findingIds: ["finding-tenant-a"], evidenceRefs: ["artifact-tenant-a"], createdAt: "2026-08-23T00:00:00.000Z" });
+      expect(listed.items.some((run) => run.runId === "api-run-tenant-b")).toBe(false);
+
+      const get = await fetch(url("/v1/runs/api-run-tenant-a"), { headers });
+      expect(get.status).toBe(200);
+      expect(await get.json()).toMatchObject({ runId: "api-run-tenant-a", missionId: "api-mission-tenant-a", findingIds: ["finding-tenant-a"], evidenceRefs: ["artifact-tenant-a"] });
+
+      const trace = await fetch(url("/v1/runs/api-run-tenant-a/trace"), { headers });
+      expect(trace.status).toBe(200);
+      expect(await trace.json()).toMatchObject({ items: [{ runId: "api-run-tenant-a", sequenceNumber: 1, stage: "observation", occurredAt: "2026-08-23T00:00:01.000Z", payloadHash: "a".repeat(64) }] });
+
+      const hidden = await fetch(url("/v1/runs/api-run-tenant-b"), { headers });
+      expect(hidden.status).toBe(404);
+      const hiddenTrace = await fetch(url("/v1/runs/api-run-tenant-b/trace"), { headers });
+      expect(hiddenTrace.status).toBe(404);
     });
   });
 

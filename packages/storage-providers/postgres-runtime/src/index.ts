@@ -45,11 +45,14 @@ export {
 } from "./aux-schema.js";
 export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";
+export { PostgresRunStore, PostgresRunStoreError } from "./postgres-run-store.js";
+export type { PostgresRunStoreErrorCode } from "./postgres-run-store.js";
 export { PostgresTraceStore } from "./postgres-trace-store.js";
 export {
   OperationScopedPostgresRunnerControlStore,
   OperationScopedPostgresTraceStore,
 } from "./operation-scoped-runner-stores.js";
+export type { OperationScopedPostgresRunnerControlStoreOptions } from "./operation-scoped-runner-stores.js";
 export { PostgresProjectTargetRepository, PostgresTestPlanRepository } from "./postgres-product-intake-store.js";
 export { PostgresPrdMissionRepository } from "./postgres-prd-mission-store.js";
 export { PostgresSkillStore } from "./postgres-skill-store.js";

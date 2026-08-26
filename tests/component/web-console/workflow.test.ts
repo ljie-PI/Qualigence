@@ -41,6 +41,25 @@ async function seedInvestigationAndTask(
   }
 }
 
+async function seedRun(
+  admin: PostgresConnectionConfig,
+  input: { tenantId: string; runId: string; jobId: string; createdAt: string },
+): Promise<void> {
+  const client = new pg.Client(admin);
+  await client.connect();
+  try {
+    await client.query(
+      `insert into execution_runs
+        (tenant_id, run_id, job_id, target_kind, objective, status,
+         next_sequence_number, created_at, completed_at, error_code)
+       values ($1,$2,$3,'web','verify console run route','running',1,$4,null,null)`,
+      [input.tenantId, input.runId, input.jobId, input.createdAt],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 const skillRecording: RecordingSession = {
   recordingId: "flow-skill-rec",
   projectId: "flow-project",
@@ -228,12 +247,25 @@ describeMaybe("Web Console critical user flow (login → project → investigati
     expect(isApiErrorCode(error, "Unauthorized")).toBe(true);
   });
 
-  it("documents that Run routes remain owned by later tickets (NotFound)", async () => {
-    // The DTOs exist and the client targets the frozen contract paths, but the
-    // PR-21 Server does not yet register these routes. The Console degrades to a
-    // typed NotFound rather than a broken page — no fabricated data.
+  it("lists Runs through the registered route while preserving auth and tenant isolation", async () => {
+    await seedRun(admin, { tenantId: "tenant-a", runId: "flow-run-a", jobId: "flow-runner-job-a", createdAt: "2026-08-02T00:00:00.000Z" });
+    await seedRun(admin, { tenantId: "tenant-b", runId: "flow-run-b", jobId: "flow-runner-job-b", createdAt: "2026-08-02T00:01:00.000Z" });
+
     login("tenant-a", ["viewer"]);
-    const error = await client.listRuns().catch((e: unknown) => e);
-    expect(isApiErrorCode(error, "NotFound")).toBe(true);
+    const tenantARuns = await client.listRuns();
+    expect(tenantARuns.items.map((run) => run.runId)).toContain("flow-run-a");
+    expect(tenantARuns.items.map((run) => run.runId)).not.toContain("flow-run-b");
+    await expect(client.getRun("flow-run-a")).resolves.toMatchObject({ runId: "flow-run-a", status: "running" });
+    const hiddenRun = await client.getRun("flow-run-b").catch((e: unknown) => e);
+    expect(isApiErrorCode(hiddenRun, "NotFound")).toBe(true);
+
+    login("tenant-b", ["viewer"]);
+    const tenantBRuns = await client.listRuns();
+    expect(tenantBRuns.items.map((run) => run.runId)).toContain("flow-run-b");
+    expect(tenantBRuns.items.map((run) => run.runId)).not.toContain("flow-run-a");
+
+    store.clear();
+    const unauthorized = await client.listRuns().catch((e: unknown) => e);
+    expect(isApiErrorCode(unauthorized, "Unauthorized")).toBe(true);
   });
 });

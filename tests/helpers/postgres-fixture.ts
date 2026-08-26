@@ -74,7 +74,7 @@ export function executionRunRow(input: RunRowInput): Record<string, unknown> {
     target_kind: "web",
     objective: "verify tenant isolation",
     status: "running",
-    next_sequence_number: 0,
+    next_sequence_number: 1,
     created_at: "2026-08-01T00:00:00.000Z",
   };
 }

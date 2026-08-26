@@ -19,6 +19,7 @@ import type {
   ReviewTaskDto,
   RunDto,
   SkillVersionDto,
+  TraceEventDto,
   StartMissionBody,
   StartMissionResultDto,
   TargetDto,
@@ -185,6 +186,12 @@ export class PublicApiClient {
 
   async getRun(runId: string): Promise<RunDto> {
     return this.request<RunDto>(`/v1/runs/${encodeURIComponent(runId)}`);
+  }
+
+  async listRunTrace(runId: string): Promise<ListEnvelope<TraceEventDto>> {
+    return this.request<ListEnvelope<TraceEventDto>>(
+      `/v1/runs/${encodeURIComponent(runId)}/trace`,
+    );
   }
 
   // ---- Skills --------------------------------------------------------------
