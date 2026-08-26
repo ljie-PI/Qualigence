@@ -4,7 +4,7 @@
 
 **Blocked by:** 25 — Contract legacy Graph and close candidate Gate.
 
-**Status:** needs-info
+**Status:** claimed
 
 ## Tracked scope
 
@@ -29,6 +29,11 @@ This is the complete edit scope.
 - `packages/{core-modules/project-target,contracts/desktop,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`
 - `packages/core-modules/mission/src/application/mission-scheduling-service.ts`
 - `packages/contracts/runner-protocol/proto`
+- `packages/runner-kernel/src/deterministic-policy-gate.ts` (maintainer-authorized narrow compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/core-daemon/src/main.ts` (maintainer-authorized narrow compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts` (maintainer-authorized narrow fail-closed compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/runner/src/offer-runtime.ts` (maintainer-authorized narrow fail-closed compatibility edit for additive Desktop `TargetRef` typing only)
+- Direct existing tests for the four compatibility files above may be updated only if needed to preserve their existing Web behavior or assert Desktop fail-closed/deferred behavior; no new test roots are authorized.
 - `tests/{type,contract/desktop,unit/core-modules/project-target,unit/core-modules/mission,conformance/runner-protocol}`
 - `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md`
 
@@ -36,7 +41,7 @@ This is the complete edit scope.
 
 N/A. This ticket and the umbrella spec assign no external/component E2E or additive acceptance file to ticket 26. Post-review verification is ticket/PR evidence that the focused Gate covers domain validation, Mission scheduling construction, protobuf schema, mappers, and Web/Desktop round trips. It is not permission to borrow ticket 28's E2E.
 
-Files outside **Allowed Files**, including any `packages/core-modules/mission` file not listed above, `packages/core-application`, `apps/server`, `apps/runner`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them.
+Files outside **Allowed Files**, including any `packages/core-modules/mission` file not listed above, `packages/core-application`, `apps/server`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them. The only `apps/runner` file in scope is `apps/runner/src/offer-runtime.ts` for the narrow compatibility edit listed above.
 
 ## Authority
 
@@ -127,3 +132,5 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
   - `apps/runner/src/offer-runtime.ts(81,40): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
 - Minimal scope expansion needed: allow narrow fail-closed compatibility edits in the directly affected Desktop-unaware consumers listed above so each switches on `target.kind` and either preserves Web behavior or rejects/defers Desktop until Ticket 28 owns runtime execution. Without that expansion, the widened public `TargetRef` contract cannot remain type-safe under the required root `corepack pnpm typecheck`.
 - No Server routes, storage migrations, package manifests/lockfile, Runner runtime composition beyond the listed blocked consumers, component tests, or E2E tests were edited.
+
+- scope-decision: Maintainer authorized a narrow Ticket 26 scope expansion after the in-scope Desktop `TargetRef` implementation reached root typecheck blockers. The added files are limited to `packages/runner-kernel/src/deterministic-policy-gate.ts`, `apps/core-daemon/src/main.ts`, `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`, and `apps/runner/src/offer-runtime.ts`, plus direct existing tests only if necessary. The edits must switch on `target.kind`, preserve Web behavior, and fail closed/defer Desktop runtime handling until Ticket 28; they do not authorize Server routes, Runner runtime execution, package manifests, lockfile changes, storage migrations, component/E2E tests, or broader app composition.
