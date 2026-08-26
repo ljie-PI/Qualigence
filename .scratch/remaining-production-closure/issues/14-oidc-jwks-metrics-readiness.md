@@ -4,7 +4,7 @@
 
 **Blocked by:** 13 — Wire Evidence API, S3, and enterprise KMS.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -98,3 +98,15 @@ Prove dependency failure and recovery transitions through Server, Worker, Consol
 - The affected context documents listed above, especially authenticated Public API mapping, mTLS/loop dependencies, readiness stronger than liveness, and secret-free bounded observability.
 - `packages/auth/oidc/src/oidc-authenticator.ts`, `packages/auth/oidc/src/claim-mapper.ts`, and `packages/observability/src/{logger,metrics}.ts`.
 - The OIDC, observability, Server, Worker, and Console contracts named by the focused Gate.
+
+## Comments
+
+### start — 2026-08-26
+
+- Base SHA: `9156a7be33f0349cf9c6e3b65167bb6cc92e1ec1`.
+- Status: claimed for Ticket 14 implementation in dedicated worktree `ticket-14-oidc-jwks-metrics-readiness`.
+- Behavior matrix applicability: applicable; using the ticket-local matrix above for OIDC/JWKS timeout/cache/rotation fail-closed behavior, redacted bounded observability, and dependency/loop readiness transitions.
+- Planned focused non-E2E Gates:
+  - `corepack pnpm vitest run tests/contract/auth/oidc.test.ts tests/unit/observability tests/component/server tests/component/intelligence-worker tests/component/web-console/oidc-flow.test.ts`
+  - `corepack pnpm typecheck`
+  - `git diff --check`
