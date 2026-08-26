@@ -1,3 +1,4 @@
+import { createPrivateKey, constants as cryptoConstants, sign as cryptoSign } from "node:crypto";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -15,6 +16,7 @@ import {
 } from "@qualigence/runner-spool";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import { openActionValueProvider, type ActionValueProvider } from "./action-value-provider.js";
+import { NamedPipeCompanionClient, type CompanionProofSignature, type RunnerCertificateProofSigner } from "@qualigence/desktop-windows-uia";
 import { RunnerOfferRuntime, runnerCapabilities } from "./offer-runtime.js";
 import { replayPendingRuns } from "./replay-recovery.js";
 import { safeRunnerLogLine } from "./safe-runner-log.js";
@@ -40,6 +42,7 @@ async function runOffer(
   spool: RunnerSpool,
   valueProvider?: ActionValueProvider,
   signal?: AbortSignal,
+  companion?: NamedPipeCompanionClient,
 ): Promise<void> {
   await new RunnerOfferRuntime({
     config,
@@ -47,6 +50,7 @@ async function runOffer(
     spool,
     ...(config.tenantId === undefined ? {} : { tenantId: config.tenantId }),
     ...(valueProvider === undefined ? {} : { valueProvider }),
+    ...(companion === undefined ? {} : { companion }),
   }).run(offer, signal);
 }
 
@@ -61,10 +65,45 @@ async function saveResumeToken(spool: RunnerSpool, session: RunnerSession): Prom
   });
 }
 
+function createCompanionProofSigner(config: RunnerConfig): RunnerCertificateProofSigner {
+  const key = createPrivateKey(config.tls.key);
+  const signatureAlgorithm = key.asymmetricKeyType === "rsa" || key.asymmetricKeyType === "rsa-pss"
+    ? "rsa-pss-sha256"
+    : "ecdsa-p256-sha256";
+  return {
+    runnerId: config.runnerId,
+    certificatePem: config.tls.cert.toString("utf8"),
+    async signCompanionProof(bytes: Uint8Array): Promise<CompanionProofSignature> {
+      const signature = signatureAlgorithm === "rsa-pss-sha256"
+        ? cryptoSign("sha256", bytes, {
+            key,
+            padding: cryptoConstants.RSA_PKCS1_PSS_PADDING,
+            saltLength: cryptoConstants.RSA_PSS_SALTLEN_DIGEST,
+          })
+        : cryptoSign("sha256", bytes, key);
+      return { signatureBase64: signature.toString("base64"), signatureAlgorithm };
+    },
+  };
+}
+
+async function openDesktopCompanion(config: RunnerConfig): Promise<NamedPipeCompanionClient | undefined> {
+  if (config.desktopCompanion === undefined || process.platform !== "win32") return undefined;
+  const client = new NamedPipeCompanionClient({
+    pipePath: config.desktopCompanion.pipePath,
+    signer: createCompanionProofSigner(config),
+    ...(config.desktopCompanion.expectedCompanionInstanceId === undefined
+      ? {}
+      : { expectedCompanionInstanceId: config.desktopCompanion.expectedCompanionInstanceId }),
+  });
+  await client.authenticate();
+  return client;
+}
+
 async function main(): Promise<void> {
   const config = loadRunnerConfig();
   const valueProvider = await openActionValueProvider();
-  const advertisedCapabilities = runnerCapabilities(valueProvider);
+  const companion = await openDesktopCompanion(config);
+  const advertisedCapabilities = runnerCapabilities(valueProvider, { desktopReady: companion !== undefined });
   const spool = await openSpool(config);
   const clientPort = new GrpcRunnerProtocolClient({
     address: config.coreAddress,
@@ -107,7 +146,7 @@ async function main(): Promise<void> {
   while (!stopping) {
     try {
       const offer = await session.nextOffer(abort.signal);
-      await runOffer(config, session, offer, spool, valueProvider, abort.signal);
+      await runOffer(config, session, offer, spool, valueProvider, abort.signal, companion);
     } catch (error) {
       if (stopping) {
         break;
@@ -128,6 +167,7 @@ async function main(): Promise<void> {
   }
 
   await session.close();
+  companion?.close();
   await clientPort.close();
   await spool.close();
 }

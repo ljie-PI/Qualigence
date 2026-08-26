@@ -53,6 +53,14 @@ This is the complete edit scope, including the post-review acceptance file. A re
 - `tests/component/web-execution/**`
 - `tests/e2e/windows/desktop-runner.test.ts`
 
+Maintainer/user-authorized narrow continuation scope expansion (2026-08-26):
+
+- `packages/contracts/desktop/src/**`
+- `tests/contract/desktop/**`
+- `tests/type/desktop-contracts.types.ts` if needed
+
+This authorization is limited to the minimal Desktop value binding/plaintext dispatch contract change required by Ticket 28: redaction-safe `valueRef`/SHA-256/byte-length binding, one-time Permit/action digest validation, and bounded short-lived plaintext only in the Desktop input/select `action.execute` dispatch DTO. It does not authorize Rust/native Companion, Runner Protocol, storage migrations, package dependencies outside existing Ticket 28 scope, or unrelated public-contract changes.
+
 ## Requirements
 
 - [ ] Runner advertises Desktop capability only after Companion authentication and capability probe.
@@ -122,3 +130,19 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
 - Blocking gap: Ticket 28 requires Runner to resolve Desktop `valueRef` at the last responsible moment, bind plaintext SHA-256 and byte length into the action/Permit digest, transmit only bounded short-lived plaintext, and keep plaintext out of Trace/Finding/logs/DTOs/Spool. The current `@qualigence/desktop-contracts` IPC DTOs expose no bounded plaintext field: `ResolvedDesktopAction` input carries only `valueRef`, select carries only `option`, `LocalPermitAuthorization` carries only `decisionId`, `policyId`, `actionDigestSha256`, `risk`, and `expiresAt`, and `action.execute` carries only `{ sessionId, action, permit, deadlineMs }`.
 - Required scope amendment: authorize editing `packages/contracts/desktop/src/**` and its direct type/contract tests to add the minimal public Companion IPC fields for Desktop value binding/transport. At minimum, the contract needs a redaction-safe value binding DTO containing `valueRef`, `valueSha256`, and `valueByteLength`; action/Permit authorization validation must bind those fields into the one-time Permit/action digest; `action.execute` needs a bounded short-lived plaintext value payload for input/select only; validators must reject plaintext in non-action/trace DTOs, mismatched hash/length, missing value binding, oversized plaintext, and unknown fields; and the companion contract tests must cover positive input/select execution plus mismatch/oversize/no-plaintext persistence cases.
 - No production, test, manifest, or lockfile implementation changes were made under this ticket after the blocker was identified. The ticket remains `claimed` and not `resolved` pending a reviewed scope amendment or maintainer direction.
+
+### continuation - 2026-08-26
+
+- Maintainer/user authorization recorded under `## Allowed Files` for the narrow Desktop IPC value-binding scope: `packages/contracts/desktop/src/**`, `tests/contract/desktop/**`, and `tests/type/desktop-contracts.types.ts` if needed.
+- Implemented redaction-safe Desktop value binding in `@qualigence/desktop-contracts`: `valueRef`, `valueSha256`, and `valueByteLength` bind input/select values; bounded plaintext exists only as `DesktopPlaintextValue` inside the `action.execute` request payload and is rejected everywhere else by exact-field validators.
+- `permit.request` now validates value-action bindings and the local Desktop action digest over session, run, action, decision, policy, risk, expiry, and value binding; `action.execute` validates plaintext hash/byte length against the one-time Permit binding before dispatch.
+- Runner composition now opens target-specific runtime resources through `TargetRuntimeFactory`: Web keeps Playwright; Desktop requires Windows plus an authenticated/probed Companion, launches through `AppEnvironmentProvider`, captures through `WindowsDesktopAdapter`, resolves with `UiaActionResolver`, executes with `UiaActionExecutor`, and closes the opened resource set in `finally` without allowing cleanup failure to mask an earlier failure.
+- Runner capability advertisement includes `desktop-windows-uia`/`uia/v1` only when a Windows Companion client has authenticated at startup; Desktop offer admission has no Web fallback and failures map to stable `CapabilityMismatch`/`CompanionUnavailable`/`ActionOutcomeUnknown` paths.
+- Desktop input/select value plaintext is resolved by the executor at the dispatch boundary from the configured value provider, hashed/length-bound into the local authorization digest, sent only in the Companion `action.execute` DTO, and not added to Trace/Finding/log/Spool DTOs.
+- Gate evidence before this commit:
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 27 passed / 2 skipped).
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 47 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- Additional non-required diagnostic: `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` currently has 4 expectation failures in existing offer-runtime unit coverage around Desktop missing-capability expectation and delayed terminal Trace drain observations; the required Ticket 28 focused Gate above is clean, but these unit expectations should be reconciled during review/fix if promoted as core coverage.
+- No PR was created. Ticket 28 remains `claimed` and ready for complete-matrix review of this implementation head.

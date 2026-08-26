@@ -17,6 +17,7 @@ import {
   parseLocalExecutionPermit,
   parseResolvedDesktopAction,
   validateAppTarget,
+  desktopActionDigestSha256,
   type CompanionResponse,
   type LocalExecutionPermit,
   type ResolvedDesktopAction,
@@ -48,13 +49,23 @@ const action: ResolvedDesktopAction = {
   resolution: "semantic",
 };
 
+const actionDigest = desktopActionDigestSha256({
+  sessionId: "sess-1",
+  runId: "run-1",
+  action,
+  decisionId: "dec-1",
+  policyId: "pol-1",
+  risk: "Normal",
+  expiresAt: "2026-08-01T00:00:30.000Z",
+});
+
 const permit: LocalExecutionPermit = {
   permitToken: "dG9rZW4=",
   nonceBase64: "bm9uY2U=",
   sessionId: "sess-1",
   runId: "run-1",
   actionId: "act-1",
-  actionDigestSha256: "a".repeat(64),
+  actionDigestSha256: actionDigest,
   graphId: "graph-1",
   risk: "Normal",
   issuedAt: "2026-08-01T00:00:00.000Z",
@@ -76,7 +87,7 @@ const permitRequest = {
   authorization: {
     decisionId: "dec-1",
     policyId: "pol-1",
-    actionDigestSha256: "a".repeat(64),
+    actionDigestSha256: actionDigest,
     risk: "Normal",
     expiresAt: "2026-08-01T00:00:30.000Z",
   },

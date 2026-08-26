@@ -16,6 +16,7 @@ import type {
   LocalPermitRequest,
   LocalExecutionPermit,
   ResolvedDesktopAction,
+  DesktopPlaintextValue,
 } from "@qualigence/desktop-contracts";
 import type { UiaSource } from "./uia-source.js";
 
@@ -34,6 +35,8 @@ export interface DesktopActionExecuteRequest {
   readonly action: ResolvedDesktopAction;
   readonly permit: LocalExecutionPermit;
   readonly deadlineMs: number;
+  /** Bounded plaintext for input/select dispatch only; never persisted by Runner. */
+  readonly value?: DesktopPlaintextValue;
 }
 
 export interface CompanionClient {
@@ -48,6 +51,8 @@ export interface CompanionClient {
 export type DesktopExecutionErrorCode =
   | "UnsupportedTargetKind"
   | "MissingPermitDescriptor"
+  | "ValueBindingMissing"
+  | "ValueBindingMismatch"
   | "LocalPermitDenied"
   | "LocalPermitTimedOut"
   | "EmergencyStopped"

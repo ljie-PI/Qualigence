@@ -441,6 +441,9 @@ importers:
 
   apps/runner:
     dependencies:
+      '@qualigence/desktop-windows-uia':
+        specifier: workspace:*
+        version: link:../../packages/target-adapters/desktop-windows-uia
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../packages/core-modules/evidence

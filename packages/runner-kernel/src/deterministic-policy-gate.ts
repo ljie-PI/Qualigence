@@ -65,7 +65,7 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
         break;
       }
       case "desktop":
-        return { status: "denied", code: "PolicyDenied", message: "DesktopTargetUnsupported" };
+        break;
     }
     if (accepted.plan?.steps.some((step) =>
       step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
@@ -84,7 +84,7 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     const expiresAt = Date.parse(this.policy.expiresAt);
     if (!Number.isFinite(expiresAt)) return denied("PolicyMalformed");
     if (expiresAt <= this.now()) return denied("PolicyExpired");
-    if (!this.policy.allowedOrigins.includes(originOf(context.job))) return denied("TargetOriginDenied");
+    if (context.job.target.kind === "web" && !this.policy.allowedOrigins.includes(originOf(context.job))) return denied("TargetOriginDenied");
     if (this.policy.environment === "production" && this.policy.explorationAllowed) return denied("ProductionExplorationDenied");
 
     const actionKind = action.kind;
@@ -98,6 +98,19 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     if (isFallback(action)) return denied("FallbackDenied");
     if (this.policy.environment === "staging" && (actionKind !== "click" || risk !== "Normal")) {
       return denied("StagingPolicyDenied");
+    }
+    if (action.targetKind === "desktop") {
+      return {
+        status: "allowed",
+        reason: "PolicyAllowed",
+        descriptor: {
+          decisionId: `decision:${context.job.runId}:${action.actionId}`,
+          policyId: this.policy.policyId,
+          actionDigestSha256: "0".repeat(64),
+          risk,
+          expiresAt: this.policy.expiresAt,
+        },
+      };
     }
     return { status: "allowed", reason: "PolicyAllowed" };
   }

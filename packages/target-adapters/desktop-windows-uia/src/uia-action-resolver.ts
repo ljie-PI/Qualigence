@@ -4,10 +4,10 @@
  * UIA Pattern that will carry out the interaction.
  *
  * Resolution is semantic-first: the proposal references an observation node id,
- * and the matching node's `uia/v1` extension tells us which Pattern is available
- * (`Invoke` for a click). A proposal that no longer matches a live node fails as
- * `PlanDiverged`; a node that lacks the required Pattern fails as
- * `UiaPatternUnsupported`. Neither ever silently falls back to a blind click.
+ * and the matching node's `uia/v1` extension tells us which Pattern is available.
+ * A proposal that no longer matches a live node fails as `PlanDiverged`; a node
+ * that lacks the required Pattern fails as `UiaPatternUnsupported`. Neither ever
+ * silently falls back to a blind click.
  */
 
 import type { UiaPattern } from "@qualigence/desktop-contracts";
@@ -16,7 +16,7 @@ import type {
   ObservationJsonValue,
   ObservationNodeV1,
 } from "@qualigence/observation-contracts";
-import type { ProposedAction, ResolvedDesktopAction } from "@qualigence/runner-kernel";
+import type { AnyProposedAction, ResolvedDesktopAction } from "@qualigence/runner-kernel";
 import { UIA_EXTENSION_TYPE } from "@qualigence/desktop-contracts";
 
 export type UiaResolutionErrorCode =
@@ -62,38 +62,73 @@ function availablePatterns(node: ObservationNodeV1): ReadonlySet<string> {
   return names;
 }
 
-const CLICK_PATTERN: UiaPattern = "Invoke";
+function requireNode(graph: ObservationGraphV1, nodeId: string): ObservationNodeV1 {
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  if (node === undefined) {
+    throw new UiaResolutionError(
+      "PlanDiverged",
+      `proposed node "${nodeId}" is not present in graph "${graph.graphId}"`,
+    );
+  }
+  return node;
+}
+
+function requirePattern(node: ObservationNodeV1, pattern: UiaPattern): UiaPattern {
+  if (!availablePatterns(node).has(pattern)) {
+    throw new UiaResolutionError(
+      "UiaPatternUnsupported",
+      `node "${node.id}" does not expose the ${pattern} pattern required for the action`,
+    );
+  }
+  return pattern;
+}
 
 export class UiaActionResolver {
   resolve(
-    proposal: ProposedAction,
+    proposal: AnyProposedAction,
     graph: ObservationGraphV1,
     input: UiaResolutionInput,
   ): ResolvedDesktopAction {
-    const node = graph.nodes.find((candidate) => candidate.id === proposal.target.nodeId);
-    if (node === undefined) {
-      throw new UiaResolutionError(
-        "PlanDiverged",
-        `proposed node "${proposal.target.nodeId}" is not present in graph "${graph.graphId}"`,
-      );
+    if (proposal.kind === "navigate") {
+      throw new UiaResolutionError("UiaPatternUnsupported", "Desktop targets do not support navigate actions");
     }
-
-    const patterns = availablePatterns(node);
-    if (!patterns.has(CLICK_PATTERN)) {
-      throw new UiaResolutionError(
-        "UiaPatternUnsupported",
-        `node "${node.id}" does not expose the ${CLICK_PATTERN} pattern required to click`,
-      );
+    if (proposal.target === undefined) {
+      throw new UiaResolutionError("PlanDiverged", "Desktop actions require a resolved target node");
     }
-
-    return {
-      targetKind: "desktop",
-      kind: "click",
+    const node = requireNode(graph, proposal.target.nodeId);
+    const base = {
+      targetKind: "desktop" as const,
       actionId: input.actionId,
       graphId: graph.graphId,
       nodeId: node.id,
-      resolution: "semantic",
-      uiaPattern: CLICK_PATTERN,
+      resolution: "semantic" as const,
     };
+
+    switch (proposal.kind) {
+      case "click":
+        return { ...base, kind: "click", uiaPattern: requirePattern(node, "Invoke") };
+      case "input":
+        return { ...base, kind: "input", valueRef: proposal.valueRef, uiaPattern: requirePattern(node, "Value") };
+      case "select": {
+        const patterns = availablePatterns(node);
+        const pattern: UiaPattern = patterns.has("SelectionItem") ? "SelectionItem" : "Selection";
+        return { ...base, kind: "select", valueRef: proposal.valueRef, uiaPattern: requirePattern(node, pattern) };
+      }
+      case "scroll":
+        return {
+          ...base,
+          kind: "scroll",
+          direction: proposal.direction,
+          amount: proposal.amount,
+          uiaPattern: requirePattern(node, "Scroll"),
+        };
+      case "window":
+        return {
+          ...base,
+          kind: "window",
+          windowOperation: proposal.operation,
+          uiaPattern: requirePattern(node, "Window"),
+        };
+    }
   }
 }

@@ -8,6 +8,13 @@ import type {
   ResolvedDesktopAction,
 } from "@qualigence/desktop-contracts";
 import {
+  createCompanionRequestEnvelope,
+  desktopActionDigestSha256,
+  desktopValueBindingForPlaintext,
+  parseCompanionRequest,
+  COMPANION_IPC_LIMITS,
+} from "@qualigence/desktop-contracts";
+import {
   ExecutionPermit,
   type ExecutionPermitDescriptor,
   type PolicyDecision,
@@ -66,6 +73,7 @@ const issuedPermit: LocalExecutionPermit = {
 class ScriptedCompanion implements CompanionClient {
   readonly log: string[] = [];
   permitRequests: LocalPermitRequest[] = [];
+  executeRequests: DesktopActionExecuteRequest[] = [];
   private decision: LocalApprovalDecision;
   private executeOutcome: ActionOutcomeReport | (() => Promise<ActionOutcomeReport>);
   private consumed = false;
@@ -91,8 +99,9 @@ class ScriptedCompanion implements CompanionClient {
     this.permitRequests.push(request);
     return this.decision;
   }
-  async execute(_request: DesktopActionExecuteRequest): Promise<ActionOutcomeReport> {
+  async execute(request: DesktopActionExecuteRequest): Promise<ActionOutcomeReport> {
     this.log.push("execute");
+    this.executeRequests.push(request);
     // A one-time Permit: a second execute with the same token fails closed.
     if (this.consumed) {
       throw new DesktopExecutionError("ActionFailed", "LocalPermitConsumed");
@@ -158,13 +167,173 @@ describe("UiaActionExecutor", () => {
     expect(outcome).toEqual({ status: "ok" });
     expect(companion.log).toEqual(["requestPermit", "execute"]);
 
-    // The descriptor was mapped onto the local authorization DTO.
+    // The descriptor identity fields plus session/run/action are bound into the local authorization digest.
     expect(companion.permitRequests[0]?.authorization).toMatchObject({
       decisionId: "dec-1",
       policyId: "policy-1",
-      actionDigestSha256: "a".repeat(64),
       risk: "Normal",
     });
+    expect(companion.permitRequests[0]?.authorization.actionDigestSha256).toBe(
+      desktopActionDigestSha256({
+        sessionId: context.sessionId,
+        runId: context.runId,
+        action: clickAction,
+        decisionId: "dec-1",
+        policyId: "policy-1",
+        risk: "Normal",
+        expiresAt: descriptor.expiresAt,
+      }),
+    );
+  });
+
+  it("binds Desktop input plaintext only inside action.execute", () => {
+    const action: ResolvedDesktopAction = {
+      targetKind: "desktop",
+      kind: "input",
+      actionId: "act-input",
+      graphId: "graph-1",
+      nodeId: "email",
+      resolution: "semantic",
+      uiaPattern: "Value",
+      valueRef: "profile.email",
+    };
+    const value = desktopValueBindingForPlaintext(action.valueRef, "alice@example.test");
+    const valueBinding = { valueRef: value.valueRef, valueSha256: value.valueSha256, valueByteLength: value.valueByteLength };
+    const authorization = {
+      decisionId: "dec-input",
+      policyId: "policy-1",
+      risk: "ExternalSideEffect" as const,
+      expiresAt: descriptor.expiresAt,
+      valueBinding,
+      actionDigestSha256: desktopActionDigestSha256({
+        sessionId: context.sessionId,
+        runId: context.runId,
+        action,
+        decisionId: "dec-input",
+        policyId: "policy-1",
+        risk: "ExternalSideEffect",
+        expiresAt: descriptor.expiresAt,
+        valueBinding,
+      }),
+    };
+    const permit: LocalExecutionPermit = {
+      ...issuedPermit,
+      actionId: action.actionId,
+      actionDigestSha256: authorization.actionDigestSha256,
+      risk: "ExternalSideEffect",
+      valueBinding,
+    };
+
+    expect(() => createCompanionRequestEnvelope("req-permit", "permit.request", {
+      request: {
+        approvalId: "run-1:act-input",
+        sessionId: context.sessionId,
+        runId: context.runId,
+        action,
+        authorization,
+        safeSummary: "input on email",
+        expiresAt: descriptor.expiresAt,
+      },
+    })).not.toThrow();
+
+    const dispatch = createCompanionRequestEnvelope("req-exec", "action.execute", {
+      sessionId: context.sessionId,
+      action,
+      permit,
+      deadlineMs: context.deadlineMs,
+      value,
+    });
+    expect(dispatch.payload.value?.plaintext).toBe("alice@example.test");
+  });
+
+  it("rejects missing binding, mismatched plaintext, oversize values, plaintext outside dispatch, and unknown fields", () => {
+    const action: ResolvedDesktopAction = {
+      targetKind: "desktop",
+      kind: "select",
+      actionId: "act-select",
+      graphId: "graph-1",
+      nodeId: "country",
+      resolution: "semantic",
+      uiaPattern: "Selection",
+      valueRef: "profile.country",
+    };
+    const value = desktopValueBindingForPlaintext(action.valueRef, "Canada");
+    const valueBinding = { valueRef: value.valueRef, valueSha256: value.valueSha256, valueByteLength: value.valueByteLength };
+    const digest = desktopActionDigestSha256({
+      sessionId: context.sessionId,
+      runId: context.runId,
+      action,
+      decisionId: "dec-select",
+      policyId: "policy-1",
+      risk: "ExternalSideEffect",
+      expiresAt: descriptor.expiresAt,
+      valueBinding,
+    });
+    const permit = { ...issuedPermit, actionId: action.actionId, actionDigestSha256: digest, risk: "ExternalSideEffect" as const, valueBinding };
+
+    expect(() => parseCompanionRequest({
+      protocolMajor: 1,
+      requestId: "missing-binding",
+      type: "permit.request",
+      payload: {
+        request: {
+          approvalId: "run-1:act-select",
+          sessionId: context.sessionId,
+          runId: context.runId,
+          action,
+          authorization: { decisionId: "dec-select", policyId: "policy-1", actionDigestSha256: digest, risk: "ExternalSideEffect", expiresAt: descriptor.expiresAt },
+          safeSummary: "select country",
+          expiresAt: descriptor.expiresAt,
+        },
+      },
+    })).toThrow(/value binding/i);
+
+    expect(() => parseCompanionRequest({
+      protocolMajor: 1,
+      requestId: "mismatch",
+      type: "action.execute",
+      payload: {
+        sessionId: context.sessionId,
+        action,
+        permit,
+        deadlineMs: context.deadlineMs,
+        value: { ...value, valueSha256: "b".repeat(64) },
+      },
+    })).toThrow(/plaintext does not match|dispatch value/i);
+
+    expect(() => desktopValueBindingForPlaintext("too.big", "x".repeat(COMPANION_IPC_LIMITS.maxPlaintextValueBytes + 1))).toThrow(/exceeds/);
+
+    expect(() => parseCompanionRequest({
+      protocolMajor: 1,
+      requestId: "plaintext-outside-dispatch",
+      type: "permit.request",
+      payload: {
+        request: {
+          approvalId: "run-1:act-select",
+          sessionId: context.sessionId,
+          runId: context.runId,
+          action,
+          authorization: { decisionId: "dec-select", policyId: "policy-1", actionDigestSha256: digest, risk: "ExternalSideEffect", expiresAt: descriptor.expiresAt, valueBinding },
+          safeSummary: "select country",
+          expiresAt: descriptor.expiresAt,
+          value,
+        },
+      },
+    })).toThrow(/known field/);
+
+    expect(() => parseCompanionRequest({
+      protocolMajor: 1,
+      requestId: "unknown-field",
+      type: "action.execute",
+      payload: {
+        sessionId: context.sessionId,
+        action,
+        permit,
+        deadlineMs: context.deadlineMs,
+        value,
+        durablePlaintextCopy: value.plaintext,
+      },
+    })).toThrow(/known field/);
   });
 
   it("requires a policy-bound descriptor before contacting the Companion", async () => {

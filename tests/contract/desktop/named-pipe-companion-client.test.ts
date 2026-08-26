@@ -5,6 +5,7 @@ import {
   PROTOCOL_MAJOR,
   COMPANION_IPC_LIMITS,
   parseCompanionRequest,
+  desktopActionDigestSha256,
   type CompanionRequestEnvelope,
   type CompanionResponse,
   type CompanionResponseType,
@@ -104,13 +105,32 @@ const action = {
   resolution: "semantic",
 } as const;
 
+const actionDigest = desktopActionDigestSha256({
+  sessionId: "sess-1",
+  runId: "run-1",
+  action,
+  decisionId: "dec-1",
+  policyId: "pol-1",
+  risk: "Normal",
+  expiresAt: "2026-08-01T00:00:30.000Z",
+});
+const actionDigest2 = desktopActionDigestSha256({
+  sessionId: "sess-1",
+  runId: "run-1",
+  action,
+  decisionId: "dec-2",
+  policyId: "pol-1",
+  risk: "Normal",
+  expiresAt: "2026-08-01T00:00:30.000Z",
+});
+
 const permit = {
   permitToken: "token",
   nonceBase64: "nonce",
   sessionId: "sess-1",
   runId: "run-1",
   actionId: "act-1",
-  actionDigestSha256: "a".repeat(64),
+  actionDigestSha256: actionDigest,
   graphId: "graph-1",
   risk: "Normal",
   issuedAt: "2026-08-01T00:00:00.000Z",
@@ -616,7 +636,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
       authorization: {
         decisionId: "dec-1",
         policyId: "pol-1",
-        actionDigestSha256: "a".repeat(64),
+        actionDigestSha256: actionDigest,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
       },
@@ -639,7 +659,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
       authorization: {
         decisionId: "dec-1",
         policyId: "pol-1",
-        actionDigestSha256: "a".repeat(64),
+        actionDigestSha256: actionDigest,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
       },
@@ -654,7 +674,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
       authorization: {
         decisionId: "dec-2",
         policyId: "pol-1",
-        actionDigestSha256: "a".repeat(64),
+        actionDigestSha256: actionDigest2,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
       },
