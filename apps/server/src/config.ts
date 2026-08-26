@@ -29,6 +29,7 @@ export interface ServerConfig {
     readonly certificatePem: string;
     readonly privateKeyPem: string;
   };
+  readonly artifactDataDir: string;
   readonly skillSigningDataDir?: string;
 }
 
@@ -85,6 +86,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       certificatePem: fileContents("SERVER_RUNNER_CA_CERT_FILE", env),
       privateKeyPem: fileContents("SERVER_RUNNER_CA_KEY_FILE", env),
     },
+    artifactDataDir: env.SERVER_ARTIFACT_DATA_DIR ?? ".qualigence-server/artifacts",
     ...(env.SERVER_SKILL_SIGNING_DATA_DIR === undefined
       ? {}
       : { skillSigningDataDir: env.SERVER_SKILL_SIGNING_DATA_DIR }),

@@ -19,15 +19,18 @@ import {
   type AcceptedLeaseLifecycleOptions,
 } from "./job-executor.js";
 import type { RunnerConfig } from "./config.js";
+import { ArtifactUploadPump } from "./artifact-upload-pump.js";
+import { SpoolingArtifactObserver } from "./spooling-artifact-observer.js";
 import { SpoolingTraceRecorder } from "./spooling-trace-recorder.js";
 import { TraceUploadPump } from "./trace-upload-pump.js";
 import { RunnerAppError } from "./errors.js";
 
 export interface RunnerOfferRuntimeOptions {
-  readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome">;
+  readonly session: Pick<RunnerSession, "accept" | "renew" | "complete" | "submit" | "close" | "welcome" | "registerArtifactManifest" | "uploadArtifactChunk">;
   readonly spool: RunnerSpool;
   readonly config: RunnerConfig;
   readonly valueProvider?: ActionValueProvider;
+  readonly tenantId?: string;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
   readonly leaseLifecycle?: AcceptedLeaseLifecycleOptions;
 }
@@ -64,6 +67,7 @@ export class RunnerOfferRuntime {
     const admission = DeterministicRunnerPolicyGate.admitJob(offer.job);
     if (admission.status === "denied") {
       const lease = await this.options.session.accept(offer.offerId);
+      await saveLease(this.options.spool, lease);
       const lifecycle = new AcceptedLeaseLifecycle(
         offer,
         this.options.session as RunnerSession,
@@ -90,6 +94,7 @@ export class RunnerOfferRuntime {
     const targetUrl = offer.job.target.url;
     const expectedOrigin = new URL(targetUrl).origin;
     const lease = await this.options.session.accept(offer.offerId);
+    await saveLease(this.options.spool, lease);
     const lifecycle = new AcceptedLeaseLifecycle(
       offer,
       this.options.session as RunnerSession,
@@ -149,7 +154,14 @@ export class RunnerOfferRuntime {
       });
       const gateway = new ModelGateway({ provider });
       const executor = new LeasedJobExecutor({
-        observer: target,
+        observer: this.options.tenantId === undefined
+          ? target
+          : new SpoolingArtifactObserver({
+              observer: target,
+              source: target,
+              spool: this.options.spool,
+              tenantId: this.options.tenantId,
+            }),
         decisionProvider: new ModelBackedDecisionProvider(
           gateway,
           this.options.config.model.modelName,
@@ -185,6 +197,9 @@ export class RunnerOfferRuntime {
     completion: ExecutionCompletion,
     signal: AbortSignal,
   ): Promise<void> {
+    if (this.options.tenantId !== undefined) {
+      await new ArtifactUploadPump(this.options.spool, artifactSubmitter(this.options.session), lifecycle.currentLease()).drain(completion.runId, signal);
+    }
     await new TraceUploadPump(this.options.spool, this.options.session, completion.runId, {
       maximumEvents: this.options.session.welcome.traceBatchMaximumEvents,
       maximumBytes: this.options.session.welcome.traceBatchMaximumBytes,
@@ -202,6 +217,22 @@ function assertWebObservationV1Requirements(offer: ExecutionJobOffer): void {
   throw new RunnerAppError("CapabilityMismatch", "web offers must require Observation Graph v1 and web/v1 capabilities", {
     details: { missingCapabilities: missing },
   });
+}
+
+function artifactSubmitter(session: Pick<RunnerSession, "registerArtifactManifest" | "uploadArtifactChunk">) {
+  if (session.registerArtifactManifest === undefined || session.uploadArtifactChunk === undefined) {
+    throw new RunnerAppError("TransportError", "active session does not support artifact upload");
+  }
+  return {
+    registerArtifactManifest: session.registerArtifactManifest.bind(session),
+    uploadArtifactChunk: session.uploadArtifactChunk.bind(session),
+  };
+}
+
+async function saveLease(spool: RunnerSpool, lease: import("@qualigence/runner-protocol").ExecutionJobLease): Promise<void> {
+  if (spool.saveLease !== undefined) {
+    await spool.saveLease(lease);
+  }
 }
 
 export function runnerCapabilities(valueProvider?: ActionValueProvider) {

@@ -2,7 +2,7 @@ import type {
   AuthenticatedRunnerContext,
   RunnerProtocolApplication,
 } from "@qualigence/runner-control";
-import { ArtifactUploadError, type ArtifactUploadService } from "@qualigence/evidence";
+import { ArtifactUploadError, type ArtifactReferenceAuthority, type ArtifactUploadService } from "@qualigence/evidence";
 import { canonicalPayloadHash } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
@@ -62,13 +62,15 @@ export function isCoreApplicationError(value: unknown): value is CoreApplication
   return value instanceof CoreApplicationError;
 }
 
+export type ArtifactUploadAuthority = Pick<ArtifactUploadService, "registerManifest" | "uploadChunk"> & ArtifactReferenceAuthority;
+
 export interface CoreRunnerProtocolApplicationOptions {
   readonly sessions: RunnerSessionService;
   readonly jobs: ExecutionJobService;
   readonly ownership: RunOwnershipService;
   readonly recordRun?: (job: AcceptedExecutionJob) => Promise<void>;
   readonly completionSink?: RunCompletionSink;
-  readonly artifactUploads?: ArtifactUploadService;
+  readonly artifactUploads?: ArtifactUploadAuthority;
 }
 
 export interface RunCompletionSink {
@@ -92,7 +94,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   readonly ownership: RunOwnershipService;
   private readonly recordRun: ((job: AcceptedExecutionJob) => Promise<void>) | undefined;
   private readonly completionSink: RunCompletionSink | undefined;
-  private readonly artifactUploads: ArtifactUploadService | undefined;
+  private readonly artifactUploads: ArtifactUploadAuthority | undefined;
   private readonly offersByJob = new Map<string, CanonicalOffer>();
   private readonly offersByRun = new Map<string, CanonicalOffer>();
   private processing: Promise<void> = Promise.resolve();
@@ -162,12 +164,19 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
         throw new CoreApplicationError("LeaseLost", `lease for run ${registration.runId} no longer authorizes new artifact manifests`);
       }
       const job = await this.ownership.jobOf(registration.runId);
-      if (job === undefined || job.jobId !== registration.jobId || job.projectId !== registration.manifest.projectId) {
+      const tenantId = tenantIdFor(session.identity);
+      if (
+        job === undefined ||
+        job.jobId !== registration.jobId ||
+        job.projectId !== registration.manifest.projectId ||
+        registration.manifest.runId !== registration.runId ||
+        registration.manifest.tenantId !== tenantId
+      ) {
         throw new CoreApplicationError("RunIdentityMismatch", `artifact manifest for run ${registration.runId} does not match durable job provenance`);
       }
       return this.requireArtifactUploads().registerManifest({
         identity: {
-          tenantId: tenantIdFor(session.identity),
+          tenantId,
           projectId: job.projectId,
           runnerId: session.identity.runnerId,
         },
@@ -184,8 +193,27 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
   ): Promise<ArtifactUploadAck> {
     return this.serialize(async () => {
       const session = this.requireSession(sessionId);
+      if (upload.chunk.runId !== upload.runId) {
+        throw new CoreApplicationError("RunIdentityMismatch", `artifact chunk for run ${upload.chunk.runId} does not match upload run ${upload.runId}`);
+      }
+      const job = await this.ownership.jobOf(upload.runId);
+      const tenantId = tenantIdFor(session.identity);
+      if (
+        job === undefined ||
+        job.jobId !== upload.jobId ||
+        job.projectId !== upload.chunk.projectId ||
+        upload.chunk.tenantId !== tenantId
+      ) {
+        throw new CoreApplicationError("RunIdentityMismatch", `artifact chunk for run ${upload.runId} does not match durable job provenance`);
+      }
       return this.requireArtifactUploads().uploadChunk({
-        identity: { runnerId: session.identity.runnerId },
+        identity: {
+          tenantId,
+          projectId: job.projectId,
+          runId: upload.runId,
+          artifactId: upload.chunk.artifactId,
+          runnerId: session.identity.runnerId,
+        },
         chunk: upload.chunk,
       }).catch(mapArtifactUploadError);
     });
@@ -282,7 +310,7 @@ export class CoreRunnerProtocolApplication implements RunnerProtocolApplication 
     await sink.complete({ identity: session.identity, jobId: authoritative.jobId, runId: authoritative.runId, completion: authoritative });
   }
 
-  private requireArtifactUploads(): ArtifactUploadService {
+  private requireArtifactUploads(): ArtifactUploadAuthority {
     if (this.artifactUploads === undefined) {
       throw new CoreApplicationError("ArtifactUploadRejected", "artifact upload is not configured");
     }

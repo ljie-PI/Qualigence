@@ -477,12 +477,18 @@ importers:
 
   apps/server:
     dependencies:
+      '@qualigence/artifact-fs':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/artifact-fs
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../packages/core-modules/context-intake
       '@qualigence/core-application':
         specifier: workspace:*
         version: link:../../packages/core-application
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../packages/core-modules/evidence
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:../../packages/storage-providers/kms-local

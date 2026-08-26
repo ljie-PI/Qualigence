@@ -43,5 +43,6 @@ function serverConfig() {
       },
     },
     runnerCa: { certificatePem: "unused", privateKeyPem: "unused" },
+    artifactDataDir: ".tmp-test-artifacts",
   };
 }

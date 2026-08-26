@@ -42,6 +42,7 @@ async function runOffer(
     config,
     session,
     spool,
+    ...(config.tenantId === undefined ? {} : { tenantId: config.tenantId }),
     ...(valueProvider === undefined ? {} : { valueProvider }),
   }).run(offer, signal);
 }

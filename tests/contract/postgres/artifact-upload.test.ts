@@ -80,7 +80,7 @@ describe.skipIf(!dockerAvailable())("PostgreSQL Artifact upload", () => {
       });
 
       const ack = await service.uploadChunk({
-        identity: { runnerId: "runner-a" },
+        identity: { tenantId: "tenant-a", projectId: "project-a", runId: "run-1", artifactId: "artifact-1", runnerId: "runner-a" },
         chunk: {
           artifactId: "artifact-1",
           tenantId: "tenant-a",
@@ -126,11 +126,11 @@ describe.skipIf(!dockerAvailable())("PostgreSQL Artifact upload", () => {
         manifest,
       });
       await expect(service.uploadChunk({
-        identity: { runnerId: "runner-a" },
+        identity: { tenantId: "tenant-a", projectId: "project-a", runId: manifest.runId, artifactId: manifest.artifactId, runnerId: "runner-a" },
         chunk: { artifactId: manifest.artifactId, tenantId: "tenant-a", projectId: "project-a", runId: manifest.runId, offset: 0, bytes: firstChunk, sha256: sha256(firstChunk) },
       })).resolves.toMatchObject({ acknowledged: false });
       await expect(service.uploadChunk({
-        identity: { runnerId: "runner-a" },
+        identity: { tenantId: "tenant-a", projectId: "project-a", runId: manifest.runId, artifactId: manifest.artifactId, runnerId: "runner-a" },
         chunk: { artifactId: manifest.artifactId, tenantId: "tenant-a", projectId: "project-a", runId: manifest.runId, offset: 0, bytes: alteredFirstChunk, sha256: sha256(alteredFirstChunk) },
       })).rejects.toMatchObject({ code: "ArtifactChunkConflict" });
     });

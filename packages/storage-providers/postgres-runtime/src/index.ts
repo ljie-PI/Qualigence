@@ -50,6 +50,8 @@ export type { PostgresRunStoreErrorCode } from "./postgres-run-store.js";
 export { PostgresTraceStore } from "./postgres-trace-store.js";
 export { PostgresArtifactManifestStore, PostgresArtifactUploadStore } from "./postgres-artifact-upload-store.js";
 export {
+  OperationScopedPostgresArtifactManifestStore,
+  OperationScopedPostgresArtifactUploadStore,
   OperationScopedPostgresRunnerControlStore,
   OperationScopedPostgresTraceStore,
 } from "./operation-scoped-runner-stores.js";

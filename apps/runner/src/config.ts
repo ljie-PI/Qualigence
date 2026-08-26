@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /** Resolved runtime configuration for the standalone Runner process. */
@@ -11,6 +12,7 @@ export interface RunnerConfig {
     readonly key: Buffer;
   };
   readonly dataDir: string;
+  readonly tenantId?: string;
   readonly model: {
     readonly baseUrl: string;
     readonly apiKey: string;
@@ -36,15 +38,19 @@ function required(name: string, env: NodeJS.ProcessEnv): string {
  * on the first Core handshake.
  */
 export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
+  const runnerId = required("RUNNER_ID", env);
+  const cert = readFileSync(required("RUNNER_TLS_CERT", env));
+  const tenantId = env.RUNNER_TENANT_ID ?? tenantIdFromCertificate(cert, runnerId);
   return {
-    runnerId: required("RUNNER_ID", env),
+    runnerId,
     coreAddress: env.CORE_ADDRESS ?? "127.0.0.1:50555",
     authority: env.CORE_AUTHORITY ?? "localhost",
     tls: {
       ca: readFileSync(required("RUNNER_TLS_CA", env)),
-      cert: readFileSync(required("RUNNER_TLS_CERT", env)),
+      cert,
       key: readFileSync(required("RUNNER_TLS_KEY", env)),
     },
+    ...(tenantId === undefined ? {} : { tenantId }),
     dataDir: env.RUNNER_DATA_DIR ?? "./.qualigence-runner",
     model: {
       baseUrl: required("RUNNER_MODEL_BASE_URL", env),
@@ -59,6 +65,19 @@ export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerCo
     navigationTimeoutMs: Number.parseInt(env.RUNNER_NAVIGATION_TIMEOUT_MS ?? "30000", 10),
     actionTimeoutMs: Number.parseInt(env.RUNNER_ACTION_TIMEOUT_MS ?? "15000", 10),
   };
+}
+
+function tenantIdFromCertificate(cert: Buffer, runnerId: string): string | undefined {
+  const subjectAltName = new X509Certificate(cert).subjectAltName;
+  if (subjectAltName === undefined || subjectAltName === "") return undefined;
+  for (const entry of subjectAltName.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed.toUpperCase().startsWith("URI:")) continue;
+    const uri = trimmed.slice(trimmed.indexOf(":") + 1).trim();
+    const match = /^spiffe:\/\/qualigence\.local\/tenants\/([^/]+)\/runners\/([^/]+)$/.exec(uri);
+    if (match !== null && match[2] === runnerId) return match[1];
+  }
+  return undefined;
 }
 
 function positiveInteger(name: string, value: string): number {

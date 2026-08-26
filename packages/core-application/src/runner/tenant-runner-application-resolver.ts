@@ -8,7 +8,7 @@ import type {
 } from "@qualigence/runner-control";
 import type { AcceptedExecutionJob, ExecutionCompletion } from "@qualigence/runner-protocol";
 import { CoreApplicationError } from "./core-runner-protocol-application.js";
-import type { RunCompletionSink } from "./core-runner-protocol-application.js";
+import type { ArtifactUploadAuthority, RunCompletionSink } from "./core-runner-protocol-application.js";
 import { CoreRunnerProtocolApplication } from "./core-runner-protocol-application.js";
 import { ExecutionJobService } from "./execution-job-service.js";
 import { RunOwnershipService } from "./run-ownership-service.js";
@@ -22,6 +22,7 @@ export interface TenantRunnerApplicationGraph {
   readonly application: RunnerProtocolApplication;
   readonly store: RunnerControlStore;
   readonly traceStore: TraceStore;
+  readonly artifactUploads?: ArtifactUploadAuthority;
 }
 
 export interface TenantRunnerApplicationResolverOptions {
@@ -34,6 +35,8 @@ export interface TenantRunnerApplicationResolverOptions {
   readonly runnerControlStore: (tenantId: string) => RunnerControlStore;
   /** Same lifetime rule as {@link runnerControlStore}, for Trace ingestion. */
   readonly traceStore: (tenantId: string) => TraceStore;
+  /** Same lifetime rule as {@link runnerControlStore}, for Artifact upload. */
+  readonly artifactUploads?: (tenantId: string) => ArtifactUploadAuthority;
   readonly integrityEvents: RunnerControlIntegrityEventSink;
   readonly now?: () => number;
   readonly leaseDurationMs?: number;
@@ -74,6 +77,7 @@ export class TenantRunnerApplicationResolver implements RunnerProtocolApplicatio
 
     const store = this.options.runnerControlStore(tenantId);
     const traceStore = this.options.traceStore(tenantId);
+    const artifactUploads = this.options.artifactUploads?.(tenantId);
     const ownership = new RunOwnershipService({
       store,
       integrityEvents: this.options.integrityEvents,
@@ -91,7 +95,7 @@ export class TenantRunnerApplicationResolver implements RunnerProtocolApplicatio
       store,
       welcome: this.options.welcome,
       resumeTokens,
-      traceIngestor: new TraceIngestor(traceStore),
+      traceIngestor: new TraceIngestor(traceStore, artifactUploads),
       ownership,
       ...(this.options.now === undefined ? {} : { now: this.options.now }),
       ...(this.options.generateSessionId === undefined ? {} : { generateSessionId: this.options.generateSessionId }),
@@ -106,13 +110,16 @@ export class TenantRunnerApplicationResolver implements RunnerProtocolApplicatio
       sessions,
       jobs,
       ownership,
+      ...(artifactUploads === undefined ? {} : { artifactUploads }),
       ...(this.options.completionSink === undefined ? {} : { completionSink: this.options.completionSink }),
       ...(this.options.recordRun === undefined
         ? {}
         : { recordRun: (job: AcceptedExecutionJob) => this.options.recordRun?.(tenantId, job) ?? Promise.resolve() }),
     });
 
-    const graph = { application, store, traceStore };
+    const graph = artifactUploads === undefined
+      ? { application, store, traceStore }
+      : { application, store, traceStore, artifactUploads };
     this.graphs.set(tenantId, graph);
     return graph;
   }

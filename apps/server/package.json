@@ -14,8 +14,10 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@qualigence/artifact-fs": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/core-application": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/mission": "workspace:*",

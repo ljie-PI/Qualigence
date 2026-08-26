@@ -40,6 +40,11 @@ export interface ArtifactUploadIdentity {
   readonly runnerId: string;
 }
 
+export interface ArtifactUploadChunkIdentity extends ArtifactUploadIdentity {
+  readonly runId: string;
+  readonly artifactId: string;
+}
+
 export interface RegisterArtifactManifestInput {
   readonly identity: ArtifactUploadIdentity;
   readonly jobId: string;
@@ -48,13 +53,14 @@ export interface RegisterArtifactManifestInput {
 }
 
 export interface UploadArtifactChunkInput {
-  readonly identity: Pick<ArtifactUploadIdentity, "runnerId">;
+  readonly identity: ArtifactUploadChunkIdentity;
   readonly chunk: ArtifactUploadChunk;
 }
 
 export interface ArtifactUploadServiceOptions {
   readonly uploads: ArtifactUploadStore;
   readonly artifactStore: ArtifactStore;
+  readonly artifactStoreForManifest?: (manifest: ArtifactUploadManifestRecord) => ArtifactStore;
   readonly manifestStore: ArtifactManifestStore;
   readonly clock: Clock;
 }
@@ -65,12 +71,14 @@ const SENSITIVITIES = new Set(["public", "internal", "sensitive", "secret"]);
 export class ArtifactUploadService {
   private readonly uploads: ArtifactUploadStore;
   private readonly artifactStore: ArtifactStore;
+  private readonly artifactStoreForManifest: ((manifest: ArtifactUploadManifestRecord) => ArtifactStore) | undefined;
   private readonly manifestStore: ArtifactManifestStore;
   private readonly clock: Clock;
 
   constructor(options: ArtifactUploadServiceOptions) {
     this.uploads = options.uploads;
     this.artifactStore = options.artifactStore;
+    this.artifactStoreForManifest = options.artifactStoreForManifest;
     this.manifestStore = options.manifestStore;
     this.clock = options.clock;
   }
@@ -95,6 +103,7 @@ export class ArtifactUploadService {
 
   async uploadChunk(input: UploadArtifactChunkInput): Promise<ArtifactUploadAck> {
     validateChunk(input.chunk);
+    this.assertChunkScope(input.identity, input.chunk);
     const manifest = await this.uploads.manifest(input.chunk);
     if (manifest === undefined) {
       throw new ArtifactUploadError("ArtifactUploadNotRegistered", `artifact ${input.chunk.artifactId} has no registered manifest`);
@@ -149,7 +158,7 @@ export class ArtifactUploadService {
     if (bytes.length !== manifest.sizeBytes || digest !== manifest.sha256) {
       throw new ArtifactUploadError("ArtifactHashMismatch", `artifact ${manifest.artifactId} failed final hash verification`);
     }
-    const stored = await this.artifactStore.write({
+    const stored = await this.artifactStoreFor(manifest).write({
       artifactId: manifest.artifactId,
       runId: manifest.runId,
       name: manifest.artifactId,
@@ -157,7 +166,7 @@ export class ArtifactUploadService {
       mediaType: manifest.mediaType,
       bytes,
     });
-    if (!await this.artifactStore.verify(stored)) {
+    if (!await this.artifactStoreFor(manifest).verify(stored)) {
       throw new ArtifactUploadError("ArtifactHashMismatch", `artifact ${manifest.artifactId} could not be verified after durable write`);
     }
     await this.manifestStore.append(stored);
@@ -171,9 +180,24 @@ export class ArtifactUploadService {
     });
   }
 
+  private artifactStoreFor(manifest: ArtifactUploadManifestRecord): ArtifactStore {
+    return this.artifactStoreForManifest?.(manifest) ?? this.artifactStore;
+  }
+
   private assertManifestScope(identity: ArtifactUploadIdentity, manifest: ArtifactUploadManifest): void {
     if (manifest.tenantId !== identity.tenantId || manifest.projectId !== identity.projectId) {
       throw new ArtifactUploadError("ArtifactUploadForbidden", "artifact manifest scope does not match authenticated runner scope");
+    }
+  }
+
+  private assertChunkScope(identity: ArtifactUploadChunkIdentity, chunk: ArtifactUploadChunk): void {
+    if (
+      chunk.tenantId !== identity.tenantId ||
+      chunk.projectId !== identity.projectId ||
+      chunk.runId !== identity.runId ||
+      chunk.artifactId !== identity.artifactId
+    ) {
+      throw new ArtifactUploadError("ArtifactUploadForbidden", "artifact chunk scope does not match authenticated runner scope");
     }
   }
 

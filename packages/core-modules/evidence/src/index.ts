@@ -19,6 +19,7 @@ export {
 export { InMemoryArtifactUploadStore } from "./in-memory-artifact-upload-store.js";
 
 export type {
+  ArtifactUploadChunkIdentity,
   ArtifactUploadErrorCode,
   ArtifactUploadIdentity,
   ArtifactUploadServiceOptions,

@@ -1,4 +1,5 @@
 import type {
+  ExecutionJobLease,
   RunnerHello,
   RunnerWelcome,
   ResumeToken,
@@ -38,6 +39,7 @@ export interface ServedOffer {
 export class RunnerClient {
   private session: RunnerSession | undefined;
   private resumeToken: ResumeToken | undefined;
+  private readonly leasesByRun = new Map<string, ExecutionJobLease>();
 
   constructor(private readonly deps: RunnerClientDependencies) {}
 
@@ -91,6 +93,8 @@ export class RunnerClient {
         await session.complete(currentLease(), completion);
       },
     );
+    this.leasesByRun.set(result.lease.runId, result.lease);
+    await saveLease(this.deps.spool, result.lease);
     if (!finalized) {
       await new ArtifactUploadPump(this.deps.spool, artifactSubmitter(session), result.lease).drain(offer.job.runId);
       await this.drain(offer.job.runId);
@@ -106,8 +110,15 @@ export class RunnerClient {
     await pump.drain();
   }
 
-  /** Replay all spooled Trace for a Run after a reconnect. */
+  /** Replay all spooled Artifact uploads, then Trace for a Run after a reconnect. */
   async replay(runId: string): Promise<void> {
+    const session = this.requireSession();
+    const lease = this.leasesByRun.get(runId) ?? await loadLeaseForRun(this.deps.spool, runId);
+    if (lease !== undefined) {
+      await new ArtifactUploadPump(this.deps.spool, artifactSubmitter(session), lease).drain(runId);
+    } else if (await hasPendingArtifacts(this.deps.spool, runId)) {
+      throw new RunnerAppError("TransportError", `cannot replay artifact uploads for run ${runId} without a persisted lease`);
+    }
     await this.drain(runId);
   }
 
@@ -131,6 +142,20 @@ export class RunnerClient {
       maximumBytes: session.welcome.traceBatchMaximumBytes,
     };
   }
+}
+
+async function saveLease(spool: RunnerSpool, lease: ExecutionJobLease): Promise<void> {
+  if (spool.saveLease !== undefined) {
+    await spool.saveLease(lease);
+  }
+}
+
+async function loadLeaseForRun(spool: RunnerSpool, runId: string): Promise<ExecutionJobLease | undefined> {
+  return spool.loadLeaseForRun?.(runId);
+}
+
+async function hasPendingArtifacts(spool: RunnerSpool, runId: string): Promise<boolean> {
+  return (await spool.pendingArtifactManifests?.(runId))?.length ? true : false;
 }
 
 function artifactSubmitter(session: RunnerSession): ArtifactUploadSubmitter {

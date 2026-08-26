@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { PeerCertificate } from "node:tls";
 import {
   TenantRunnerApplicationResolver,
@@ -5,7 +6,11 @@ import {
   type SessionWelcomeParameters,
   type TenantRunnerApplicationResolverOptions,
 } from "@qualigence/core-application";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
+import { ArtifactUploadService } from "@qualigence/evidence";
 import {
+  OperationScopedPostgresArtifactManifestStore,
+  OperationScopedPostgresArtifactUploadStore,
   OperationScopedPostgresRunnerControlStore,
   OperationScopedPostgresTraceStore,
   type TenantTransactionProvider,
@@ -38,6 +43,7 @@ export interface SelfHostedRunnerApplicationResolverOptions {
   readonly integrityEvents: TenantRunnerApplicationResolverOptions["integrityEvents"];
   readonly leaseDurationMs?: number;
   readonly completionSink?: RunCompletionSink;
+  readonly artifactDataDir: string;
 }
 
 /**
@@ -84,9 +90,38 @@ export function selfHostedRunnerApplicationResolver(
     welcome: options.welcome,
     runnerControlStore: (tenantId) => new OperationScopedPostgresRunnerControlStore(options.provider, tenantId, { projectSelfHostedCompletion: true }),
     traceStore: (tenantId) => new OperationScopedPostgresTraceStore(options.provider, tenantId, options.clock),
+    artifactUploads: (tenantId) => new ArtifactUploadService({
+      uploads: new OperationScopedPostgresArtifactUploadStore(options.provider, tenantId),
+      artifactStore: new LocalArtifactStore(tenantArtifactRoot(options.artifactDataDir, tenantId), options.clock),
+      artifactStoreForManifest: (manifest) => new LocalArtifactStore(
+        tenantArtifactRoot(options.artifactDataDir, tenantId, manifest.projectId),
+        options.clock,
+      ),
+      manifestStore: new OperationScopedPostgresArtifactManifestStore(options.provider, tenantId),
+      clock: options.clock,
+    }),
     integrityEvents: options.integrityEvents,
     now: () => Date.parse(options.clock.now()),
     ...(options.leaseDurationMs === undefined ? {} : { leaseDurationMs: options.leaseDurationMs }),
     ...(options.completionSink === undefined ? {} : { completionSink: options.completionSink }),
   });
+}
+
+function tenantArtifactRoot(root: string, tenantId: string, projectId?: string): string {
+  assertSafeSegment("tenant id", tenantId);
+  if (projectId !== undefined) assertSafeSegment("project id", projectId);
+  return projectId === undefined ? join(root, tenantId) : join(root, tenantId, projectId);
+}
+
+function assertSafeSegment(kind: "tenant id" | "project id", value: string): void {
+  if (
+    value.length === 0 ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    throw new Error(`Unsafe artifact ${kind}: ${JSON.stringify(value)}`);
+  }
 }

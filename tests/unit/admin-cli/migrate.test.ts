@@ -394,6 +394,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
         },
       },
       runnerCa: { certificatePem: "unused", privateKeyPem: "unused" },
+      artifactDataDir: ".tmp-test-artifacts",
     };
   }
 

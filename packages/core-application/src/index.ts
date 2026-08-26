@@ -32,6 +32,7 @@ export {
   isCoreApplicationError,
 } from "./runner/core-runner-protocol-application.js";
 export type {
+  ArtifactUploadAuthority,
   CoreApplicationErrorCode,
   CoreApplicationErrorOptions,
   CoreRunnerProtocolApplicationOptions,

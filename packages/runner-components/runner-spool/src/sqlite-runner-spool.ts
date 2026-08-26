@@ -50,6 +50,8 @@ export interface RunnerSpool {
     limit: SpoolBatchLimit,
   ): Promise<readonly TraceEvent[]>;
   acknowledge(runId: string, nextExpectedSequenceNumber: number): Promise<void>;
+  saveLease?(record: SpoolLeaseRecord): Promise<void>;
+  loadLeaseForRun?(runId: string): Promise<SpoolLeaseRecord | undefined>;
   saveArtifactManifest?(manifest: ArtifactUploadManifest): Promise<void>;
   saveArtifactChunk?(chunk: ArtifactUploadChunk): Promise<void>;
   pendingArtifactManifests?(runId: string): Promise<readonly ArtifactUploadManifest[]>;
@@ -96,6 +98,7 @@ interface EventRow {
 }
 
 interface LeaseRow {
+  readonly job_id?: string;
   readonly run_id: string;
   readonly lease_epoch: number;
   readonly expires_at: string;
@@ -475,16 +478,30 @@ export class SqliteRunnerSpool implements RunnerSpool {
 
   async loadLease(jobId: string): Promise<SpoolLeaseRecord | undefined> {
     this.assertOpen();
-    const crypto = this.requireCrypto();
+    this.requireCrypto();
     const row = this.connection
       .prepare(
-        `SELECT run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
+        `SELECT job_id, run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
            FROM spool_leases WHERE job_id = ?`,
       )
       .get(jobId) as LeaseRow | undefined;
-    if (row === undefined) {
-      return undefined;
-    }
+    return row === undefined ? undefined : this.decryptLeaseRow(row.job_id ?? jobId, row);
+  }
+
+  async loadLeaseForRun(runId: string): Promise<SpoolLeaseRecord | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT job_id, run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
+           FROM spool_leases WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(runId) as LeaseRow | undefined;
+    if (row === undefined || row.job_id === undefined) return undefined;
+    return this.decryptLeaseRow(row.job_id, row);
+  }
+
+  private async decryptLeaseRow(jobId: string, row: LeaseRow): Promise<SpoolLeaseRecord> {
+    const crypto = this.requireCrypto();
     const encrypted: EncryptedLeaseSecret = {
       schemaVersion: row.schema_version,
       jobId,
