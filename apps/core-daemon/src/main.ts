@@ -141,7 +141,7 @@ export async function startCoreDaemon(config: CoreDaemonConfig, dependencies: Co
       ...(localEnabled ? { completionSink: { complete: async (input: Parameters<LocalRunCoordinator["complete"]>[0]) => coordinator?.complete(input) } } : {}),
       recordRun: async (job) => {
         if ((await runStore.get(job.runId)) !== undefined) return;
-        await runStore.create({ runId: job.runId, jobId: job.jobId, targetKind: job.target.kind, objective: job.objective, status: "running", nextSequenceNumber: 1, createdAt: new Date().toISOString() });
+        await runStore.create({ runId: job.runId, jobId: job.jobId, targetKind: runStoreTargetKind(job), objective: job.objective, status: "running", nextSequenceNumber: 1, createdAt: new Date().toISOString() });
       },
     });
     server = new GrpcRunnerProtocolServer({
@@ -196,6 +196,15 @@ export async function startCoreDaemon(config: CoreDaemonConfig, dependencies: Co
       if (startupFailure === undefined && cleanupFailure !== undefined) throw cleanupFailure;
     }
     credentials?.destroy();
+  }
+}
+
+function runStoreTargetKind(job: AcceptedExecutionJob): "web" | "app" {
+  switch (job.target.kind) {
+    case "web":
+      return "web";
+    case "desktop":
+      return "app";
   }
 }
 

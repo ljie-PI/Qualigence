@@ -1,5 +1,6 @@
 import type { ExecutionJobOffer, ExecutionCompletion } from "@qualigence/runner-protocol";
 import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
   WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
   capabilities,
 } from "@qualigence/runner-protocol";
@@ -41,6 +42,14 @@ export class RunnerOfferRuntime {
 
   async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider);
+    switch (offer.job.target.kind) {
+      case "web":
+        break;
+      case "desktop":
+        throw new RunnerAppError("CapabilityMismatch", "desktop target runtime support is deferred to Ticket 28", {
+          details: { missingCapabilities: DESKTOP_UIA_V1_CAPABILITY_TOKENS },
+        });
+    }
     assertWebObservationV1Requirements(offer);
     const offerWithLiveObservationRequirements = {
       ...offer,

@@ -101,8 +101,14 @@ export class RunnerBackedRunResourceFactory implements RunResourceFactory {
           if (acceptedJob.projectId !== request.projectId) {
             throw new Error("Execution Job project provenance must match its opened run request.");
           }
-          if (acceptedJob.runId !== runId || acceptedJob.target.url !== request.target.url) {
-            throw new Error("Execution Job must match its opened run request.");
+          switch (acceptedJob.target.kind) {
+            case "web":
+              if (acceptedJob.runId !== runId || acceptedJob.target.url !== request.target.url) {
+                throw new Error("Execution Job must match its opened run request.");
+              }
+              break;
+            case "desktop":
+              throw new Error("Execution Job must match its opened run request.");
           }
           offeredJob = acceptedJob;
           const lease = await this.connection.offer(acceptedJob, this.requiredCapabilities);
