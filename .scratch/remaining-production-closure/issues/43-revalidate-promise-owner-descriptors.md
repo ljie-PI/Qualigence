@@ -147,13 +147,13 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 - Reviewed code/test head: `57547dce98cae1b43788856a8573dbcf0c14e6a6`.
 - Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/534d4ca0-4fcc-429f-ae07-4480888c5fa9/ticket43-review4/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/534d4ca0-4fcc-429f-ae07-4480888c5fa9/ticket43-review4/spec.md`).
 - Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (4 files / 35 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
-- Pull request: pending creation.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/117`
 
 ## Answer
 
 Implemented Ticket 43 Promise owner descriptor revalidation. Sensitive Promise instrumentation now retains a closure-private, identity-deduplicated, bounded registry of observed Promise receivers/prototype owners and exact `then`/`catch`/`finally` descriptor/prototype/method-owner snapshots. The observer revalidates the full authoritative registry immediately before Graph return and again before Artifact/observation registration, failing evidence closed on mutation, overflow, inspection failure, or incomplete/tampered enumeration while preserving native Promise behavior. Post-review Chromium E2E now exercises multiple owner registrations and descriptor/prototype mutations at Graph and Artifact capture boundaries and verifies no unsafe evidence is accepted after failed revalidation.
 
-Pull request: pending creation.
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/117`
 
 Reviewed code/test head: `57547dce98cae1b43788856a8573dbcf0c14e6a6`
 
