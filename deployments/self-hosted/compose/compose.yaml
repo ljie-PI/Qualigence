@@ -234,7 +234,8 @@ services:
       SERVER_RUNNER_GRPC_TLS_CERT_FILE: /run/secrets/runner_server_cert
       SERVER_RUNNER_GRPC_TLS_KEY_FILE: /run/secrets/runner_server_key
       SERVER_OBJECT_STORAGE_READY_URL: http://minio:9000/minio/health/ready
-      SERVER_ARTIFACT_DATA_DIR: /tmp/qualigence-artifacts
+      SERVER_ARTIFACT_DATA_DIR: /var/lib/qualigence/artifacts
+      SERVER_SKILL_SIGNING_DATA_DIR: /var/lib/qualigence/skill-signing
     secrets:
       - pg_server_password
       - oidc_jwks
@@ -249,6 +250,9 @@ services:
       - internal
     tmpfs:
       - /tmp
+    volumes:
+      - artifactdata:/var/lib/qualigence/artifacts
+      - skill_signing_data:/var/lib/qualigence/skill-signing
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
@@ -393,6 +397,8 @@ volumes:
   pgdata:
   miniodata:
   backups:
+  artifactdata:
+  skill_signing_data:
   caddydata:
   caddyconfig:
 

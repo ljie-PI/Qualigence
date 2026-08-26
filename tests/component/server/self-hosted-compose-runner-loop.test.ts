@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadServerConfig } from "../../../apps/server/src/config.js";
+import { loadServerConfig, type ServerConfig } from "../../../apps/server/src/config.js";
+import { main } from "../../../apps/server/src/main.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +61,7 @@ describe("Self-hosted Server configuration", () => {
       SERVER_TENANT_IDS: "tenant-a, tenant-b, tenant-a",
       SERVER_OBJECT_STORAGE_READY_URL: "http://minio:9000/minio/health/ready",
       SERVER_ARTIFACT_DATA_DIR: "/var/lib/qualigence/artifacts",
+      SERVER_SKILL_SIGNING_DATA_DIR: "/var/lib/qualigence/skill-signing",
       SERVER_OIDC_ISSUER: "https://issuer.example.com",
       SERVER_OIDC_AUDIENCE: "qualigence-self-hosted",
       SERVER_OIDC_JWKS_FILE: files.jwks,
@@ -80,6 +84,71 @@ describe("Self-hosted Server configuration", () => {
     });
     expect(config.objectStorageReadinessUrl).toBe("http://minio:9000/minio/health/ready");
     expect(config.artifactDataDir).toBe("/var/lib/qualigence/artifacts");
+    expect(config.skillSigningDataDir).toBe("/var/lib/qualigence/skill-signing");
+  });
+
+  it("cleans up the HTTP listener when Runner gRPC startup fails after HTTP bind", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qualigence-server-startup-cleanup-"));
+    tempDirs.push(dir);
+    const port = await freeTcpPort();
+    const config: ServerConfig = {
+      host: "127.0.0.1",
+      port,
+      postgres: {
+        host: "postgres",
+        port: 5432,
+        database: "qualigence",
+        user: "qualigence_server",
+        password: "server_pw",
+      },
+      runnerGrpc: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: await freeTcpPort(),
+        tlsCertificatePem: Buffer.from("not a pem certificate"),
+        tlsPrivateKeyPem: Buffer.from("not a pem private key"),
+      },
+      missionDispatch: {
+        enabled: false,
+        tenantIds: ["tenant-a"],
+        batchSize: 1,
+        intervalMs: 1000,
+        initialBackoffMs: 100,
+        maximumBackoffMs: 1000,
+      },
+      intelligenceResultConsumer: {
+        enabled: false,
+        consumerId: "test-consumer",
+        tenantBatchSize: 1,
+        resultBatchSize: 1,
+        leaseDurationMs: 1000,
+        idleBackoffMs: 100,
+        errorBackoffMs: 100,
+        maximumBackoffMs: 1000,
+      },
+      oidc: {
+        issuer: "https://issuer.example.com",
+        audience: "qualigence-self-hosted",
+        allowedAlgorithms: ["RS256"],
+        jwksJson: "[]",
+        claimMapper: {
+          tenantClaim: "tenant",
+          rolesClaim: "roles",
+          allowedTenants: ["tenant-a"],
+          roleMap: { admin: "admin" },
+        },
+      },
+      runnerCa: {
+        certificatePem: "not a pem ca certificate",
+        privateKeyPem: "not a pem ca key",
+      },
+      artifactDataDir: join(dir, "artifacts"),
+      objectStorageReadinessUrl: "http://minio:9000/minio/health/ready",
+      skillSigningDataDir: join(dir, "skill-signing"),
+    };
+
+    await expect(main({}, async () => undefined, () => config)).rejects.toThrow();
+    await expect(fetch(`http://127.0.0.1:${port}/livez`)).rejects.toThrow();
   });
 
   it("fails closed when Runner gRPC is enabled without a Server TLS certificate/key", async () => {
@@ -113,6 +182,19 @@ describe("Self-hosted Docker gate", () => {
     })).rejects.toMatchObject({ code: "DockerUnavailable" });
   });
 });
+
+async function freeTcpPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address() as AddressInfo;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
+  return address.port;
+}
 
 async function writeConfigFiles(dir: string): Promise<Record<string, string>> {
   const paths = {

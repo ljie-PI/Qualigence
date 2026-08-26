@@ -35,6 +35,14 @@ This is the multi-tenant Team stack — **not** the M1 single-tenant
 - Runners connect **into** the Server over end-to-end mTLS using the enrollment
   CA (`runner_ca_*` plus `runner_server_*` TLS secrets); the Server's public HTTP
   routes are reached through the proxy under `/api`.
+- The Server's Runner Artifact ACK data plane uses the durable `artifactdata`
+  named volume mounted at `/var/lib/qualigence/artifacts`; readiness writes and
+  reads that same store. MinIO remains private object-storage infrastructure,
+  but it is not reported as the Runner Artifact ACK store in this Ticket 12
+  topology.
+- Skill-signing state uses the durable `skill_signing_data` named volume mounted
+  at `/var/lib/qualigence/skill-signing`, so Server startup satisfies the
+  read-only root filesystem constraint and survives container restart.
 - The Console is a **static asset image** (Vite `dist/` served by Caddy), never
   a Node process.
 
@@ -80,14 +88,19 @@ Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness,
 `https://<host>/api/readyz` for dependency/loop readiness, and configure external
 Runners to connect to `grpcs://<host>:${QUALIGENCE_RUNNER_GRPC_PORT:-50555}`.
 Readiness is intentionally stronger than liveness: Server readiness checks
-PostgreSQL, object-storage reachability, artifact data-plane storage, Runner
-gRPC, Mission dispatch loops, and the Intelligence Result consumer; Compose
-healthchecks also probe Worker, Console, and proxy dependencies.
+PostgreSQL, object-storage reachability, the actual durable Runner Artifact
+data-plane volume, Runner gRPC, Mission dispatch loops, and the Intelligence
+Result consumer; Compose healthchecks also probe Worker, Console, and proxy
+dependencies.
 
 ## Backup, restore & upgrade runbook
 
-Backups are **byte-complete**: a consistent PostgreSQL snapshot plus the real
-bytes of every S3 object, content-addressed and checksummed in a signed index.
+Backups are **byte-complete** for the currently wired PostgreSQL and S3 object
+contracts: a consistent PostgreSQL snapshot plus the real bytes of every S3
+object, content-addressed and checksummed in a signed index. Until the LS-11
+closure promotes all Evidence APIs and backup/restore coverage, operators must
+also preserve the Ticket 12 `artifactdata` and `skill_signing_data` named volumes
+with their host-level volume backup process.
 
 ```sh
 # Consistent point-in-time backup into the `backups` volume.
@@ -104,7 +117,8 @@ docker compose run --rm backup
 
 # --- Disaster recovery: restore into a clean environment ---
 docker compose down                       # stop app containers
-docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata
+docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata \
+  qualigence-self-hosted_artifactdata qualigence-self-hosted_skill_signing_data
 docker compose up -d postgres minio        # empty DB + object store
 docker compose run --rm restore            # verifies every byte before mutating,
                                            # then restores DB + objects and
@@ -119,9 +133,9 @@ sha256/size, and asserts forced row-level security survived the restore.
 
 ## Testing note (sandbox)
 
-The automated Gate test exercises the same real containers this Compose file
-declares (PostgreSQL + MinIO via the PR-19 Docker helpers) plus the real
-`apps/server` / `apps/intelligence-worker` code in-process, because the CI
-sandbox cannot run a privileged `docker compose up`. `tests/e2e/self-hosted/`
-additionally runs `docker compose config` to assert this topology's security
-invariants. See the PR-23 report for details.
+The focused non-E2E Gate validates the Compose config and component-level Server
+wiring. Post-review acceptance lives under `tests/e2e/self-hosted/`: it must run
+with Docker available, fail as `DockerUnavailable` when Docker is absent, assert
+this Compose topology's security/durability invariants, and use an external
+Runner process rather than in-process Server/Runner substitutes for completion
+evidence.

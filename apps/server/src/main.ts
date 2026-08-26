@@ -174,34 +174,54 @@ export async function main(
 
   const app = buildServer(deps);
 
+  let shutdownStarted = false;
   const shutdownServer = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     shutdown.abort();
+    const cleanup = async (operation: Promise<unknown> | undefined): Promise<void> => {
+      try {
+        await operation;
+      } catch (error) {
+        console.error("[server] shutdown cleanup failed", error);
+      }
+    };
     for (const loop of missionDispatchLoops) {
-      await loop.stop();
+      await cleanup(loop.stop());
     }
-    await resultConsumerLoop.stop();
-    await resultWakeups.close();
-    await app.close();
-    await runnerServer?.shutdown();
-    await provider.close();
+    await cleanup(resultConsumerLoop.stop());
+    await cleanup(resultWakeups.close());
+    await cleanup(app.close());
+    await cleanup(runnerServer?.shutdown());
+    await cleanup(provider.close());
+    process.removeListener("SIGINT", shutdownOnSignal);
+    process.removeListener("SIGTERM", shutdownOnSignal);
   };
-  process.once("SIGINT", () => void shutdownServer());
-  process.once("SIGTERM", () => void shutdownServer());
+  const shutdownOnSignal = (): void => {
+    void shutdownServer().catch((error) => console.error("[server] shutdown failed", error));
+  };
+  process.once("SIGINT", shutdownOnSignal);
+  process.once("SIGTERM", shutdownOnSignal);
 
-  await app.listen({ host: config.host, port: config.port });
-  if (runnerServer !== undefined) {
-    await runnerServer.listen();
-    runnerGrpcReady = true;
-  }
-  if (config.intelligenceResultConsumer.enabled) {
-    resultConsumerLoop.start();
-  }
-  for (const loop of missionDispatchLoops) {
-    loop.start();
-  }
-  console.error(`[server] listening on ${config.host}:${config.port}`);
-  if (runnerServer !== undefined) {
-    console.error(`[server] runner gRPC listening on ${config.runnerGrpc?.host}:${config.runnerGrpc?.port}`);
+  try {
+    await app.listen({ host: config.host, port: config.port });
+    if (runnerServer !== undefined) {
+      await runnerServer.listen();
+      runnerGrpcReady = true;
+    }
+    if (config.intelligenceResultConsumer.enabled) {
+      resultConsumerLoop.start();
+    }
+    for (const loop of missionDispatchLoops) {
+      loop.start();
+    }
+    console.error(`[server] listening on ${config.host}:${config.port}`);
+    if (runnerServer !== undefined) {
+      console.error(`[server] runner gRPC listening on ${config.runnerGrpc?.host}:${config.runnerGrpc?.port}`);
+    }
+  } catch (error) {
+    await shutdownServer();
+    throw error;
   }
 }
 
