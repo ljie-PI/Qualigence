@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ipc::dto::ResolvedDesktopAction;
+use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 
 /// A single UIA pattern availability descriptor, mirrored losslessly from the
 /// native `IUIAutomationElement` pattern set.
@@ -104,6 +104,8 @@ pub enum WorkerRequest {
     Execute {
         session_id: String,
         action: ResolvedDesktopAction,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<DesktopPlaintextValue>,
     },
     Ping,
 }

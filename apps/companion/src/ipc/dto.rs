@@ -3,13 +3,14 @@
 //! exactly (tag field `type`). Deserialization is the Rust authority that rejects
 //! unknown request types and malformed frames before any dispatch.
 
+use serde::de::Error as DeError;
 use serde::ser::SerializeStruct;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::risk::Risk;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedDesktopAction {
     pub target_kind: TargetKind,
     #[serde(flatten)]
@@ -22,6 +23,100 @@ pub struct ResolvedDesktopAction {
     pub uia_pattern: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawResolvedDesktopAction {
+    pub target_kind: TargetKind,
+    #[serde(flatten)]
+    pub kind: DesktopActionKind,
+    pub action_id: String,
+    pub graph_id: String,
+    pub node_id: String,
+    pub resolution: DesktopResolution,
+    #[serde(default)]
+    pub uia_pattern: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ResolvedDesktopAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        validate_action_keys(&value).map_err(D::Error::custom)?;
+        let raw =
+            serde_json::from_value::<RawResolvedDesktopAction>(value).map_err(D::Error::custom)?;
+        Ok(Self {
+            target_kind: raw.target_kind,
+            kind: raw.kind,
+            action_id: raw.action_id,
+            graph_id: raw.graph_id,
+            node_id: raw.node_id,
+            resolution: raw.resolution,
+            uia_pattern: raw.uia_pattern,
+        })
+    }
+}
+
+fn validate_action_keys(value: &serde_json::Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "action must be an object".to_string())?;
+    let kind = object
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "action.kind must be present".to_string())?;
+    let allowed: &[&str] = match kind {
+        "click" => &[
+            "targetKind",
+            "kind",
+            "actionId",
+            "graphId",
+            "nodeId",
+            "resolution",
+            "uiaPattern",
+        ],
+        "input" | "select" => &[
+            "targetKind",
+            "kind",
+            "actionId",
+            "graphId",
+            "nodeId",
+            "resolution",
+            "uiaPattern",
+            "valueRef",
+        ],
+        "scroll" => &[
+            "targetKind",
+            "kind",
+            "actionId",
+            "graphId",
+            "nodeId",
+            "resolution",
+            "uiaPattern",
+            "direction",
+            "amount",
+        ],
+        "window" => &[
+            "targetKind",
+            "kind",
+            "actionId",
+            "graphId",
+            "nodeId",
+            "resolution",
+            "uiaPattern",
+            "windowOperation",
+        ],
+        _ => return Err("action.kind is unsupported".to_string()),
+    };
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("action.{key} is not a known field"));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TargetKind {
@@ -29,13 +124,19 @@ pub enum TargetKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
 pub enum DesktopActionKind {
     Click,
     Input {
+        #[serde(rename = "valueRef")]
         value_ref: String,
     },
     Select {
+        #[serde(rename = "valueRef")]
         value_ref: String,
     },
     Scroll {

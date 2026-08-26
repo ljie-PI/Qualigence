@@ -202,3 +202,18 @@ fn a_worker_crash_does_not_disturb_the_companion_security_core() {
     };
     assert_eq!(companion.authorize_action(&token, &binding), Ok(()));
 }
+
+#[cfg(windows)]
+#[test]
+fn native_uia_worker_child_runs_hidden_role_and_answers_ping() {
+    let worker_exe = std::env::var("CARGO_BIN_EXE_companion")
+        .expect("cargo exposes the companion binary path to this integration test");
+    let mut spawner =
+        companion::uia::worker_supervisor::NativeUiaWorkerSpawner::with_executable(worker_exe);
+    let mut worker = spawner.spawn().expect("spawn native UIA worker child");
+    let response = worker
+        .request(&WorkerRequest::Ping, Duration::from_millis(5_000))
+        .expect("worker responds before deadline");
+    assert_eq!(response, WorkerResponse::Pong);
+    worker.kill();
+}

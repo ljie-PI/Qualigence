@@ -2,6 +2,7 @@
 
 use std::io::Cursor;
 
+use companion::ipc::dto::CompanionRequest;
 use companion::ipc::server::{
     parse_request, read_frame, write_frame, FrameError, FrameLimits, RequestAdmission,
     RequestProcessError, SessionAdmissionError,
@@ -170,4 +171,15 @@ fn request_path_errors_map_to_public_companion_stable_codes() {
         RequestProcessError::Session(SessionAdmissionError::CompanionUnauthenticated).stable_code(),
         "CompanionUnauthenticated"
     );
+}
+
+#[test]
+fn action_execute_accepts_public_value_ref_field_and_rejects_legacy_value_ref_name() {
+    let public = br#"{"protocolMajor":1,"requestId":"req-value","type":"action.execute","payload":{"sessionId":"sess-1","action":{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","valueRef":"secret-ref"},"permit":{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6}},"value":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6,"plaintext":"secret"},"deadlineMs":5000}}"#;
+    let parsed_public = CompanionRequest::from_slice(public);
+    assert!(parsed_public.is_ok(), "{parsed_public:?}");
+    assert!(parse_request(public).is_ok());
+
+    let legacy = br#"{"protocolMajor":1,"requestId":"req-value","type":"action.execute","payload":{"sessionId":"sess-1","action":{"targetKind":"desktop","kind":"input","actionId":"act-1","graphId":"graph-1","nodeId":"edit-1","resolution":"semantic","uiaPattern":"Value","value_ref":"secret-ref"},"permit":{"permitToken":"permit-1","nonceBase64":"nonce","sessionId":"sess-1","runId":"run-1","actionId":"act-1","actionDigestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","graphId":"graph-1","decisionId":"decision-1","policyId":"policy-1","risk":"ExternalSideEffect","issuedAt":"2026-08-02T00:00:00.000Z","expiresAt":"2026-08-02T00:01:00.000Z","valueBinding":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6}},"value":{"valueRef":"secret-ref","valueSha256":"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b","valueByteLength":6,"plaintext":"secret"},"deadlineMs":5000}}"#;
+    assert_eq!(parse_request(legacy), Err(FrameError::Malformed));
 }

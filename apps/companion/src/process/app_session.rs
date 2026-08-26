@@ -74,16 +74,31 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         spec: &AppLaunchSpec,
     ) -> Result<AppSessionState, LifecycleError> {
         let process = self.host.create_suspended(spec)?;
-        if process.image_name != spec.expected_image_name {
+        if !process
+            .image_name
+            .eq_ignore_ascii_case(&spec.expected_image_name)
+        {
+            let _ = self.host.terminate_process(process.pid);
             return Err(LifecycleError::AppLaunchFailed);
         }
 
-        let job = self.host.create_job()?;
-        self.host.set_kill_on_close(job)?;
+        let job = match self.host.create_job() {
+            Ok(job) => job,
+            Err(err) => {
+                let _ = self.host.terminate_process(process.pid);
+                return Err(err);
+            }
+        };
+        if let Err(err) = self.host.set_kill_on_close(job) {
+            let _ = self.host.terminate_process(process.pid);
+            let _ = self.host.terminate_job(job);
+            return Err(err);
+        }
 
         if let Err(err) = self.host.assign_to_job(job, process.pid) {
             // Clean up the suspended husk without ever resuming it, and surface
             // the unsupported target to the human — no name-based fallback.
+            let _ = self.host.terminate_process(process.pid);
             let _ = self.host.terminate_job(job);
             return match err {
                 LifecycleError::AppLifecycleUnsupported => {
@@ -93,15 +108,22 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             };
         }
 
-        self.host.resume(process.pid)?;
+        if let Err(err) = self.host.resume(process.pid) {
+            let _ = self.host.terminate_job(job);
+            return Err(err);
+        }
 
+        let root_window_handle = self
+            .host
+            .root_window_handle(process.pid)
+            .unwrap_or_else(|| process.root_window_handle.clone());
         let state = AppSessionState {
             session_id: session_id.to_string(),
             process_group_id: hex::encode(random_bytes::<16>()),
             pid: process.pid,
             creation_time: process.creation_time.clone(),
             image_name: process.image_name.clone(),
-            root_window_handle: process.root_window_handle.clone(),
+            root_window_handle,
             allowed_child_image_names: spec.allowed_child_image_names.clone(),
             job,
         };
@@ -139,8 +161,17 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
 
     /// Run the declared reset helper (explicit argv + timeout, own Job).
     pub fn reset(&mut self, session_id: &str, spec: &ResetSpec) -> Result<(), LifecycleError> {
-        if !self.sessions.contains_key(session_id) {
-            return Err(LifecycleError::SessionNotFound);
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or(LifecycleError::SessionNotFound)?;
+        if !self.host.verify_process_in_job(
+            session.job,
+            session.pid,
+            &session.creation_time,
+            &session.image_name,
+        ) {
+            return Err(LifecycleError::AppLifecycleUnsupported);
         }
         self.host.run_reset(spec)
     }
@@ -150,8 +181,18 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
     pub fn shutdown(&mut self, session_id: &str) -> Result<(), LifecycleError> {
         let session = self
             .sessions
-            .remove(session_id)
-            .ok_or(LifecycleError::SessionNotFound)?;
+            .get(session_id)
+            .ok_or(LifecycleError::SessionNotFound)?
+            .clone();
+        if !self.host.verify_process_in_job(
+            session.job,
+            session.pid,
+            &session.creation_time,
+            &session.image_name,
+        ) {
+            return Err(LifecycleError::AppLifecycleUnsupported);
+        }
+        self.sessions.remove(session_id);
         self.host.terminate_job(session.job)
     }
 }

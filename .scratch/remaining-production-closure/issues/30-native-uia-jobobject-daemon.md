@@ -4,7 +4,7 @@
 
 **Blocked by:** 29 — Implement native Windows Named Pipe authority.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -105,3 +105,15 @@ Record base/reviewed SHAs in `## Comments`. Review the entire native/contract di
 | Worker or Companion restart | `started` only for already launched App; old request may be unknown | Fresh worker is usable; old IPC/session/Permit authority is invalid | App Job survives worker recycle, not Companion authority loss; no stale Permit survives | Reauthenticate/reopen Session and re-observe; never replay old action | Generation/session invalidation evidence |
 | Reset/shutdown sees PID reuse, image/creation mismatch, or non-Job same-name process | `not_started` | Stable lifecycle rejection | Verified Job members remain the only termination scope | Re-query verified membership; never kill by name/PID alone | Unrelated-process survival evidence |
 | Terminal response/Trace handoff fails after native action | `outcome_unknown` | Connection/recording failure, never false success | Companion keeps consumed Permit; Runner owns durable Trace recovery | No native action replay; only result/Trace transport may retry | Consumed Permit plus absent duplicate dispatch |
+
+## Comments
+
+### start - 2026-08-26
+
+- Fixed base: `6a0a0adc0ae35359e137d89163b72bca38c65a51` (`main` after Ticket 29 PR #120 merge), verified as the current worktree head before edits.
+- Predecessor evidence: Ticket 29 is `resolved`; PR #120 merged as `6a0a0adc0ae35359e137d89163b72bca38c65a51`; reviewed code/test head `16f4f90df56a21e589d64b3748fdbb90180a6cb4`; final Ticket 29 gates recorded in `.scratch/remaining-production-closure/issues/29-native-windows-pipe-authority.md` passed, including native Rust Gate, `tests/e2e/windows/named-pipe-authority.test.ts`, the current named-pipe Companion client contract, `corepack pnpm typecheck`, and `git diff --check`.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs native Windows suspended launch / Job assignment / resume ordering, reset/shutdown verification by PID plus creation time plus Job membership, bounded restartable UIA MTA worker lifecycle, Graph v1 `uia/v1` capture/masking/bounds/deadlines, supported-pattern-only actions, atomic Permit/value digest consumption before dispatch, Emergency Stop, default daemon routing, worker timeout/corruption/exit recovery, and no replay after `ActionOutcomeUnknown`.
+- Planned focused Gate: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `cargo build --workspace`, `cargo test --workspace`, `CI=true corepack pnpm vitest run tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Scope guard: implementation is limited to the Ticket 30 Allowed Files. Ticket 31 owns independent manual/local-console/RDP evidence; signatures/checklist signoff, Graph v1 freeze, unrelated protocol/storage/product changes, public contract changes beyond existing Companion DTO behavior, and files outside the allowed list require explicit maintainer authorization before editing.
+- Dependency approval: supervisor approved a narrow `windows` crate addition for `apps/companion` only, pinned to compatible `0.62.x` with minimal UIAutomation/COM/required Win32 feature set, because native UIA COM implementation is not practical through the existing low-level `windows-sys` surface alone.
+- Scope amendment: supervisor approved a narrow `apps/companion/src/ipc/dto.rs` edit solely to align Rust `DesktopActionKind::Input/Select` serde with the existing public desktop IPC contract's `valueRef` camelCase field and to add direct Rust coverage that old `value_ref` input is rejected.

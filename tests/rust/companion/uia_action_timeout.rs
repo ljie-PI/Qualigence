@@ -10,11 +10,15 @@ use std::time::Duration;
 use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
 use companion::clock::ManualClock;
 use companion::ipc::dto::{
-    DesktopActionKind, DesktopResolution, ResolvedDesktopAction, TargetKind, WindowOperation,
+    DesktopActionKind, DesktopPlaintextValue, DesktopResolution, DesktopValueBinding,
+    LocalExecutionPermit, ResolvedDesktopAction, TargetKind, WindowOperation,
 };
 use companion::permit::{PermitBinding, PermitError, PermitStore};
 use companion::risk::Risk;
-use companion::uia::action::{classify_desktop_action, execute_desktop_action, DesktopActionError};
+use companion::uia::action::{
+    classify_desktop_action, desktop_action_digest_sha256, execute_desktop_action,
+    execute_desktop_action_request, DesktopActionError,
+};
 use companion::uia::protocol::{ActionOutcomeReport, UiaError, WorkerRequest, WorkerResponse};
 use companion::uia::worker_supervisor::{
     UiaWorkerSupervisor, WorkerError, WorkerHandle, WorkerSpawner,
@@ -348,4 +352,187 @@ fn an_action_timeout_is_a_non_replayable_unknown_outcome() {
     // The worker was recycled; there is no automatic retry.
     assert_eq!(supervisor.restart_count(), 1);
     assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+fn input_action(action_id: &str, value_ref: &str) -> ResolvedDesktopAction {
+    let mut action = click_action(action_id);
+    action.kind = DesktopActionKind::Input {
+        value_ref: value_ref.to_string(),
+    };
+    action.uia_pattern = Some("Value".to_string());
+    action
+}
+
+fn local_execution_permit(
+    token: String,
+    action: &ResolvedDesktopAction,
+    binding: &PermitBinding,
+    value_binding: Option<DesktopValueBinding>,
+) -> LocalExecutionPermit {
+    let decision_id = "decision:act".to_string();
+    let policy_id = "policy:desktop".to_string();
+    let nonce_base64 = "nonce".to_string();
+    let expires_at = "2026-08-02T00:01:00.000Z".to_string();
+    LocalExecutionPermit {
+        permit_token: token,
+        nonce_base64: nonce_base64.clone(),
+        session_id: binding.session_id.clone(),
+        run_id: binding.run_id.clone(),
+        action_id: action.action_id.clone(),
+        action_digest_sha256: desktop_action_digest_sha256(
+            &binding.session_id,
+            &binding.run_id,
+            action,
+            &decision_id,
+            &policy_id,
+            binding.risk,
+            &expires_at,
+            &nonce_base64,
+            value_binding.as_ref(),
+        ),
+        graph_id: action.graph_id.clone(),
+        decision_id,
+        policy_id,
+        risk: binding.risk,
+        issued_at: "2026-08-02T00:00:00.000Z".to_string(),
+        expires_at,
+        value_binding,
+    }
+}
+
+#[test]
+fn action_execute_revalidates_value_digest_before_consuming_or_dispatching() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let action = input_action("act-input", "secret-ref");
+    let mut binding = binding_for("act-input", Risk::ExternalSideEffect);
+    let value_binding = DesktopValueBinding {
+        value_ref: "secret-ref".to_string(),
+        value_sha256: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b"
+            .to_string(),
+        value_byte_length: 6,
+    };
+    let digest = desktop_action_digest_sha256(
+        &binding.session_id,
+        &binding.run_id,
+        &action,
+        "decision:act",
+        "policy:desktop",
+        binding.risk,
+        "2026-08-02T00:01:00.000Z",
+        "nonce",
+        Some(&value_binding),
+    );
+    assert_eq!(
+        digest,
+        "dac280eb961c48c285e87e882574fbf662c2a6ac8c1eb9f75b1e180eed2981f5"
+    );
+    binding.action_digest_sha256 = digest;
+    let token = match companion.request_permit(
+        &approval_for("act-input", Risk::ExternalSideEffect),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(permit) => permit.token,
+        other => panic!("expected permit issue, got {other:?}"),
+    };
+
+    let bad_permit = local_execution_permit(
+        token.clone(),
+        &action,
+        &binding,
+        Some(DesktopValueBinding {
+            value_ref: "secret-ref".to_string(),
+            value_sha256: "0".repeat(64),
+            value_byte_length: 6,
+        }),
+    );
+    let bad_value = DesktopPlaintextValue {
+        value_ref: "secret-ref".to_string(),
+        value_sha256: "0".repeat(64),
+        value_byte_length: 6,
+        plaintext: "secret".to_string(),
+    };
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            "sess-1",
+            &action,
+            &bad_permit,
+            Some(bad_value),
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Err(DesktopActionError::BindingMismatch)
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let good_hash = "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b";
+    let good_permit = local_execution_permit(token, &action, &binding, Some(value_binding));
+    let good_value = DesktopPlaintextValue {
+        value_ref: "secret-ref".to_string(),
+        value_sha256: good_hash.to_string(),
+        value_byte_length: 6,
+        plaintext: "secret".to_string(),
+    };
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            "sess-1",
+            &action,
+            &good_permit,
+            Some(good_value),
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn unsupported_uia_pattern_is_reported_without_fallback() {
+    let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let mut action = click_action("act-unsupported");
+    action.uia_pattern = Some("Value".to_string());
+    let binding = binding_for("act-unsupported", Risk::Normal);
+    let token = match companion.request_permit(
+        &approval_for("act-unsupported", Risk::Normal),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(permit) => permit.token,
+        other => panic!("expected permit issue, got {other:?}"),
+    };
+
+    assert_eq!(
+        execute_desktop_action(
+            &mut companion,
+            &mut supervisor,
+            "sess-1",
+            &action,
+            &token,
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Err(DesktopActionError::Uia(UiaError::Reported(
+            "UiaPatternUnsupported".to_string()
+        )))
+    );
+    assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

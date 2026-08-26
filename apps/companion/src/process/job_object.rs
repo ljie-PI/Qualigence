@@ -92,10 +92,24 @@ pub trait DesktopProcessHost {
     fn list_children(&self, pid: u32) -> Vec<HostProcess>;
     /// Terminate every process in the Job atomically (`TerminateJobObject`).
     fn terminate_job(&mut self, job: HostJob) -> Result<(), LifecycleError>;
+    /// Terminate a not-yet-contained suspended process during partial startup
+    /// cleanup. This is used only before resume, so no uncontained code has run.
+    fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError>;
     /// Run the reset helper in its own controlled Job with the declared argv.
     fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError>;
     /// Whether the exact process instance (pid + creation time) is still alive.
     fn is_alive(&self, pid: u32, creation_time: &str) -> bool;
+    /// Return a visible root window handle for the process after resume, if one
+    /// is available before the caller's launch budget expires.
+    fn root_window_handle(&self, pid: u32) -> Option<String>;
+    /// Verify the exact process instance is still a member of the tracked Job.
+    fn verify_process_in_job(
+        &self,
+        job: HostJob,
+        pid: u32,
+        creation_time: &str,
+        expected_image_name: &str,
+    ) -> bool;
 }
 
 /// A portable, deterministic host used by the cross-platform test-suite and by a
@@ -235,6 +249,12 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
         Ok(())
     }
 
+    fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
+        self.processes.remove(&pid);
+        self.ops.push(format!("terminate_process:{pid}"));
+        Ok(())
+    }
+
     fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
         self.last_reset = Some(spec.clone());
         self.ops.push(format!("reset:{}", spec.command));
@@ -247,42 +267,467 @@ impl DesktopProcessHost for FakeDesktopProcessHost {
             .map(|(p, _)| p.creation_time == creation_time)
             .unwrap_or(false)
     }
+
+    fn root_window_handle(&self, pid: u32) -> Option<String> {
+        self.processes
+            .get(&pid)
+            .map(|(process, _)| process.root_window_handle.clone())
+    }
+
+    fn verify_process_in_job(
+        &self,
+        job: HostJob,
+        pid: u32,
+        creation_time: &str,
+        expected_image_name: &str,
+    ) -> bool {
+        self.processes
+            .get(&pid)
+            .map(|(p, owner)| {
+                *owner == Some(job.native_id)
+                    && p.creation_time == creation_time
+                    && p.image_name.eq_ignore_ascii_case(expected_image_name)
+            })
+            .unwrap_or(false)
+    }
 }
 
-/// The real Windows Job Object host. This is the isolated Win32 FFI seam,
-/// compiled only on Windows CI. It is where `CreateProcessW`/`CreateJobObjectW`/
-/// `AssignProcessToJobObject`/`ResumeThread`/`TerminateJobObject` are wired; the
-/// portable [`FakeDesktopProcessHost`] is what the logic tests exercise.
 #[cfg(windows)]
-pub struct WindowsDesktopProcessHost;
+mod windows_host {
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::iter::once;
+    use std::mem::{size_of, zeroed};
+    use std::path::Path;
+    use std::ptr::null;
 
-#[cfg(windows)]
-impl DesktopProcessHost for WindowsDesktopProcessHost {
-    fn create_suspended(&mut self, _spec: &AppLaunchSpec) -> Result<HostProcess, LifecycleError> {
-        Err(LifecycleError::HostError)
+    use super::{
+        AppLaunchSpec, DesktopProcessHost, HostJob, HostProcess, LifecycleError, ResetSpec,
+    };
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, GetExitCodeProcess, GetProcessTimes, QueryFullProcessImageNameW,
+        ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION,
+        STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    #[derive(Debug)]
+    struct OwnedHandle(HANDLE);
+
+    impl OwnedHandle {
+        fn new(handle: HANDLE) -> Result<Self, LifecycleError> {
+            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                Err(LifecycleError::HostError)
+            } else {
+                Ok(Self(handle))
+            }
+        }
+
+        fn raw(&self) -> HANDLE {
+            self.0
+        }
     }
-    fn create_job(&mut self) -> Result<HostJob, LifecycleError> {
-        Err(LifecycleError::HostError)
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
     }
-    fn set_kill_on_close(&mut self, _job: HostJob) -> Result<(), LifecycleError> {
-        Err(LifecycleError::HostError)
+
+    #[derive(Debug)]
+    struct TrackedProcess {
+        process: OwnedHandle,
+        thread: Option<OwnedHandle>,
+        creation_time: String,
+        image_name: String,
+        job_id: Option<u64>,
     }
-    fn assign_to_job(&mut self, _job: HostJob, _pid: u32) -> Result<(), LifecycleError> {
-        Err(LifecycleError::AppLifecycleUnsupported)
+
+    /// Native Windows Job Object host. It never exposes native handles outside
+    /// this module: `HostJob.native_id` is only a process-local lookup key.
+    #[derive(Debug, Default)]
+    pub struct WindowsDesktopProcessHost {
+        next_job_id: u64,
+        jobs: HashMap<u64, OwnedHandle>,
+        processes: HashMap<u32, TrackedProcess>,
     }
-    fn resume(&mut self, _pid: u32) -> Result<(), LifecycleError> {
-        Err(LifecycleError::HostError)
+
+    impl WindowsDesktopProcessHost {
+        pub fn new() -> Self {
+            Self {
+                next_job_id: 1,
+                jobs: HashMap::new(),
+                processes: HashMap::new(),
+            }
+        }
     }
-    fn list_children(&self, _pid: u32) -> Vec<HostProcess> {
-        Vec::new()
+
+    impl DesktopProcessHost for WindowsDesktopProcessHost {
+        fn create_suspended(
+            &mut self,
+            spec: &AppLaunchSpec,
+        ) -> Result<HostProcess, LifecycleError> {
+            if spec.packaged_cannot_join_job {
+                return Err(LifecycleError::AppLifecycleUnsupported);
+            }
+
+            let application = wide(&spec.executable);
+            let mut command_line = wide(&command_line(&spec.executable, &spec.args));
+            let working_directory = spec.working_directory.as_ref().map(|cwd| wide(cwd));
+            let startup = STARTUPINFOW {
+                cb: size_of::<STARTUPINFOW>() as u32,
+                ..unsafe { zeroed() }
+            };
+            let mut process_info: PROCESS_INFORMATION = unsafe { zeroed() };
+            let ok = unsafe {
+                CreateProcessW(
+                    application.as_ptr(),
+                    command_line.as_mut_ptr(),
+                    null(),
+                    null(),
+                    0,
+                    CREATE_SUSPENDED,
+                    null(),
+                    working_directory
+                        .as_ref()
+                        .map(|cwd| cwd.as_ptr())
+                        .unwrap_or(null()),
+                    &startup,
+                    &mut process_info,
+                )
+            };
+            if ok == 0 {
+                return Err(LifecycleError::AppLaunchFailed);
+            }
+
+            let process = OwnedHandle::new(process_info.hProcess)?;
+            let thread = OwnedHandle::new(process_info.hThread)?;
+            let image_path = canonical_process_image_path(process.raw())?;
+            let image_name = file_name(&image_path).unwrap_or_else(|| image_path.clone());
+            if !image_name.eq_ignore_ascii_case(&spec.expected_image_name) {
+                unsafe {
+                    TerminateProcess(process.raw(), 1);
+                }
+                return Err(LifecycleError::AppLaunchFailed);
+            }
+            let creation_time = process_creation_time(process.raw())?;
+            let pid = process_info.dwProcessId;
+            let root_window_handle = root_window_handle_for_pid(pid)
+                .map(|hwnd| format!("0x{:X}", hwnd as usize))
+                .unwrap_or_else(|| "0x0".to_string());
+            self.processes.insert(
+                pid,
+                TrackedProcess {
+                    process,
+                    thread: Some(thread),
+                    creation_time: creation_time.clone(),
+                    image_name: image_name.clone(),
+                    job_id: None,
+                },
+            );
+            Ok(HostProcess {
+                pid,
+                creation_time,
+                image_name,
+                root_window_handle,
+            })
+        }
+
+        fn create_job(&mut self) -> Result<HostJob, LifecycleError> {
+            let handle = OwnedHandle::new(unsafe { CreateJobObjectW(null(), null()) })?;
+            let id = self.next_job_id;
+            self.next_job_id += 1;
+            self.jobs.insert(id, handle);
+            Ok(HostJob { native_id: id })
+        }
+
+        fn set_kill_on_close(&mut self, job: HostJob) -> Result<(), LifecycleError> {
+            let handle = self
+                .jobs
+                .get(&job.native_id)
+                .ok_or(LifecycleError::HostError)?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = unsafe {
+                SetInformationJobObject(
+                    handle.raw(),
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                Err(LifecycleError::HostError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn assign_to_job(&mut self, job: HostJob, pid: u32) -> Result<(), LifecycleError> {
+            let job_handle = self
+                .jobs
+                .get(&job.native_id)
+                .ok_or(LifecycleError::HostError)?;
+            let proc = self
+                .processes
+                .get_mut(&pid)
+                .ok_or(LifecycleError::HostError)?;
+            let ok = unsafe { AssignProcessToJobObject(job_handle.raw(), proc.process.raw()) };
+            if ok == 0 {
+                let code = unsafe { GetLastError() };
+                // Protected, packaged or already-jobbed processes must not be
+                // resumed through a breakaway/elevation fallback.
+                return if code == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED {
+                    Err(LifecycleError::AppLifecycleUnsupported)
+                } else {
+                    Err(LifecycleError::HostError)
+                };
+            }
+            proc.job_id = Some(job.native_id);
+            Ok(())
+        }
+
+        fn resume(&mut self, pid: u32) -> Result<(), LifecycleError> {
+            let proc = self
+                .processes
+                .get_mut(&pid)
+                .ok_or(LifecycleError::HostError)?;
+            let thread = proc.thread.take().ok_or(LifecycleError::HostError)?;
+            let previous = unsafe { ResumeThread(thread.raw()) };
+            if previous == u32::MAX {
+                Err(LifecycleError::HostError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn list_children(&self, _pid: u32) -> Vec<HostProcess> {
+            Vec::new()
+        }
+
+        fn terminate_job(&mut self, job: HostJob) -> Result<(), LifecycleError> {
+            let handle = self
+                .jobs
+                .remove(&job.native_id)
+                .ok_or(LifecycleError::HostError)?;
+            unsafe {
+                TerminateJobObject(handle.raw(), 1);
+            }
+            self.processes
+                .retain(|_, process| process.job_id != Some(job.native_id));
+            Ok(())
+        }
+
+        fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
+            if let Some(process) = self.processes.remove(&pid) {
+                unsafe {
+                    TerminateProcess(process.process.raw(), 1);
+                }
+            }
+            Ok(())
+        }
+
+        fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
+            let reset_launch = AppLaunchSpec {
+                executable: spec.command.clone(),
+                args: spec.args.clone(),
+                working_directory: None,
+                expected_image_name: file_name(&spec.command)
+                    .unwrap_or_else(|| spec.command.clone()),
+                allowed_child_image_names: Vec::new(),
+                packaged_cannot_join_job: false,
+            };
+            let process = self.create_suspended(&reset_launch)?;
+            let job = self.create_job()?;
+            self.set_kill_on_close(job)?;
+            self.assign_to_job(job, process.pid)?;
+            self.resume(process.pid)?;
+            let handle = self
+                .processes
+                .get(&process.pid)
+                .ok_or(LifecycleError::HostError)?
+                .process
+                .raw();
+            let wait = unsafe { WaitForSingleObject(handle, spec.timeout_ms as u32) };
+            if wait == WAIT_OBJECT_0 {
+                self.terminate_job(job)
+            } else if wait == WAIT_TIMEOUT {
+                let _ = self.terminate_job(job);
+                Err(LifecycleError::AppResetFailed)
+            } else {
+                let _ = self.terminate_job(job);
+                Err(LifecycleError::HostError)
+            }
+        }
+
+        fn is_alive(&self, pid: u32, creation_time: &str) -> bool {
+            self.processes
+                .get(&pid)
+                .map(|process| {
+                    process.creation_time == creation_time
+                        && process_exit_code(process.process.raw()) == Some(STILL_ACTIVE as u32)
+                })
+                .unwrap_or(false)
+        }
+
+        fn root_window_handle(&self, pid: u32) -> Option<String> {
+            for _ in 0..20 {
+                if let Some(hwnd) = root_window_handle_for_pid(pid) {
+                    return Some(format!("0x{:X}", hwnd as usize));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            None
+        }
+
+        fn verify_process_in_job(
+            &self,
+            job: HostJob,
+            pid: u32,
+            creation_time: &str,
+            expected_image_name: &str,
+        ) -> bool {
+            let Some(job_handle) = self.jobs.get(&job.native_id) else {
+                return false;
+            };
+            let Some(process) = self.processes.get(&pid) else {
+                return false;
+            };
+            if process.creation_time != creation_time
+                || !process.image_name.eq_ignore_ascii_case(expected_image_name)
+            {
+                return false;
+            }
+            let mut in_job = 0;
+            let ok =
+                unsafe { IsProcessInJob(process.process.raw(), job_handle.raw(), &mut in_job) };
+            ok != 0 && in_job != 0
+        }
     }
-    fn terminate_job(&mut self, _job: HostJob) -> Result<(), LifecycleError> {
-        Err(LifecycleError::HostError)
+
+    fn process_exit_code(process: HANDLE) -> Option<u32> {
+        let mut code = 0u32;
+        let ok = unsafe { GetExitCodeProcess(process, &mut code) };
+        if ok == 0 {
+            None
+        } else {
+            Some(code)
+        }
     }
-    fn run_reset(&mut self, _spec: &ResetSpec) -> Result<(), LifecycleError> {
-        Err(LifecycleError::HostError)
+
+    fn process_creation_time(process: HANDLE) -> Result<String, LifecycleError> {
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut kernel = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut user = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let ok =
+            unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) };
+        if ok == 0 {
+            return Err(LifecycleError::HostError);
+        }
+        let ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+        Ok(format!("filetime:{ticks}"))
     }
-    fn is_alive(&self, _pid: u32, _creation_time: &str) -> bool {
-        false
+
+    fn canonical_process_image_path(process: HANDLE) -> Result<String, LifecycleError> {
+        let mut chars = 32768u32;
+        let mut buffer = vec![0u16; chars as usize];
+        let ok = unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut chars) };
+        if ok == 0 {
+            return Err(LifecycleError::HostError);
+        }
+        buffer.truncate(chars as usize);
+        Ok(String::from_utf16_lossy(&buffer))
+    }
+
+    fn root_window_handle_for_pid(pid: u32) -> Option<HANDLE> {
+        #[repr(C)]
+        struct Search {
+            pid: u32,
+            hwnd: HANDLE,
+        }
+        unsafe extern "system" fn enum_proc(hwnd: HANDLE, lparam: isize) -> i32 {
+            let search = &mut *(lparam as *mut Search);
+            let mut window_pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut window_pid);
+            if window_pid == search.pid && IsWindowVisible(hwnd) != 0 {
+                search.hwnd = hwnd;
+                0
+            } else {
+                1
+            }
+        }
+        let mut search = Search {
+            pid,
+            hwnd: null_mut_handle(),
+        };
+        unsafe {
+            EnumWindows(Some(enum_proc), &mut search as *mut _ as isize);
+        }
+        if search.hwnd.is_null() {
+            None
+        } else {
+            Some(search.hwnd)
+        }
+    }
+
+    fn null_mut_handle() -> HANDLE {
+        std::ptr::null_mut()
+    }
+
+    fn file_name(path: &str) -> Option<String> {
+        Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+    }
+
+    fn command_line(executable: &str, args: &[String]) -> String {
+        std::iter::once(quote_arg(executable))
+            .chain(args.iter().map(|arg| quote_arg(arg)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn quote_arg(arg: &str) -> String {
+        if arg.is_empty() || arg.chars().any(|ch| ch.is_whitespace() || ch == '"') {
+            let escaped = arg.replace('"', "\\\"");
+            format!("\"{escaped}\"")
+        } else {
+            arg.to_string()
+        }
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(once(0)).collect()
     }
 }
+
+#[cfg(windows)]
+pub use windows_host::WindowsDesktopProcessHost;

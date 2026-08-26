@@ -9,7 +9,9 @@
 //! synthetic desktop tree so the worker loop, the supervisor restart logic and
 //! the payload mapping are all genuinely exercised cross-platform.
 
-use crate::ipc::dto::ResolvedDesktopAction;
+use crate::ipc::dto::{
+    DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, WindowOperation,
+};
 use crate::uia::mapping::{masked_value, role_for_control_type};
 use crate::uia::protocol::{
     ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSource, UiaSourceNode,
@@ -25,6 +27,7 @@ pub trait UiaCapture {
         &mut self,
         session_id: &str,
         action: &ResolvedDesktopAction,
+        value: Option<&DesktopPlaintextValue>,
     ) -> Result<ActionOutcomeReport, UiaError>;
 }
 
@@ -58,8 +61,19 @@ impl UiaCapture for SyntheticUiaCapture {
     fn execute(
         &mut self,
         _session_id: &str,
-        _action: &ResolvedDesktopAction,
+        action: &ResolvedDesktopAction,
+        value: Option<&DesktopPlaintextValue>,
     ) -> Result<ActionOutcomeReport, UiaError> {
+        if !action_pattern_is_supported(action) {
+            return Err(UiaError::Reported("UiaPatternUnsupported".to_string()));
+        }
+        if matches!(
+            action.kind,
+            DesktopActionKind::Input { .. } | DesktopActionKind::Select { .. }
+        ) && value.is_none()
+        {
+            return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
+        }
         Ok(ActionOutcomeReport::Ok)
     }
 }
@@ -189,34 +203,489 @@ fn pattern(name: &str, available: bool, read_only: Option<bool>) -> UiaPatternDe
     }
 }
 
-/// The real Windows UIA capture backend. This is the isolated COM FFI seam: it is
-/// only compiled on Windows CI (never on this Linux sandbox) and is where the
-/// `windows` crate `IUIAutomation` tree walk / pattern extraction is wired. The
-/// portable [`SyntheticUiaCapture`] is what the cross-platform logic tests use.
-#[cfg(windows)]
-pub struct WindowsUiaCapture;
+pub fn action_pattern_is_supported(action: &ResolvedDesktopAction) -> bool {
+    let Some(pattern) = action.uia_pattern.as_deref() else {
+        return true;
+    };
+    match &action.kind {
+        DesktopActionKind::Click => pattern == "Invoke",
+        DesktopActionKind::Input { .. } => pattern == "Value",
+        DesktopActionKind::Select { .. } => pattern == "Selection" || pattern == "SelectionItem",
+        DesktopActionKind::Scroll { .. } => pattern == "Scroll",
+        DesktopActionKind::Window { .. } => pattern == "Window",
+    }
+}
 
-#[cfg(windows)]
-impl WindowsUiaCapture {
-    /// Initialise COM as MTA on this worker thread and construct the
-    /// `IUIAutomation` root. Wired against the `windows` crate on Windows CI.
-    pub fn initialize() -> Result<Self, UiaError> {
-        Err(UiaError::WorkerUnavailable)
+pub fn run_worker_stdio<C: UiaCapture>(capture: &mut C) -> Result<(), UiaError> {
+    let limits = crate::ipc::server::FrameLimits::default();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+    loop {
+        let frame = match crate::ipc::server::read_frame(&mut input, &limits) {
+            Ok(frame) => frame,
+            Err(crate::ipc::server::FrameError::Truncated) => return Ok(()),
+            Err(_) => return Err(UiaError::ProtocolCorruption),
+        };
+        let request: crate::uia::protocol::WorkerRequest =
+            serde_json::from_slice(&frame).map_err(|_| UiaError::ProtocolCorruption)?;
+        let response = match request {
+            crate::uia::protocol::WorkerRequest::Capture { session_id } => {
+                match capture.capture(&session_id) {
+                    Ok(source) => crate::uia::protocol::WorkerResponse::Captured { source },
+                    Err(error) => crate::uia::protocol::WorkerResponse::Error {
+                        message: error.code().to_string(),
+                    },
+                }
+            }
+            crate::uia::protocol::WorkerRequest::Execute {
+                session_id,
+                action,
+                mut value,
+            } => {
+                let response = match capture.execute(&session_id, &action, value.as_ref()) {
+                    Ok(outcome) => crate::uia::protocol::WorkerResponse::Executed { outcome },
+                    Err(error) => crate::uia::protocol::WorkerResponse::Error {
+                        message: error.code().to_string(),
+                    },
+                };
+                if let Some(value) = value.as_mut() {
+                    value.plaintext.clear();
+                }
+                response
+            }
+            crate::uia::protocol::WorkerRequest::Ping => crate::uia::protocol::WorkerResponse::Pong,
+        };
+        let body = serde_json::to_vec(&response).map_err(|_| UiaError::ProtocolCorruption)?;
+        crate::ipc::server::write_frame(&mut output, &body, &limits)
+            .map_err(|_| UiaError::ProtocolCorruption)?;
+        std::io::Write::flush(&mut output).map_err(|_| UiaError::ProtocolCorruption)?;
     }
 }
 
 #[cfg(windows)]
-impl UiaCapture for WindowsUiaCapture {
-    fn capture(&mut self, _session_id: &str) -> Result<UiaSource, UiaError> {
-        // Real IUIAutomation tree walk is wired here on Windows CI.
-        Err(UiaError::TargetUnresponsive)
+mod windows_uia {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{
+        action_pattern_is_supported, masked_value, role_for_control_type, ActionOutcomeReport,
+        DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, UiaCapture, UiaError,
+        UiaPatternDescriptor, UiaSource, UiaSourceNode, WindowOperation,
+    };
+    use windows::core::BSTR;
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation8, IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern,
+        IUIAutomationScrollPattern, IUIAutomationSelectionItemPattern, IUIAutomationValuePattern,
+        IUIAutomationWindowPattern, ScrollAmount_LargeDecrement, ScrollAmount_LargeIncrement,
+        ScrollAmount_NoAmount, ScrollAmount_SmallDecrement, ScrollAmount_SmallIncrement,
+        TreeScope_Children, UIA_InvokePatternId, UIA_ScrollPatternId, UIA_SelectionItemPatternId,
+        UIA_ValuePatternId, UIA_WindowPatternId, WindowVisualState_Minimized,
+        WindowVisualState_Normal,
+    };
+
+    const MAX_CAPTURE_NODES: usize = 512;
+    const MAX_CAPTURE_DEPTH: usize = 16;
+
+    struct ComMta;
+
+    impl ComMta {
+        fn init() -> Result<Self, UiaError> {
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+                .ok()
+                .map_err(|_| UiaError::WorkerUnavailable)?;
+            Ok(Self)
+        }
     }
 
-    fn execute(
-        &mut self,
-        _session_id: &str,
-        _action: &ResolvedDesktopAction,
-    ) -> Result<ActionOutcomeReport, UiaError> {
-        Err(UiaError::ActionOutcomeUnknown)
+    impl Drop for ComMta {
+        fn drop(&mut self) {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+
+    /// Native Windows UIA capture/action backend. It is constructed only inside
+    /// the hidden `--uia-worker` child, so all COM objects stay out of the
+    /// Companion authority process.
+    pub struct WindowsUiaCapture {
+        _com: ComMta,
+        automation: IUIAutomation,
+    }
+
+    impl WindowsUiaCapture {
+        pub fn initialize() -> Result<Self, UiaError> {
+            let com = ComMta::init()?;
+            let automation =
+                unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }
+                    .map_err(|_| UiaError::WorkerUnavailable)?;
+            Ok(Self {
+                _com: com,
+                automation,
+            })
+        }
+    }
+
+    impl UiaCapture for WindowsUiaCapture {
+        fn capture(&mut self, session_id: &str) -> Result<UiaSource, UiaError> {
+            let root = unsafe { self.automation.GetRootElement() }
+                .map_err(|_| UiaError::TargetUnresponsive)?;
+            let mut nodes = Vec::new();
+            self.walk(&root, 0, &mut nodes)?;
+            Ok(UiaSource {
+                session_id: session_id.to_string(),
+                captured_at: now_iso_like(),
+                root_node_ids: nodes
+                    .first()
+                    .map(|node| vec![node.node_id.clone()])
+                    .unwrap_or_default(),
+                nodes,
+            })
+        }
+
+        fn execute(
+            &mut self,
+            _session_id: &str,
+            action: &ResolvedDesktopAction,
+            value: Option<&DesktopPlaintextValue>,
+        ) -> Result<ActionOutcomeReport, UiaError> {
+            if !action_pattern_is_supported(action) {
+                return Err(UiaError::Reported("UiaPatternUnsupported".to_string()));
+            }
+            let target = self.find_element(&action.node_id)?;
+            match &action.kind {
+                DesktopActionKind::Click => {
+                    let pattern = unsafe {
+                        target
+                            .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+                    }
+                    .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                    unsafe { pattern.Invoke() }
+                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                }
+                DesktopActionKind::Input { value_ref } => {
+                    let Some(value) = value else {
+                        return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
+                    };
+                    if &value.value_ref != value_ref {
+                        return Err(UiaError::Reported("LocalPermitBindingMismatch".to_string()));
+                    }
+                    let pattern = unsafe {
+                        target.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                    }
+                    .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                    let text = BSTR::from(value.plaintext.as_str());
+                    unsafe { pattern.SetValue(&text) }
+                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                }
+                DesktopActionKind::Select { .. } => {
+                    let pattern = unsafe {
+                        target.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                            UIA_SelectionItemPatternId,
+                        )
+                    }
+                    .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                    unsafe { pattern.Select() }
+                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                }
+                DesktopActionKind::Scroll { direction, amount } => {
+                    let pattern = unsafe {
+                        target
+                            .GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
+                    }
+                    .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                    let small = matches!(amount, crate::ipc::dto::ScrollAmount::Small);
+                    let (horizontal, vertical) = match direction {
+                        crate::ipc::dto::ScrollDirection::Up => (
+                            ScrollAmount_NoAmount,
+                            if small {
+                                ScrollAmount_SmallDecrement
+                            } else {
+                                ScrollAmount_LargeDecrement
+                            },
+                        ),
+                        crate::ipc::dto::ScrollDirection::Down => (
+                            ScrollAmount_NoAmount,
+                            if small {
+                                ScrollAmount_SmallIncrement
+                            } else {
+                                ScrollAmount_LargeIncrement
+                            },
+                        ),
+                        crate::ipc::dto::ScrollDirection::Left => (
+                            if small {
+                                ScrollAmount_SmallDecrement
+                            } else {
+                                ScrollAmount_LargeDecrement
+                            },
+                            ScrollAmount_NoAmount,
+                        ),
+                        crate::ipc::dto::ScrollDirection::Right => (
+                            if small {
+                                ScrollAmount_SmallIncrement
+                            } else {
+                                ScrollAmount_LargeIncrement
+                            },
+                            ScrollAmount_NoAmount,
+                        ),
+                    };
+                    unsafe { pattern.Scroll(horizontal, vertical) }
+                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                }
+                DesktopActionKind::Window { window_operation } => match window_operation {
+                    WindowOperation::Focus => unsafe { target.SetFocus() }
+                        .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?,
+                    WindowOperation::Minimize => {
+                        let pattern = unsafe {
+                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                                UIA_WindowPatternId,
+                            )
+                        }
+                        .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                        unsafe { pattern.SetWindowVisualState(WindowVisualState_Minimized) }
+                            .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                    }
+                    WindowOperation::Restore => {
+                        let pattern = unsafe {
+                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                                UIA_WindowPatternId,
+                            )
+                        }
+                        .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                        unsafe { pattern.SetWindowVisualState(WindowVisualState_Normal) }
+                            .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                    }
+                    WindowOperation::Close => {
+                        let pattern = unsafe {
+                            target.GetCurrentPatternAs::<IUIAutomationWindowPattern>(
+                                UIA_WindowPatternId,
+                            )
+                        }
+                        .map_err(|_| UiaError::Reported("UiaPatternUnsupported".to_string()))?;
+                        unsafe { pattern.Close() }
+                            .map_err(|_| UiaError::Reported("UiaActionFailed".to_string()))?;
+                    }
+                },
+            }
+            Ok(ActionOutcomeReport::Ok)
+        }
+    }
+
+    impl WindowsUiaCapture {
+        fn walk(
+            &self,
+            element: &IUIAutomationElement,
+            depth: usize,
+            nodes: &mut Vec<UiaSourceNode>,
+        ) -> Result<String, UiaError> {
+            if nodes.len() >= MAX_CAPTURE_NODES || depth > MAX_CAPTURE_DEPTH {
+                return Err(UiaError::Reported("UiaCaptureBoundsExceeded".to_string()));
+            }
+            let node_id = format!("uia-{}", nodes.len());
+            let control_type = unsafe { element.CurrentControlType() }
+                .map(|value| value.0)
+                .unwrap_or(0);
+            let is_password = unsafe { element.CurrentIsPassword() }
+                .map(|value| value.as_bool())
+                .unwrap_or(false);
+            let value = if is_password {
+                masked_value(true, None)
+            } else {
+                current_value(element)
+            };
+            let rect = unsafe { element.CurrentBoundingRectangle() }.ok();
+            let mut node = UiaSourceNode {
+                node_id: node_id.clone(),
+                role: role_for_control_type(control_type),
+                control_type_id: control_type,
+                name: current_bstr(element, |element| unsafe { element.CurrentName() }),
+                value,
+                automation_id: current_bstr(element, |element| unsafe {
+                    element.CurrentAutomationId()
+                }),
+                framework_id: current_bstr(element, |element| unsafe {
+                    element.CurrentFrameworkId()
+                }),
+                class_name: current_bstr(element, |element| unsafe { element.CurrentClassName() }),
+                native_window_handle: unsafe { element.CurrentNativeWindowHandle() }
+                    .ok()
+                    .filter(|hwnd| !hwnd.is_invalid())
+                    .map(|hwnd| format!("0x{:X}", hwnd.0 as usize)),
+                process_id: unsafe { element.CurrentProcessId() }.unwrap_or_default(),
+                is_offscreen: unsafe { element.CurrentIsOffscreen() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                is_keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                has_keyboard_focus: unsafe { element.CurrentHasKeyboardFocus() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                is_password,
+                bounds: rect.map(rect_to_bounds),
+                patterns: supported_patterns(element),
+                children: Vec::new(),
+            };
+            let index = nodes.len();
+            nodes.push(node.clone());
+
+            if depth < MAX_CAPTURE_DEPTH {
+                let condition = unsafe { self.automation.CreateTrueCondition() }
+                    .map_err(|_| UiaError::TargetUnresponsive)?;
+                if let Ok(children) = unsafe { element.FindAll(TreeScope_Children, &condition) } {
+                    let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
+                    for i in 0..len.min(MAX_CAPTURE_NODES.saturating_sub(nodes.len())) {
+                        if let Ok(child) = unsafe { children.GetElement(i as i32) } {
+                            let child_id = self.walk(&child, depth + 1, nodes)?;
+                            node.children.push(child_id);
+                        }
+                    }
+                }
+            }
+            nodes[index] = node;
+            Ok(node_id)
+        }
+
+        fn find_element(&self, node_id: &str) -> Result<IUIAutomationElement, UiaError> {
+            let root = unsafe { self.automation.GetRootElement() }
+                .map_err(|_| UiaError::TargetUnresponsive)?;
+            let mut cursor = 0usize;
+            self.find_by_generated_id(&root, node_id, &mut cursor, 0)
+        }
+
+        fn find_by_generated_id(
+            &self,
+            element: &IUIAutomationElement,
+            wanted: &str,
+            cursor: &mut usize,
+            depth: usize,
+        ) -> Result<IUIAutomationElement, UiaError> {
+            let current_id = format!("uia-{cursor}");
+            *cursor += 1;
+            if current_id == wanted {
+                return Ok(element.clone());
+            }
+            if depth >= MAX_CAPTURE_DEPTH || *cursor >= MAX_CAPTURE_NODES {
+                return Err(UiaError::Reported("UiaElementNotFound".to_string()));
+            }
+            let condition = unsafe { self.automation.CreateTrueCondition() }
+                .map_err(|_| UiaError::TargetUnresponsive)?;
+            if let Ok(children) = unsafe { element.FindAll(TreeScope_Children, &condition) } {
+                let len = unsafe { children.Length() }.unwrap_or(0).max(0) as usize;
+                for i in 0..len.min(MAX_CAPTURE_NODES.saturating_sub(*cursor)) {
+                    if let Ok(child) = unsafe { children.GetElement(i as i32) } {
+                        if let Ok(found) =
+                            self.find_by_generated_id(&child, wanted, cursor, depth + 1)
+                        {
+                            return Ok(found);
+                        }
+                    }
+                }
+            }
+            Err(UiaError::Reported("UiaElementNotFound".to_string()))
+        }
+    }
+
+    fn current_bstr<F>(element: &IUIAutomationElement, f: F) -> Option<String>
+    where
+        F: FnOnce(&IUIAutomationElement) -> windows::core::Result<BSTR>,
+    {
+        f(element).ok().and_then(|bstr| {
+            let value = String::try_from(&bstr).ok()?;
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        })
+    }
+
+    fn current_value(element: &IUIAutomationElement) -> Option<String> {
+        let pattern =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
+                .ok()?;
+        unsafe { pattern.CurrentValue() }.ok().and_then(|bstr| {
+            let value = String::try_from(&bstr).ok()?;
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        })
+    }
+
+    fn rect_to_bounds(rect: RECT) -> crate::uia::protocol::UiaBounds {
+        crate::uia::protocol::UiaBounds {
+            x: rect.left as f64,
+            y: rect.top as f64,
+            width: (rect.right - rect.left).max(0) as f64,
+            height: (rect.bottom - rect.top).max(0) as f64,
+        }
+    }
+
+    fn supported_patterns(element: &IUIAutomationElement) -> Vec<UiaPatternDescriptor> {
+        let mut patterns = Vec::new();
+        if unsafe { element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) }
+            .is_ok()
+        {
+            patterns.push(pattern("Invoke", true, None));
+        }
+        if let Ok(value) =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
+        {
+            patterns.push(pattern(
+                "Value",
+                true,
+                unsafe { value.CurrentIsReadOnly() }
+                    .ok()
+                    .map(|v| v.as_bool()),
+            ));
+        }
+        if unsafe {
+            element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                UIA_SelectionItemPatternId,
+            )
+        }
+        .is_ok()
+        {
+            patterns.push(pattern("SelectionItem", true, None));
+            patterns.push(pattern("Selection", true, None));
+        }
+        if unsafe { element.GetCurrentPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId) }
+            .is_ok()
+        {
+            patterns.push(pattern("Scroll", true, None));
+        }
+        if unsafe { element.GetCurrentPatternAs::<IUIAutomationWindowPattern>(UIA_WindowPatternId) }
+            .is_ok()
+        {
+            patterns.push(pattern("Window", true, None));
+        }
+        patterns
+    }
+
+    fn pattern(name: &str, available: bool, read_only: Option<bool>) -> UiaPatternDescriptor {
+        UiaPatternDescriptor {
+            pattern: name.to_string(),
+            available,
+            read_only,
+        }
+    }
+
+    fn now_iso_like() -> String {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        format!("unix-ms:{millis}")
     }
 }
+
+#[cfg(windows)]
+pub use windows_uia::WindowsUiaCapture;

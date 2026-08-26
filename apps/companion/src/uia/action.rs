@@ -13,12 +13,17 @@ use std::time::Duration;
 
 use crate::approval::Approver;
 use crate::clock::Clock;
-use crate::ipc::dto::{DesktopActionKind, ResolvedDesktopAction, WindowOperation};
+use crate::ipc::dto::{
+    DesktopActionKind, DesktopPlaintextValue, LocalExecutionPermit, ResolvedDesktopAction,
+    WindowOperation,
+};
 use crate::permit::{PermitBinding, PermitError};
 use crate::risk::Risk;
 use crate::uia::protocol::{ActionOutcomeReport, UiaError};
+use crate::uia::worker::action_pattern_is_supported;
 use crate::uia::worker_supervisor::{UiaWorkerSupervisor, WorkerSpawner};
 use crate::Companion;
+use sha2::{Digest, Sha256};
 
 /// The Companion-side, independent risk classification for a desktop action.
 ///
@@ -48,6 +53,9 @@ pub enum DesktopActionError {
     /// The one-time Permit was missing, replayed, expired, mismatched, or the
     /// Session was paused / emergency-stopped. No COM call was attempted.
     Permit(PermitError),
+    /// The presented LocalExecutionPermit, action digest, or plaintext value
+    /// binding did not match. No worker dispatch occurred.
+    BindingMismatch,
     /// The Permit was consumed but the UIA worker failed (e.g. timeout →
     /// `ActionOutcomeUnknown`). Never retried automatically.
     Uia(UiaError),
@@ -73,11 +81,228 @@ where
     A: Approver,
     S: WorkerSpawner,
 {
+    if !action_pattern_is_supported(action) {
+        return Err(DesktopActionError::Uia(UiaError::Reported(
+            "UiaPatternUnsupported".to_string(),
+        )));
+    }
+
     companion
         .authorize_action(permit_token, binding)
         .map_err(DesktopActionError::Permit)?;
 
     supervisor
-        .execute(session_id, action, deadline)
+        .execute(session_id, action, None, deadline)
         .map_err(DesktopActionError::Uia)
+}
+
+/// Execute an `action.execute` IPC request. This revalidates the complete local
+/// Permit/action/value envelope before atomically consuming the one-use Permit,
+/// then clears any plaintext buffer after every outcome.
+pub fn execute_desktop_action_request<C, A, S>(
+    companion: &mut Companion<C, A>,
+    supervisor: &mut UiaWorkerSupervisor<S>,
+    session_id: &str,
+    action: &ResolvedDesktopAction,
+    permit: &LocalExecutionPermit,
+    mut value: Option<DesktopPlaintextValue>,
+    binding: &PermitBinding,
+    deadline: Duration,
+) -> Result<ActionOutcomeReport, DesktopActionError>
+where
+    C: Clock,
+    A: Approver,
+    S: WorkerSpawner,
+{
+    if !permit_matches_action(session_id, action, permit, binding)
+        || !value_matches_permit(action, permit, value.as_ref())
+    {
+        clear_plaintext(&mut value);
+        return Err(DesktopActionError::BindingMismatch);
+    }
+
+    if !action_pattern_is_supported(action) {
+        clear_plaintext(&mut value);
+        return Err(DesktopActionError::Uia(UiaError::Reported(
+            "UiaPatternUnsupported".to_string(),
+        )));
+    }
+
+    let consume = companion
+        .authorize_action(&permit.permit_token, binding)
+        .map_err(DesktopActionError::Permit);
+    if consume.is_err() {
+        clear_plaintext(&mut value);
+        return consume.map(|_| ActionOutcomeReport::Ok);
+    }
+
+    let dispatch_value = value.clone();
+    let outcome = supervisor
+        .execute(session_id, action, dispatch_value, deadline)
+        .map_err(DesktopActionError::Uia);
+    clear_plaintext(&mut value);
+    outcome
+}
+
+fn permit_matches_action(
+    session_id: &str,
+    action: &ResolvedDesktopAction,
+    permit: &LocalExecutionPermit,
+    binding: &PermitBinding,
+) -> bool {
+    permit.session_id == session_id
+        && permit.session_id == binding.session_id
+        && permit.run_id == binding.run_id
+        && permit.action_id == binding.action_id
+        && permit.action_id == action.action_id
+        && permit.action_digest_sha256 == binding.action_digest_sha256
+        && permit.action_digest_sha256
+            == desktop_action_digest_sha256(
+                &permit.session_id,
+                &permit.run_id,
+                action,
+                &permit.decision_id,
+                &permit.policy_id,
+                permit.risk,
+                &permit.expires_at,
+                &permit.nonce_base64,
+                permit.value_binding.as_ref(),
+            )
+        && permit.graph_id == binding.graph_id
+        && permit.graph_id == action.graph_id
+        && permit.risk == binding.risk
+        && !permit.permit_token.is_empty()
+        && !permit.nonce_base64.is_empty()
+        && !permit.decision_id.is_empty()
+        && !permit.policy_id.is_empty()
+        && !permit.issued_at.is_empty()
+        && !permit.expires_at.is_empty()
+}
+
+fn value_matches_permit(
+    action: &ResolvedDesktopAction,
+    permit: &LocalExecutionPermit,
+    value: Option<&DesktopPlaintextValue>,
+) -> bool {
+    let action_value_ref = match &action.kind {
+        DesktopActionKind::Input { value_ref } | DesktopActionKind::Select { value_ref } => {
+            Some(value_ref)
+        }
+        _ => None,
+    };
+    match (action_value_ref, permit.value_binding.as_ref(), value) {
+        (None, None, None) => true,
+        (Some(action_ref), Some(binding), Some(value)) => {
+            action_ref == &binding.value_ref
+                && value.value_ref == binding.value_ref
+                && value.value_sha256 == binding.value_sha256
+                && value.value_byte_length == binding.value_byte_length
+                && value.value_byte_length == value.plaintext.as_bytes().len() as u64
+                && sha256_hex(value.plaintext.as_bytes()) == binding.value_sha256
+        }
+        _ => false,
+    }
+}
+
+fn clear_plaintext(value: &mut Option<DesktopPlaintextValue>) {
+    if let Some(value) = value.as_mut() {
+        value.plaintext.clear();
+    }
+}
+
+pub fn desktop_action_digest_sha256(
+    session_id: &str,
+    run_id: &str,
+    action: &ResolvedDesktopAction,
+    decision_id: &str,
+    policy_id: &str,
+    risk: Risk,
+    expires_at: &str,
+    nonce_base64: &str,
+    value_binding: Option<&crate::ipc::dto::DesktopValueBinding>,
+) -> String {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "schema".to_string(),
+        serde_json::Value::String("qualigence-desktop-action-digest/v1".to_string()),
+    );
+    object.insert(
+        "sessionId".to_string(),
+        serde_json::Value::String(session_id.to_string()),
+    );
+    object.insert(
+        "runId".to_string(),
+        serde_json::Value::String(run_id.to_string()),
+    );
+    object.insert(
+        "action".to_string(),
+        serde_json::to_value(action).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "decisionId".to_string(),
+        serde_json::Value::String(decision_id.to_string()),
+    );
+    object.insert(
+        "policyId".to_string(),
+        serde_json::Value::String(policy_id.to_string()),
+    );
+    object.insert(
+        "risk".to_string(),
+        serde_json::to_value(risk).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "expiresAt".to_string(),
+        serde_json::Value::String(expires_at.to_string()),
+    );
+    object.insert(
+        "nonceBase64".to_string(),
+        serde_json::Value::String(nonce_base64.to_string()),
+    );
+    if let Some(value_binding) = value_binding {
+        object.insert(
+            "valueBinding".to_string(),
+            serde_json::to_value(value_binding).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    sha256_hex(canonicalize_json(&serde_json::Value::Object(object)).as_bytes())
+}
+
+fn canonicalize_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => {
+            serde_json::to_string(value).expect("string serializes")
+        }
+        serde_json::Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonicalize_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        serde_json::Value::Object(map) => {
+            let mut entries = map
+                .iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).expect("key serializes"),
+                        canonicalize_json(value)
+                    )
+                })
+                .collect::<Vec<_>>();
+            entries.sort();
+            format!("{{{}}}", entries.join(","))
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }

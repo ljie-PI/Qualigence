@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use crate::ipc::dto::ResolvedDesktopAction;
+use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 use crate::uia::protocol::{
     ActionOutcomeReport, UiaError, UiaSource, WorkerRequest, WorkerResponse,
 };
@@ -150,11 +150,13 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         &mut self,
         session_id: &str,
         action: &ResolvedDesktopAction,
+        value: Option<DesktopPlaintextValue>,
         deadline: Duration,
     ) -> Result<ActionOutcomeReport, UiaError> {
         let req = WorkerRequest::Execute {
             session_id: session_id.to_string(),
             action: action.clone(),
+            value,
         };
         match self.dispatch(&req, deadline) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
@@ -171,3 +173,204 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         }
     }
 }
+
+#[cfg(windows)]
+mod native_child {
+    use std::io::{Read, Write};
+    use std::os::windows::io::AsRawHandle;
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    use super::{WorkerError, WorkerHandle, WorkerRequest, WorkerResponse, WorkerSpawner};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    #[derive(Debug, Default)]
+    pub struct NativeUiaWorkerSpawner {
+        executable: Option<std::path::PathBuf>,
+    }
+
+    impl NativeUiaWorkerSpawner {
+        pub fn new() -> Self {
+            Self { executable: None }
+        }
+
+        pub fn with_executable(executable: impl Into<std::path::PathBuf>) -> Self {
+            Self {
+                executable: Some(executable.into()),
+            }
+        }
+    }
+
+    impl WorkerSpawner for NativeUiaWorkerSpawner {
+        type Handle = NativeUiaWorkerHandle;
+
+        fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+            let executable = match &self.executable {
+                Some(path) => path.clone(),
+                None => std::env::current_exe().map_err(|_| WorkerError::Spawn)?,
+            };
+            let mut child = Command::new(executable)
+                .arg("--uia-worker")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| WorkerError::Spawn)?;
+
+            let stdin = child.stdin.take().ok_or(WorkerError::Spawn)?;
+            let stdout = child.stdout.take().ok_or(WorkerError::Spawn)?;
+            let job = WorkerJob::create()?;
+            job.assign_child(&child)?;
+            Ok(NativeUiaWorkerHandle {
+                child,
+                stdin,
+                stdout: Arc::new(Mutex::new(stdout)),
+                job,
+                alive: true,
+            })
+        }
+    }
+
+    pub struct NativeUiaWorkerHandle {
+        child: Child,
+        stdin: ChildStdin,
+        stdout: Arc<Mutex<ChildStdout>>,
+        job: WorkerJob,
+        alive: bool,
+    }
+
+    impl WorkerHandle for NativeUiaWorkerHandle {
+        fn request(
+            &mut self,
+            req: &WorkerRequest,
+            deadline: Duration,
+        ) -> Result<WorkerResponse, WorkerError> {
+            let body = serde_json::to_vec(req).map_err(|_| WorkerError::Corrupt)?;
+            crate::ipc::server::write_frame(
+                &mut self.stdin,
+                &body,
+                &crate::ipc::server::FrameLimits::default(),
+            )
+            .map_err(|_| {
+                self.alive = false;
+                WorkerError::Closed
+            })?;
+            self.stdin.flush().map_err(|_| {
+                self.alive = false;
+                WorkerError::Closed
+            })?;
+
+            let stdout = Arc::clone(&self.stdout);
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = stdout
+                    .lock()
+                    .map_err(|_| WorkerError::Corrupt)
+                    .and_then(|mut out| read_worker_response(&mut *out));
+                let _ = tx.send(result);
+            });
+
+            match rx.recv_timeout(deadline) {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(err)) => {
+                    self.alive = false;
+                    Err(err)
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.kill();
+                    Err(WorkerError::Timeout)
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.alive = false;
+                    Err(WorkerError::Closed)
+                }
+            }
+        }
+
+        fn kill(&mut self) {
+            self.alive = false;
+            self.job.terminate();
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+
+        fn is_alive(&self) -> bool {
+            self.alive
+        }
+    }
+
+    fn read_worker_response<R: Read>(reader: &mut R) -> Result<WorkerResponse, WorkerError> {
+        let body =
+            crate::ipc::server::read_frame(reader, &crate::ipc::server::FrameLimits::default())
+                .map_err(|error| match error {
+                    crate::ipc::server::FrameError::Truncated
+                    | crate::ipc::server::FrameError::Io => WorkerError::Closed,
+                    _ => WorkerError::Corrupt,
+                })?;
+        serde_json::from_slice(&body).map_err(|_| WorkerError::Corrupt)
+    }
+
+    struct WorkerJob {
+        handle: HANDLE,
+    }
+
+    impl WorkerJob {
+        fn create() -> Result<Self, WorkerError> {
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                return Err(WorkerError::Spawn);
+            }
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = unsafe {
+                SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                return Err(WorkerError::Spawn);
+            }
+            Ok(Self { handle })
+        }
+
+        fn assign_child(&self, child: &Child) -> Result<(), WorkerError> {
+            let ok = unsafe { AssignProcessToJobObject(self.handle, child.as_raw_handle()) };
+            if ok == 0 {
+                Err(WorkerError::Spawn)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn terminate(&self) {
+            unsafe {
+                TerminateJobObject(self.handle, 1);
+            }
+        }
+    }
+
+    impl Drop for WorkerJob {
+        fn drop(&mut self) {
+            if !self.handle.is_null() && self.handle != INVALID_HANDLE_VALUE {
+                unsafe {
+                    CloseHandle(self.handle);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use native_child::NativeUiaWorkerSpawner;

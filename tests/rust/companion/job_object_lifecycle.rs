@@ -183,11 +183,27 @@ fn a_packaged_app_that_cannot_join_a_job_fails_as_unsupported() {
         ) -> Result<(), LifecycleError> {
             self.0.terminate_job(job)
         }
+        fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
+            self.0.terminate_process(pid)
+        }
         fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
             self.0.run_reset(spec)
         }
         fn is_alive(&self, pid: u32, creation_time: &str) -> bool {
             self.0.is_alive(pid, creation_time)
+        }
+        fn root_window_handle(&self, pid: u32) -> Option<String> {
+            self.0.root_window_handle(pid)
+        }
+        fn verify_process_in_job(
+            &self,
+            job: companion::process::job_object::HostJob,
+            pid: u32,
+            creation_time: &str,
+            expected_image_name: &str,
+        ) -> bool {
+            self.0
+                .verify_process_in_job(job, pid, creation_time, expected_image_name)
         }
     }
 
@@ -217,4 +233,119 @@ fn reset_uses_the_declared_argv_and_timeout() {
         .clone()
         .expect("reset spec recorded");
     assert_eq!(recorded, reset);
+}
+
+#[test]
+fn reset_and_shutdown_require_exact_job_membership_before_side_effects() {
+    struct MembershipRejectingHost(FakeDesktopProcessHost);
+    impl DesktopProcessHost for MembershipRejectingHost {
+        fn create_suspended(
+            &mut self,
+            spec: &AppLaunchSpec,
+        ) -> Result<HostProcess, LifecycleError> {
+            self.0.create_suspended(spec)
+        }
+        fn create_job(
+            &mut self,
+        ) -> Result<companion::process::job_object::HostJob, LifecycleError> {
+            self.0.create_job()
+        }
+        fn set_kill_on_close(
+            &mut self,
+            job: companion::process::job_object::HostJob,
+        ) -> Result<(), LifecycleError> {
+            self.0.set_kill_on_close(job)
+        }
+        fn assign_to_job(
+            &mut self,
+            job: companion::process::job_object::HostJob,
+            pid: u32,
+        ) -> Result<(), LifecycleError> {
+            self.0.assign_to_job(job, pid)
+        }
+        fn resume(&mut self, pid: u32) -> Result<(), LifecycleError> {
+            self.0.resume(pid)
+        }
+        fn list_children(&self, pid: u32) -> Vec<HostProcess> {
+            self.0.list_children(pid)
+        }
+        fn terminate_job(
+            &mut self,
+            job: companion::process::job_object::HostJob,
+        ) -> Result<(), LifecycleError> {
+            self.0.terminate_job(job)
+        }
+        fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
+            self.0.terminate_process(pid)
+        }
+        fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
+            self.0.run_reset(spec)
+        }
+        fn is_alive(&self, pid: u32, creation_time: &str) -> bool {
+            self.0.is_alive(pid, creation_time)
+        }
+        fn root_window_handle(&self, pid: u32) -> Option<String> {
+            self.0.root_window_handle(pid)
+        }
+        fn verify_process_in_job(
+            &self,
+            _job: companion::process::job_object::HostJob,
+            _pid: u32,
+            _creation_time: &str,
+            _expected_image_name: &str,
+        ) -> bool {
+            false
+        }
+    }
+
+    let mut manager =
+        AppSessionManager::new(MembershipRejectingHost(FakeDesktopProcessHost::new()));
+    manager.launch("sess-1", &spec()).expect("launch succeeds");
+
+    let reset = ResetSpec {
+        command: "C:/Apps/reset.exe".into(),
+        args: vec!["--wipe".into()],
+        timeout_ms: 5_000,
+    };
+    assert_eq!(
+        manager.reset("sess-1", &reset),
+        Err(LifecycleError::AppLifecycleUnsupported)
+    );
+    assert!(manager.host().0.last_reset.is_none());
+
+    assert_eq!(
+        manager.shutdown("sess-1"),
+        Err(LifecycleError::AppLifecycleUnsupported)
+    );
+    assert!(manager.session("sess-1").is_some());
+}
+
+#[cfg(windows)]
+#[test]
+fn native_windows_host_launches_in_job_and_shutdown_verifies_membership() {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:/Windows".to_string());
+    let powershell = format!("{system_root}/System32/WindowsPowerShell/v1.0/powershell.exe");
+    let spec = AppLaunchSpec {
+        executable: powershell,
+        args: vec![
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-Command".into(),
+            "Start-Sleep -Seconds 30".into(),
+        ],
+        working_directory: None,
+        expected_image_name: "powershell.exe".into(),
+        allowed_child_image_names: vec![],
+        packaged_cannot_join_job: false,
+    };
+    let mut manager =
+        AppSessionManager::new(companion::process::job_object::WindowsDesktopProcessHost::new());
+    let session = manager
+        .launch("native-sess", &spec)
+        .expect("native target launches under a Job Object");
+    assert!(manager.is_session_alive("native-sess"));
+    assert_eq!(session.image_name, "powershell.exe");
+    manager
+        .shutdown("native-sess")
+        .expect("verified Job member shuts down");
 }
