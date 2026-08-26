@@ -4,7 +4,7 @@
 
 **Blocked by:** 43 - Revalidate bounded Promise owner descriptors.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -118,7 +118,7 @@ The Chromium E2E must mutate and restore descriptors/prototypes after first appr
 - Blocker: the Ticket 44 matrix rows for direct assignment/deletion followed by exact restoration before capture cannot be satisfied non-intrusively for ordinary page objects/Promise owners. ECMAScript exposes no hook for `owner.then = replacement` or `delete owner.then` on a plain object when the page restores the original descriptor/prototype before any instrumented Promise method, guarded `Object`/`Reflect` helper, or capture-time validation observes the changed state.
 - Implemented prototype in the worktree can latch guarded `Object.defineProperty`/`Object.defineProperties`/`Object.assign`/`Object.setPrototypeOf` and `Reflect.*` mutations, and can latch direct assignment when a sensitive epoch re-observes the owner while it is still changed; it cannot prove an unobserved direct set/delete+restore history.
 - Intrusive alternatives would require wrapping/freezing/redefining approved owner descriptors, interposing proxies, or otherwise changing object/prototype semantics. Those options would alter observable descriptor state or assignment/delete behavior and violate the native Promise/application behavior requirement.
-- Status set to `needs-info`; no PR/final evidence should be created until maintainers resolve the authority conflict.
+- Historical blocker note: initial implementation hit an authority conflict and was paused for maintainer decision. Maintainer selected Option A; implementation continued under the revised acceptance boundary.
 
 ### maintainer-decision — 2026-08-26
 
@@ -139,8 +139,25 @@ The Chromium E2E must mutate and restore descriptors/prototypes after first appr
 
 ## Acceptance
 
-- [ ] Controlled instrumentation completes before exactly one immutable first-approved snapshot is stored per owner.
+- [x] Controlled instrumentation completes before exactly one immutable first-approved snapshot is stored per owner.
 - [ ] Later assignment, deletion, descriptor/accessor/method replacement, or prototype change that is observed through a controlled/captured Object/Reflect API, instrumented Promise owner re-observation while changed, capture-boundary validation mismatch, inspection failure, incomplete enumeration, overflow, or another observable owner/prototype/descriptor authority failure permanently poisons sensitive evidence for the session, even after exact restoration or re-registration. Direct assignment/delete plus exact restoration entirely between observation points is explicitly out of claim.
-- [ ] Snapshot and validation use captured native intrinsic authority and preserve native Promise/application behavior.
-- [ ] Ticket 43 enumerable registry/revalidation remains green but is not re-claimed as Ticket 44 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] Snapshot and validation use captured native intrinsic authority and preserve native Promise/application behavior.
+- [x] Ticket 43 enumerable registry/revalidation remains green but is not re-claimed as Ticket 44 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `5bcbbf95c6180e00f7e0f73afece761ec6885408`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/38db09e8-5a9a-41c0-85bf-a2e50e49921b/ticket44-review2/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/38db09e8-5a9a-41c0-85bf-a2e50e49921b/ticket44-review2/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts tests/component/web-execution/promise-owner-snapshot.test.ts` (5 files / 45 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/121`.
+
+## Answer
+
+Implemented Ticket 44 under the maintainer-approved Option A boundary. Promise owner authority now records immutable first-approved snapshots, uses captured native intrinsic authority for snapshot/validation and guarded mutation APIs, never refreshes approved owner records, permanently poisons sensitive evidence for observed owner descriptor/prototype/method changes even after restoration or re-registration, preserves native Promise/application behavior, and keeps the unobservable direct mutation plus exact-restore history outside the ticket's claim. Focused component coverage and Chromium valueRef E2E prove fail-closed evidence behavior.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/121`
+
+Reviewed code/test head: `5bcbbf95c6180e00f7e0f73afece761ec6885408`
+
+Final verification: focused Ticket 44 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
