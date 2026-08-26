@@ -127,3 +127,13 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 - Fix commit: `93fa730dfce93ba74f366493e397cde3cbb9f562` (`Fix Ticket 42 Promise accounting blockers`).
 - Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
 - Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, or DOM geometry work is added pending a fresh complete-matrix review.
+
+### review2-fix — 2026-08-26
+
+- Reviewed head fixed: `04538b8852ccd5098fe03d50ab88f8cee679f681`.
+- Review2 core blockers fixed: custom receiver `catch`/`finally` native-delegation suppression now keys off the actual `then` value obtained by the native-equivalent `Get`/`Invoke` path, so Proxy receivers no longer see extra `getOwnPropertyDescriptor` or `getPrototypeOf` traps before the native incompatible-receiver `TypeError`.
+- Review2 core blockers fixed: custom receiver `then` accessors that return the default `Promise.prototype.then` are treated as native internal `catch`/`finally` delegation, so one direct application `catch`/`finally` call counts once; custom receiver methods that explicitly call `Promise.prototype.then` still count the additional registration exactly once.
+- Native oracle/accounting coverage expanded: Proxy trap-order `catch`/`finally` cases now compare instrumented Chromium with the uninstrumented native realm, and accounting covers accessor-returned default `then` for direct `catch`/`finally` calls.
+- Fix commit: `e7d88d8665ed0b6bdaafb11ed83fb315709f3989` (`Fix Ticket 42 review2 Promise transparency blockers`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
