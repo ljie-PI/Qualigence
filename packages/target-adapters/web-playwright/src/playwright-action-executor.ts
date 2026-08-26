@@ -312,7 +312,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             }
             try {
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "input", value);
-              if (startedEpoch.status === "failed") {
+              if (startedEpoch?.status === "failed") {
                 await endPageSensitiveActionEpoch(
                   locator,
                   sensitiveEvidence,
@@ -339,7 +339,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
                   permit.dispatchStarted,
                 );
               }
-              if (epochResult.status === "failed") {
+              if (epochResult?.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
               } else {
                 await this.completeInputSensitiveEvidence(locator, sensitiveEvidence);
@@ -364,7 +364,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
             }
             try {
               const startedEpoch = await beginPageSensitiveActionEpoch(locator, sensitiveEvidence, "select", value);
-              if (startedEpoch.status === "failed") {
+              if (startedEpoch?.status === "failed") {
                 await endPageSensitiveActionEpoch(
                   locator,
                   sensitiveEvidence,
@@ -391,7 +391,7 @@ export class PlaywrightActionExecutor implements ActionExecutor {
                   permit.dispatchStarted,
                 );
               }
-              if (epochResult.status === "failed") {
+              if (epochResult?.status === "failed") {
                 this.session.abandonSensitiveEvidenceDispatch(sensitiveEvidence);
               } else {
                 await this.completeSelectSensitiveEvidence(locator, sensitiveEvidence);
@@ -774,7 +774,9 @@ async function beginPageSensitiveActionEpoch(
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
       const values = new Set<string>([source]);
       if (actionKind === "input") {
-        const browserValue = source.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const lineFeed = String.fromCharCode(10);
+        const carriageReturn = String.fromCharCode(13);
+        const browserValue = source.split(carriageReturn + lineFeed).join(lineFeed).split(carriageReturn).join(lineFeed);
         values.add(browserValue);
         values.add(normalizeVisibleSensitiveForm(browserValue));
       }
@@ -789,7 +791,6 @@ async function beginPageSensitiveActionEpoch(
       }
       return Array.from(values).filter((value) => value !== "");
     }
-
     function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, ReadonlySet<string>> {
       const result = new WeakMap<Element, ReadonlySet<string>>();
       void document;
@@ -1315,6 +1316,8 @@ async function endPageSensitiveActionEpoch(
       return { status: "failed" };
     }
     if (input.retainRecord) {
+      active.forms = mergeSensitiveForms(active.forms, reflectedCandidateForms(element, input.kind));
+      processCurrentSensitiveMatches(state, active);
       const records = [...active.deferredRecords, ...active.observer.takeRecords()];
       active.deferredRecords = [];
       processMutationRecords(
@@ -1382,6 +1385,20 @@ async function endPageSensitiveActionEpoch(
         return;
       }
       host[input.targetIdsProperty] = remaining;
+    }
+
+    function processCurrentSensitiveMatches(
+      stateToUpdate: BrowserSensitiveState,
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+    ): void {
+      for (const candidate of Array.from(element.ownerDocument.querySelectorAll("*"))) {
+        const matches = sensitiveMatches(candidate, epochToUpdate.forms);
+        if (matches.length === 0) continue;
+        if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
+        if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) continue;
+        classifyElement(stateToUpdate, epochToUpdate, candidate);
+        if (epochToUpdate.poisoned) return;
+      }
     }
 
     function processMutationRecords(
@@ -1650,6 +1667,34 @@ async function endPageSensitiveActionEpoch(
       return Array.isArray(ids) && ids.includes(markerId);
     }
 
+    function reflectedCandidateForms(target: Element, actionKind: "input" | "select"): string[] {
+      const values = new Set<string>();
+      if (actionKind === "input" && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+        values.add(target.value);
+        values.add(target.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+        values.add(normalizeVisibleSensitiveForm(target.value));
+      }
+      if (actionKind === "select" && target instanceof HTMLSelectElement) {
+        values.add(target.value);
+        for (const option of Array.from(target.selectedOptions)) {
+          values.add(option.value);
+          values.add(option.text);
+          values.add(option.label);
+        }
+      }
+      return Array.from(values).filter((value) => value !== "");
+    }
+
+    function mergeSensitiveForms(current: string[], next: readonly string[]): string[] {
+      const merged = new Set(current);
+      for (const value of next) merged.add(value);
+      return Array.from(merged).filter((value) => value !== "");
+    }
+
+    function normalizeVisibleSensitiveForm(value: string): string {
+      return value.normalize("NFC").replace(/\s+/g, " ").trim();
+    }
+
     function sensitiveValues(candidate: Element): readonly string[] {
       const values: string[] = [];
       const text = directText(candidate);
@@ -1722,7 +1767,7 @@ async function markSensitiveTarget(
         });
       }
       if (!element.hasAttribute(input.maskAttribute)) {
-        element.setAttribute(input.maskAttribute, "qm-target");
+        element.setAttribute(input.maskAttribute, `qm-${input.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}`);
       }
     },
     {
@@ -1744,36 +1789,70 @@ interface SelectSensitiveForms extends InputSensitiveForms {
 }
 
 async function readInputSensitiveForms(locator: Locator): Promise<InputSensitiveForms> {
-  return locator.evaluate((element, property) => {
-    const ids = (element as unknown as Element & Record<string, unknown>)[property];
+  return locator.evaluate((element, input) => {
+    type NativeDomAuthority = {
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlInputElementValueGet: (() => string) | undefined;
+      readonly htmlTextAreaElementValueGet: (() => string) | undefined;
+    };
+    const ids = (element as unknown as Element & Record<string, unknown>)[input.property];
     const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
       ? ids
       : [];
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      throw new Error("Sensitive target is not an input field.");
+    const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
+    if (dom === undefined || dom.elementTagNameGet === undefined) {
+      throw new Error("Sensitive DOM authority is unavailable.");
     }
-    return { sensitiveTargetIds, value: element.value };
-  }, SENSITIVE_TARGET_IDS_PROPERTY);
+    const tag = dom.elementTagNameGet.call(element).toLowerCase();
+    if (tag === "input") {
+      if (dom.htmlInputElementValueGet === undefined) throw new Error("Sensitive input value authority is unavailable.");
+      return { sensitiveTargetIds, value: dom.htmlInputElementValueGet.call(element) };
+    }
+    if (tag === "textarea") {
+      if (dom.htmlTextAreaElementValueGet === undefined) throw new Error("Sensitive textarea value authority is unavailable.");
+      return { sensitiveTargetIds, value: dom.htmlTextAreaElementValueGet.call(element) };
+    }
+    throw new Error("Sensitive target is not an input field.");
+  }, {
+    property: SENSITIVE_TARGET_IDS_PROPERTY,
+    runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+  });
 }
 
 async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensitiveForms> {
-  return locator.evaluate((element, property) => {
-    const ids = (element as unknown as Element & Record<string, unknown>)[property];
+  return locator.evaluate((element, input) => {
+    type NativeDomAuthority = {
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlOptionElementTextGet: (() => string) | undefined;
+      readonly htmlOptionElementValueGet: (() => string) | undefined;
+      readonly htmlSelectElementSelectedOptionsGet: (() => HTMLCollectionOf<HTMLOptionElement>) | undefined;
+      readonly htmlSelectElementValueGet: (() => string) | undefined;
+    };
+    const ids = (element as unknown as Element & Record<string, unknown>)[input.property];
     const sensitiveTargetIds = Array.isArray(ids) && ids.every((entry) => typeof entry === "string")
       ? ids
       : [];
-    if (!(element instanceof HTMLSelectElement)) {
-      throw new Error("Sensitive target is not a select field.");
+    const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
+    if (dom === undefined || dom.elementTagNameGet === undefined || dom.htmlSelectElementValueGet === undefined ||
+      dom.htmlSelectElementSelectedOptionsGet === undefined || dom.htmlOptionElementValueGet === undefined ||
+      dom.htmlOptionElementTextGet === undefined) {
+      throw new Error("Sensitive select authority is unavailable.");
     }
-    const selectedOption = element.selectedOptions.item(0);
-    if (selectedOption === null) {
+    if (dom.elementTagNameGet.call(element).toLowerCase() !== "select") {
+      throw new Error("Sensitive select target is not a select field.");
+    }
+    const selectedOption = dom.htmlSelectElementSelectedOptionsGet.call(element)[0];
+    if (selectedOption === undefined) {
       throw new Error("Sensitive select target has no selected option.");
     }
     return {
       sensitiveTargetIds,
-      value: element.value,
-      selectedOptionValue: selectedOption.value,
-      selectedOptionText: selectedOption.text,
+      value: dom.htmlSelectElementValueGet.call(element),
+      selectedOptionValue: dom.htmlOptionElementValueGet.call(selectedOption),
+      selectedOptionText: dom.htmlOptionElementTextGet.call(selectedOption),
     };
-  }, SENSITIVE_TARGET_IDS_PROPERTY);
+  }, {
+    property: SENSITIVE_TARGET_IDS_PROPERTY,
+    runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+  });
 }

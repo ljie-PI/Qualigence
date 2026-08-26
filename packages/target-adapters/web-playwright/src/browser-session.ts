@@ -159,9 +159,45 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly resolvedMethodOwners: Readonly<Record<PromiseMethodName, ResolvedMethodOwnerSnapshot>>;
     };
     type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
+    type NativeDomAuthority = {
+      readonly arrayFrom: typeof Array.from;
+      readonly documentGetElementById: typeof Document.prototype.getElementById;
+      readonly documentQuerySelector: typeof Document.prototype.querySelector;
+      readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
+      readonly documentTitleGet: (() => string) | undefined;
+      readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
+      readonly elementClosest: typeof Element.prototype.closest;
+      readonly elementGetAttribute: typeof Element.prototype.getAttribute;
+      readonly elementGetClientRects: typeof Element.prototype.getClientRects;
+      readonly elementHasAttribute: typeof Element.prototype.hasAttribute;
+      readonly elementQuerySelectorAll: typeof Element.prototype.querySelectorAll;
+      readonly elementRemoveAttribute: typeof Element.prototype.removeAttribute;
+      readonly elementSetAttribute: typeof Element.prototype.setAttribute;
+      readonly elementShadowRootGet: (() => ShadowRoot | null) | undefined;
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlElementHiddenGet: (() => boolean) | undefined;
+      readonly htmlInputElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlInputElementValueGet: (() => string) | undefined;
+      readonly htmlOptionElementLabelGet: (() => string) | undefined;
+      readonly htmlOptionElementTextGet: (() => string) | undefined;
+      readonly htmlOptionElementValueGet: (() => string) | undefined;
+      readonly htmlSelectElementOptionsGet: (() => HTMLOptionsCollection) | undefined;
+      readonly htmlSelectElementSelectedOptionsGet: (() => HTMLCollectionOf<HTMLOptionElement>) | undefined;
+      readonly htmlSelectElementValueGet: (() => string) | undefined;
+      readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlTextAreaElementValueGet: (() => string) | undefined;
+      readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+      readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
+      readonly nodeTextContentGet: (() => string | null) | undefined;
+      readonly characterDataDataGet: (() => string) | undefined;
+      readonly shadowRootHostGet: (() => Element) | undefined;
+      readonly shadowRootModeGet: (() => ShadowRootMode) | undefined;
+      readonly windowGetComputedStyle: typeof window.getComputedStyle;
+    };
     type SensitiveRuntimeRegistry = {
       readonly roots: ShadowRoot[];
       readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
+      readonly nativeDom?: NativeDomAuthority;
       readonly promiseOwners?: readonly PromiseOwnerRecord[];
       shadowRootOverflow: boolean;
       readonly promiseOwnerOverflow?: boolean;
@@ -229,6 +265,73 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeReflectDeleteProperty: typeof Reflect.deleteProperty = Reflect.deleteProperty;
     const nativeReflectSet: typeof Reflect.set = Reflect.set;
     const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
+    const nativeDocumentGetElementById: typeof Document.prototype.getElementById = Document.prototype.getElementById;
+    const nativeDocumentQuerySelector: typeof Document.prototype.querySelector = Document.prototype.querySelector;
+    const nativeDocumentQuerySelectorAll: typeof Document.prototype.querySelectorAll = Document.prototype.querySelectorAll;
+    const nativeDocumentTitleGet = nativeObjectGetOwnPropertyDescriptor(Document.prototype, "title")?.get;
+    const nativeDocumentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll = DocumentFragment.prototype.querySelectorAll;
+    const nativeElementClosest: typeof Element.prototype.closest = Element.prototype.closest;
+    const nativeElementGetAttribute: typeof Element.prototype.getAttribute = Element.prototype.getAttribute;
+    const nativeElementGetClientRects: typeof Element.prototype.getClientRects = Element.prototype.getClientRects;
+    const nativeElementHasAttribute: typeof Element.prototype.hasAttribute = Element.prototype.hasAttribute;
+    const nativeElementQuerySelectorAll: typeof Element.prototype.querySelectorAll = Element.prototype.querySelectorAll;
+    const nativeElementRemoveAttribute: typeof Element.prototype.removeAttribute = Element.prototype.removeAttribute;
+    const nativeElementSetAttribute: typeof Element.prototype.setAttribute = Element.prototype.setAttribute;
+    const nativeElementShadowRootGet = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "shadowRoot")?.get;
+    const nativeElementTagNameGet = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "tagName")?.get;
+    const nativeHTMLElementHiddenGet = nativeObjectGetOwnPropertyDescriptor(HTMLElement.prototype, "hidden")?.get;
+    const nativeHTMLInputElementPlaceholderGet = nativeObjectGetOwnPropertyDescriptor(HTMLInputElement.prototype, "placeholder")?.get;
+    const nativeHTMLInputElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.get;
+    const nativeHTMLOptionElementLabelGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "label")?.get;
+    const nativeHTMLOptionElementTextGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "text")?.get;
+    const nativeHTMLOptionElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "value")?.get;
+    const nativeHTMLSelectElementOptionsGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "options")?.get;
+    const nativeHTMLSelectElementSelectedOptionsGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedOptions")?.get;
+    const nativeHTMLSelectElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.get;
+    const nativeHTMLTextAreaElementPlaceholderGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "placeholder")?.get;
+    const nativeHTMLTextAreaElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.get;
+    const nativeNodeChildNodesGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "childNodes")?.get;
+    const nativeNodeGetRootNode: typeof Node.prototype.getRootNode = Node.prototype.getRootNode;
+    const nativeNodeTextContentGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "textContent")?.get;
+    const nativeCharacterDataDataGet = nativeObjectGetOwnPropertyDescriptor(CharacterData.prototype, "data")?.get;
+    const nativeShadowRootHostGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "host")?.get;
+    const nativeShadowRootModeGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "mode")?.get;
+    const nativeWindowGetComputedStyle: typeof window.getComputedStyle = window.getComputedStyle;
+    const nativeDomAuthority = nativeObjectFreeze({
+      arrayFrom: Array.from,
+      documentGetElementById: nativeDocumentGetElementById,
+      documentQuerySelector: nativeDocumentQuerySelector,
+      documentQuerySelectorAll: nativeDocumentQuerySelectorAll,
+      documentTitleGet: nativeDocumentTitleGet,
+      documentFragmentQuerySelectorAll: nativeDocumentFragmentQuerySelectorAll,
+      elementClosest: nativeElementClosest,
+      elementGetAttribute: nativeElementGetAttribute,
+      elementGetClientRects: nativeElementGetClientRects,
+      elementHasAttribute: nativeElementHasAttribute,
+      elementQuerySelectorAll: nativeElementQuerySelectorAll,
+      elementRemoveAttribute: nativeElementRemoveAttribute,
+      elementSetAttribute: nativeElementSetAttribute,
+      elementShadowRootGet: nativeElementShadowRootGet,
+      elementTagNameGet: nativeElementTagNameGet,
+      htmlElementHiddenGet: nativeHTMLElementHiddenGet,
+      htmlInputElementPlaceholderGet: nativeHTMLInputElementPlaceholderGet,
+      htmlInputElementValueGet: nativeHTMLInputElementValueGet,
+      htmlOptionElementLabelGet: nativeHTMLOptionElementLabelGet,
+      htmlOptionElementTextGet: nativeHTMLOptionElementTextGet,
+      htmlOptionElementValueGet: nativeHTMLOptionElementValueGet,
+      htmlSelectElementOptionsGet: nativeHTMLSelectElementOptionsGet,
+      htmlSelectElementSelectedOptionsGet: nativeHTMLSelectElementSelectedOptionsGet,
+      htmlSelectElementValueGet: nativeHTMLSelectElementValueGet,
+      htmlTextAreaElementPlaceholderGet: nativeHTMLTextAreaElementPlaceholderGet,
+      htmlTextAreaElementValueGet: nativeHTMLTextAreaElementValueGet,
+      nodeChildNodesGet: nativeNodeChildNodesGet,
+      nodeGetRootNode: nativeNodeGetRootNode,
+      nodeTextContentGet: nativeNodeTextContentGet,
+      characterDataDataGet: nativeCharacterDataDataGet,
+      shadowRootHostGet: nativeShadowRootHostGet,
+      shadowRootModeGet: nativeShadowRootModeGet,
+      windowGetComputedStyle: nativeWindowGetComputedStyle,
+    });
     const intrinsicAuthorityFailed = [
       nativeArrayIsArray,
       nativeArrayPrototypeFind,
@@ -253,6 +356,39 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeReflectDeleteProperty,
       nativeReflectSet,
       nativeReflectSetPrototypeOf,
+      nativeDocumentGetElementById,
+      nativeDocumentQuerySelector,
+      nativeDocumentQuerySelectorAll,
+      nativeDocumentFragmentQuerySelectorAll,
+      nativeElementClosest,
+      nativeElementGetAttribute,
+      nativeElementGetClientRects,
+      nativeElementHasAttribute,
+      nativeElementQuerySelectorAll,
+      nativeElementRemoveAttribute,
+      nativeElementSetAttribute,
+      nativeNodeGetRootNode,
+      nativeWindowGetComputedStyle,
+      nativeDomAuthority.arrayFrom,
+      nativeDomAuthority.documentTitleGet,
+      nativeDomAuthority.elementShadowRootGet,
+      nativeDomAuthority.elementTagNameGet,
+      nativeDomAuthority.htmlElementHiddenGet,
+      nativeDomAuthority.htmlInputElementPlaceholderGet,
+      nativeDomAuthority.htmlInputElementValueGet,
+      nativeDomAuthority.htmlOptionElementLabelGet,
+      nativeDomAuthority.htmlOptionElementTextGet,
+      nativeDomAuthority.htmlOptionElementValueGet,
+      nativeDomAuthority.htmlSelectElementOptionsGet,
+      nativeDomAuthority.htmlSelectElementSelectedOptionsGet,
+      nativeDomAuthority.htmlSelectElementValueGet,
+      nativeDomAuthority.htmlTextAreaElementPlaceholderGet,
+      nativeDomAuthority.htmlTextAreaElementValueGet,
+      nativeDomAuthority.nodeChildNodesGet,
+      nativeDomAuthority.nodeTextContentGet,
+      nativeDomAuthority.characterDataDataGet,
+      nativeDomAuthority.shadowRootHostGet,
+      nativeDomAuthority.shadowRootModeGet,
     ].some((fn) => typeof fn !== "function");
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
@@ -289,6 +425,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
         configurable: false,
         enumerable: false,
         get: () => promiseOwnerValidationFailed,
+      },
+      nativeDom: {
+        configurable: false,
+        enumerable: false,
+        value: nativeDomAuthority,
+        writable: false,
       },
       validatePromiseOwners: {
         configurable: false,
