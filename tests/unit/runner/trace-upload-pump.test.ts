@@ -192,6 +192,78 @@ describe("Standalone Runner recovery", () => {
     await reopened.close();
   });
 
+  it("resumes a previously registered artifact after restart without registering a new manifest", async () => {
+    const databaseFile = join(root, "standalone-registered-lost-owner.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const bytes = new Uint8Array([6, 7, 8]);
+    const manifest = manifestFor(bytes);
+    const first = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    await first.saveLease(lease());
+    await first.saveArtifactManifest(manifest);
+    await first.saveArtifactChunk(chunkFor(manifest, bytes));
+    await first.acknowledgeArtifactProgress({
+      artifactId: manifest.artifactId,
+      runId: manifest.runId,
+      acknowledged: false,
+      missingRanges: [{ offset: 0, length: bytes.length }],
+    });
+    await first.append(event(1));
+    await first.close();
+
+    const reopened = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    const calls: string[] = [];
+    const session = sessionForReplay(manifest, bytes, calls, {
+      registerArtifactManifest: async () => {
+        calls.push("artifact:manifest");
+        throw new Error("lease lost before new manifest registration");
+      },
+    });
+
+    await expect(replayPendingRuns(session, reopened)).resolves.toEqual(["run-1"]);
+
+    expect(calls).toEqual(["artifact:chunk", "trace:1"]);
+    expect(await reopened.pendingRunIds()).toEqual([]);
+    await reopened.close();
+  });
+
+  it("fails closed after lease loss when an artifact has no prior registration evidence", async () => {
+    const databaseFile = join(root, "standalone-unregistered-lost-owner.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const bytes = new Uint8Array([9, 10, 11]);
+    const manifest = manifestFor(bytes);
+    const first = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    await first.saveLease(lease());
+    await first.saveArtifactManifest(manifest);
+    await first.saveArtifactChunk(chunkFor(manifest, bytes));
+    await first.append(event(1));
+    await first.close();
+
+    const reopened = await SqliteRunnerSpool.open({ databaseFile, crypto });
+    const calls: string[] = [];
+    const session = sessionForReplay(manifest, bytes, calls, {
+      registerArtifactManifest: async () => {
+        calls.push("artifact:manifest");
+        throw new Error("lease lost before manifest registration");
+      },
+      uploadArtifactChunk: async () => {
+        calls.push("artifact:chunk");
+        throw new Error("unregistered chunk upload must not run");
+      },
+      submit: async (batch: ExecutionEventBatch) => {
+        calls.push(`trace:${batch.firstSequenceNumber}`);
+        throw new Error("trace must not advance before artifact acknowledgement");
+      },
+    });
+
+    await expect(replayPendingRuns(session, reopened)).rejects.toThrow("lease lost before manifest registration");
+
+    expect(calls).toEqual(["artifact:manifest"]);
+    expect(await reopened.pending("run-1", 1, { maximumEvents: 10, maximumBytes: 4096 })).toEqual([event(1)]);
+    expect(await reopened.pendingArtifactManifests("run-1")).toEqual([manifest]);
+    expect(await reopened.pendingArtifactChunks("run-1", manifest.artifactId, [{ offset: 0, length: bytes.length }])).toEqual([chunkFor(manifest, bytes)]);
+    await reopened.close();
+  });
+
   it("refuses to advance Trace for a pending Artifact run without a persisted lease", async () => {
     const spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "standalone-missing-lease.db") });
     const bytes = new Uint8Array([3, 4, 5]);
@@ -323,6 +395,15 @@ function lease(): ExecutionJobLease {
 }
 
 function sessionForReplay(
+  manifest: ArtifactUploadManifest,
+  bytes: Uint8Array,
+  calls: string[],
+  overrides: Partial<ReturnType<typeof sessionForReplayDefaults>> = {},
+) {
+  return { ...sessionForReplayDefaults(manifest, bytes, calls), ...overrides };
+}
+
+function sessionForReplayDefaults(
   manifest: ArtifactUploadManifest,
   bytes: Uint8Array,
   calls: string[],

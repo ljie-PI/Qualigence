@@ -61,6 +61,7 @@ export interface RunnerSpool {
   saveArtifactChunk?(chunk: ArtifactUploadChunk): Promise<void>;
   pendingArtifactManifests?(runId: string): Promise<readonly ArtifactUploadManifest[]>;
   pendingArtifactChunks?(runId: string, artifactId: string, missingRanges: readonly { readonly offset: number; readonly length: number }[]): Promise<readonly ArtifactUploadChunk[]>;
+  artifactUploadProgress?(runId: string, artifactId: string): Promise<ArtifactUploadAck | undefined>;
   acknowledgeArtifactProgress?(progress: ArtifactUploadAck): Promise<void>;
   usage(): Promise<{ readonly bytes: number; readonly events: number }>;
 }
@@ -138,6 +139,10 @@ interface ArtifactChunkRow {
   readonly offset_bytes: number;
   readonly bytes: Buffer;
   readonly sha256: string;
+}
+
+interface ArtifactProgressRow {
+  readonly progress_json: string;
 }
 
 function defaultMeasureEventBytes(event: TraceEvent): number {
@@ -406,11 +411,31 @@ export class SqliteRunnerSpool implements RunnerSpool {
       }));
   }
 
+  async artifactUploadProgress(runId: string, artifactId: string): Promise<ArtifactUploadAck | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT progress_json FROM spool_artifact_progress
+          WHERE run_id = ? AND artifact_id = ?`,
+      )
+      .get(runId, artifactId) as ArtifactProgressRow | undefined;
+    if (row === undefined) return undefined;
+    const progress = JSON.parse(row.progress_json) as ArtifactUploadAck;
+    if (progress.runId !== runId || progress.artifactId !== artifactId) {
+      throw new RunnerSpoolError(
+        "SpoolIntegrityViolation",
+        `Artifact ${artifactId} progress does not match the requested Run and Artifact`,
+      );
+    }
+    return progress;
+  }
+
   async acknowledgeArtifactProgress(progress: ArtifactUploadAck): Promise<void> {
     this.assertOpen();
     if (progress.acknowledged) {
       const remove = this.connection.transaction(() => {
         this.connection.prepare("DELETE FROM spool_artifact_chunks WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
+        this.connection.prepare("DELETE FROM spool_artifact_progress WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
         this.connection.prepare("DELETE FROM spool_artifact_manifests WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
       });
       remove();
@@ -422,13 +447,24 @@ export class SqliteRunnerSpool implements RunnerSpool {
     const acknowledgedOffsets = rows
       .map((row) => row.offset_bytes)
       .filter((offset) => !progress.missingRanges.some((range) => offset >= range.offset && offset < range.offset + range.length));
-    const remove = this.connection.transaction(() => {
+    const update = this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          `INSERT INTO spool_artifact_progress
+             (artifact_id, run_id, progress_json, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(artifact_id) DO UPDATE SET
+             run_id = excluded.run_id,
+             progress_json = excluded.progress_json,
+             updated_at = excluded.updated_at`,
+        )
+        .run(progress.artifactId, progress.runId, JSON.stringify(progress), this.clock.now());
       for (const offset of acknowledgedOffsets) {
         this.connection.prepare("DELETE FROM spool_artifact_chunks WHERE run_id = ? AND artifact_id = ? AND offset_bytes = ?")
           .run(progress.runId, progress.artifactId, offset);
       }
     });
-    remove();
+    update();
   }
 
   async pendingRunIds(): Promise<readonly string[]> {

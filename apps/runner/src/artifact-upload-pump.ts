@@ -21,6 +21,7 @@ export interface ArtifactUploadPumpResult {
 interface ArtifactSpool {
   pendingArtifactManifests(runId: string): Promise<readonly ArtifactUploadManifest[]>;
   pendingArtifactChunks(runId: string, artifactId: string, missingRanges: readonly { readonly offset: number; readonly length: number }[]): Promise<readonly import("@qualigence/runner-protocol").ArtifactUploadChunk[]>;
+  artifactUploadProgress(runId: string, artifactId: string): Promise<ArtifactUploadAck | undefined>;
   acknowledgeArtifactProgress(progress: ArtifactUploadAck): Promise<void>;
 }
 
@@ -44,20 +45,33 @@ export class ArtifactUploadPump {
     let acknowledged = 0;
     for (const manifest of manifests) {
       signal?.throwIfAborted();
-      const registered = await abortable(this.submitter.registerArtifactManifest({
-        jobId: this.lease.jobId,
-        runId: this.lease.runId,
-        leaseEpoch: this.lease.leaseEpoch,
-        leaseToken: this.lease.leaseToken,
-        manifest,
-      }), signal);
-      await abortable(spool.acknowledgeArtifactProgress(registered), signal);
-      const final = registered.acknowledged
-        ? registered
-        : await this.uploadMissing(manifest, registered, signal);
+      const progress = await abortable(
+        spool.artifactUploadProgress(manifest.runId, manifest.artifactId),
+        signal,
+      );
+      const initial = progress ?? await this.registerManifest(manifest, spool, signal);
+      const final = initial.acknowledged
+        ? initial
+        : await this.uploadMissing(manifest, initial, signal);
       if (final.acknowledged) acknowledged += 1;
     }
     return { artifacts: manifests.length, acknowledged };
+  }
+
+  private async registerManifest(
+    manifest: ArtifactUploadManifest,
+    spool: ArtifactSpool,
+    signal?: AbortSignal,
+  ): Promise<ArtifactUploadAck> {
+    const registered = await abortable(this.submitter.registerArtifactManifest({
+      jobId: this.lease.jobId,
+      runId: this.lease.runId,
+      leaseEpoch: this.lease.leaseEpoch,
+      leaseToken: this.lease.leaseToken,
+      manifest,
+    }), signal);
+    await abortable(spool.acknowledgeArtifactProgress(registered), signal);
+    return registered;
   }
 
   private async uploadMissing(
@@ -92,6 +106,7 @@ function artifactSpool(spool: RunnerSpool): ArtifactSpool {
   if (
     spool.pendingArtifactManifests === undefined ||
     spool.pendingArtifactChunks === undefined ||
+    spool.artifactUploadProgress === undefined ||
     spool.acknowledgeArtifactProgress === undefined
   ) {
     throw new RunnerAppError("TransportError", "runner spool does not support artifact upload recovery");
@@ -99,6 +114,7 @@ function artifactSpool(spool: RunnerSpool): ArtifactSpool {
   return {
     pendingArtifactManifests: spool.pendingArtifactManifests.bind(spool),
     pendingArtifactChunks: spool.pendingArtifactChunks.bind(spool),
+    artifactUploadProgress: spool.artifactUploadProgress.bind(spool),
     acknowledgeArtifactProgress: spool.acknowledgeArtifactProgress.bind(spool),
   };
 }
