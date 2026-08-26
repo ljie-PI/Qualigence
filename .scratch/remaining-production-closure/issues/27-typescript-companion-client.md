@@ -109,6 +109,18 @@ Run the built TypeScript client against a separate-process authenticated Named P
 - Focused non-E2E Gate is clean on this continuation: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 36 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
 - No PR was created. Ticket 27 is ready for exact-head complete-matrix review before any post-review acceptance fixture or PR work.
 
+### review-fix - 2026-08-26
+
+- Reviewed head fixed: `024e0f058cbce77d7fc073f046bea988083f3287`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review blockers fixed from the Standards/Spec complete-matrix artifacts:
+  - close/cancel during pending `socketFactory`/connect/auth now rejects the in-flight caller with stable `CompanionUnavailable`, rechecks the closed latch after connect/auth and before writes, destroys sockets that arrive after close, and sends zero frames when closed before dispatch;
+  - handshake `CompanionIdentityRejected`, handshake error responses, and handshake timeouts now fail-stop/destroy the socket so no authenticated or reusable session remains and no later application frame is admitted on the rejected connection;
+  - `permit.request` is classified as side-effecting, so a timeout/disconnect after dispatch surfaces `outcomeUnknown: true` and is not replay-safe;
+  - minor local cleanup removed the unused `performance` import and the unread `PendingRequest.requestType` field.
+- Fix commit: `2432d06307a65eb28d720df845bf727f88fe5abf` (`fix ticket 27 companion fail-closed semantics`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 41 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed).
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
