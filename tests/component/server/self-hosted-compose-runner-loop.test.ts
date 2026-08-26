@@ -185,6 +185,14 @@ describe("Self-hosted Docker gate", () => {
     expect(compose).toContain("server-volume-permissions:\n        condition: service_completed_successfully");
   });
 
+  it("keeps the Console healthcheck compatible with the Caddy runtime image", async () => {
+    const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
+    const consoleSection = composeServiceSection(compose, "console");
+    expect(consoleSection).toContain("dockerfile: deployments/self-hosted/docker/console.Dockerfile");
+    expect(consoleSection).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
+    expect(consoleSection).not.toContain("node -e");
+  });
+
   it("requires Docker explicitly and classifies absence as DockerUnavailable instead of skipping", async () => {
     await expect(requireDocker()).resolves.toBeUndefined();
   });
@@ -230,6 +238,19 @@ async function writeConfigFiles(dir: string): Promise<Record<string, string>> {
   await writeFile(paths.runnerServerCert, "server-cert", "utf8");
   await writeFile(paths.runnerServerKey, "server-key", "utf8");
   return paths;
+}
+
+function composeServiceSection(compose: string, serviceName: string): string {
+  const start = compose.indexOf(`  ${serviceName}:\n`);
+  if (start === -1) {
+    throw new Error(`Compose service ${serviceName} was not found`);
+  }
+  const remainder = compose.slice(start + `  ${serviceName}:\n`.length);
+  const nextService = remainder.search(/\n  [a-zA-Z0-9_-]+:\n/);
+  if (nextService === -1) {
+    return compose.slice(start);
+  }
+  return compose.slice(start, start + `  ${serviceName}:\n`.length + nextService);
 }
 
 async function requireDocker(

@@ -49,6 +49,7 @@ interface ComposeService {
   deploy?: { resources?: { limits?: { cpus?: unknown; memory?: unknown; pids?: unknown } } };
   logging?: { options?: Record<string, string> };
   build?: { dockerfile?: string };
+  healthcheck?: { test?: unknown };
 }
 
 interface ComposeConfig {
@@ -293,12 +294,15 @@ describe("Self-hosted Compose topology invariants", () => {
     }
   });
 
-  it("serves the Console as a static asset image, not a Node process", () => {
+  it("serves the Console as a static asset image, not a Node process", async () => {
     const console = config.services.console;
     expect(console).toBeDefined();
     // The console builds the static-asset Dockerfile and runs no server/worker role.
     expect(console?.build?.dockerfile ?? "").toContain("console.Dockerfile");
+    await expect(readConsoleRuntimeImage()).resolves.toContain("caddy:2.8-alpine@sha256:");
     expect(console?.command ?? undefined).toBeUndefined();
+    expect(composeHealthcheckText(console)).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
+    expect(composeHealthcheckText(console)).not.toMatch(/\bnode\b|node -e/);
     // There is no additional Node service for the web console.
     const nodeConsoleServices = Object.entries(config.services).filter(
       ([name, service]) =>
@@ -307,6 +311,32 @@ describe("Self-hosted Compose topology invariants", () => {
     );
     expect(nodeConsoleServices).toEqual([]);
   });
+
+  it("uses a Console healthcheck command available in the Caddy runtime image", async () => {
+    const console = config.services.console;
+    expect(composeHealthcheckText(console)).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
+    expect(composeHealthcheckText(console)).not.toMatch(/\bnode\b|node -e/);
+
+    const { stdout } = await execFileAsync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--network",
+        "none",
+        "--entrypoint",
+        "/bin/sh",
+        await readConsoleRuntimeImage(),
+        "-ec",
+        "command -v wget",
+      ],
+      { env: { ...process.env, MSYS_NO_PATHCONV: "1" }, timeout: 60_000 },
+    );
+    expect(stdout.trim()).toMatch(/wget$/);
+  }, 90_000);
 
   it("applies the frozen strict CSP and security headers at the edge proxy", async () => {
     const caddyfile = await readFile(join(composeDir, "Caddyfile"), "utf8");
@@ -322,6 +352,23 @@ describe("Self-hosted Compose topology invariants", () => {
     expect(caddyfile).toContain("/healthz");
   });
 });
+
+function composeHealthcheckText(service: ComposeService | undefined): string {
+  const test = service?.healthcheck?.test;
+  return Array.isArray(test) ? test.join(" ") : String(test ?? "");
+}
+
+async function readConsoleRuntimeImage(): Promise<string> {
+  const dockerfile = await readFile(
+    join(process.cwd(), "deployments", "self-hosted", "docker", "console.Dockerfile"),
+    "utf8",
+  );
+  const runtimeImage = /^FROM\s+(caddy:2\.8-alpine@sha256:[a-f0-9]{64})\s+AS\s+runtime$/m.exec(dockerfile)?.[1];
+  if (runtimeImage === undefined) {
+    throw new Error("Console Dockerfile Caddy runtime image was not found");
+  }
+  return runtimeImage;
+}
 
 async function requireDocker(): Promise<void> {
   try {
