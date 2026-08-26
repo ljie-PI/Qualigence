@@ -1,7 +1,9 @@
 # Qualigence Team Self-hosted — Linux single-node Docker Compose topology.
 #
-# The reverse proxy is the only public entrypoint. PostgreSQL and MinIO stay on
-# the internal network with NO host-published ports. Every secret is mounted
+# The reverse proxy is the public HTTP entrypoint. Ticket 12 intentionally
+# publishes one additional Server Runner gRPC port for external Runner mTLS;
+# PostgreSQL and MinIO stay on the internal network with NO host-published ports.
+# Every secret is mounted
 # from a file under /run/secrets (never baked into an image layer or passed as a
 # plaintext environment value). All third-party images are pinned by digest and
 # `latest` is never used. Runtime application containers are non-root, run with a
@@ -204,11 +206,38 @@ services:
     volumes:
       - backups:/var/lib/qualigence/backups
 
+  server-volume-permissions:
+    <<: [*node-image, *hardening]
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chown 0:0 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+        chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing
+    network_mode: none
+    cap_add:
+      - CHOWN
+    volumes:
+      - artifactdata:/var/lib/qualigence/artifacts
+      - skill_signing_data:/var/lib/qualigence/skill-signing
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+          pids: 64
+
   server:
     <<: [*node-image, *hardening]
     command: ["server"]
     depends_on:
+      server-volume-permissions:
+        condition: service_completed_successfully
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     environment:
       SERVER_HOST: 0.0.0.0
@@ -225,16 +254,35 @@ services:
       SERVER_OIDC_CLAIM_MAP_FILE: /run/secrets/oidc_claim_map
       SERVER_RUNNER_CA_CERT_FILE: /run/secrets/runner_ca_cert
       SERVER_RUNNER_CA_KEY_FILE: /run/secrets/runner_ca_key
+      SERVER_RUNNER_GRPC_HOST: 0.0.0.0
+      SERVER_RUNNER_GRPC_PORT: "50555"
+      SERVER_RUNNER_GRPC_TLS_CERT_FILE: /run/secrets/runner_server_cert
+      SERVER_RUNNER_GRPC_TLS_KEY_FILE: /run/secrets/runner_server_key
+      SERVER_OBJECT_STORAGE_READY_URL: http://minio:9000/minio/health/ready
+      SERVER_ARTIFACT_DATA_DIR: /var/lib/qualigence/artifacts
+      SERVER_SKILL_SIGNING_DATA_DIR: /var/lib/qualigence/skill-signing
     secrets:
       - pg_server_password
       - oidc_jwks
       - oidc_claim_map
       - runner_ca_cert
       - runner_ca_key
+      - runner_server_cert
+      - runner_server_key
+    ports:
+      - "${QUALIGENCE_RUNNER_GRPC_PORT:-50555}:50555"
     networks:
       - internal
     tmpfs:
       - /tmp
+    volumes:
+      - artifactdata:/var/lib/qualigence/artifacts
+      - skill_signing_data:/var/lib/qualigence/skill-signing
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     deploy:
       resources:
         limits:
@@ -275,6 +323,17 @@ services:
       - internal
     tmpfs:
       - /tmp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "Promise.all([
+          fetch('http://minio:9000/minio/health/ready').then(r=>{if(!r.ok)throw new Error('minio status '+r.status)}),
+          import('pg').then(async (pg)=>{const {Client}=pg.default??pg;const fs=await import('node:fs/promises');const c=new Client({host:process.env.WORKER_PG_HOST,port:Number(process.env.WORKER_PG_PORT),database:process.env.WORKER_PG_DATABASE,user:process.env.WORKER_PG_USER,password:(await fs.readFile(process.env.WORKER_PG_PASSWORD_FILE,'utf8')).trim(),connectionTimeoutMillis:2000});try{await c.connect();await c.query('select 1')}finally{await c.end().catch(()=>undefined)}})
+          ]).then(()=>process.exit(0),(error)=>{console.error(error&&error.stack?error.stack:String(error));process.exit(1)})"
+      interval: 10s
+      timeout: 5s
+      retries: 12
     deploy:
       resources:
         limits:
@@ -288,12 +347,25 @@ services:
       context: ../../..
       dockerfile: deployments/self-hosted/docker/console.Dockerfile
     <<: *hardening
+    # Caddy's upstream binary carries cap_net_bind_service; Docker refuses to
+    # exec a file-capability binary when no-new-privileges is paired with a
+    # fully empty capability set. Grant only that narrow capability so the
+    # static Console can start while the service still has no host-published
+    # ports and no added data-plane authority.
+    cap_add:
+      - NET_BIND_SERVICE
+    command: ["caddy", "file-server", "--listen", ":8080", "--root", "/srv"]
     networks:
       - internal
     tmpfs:
       - /tmp
       - /config
       - /data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     deploy:
       resources:
         limits:
@@ -304,8 +376,10 @@ services:
   proxy:
     image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
     depends_on:
-      - server
-      - console
+      server:
+        condition: service_healthy
+      console:
+        condition: service_healthy
     ports:
       - "443:443"
     security_opt:
@@ -325,6 +399,16 @@ services:
       - caddyconfig:/config
     networks:
       - internal
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget --no-check-certificate -qO- https://127.0.0.1/healthz >/dev/null
+          && wget --no-check-certificate -qO- https://127.0.0.1/api/readyz >/dev/null
+          && wget --no-check-certificate -qO- https://127.0.0.1/ >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
     logging:
       driver: json-file
       options:
@@ -346,6 +430,8 @@ volumes:
   pgdata:
   miniodata:
   backups:
+  artifactdata:
+  skill_signing_data:
   caddydata:
   caddyconfig:
 
@@ -373,6 +459,10 @@ secrets:
     file: ./secrets/runner_ca_cert.pem
   runner_ca_key:
     file: ./secrets/runner_ca_key.pem
+  runner_server_cert:
+    file: ./secrets/runner_server_cert.pem
+  runner_server_key:
+    file: ./secrets/runner_server_key.pem
   worker_model_api_key:
     file: ./secrets/worker_model_api_key
   tls_cert:

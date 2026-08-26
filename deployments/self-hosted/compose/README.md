@@ -9,27 +9,48 @@ This is the multi-tenant Team stack — **not** the M1 single-tenant
 
 ```
               ┌───────────────── proxy (Caddy, :443) ─────────────────┐
-   client ──▶ │  TLS · strict CSP · /healthz                          │
+   client ──▶ │  TLS · strict CSP · /healthz · /api/readyz             │
               │    /api/*  ─▶ server:8080  (Public API, /v1/*)         │
               │    else    ─▶ console:8080 (static SPA bundle)         │
               └───────┬───────────────────────────────┬───────────────┘
                       │ internal network only          │
+   runner ──mTLS────▶ ├──── server:50555 (Runner gRPC data plane)      │
+                      │                                                │
              ┌────────▼────────┐              ┌─────────▼─────────┐
              │ server (Node)   │              │ worker (Node)     │
              │ Fastify /v1     │              │ Intelligence loop │
+             │ Runner gRPC     │              │ readiness probe   │
              └───┬─────────┬───┘              └────┬─────────┬────┘
                  │         │                       │         │
            ┌─────▼───┐ ┌───▼──────┐          ┌─────▼───┐ ┌───▼──────┐
-           │postgres │ │ (runner  │          │postgres │ │  minio   │
-           │  :5432  │ │  mTLS in)│          │  :5432  │ │  :9000   │
+           │postgres │ │artifact  │          │postgres │ │  minio   │
+           │  :5432  │ │ dataplane│          │  :5432  │ │  :9000   │
            └─────────┘ └──────────┘          └─────────┘ └──────────┘
 ```
 
-- **Only the proxy is published** (`:443`). PostgreSQL and MinIO have **no**
-  host ports.
-- Runners connect **into** the Server over mTLS using the enrollment CA
-  (`runner_ca_*` secrets); the Server's public routes are reached through the
-  proxy under `/api`.
+- The proxy is the only public **HTTP** entrypoint (`:443`). Ticket 12 also
+  publishes exactly one dedicated Runner gRPC host port (default `:50555`) so
+  the Server receives the Runner's mTLS peer certificate directly. PostgreSQL
+  and MinIO have **no** host ports.
+- Runners connect **into** the Server over end-to-end mTLS using the enrollment
+  CA (`runner_ca_*` plus `runner_server_*` TLS secrets); the Server's public HTTP
+  routes are reached through the proxy under `/api`.
+- The Server's Runner Artifact ACK data plane uses the durable `artifactdata`
+  named volume mounted at `/var/lib/qualigence/artifacts`; readiness writes and
+  reads that same store. MinIO remains private object-storage infrastructure,
+  but it is not reported as the Runner Artifact ACK store in this Ticket 12
+  topology.
+- Skill-signing state uses the durable `skill_signing_data` named volume mounted
+  at `/var/lib/qualigence/skill-signing`, so Server startup satisfies the
+  read-only root filesystem constraint and survives container restart.
+- Before the non-root, read-only Server starts, the one-shot
+  `server-volume-permissions` Compose service runs as root with no network or
+  public ports and only the `CHOWN` capability. It mounts only `artifactdata`
+  and `skill_signing_data`, creates the Server state directories, temporarily
+  restores directory ownership to root so mode correction is permitted, then
+  chowns them back to the image's `node` user. The preparation is idempotent for
+  retained volumes, so Artifact ACK bytes and skill-signing keys stay writable
+  without widening the Server runtime privileges.
 - The Console is a **static asset image** (Vite `dist/` served by Caddy), never
   a Node process.
 
@@ -68,15 +89,27 @@ cp .env.example .env                 # edit non-secret config
 
 docker compose run --rm migrate      # provision schema + forced RLS + roles
 docker compose run --rm doctor       # verify DB/RLS/S3/KMS/Server health
-docker compose up -d                 # start postgres, minio, server, worker, console, proxy
+docker compose up -d                 # first runs server-volume-permissions, then starts postgres, minio, server, worker, console, proxy
 ```
 
-Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness.
+Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness,
+`https://<host>/api/readyz` for dependency/loop readiness, and configure external
+Runners to connect to `grpcs://<host>:${QUALIGENCE_RUNNER_GRPC_PORT:-50555}`.
+Readiness is intentionally stronger than liveness: Server readiness checks
+PostgreSQL, object-storage reachability, the actual durable Runner Artifact
+data-plane volume, Runner gRPC, Mission dispatch loops, and the Intelligence
+Result consumer; Compose healthchecks also probe Worker, Console, and proxy
+dependencies. Every `docker compose up` reruns the idempotent permission-prep
+dependency against retained or recreated named volumes before Server startup.
 
 ## Backup, restore & upgrade runbook
 
-Backups are **byte-complete**: a consistent PostgreSQL snapshot plus the real
-bytes of every S3 object, content-addressed and checksummed in a signed index.
+Backups are **byte-complete** for the currently wired PostgreSQL and S3 object
+contracts: a consistent PostgreSQL snapshot plus the real bytes of every S3
+object, content-addressed and checksummed in a signed index. Until the LS-11
+closure promotes all Evidence APIs and backup/restore coverage, operators must
+also preserve the Ticket 12 `artifactdata` and `skill_signing_data` named volumes
+with their host-level volume backup process.
 
 ```sh
 # Consistent point-in-time backup into the `backups` volume.
@@ -93,7 +126,8 @@ docker compose run --rm backup
 
 # --- Disaster recovery: restore into a clean environment ---
 docker compose down                       # stop app containers
-docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata
+docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata \
+  qualigence-self-hosted_artifactdata qualigence-self-hosted_skill_signing_data
 docker compose up -d postgres minio        # empty DB + object store
 docker compose run --rm restore            # verifies every byte before mutating,
                                            # then restores DB + objects and
@@ -108,9 +142,9 @@ sha256/size, and asserts forced row-level security survived the restore.
 
 ## Testing note (sandbox)
 
-The automated Gate test exercises the same real containers this Compose file
-declares (PostgreSQL + MinIO via the PR-19 Docker helpers) plus the real
-`apps/server` / `apps/intelligence-worker` code in-process, because the CI
-sandbox cannot run a privileged `docker compose up`. `tests/e2e/self-hosted/`
-additionally runs `docker compose config` to assert this topology's security
-invariants. See the PR-23 report for details.
+The focused non-E2E Gate validates the Compose config and component-level Server
+wiring. Post-review acceptance lives under `tests/e2e/self-hosted/`: it must run
+with Docker available, fail as `DockerUnavailable` when Docker is absent, assert
+this Compose topology's security/durability invariants, and use an external
+Runner process rather than in-process Server/Runner substitutes for completion
+evidence.

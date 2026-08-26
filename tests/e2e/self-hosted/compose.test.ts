@@ -2,31 +2,20 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  PostgresIntelligenceQueue,
-  ServerIntelligenceResultConsumer,
-  type IntelligenceJobStore,
-  type IntelligenceResultInbox,
-} from "@qualigence/core-application";
-import { createPostgresRuntime } from "@qualigence/postgres-runtime";
-import { WorkerLoop, type Clock, type JobProcessor } from "@qualigence/intelligence-worker";
-import type { IntelligenceJob } from "@qualigence/intelligence";
-import { dockerAvailable } from "../../helpers/docker-container.js";
-import {
-  buildJobPair,
-  readCaseVersion,
-  seedInvestigationCase,
-  seedJob,
-} from "../../helpers/intelligence-fixtures.js";
-import { generateRunnerCsr } from "../../helpers/runner-identity-pki.js";
-import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
-const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 const composeDir = join(process.cwd(), "deployments", "self-hosted", "compose");
 const composeFile = join(composeDir, "compose.yaml");
+const runtimePermissionProbeImage =
+  "node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7";
+const serverVolumePermissionCommand = [
+  "mkdir -p /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+  "chown 0:0 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+  "chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+  "chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing",
+].join(" && ");
 
 /**
  * The environment the Compose file requires (all non-secret). Secrets are file
@@ -38,25 +27,35 @@ const composeEnv = {
   QUALIGENCE_OIDC_AUDIENCE: "qualigence-self-hosted",
   QUALIGENCE_MODEL_BASE_URL: "https://models.example.com/v1",
   QUALIGENCE_MODEL_NAME: "qualigence-analyst",
+  QUALIGENCE_SERVER_PG_ROLE: "qualigence_server",
 } as NodeJS.ProcessEnv;
 
 interface ComposeService {
   image?: string;
   command?: unknown;
+  entrypoint?: unknown;
+  user?: string;
   read_only?: boolean;
   security_opt?: string[];
   cap_drop?: string[];
+  cap_add?: string[];
+  network_mode?: string;
   ports?: unknown[];
+  tmpfs?: string[];
+  volumes?: unknown[];
+  depends_on?: Record<string, { condition?: string; required?: boolean }>;
   environment?: Record<string, string>;
   secrets?: Array<{ source: string; target: string }>;
   deploy?: { resources?: { limits?: { cpus?: unknown; memory?: unknown; pids?: unknown } } };
   logging?: { options?: Record<string, string> };
   build?: { dockerfile?: string };
+  healthcheck?: { test?: unknown };
 }
 
 interface ComposeConfig {
   services: Record<string, ComposeService>;
   secrets: Record<string, { file?: string }>;
+  volumes?: Record<string, unknown>;
 }
 
 async function loadComposeConfig(): Promise<ComposeConfig> {
@@ -68,26 +67,169 @@ async function loadComposeConfig(): Promise<ComposeConfig> {
   return JSON.parse(stdout) as ComposeConfig;
 }
 
-describe.skipIf(!dockerAvailable())("Self-hosted Compose topology invariants", () => {
+describe("Self-hosted Compose topology invariants", () => {
   let config: ComposeConfig;
 
   beforeAll(async () => {
+    await requireDocker();
     config = await loadComposeConfig();
   }, 60_000);
 
   it("keeps PostgreSQL and MinIO off the public network (no host-published ports)", () => {
     expect(config.services.postgres?.ports ?? []).toEqual([]);
     expect(config.services.minio?.ports ?? []).toEqual([]);
-    // The reverse proxy is the only public entrypoint.
+    // The reverse proxy is the only public HTTP entrypoint, and Ticket 12
+    // intentionally allows exactly one dedicated Server Runner gRPC host port.
     const proxyPorts = (config.services.proxy?.ports ?? []) as Array<{ target: number }>;
     expect(proxyPorts.some((port) => port.target === 443)).toBe(true);
+    const serverPorts = (config.services.server?.ports ?? []) as Array<{ target: number }>;
+    expect(serverPorts).toHaveLength(1);
+    expect(serverPorts[0]?.target).toBe(50555);
     for (const [name, service] of Object.entries(config.services)) {
-      if (name === "proxy") {
+      if (name === "proxy" || name === "server") {
         continue;
       }
       expect(service.ports ?? [], `${name} must not publish host ports`).toEqual([]);
     }
   });
+
+  it("persists Server Runner Artifact and skill-signing state outside tmpfs", () => {
+    const server = config.services.server;
+    expect(config.volumes?.artifactdata, "artifactdata volume must be declared").toBeDefined();
+    expect(config.volumes?.skill_signing_data, "skill_signing_data volume must be declared").toBeDefined();
+    expect(server?.environment?.SERVER_ARTIFACT_DATA_DIR).toBe("/var/lib/qualigence/artifacts");
+    expect(server?.environment?.SERVER_SKILL_SIGNING_DATA_DIR).toBe("/var/lib/qualigence/skill-signing");
+    const volumes = (server?.volumes ?? []) as Array<{ source?: string; target?: string }>;
+    expect(volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "artifactdata",
+          target: "/var/lib/qualigence/artifacts",
+        }),
+        expect.objectContaining({
+          source: "skill_signing_data",
+          target: "/var/lib/qualigence/skill-signing",
+        }),
+      ]),
+    );
+    expect(server?.tmpfs ?? []).toContain("/tmp");
+    expect(server?.tmpfs ?? []).not.toContain("/var/lib/qualigence/artifacts");
+    expect(server?.tmpfs ?? []).not.toContain("/var/lib/qualigence/skill-signing");
+  });
+
+  it("prepares Server state volume permissions before non-root Server startup", () => {
+    const prep = config.services["server-volume-permissions"];
+    const server = config.services.server;
+    expect(prep, "server-volume-permissions service is missing").toBeDefined();
+    expect(prep?.user).toBe("0:0");
+    expect(prep?.read_only).toBe(true);
+    expect(prep?.security_opt).toContain("no-new-privileges:true");
+    expect(prep?.cap_drop).toContain("ALL");
+    expect(prep?.cap_add).toEqual(["CHOWN"]);
+    expect(prep?.network_mode).toBe("none");
+    expect(prep?.ports ?? []).toEqual([]);
+    expect(prep?.secrets ?? []).toEqual([]);
+    const commandText = Array.isArray(prep?.command) ? prep?.command.join("\n") : String(prep?.command ?? "");
+    expect(commandText).toContain("mkdir -p /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(commandText).toContain("chown 0:0 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(commandText).toContain("chmod 0770 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(commandText).toContain("chown -R 1000:1000 /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing");
+    expect(commandText.indexOf("chown 0:0")).toBeLessThan(commandText.indexOf("chmod 0770"));
+    expect(commandText.indexOf("chmod 0770")).toBeLessThan(commandText.indexOf("chown -R 1000:1000"));
+    const volumes = (prep?.volumes ?? []) as Array<{ source?: string; target?: string }>;
+    expect(volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "artifactdata",
+          target: "/var/lib/qualigence/artifacts",
+        }),
+        expect.objectContaining({
+          source: "skill_signing_data",
+          target: "/var/lib/qualigence/skill-signing",
+        }),
+      ]),
+    );
+    expect(volumes).toHaveLength(2);
+    expect(server?.depends_on?.["server-volume-permissions"]?.condition).toBe("service_completed_successfully");
+  });
+
+  it("prepares fresh Server state volumes idempotently before uid/gid 1000 read-only writes", async () => {
+    const suffix = `${process.pid}_${Date.now()}`;
+    const artifactVolume = `qualigence_artifact_permission_probe_${suffix}`;
+    const signingVolume = `qualigence_signing_permission_probe_${suffix}`;
+    const dockerEnv = { ...process.env, MSYS_NO_PATHCONV: "1" };
+    const mountArgs = [
+      "--mount",
+      `type=volume,source=${artifactVolume},target=/var/lib/qualigence/artifacts`,
+      "--mount",
+      `type=volume,source=${signingVolume},target=/var/lib/qualigence/skill-signing`,
+    ];
+
+    try {
+      for (const pass of ["initial", "retained-volume rerun"]) {
+        await execFileAsync(
+          "docker",
+          [
+            "run",
+            "--rm",
+            "--read-only",
+            "--user",
+            "0:0",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "CHOWN",
+            "--network",
+            "none",
+            ...mountArgs,
+            "--entrypoint",
+            "/bin/sh",
+            runtimePermissionProbeImage,
+            "-ec",
+            serverVolumePermissionCommand,
+          ],
+          { env: { ...dockerEnv, QUALIGENCE_PERMISSION_PREP_PASS: pass }, timeout: 60_000 },
+        );
+      }
+
+      const { stdout } = await execFileAsync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--read-only",
+          "--user",
+          "1000:1000",
+          "--cap-drop",
+          "ALL",
+          "--network",
+          "none",
+          ...mountArgs,
+          "--entrypoint",
+          "/bin/sh",
+          runtimePermissionProbeImage,
+          "-ec",
+          [
+            "touch /var/lib/qualigence/artifacts/probe",
+            "touch /var/lib/qualigence/skill-signing/probe",
+            "stat -c '%u:%g %a %n' /var/lib/qualigence/artifacts /var/lib/qualigence/skill-signing /var/lib/qualigence/artifacts/probe /var/lib/qualigence/skill-signing/probe",
+          ].join(" && "),
+        ],
+        { env: dockerEnv, timeout: 60_000 },
+      );
+
+      expect(stdout).toContain("1000:1000 770 /var/lib/qualigence/artifacts");
+      expect(stdout).toContain("1000:1000 770 /var/lib/qualigence/skill-signing");
+      expect(stdout).toContain("1000:1000 644 /var/lib/qualigence/artifacts/probe");
+      expect(stdout).toContain("1000:1000 644 /var/lib/qualigence/skill-signing/probe");
+    } finally {
+      await Promise.all(
+        [artifactVolume, signingVolume].map((volume) =>
+          execFileAsync("docker", ["volume", "rm", "-f", volume], { timeout: 15_000 }).catch(() => undefined),
+        ),
+      );
+    }
+  }, 120_000);
 
   it("hardens the runtime application containers", () => {
     for (const name of ["server", "worker", "console"]) {
@@ -99,6 +241,14 @@ describe.skipIf(!dockerAvailable())("Self-hosted Compose topology invariants", (
       );
       expect(service?.cap_drop, `${name} must drop all capabilities`).toContain("ALL");
     }
+  });
+
+  it("keeps the Worker healthcheck compatible with the pg CommonJS runtime package", () => {
+    const workerHealthcheck = composeHealthcheckText(config.services.worker);
+    expect(workerHealthcheck).toContain("const {Client}=pg.default??pg");
+    expect(workerHealthcheck).toContain("console.error(error&&error.stack?error.stack:String(error))");
+    expect(workerHealthcheck).toContain("http://minio:9000/minio/health/ready");
+    expect(workerHealthcheck).toContain("select 1");
   });
 
   it("applies CPU, memory, PID and log-rotation limits", () => {
@@ -152,12 +302,16 @@ describe.skipIf(!dockerAvailable())("Self-hosted Compose topology invariants", (
     }
   });
 
-  it("serves the Console as a static asset image, not a Node process", () => {
+  it("serves the Console as a static asset image, not a Node process", async () => {
     const console = config.services.console;
     expect(console).toBeDefined();
     // The console builds the static-asset Dockerfile and runs no server/worker role.
     expect(console?.build?.dockerfile ?? "").toContain("console.Dockerfile");
-    expect(console?.command ?? undefined).toBeUndefined();
+    await expect(readConsoleRuntimeImage()).resolves.toContain("caddy:2.8-alpine@sha256:");
+    expect(console?.command).toEqual(["caddy", "file-server", "--listen", ":8080", "--root", "/srv"]);
+    expect(console?.cap_add).toEqual(["NET_BIND_SERVICE"]);
+    expect(composeHealthcheckText(console)).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
+    expect(composeHealthcheckText(console)).not.toMatch(/\bnode\b|node -e/);
     // There is no additional Node service for the web console.
     const nodeConsoleServices = Object.entries(config.services).filter(
       ([name, service]) =>
@@ -166,6 +320,36 @@ describe.skipIf(!dockerAvailable())("Self-hosted Compose topology invariants", (
     );
     expect(nodeConsoleServices).toEqual([]);
   });
+
+  it("uses a Console healthcheck command available in the Caddy runtime image", async () => {
+    const console = config.services.console;
+    expect(composeHealthcheckText(console)).toContain("wget -qO- http://127.0.0.1:8080/ >/dev/null");
+    expect(composeHealthcheckText(console)).not.toMatch(/\bnode\b|node -e/);
+
+    const { stdout } = await execFileAsync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "NET_BIND_SERVICE",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--network",
+        "none",
+        "--entrypoint",
+        "/bin/sh",
+        await readConsoleRuntimeImage(),
+        "-ec",
+        "command -v wget && caddy version >/dev/null",
+      ],
+      { env: { ...process.env, MSYS_NO_PATHCONV: "1" }, timeout: 60_000 },
+    );
+    expect(stdout.trim()).toMatch(/wget$/);
+  }, 90_000);
 
   it("applies the frozen strict CSP and security headers at the edge proxy", async () => {
     const caddyfile = await readFile(join(composeDir, "Caddyfile"), "utf8");
@@ -182,152 +366,30 @@ describe.skipIf(!dockerAvailable())("Self-hosted Compose topology invariants", (
   });
 });
 
-describe.skipIf(!dockerAvailable())(
-  "Self-hosted full loop (realistic compose-up equivalent: enroll -> mission -> worker -> console query)",
-  () => {
-    let fx: ServerFixture;
+function composeHealthcheckText(service: ComposeService | undefined): string {
+  const test = service?.healthcheck?.test;
+  return Array.isArray(test) ? test.join(" ") : String(test ?? "");
+}
 
-    const fixedClock: Clock = { now: () => new Date().toISOString(), sleep: async () => {} };
+async function readConsoleRuntimeImage(): Promise<string> {
+  const dockerfile = await readFile(
+    join(process.cwd(), "deployments", "self-hosted", "docker", "console.Dockerfile"),
+    "utf8",
+  );
+  const runtimeImage = /^FROM\s+(caddy:2\.8-alpine@sha256:[a-f0-9]{64})\s+AS\s+runtime$/m.exec(dockerfile)?.[1];
+  if (runtimeImage === undefined) {
+    throw new Error("Console Dockerfile Caddy runtime image was not found");
+  }
+  return runtimeImage;
+}
 
-    function adminConfig() {
-      return {
-        host: fx.container.host,
-        port: fx.container.port,
-        database: fx.container.database,
-        user: fx.container.superuser,
-        password: fx.container.password,
-      };
-    }
-
-    function url(path: string): string {
-      return `${fx.baseUrl}${path}`;
-    }
-
-    beforeAll(async () => {
-      fx = await setupServerFixture();
-    }, 240_000);
-
-    afterAll(async () => {
-      await fx?.stop();
+async function requireDocker(): Promise<void> {
+  try {
+    await execFileAsync("docker", ["info"], { timeout: 15_000 });
+  } catch (cause) {
+    throw Object.assign(new Error("DockerUnavailable: docker info failed"), {
+      code: "DockerUnavailable",
+      cause,
     });
-
-    it("runs the whole private-network loop and the Server applies the Worker's result", async () => {
-      const tenantId = "tenant-a";
-
-      // 1. Runner enrolls via mTLS (admin OIDC creates the enrollment; the
-      //    certificate + self-identity exchange use NO OIDC bearer token).
-      const adminToken = fx.token(tenantId, ["admin"]);
-      const enrollRes = await fetch(url("/v1/runner-enrollments"), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${adminToken}`,
-          "content-type": "application/json",
-          [IDEMPOTENCY_KEY_HEADER]: "loop-enroll-1",
-        },
-        body: JSON.stringify({ runnerId: "runner-loop", projectIds: ["project-1"], ttlMs: 600_000 }),
-      });
-      expect(enrollRes.status).toBe(201);
-      const { resource } = (await enrollRes.json()) as {
-        resource: { enrollmentId: string; enrollmentToken: string };
-      };
-      const csr = generateRunnerCsr({ commonName: "runner-loop" });
-      const certRes = await fetch(
-        url(`/v1/runner-enrollments/${resource.enrollmentId}/certificate`),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-tenant-id": tenantId },
-          body: JSON.stringify({ enrollmentToken: resource.enrollmentToken, csrPem: csr.csrPem }),
-        },
-      );
-      expect(certRes.status).toBe(201);
-      const cert = (await certRes.json()) as { certificatePem: string };
-      const selfRes = await fetch(url("/v1/runner-identity/self"), {
-        headers: { "x-client-cert": encodeURIComponent(cert.certificatePem) },
-      });
-      expect(selfRes.status).toBe(200);
-      expect((await selfRes.json()) as { runnerId: string }).toMatchObject({
-        runnerId: "runner-loop",
-      });
-
-      // 2. Server accepts a Mission (project) through the Public API.
-      const testerToken = fx.token(tenantId, ["tester"]);
-      const projectRes = await fetch(url("/v1/projects"), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${testerToken}`,
-          "content-type": "application/json",
-          [IDEMPOTENCY_KEY_HEADER]: "loop-project-1",
-        },
-        body: JSON.stringify({ name: "Loop Mission", description: "self-hosted E2E" }),
-      });
-      expect(projectRes.status).toBe(201);
-
-      // 3. Seed an investigation case + Intelligence Job, then the Worker processes it.
-      const caseId = "case-loop-e2e";
-      const { job, result } = buildJobPair({
-        tenantId,
-        caseId,
-        jobId: "job-loop-e2e",
-        baseAggregateVersion: 0,
-      });
-      await seedInvestigationCase(adminConfig(), { tenantId, caseId, version: 0 });
-      await seedJob(adminConfig(), job);
-
-      const queue = new PostgresIntelligenceQueue({
-        host: fx.container.host,
-        port: fx.container.port,
-        database: fx.container.database,
-        user: "qualigence_worker",
-        password: "worker_pw",
-      });
-      const processor: JobProcessor = {
-        process: async (leased: IntelligenceJob) => {
-          expect(leased.jobId).toBe("job-loop-e2e");
-          return result;
-        },
-      };
-      try {
-        const loop = new WorkerLoop({
-          store: queue as IntelligenceJobStore,
-          inbox: queue as IntelligenceResultInbox,
-          processor,
-          workerId: "worker-loop",
-          acceptedTypes: ["investigation.reproduction-planning"],
-          leaseDurationMs: 60_000,
-          idleBackoffMs: 5,
-          clock: fixedClock,
-        });
-        expect(await loop.runOnce()).toBe("processed");
-      } finally {
-        await queue.close();
-      }
-
-      // 4. The Server (never the Worker) applies the result deterministically.
-      const provider = createPostgresRuntime({
-        host: fx.container.host,
-        port: fx.container.port,
-        database: fx.container.database,
-        user: "qualigence_server",
-        password: "server_pw",
-      });
-      try {
-        const consumer = new ServerIntelligenceResultConsumer(provider);
-        const summary = await consumer.consumeForTenant(tenantId);
-        expect(summary.applied).toBe(1);
-      } finally {
-        await provider.close();
-      }
-
-      // 5. The Console can query the applied result via the Public API.
-      const viewerToken = fx.token(tenantId, ["viewer"]);
-      const investigationRes = await fetch(url(`/v1/investigations/${caseId}`), {
-        headers: { authorization: `Bearer ${viewerToken}` },
-      });
-      expect(investigationRes.status).toBe(200);
-      const dto = (await investigationRes.json()) as { caseId: string; version: number };
-      expect(dto.caseId).toBe(caseId);
-      expect(dto.version).toBe(1);
-      expect(await readCaseVersion(adminConfig(), caseId)).toBe(1);
-    }, 240_000);
-  },
-);
+  }
+}

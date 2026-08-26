@@ -38,8 +38,17 @@ export interface TenantStores {
 }
 
 /** Everything the routes need, wired once at startup. */
+export type ServerReadinessCheckName =
+  | "postgres"
+  | "object_storage"
+  | "artifact_data_plane"
+  | "oidc_jwks"
+  | "runner_grpc"
+  | "mission_dispatch"
+  | "intelligence_result_consumer";
+
 export interface ServerReadinessCheck {
-  readonly name: "intelligence_result_consumer";
+  readonly name: ServerReadinessCheckName;
   readonly status: "pass" | "fail";
   readonly code?: string;
   readonly safeMessage: string;
@@ -69,7 +78,7 @@ export interface ServerDeps {
   readonly skillRepository?: (stores: TenantStores, tenantId: string) => SkillRepository;
   readonly skillSigner?: SkillSigner;
   readonly missionSchedulingIds?: MissionSchedulingIds;
-  readonly readiness?: () => ServerReadinessReport;
+  readonly readiness?: () => ServerReadinessReport | Promise<ServerReadinessReport>;
 }
 
 export function projectTargetService(deps: ServerDeps, stores: TenantStores, tenantId: string): ProjectTargetService {

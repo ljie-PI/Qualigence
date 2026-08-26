@@ -18,6 +18,7 @@
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/core-application": "workspace:*",
     "@qualigence/evidence": "workspace:*",
+    "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/mission": "workspace:*",
