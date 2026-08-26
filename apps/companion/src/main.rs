@@ -57,8 +57,8 @@ fn run_daemon() {
     use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
     use companion::clock::SystemClock;
     use companion::ipc::dto::{
-        validate_deadline_ms, ActionExecutePayload, AppTarget, CompanionRequestPayload,
-        DesktopPlatform,
+        validate_app_target_timeout_ms, validate_deadline_ms, ActionExecutePayload, AppTarget,
+        CompanionRequestPayload, DesktopPlatform,
     };
     use companion::ipc::security::{CertificateHandshakeVerifier, RunnerCertificatePolicy};
     use companion::ipc::server::{write_frame, FrameLimits};
@@ -74,12 +74,13 @@ fn run_daemon() {
     };
     use companion::risk::Risk;
     use companion::uia::action::{
-        classify_desktop_action, desktop_action_digest_sha256, prepare_desktop_action_request,
-        DesktopActionError,
+        classify_desktop_action, desktop_action_digest_sha256, ensure_companion_accepts_uia_work,
+        execute_desktop_action_request_before_deadline, DesktopActionError,
     };
     use companion::uia::protocol::{ActionOutcomeReport, UiaError, UiaSessionTarget};
     use companion::uia::worker_supervisor::{
-        NativeUiaWorkerSpawner, UiaWorkerSupervisor, WorkerCancellation,
+        lock_supervisor_until, NativeUiaWorkerSpawner, RequestDeadline, UiaWorkerSupervisor,
+        WorkerCancellation, WorkerError,
     };
     use companion::{Companion, PermitRequestOutcome};
     use windows_sys::Win32::Foundation::{
@@ -625,24 +626,59 @@ fn run_daemon() {
                         )
                     }
                 };
-                let capture_result = match state.supervisor.lock() {
-                    Ok(mut supervisor) => supervisor.capture(&target, deadline),
-                    Err(_) => Err(UiaError::WorkerUnavailable),
+                let Some(companion) = state.companions.get(&payload.session_id).cloned() else {
+                    return response_writer.write_error(
+                        &request_id,
+                        "uia.capture",
+                        "ApplicationError",
+                        "SessionNotFound",
+                        frame_limits,
+                    );
                 };
-                match capture_result {
-                    Ok(source) => response_writer.write_ok(
-                        &request_id,
-                        "uia.capture",
-                        serde_json::to_value(source).unwrap_or(serde_json::Value::Null),
-                        frame_limits,
-                    ),
-                    Err(error) => response_writer.write_uia_error(
-                        &request_id,
-                        "uia.capture",
-                        error,
-                        frame_limits,
-                    ),
+                match companion
+                    .lock()
+                    .map_err(|_| UiaError::WorkerUnavailable)
+                    .and_then(|companion| ensure_companion_accepts_uia_work(&*companion))
+                {
+                    Ok(()) => {}
+                    Err(error) => {
+                        return response_writer.write_uia_error(
+                            &request_id,
+                            "uia.capture",
+                            error,
+                            frame_limits,
+                        )
+                    }
                 }
+                let supervisor = Arc::clone(&state.supervisor);
+                let cancellation = state.worker_cancellation.checkpoint();
+                let deadline = RequestDeadline::after(deadline);
+                let writer = response_writer.clone();
+                let limits = *frame_limits;
+                action_threads.push(std::thread::spawn(move || {
+                    let _admitted = admitted;
+                    let capture_result =
+                        match lock_supervisor_until(&supervisor, &deadline, &cancellation) {
+                            Ok(mut supervisor) => {
+                                supervisor.capture_until(&target, &deadline, &cancellation)
+                            }
+                            Err(WorkerError::Timeout) => Err(UiaError::TargetUnresponsive),
+                            Err(WorkerError::Cancelled) => Err(UiaError::EmergencyStopped),
+                            Err(_) => Err(UiaError::WorkerUnavailable),
+                        };
+                    let _ = match capture_result {
+                        Ok(source) => writer.write_ok(
+                            &request_id,
+                            "uia.capture",
+                            serde_json::to_value(source).unwrap_or(serde_json::Value::Null),
+                            &limits,
+                        ),
+                        Err(error) => {
+                            writer.write_uia_error(&request_id, "uia.capture", error, &limits)
+                        }
+                    };
+                }));
+                Ok(())
             }
             CompanionRequestPayload::PermitRequest(payload) => {
                 let permit_request = payload.request;
@@ -788,18 +824,28 @@ fn run_daemon() {
                 };
                 let supervisor = Arc::clone(&state.supervisor);
                 let cancellation = state.worker_cancellation.checkpoint();
+                let deadline = RequestDeadline::after(deadline);
                 let writer = response_writer.clone();
                 let limits = *frame_limits;
                 action_threads.push(std::thread::spawn(move || {
                     let _admitted = admitted;
-                    let result = execute_action_after_admission(
-                        companion,
-                        supervisor,
-                        cancellation,
-                        target,
-                        payload,
-                        binding,
-                        deadline,
+                    let ActionExecutePayload {
+                        session_id: _,
+                        action,
+                        permit,
+                        value,
+                        deadline_ms: _,
+                    } = payload;
+                    let result = execute_desktop_action_request_before_deadline(
+                        &companion,
+                        &supervisor,
+                        &cancellation,
+                        &target,
+                        &action,
+                        &permit,
+                        value,
+                        &binding,
+                        &deadline,
                     );
                     let _ = write_action_execute_result(&writer, &request_id, result, &limits);
                 }));
@@ -815,82 +861,6 @@ fn run_daemon() {
             ),
         }?;
         Ok(())
-    }
-
-    fn execute_action_after_admission(
-        companion: Arc<Mutex<DaemonCompanion>>,
-        supervisor: Arc<Mutex<UiaWorkerSupervisor<NativeUiaWorkerSpawner>>>,
-        cancellation: companion::uia::worker_supervisor::WorkerCancellationCheckpoint,
-        target: UiaSessionTarget,
-        payload: ActionExecutePayload,
-        binding: PermitBinding,
-        deadline: Duration,
-    ) -> Result<ActionOutcomeReport, DesktopActionError> {
-        let ActionExecutePayload {
-            session_id: _,
-            action,
-            permit,
-            value,
-            deadline_ms: _,
-        } = payload;
-        let mut prepared = {
-            let mut companion = companion
-                .lock()
-                .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))?;
-            prepare_desktop_action_request(
-                &mut *companion,
-                &target,
-                &action,
-                &permit,
-                value,
-                &binding,
-            )?
-        };
-
-        if companion_is_emergency_stopped(&companion)? {
-            prepared.clear_plaintext();
-            return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
-        }
-
-        let outcome = {
-            let mut supervisor = supervisor
-                .lock()
-                .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))?;
-            if companion_is_emergency_stopped(&companion)? {
-                prepared.clear_plaintext();
-                return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
-            }
-            supervisor
-                .execute_with_cancellation(
-                    &target,
-                    &action,
-                    prepared.value.as_ref(),
-                    deadline,
-                    &cancellation,
-                )
-                .map_err(DesktopActionError::Uia)
-        };
-        prepared.clear_plaintext();
-
-        if companion_is_emergency_stopped(&companion)? {
-            return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
-        }
-
-        outcome
-    }
-
-    fn companion_is_emergency_stopped(
-        companion: &Arc<Mutex<DaemonCompanion>>,
-    ) -> Result<bool, DesktopActionError> {
-        companion
-            .lock()
-            .map(|companion| {
-                matches!(
-                    companion.state(),
-                    companion::emergency_stop::ControlState::EmergencyStopped
-                )
-            })
-            .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))
     }
 
     fn write_action_execute_result(
@@ -917,6 +887,27 @@ fn run_daemon() {
                     },
                     frame_limits,
                 ),
+            Err(DesktopActionError::RequestDeadlineExpired) => writer.write_error(
+                request_id,
+                "action.execute",
+                "CompanionRequestTimeout",
+                "CompanionRequestTimeout",
+                frame_limits,
+            ),
+            Err(DesktopActionError::RequestCancelled) => writer.write_error(
+                request_id,
+                "action.execute",
+                "CompanionUnavailable",
+                "RequestCancelled",
+                frame_limits,
+            ),
+            Err(DesktopActionError::ValueTooLarge) => writer.write_error(
+                request_id,
+                "action.execute",
+                "InvalidAction",
+                "PlaintextValueTooLarge",
+                frame_limits,
+            ),
             Err(error) => writer.write_error(
                 request_id,
                 "action.execute",
@@ -924,6 +915,20 @@ fn run_daemon() {
                 action_error_message(&error),
                 frame_limits,
             ),
+        }
+    }
+
+    fn action_error_message(error: &DesktopActionError) -> &str {
+        match error {
+            DesktopActionError::Permit(companion::permit::PermitError::EmergencyStopped) => {
+                "EmergencyStopped"
+            }
+            DesktopActionError::Permit(_) => "LocalPermitInvalid",
+            DesktopActionError::BindingMismatch => "LocalPermitBindingMismatch",
+            DesktopActionError::ValueTooLarge => "PlaintextValueTooLarge",
+            DesktopActionError::RequestDeadlineExpired => "CompanionRequestTimeout",
+            DesktopActionError::RequestCancelled => "RequestCancelled",
+            DesktopActionError::Uia(error) => error.code(),
         }
     }
 
@@ -941,8 +946,8 @@ fn run_daemon() {
     }
 
     fn target_deadlines_are_valid(target: &AppTarget) -> bool {
-        checked_deadline(target.reset.timeout_ms).is_some()
-            && checked_deadline(target.shutdown.graceful_timeout_ms).is_some()
+        validate_app_target_timeout_ms(target.reset.timeout_ms).is_ok()
+            && validate_app_target_timeout_ms(target.shutdown.graceful_timeout_ms).is_ok()
     }
 
     fn authorize_peer(listener: &NamedPipeListener) -> Result<(), NativePipeError> {
@@ -1229,17 +1234,6 @@ fn run_daemon() {
             error.code(),
             limits,
         )
-    }
-
-    fn action_error_message(error: &DesktopActionError) -> &str {
-        match error {
-            DesktopActionError::Permit(companion::permit::PermitError::EmergencyStopped) => {
-                "EmergencyStopped"
-            }
-            DesktopActionError::Permit(_) => "LocalPermitInvalid",
-            DesktopActionError::BindingMismatch => "LocalPermitBindingMismatch",
-            DesktopActionError::Uia(error) => error.code(),
-        }
     }
 
     fn decision_status(decision: companion::approval::Decision) -> &'static str {

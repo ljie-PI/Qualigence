@@ -2,7 +2,7 @@
 //! the supervisor's kill-and-rebuild restart behavior (specialist finding W-03).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,8 +19,8 @@ use companion::uia::protocol::{
 };
 use companion::uia::worker::synthetic_source;
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerCancellation, WorkerCancellationCheckpoint, WorkerError,
-    WorkerHandle, WorkerSpawner,
+    RequestDeadline, UiaWorkerSupervisor, WorkerCancellation, WorkerCancellationCheckpoint,
+    WorkerError, WorkerHandle, WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -278,6 +278,123 @@ fn emergency_stop_cancels_an_action_already_waiting_on_the_worker() {
         supervisor.lock().expect("supervisor lock").restart_count(),
         1,
     );
+}
+
+#[test]
+fn emergency_stop_cancels_a_capture_already_waiting_on_the_worker() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(BlockingSpawner {
+        entered: Arc::clone(&entered),
+        killed: Arc::clone(&killed),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let capture_supervisor = Arc::clone(&supervisor);
+    let checkpoint = cancellation.checkpoint();
+    let capture = std::thread::spawn(move || {
+        capture_supervisor
+            .lock()
+            .expect("supervisor lock")
+            .capture_until(
+                &target("sess-1"),
+                &RequestDeadline::after(Duration::from_millis(5_000)),
+                &checkpoint,
+            )
+    });
+
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        capture.join().expect("capture thread"),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert!(killed.load(Ordering::SeqCst));
+    assert_eq!(
+        supervisor.lock().expect("supervisor lock").restart_count(),
+        1,
+    );
+}
+
+#[test]
+fn expired_capture_deadline_never_dispatches_to_worker() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let spawner = CountingSpawner {
+        request_count: Arc::clone(&request_count),
+    };
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let cancellation = WorkerCancellation::default();
+    let deadline = RequestDeadline::after(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(5));
+
+    assert_eq!(
+        supervisor.capture_until(&target("sess-1"), &deadline, &cancellation.checkpoint()),
+        Err(UiaError::TargetUnresponsive)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn cancelled_capture_never_dispatches_to_worker() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let spawner = CountingSpawner {
+        request_count: Arc::clone(&request_count),
+    };
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let cancellation = WorkerCancellation::default();
+    let checkpoint = cancellation.checkpoint();
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        supervisor.capture_until(
+            &target("sess-1"),
+            &RequestDeadline::after(Duration::from_millis(50)),
+            &checkpoint,
+        ),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
+}
+
+struct CountingHandle {
+    request_count: Arc<AtomicUsize>,
+}
+
+impl WorkerHandle for CountingHandle {
+    fn request(
+        &mut self,
+        _req: &WorkerRequest,
+        _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.request_count.fetch_add(1, Ordering::SeqCst);
+        Ok(captured("sess-1"))
+    }
+
+    fn kill(&mut self) {}
+
+    fn is_alive(&self) -> bool {
+        true
+    }
+}
+
+struct CountingSpawner {
+    request_count: Arc<AtomicUsize>,
+}
+
+impl WorkerSpawner for CountingSpawner {
+    type Handle = CountingHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(CountingHandle {
+            request_count: Arc::clone(&self.request_count),
+        })
+    }
 }
 
 #[test]

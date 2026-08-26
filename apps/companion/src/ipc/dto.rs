@@ -10,7 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::risk::Risk;
 
 pub const MIN_DEADLINE_MS: u64 = 1;
+pub const MIN_APP_TARGET_TIMEOUT_MS: u64 = 0;
 pub const MAX_DEADLINE_MS: u64 = 600_000;
+pub const MAX_PLAINTEXT_VALUE_BYTES: u64 = 64 * 1024;
 
 pub fn validate_deadline_ms(value: u64) -> Result<u64, String> {
     if (MIN_DEADLINE_MS..=MAX_DEADLINE_MS).contains(&value) {
@@ -18,6 +20,26 @@ pub fn validate_deadline_ms(value: u64) -> Result<u64, String> {
     } else {
         Err(format!(
             "deadlineMs must be between {MIN_DEADLINE_MS} and {MAX_DEADLINE_MS}"
+        ))
+    }
+}
+
+pub fn validate_app_target_timeout_ms(value: u64) -> Result<u64, String> {
+    if (MIN_APP_TARGET_TIMEOUT_MS..=MAX_DEADLINE_MS).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "AppTarget timeoutMs must be between {MIN_APP_TARGET_TIMEOUT_MS} and {MAX_DEADLINE_MS}"
+        ))
+    }
+}
+
+pub fn validate_plaintext_value_byte_length(value: u64) -> Result<u64, String> {
+    if value <= MAX_PLAINTEXT_VALUE_BYTES {
+        Ok(value)
+    } else {
+        Err(format!(
+            "plaintext value must be at most {MAX_PLAINTEXT_VALUE_BYTES} bytes"
         ))
     }
 }
@@ -211,21 +233,71 @@ pub struct LocalPermitAuthorization {
     pub value_binding: Option<DesktopValueBinding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DesktopValueBinding {
     pub value_ref: String,
     pub value_sha256: String,
     pub value_byte_length: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDesktopValueBinding {
+    value_ref: String,
+    value_sha256: String,
+    value_byte_length: u64,
+}
+
+impl<'de> Deserialize<'de> for DesktopValueBinding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawDesktopValueBinding::deserialize(deserializer)?;
+        validate_plaintext_value_byte_length(raw.value_byte_length).map_err(D::Error::custom)?;
+        Ok(Self {
+            value_ref: raw.value_ref,
+            value_sha256: raw.value_sha256,
+            value_byte_length: raw.value_byte_length,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DesktopPlaintextValue {
     pub value_ref: String,
     pub value_sha256: String,
     pub value_byte_length: u64,
     pub plaintext: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDesktopPlaintextValue {
+    value_ref: String,
+    value_sha256: String,
+    value_byte_length: u64,
+    plaintext: String,
+}
+
+impl<'de> Deserialize<'de> for DesktopPlaintextValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawDesktopPlaintextValue::deserialize(deserializer)?;
+        validate_plaintext_value_byte_length(raw.value_byte_length).map_err(D::Error::custom)?;
+        validate_plaintext_value_byte_length(raw.plaintext.as_bytes().len() as u64)
+            .map_err(D::Error::custom)?;
+        Ok(Self {
+            value_ref: raw.value_ref,
+            value_sha256: raw.value_sha256,
+            value_byte_length: raw.value_byte_length,
+            plaintext: raw.plaintext,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,8 @@
 //! a non-replayable `ActionOutcomeUnknown`.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use companion::approval::{ApprovalOutcome, ApprovalRequest, ApprovalState, ScriptedApprover};
@@ -16,14 +17,16 @@ use companion::ipc::dto::{
 use companion::permit::{PermitBinding, PermitError, PermitStore};
 use companion::risk::Risk;
 use companion::uia::action::{
-    classify_desktop_action, desktop_action_digest_sha256, execute_desktop_action,
-    execute_desktop_action_request, DesktopActionError,
+    classify_desktop_action, desktop_action_digest_sha256, ensure_companion_accepts_uia_work,
+    execute_desktop_action, execute_desktop_action_request,
+    execute_desktop_action_request_before_deadline, DesktopActionError,
 };
 use companion::uia::protocol::{
     ActionOutcomeReport, UiaError, UiaSessionTarget, WorkerRequest, WorkerResponse,
 };
 use companion::uia::worker_supervisor::{
-    UiaWorkerSupervisor, WorkerCancellationCheckpoint, WorkerError, WorkerHandle, WorkerSpawner,
+    RequestDeadline, UiaWorkerSupervisor, WorkerCancellationCheckpoint, WorkerError, WorkerHandle,
+    WorkerSpawner,
 };
 use companion::{Companion, PermitRequestOutcome};
 
@@ -99,6 +102,69 @@ impl WorkerSpawner for ScriptedSpawner {
             }),
             None => Err(WorkerError::Spawn),
         }
+    }
+}
+
+struct ConcurrentHandle {
+    request_count: Arc<AtomicUsize>,
+    release_first: Arc<AtomicBool>,
+    alive: bool,
+}
+
+impl WorkerHandle for ConcurrentHandle {
+    fn request(
+        &mut self,
+        _req: &WorkerRequest,
+        deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        let index = self.request_count.fetch_add(1, Ordering::SeqCst);
+        if index == 0 {
+            let started = std::time::Instant::now();
+            while !self.release_first.load(Ordering::SeqCst) {
+                if cancellation.is_cancelled() {
+                    self.kill();
+                    return Err(WorkerError::Cancelled);
+                }
+                if started.elapsed() >= deadline {
+                    self.kill();
+                    return Err(WorkerError::Timeout);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if cancellation.is_cancelled() {
+                self.kill();
+                return Err(WorkerError::Cancelled);
+            }
+        }
+        Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })
+    }
+
+    fn kill(&mut self) {
+        self.alive = false;
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+struct ConcurrentSpawner {
+    request_count: Arc<AtomicUsize>,
+    release_first: Arc<AtomicBool>,
+}
+
+impl WorkerSpawner for ConcurrentSpawner {
+    type Handle = ConcurrentHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(ConcurrentHandle {
+            request_count: Arc::clone(&self.request_count),
+            release_first: Arc::clone(&self.release_first),
+            alive: true,
+        })
     }
 }
 
@@ -291,6 +357,21 @@ fn destructive_actions_are_never_auto_approved() {
 }
 
 #[test]
+fn emergency_stopped_session_denies_new_capture_work() {
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+
+    companion.emergency_stop();
+
+    assert_eq!(
+        ensure_companion_accepts_uia_work(&companion),
+        Err(UiaError::EmergencyStopped)
+    );
+
+    companion.reset_session("sess-2");
+    assert_eq!(ensure_companion_accepts_uia_work(&companion), Ok(()));
+}
+
+#[test]
 fn an_emergency_stop_blocks_a_brokered_action_before_the_worker() {
     let request_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let spawner = ScriptedSpawner::new(
@@ -410,6 +491,287 @@ fn an_action_timeout_is_a_non_replayable_unknown_outcome() {
     assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[test]
+fn concurrent_action_requests_wait_for_supervisor_without_consuming_late_permits() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_first = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(ConcurrentSpawner {
+        request_count: Arc::clone(&request_count),
+        release_first: Arc::clone(&release_first),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let companion = Arc::new(Mutex::new(companion_with(ScriptedApprover::always(
+        ApprovalOutcome::Approved,
+    ))));
+    let action_one = click_action("act-concurrent-1");
+    let action_two = click_action("act-concurrent-2");
+    let mut binding_one = binding_for("act-concurrent-1", Risk::Normal);
+    let mut binding_two = binding_for("act-concurrent-2", Risk::Normal);
+    let permit_one = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &action_one,
+        &mut binding_one,
+        None,
+    );
+    let permit_two = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &action_two,
+        &mut binding_two,
+        None,
+    );
+
+    let first_companion = Arc::clone(&companion);
+    let first_supervisor = Arc::clone(&supervisor);
+    let first_checkpoint = cancellation.checkpoint();
+    let first = std::thread::spawn(move || {
+        execute_desktop_action_request_before_deadline(
+            &first_companion,
+            &first_supervisor,
+            &first_checkpoint,
+            &target(),
+            &action_one,
+            &permit_one,
+            None,
+            &binding_one,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        )
+    });
+
+    while request_count.load(Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let second_companion = Arc::clone(&companion);
+    let second_supervisor = Arc::clone(&supervisor);
+    let second_checkpoint = cancellation.checkpoint();
+    let second = std::thread::spawn(move || {
+        execute_desktop_action_request_before_deadline(
+            &second_companion,
+            &second_supervisor,
+            &second_checkpoint,
+            &target(),
+            &action_two,
+            &permit_two,
+            None,
+            &binding_two,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        )
+    });
+
+    std::thread::sleep(Duration::from_millis(25));
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    release_first.store(true, Ordering::SeqCst);
+
+    assert_eq!(
+        first.join().expect("first action"),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(
+        second.join().expect("second action"),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn expired_queued_action_does_not_consume_permit_or_dispatch() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_first = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(ConcurrentSpawner {
+        request_count: Arc::clone(&request_count),
+        release_first: Arc::clone(&release_first),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let companion = Arc::new(Mutex::new(companion_with(ScriptedApprover::always(
+        ApprovalOutcome::Approved,
+    ))));
+    let first_action = click_action("act-deadline-holder");
+    let queued_action = click_action("act-deadline-queued");
+    let mut first_binding = binding_for("act-deadline-holder", Risk::Normal);
+    let mut queued_binding = binding_for("act-deadline-queued", Risk::Normal);
+    let first_permit = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &first_action,
+        &mut first_binding,
+        None,
+    );
+    let queued_permit = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &queued_action,
+        &mut queued_binding,
+        None,
+    );
+
+    let first_companion = Arc::clone(&companion);
+    let first_supervisor = Arc::clone(&supervisor);
+    let first_checkpoint = cancellation.checkpoint();
+    let first = std::thread::spawn(move || {
+        execute_desktop_action_request_before_deadline(
+            &first_companion,
+            &first_supervisor,
+            &first_checkpoint,
+            &target(),
+            &first_action,
+            &first_permit,
+            None,
+            &first_binding,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        )
+    });
+
+    while request_count.load(Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let queued_result = execute_desktop_action_request_before_deadline(
+        &companion,
+        &supervisor,
+        &cancellation.checkpoint(),
+        &target(),
+        &queued_action,
+        &queued_permit,
+        None,
+        &queued_binding,
+        &RequestDeadline::after(Duration::from_millis(10)),
+    );
+    assert_eq!(
+        queued_result,
+        Err(DesktopActionError::RequestDeadlineExpired)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    release_first.store(true, Ordering::SeqCst);
+    assert_eq!(
+        first.join().expect("first action"),
+        Ok(ActionOutcomeReport::Ok)
+    );
+
+    assert_eq!(
+        execute_desktop_action_request_before_deadline(
+            &companion,
+            &supervisor,
+            &cancellation.checkpoint(),
+            &target(),
+            &queued_action,
+            &queued_permit,
+            None,
+            &queued_binding,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        ),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn cancelled_queued_action_does_not_consume_permit_or_dispatch() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_first = Arc::new(AtomicBool::new(false));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(ConcurrentSpawner {
+        request_count: Arc::clone(&request_count),
+        release_first: Arc::clone(&release_first),
+    })));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    let companion = Arc::new(Mutex::new(companion_with(ScriptedApprover::always(
+        ApprovalOutcome::Approved,
+    ))));
+    let first_action = click_action("act-cancel-holder");
+    let queued_action = click_action("act-cancel-queued");
+    let mut first_binding = binding_for("act-cancel-holder", Risk::Normal);
+    let mut queued_binding = binding_for("act-cancel-queued", Risk::Normal);
+    let first_permit = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &first_action,
+        &mut first_binding,
+        None,
+    );
+    let queued_permit = issue_local_execution_permit(
+        &mut companion.lock().expect("companion lock"),
+        &queued_action,
+        &mut queued_binding,
+        None,
+    );
+
+    let first_companion = Arc::clone(&companion);
+    let first_supervisor = Arc::clone(&supervisor);
+    let first_checkpoint = cancellation.checkpoint();
+    let first = std::thread::spawn(move || {
+        execute_desktop_action_request_before_deadline(
+            &first_companion,
+            &first_supervisor,
+            &first_checkpoint,
+            &target(),
+            &first_action,
+            &first_permit,
+            None,
+            &first_binding,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        )
+    });
+
+    while request_count.load(Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let queued_action_retry = queued_action.clone();
+    let queued_permit_retry = queued_permit.clone();
+    let queued_binding_retry = queued_binding.clone();
+    let queued_companion = Arc::clone(&companion);
+    let queued_supervisor = Arc::clone(&supervisor);
+    let queued_checkpoint = cancellation.checkpoint();
+    let queued_thread = std::thread::spawn(move || {
+        execute_desktop_action_request_before_deadline(
+            &queued_companion,
+            &queued_supervisor,
+            &queued_checkpoint,
+            &target(),
+            &queued_action,
+            &queued_permit,
+            None,
+            &queued_binding,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        )
+    });
+
+    std::thread::sleep(Duration::from_millis(25));
+    cancellation.cancel_in_flight();
+    release_first.store(true, Ordering::SeqCst);
+    assert_eq!(
+        first.join().expect("first action"),
+        Err(DesktopActionError::Uia(UiaError::EmergencyStopped))
+    );
+    assert_eq!(
+        queued_thread.join().expect("queued action"),
+        Err(DesktopActionError::RequestCancelled)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        execute_desktop_action_request_before_deadline(
+            &companion,
+            &supervisor,
+            &cancellation.checkpoint(),
+            &target(),
+            &queued_action_retry,
+            &queued_permit_retry,
+            None,
+            &queued_binding_retry,
+            &RequestDeadline::after(Duration::from_millis(1_000)),
+        ),
+        Ok(ActionOutcomeReport::Ok)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+}
+
 fn input_action(action_id: &str, value_ref: &str) -> ResolvedDesktopAction {
     let mut action = click_action(action_id);
     action.kind = DesktopActionKind::Input {
@@ -426,6 +788,28 @@ fn select_action(action_id: &str, value_ref: &str, uia_pattern: &str) -> Resolve
     };
     action.uia_pattern = Some(uia_pattern.to_string());
     action
+}
+
+fn issue_local_execution_permit(
+    companion: &mut Companion<ManualClock, ScriptedApprover>,
+    action: &ResolvedDesktopAction,
+    binding: &mut PermitBinding,
+    value_binding: Option<DesktopValueBinding>,
+) -> LocalExecutionPermit {
+    let permit_template =
+        local_execution_permit("pending-token".to_string(), action, binding, value_binding);
+    binding.action_digest_sha256 = permit_template.action_digest_sha256.clone();
+    let token = match companion.request_permit(
+        &approval_for(&action.action_id, binding.risk),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(issued) => issued.token,
+        other => panic!("expected permit issue, got {other:?}"),
+    };
+    LocalExecutionPermit {
+        permit_token: token,
+        ..permit_template
+    }
 }
 
 fn local_execution_permit(
@@ -561,6 +945,71 @@ fn action_execute_revalidates_value_digest_before_consuming_or_dispatching() {
         Ok(ActionOutcomeReport::Ok)
     );
     assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn oversized_plaintext_is_rejected_before_permit_consumption_or_worker_dispatch() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let spawner = ScriptedSpawner::new(
+        vec![vec![Ok(WorkerResponse::Executed {
+            outcome: ActionOutcomeReport::Ok,
+        })]],
+        Arc::clone(&request_count),
+    );
+    let mut supervisor = UiaWorkerSupervisor::new(spawner);
+    let mut companion = companion_with(ScriptedApprover::always(ApprovalOutcome::Approved));
+    let action = input_action("act-oversized", "secret-ref");
+    let mut binding = binding_for("act-oversized", Risk::ExternalSideEffect);
+    let oversized_plaintext =
+        "x".repeat((companion::ipc::dto::MAX_PLAINTEXT_VALUE_BYTES + 1) as usize);
+    let oversized_hash = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(oversized_plaintext.as_bytes()))
+    };
+    let value_binding = DesktopValueBinding {
+        value_ref: "secret-ref".to_string(),
+        value_sha256: oversized_hash.clone(),
+        value_byte_length: oversized_plaintext.as_bytes().len() as u64,
+    };
+    let permit = local_execution_permit(
+        "permit-oversized".to_string(),
+        &action,
+        &binding,
+        Some(value_binding.clone()),
+    );
+    binding.action_digest_sha256 = permit.action_digest_sha256.clone();
+    let token = match companion.request_permit(
+        &approval_for("act-oversized", Risk::ExternalSideEffect),
+        binding.clone(),
+    ) {
+        PermitRequestOutcome::Issued(issued) => issued.token,
+        other => panic!("expected permit issue, got {other:?}"),
+    };
+    let permit = LocalExecutionPermit {
+        permit_token: token,
+        ..permit
+    };
+    let value = DesktopPlaintextValue {
+        value_ref: "secret-ref".to_string(),
+        value_sha256: oversized_hash,
+        value_byte_length: value_binding.value_byte_length,
+        plaintext: oversized_plaintext,
+    };
+
+    assert_eq!(
+        execute_desktop_action_request(
+            &mut companion,
+            &mut supervisor,
+            &target(),
+            &action,
+            &permit,
+            Some(value),
+            &binding,
+            Duration::from_millis(50),
+        ),
+        Err(DesktopActionError::ValueTooLarge)
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 0);
 }
 
 #[test]

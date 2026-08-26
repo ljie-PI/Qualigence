@@ -13,8 +13,8 @@
 //! portable fake used by the Linux test-suite share the exact restart logic.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 use crate::uia::protocol::{
@@ -69,6 +69,48 @@ pub struct WorkerCancellationCheckpoint {
 impl WorkerCancellationCheckpoint {
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled_since(self.epoch)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RequestDeadline {
+    expires_at: Instant,
+}
+
+impl RequestDeadline {
+    pub fn after(duration: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + duration,
+        }
+    }
+
+    pub fn remaining(&self) -> Result<Duration, WorkerError> {
+        let now = Instant::now();
+        if now >= self.expires_at {
+            Err(WorkerError::Timeout)
+        } else {
+            Ok(self.expires_at.saturating_duration_since(now))
+        }
+    }
+}
+
+pub fn lock_supervisor_until<'a, S: WorkerSpawner>(
+    supervisor: &'a Arc<Mutex<UiaWorkerSupervisor<S>>>,
+    deadline: &RequestDeadline,
+    cancellation: &WorkerCancellationCheckpoint,
+) -> Result<MutexGuard<'a, UiaWorkerSupervisor<S>>, WorkerError> {
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(WorkerError::Cancelled);
+        }
+        let remaining = deadline.remaining()?;
+        match supervisor.try_lock() {
+            Ok(supervisor) => return Ok(supervisor),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(remaining.min(Duration::from_millis(2)));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(WorkerError::Spawn),
+        }
     }
 }
 
@@ -158,24 +200,22 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         self.recycle_worker();
     }
 
-    fn dispatch(
+    fn dispatch_until(
         &mut self,
         req: &WorkerRequest,
-        deadline: Duration,
-    ) -> Result<WorkerResponse, WorkerError> {
-        let cancellation = self.cancellation.checkpoint();
-        self.dispatch_with_cancellation(req, deadline, &cancellation)
-    }
-
-    fn dispatch_with_cancellation(
-        &mut self,
-        req: &WorkerRequest,
-        deadline: Duration,
+        deadline: &RequestDeadline,
         cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<WorkerResponse, WorkerError> {
+        if cancellation.is_cancelled() {
+            return Err(WorkerError::Cancelled);
+        }
         self.ensure_worker()?;
+        if cancellation.is_cancelled() {
+            return Err(WorkerError::Cancelled);
+        }
+        let remaining = deadline.remaining()?;
         let worker = self.worker.as_mut().expect("worker ensured");
-        match worker.request(req, deadline, cancellation) {
+        match worker.request(req, remaining, cancellation) {
             Ok(response) => Ok(response),
             Err(err) => {
                 // Any transport failure recycles ONLY the child worker; the
@@ -194,19 +234,29 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         target: &UiaSessionTarget,
         deadline: Duration,
     ) -> Result<UiaSource, UiaError> {
+        let cancellation = self.cancellation.checkpoint();
+        let deadline = RequestDeadline::after(deadline);
+        self.capture_until(target, &deadline, &cancellation)
+    }
+
+    pub fn capture_until(
+        &mut self,
+        target: &UiaSessionTarget,
+        deadline: &RequestDeadline,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<UiaSource, UiaError> {
         let req = WorkerRequest::Capture {
             target: target.clone(),
         };
-        match self.dispatch(&req, deadline) {
+        match self.dispatch_until(&req, deadline, cancellation) {
             Ok(WorkerResponse::Captured { source }) => Ok(source),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
             Ok(_) => {
                 self.recycle_worker();
                 Err(UiaError::ProtocolCorruption)
             }
-            Err(WorkerError::Timeout) | Err(WorkerError::Cancelled) => {
-                Err(UiaError::TargetUnresponsive)
-            }
+            Err(WorkerError::Timeout) => Err(UiaError::TargetUnresponsive),
+            Err(WorkerError::Cancelled) => Err(UiaError::EmergencyStopped),
             Err(WorkerError::Closed) | Err(WorkerError::Corrupt) => {
                 Err(UiaError::TargetUnresponsive)
             }
@@ -237,12 +287,24 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         deadline: Duration,
         cancellation: &WorkerCancellationCheckpoint,
     ) -> Result<ActionOutcomeReport, UiaError> {
+        let deadline = RequestDeadline::after(deadline);
+        self.execute_until(target, action, value, &deadline, cancellation)
+    }
+
+    pub fn execute_until(
+        &mut self,
+        target: &UiaSessionTarget,
+        action: &ResolvedDesktopAction,
+        value: Option<&DesktopPlaintextValue>,
+        deadline: &RequestDeadline,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<ActionOutcomeReport, UiaError> {
         let mut req = WorkerRequest::Execute {
             target: target.clone(),
             action: action.clone(),
             value: value.cloned(),
         };
-        let result = match self.dispatch_with_cancellation(&req, deadline, cancellation) {
+        let result = match self.dispatch_until(&req, deadline, cancellation) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
             Ok(_) => {
@@ -378,7 +440,20 @@ mod native_child {
             deadline: Duration,
             cancellation: &WorkerCancellationCheckpoint,
         ) -> Result<WorkerResponse, WorkerError> {
+            let started_at = Instant::now();
+            if cancellation.is_cancelled() {
+                return Err(WorkerError::Cancelled);
+            }
+            if started_at.elapsed() >= deadline {
+                return Err(WorkerError::Timeout);
+            }
             let body = serde_json::to_vec(req).map_err(|_| WorkerError::Corrupt)?;
+            if cancellation.is_cancelled() {
+                return Err(WorkerError::Cancelled);
+            }
+            if started_at.elapsed() >= deadline {
+                return Err(WorkerError::Timeout);
+            }
             crate::ipc::server::write_frame(
                 &mut self.stdin,
                 &body,
@@ -403,7 +478,6 @@ mod native_child {
                 let _ = tx.send(result);
             });
 
-            let started_at = Instant::now();
             loop {
                 if cancellation.is_cancelled() {
                     self.kill();

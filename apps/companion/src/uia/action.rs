@@ -9,19 +9,23 @@
 //! Session or an Emergency Stop fails closed *before* any COM call is attempted,
 //! so TypeScript can never obtain an alternate execution path.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::approval::Approver;
 use crate::clock::Clock;
 use crate::ipc::dto::{
     DesktopActionKind, DesktopPlaintextValue, LocalExecutionPermit, ResolvedDesktopAction,
-    WindowOperation,
+    WindowOperation, MAX_PLAINTEXT_VALUE_BYTES,
 };
 use crate::permit::{PermitBinding, PermitError};
 use crate::risk::Risk;
 use crate::uia::protocol::{ActionOutcomeReport, UiaError, UiaSessionTarget};
 use crate::uia::worker::action_pattern_is_supported;
-use crate::uia::worker_supervisor::{UiaWorkerSupervisor, WorkerSpawner};
+use crate::uia::worker_supervisor::{
+    lock_supervisor_until, RequestDeadline, UiaWorkerSupervisor, WorkerCancellationCheckpoint,
+    WorkerError, WorkerSpawner,
+};
 use crate::Companion;
 use sha2::{Digest, Sha256};
 
@@ -56,6 +60,15 @@ pub enum DesktopActionError {
     /// The presented LocalExecutionPermit, action digest, or plaintext value
     /// binding did not match. No worker dispatch occurred.
     BindingMismatch,
+    /// The presented plaintext value/binding exceeds the public 64 KiB bound.
+    /// No Permit was consumed and no worker dispatch occurred.
+    ValueTooLarge,
+    /// The request deadline expired before the Permit was consumed and before
+    /// any worker request was dispatched. The caller may request a fresh Permit.
+    RequestDeadlineExpired,
+    /// The connection/request was cancelled before the Permit was consumed and
+    /// before any worker request was dispatched.
+    RequestCancelled,
     /// The Permit was consumed but the UIA worker failed (e.g. timeout →
     /// `ActionOutcomeUnknown`). Never retried automatically.
     Uia(UiaError),
@@ -133,6 +146,11 @@ where
     C: Clock,
     A: Approver,
 {
+    if !value_is_within_public_bound(permit, value.as_ref()) {
+        clear_plaintext(&mut value);
+        return Err(DesktopActionError::ValueTooLarge);
+    }
+
     if !permit_matches_action(&target.session_id, action, permit, binding)
         || !value_matches_permit(action, permit, value.as_ref())
     {
@@ -186,6 +204,115 @@ where
     outcome
 }
 
+pub fn ensure_companion_accepts_uia_work<C, A>(companion: &Companion<C, A>) -> Result<(), UiaError>
+where
+    C: Clock,
+    A: Approver,
+{
+    match companion.state() {
+        crate::emergency_stop::ControlState::Active => Ok(()),
+        crate::emergency_stop::ControlState::Paused => {
+            Err(UiaError::Reported("SessionPaused".to_string()))
+        }
+        crate::emergency_stop::ControlState::EmergencyStopped => Err(UiaError::EmergencyStopped),
+    }
+}
+
+/// Execute an `action.execute` request from the daemon's concurrent IPC path.
+///
+/// This waits for the serialized UIA supervisor while the original request
+/// deadline and cancellation token are still active. It consumes the Permit only
+/// after the supervisor is available and the request is still live, so queued
+/// elapsed time cannot turn into a late side effect. Once the Permit has been
+/// consumed, the worker dispatch uses the remaining request budget and a cancel
+/// check immediately before the worker frame is written.
+pub fn execute_desktop_action_request_before_deadline<C, A, S>(
+    companion: &Arc<Mutex<Companion<C, A>>>,
+    supervisor: &Arc<Mutex<UiaWorkerSupervisor<S>>>,
+    cancellation: &WorkerCancellationCheckpoint,
+    target: &UiaSessionTarget,
+    action: &ResolvedDesktopAction,
+    permit: &LocalExecutionPermit,
+    mut value: Option<DesktopPlaintextValue>,
+    binding: &PermitBinding,
+    deadline: &RequestDeadline,
+) -> Result<ActionOutcomeReport, DesktopActionError>
+where
+    C: Clock,
+    A: Approver,
+    S: WorkerSpawner,
+{
+    let mut supervisor = match lock_supervisor_until(supervisor, deadline, cancellation) {
+        Ok(supervisor) => supervisor,
+        Err(WorkerError::Timeout) => {
+            clear_plaintext(&mut value);
+            return Err(DesktopActionError::RequestDeadlineExpired);
+        }
+        Err(WorkerError::Cancelled) => {
+            clear_plaintext(&mut value);
+            return Err(cancellation_error_before_permit(companion));
+        }
+        Err(_) => {
+            clear_plaintext(&mut value);
+            return Err(DesktopActionError::Uia(UiaError::WorkerUnavailable));
+        }
+    };
+
+    if cancellation.is_cancelled() {
+        clear_plaintext(&mut value);
+        return Err(cancellation_error_before_permit(companion));
+    }
+    if deadline.remaining().is_err() {
+        clear_plaintext(&mut value);
+        return Err(DesktopActionError::RequestDeadlineExpired);
+    }
+
+    let mut prepared = {
+        let mut companion = companion
+            .lock()
+            .map_err(|_| DesktopActionError::Uia(UiaError::WorkerUnavailable))?;
+        prepare_desktop_action_request(&mut *companion, target, action, permit, value, binding)?
+    };
+
+    if cancellation.is_cancelled() {
+        prepared.clear_plaintext();
+        return Err(DesktopActionError::Uia(UiaError::EmergencyStopped));
+    }
+    if deadline.remaining().is_err() {
+        prepared.clear_plaintext();
+        return Err(DesktopActionError::Uia(UiaError::ActionOutcomeUnknown));
+    }
+
+    let outcome = supervisor
+        .execute_until(
+            target,
+            action,
+            prepared.value.as_ref(),
+            deadline,
+            cancellation,
+        )
+        .map_err(DesktopActionError::Uia);
+    prepared.clear_plaintext();
+    outcome
+}
+
+fn cancellation_error_before_permit<C, A>(
+    companion: &Arc<Mutex<Companion<C, A>>>,
+) -> DesktopActionError
+where
+    C: Clock,
+    A: Approver,
+{
+    match companion.lock() {
+        Ok(companion) => match ensure_companion_accepts_uia_work(&*companion) {
+            Ok(()) => DesktopActionError::RequestCancelled,
+            Err(UiaError::EmergencyStopped) => DesktopActionError::Uia(UiaError::EmergencyStopped),
+            Err(error) => DesktopActionError::Uia(error),
+        },
+        Err(_) => DesktopActionError::Uia(UiaError::WorkerUnavailable),
+    }
+}
+
 fn permit_matches_action(
     session_id: &str,
     action: &ResolvedDesktopAction,
@@ -219,6 +346,23 @@ fn permit_matches_action(
         && !permit.policy_id.is_empty()
         && !permit.issued_at.is_empty()
         && !permit.expires_at.is_empty()
+}
+
+fn value_is_within_public_bound(
+    permit: &LocalExecutionPermit,
+    value: Option<&DesktopPlaintextValue>,
+) -> bool {
+    permit
+        .value_binding
+        .as_ref()
+        .map(|binding| binding.value_byte_length <= MAX_PLAINTEXT_VALUE_BYTES)
+        .unwrap_or(true)
+        && value
+            .map(|value| {
+                value.value_byte_length <= MAX_PLAINTEXT_VALUE_BYTES
+                    && value.plaintext.as_bytes().len() as u64 <= MAX_PLAINTEXT_VALUE_BYTES
+            })
+            .unwrap_or(true)
 }
 
 fn value_matches_permit(
