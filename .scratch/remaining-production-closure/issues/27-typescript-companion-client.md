@@ -141,6 +141,14 @@ Run the built TypeScript client against a separate-process authenticated Named P
 - Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
 - No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
 
+### post-review-e2e - 2026-08-26
+
+- Clean complete-matrix review authority for the acceptance start point: reviewed head `d5246d632ee290f270bd2c4a9662e2832c2b2b9b`, fixed point/base `cff217f68f0b3bcaffe517aaed11e3e302abb964`, with no core blockers in review4 Standards/Spec artifacts.
+- Added the required post-review acceptance file `tests/e2e/windows/companion-client.test.ts` only. The fixture is a separate Node process listening on a real local Windows Named Pipe via `node:net`; the client under test imports the built `@qualigence/desktop-windows-uia` package and uses the production `NamedPipeCompanionClient`.
+- Acceptance coverage: authenticated challenge/proof/accepted handshake with ECDSA P-256 proof verification over the exact Ticket 27 proof bytes, 32-bit big-endian frame parsing with declared-length evidence, request ordering before privileged frames, out-of-order request/response correlation, deadline timeout, post-dispatch disconnect outcome-unknown classification, partial-frame timeout/fail-close behavior, oversized-frame rejection, and bounded in-flight flood/backpressure.
+- Evidence commands passed after adding the E2E file: `CI=true corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts` (1 file / 4 tests), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Scope and evidence limits: this is still TypeScript client/separate-process contract acceptance only. It is not native Companion ACL, Windows peer-token, UIA, process/Job Object, RDP/manual, or release evidence; those remain downstream Tickets 29-31. Because this acceptance adds a test file after the clean review head, Ticket 27 needs a fresh complete-matrix review before PR/final acceptance.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
