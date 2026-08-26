@@ -14,6 +14,7 @@ mod windows_native {
     use std::collections::HashSet;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
@@ -173,6 +174,22 @@ DzQHpEk=
         nonce_base64: &str,
         signature_base64: &str,
     ) -> serde_json::Value {
+        prove_request_with_algorithm(
+            request_id,
+            challenge_id,
+            nonce_base64,
+            signature_base64,
+            "ecdsa-p256-sha256",
+        )
+    }
+
+    fn prove_request_with_algorithm(
+        request_id: &str,
+        challenge_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "protocolMajor": PROTOCOL_MAJOR,
             "requestId": request_id,
@@ -182,7 +199,7 @@ DzQHpEk=
                 "companionInstanceId": INSTANCE,
                 "nonceBase64": nonce_base64,
                 "signatureBase64": signature_base64,
-                "signatureAlgorithm": "ecdsa-p256-sha256"
+                "signatureAlgorithm": signature_algorithm
             }
         })
     }
@@ -205,6 +222,33 @@ DzQHpEk=
         let listener = NamedPipeListener::bind_for_current_logon(config).expect("bind");
         let path = listener.path().to_string();
         (listener, path)
+    }
+
+    fn pipe_name_for_dotnet_client(path: &str) -> String {
+        path.strip_prefix(r"\\.\pipe\")
+            .expect("local named pipe path")
+            .to_string()
+    }
+
+    fn powershell_write_frame_script(pipe_name: &str, request: serde_json::Value) -> String {
+        let json = serde_json::to_string(&request).expect("request json");
+        let escaped_pipe = pipe_name.replace('\'', "''");
+        let escaped_json = json.replace('\'', "''");
+        format!(
+            "$ErrorActionPreference = 'Stop'; \
+             $pipeName = '{escaped_pipe}'; \
+             $json = '{escaped_json}'; \
+             $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut); \
+             $client.Connect(2000); \
+             $bytes = [System.Text.Encoding]::UTF8.GetBytes($json); \
+             $length = [BitConverter]::GetBytes([UInt32]$bytes.Length); \
+             if ([BitConverter]::IsLittleEndian) {{ [Array]::Reverse($length) }}; \
+             $client.Write($length, 0, 4); \
+             $client.Write($bytes, 0, $bytes.Length); \
+             $client.Flush(); \
+             Start-Sleep -Milliseconds 500; \
+             $client.Dispose();"
+        )
     }
 
     #[test]
@@ -268,6 +312,99 @@ DzQHpEk=
         assert_eq!(authorizer.authorize(&identity), Ok(()));
 
         client.join().expect("join client");
+    }
+
+    #[test]
+    fn real_signed_process_pid_image_and_signature_are_authorized_over_native_pipe() {
+        assert_windows_11_or_newer().expect("Windows11Unavailable");
+        let signed_image = signed_system_binary();
+        let signed_image = signed_image.to_string_lossy().to_string();
+        let thumbprints = authenticode_signer_thumbprints_sha1(&signed_image)
+            .expect("Windows system binary must have an Authenticode signer");
+
+        let limits = FrameLimits {
+            max_frame_bytes: 16 * 1024,
+            max_queue_depth: 4,
+            max_concurrent_requests: 2,
+        };
+        let config = NativePipeConfig {
+            name_prefix: unique_prefix(),
+            max_frame_bytes: limits.max_frame_bytes,
+            connect_timeout_ms: 2_000,
+        };
+        let (listener, path) = connected_listener(&config);
+        let pipe_name = pipe_name_for_dotnet_client(&path);
+        let request = begin_request("req-real-signed-process");
+        let script = powershell_write_frame_script(&pipe_name, request);
+        let mut child = Command::new(&signed_image)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .spawn()
+            .expect("spawn signed PowerShell client");
+
+        listener
+            .connect(config.connect_timeout_ms)
+            .expect("server connect");
+        let identity = listener.client_identity().expect("client identity");
+        assert_ne!(identity.pid, std::process::id());
+        assert_eq!(
+            normalize_path_for_comparison(&identity.image_path),
+            normalize_path_for_comparison(&signed_image)
+        );
+
+        let current = WindowsPeerIdentity::for_current_process().expect("current identity");
+        let mut allowed_paths = HashSet::new();
+        allowed_paths.insert(normalize_path_for_comparison(&signed_image));
+        let allowed_policy = WindowsPeerPolicy {
+            expected_logon_sid: current.logon_sid.clone(),
+            expected_token_user_sid: current.token_user_sid.clone(),
+            expected_session_id: current.session_id,
+            allowed_image_paths: allowed_paths.clone(),
+            signature_policy: BinarySignaturePolicy::RequireAuthenticodeSigner {
+                allowed_sha1_thumbprints: thumbprints.clone(),
+            },
+        };
+        WindowsPeerAuthorizer::new(allowed_policy)
+            .authorize(&identity)
+            .expect("real signed connecting process is allowed");
+
+        let wrong_signer_policy = WindowsPeerPolicy {
+            expected_logon_sid: current.logon_sid,
+            expected_token_user_sid: current.token_user_sid,
+            expected_session_id: current.session_id,
+            allowed_image_paths: allowed_paths,
+            signature_policy: BinarySignaturePolicy::RequireAuthenticodeSigner {
+                allowed_sha1_thumbprints: ["00".repeat(20)].into_iter().collect(),
+            },
+        };
+        assert_eq!(
+            WindowsPeerAuthorizer::new(wrong_signer_policy).authorize(&identity),
+            Err(NativePipeError::CompanionIdentityRejected)
+        );
+
+        let mut connection = listener.connection();
+        let mut session = processor(limits);
+        match session
+            .process_next_request(&mut connection)
+            .expect("real process challenge issued")
+        {
+            NativePipeRequestEvent::ChallengeIssued { request_id, .. } => {
+                assert_eq!(request_id, "req-real-signed-process");
+            }
+            _ => panic!("expected challenge event from real signed process"),
+        }
+
+        let status = child.wait().expect("wait signed PowerShell client");
+        assert!(
+            status.success(),
+            "signed PowerShell client failed: {status}"
+        );
     }
 
     #[test]
@@ -442,6 +579,83 @@ DzQHpEk=
                 RequestProcessError::Session(_)
             ))
         ));
+        assert!(matches!(
+            session.process_next_request(&mut connection),
+            Err(NativePipeRequestError::Handshake(
+                CertificateHandshakeError::ReplayedChallenge
+            ))
+        ));
+
+        client.join().expect("join client");
+    }
+
+    #[test]
+    fn native_session_consumes_challenge_on_unsupported_proof_algorithm() {
+        assert_windows_11_or_newer().expect("Windows11Unavailable");
+        let limits = FrameLimits {
+            max_frame_bytes: 16 * 1024,
+            max_queue_depth: 4,
+            max_concurrent_requests: 2,
+        };
+        let config = NativePipeConfig {
+            name_prefix: unique_prefix(),
+            max_frame_bytes: limits.max_frame_bytes,
+            connect_timeout_ms: 2_000,
+        };
+        let (listener, path) = connected_listener(&config);
+        let (challenge_tx, challenge_rx) = mpsc::channel::<(String, String)>();
+        let client_limits = limits;
+        let client = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            let mut client = connect_client_for_test(&path).expect("client connect");
+            write_json_frame(&mut client, begin_request("req-begin"), &client_limits);
+            let (challenge_id, nonce_base64) = challenge_rx.recv().expect("challenge");
+            let signature = sign_ecdsa(&nonce_base64, RUNNER_ID);
+            write_json_frame(
+                &mut client,
+                prove_request_with_algorithm(
+                    "req-unsupported-algorithm",
+                    &challenge_id,
+                    &nonce_base64,
+                    &signature,
+                    "ed25519-sha512",
+                ),
+                &client_limits,
+            );
+            write_json_frame(
+                &mut client,
+                prove_request("req-valid-replay", &challenge_id, &nonce_base64, &signature),
+                &client_limits,
+            );
+            thread::sleep(Duration::from_millis(25));
+        });
+
+        listener
+            .connect(config.connect_timeout_ms)
+            .expect("server connect");
+        let mut connection = listener.connection();
+        let mut session = processor(limits);
+
+        match session
+            .process_next_request(&mut connection)
+            .expect("challenge issued")
+        {
+            NativePipeRequestEvent::ChallengeIssued {
+                challenge_id,
+                nonce_base64,
+                ..
+            } => challenge_tx
+                .send((challenge_id, nonce_base64))
+                .expect("send challenge"),
+            _ => panic!("expected challenge event"),
+        }
+        assert!(matches!(
+            session.process_next_request(&mut connection),
+            Err(NativePipeRequestError::Handshake(
+                CertificateHandshakeError::Certificate(_)
+            ))
+        ));
+        assert!(!session.is_authenticated());
         assert!(matches!(
             session.process_next_request(&mut connection),
             Err(NativePipeRequestError::Handshake(

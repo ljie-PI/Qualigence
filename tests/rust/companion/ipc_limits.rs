@@ -4,6 +4,7 @@ use std::io::Cursor;
 
 use companion::ipc::server::{
     parse_request, read_frame, write_frame, FrameError, FrameLimits, RequestAdmission,
+    RequestProcessError, SessionAdmissionError,
 };
 
 fn small_limits() -> FrameLimits {
@@ -141,4 +142,32 @@ fn queued_request_depth_is_bounded_independently_from_in_flight_work() {
     let q3 = admission.try_queue().expect("queue remains usable");
     assert_eq!(q3.try_start().err(), Some(FrameError::Overloaded));
     drop(in_flight);
+}
+
+#[test]
+fn request_path_errors_map_to_public_companion_stable_codes() {
+    assert_eq!(
+        RequestProcessError::Frame(FrameError::FrameTooLarge).stable_code(),
+        "CompanionMessageTooLarge"
+    );
+    assert_eq!(
+        RequestProcessError::Frame(FrameError::Overloaded).stable_code(),
+        "CompanionBackpressure"
+    );
+    assert_eq!(
+        RequestProcessError::Frame(FrameError::Truncated).stable_code(),
+        "CompanionProtocolViolation"
+    );
+    assert_eq!(
+        RequestProcessError::Frame(FrameError::Malformed).stable_code(),
+        "CompanionProtocolViolation"
+    );
+    assert_eq!(
+        RequestProcessError::Frame(FrameError::Io).stable_code(),
+        "CompanionUnavailable"
+    );
+    assert_eq!(
+        RequestProcessError::Session(SessionAdmissionError::CompanionUnauthenticated).stable_code(),
+        "CompanionUnauthenticated"
+    );
 }

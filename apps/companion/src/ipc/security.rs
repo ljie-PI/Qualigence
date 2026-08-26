@@ -16,7 +16,7 @@
 //! independent state machines testable on non-Windows hosts. The Windows native
 //! peer implementation lives in [`crate::ipc::windows_pipe`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 
@@ -483,6 +483,33 @@ struct PendingCertificateChallenge {
     certificate: ValidatedRunnerCertificate,
 }
 
+const DEFAULT_MAX_PENDING_CERTIFICATE_CHALLENGES: usize = 64;
+const DEFAULT_MAX_CONSUMED_CERTIFICATE_CHALLENGES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertificateChallengeStateLimits {
+    pub max_pending: usize,
+    pub max_consumed: usize,
+}
+
+impl Default for CertificateChallengeStateLimits {
+    fn default() -> Self {
+        Self {
+            max_pending: DEFAULT_MAX_PENDING_CERTIFICATE_CHALLENGES,
+            max_consumed: DEFAULT_MAX_CONSUMED_CERTIFICATE_CHALLENGES,
+        }
+    }
+}
+
+impl CertificateChallengeStateLimits {
+    fn bounded(self) -> Self {
+        Self {
+            max_pending: self.max_pending.max(1),
+            max_consumed: self.max_consumed.max(1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedCertificateRunner {
     pub runner_id: String,
@@ -508,9 +535,12 @@ pub struct CertificateHandshakeVerifier<C: Clock> {
     companion_instance_id: String,
     policies: HashMap<String, RunnerCertificatePolicy>,
     pending: HashMap<String, PendingCertificateChallenge>,
-    consumed_challenges: HashSet<String>,
+    pending_order: VecDeque<String>,
+    consumed_challenges: HashMap<String, u64>,
+    consumed_order: VecDeque<String>,
     clock: Arc<C>,
     deadline_ms: u64,
+    state_limits: CertificateChallengeStateLimits,
 }
 
 impl<C: Clock> CertificateHandshakeVerifier<C> {
@@ -521,6 +551,24 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         clock: Arc<C>,
         deadline_ms: u64,
     ) -> Self {
+        Self::with_challenge_state_limits(
+            protocol_major,
+            companion_instance_id,
+            policies,
+            clock,
+            deadline_ms,
+            CertificateChallengeStateLimits::default(),
+        )
+    }
+
+    pub fn with_challenge_state_limits(
+        protocol_major: u8,
+        companion_instance_id: impl Into<String>,
+        policies: impl IntoIterator<Item = RunnerCertificatePolicy>,
+        clock: Arc<C>,
+        deadline_ms: u64,
+        state_limits: CertificateChallengeStateLimits,
+    ) -> Self {
         Self {
             protocol_major,
             companion_instance_id: companion_instance_id.into(),
@@ -529,9 +577,12 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
                 .map(|p| (p.runner_id.clone(), p))
                 .collect(),
             pending: HashMap::new(),
-            consumed_challenges: HashSet::new(),
+            pending_order: VecDeque::new(),
+            consumed_challenges: HashMap::new(),
+            consumed_order: VecDeque::new(),
             clock,
             deadline_ms,
+            state_limits: state_limits.bounded(),
         }
     }
 
@@ -541,6 +592,11 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
 
     pub fn clear_pending_challenges(&mut self) {
         self.pending.clear();
+        self.pending_order.clear();
+    }
+
+    pub fn challenge_state_counts(&self) -> (usize, usize) {
+        (self.pending.len(), self.consumed_challenges.len())
     }
 
     pub fn begin(
@@ -552,12 +608,15 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         if protocol_major != self.protocol_major {
             return Err(CertificateHandshakeError::WrongProtocol);
         }
+        let now = self.clock.monotonic_ms();
+        self.purge_expired_challenge_state(now);
         let policy = self
             .policies
             .get(runner_id)
             .ok_or(CertificateHandshakeError::UnknownRunner)?;
         let certificate = validate_runner_certificate(certificate_pem, policy)
             .map_err(CertificateHandshakeError::Certificate)?;
+        self.enforce_pending_capacity_for_insert();
         let challenge_id = BASE64.encode(random_bytes::<16>());
         let nonce = random_bytes::<32>();
         let nonce_base64 = BASE64.encode(nonce);
@@ -566,10 +625,11 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             PendingCertificateChallenge {
                 runner_id: runner_id.to_string(),
                 nonce_base64,
-                issued_monotonic_ms: self.clock.monotonic_ms(),
+                issued_monotonic_ms: now,
                 certificate,
             },
         );
+        self.pending_order.push_back(challenge_id.clone());
         Ok(Challenge {
             challenge_id,
             nonce,
@@ -585,7 +645,45 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         signature_base64: &str,
         signature_algorithm: CompanionProofSignatureAlgorithm,
     ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        self.verify_pending_challenge_with_algorithm_result(
+            challenge_id,
+            companion_instance_id,
+            nonce_base64,
+            signature_base64,
+            Ok(signature_algorithm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_pending_challenge_with_algorithm_name(
+        &mut self,
+        challenge_id: &str,
+        companion_instance_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: &str,
+    ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
+        self.verify_pending_challenge_with_algorithm_result(
+            challenge_id,
+            companion_instance_id,
+            nonce_base64,
+            signature_base64,
+            CompanionProofSignatureAlgorithm::parse(signature_algorithm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_pending_challenge_with_algorithm_result(
+        &mut self,
+        challenge_id: &str,
+        companion_instance_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: Result<CompanionProofSignatureAlgorithm, CertificateError>,
+    ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
+        let now = self.clock.monotonic_ms();
+        self.purge_expired_consumed_challenges(now);
+        if self.consumed_challenges.contains_key(challenge_id) {
             return Err(CertificateHandshakeError::ReplayedChallenge);
         }
         let runner_id = self
@@ -594,7 +692,7 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             .ok_or(CertificateHandshakeError::UnknownChallenge)?
             .runner_id
             .clone();
-        self.verify(
+        self.verify_with_algorithm_result(
             &runner_id,
             challenge_id,
             companion_instance_id,
@@ -614,14 +712,38 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         signature_base64: &str,
         signature_algorithm: CompanionProofSignatureAlgorithm,
     ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        self.verify_with_algorithm_result(
+            runner_id,
+            challenge_id,
+            companion_instance_id,
+            nonce_base64,
+            signature_base64,
+            Ok(signature_algorithm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_with_algorithm_result(
+        &mut self,
+        runner_id: &str,
+        challenge_id: &str,
+        companion_instance_id: &str,
+        nonce_base64: &str,
+        signature_base64: &str,
+        signature_algorithm: Result<CompanionProofSignatureAlgorithm, CertificateError>,
+    ) -> Result<AuthenticatedCertificateRunner, CertificateHandshakeError> {
+        let now = self.clock.monotonic_ms();
+        self.purge_expired_consumed_challenges(now);
+        if self.consumed_challenges.contains_key(challenge_id) {
             return Err(CertificateHandshakeError::ReplayedChallenge);
         }
         let pending = self
             .pending
             .remove(challenge_id)
             .ok_or(CertificateHandshakeError::UnknownChallenge)?;
-        self.consumed_challenges.insert(challenge_id.to_string());
+        self.pending_order
+            .retain(|pending_id| pending_id != challenge_id);
+        self.consume_challenge(challenge_id, now);
         if pending.runner_id != runner_id {
             return Err(CertificateHandshakeError::RunnerMismatch);
         }
@@ -632,11 +754,7 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             return Err(CertificateHandshakeError::NonceMismatch);
         }
 
-        let expired = self
-            .clock
-            .monotonic_ms()
-            .saturating_sub(pending.issued_monotonic_ms)
-            > self.deadline_ms;
+        let expired = now.saturating_sub(pending.issued_monotonic_ms) > self.deadline_ms;
         let proof = proof_bytes(
             self.protocol_major,
             &self.companion_instance_id,
@@ -648,6 +766,8 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
         if expired {
             return Err(CertificateHandshakeError::Expired);
         }
+        let signature_algorithm =
+            signature_algorithm.map_err(CertificateHandshakeError::Certificate)?;
         verify_certificate_signature(&certificate, &proof, signature_base64, signature_algorithm)
             .map_err(CertificateHandshakeError::Certificate)?;
         Ok(AuthenticatedCertificateRunner {
@@ -655,6 +775,66 @@ impl<C: Clock> CertificateHandshakeVerifier<C> {
             certificate_sha256_fingerprint: certificate.fingerprint_sha256,
             signature_algorithm,
         })
+    }
+
+    fn consume_challenge(&mut self, challenge_id: &str, now: u64) {
+        self.consumed_challenges
+            .insert(challenge_id.to_string(), now);
+        self.consumed_order.push_back(challenge_id.to_string());
+        self.enforce_consumed_capacity();
+    }
+
+    fn purge_expired_challenge_state(&mut self, now: u64) {
+        self.purge_expired_pending_challenges(now);
+        self.purge_expired_consumed_challenges(now);
+    }
+
+    fn purge_expired_pending_challenges(&mut self, now: u64) {
+        while let Some(challenge_id) = self.pending_order.front().cloned() {
+            let expired = self
+                .pending
+                .get(&challenge_id)
+                .map(|pending| now.saturating_sub(pending.issued_monotonic_ms) > self.deadline_ms)
+                .unwrap_or(true);
+            if !expired {
+                break;
+            }
+            self.pending_order.pop_front();
+            self.pending.remove(&challenge_id);
+        }
+    }
+
+    fn purge_expired_consumed_challenges(&mut self, now: u64) {
+        while let Some(challenge_id) = self.consumed_order.front().cloned() {
+            let expired = self
+                .consumed_challenges
+                .get(&challenge_id)
+                .map(|consumed_at| now.saturating_sub(*consumed_at) > self.deadline_ms)
+                .unwrap_or(true);
+            if !expired {
+                break;
+            }
+            self.consumed_order.pop_front();
+            self.consumed_challenges.remove(&challenge_id);
+        }
+    }
+
+    fn enforce_pending_capacity_for_insert(&mut self) {
+        while self.pending.len() >= self.state_limits.max_pending {
+            let Some(challenge_id) = self.pending_order.pop_front() else {
+                break;
+            };
+            self.pending.remove(&challenge_id);
+        }
+    }
+
+    fn enforce_consumed_capacity(&mut self) {
+        while self.consumed_challenges.len() > self.state_limits.max_consumed {
+            let Some(challenge_id) = self.consumed_order.pop_front() else {
+                break;
+            };
+            self.consumed_challenges.remove(&challenge_id);
+        }
     }
 }
 

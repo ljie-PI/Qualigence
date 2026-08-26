@@ -8,9 +8,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use companion::clock::ManualClock;
 use companion::ipc::security::{
-    proof_bytes, CertificateError, CertificateHandshakeError, CertificateHandshakeVerifier,
-    CompanionProofSignatureAlgorithm, HandshakeError, HandshakeVerifier, RunnerCertificatePolicy,
-    RunnerSigner,
+    proof_bytes, CertificateChallengeStateLimits, CertificateError, CertificateHandshakeError,
+    CertificateHandshakeVerifier, CompanionProofSignatureAlgorithm, HandshakeError,
+    HandshakeVerifier, RunnerCertificatePolicy, RunnerSigner,
 };
 use p256::ecdsa::signature::Signer as EcdsaSigner;
 use p256::ecdsa::SigningKey as EcdsaSigningKey;
@@ -155,6 +155,21 @@ fn cert_verifier(
     policies: Vec<RunnerCertificatePolicy>,
 ) -> CertificateHandshakeVerifier<ManualClock> {
     CertificateHandshakeVerifier::new(PROTOCOL_MAJOR, INSTANCE, policies, clock, DEADLINE_MS)
+}
+
+fn cert_verifier_with_limits(
+    clock: Arc<ManualClock>,
+    policies: Vec<RunnerCertificatePolicy>,
+    state_limits: CertificateChallengeStateLimits,
+) -> CertificateHandshakeVerifier<ManualClock> {
+    CertificateHandshakeVerifier::with_challenge_state_limits(
+        PROTOCOL_MAJOR,
+        INSTANCE,
+        policies,
+        clock,
+        DEADLINE_MS,
+        state_limits,
+    )
 }
 
 fn sign_ecdsa(proof: &[u8]) -> String {
@@ -600,4 +615,181 @@ fn certificate_challenge_expires_and_binds_instance_nonce_and_runner() {
         ),
         Err(CertificateHandshakeError::Expired)
     );
+}
+
+#[test]
+fn unsupported_certificate_signature_algorithm_consumes_the_known_challenge() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let mut v = cert_verifier(
+        Arc::clone(&clock),
+        vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
+    );
+    let challenge = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("begin");
+    let proof = proof_bytes(
+        PROTOCOL_MAJOR,
+        INSTANCE,
+        &challenge.nonce_base64(),
+        "runner-1",
+    );
+    let signature = sign_ecdsa(&proof);
+
+    assert_eq!(
+        v.verify_pending_challenge_with_algorithm_name(
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            "ed25519-sha512",
+        ),
+        Err(CertificateHandshakeError::Certificate(
+            CertificateError::UnsupportedKeyAlgorithm
+        ))
+    );
+    assert_eq!(
+        v.verify_pending_challenge(
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &signature,
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::ReplayedChallenge)
+    );
+}
+
+#[test]
+fn certificate_challenge_state_is_capacity_bounded() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let mut v = cert_verifier_with_limits(
+        Arc::clone(&clock),
+        vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
+        CertificateChallengeStateLimits {
+            max_pending: 2,
+            max_consumed: 2,
+        },
+    );
+
+    let first = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("first begin");
+    let second = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("second begin");
+    let third = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("third begin evicts oldest pending challenge");
+    assert_eq!(v.challenge_state_counts(), (2, 0));
+
+    let first_proof = proof_bytes(PROTOCOL_MAJOR, INSTANCE, &first.nonce_base64(), "runner-1");
+    assert_eq!(
+        v.verify_pending_challenge(
+            &first.challenge_id,
+            INSTANCE,
+            &first.nonce_base64(),
+            &sign_ecdsa(&first_proof),
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::UnknownChallenge)
+    );
+
+    for challenge in [&second, &third] {
+        let proof = proof_bytes(
+            PROTOCOL_MAJOR,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            "runner-1",
+        );
+        v.verify_pending_challenge(
+            &challenge.challenge_id,
+            INSTANCE,
+            &challenge.nonce_base64(),
+            &sign_ecdsa(&proof),
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        )
+        .expect("bounded pending challenge remains valid");
+        assert!(v.challenge_state_counts().1 <= 2);
+    }
+
+    for _ in 0..8 {
+        let challenge = v
+            .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+            .expect("begin for consumed cap");
+        assert_eq!(v.challenge_state_counts().0, 1);
+        assert_eq!(
+            v.verify_pending_challenge_with_algorithm_name(
+                &challenge.challenge_id,
+                INSTANCE,
+                &challenge.nonce_base64(),
+                &BASE64.encode(b"not a signature"),
+                "ecdsa-p256-sha256",
+            ),
+            Err(CertificateHandshakeError::Certificate(
+                CertificateError::MalformedSignature
+            ))
+        );
+        let (_, consumed) = v.challenge_state_counts();
+        assert!(consumed <= 2, "consumed challenge cache exceeded cap");
+    }
+}
+
+#[test]
+fn certificate_challenge_state_expires_without_unbounded_growth() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let mut v = cert_verifier_with_limits(
+        Arc::clone(&clock),
+        vec![policy(ECDSA_CERT, "runner-1", "runner-1")],
+        CertificateChallengeStateLimits {
+            max_pending: 8,
+            max_consumed: 8,
+        },
+    );
+
+    let expired_without_attempt = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("begin expired challenge");
+    clock.advance_monotonic(DEADLINE_MS + 1);
+    let current = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("begin purges expired pending challenge");
+    assert_eq!(v.challenge_state_counts(), (1, 0));
+    let expired_proof = proof_bytes(
+        PROTOCOL_MAJOR,
+        INSTANCE,
+        &expired_without_attempt.nonce_base64(),
+        "runner-1",
+    );
+    assert_eq!(
+        v.verify_pending_challenge(
+            &expired_without_attempt.challenge_id,
+            INSTANCE,
+            &expired_without_attempt.nonce_base64(),
+            &sign_ecdsa(&expired_proof),
+            CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+        ),
+        Err(CertificateHandshakeError::UnknownChallenge)
+    );
+
+    let proof = proof_bytes(
+        PROTOCOL_MAJOR,
+        INSTANCE,
+        &current.nonce_base64(),
+        "runner-1",
+    );
+    v.verify_pending_challenge(
+        &current.challenge_id,
+        INSTANCE,
+        &current.nonce_base64(),
+        &sign_ecdsa(&proof),
+        CompanionProofSignatureAlgorithm::EcdsaP256Sha256,
+    )
+    .expect("current challenge verifies");
+    assert_eq!(v.challenge_state_counts(), (0, 1));
+
+    clock.advance_monotonic(DEADLINE_MS + 1);
+    let _ = v
+        .begin(PROTOCOL_MAJOR, "runner-1", &chain(ECDSA_CERT))
+        .expect("begin purges expired consumed challenge");
+    assert_eq!(v.challenge_state_counts(), (1, 0));
 }

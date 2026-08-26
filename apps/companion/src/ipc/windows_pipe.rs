@@ -18,9 +18,7 @@ use std::ptr::{null, null_mut};
 
 use crate::clock::Clock;
 use crate::ipc::dto::{CompanionRequest, CompanionRequestPayload};
-use crate::ipc::security::{
-    CertificateHandshakeError, CertificateHandshakeVerifier, CompanionProofSignatureAlgorithm,
-};
+use crate::ipc::security::{CertificateHandshakeError, CertificateHandshakeVerifier};
 use crate::ipc::server::{BoundedRequestProcessor, FrameLimits, RequestProcessError};
 
 use windows_sys::Win32::Foundation::{
@@ -366,16 +364,15 @@ impl<C: Clock> NativePipeRequestProcessor<C> {
                 })
             }
             CompanionRequestPayload::HandshakeProve(payload) => {
-                let algorithm =
-                    CompanionProofSignatureAlgorithm::parse(&payload.signature_algorithm)
-                        .map_err(CertificateHandshakeError::Certificate)?;
-                let runner = self.certificates.verify_pending_challenge(
-                    &payload.challenge_id,
-                    &payload.companion_instance_id,
-                    &payload.nonce_base64,
-                    &payload.signature_base64,
-                    algorithm,
-                );
+                let runner = self
+                    .certificates
+                    .verify_pending_challenge_with_algorithm_name(
+                        &payload.challenge_id,
+                        &payload.companion_instance_id,
+                        &payload.nonce_base64,
+                        &payload.signature_base64,
+                        &payload.signature_algorithm,
+                    );
                 drop(admission);
                 let runner = runner?;
                 self.requests.accept_runner(runner.clone());

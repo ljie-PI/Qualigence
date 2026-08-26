@@ -57,11 +57,11 @@ pub enum RequestProcessError {
 impl RequestProcessError {
     pub fn stable_code(&self) -> &'static str {
         match self {
-            Self::Frame(FrameError::FrameTooLarge) => "CompanionFrameTooLarge",
-            Self::Frame(FrameError::Truncated) => "CompanionFrameTruncated",
+            Self::Frame(FrameError::FrameTooLarge) => "CompanionMessageTooLarge",
+            Self::Frame(FrameError::Truncated) => "CompanionProtocolViolation",
             Self::Frame(FrameError::Malformed) => "CompanionProtocolViolation",
             Self::Frame(FrameError::Io) => "CompanionUnavailable",
-            Self::Frame(FrameError::Overloaded) => "CompanionOverloaded",
+            Self::Frame(FrameError::Overloaded) => "CompanionBackpressure",
             Self::Session(SessionAdmissionError::CompanionUnauthenticated) => {
                 "CompanionUnauthenticated"
             }
