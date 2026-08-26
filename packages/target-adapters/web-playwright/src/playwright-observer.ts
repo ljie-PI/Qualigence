@@ -522,6 +522,22 @@ interface BrowserObservationCapture {
   readonly sensitiveEvidenceUnavailable: boolean;
 }
 
+interface BrowserObservationSensitiveStringListInput {
+  readonly length: number;
+  readonly values: { readonly [index: number]: string | undefined };
+}
+
+interface BrowserObservationSensitiveRecordInput {
+  readonly markerId: string;
+  readonly forms: BrowserObservationSensitiveStringListInput;
+  readonly maskIds: BrowserObservationSensitiveStringListInput;
+}
+
+interface BrowserObservationSensitiveRecordsInput {
+  readonly length: number;
+  readonly records: { readonly [index: number]: BrowserObservationSensitiveRecordInput | undefined };
+}
+
 interface BrowserObservationCaptureInput {
   readonly sensitiveTargetIdsProperty: string;
   readonly sensitiveMaskIdAttribute: string;
@@ -529,10 +545,11 @@ interface BrowserObservationCaptureInput {
   readonly sensitiveShadowRootsProperty: string;
   readonly maxMaskRegions: number;
   readonly maxShadowRoots: number;
-  readonly sensitiveRecords: readonly SensitiveEvidenceScanRecord[];
+  readonly sensitiveRecords: BrowserObservationSensitiveRecordsInput;
 }
 
 function browserObservationCaptureInput(session: PlaywrightBrowserSession): BrowserObservationCaptureInput {
+  const scanRecords = session.sensitiveEvidenceScanRecords();
   return {
     sensitiveTargetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
     sensitiveMaskIdAttribute: SENSITIVE_MASK_ID_ATTRIBUTE,
@@ -540,8 +557,29 @@ function browserObservationCaptureInput(session: PlaywrightBrowserSession): Brow
     sensitiveShadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
     maxMaskRegions: MAX_REFLECTED_REGIONS,
     maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
-    sensitiveRecords: session.sensitiveEvidenceScanRecords(),
+    sensitiveRecords: sensitiveRecordInput(scanRecords),
   };
+}
+
+function sensitiveRecordInput(records: readonly SensitiveEvidenceScanRecord[]): BrowserObservationSensitiveRecordsInput {
+  const result: { [index: number]: BrowserObservationSensitiveRecordInput | undefined } = {};
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    result[index] = {
+      markerId: record.markerId,
+      forms: sensitiveStringListInput(record.forms),
+      maskIds: sensitiveStringListInput(record.maskIds),
+    };
+  }
+  return { length: records.length, records: result };
+}
+
+function sensitiveStringListInput(values: readonly string[]): BrowserObservationSensitiveStringListInput {
+  const result: { [index: number]: string | undefined } = {};
+  for (let index = 0; index < values.length; index += 1) {
+    result[index] = values[index];
+  }
+  return { length: values.length, values: result };
 }
 
 async function collectAuthorizedPageObservation(
@@ -791,14 +829,17 @@ function collectPageObservation(
     }
     const labelledBy = getAttribute(element, "aria-labelledby");
     if (labelledBy) {
-      const labels: string[] = [];
-      const labelIds = labelledBy.split(/\s+/);
+      let joined = "";
+      const labelIds = splitWhitespace(labelledBy);
       for (let index = 0; index < labelIds.length; index += 1) {
         const id = labelIds[index]!;
         const node = apply(dom.documentGetElementById, document, [id]);
-        if (node !== null) labels[labels.length] = textContent(node);
+        if (node !== null) {
+          const labelText = textContent(node);
+          if (labelText !== "") joined = joined === "" ? labelText : `${joined} ${labelText}`;
+        }
       }
-      const joined = stringTrim(labels.join(" "));
+      joined = stringTrim(joined);
       if (joined !== "") {
         return joined;
       }
@@ -882,32 +923,48 @@ function collectPageObservation(
   function sensitiveValues(element: Element): readonly string[] {
     const values: string[] = [];
     const text = directText(element);
-    if (text !== "") values.push(text);
+    appendNonEmptyString(values, text);
     if (isTag(element, "input")) {
-      const value = inputValue(element);
-      const placeholder = inputPlaceholder(element);
-      if (value !== "") values.push(value);
-      if (placeholder !== "") values.push(placeholder);
+      appendNonEmptyString(values, inputValue(element));
+      appendNonEmptyString(values, inputPlaceholder(element));
     }
     if (isTag(element, "textarea")) {
-      const value = textareaValue(element);
-      const placeholder = textareaPlaceholder(element);
-      if (value !== "") values.push(value);
-      if (placeholder !== "") values.push(placeholder);
+      appendNonEmptyString(values, textareaValue(element));
+      appendNonEmptyString(values, textareaPlaceholder(element));
     }
     if (isTag(element, "select")) {
-      const value = selectValue(element);
-      if (value !== "") values.push(value);
+      appendNonEmptyString(values, selectValue(element));
       const selected = selectedOptions(element)[0];
-      const selectedText = selected === undefined ? "" : optionText(selected);
-      if (selectedText !== "") values.push(selectedText);
+      appendNonEmptyString(values, selected === undefined ? "" : optionText(selected));
     }
-    const attributes = ["aria-label", "title", "value"] as const;
+    const attributes = ["role", "aria-label", "title", "value"] as const;
     for (let index = 0; index < attributes.length; index += 1) {
       const attributeValue = getAttribute(element, attributes[index]!);
-      if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
+      appendNonEmptyString(values, attributeValue ?? "");
     }
     return values;
+  }
+
+  function appendNonEmptyString(values: string[], value: string): void {
+    if (value !== "") values[values.length] = value;
+  }
+
+  function splitWhitespace(value: string): string[] {
+    const result: string[] = [];
+    let token = "";
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code === 32 || code === 9 || code === 10 || code === 13 || code === 12) {
+        if (token !== "") {
+          result[result.length] = token;
+          token = "";
+        }
+      } else {
+        token += value[index]!;
+      }
+    }
+    if (token !== "") result[result.length] = token;
+    return result;
   }
 
   function directText(element: Element): string {
@@ -1081,9 +1138,8 @@ function collectPageObservation(
     return false;
   }
 
-  function metadataValueUnavailable(value: string, element: Element | null): boolean {
+  function candidateFieldUnavailable(element: Element, ids: readonly string[], value: string): boolean {
     if (value === "") return false;
-    const ids = element === null ? [] : readSensitiveTargetIds(element);
     const state = (window as unknown as Record<string, {
       readonly records?: readonly { readonly markerId: string }[];
     } | undefined>)[input.sensitiveEvidenceStateProperty];
@@ -1091,8 +1147,19 @@ function collectPageObservation(
       const record = hostSensitiveRecords[recordIndex]!;
       if (!carriesForm(value, record.forms)) continue;
       const pendingPageRecord = findRecord(state?.records, record.markerId) !== undefined;
-      if (element !== null && sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
+      if (pendingPageRecord && baselineAllows(element, record.markerId, value)) continue;
+      if (sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
       return true;
+    }
+    return false;
+  }
+
+  function metadataValueUnavailable(value: string, element: Element | null): boolean {
+    if (value === "") return false;
+    if (element !== null) return candidateFieldUnavailable(element, readSensitiveTargetIds(element), value);
+    for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+      const record = hostSensitiveRecords[recordIndex]!;
+      if (carriesForm(value, record.forms)) return true;
     }
     return false;
   }
@@ -1238,16 +1305,27 @@ function collectPageObservation(
     return result;
   }
 
-  function cloneSensitiveScanRecords(value: unknown): SensitiveEvidenceScanRecord[] | undefined {
-    if (!dom.arrayIsArray(value)) return undefined;
+  function cloneSensitiveScanRecords(value: BrowserObservationSensitiveRecordsInput): SensitiveEvidenceScanRecord[] | undefined {
+    if (typeof value.length !== "number" || !Number.isSafeInteger(value.length) || value.length < 0) return undefined;
     const result: SensitiveEvidenceScanRecord[] = [];
     for (let index = 0; index < value.length; index += 1) {
-      const record = value[index] as SensitiveEvidenceScanRecord | undefined;
+      const record = value.records[index];
       if (record === undefined || typeof record.markerId !== "string") return undefined;
-      const forms = cloneStringArray(record.forms);
-      const maskIds = cloneStringArray(record.maskIds);
+      const forms = cloneSensitiveStringList(record.forms);
+      const maskIds = cloneSensitiveStringList(record.maskIds);
       if (forms === undefined || maskIds === undefined) return undefined;
       result[result.length] = { markerId: record.markerId, forms, maskIds };
+    }
+    return result;
+  }
+
+  function cloneSensitiveStringList(value: BrowserObservationSensitiveStringListInput): string[] | undefined {
+    if (typeof value.length !== "number" || !Number.isSafeInteger(value.length) || value.length < 0) return undefined;
+    const result: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = value.values[index];
+      if (typeof entry !== "string") return undefined;
+      result[result.length] = entry;
     }
     return result;
   }
@@ -1307,6 +1385,7 @@ function collectPageObservation(
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
+  let candidateSensitiveEvidenceUnavailable = false;
   const sensitiveMaskIds = pageSensitiveState.status === "ok" ? pageSensitiveState.ids : [];
   const titleElement = queryDocumentOne("title");
 
@@ -1362,6 +1441,13 @@ function collectPageObservation(
       (element as HTMLButtonElement).disabled === true ||
       getAttribute(element, "aria-disabled") === "true";
 
+    if (candidateFieldUnavailable(element, sensitiveTargetIds, role) ||
+      (name !== "" && candidateFieldUnavailable(element, sensitiveTargetIds, name)) ||
+      (text !== undefined && candidateFieldUnavailable(element, sensitiveTargetIds, text)) ||
+      (value !== undefined && candidateFieldUnavailable(element, sensitiveTargetIds, value))) {
+      candidateSensitiveEvidenceUnavailable = true;
+    }
+
     const candidate: BrowserObservationCandidate = {
       role,
       ...(name !== "" ? { name } : {}),
@@ -1371,7 +1457,7 @@ function collectPageObservation(
       ...(sensitiveTargetIds.length > 0 ? { sensitiveTargetIds } : {}),
       ...(sensitiveMaskId !== undefined ? { sensitiveMaskId } : {}),
     };
-    candidates.push(candidate);
+    candidates[candidates.length] = candidate;
   }
 
   return {
@@ -1391,7 +1477,7 @@ function collectPageObservation(
         return titleSensitiveMaskId === undefined ? {} : { titleSensitiveMaskId };
       })(),
     }),
-    sensitiveEvidenceUnavailable: pageSensitiveState.status === "failed" || sensitiveEvidenceUnavailable(),
+    sensitiveEvidenceUnavailable: pageSensitiveState.status === "failed" || candidateSensitiveEvidenceUnavailable || sensitiveEvidenceUnavailable(),
   };
   } catch {
     return failedPageObservation();
@@ -1451,7 +1537,11 @@ export class PlaywrightObserver implements Observer {
         await refreshPendingMaskSnapshotFromPageState(this.session, page, preScreenshotCheck.sensitivePageState, assertCaptureAuthority);
         this.session.validatePendingSensitivePageState(preScreenshotCheck.sensitivePageState);
         const raw = captured.candidates.map((candidate) => ({
-          role: candidate.role,
+          role: this.session.redactSensitiveAccessibleNameField(
+            candidate.sensitiveTargetIds,
+            candidate.role,
+            candidate.sensitiveMaskId,
+          ),
           ...(candidate.name === undefined ? {} : {
             name: this.session.redactSensitiveAccessibleNameField(
               candidate.sensitiveTargetIds,

@@ -509,6 +509,100 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when page Array.prototype.push hides a later visible valueRef reflection", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+    expect(Buffer.concat(session.artifactsFor(firstGraph.graphId).map((artifact) => Buffer.from(artifact.bytes))).toString("utf8"))
+      .not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly Array: { readonly prototype: { push(...items: unknown[]): number } };
+          readonly Reflect: { apply(target: unknown, receiver: unknown, args: readonly unknown[]): unknown };
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const nativePush = host.Array.prototype.push;
+        const nativeApply = host.Reflect.apply;
+        host.Array.prototype.push = function push(this: { readonly length: number }, ...items: unknown[]) {
+          if (typeof items[0] === "string") return this.length;
+          return nativeApply(nativePush, this, items) as number;
+        };
+        const reflected = host.document.createElement("div");
+        reflected.id = "array-push-hidden-reflection";
+        reflected.textContent = secret;
+        reflected.setAttribute("data-qualigence-observe", "true");
+        Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "240px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        host.document.body.append(reflected);
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when a later explicit role attribute reflects a retired host-known valueRef form", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+    expect(Buffer.concat(session.artifactsFor(firstGraph.graphId).map((artifact) => Buffer.from(artifact.bytes))).toString("utf8"))
+      .not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const button = host.document.createElement("button");
+        button.id = "explicit-role-value-ref";
+        button.textContent = "Continue";
+        button.setAttribute("role", secret);
+        Object.assign(button.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "140px",
+          height: "28px",
+        });
+        host.document.body.append(button);
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when a later same-page title reflects a retired host-known valueRef form", async () => {
     await fixture.close();
     fixture = await startFixtureServer({

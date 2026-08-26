@@ -139,6 +139,7 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /(^|[^.\w$])getComputedStyle\s*\(/g, label: "getComputedStyle(" },
   { pattern: /\bstyle\.(?:display|visibility)\b/g, label: "style.display/visibility" },
   { pattern: /\.(?:includes|toLowerCase|trim|replace|normalize)\s*\(/g, label: "mutable String.prototype method" },
+  { pattern: /\.(?:copyWithin|fill|pop|push|reverse|shift|sort|splice|unshift)\s*\(/g, label: "mutable Array.prototype method" },
 ];
 
 const dynamicCallbackConstruction: readonly RegExp[] = [
@@ -229,6 +230,9 @@ describe("page callback authority inventory", () => {
       const normalized = value.normalize('NFC');
       const replaced = value.replace(/secret/g, 'x');
       const matched = value.includes(secret);
+      values.push(secret);
+      values.splice(0, 1);
+      values.sort();
       if (target[handlerName]) console.log('dynamic');
       if (target[handlerName, otherName]) console.log('comma dynamic');
       if (target[...handlerNames]) console.log('spread dynamic');
@@ -262,6 +266,7 @@ describe("page callback authority inventory", () => {
       "mutable String.prototype method",
       "mutable String.prototype method",
       "mutable String.prototype method",
+      "mutable Array.prototype method",
     ]));
     expect(unapprovedComputedReads(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
       "[handlerName]",

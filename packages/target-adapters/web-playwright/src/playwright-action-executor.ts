@@ -823,7 +823,7 @@ async function beginPageSensitiveActionEpoch(
           : undefined;
       if (active === undefined) return;
       if (active.inTargetDispatch) {
-        active.deferredRecords.push(...records);
+        appendArray(active.deferredRecords, records);
         return;
       }
       processMutationRecords(active, records, active.inSchedulerCallback === true);
@@ -839,7 +839,8 @@ async function beginPageSensitiveActionEpoch(
       const allowClassification = canClassifyCurrentDispatch(active);
       processCurrentSensitiveMatches(active, allowClassification);
       if (!active.poisoned) {
-        const records = [...active.deferredRecords, ...active.observer.takeRecords()];
+        const records = cloneArray(active.deferredRecords);
+        appendArray(records, active.observer.takeRecords());
         active.deferredRecords = [];
         processMutationRecords(active, records, allowClassification);
       }
@@ -873,7 +874,8 @@ async function beginPageSensitiveActionEpoch(
       }
       processCurrentSensitiveMatches(activeEpoch, true);
       if (activeEpoch.poisoned) return;
-      const records = [...activeEpoch.deferredRecords, ...activeEpoch.observer.takeRecords()];
+      const records = cloneArray(activeEpoch.deferredRecords);
+      appendArray(records, activeEpoch.observer.takeRecords());
       activeEpoch.deferredRecords = [];
       processMutationRecords(activeEpoch, records, true);
     };
@@ -1127,6 +1129,18 @@ async function beginPageSensitiveActionEpoch(
       if (candidate !== "" && !arrayHasString(values, candidate)) values[values.length] = candidate;
     }
 
+    function appendArray<T>(target: T[], items: readonly T[]): void {
+      for (let index = 0; index < items.length; index += 1) {
+        target[target.length] = items[index]!;
+      }
+    }
+
+    function cloneArray<T>(items: readonly T[]): T[] {
+      const result: T[] = [];
+      appendArray(result, items);
+      return result;
+    }
+
     function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
       if (baseline === undefined) return false;
       for (const value of matches) {
@@ -1272,10 +1286,10 @@ async function beginPageSensitiveActionEpoch(
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
       for (let current = parentElement(element); current !== null; current = parentElement(current)) {
-        targets.push(current);
+        targets[targets.length] = current;
       }
-      targets.push(element.ownerDocument);
-      if (win !== null) targets.push(win);
+      targets[targets.length] = element.ownerDocument;
+      if (win !== null) targets[targets.length] = win;
       return targets;
     }
 
@@ -1370,7 +1384,8 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
-      const touchedNodes = [record.target, ...arrayFrom(record.addedNodes)];
+      const touchedNodes: Node[] = [record.target];
+      appendArray(touchedNodes, arrayFrom(record.addedNodes));
       for (const node of touchedNodes) {
         const root = isShadowRootNode(node) ? node : getRootNode(node);
         if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
@@ -1389,15 +1404,15 @@ async function beginPageSensitiveActionEpoch(
 
     function addNode(node: Node, candidates: Element[]): void {
       if (isElementNode(node)) {
-        candidates.push(node);
-        candidates.push(...queryDescendants(node));
-        candidates.push(...observedAncestors(node));
+        candidates[candidates.length] = node;
+        appendArray(candidates, queryDescendants(node));
+        appendArray(candidates, observedAncestors(node));
         return;
       }
       const parent = parentElementAcrossShadow(node);
       if (parent !== null) {
-        candidates.push(parent);
-        candidates.push(...observedAncestors(parent));
+        candidates[candidates.length] = parent;
+        appendArray(candidates, observedAncestors(parent));
       }
     }
 
@@ -1427,7 +1442,7 @@ async function beginPageSensitiveActionEpoch(
       const regionKey = nodeKey;
       if (isMaskableElement(candidate) && !arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
         epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
-        epochToUpdate.classifiedElements.push(candidate);
+        epochToUpdate.classifiedElements[epochToUpdate.classifiedElements.length] = candidate;
         if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           poison(epochToUpdate);
           return;
@@ -1439,7 +1454,7 @@ async function beginPageSensitiveActionEpoch(
     function observedAncestors(candidate: Element): Element[] {
       const result: Element[] = [];
       for (let current = parentElementAcrossShadow(candidate); current !== null; current = parentElementAcrossShadow(current)) {
-        if (isObservationCandidate(current)) result.push(current);
+        if (isObservationCandidate(current)) result[result.length] = current;
       }
       return result;
     }
@@ -1454,7 +1469,7 @@ async function beginPageSensitiveActionEpoch(
     function observableElements(): Element[] {
       const elements = queryDocument("*");
       for (const root of shadowRoots()) {
-        if (shadowRootMode(root) === "open") elements.push(...queryRoot(root, "*"));
+        if (shadowRootMode(root) === "open") appendArray(elements, queryRoot(root, "*"));
       }
       return elements;
     }
@@ -1494,7 +1509,7 @@ async function beginPageSensitiveActionEpoch(
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
       if (dom.arrayIsArray(current)) {
-        if (!arrayHasString(current, markerId)) current.push(markerId);
+        if (!arrayHasString(current, markerId)) current[current.length] = markerId;
       } else {
         apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
           configurable: false,
@@ -1541,23 +1556,23 @@ async function beginPageSensitiveActionEpoch(
     function sensitiveValues(candidate: Element): readonly string[] {
       const values: string[] = [];
       const text = directText(candidate);
-      if (text !== "") values.push(text);
+      if (text !== "") values[values.length] = text;
       const observedText = isObservationCandidate(candidate) ? textContent(candidate) : "";
-      if (observedText !== "" && observedText !== text) values.push(observedText);
+      if (observedText !== "" && observedText !== text) values[values.length] = observedText;
       const tag = tagName(candidate);
       if (tag === "input" || tag === "textarea") {
-        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
-        if (fieldPlaceholder(candidate) !== "") values.push(fieldPlaceholder(candidate));
+        if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
+        if (fieldPlaceholder(candidate) !== "") values[values.length] = fieldPlaceholder(candidate);
       }
       if (tag === "select") {
-        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
         const selectedOption = selectedOptions(candidate)[0];
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
-        if (selectedText !== "") values.push(selectedText);
+        if (selectedText !== "") values[values.length] = selectedText;
       }
-      for (const attribute of ["aria-label", "title", "value"] as const) {
+      for (const attribute of ["role", "aria-label", "title", "value"] as const) {
         const attributeValue = getAttribute(candidate, attribute);
-        if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
+        if (attributeValue !== null && attributeValue !== "") values[values.length] = attributeValue;
       }
       return values;
     }
@@ -1576,9 +1591,9 @@ async function beginPageSensitiveActionEpoch(
       for (const node of childNodes(root)) {
         if (isTextNode(node)) direct += textData(node);
       }
-      if (direct !== "") values.push(direct);
+      if (direct !== "") values[values.length] = direct;
       const fullText = textContent(root);
-      if (fullText !== "" && fullText !== direct) values.push(fullText);
+      if (fullText !== "" && fullText !== direct) values[values.length] = fullText;
       return values;
     }
 
@@ -1771,7 +1786,8 @@ async function endPageSensitiveActionEpoch(
     if (input.retainRecord) {
       active.forms = mergeSensitiveForms(active.forms, reflectedCandidateForms(element, input.kind));
       processCurrentSensitiveMatches(state, active);
-      const records = [...active.deferredRecords, ...active.observer.takeRecords()];
+      const records = cloneArray(active.deferredRecords);
+      appendArray(records, active.observer.takeRecords());
       active.deferredRecords = [];
       processMutationRecords(
         state,
@@ -1790,7 +1806,7 @@ async function endPageSensitiveActionEpoch(
     element.ownerDocument.removeEventListener("change", active.documentBubbleListener, false);
     const maskIds = input.retainRecord ? assignSensitiveMaskIds(state, active) : [];
     if (input.retainRecord) {
-      state.records.push({
+      state.records[state.records.length] = {
         markerId: active.markerId,
         forms: active.forms,
         baseline: active.baseline,
@@ -1802,10 +1818,10 @@ async function endPageSensitiveActionEpoch(
         schedulerRegistrations: active.schedulerRegistrations ?? 0,
         poisoned: active.poisoned,
         ...(retainSchedulerObserver ? { observer: active.observer } : {}),
-      });
+      };
       if (retainSchedulerObserver) {
         state.retainedSchedulerEpochs ??= [];
-        state.retainedSchedulerEpochs.push(active);
+        state.retainedSchedulerEpochs[state.retainedSchedulerEpochs.length] = active;
         registry?.retainSensitiveSchedulerEpoch?.(active);
       }
     } else {
@@ -2049,6 +2065,18 @@ async function endPageSensitiveActionEpoch(
       if (candidate !== "" && !arrayHasString(values, candidate)) values[values.length] = candidate;
     }
 
+    function appendArray<T>(target: T[], items: readonly T[]): void {
+      for (let index = 0; index < items.length; index += 1) {
+        target[target.length] = items[index]!;
+      }
+    }
+
+    function cloneArray<T>(items: readonly T[]): T[] {
+      const result: T[] = [];
+      appendArray(result, items);
+      return result;
+    }
+
     function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
       if (baseline === undefined) return false;
       for (const value of matches) {
@@ -2187,7 +2215,8 @@ async function endPageSensitiveActionEpoch(
     }
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
-      const touchedNodes = [record.target, ...arrayFrom(record.addedNodes)];
+      const touchedNodes: Node[] = [record.target];
+      appendArray(touchedNodes, arrayFrom(record.addedNodes));
       for (const node of touchedNodes) {
         const root = isShadowRootNode(node) ? node : getRootNode(node);
         if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
@@ -2206,15 +2235,15 @@ async function endPageSensitiveActionEpoch(
 
     function addNode(node: Node, candidates: Element[]): void {
       if (isElementNode(node)) {
-        candidates.push(node);
-        candidates.push(...queryDescendants(node));
-        candidates.push(...observedAncestors(node));
+        candidates[candidates.length] = node;
+        appendArray(candidates, queryDescendants(node));
+        appendArray(candidates, observedAncestors(node));
         return;
       }
       const parent = parentElementAcrossShadow(node);
       if (parent !== null) {
-        candidates.push(parent);
-        candidates.push(...observedAncestors(parent));
+        candidates[candidates.length] = parent;
+        appendArray(candidates, observedAncestors(parent));
       }
     }
 
@@ -2286,10 +2315,10 @@ async function endPageSensitiveActionEpoch(
     function delegatedEventPathTargets(): EventTarget[] {
       const targets: EventTarget[] = [];
       for (let current = parentElement(element); current !== null; current = parentElement(current)) {
-        targets.push(current);
+        targets[targets.length] = current;
       }
-      targets.push(element.ownerDocument);
-      if (win !== null) targets.push(win);
+      targets[targets.length] = element.ownerDocument;
+      if (win !== null) targets[targets.length] = win;
       return targets;
     }
 
@@ -2336,7 +2365,7 @@ async function endPageSensitiveActionEpoch(
       if (isMaskableElement(candidate) && !arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
         epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
         if (epochToUpdate.classifiedElements !== undefined) {
-          epochToUpdate.classifiedElements.push(candidate);
+          epochToUpdate.classifiedElements[epochToUpdate.classifiedElements.length] = candidate;
         }
         if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           epochToUpdate.poisoned = true;
@@ -2350,7 +2379,7 @@ async function endPageSensitiveActionEpoch(
     function observedAncestors(candidate: Element): Element[] {
       const result: Element[] = [];
       for (let current = parentElementAcrossShadow(candidate); current !== null; current = parentElementAcrossShadow(current)) {
-        if (isObservationCandidate(current)) result.push(current);
+        if (isObservationCandidate(current)) result[result.length] = current;
       }
       return result;
     }
@@ -2401,7 +2430,7 @@ async function endPageSensitiveActionEpoch(
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
       if (dom.arrayIsArray(current)) {
-        if (!arrayHasString(current, markerId)) current.push(markerId);
+        if (!arrayHasString(current, markerId)) current[current.length] = markerId;
       } else {
         apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
           configurable: false,
@@ -2469,23 +2498,23 @@ async function endPageSensitiveActionEpoch(
     function sensitiveValues(candidate: Element): readonly string[] {
       const values: string[] = [];
       const text = directText(candidate);
-      if (text !== "") values.push(text);
+      if (text !== "") values[values.length] = text;
       const observedText = isObservationCandidate(candidate) ? textContent(candidate) : "";
-      if (observedText !== "" && observedText !== text) values.push(observedText);
+      if (observedText !== "" && observedText !== text) values[values.length] = observedText;
       const tag = tagName(candidate);
       if (tag === "input" || tag === "textarea") {
-        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
-        if (fieldPlaceholder(candidate) !== "") values.push(fieldPlaceholder(candidate));
+        if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
+        if (fieldPlaceholder(candidate) !== "") values[values.length] = fieldPlaceholder(candidate);
       }
       if (tag === "select") {
-        if (fieldValue(candidate) !== "") values.push(fieldValue(candidate));
+        if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
         const selectedOption = selectedOptions(candidate)[0];
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
-        if (selectedText !== "") values.push(selectedText);
+        if (selectedText !== "") values[values.length] = selectedText;
       }
-      for (const attribute of ["aria-label", "title", "value"] as const) {
+      for (const attribute of ["role", "aria-label", "title", "value"] as const) {
         const attributeValue = getAttribute(candidate, attribute);
-        if (attributeValue !== null && attributeValue !== "") values.push(attributeValue);
+        if (attributeValue !== null && attributeValue !== "") values[values.length] = attributeValue;
       }
       return values;
     }
@@ -2544,7 +2573,7 @@ async function markSensitiveTarget(
         for (const markerId of current) {
           if (markerId === input.markerId) found = true;
         }
-        if (!found) current.push(input.markerId);
+        if (!found) current[current.length] = input.markerId;
         return;
       }
       if (current !== undefined) throw new Error("Sensitive target marker is unavailable.");
