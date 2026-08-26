@@ -181,3 +181,18 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
   - Passed: `CI=true corepack pnpm typecheck`.
   - Passed: `git diff --check`.
 - No PR was created. Ticket 28 remains `claimed` and ready for a fresh complete-matrix review of the current head.
+
+### post-review-e2e - 2026-08-26
+
+- Clean complete-matrix review head before post-review acceptance: `a4b00d9e5512cbb39c69aaa311f9f6c58e2294f5` (Standards and Spec review3 both reported no core Critical or Important blockers).
+- Added the required automated post-review E2E file `tests/e2e/windows/desktop-runner.test.ts`.
+- The E2E drives the production `TargetRuntimeFactory`/`ExecutionRuntime` Desktop path through a real `NamedPipeCompanionClient` connected to a separate-process authenticated Companion contract fixture. It proves Desktop auth+concrete probe before capability/admission, probe-before-launch runtime ordering, no Web fallback, Desktop `valueRef` hash/byte-length binding with plaintext only in `action.execute`, Trace plaintext exclusion, and post-dispatch disconnect terminalization as `ActionOutcomeUnknown` with exactly one Permit/action dispatch.
+- This is TypeScript Runner/Companion-boundary evidence only. Native Named Pipe ACL/peer identity, Rust Companion, real UIA worker/Job Object, local-console/RDP, manual checklist, and release evidence remain downstream Tickets 29-31 scope.
+- Post-review acceptance and required regression Gates passed before commit:
+  - Passed: `CI=true corepack pnpm vitest run tests/e2e/windows/desktop-runner.test.ts` (1 file / 2 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 32 passed / 2 skipped).
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 53 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` (1 file / 48 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- No PR was created. Because the E2E test file changed after the clean review, Ticket 28 remains `claimed` and needs a fresh complete-matrix review before final PR/acceptance.
