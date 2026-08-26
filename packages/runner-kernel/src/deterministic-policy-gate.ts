@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ExecutionPlanPolicyError,
   ExecutionPolicySnapshotError,
@@ -106,7 +107,14 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
         descriptor: {
           decisionId: `decision:${context.job.runId}:${action.actionId}`,
           policyId: this.policy.policyId,
-          actionDigestSha256: "0".repeat(64),
+          actionDigestSha256: runnerPolicyActionDigestSha256({
+            runId: context.job.runId,
+            action,
+            decisionId: `decision:${context.job.runId}:${action.actionId}`,
+            policyId: this.policy.policyId,
+            risk,
+            expiresAt: this.policy.expiresAt,
+          }),
           risk,
           expiresAt: this.policy.expiresAt,
         },
@@ -114,6 +122,40 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     }
     return { status: "allowed", reason: "PolicyAllowed" };
   }
+}
+
+export interface RunnerPolicyActionDigestInput {
+  readonly runId: string;
+  readonly action: ResolvedAction;
+  readonly decisionId: string;
+  readonly policyId: string;
+  readonly risk: string;
+  readonly expiresAt: string;
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const entries = Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize(record[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+export function runnerPolicyActionDigestSha256(input: RunnerPolicyActionDigestInput): string {
+  return createHash("sha256")
+    .update(canonicalize({
+      schema: "qualigence-runner-policy-action-digest/v1",
+      runId: input.runId,
+      action: input.action,
+      decisionId: input.decisionId,
+      policyId: input.policyId,
+      risk: input.risk,
+      expiresAt: input.expiresAt,
+    }))
+    .digest("hex");
 }
 
 function denied(reason: string): PolicyDecision {

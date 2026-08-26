@@ -116,12 +116,12 @@ export class TargetRuntimeFactory {
         close: () => target.close(),
       };
     } catch (error) {
-      await closeIgnoring(target);
+      void closeIgnoring(target);
       throw error;
     }
   }
 
-  private async openDesktop(job: AcceptedExecutionJob, _signal?: AbortSignal): Promise<TargetRuntimeResourceSet> {
+  private async openDesktop(job: AcceptedExecutionJob, signal?: AbortSignal): Promise<TargetRuntimeResourceSet> {
     if (job.target.kind !== "desktop") throw new ExecutionTargetError("CapabilityMismatch", "blocked");
     const target = job.target;
     if (this.platform !== "win32") {
@@ -132,31 +132,41 @@ export class TargetRuntimeFactory {
       throw new ExecutionTargetError("CompanionUnavailable", "blocked", "Desktop Companion is not configured");
     }
     try {
+      signal?.throwIfAborted();
       await companion.authenticate?.();
+      signal?.throwIfAborted();
       await companion.probe?.();
+      signal?.throwIfAborted();
       const provider = new AppEnvironmentProvider(companion);
       const session = await provider.launch(target.app);
       let closed = false;
-      return {
-        observer: new DesktopObserver(new WindowsDesktopAdapter(companion), session.sessionId, this.options.config.actionTimeoutMs),
-        resolver: new DesktopResolver(job.runId),
-        actionExecutor: new UiaActionExecutor(companion, {
-          sessionId: session.sessionId,
-          runId: job.runId,
-          deadlineMs: this.options.config.actionTimeoutMs,
-          ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
-        }),
-        verifier: this.options.verifier,
-        close: async () => {
-          if (closed) return;
-          closed = true;
-          try {
-            await provider.shutdown(session);
-          } finally {
-            companion.close?.();
-          }
-        },
+      const close = async (): Promise<void> => {
+        if (closed) return;
+        closed = true;
+        try {
+          await provider.shutdown(session);
+        } finally {
+          companion.close?.();
+        }
       };
+      try {
+        signal?.throwIfAborted();
+        return {
+          observer: new DesktopObserver(new WindowsDesktopAdapter(companion), session.sessionId, this.options.config.actionTimeoutMs),
+          resolver: new DesktopResolver(job.runId),
+          actionExecutor: new UiaActionExecutor(companion, {
+            sessionId: session.sessionId,
+            runId: job.runId,
+            deadlineMs: this.options.config.actionTimeoutMs,
+            ...(this.options.valueProvider === undefined ? {} : { valueProvider: this.options.valueProvider }),
+          }),
+          verifier: this.options.verifier,
+          close,
+        };
+      } catch (error) {
+        await close();
+        throw error;
+      }
     } catch (error) {
       throw mapDesktopOpenError(error, error instanceof DesktopExecutionError && error.code === "ActionOutcomeUnknown" ? "error" : "blocked");
     }

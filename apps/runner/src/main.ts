@@ -50,7 +50,7 @@ async function runOffer(
     spool,
     ...(config.tenantId === undefined ? {} : { tenantId: config.tenantId }),
     ...(valueProvider === undefined ? {} : { valueProvider }),
-    ...(companion === undefined ? {} : { companion }),
+    ...(companion === undefined ? {} : { companion, desktopReady: true }),
   }).run(offer, signal);
 }
 
@@ -96,6 +96,7 @@ async function openDesktopCompanion(config: RunnerConfig): Promise<NamedPipeComp
       : { expectedCompanionInstanceId: config.desktopCompanion.expectedCompanionInstanceId }),
   });
   await client.authenticate();
+  await client.probe();
   return client;
 }
 

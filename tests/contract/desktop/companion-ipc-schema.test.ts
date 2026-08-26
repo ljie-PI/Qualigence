@@ -57,6 +57,7 @@ const actionDigest = desktopActionDigestSha256({
   policyId: "pol-1",
   risk: "Normal",
   expiresAt: "2026-08-01T00:00:30.000Z",
+  nonceBase64: "bm9uY2U=",
 });
 
 const permit: LocalExecutionPermit = {
@@ -67,6 +68,8 @@ const permit: LocalExecutionPermit = {
   actionId: "act-1",
   actionDigestSha256: actionDigest,
   graphId: "graph-1",
+  decisionId: "dec-1",
+  policyId: "pol-1",
   risk: "Normal",
   issuedAt: "2026-08-01T00:00:00.000Z",
   expiresAt: "2026-08-01T00:00:30.000Z",
@@ -90,6 +93,7 @@ const permitRequest = {
     actionDigestSha256: actionDigest,
     risk: "Normal",
     expiresAt: "2026-08-01T00:00:30.000Z",
+    nonceBase64: "bm9uY2U=",
   },
   safeSummary: "Click the Submit button",
   expiresAt: "2026-08-01T00:00:30.000Z",

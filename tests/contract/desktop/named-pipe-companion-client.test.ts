@@ -113,6 +113,7 @@ const actionDigest = desktopActionDigestSha256({
   policyId: "pol-1",
   risk: "Normal",
   expiresAt: "2026-08-01T00:00:30.000Z",
+  nonceBase64: "nonce",
 });
 const actionDigest2 = desktopActionDigestSha256({
   sessionId: "sess-1",
@@ -122,6 +123,7 @@ const actionDigest2 = desktopActionDigestSha256({
   policyId: "pol-1",
   risk: "Normal",
   expiresAt: "2026-08-01T00:00:30.000Z",
+  nonceBase64: "nonce",
 });
 
 const permit = {
@@ -132,6 +134,8 @@ const permit = {
   actionId: "act-1",
   actionDigestSha256: actionDigest,
   graphId: "graph-1",
+  decisionId: "dec-1",
+  policyId: "pol-1",
   risk: "Normal",
   issuedAt: "2026-08-01T00:00:00.000Z",
   expiresAt: "2026-08-01T00:00:30.000Z",
@@ -639,6 +643,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
         actionDigestSha256: actionDigest,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
+        nonceBase64: "nonce",
       },
       safeSummary: "Click",
       expiresAt: "2026-08-01T00:00:30.000Z",
@@ -662,6 +667,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
         actionDigestSha256: actionDigest,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
+        nonceBase64: "nonce",
       },
       safeSummary: "Click",
       expiresAt: "2026-08-01T00:00:30.000Z",
@@ -677,6 +683,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
         actionDigestSha256: actionDigest2,
         risk: "Normal",
         expiresAt: "2026-08-01T00:00:30.000Z",
+        nonceBase64: "nonce",
       },
       safeSummary: "Click",
       expiresAt: "2026-08-01T00:00:30.000Z",

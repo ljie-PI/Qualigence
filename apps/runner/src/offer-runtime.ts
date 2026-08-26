@@ -34,6 +34,8 @@ export interface RunnerOfferRuntimeOptions {
   readonly tenantId?: string;
   readonly createTarget?: (options: ConstructorParameters<typeof PlaywrightWebTargetAdapter>[0]) => PlaywrightWebTargetAdapter;
   readonly companion?: DesktopCompanionRuntimeClient;
+  /** True only after Runner startup has authenticated and probed the Desktop Companion. */
+  readonly desktopReady?: boolean;
   readonly platform?: NodeJS.Platform;
   readonly leaseLifecycle?: AcceptedLeaseLifecycleOptions;
 }
@@ -54,7 +56,7 @@ export class RunnerOfferRuntime {
 
   async run(offer: ExecutionJobOffer, signal?: AbortSignal): Promise<void> {
     const currentCapabilities = runnerCapabilities(this.options.valueProvider, {
-      desktopReady: this.options.companion !== undefined && (this.options.platform ?? process.platform) === "win32",
+      desktopReady: this.options.desktopReady === true && this.options.companion !== undefined && (this.options.platform ?? process.platform) === "win32",
       ...(this.options.platform === undefined ? {} : { platform: this.options.platform }),
     });
     assertTargetObservationRequirements(offer);
@@ -214,7 +216,7 @@ function assertTargetObservationRequirements(offer: ExecutionJobOffer): void {
   const missing = expected.filter((token) => !required.has(token));
   if (missing.length === 0) return;
   throw new RunnerAppError("CapabilityMismatch", "target offers must require their negotiated Observation Graph capabilities", {
-    details: { missingCapabilities: missing },
+    details: { missingCapabilities: offer.job.target.kind === "desktop" ? expected : missing },
   });
 }
 

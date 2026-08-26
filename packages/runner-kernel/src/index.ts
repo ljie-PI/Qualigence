@@ -54,5 +54,5 @@ export type {
   MonotonicClock,
 } from "./execution-budget.js";
 
-export { DeterministicRunnerPolicyGate } from "./deterministic-policy-gate.js";
-export type { DeterministicRunnerPolicyGateOptions, TargetAdmission } from "./deterministic-policy-gate.js";
+export { DeterministicRunnerPolicyGate, runnerPolicyActionDigestSha256 } from "./deterministic-policy-gate.js";
+export type { DeterministicRunnerPolicyGateOptions, RunnerPolicyActionDigestInput, TargetAdmission } from "./deterministic-policy-gate.js";

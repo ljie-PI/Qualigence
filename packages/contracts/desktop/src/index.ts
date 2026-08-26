@@ -86,6 +86,8 @@ export {
   desktopValueBindingForPlaintext,
   parseDesktopPlaintextValue,
   assertDesktopValueBindingMatchesAction,
+  assertActionExecutePermitBinding,
+  assertActionExecuteValueBinding,
   desktopActionDigestSha256,
   parseLocalPermitAuthorization,
   parseLocalExecutionPermit,

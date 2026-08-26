@@ -284,21 +284,6 @@ export class FakeReferenceCompanion implements CompanionClient {
     if (record.permit.actionDigestSha256 !== request.permit.actionDigestSha256) {
       return { status: "failed", errorCode: "LocalPermitBindingMismatch" };
     }
-    if (request.action.kind === "input" || request.action.kind === "select") {
-      const binding = record.permit.valueBinding;
-      if (
-        request.value === undefined ||
-        binding === undefined ||
-        request.value.valueRef !== request.action.valueRef ||
-        request.value.valueRef !== binding.valueRef ||
-        request.value.valueSha256 !== binding.valueSha256 ||
-        request.value.valueByteLength !== binding.valueByteLength
-      ) {
-        return { status: "failed", errorCode: "LocalPermitValueBindingMismatch" };
-      }
-    } else if (request.value !== undefined) {
-      return { status: "failed", errorCode: "LocalPermitValueBindingMismatch" };
-    }
     if (isLocalPermitExpired(record.permit, this.now())) {
       return { status: "failed", errorCode: "LocalPermitTimedOut" };
     }
@@ -328,7 +313,6 @@ export class FakeReferenceCompanion implements CompanionClient {
       risk: request.authorization.risk,
       issuedAt,
       expiresAt,
-      ...(request.authorization.valueBinding === undefined ? {} : { valueBinding: request.authorization.valueBinding }),
     };
   }
 }

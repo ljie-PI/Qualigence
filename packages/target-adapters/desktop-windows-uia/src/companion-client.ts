@@ -46,6 +46,8 @@ export interface CompanionClient {
   capture(request: UiaCaptureRequest): Promise<UiaSource>;
   requestPermit(request: LocalPermitRequest): Promise<LocalApprovalDecision>;
   execute(request: DesktopActionExecuteRequest): Promise<ActionOutcomeReport>;
+  /** Concrete post-authentication readiness probe used before Desktop capability advertisement. */
+  probe?(): Promise<void>;
 }
 
 export type DesktopExecutionErrorCode =

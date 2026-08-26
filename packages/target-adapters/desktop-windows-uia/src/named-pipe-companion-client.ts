@@ -238,6 +238,10 @@ export class NamedPipeCompanionClient implements CompanionClient {
     this.failStop(error);
   }
 
+  async probe(): Promise<void> {
+    await this.authenticate();
+  }
+
   async launch(target: AppTarget): Promise<AppSession> {
     await this.authenticate();
     return this.request("app.launch", { target }, this.defaultRequestDeadlineMs);

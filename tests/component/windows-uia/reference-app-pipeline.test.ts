@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   AppEnvironmentProvider,
@@ -8,6 +7,7 @@ import {
 } from "@qualigence/desktop-windows-uia";
 import {
   ExecutionPermit,
+  runnerPolicyActionDigestSha256,
   type ExecutionPermitDescriptor,
   type ExecutionRisk,
   type ProposedAction,
@@ -45,17 +45,16 @@ import {
 const DEADLINE_MS = 5_000;
 const RUN_ID = "run-ref";
 
-function actionDigest(action: ResolvedDesktopAction): string {
-  return createHash("sha256").update(JSON.stringify(action)).digest("hex");
-}
-
 function permitFor(action: ResolvedDesktopAction, risk: ExecutionRisk): ExecutionPermit {
+  const decisionId = `decision:${action.actionId}`;
+  const policyId = "policy:windows-reference";
+  const expiresAt = "2026-08-02T00:01:00.000Z";
   const descriptor: ExecutionPermitDescriptor = {
-    decisionId: `decision:${action.actionId}`,
-    policyId: "policy:windows-reference",
-    actionDigestSha256: actionDigest(action),
+    decisionId,
+    policyId,
+    actionDigestSha256: runnerPolicyActionDigestSha256({ runId: RUN_ID, action, decisionId, policyId, risk, expiresAt }),
     risk,
-    expiresAt: "2026-08-02T00:01:00.000Z",
+    expiresAt,
   };
   return ExecutionPermit.fromAllowedDecision({
     status: "allowed",
