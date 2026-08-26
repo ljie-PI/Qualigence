@@ -11,11 +11,35 @@ export type {
   TraceStore,
 } from "./trace-ingestor.js";
 
+export {
+  ArtifactUploadError,
+  ArtifactUploadService,
+  missingRanges,
+} from "./artifact-upload-service.js";
+export { InMemoryArtifactUploadStore } from "./in-memory-artifact-upload-store.js";
+
+export type {
+  ArtifactUploadChunkIdentity,
+  ArtifactUploadErrorCode,
+  ArtifactUploadIdentity,
+  ArtifactUploadServiceOptions,
+  RegisterArtifactManifestInput,
+  UploadArtifactChunkInput,
+} from "./artifact-upload-service.js";
+
 export type {
   ArtifactKind,
   ArtifactManifest,
   ArtifactManifestStore,
+  ArtifactRangePlanner,
+  ArtifactReferenceAuthority,
   ArtifactStore,
+  ArtifactUploadChunkRecord,
+  ArtifactUploadChunkResult,
+  ArtifactUploadManifestRecord,
+  ArtifactUploadRegisterResult,
+  ArtifactUploadStatus,
+  ArtifactUploadStore,
   ArtifactWriteRequest,
   ExecutionRunRecord,
   FindingReference,

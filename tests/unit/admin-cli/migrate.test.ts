@@ -103,13 +103,13 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
       },
       migrate: async (input) => {
         calls.push("migrate");
-        return { fromVersion: 0, toVersion: 13, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] };
+        return { fromVersion: 0, toVersion: 14, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] };
       },
     });
 
-    expect(calls).toEqual(["backup:invocation-1:13", "migrate"]);
+    expect(calls).toEqual(["backup:invocation-1:14", "migrate"]);
     expect(result.action).toBe("provisioned");
-    expect(result).toMatchObject({ schemaVersion: 13, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] });
+    expect(result).toMatchObject({ schemaVersion: 14, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] });
   });
 
   it("leaves committed data intact and the schema resumable after an injected step failure", async () => {
@@ -175,7 +175,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
           throw new Error("injected auxiliary schema failure");
         },
       })).rejects.toThrow("injected auxiliary schema failure");
-      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(13);
+      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(14);
       await expect(assertPostgresSchemaCurrent(
         isolatedConfig.postgres.admin,
         isolatedConfig.postgres.server.name,
@@ -394,6 +394,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
         },
       },
       runnerCa: { certificatePem: "unused", privateKeyPem: "unused" },
+      artifactDataDir: ".tmp-test-artifacts",
     };
   }
 

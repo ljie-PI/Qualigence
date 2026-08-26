@@ -11,8 +11,13 @@ export type {
   RenewalDelay,
 } from "./lease-renewal-controller.js";
 export { SpoolingTraceRecorder, findingOf } from "./spooling-trace-recorder.js";
+export { SpoolingArtifactObserver } from "./spooling-artifact-observer.js";
+export type { ArtifactSource, RawCapturedArtifact, SpoolingArtifactObserverOptions } from "./spooling-artifact-observer.js";
 export { TraceUploadPump } from "./trace-upload-pump.js";
 export type { TraceBatchSubmitter, TraceUploadPumpResult } from "./trace-upload-pump.js";
+export { replayPendingRuns } from "./replay-recovery.js";
+export { ArtifactUploadPump } from "./artifact-upload-pump.js";
+export type { ArtifactUploadPumpResult, ArtifactUploadSubmitter } from "./artifact-upload-pump.js";
 export { AcceptedLeaseLifecycle, LeasedJobExecutor } from "./job-executor.js";
 export type {
   AcceptedLeaseFinalization,

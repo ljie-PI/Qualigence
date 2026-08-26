@@ -1,5 +1,8 @@
 import type {
   AcceptedExecutionJob,
+  ArtifactChunkUpload,
+  ArtifactManifestRegistration,
+  ArtifactUploadAck,
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -36,6 +39,14 @@ export interface RunnerProtocolApplication {
   accept(sessionId: string, offerId: string): Promise<ExecutionJobLease>;
   renew(sessionId: string, lease: ExecutionJobLease): Promise<ExecutionJobLease>;
   ingest(sessionId: string, batch: ExecutionEventBatch): Promise<ExecutionEventAck>;
+  registerArtifactManifest(
+    sessionId: string,
+    registration: ArtifactManifestRegistration,
+  ): Promise<ArtifactUploadAck>;
+  uploadArtifactChunk(
+    sessionId: string,
+    upload: ArtifactChunkUpload,
+  ): Promise<ArtifactUploadAck>;
   complete(
     sessionId: string,
     lease: ExecutionJobLease,

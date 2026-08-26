@@ -334,6 +334,10 @@ export class RunOwnershipService {
     return (await this.store.lease(runId))?.recoveryOfRunId;
   }
 
+  async jobOf(runId: string): Promise<AcceptedExecutionJob | undefined> {
+    return (await this.store.lease(runId))?.job;
+  }
+
   async completionOf(runId: string): Promise<ExecutionCompletion | undefined> {
     return this.store.completion(runId);
   }

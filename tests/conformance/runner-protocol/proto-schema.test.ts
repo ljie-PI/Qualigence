@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { capabilities } from "@qualigence/runner-protocol";
 import type {
+  ArtifactUploadManifest,
   ExecutionEventAck,
   ExecutionEventBatch,
   ExecutionJobLease,
@@ -201,6 +202,18 @@ describe("runner protocol v1 proto schema", () => {
       runId: "run-attempt-1",
       nextExpectedSequenceNumber: 2,
     };
+    const artifactManifest: ArtifactUploadManifest = {
+      artifactId: "artifact-1",
+      tenantId: "tenant-a",
+      projectId: "project-1",
+      runId: "run-attempt-1",
+      sizeBytes: 3,
+      sha256: "0".repeat(64),
+      mediaType: "application/octet-stream",
+      sensitivity: "internal",
+      chunkSizeBytes: 262_144,
+      totalChunks: 1,
+    };
 
     const expectations: ReadonlyArray<readonly [string, object]> = [
       ["RunnerHello", hello],
@@ -209,6 +222,7 @@ describe("runner protocol v1 proto schema", () => {
       ["ExecutionJobLease", lease],
       ["ExecutionEventBatch", batch],
       ["ExecutionEventAck", ack],
+      ["ArtifactManifest", artifactManifest],
     ];
 
     for (const [messageName, sample] of expectations) {
@@ -228,6 +242,18 @@ describe("runner protocol v1 proto schema", () => {
     const renewLease = messages.get("RenewLease");
     expect(renewLease, "proto is missing message RenewLease").toBeDefined();
     expect(renewLease!.fields.get("lease_token")).toBe(4);
+  });
+
+  it("adds resumable Artifact upload frames and ACK fields without entering Trace", () => {
+    expect(messages.get("RunnerFrame")?.fields.get("register_artifact_manifest")).toBe(7);
+    expect(messages.get("RunnerFrame")?.fields.get("upload_artifact_chunk")).toBe(8);
+    expect(messages.get("ServerFrame")?.fields.get("artifact_manifest_ack")).toBe(10);
+    expect(messages.get("ServerFrame")?.fields.get("artifact_chunk_ack")).toBe(11);
+    expect(messages.get("RegisterArtifactManifest")?.fields.get("lease_token")).toBe(4);
+    expect(messages.get("UploadArtifactChunk")?.fields.get("chunk")).toBe(5);
+    expect(messages.get("ArtifactUploadAck")?.fields).toEqual(new Map([
+      ["artifact_id", 1], ["run_id", 2], ["missing_ranges", 3], ["acknowledged", 4],
+    ]));
   });
 
   it("freezes every ExecutionPolicySnapshot field and tag", () => {

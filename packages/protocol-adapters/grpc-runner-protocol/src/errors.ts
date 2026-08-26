@@ -22,6 +22,8 @@ export type RunnerProtocolErrorCode =
   | "UnknownSession"
   | "TraceGap"
   | "TraceIntegrityViolation"
+  | "ArtifactUnacknowledged"
+  | "ArtifactUploadRejected"
   | "ProtocolViolation"
   | "PolicyMissing"
   | "SessionClosed"

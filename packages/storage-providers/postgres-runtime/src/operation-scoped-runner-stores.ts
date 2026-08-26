@@ -1,4 +1,4 @@
-import type { TraceStore } from "@qualigence/evidence";
+import type { ArtifactManifest, ArtifactManifestStore, ArtifactUploadChunkRecord, ArtifactUploadChunkResult, ArtifactUploadManifestRecord, ArtifactUploadRegisterResult, ArtifactUploadStore, TraceStore } from "@qualigence/evidence";
 import type {
   CompleteLeaseResult,
   HashedResumeTokenRecord,
@@ -28,6 +28,10 @@ import {
   PostgresTraceStore,
   type PostgresTraceClock,
 } from "./postgres-trace-store.js";
+import {
+  PostgresArtifactManifestStore,
+  PostgresArtifactUploadStore,
+} from "./postgres-artifact-upload-store.js";
 
 /**
  * Long-lived Runner-control store facade for Self-hosted composition. Each
@@ -175,6 +179,64 @@ export class OperationScopedPostgresTraceStore implements TraceStore {
   private withStore<T>(operation: (store: PostgresTraceStore) => Promise<T>): Promise<T> {
     return this.provider.withTenant(this.tenantId, ({ db }) =>
       operation(new PostgresTraceStore(db, this.tenantId, this.clock)),
+    );
+  }
+}
+
+export class OperationScopedPostgresArtifactManifestStore implements ArtifactManifestStore {
+  constructor(
+    private readonly provider: TenantTransactionProvider,
+    private readonly tenantId: string,
+  ) {}
+
+  append(manifest: ArtifactManifest): Promise<"accepted" | "duplicate"> {
+    return this.withStore((store) => store.append(manifest));
+  }
+
+  listForRun(runId: RunId): Promise<readonly ArtifactManifest[]> {
+    return this.withStore((store) => store.listForRun(runId));
+  }
+
+  private withStore<T>(operation: (store: PostgresArtifactManifestStore) => Promise<T>): Promise<T> {
+    return this.provider.withTenant(this.tenantId, ({ db }) =>
+      operation(new PostgresArtifactManifestStore(db, this.tenantId)),
+    );
+  }
+}
+
+export class OperationScopedPostgresArtifactUploadStore implements ArtifactUploadStore {
+  constructor(
+    private readonly provider: TenantTransactionProvider,
+    private readonly tenantId: string,
+  ) {}
+
+  registerManifest(manifest: ArtifactUploadManifestRecord): Promise<ArtifactUploadRegisterResult> {
+    return this.withStore((store) => store.registerManifest(manifest));
+  }
+
+  manifest(input: { readonly tenantId: string; readonly projectId: string; readonly runId: RunId; readonly artifactId: string }): Promise<ArtifactUploadManifestRecord | undefined> {
+    return this.withStore((store) => store.manifest(input));
+  }
+
+  appendChunk(chunk: ArtifactUploadChunkRecord): Promise<ArtifactUploadChunkResult> {
+    return this.withStore((store) => store.appendChunk(chunk));
+  }
+
+  chunks(input: { readonly tenantId: string; readonly projectId: string; readonly runId: RunId; readonly artifactId: string }): Promise<readonly ArtifactUploadChunkRecord[]> {
+    return this.withStore((store) => store.chunks(input));
+  }
+
+  markVerified(input: { readonly tenantId: string; readonly projectId: string; readonly runId: RunId; readonly artifactId: string; readonly relativePath: string; readonly verifiedAt: string }): Promise<void> {
+    return this.withStore((store) => store.markVerified(input));
+  }
+
+  acknowledgedArtifactIds(runId: RunId, artifactIds: readonly string[]): Promise<ReadonlySet<string>> {
+    return this.withStore((store) => store.acknowledgedArtifactIds(runId, artifactIds));
+  }
+
+  private withStore<T>(operation: (store: PostgresArtifactUploadStore) => Promise<T>): Promise<T> {
+    return this.provider.withTenant(this.tenantId, ({ db }) =>
+      operation(new PostgresArtifactUploadStore(db, this.tenantId)),
     );
   }
 }

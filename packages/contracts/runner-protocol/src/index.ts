@@ -3,7 +3,7 @@ import {
   validateAppTarget,
   type AppTarget,
 } from "@qualigence/desktop-contracts";
-import type { ObservationGraphV1 } from "@qualigence/observation-contracts";
+import type { ObservationGraphV1, ObservationSensitivity } from "@qualigence/observation-contracts";
 
 export * from "./capabilities.js";
 export * from "./messages.js";
@@ -110,8 +110,47 @@ export type ObservationNodeId = string;
 export type FindingId = string;
 export type MessageId = string;
 export type IdempotencyKey = string;
+export type ArtifactId = string;
 export type RunnerProtocolVersion = "runner-protocol/v1";
 export type TraceEventSchemaVersion = "trace-event/v1";
+
+export const ARTIFACT_CHUNK_SIZE_BYTES = 256 * 1024;
+export type ArtifactSensitivity = ObservationSensitivity;
+
+export interface ArtifactByteRange {
+  readonly offset: number;
+  readonly length: number;
+}
+
+export interface ArtifactUploadManifest {
+  readonly artifactId: ArtifactId;
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly runId: RunId;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly mediaType: string;
+  readonly sensitivity: ArtifactSensitivity;
+  readonly chunkSizeBytes: typeof ARTIFACT_CHUNK_SIZE_BYTES;
+  readonly totalChunks: number;
+}
+
+export interface ArtifactUploadChunk {
+  readonly artifactId: ArtifactId;
+  readonly tenantId: string;
+  readonly projectId: string;
+  readonly runId: RunId;
+  readonly offset: number;
+  readonly bytes: Uint8Array;
+  readonly sha256: string;
+}
+
+export interface ArtifactUploadProgress {
+  readonly artifactId: ArtifactId;
+  readonly runId: RunId;
+  readonly missingRanges: readonly ArtifactByteRange[];
+  readonly acknowledged: boolean;
+}
 
 export interface WebTargetRef {
   readonly kind: "web";

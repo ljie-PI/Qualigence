@@ -1,12 +1,15 @@
 import BetterSqlite3 from "better-sqlite3";
-import type { TraceEvent } from "@qualigence/runner-protocol";
+import { createHash } from "node:crypto";
+import type { ArtifactUploadAck, ArtifactUploadChunk, ArtifactUploadManifest, TraceEvent } from "@qualigence/runner-protocol";
 import type { Clock } from "@qualigence/shared-kernel";
 import { SystemClock } from "@qualigence/shared-kernel";
 import { RunnerSpoolError } from "./errors.js";
 import { migrateSpool } from "./migrations.js";
 import {
   SPOOL_LEASE_SCHEMA_VERSION,
+  SPOOL_RESUME_SCHEMA_VERSION,
   type EncryptedLeaseSecret,
+  type EncryptedResumeSecret,
   type SpoolCrypto,
 } from "./spool-crypto.js";
 
@@ -49,6 +52,17 @@ export interface RunnerSpool {
     limit: SpoolBatchLimit,
   ): Promise<readonly TraceEvent[]>;
   acknowledge(runId: string, nextExpectedSequenceNumber: number): Promise<void>;
+  saveLease?(record: SpoolLeaseRecord): Promise<void>;
+  loadLeaseForRun?(runId: string): Promise<SpoolLeaseRecord | undefined>;
+  saveResumeToken?(record: SpoolResumeTokenRecord): Promise<void>;
+  loadResumeToken?(): Promise<SpoolResumeTokenRecord | undefined>;
+  pendingRunIds?(): Promise<readonly string[]>;
+  saveArtifactManifest?(manifest: ArtifactUploadManifest): Promise<void>;
+  saveArtifactChunk?(chunk: ArtifactUploadChunk): Promise<void>;
+  pendingArtifactManifests?(runId: string): Promise<readonly ArtifactUploadManifest[]>;
+  pendingArtifactChunks?(runId: string, artifactId: string, missingRanges: readonly { readonly offset: number; readonly length: number }[]): Promise<readonly ArtifactUploadChunk[]>;
+  artifactUploadProgress?(runId: string, artifactId: string): Promise<ArtifactUploadAck | undefined>;
+  acknowledgeArtifactProgress?(progress: ArtifactUploadAck): Promise<void>;
   usage(): Promise<{ readonly bytes: number; readonly events: number }>;
 }
 
@@ -68,6 +82,11 @@ export interface SpoolLeaseRecord {
   readonly leaseEpoch: number;
   readonly expiresAt: string;
   readonly leaseToken: string;
+}
+
+export interface SpoolResumeTokenRecord {
+  readonly sessionId: string;
+  readonly resumeToken: string;
 }
 
 export interface SpoolUsage {
@@ -90,6 +109,7 @@ interface EventRow {
 }
 
 interface LeaseRow {
+  readonly job_id?: string;
   readonly run_id: string;
   readonly lease_epoch: number;
   readonly expires_at: string;
@@ -97,6 +117,32 @@ interface LeaseRow {
   readonly encrypted_token: Buffer;
   readonly token_nonce: Buffer;
   readonly token_tag: Buffer;
+}
+
+interface ResumeTokenRow {
+  readonly session_id: string;
+  readonly schema_version: string;
+  readonly encrypted_token: Buffer;
+  readonly token_nonce: Buffer;
+  readonly token_tag: Buffer;
+}
+
+interface ArtifactManifestRow {
+  readonly manifest_json: string;
+}
+
+interface ArtifactChunkRow {
+  readonly artifact_id: string;
+  readonly tenant_id: string;
+  readonly project_id: string;
+  readonly run_id: string;
+  readonly offset_bytes: number;
+  readonly bytes: Buffer;
+  readonly sha256: string;
+}
+
+interface ArtifactProgressRow {
+  readonly progress_json: string;
 }
 
 function defaultMeasureEventBytes(event: TraceEvent): number {
@@ -166,6 +212,7 @@ export class SqliteRunnerSpool implements RunnerSpool {
     // again; drop the unreadable metadata but keep the Trace intact.
     if (options.crypto === undefined) {
       connection.prepare("DELETE FROM spool_leases").run();
+      connection.prepare("DELETE FROM spool_resume_tokens").run();
     }
 
     return spool;
@@ -269,11 +316,178 @@ export class SqliteRunnerSpool implements RunnerSpool {
     acknowledge();
   }
 
+  async saveArtifactManifest(manifest: ArtifactUploadManifest): Promise<void> {
+    this.assertOpen();
+    const existing = this.connection
+      .prepare("SELECT manifest_json FROM spool_artifact_manifests WHERE artifact_id = ?")
+      .get(manifest.artifactId) as ArtifactManifestRow | undefined;
+    const manifestJson = JSON.stringify(manifest);
+    if (existing !== undefined) {
+      if (existing.manifest_json === manifestJson) return;
+      throw new RunnerSpoolError("SpoolIntegrityViolation", `Artifact ${manifest.artifactId} already has a different manifest`);
+    }
+    this.connection
+      .prepare(
+        `INSERT INTO spool_artifact_manifests
+          (artifact_id, run_id, manifest_json, size_bytes, chunk_size_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(manifest.artifactId, manifest.runId, manifestJson, manifest.sizeBytes, manifest.chunkSizeBytes, this.clock.now());
+  }
+
+  async saveArtifactChunk(chunk: ArtifactUploadChunk): Promise<void> {
+    this.assertOpen();
+    if (sha256Hex(chunk.bytes) !== chunk.sha256) {
+      throw new RunnerSpoolError("SpoolIntegrityViolation", `Artifact ${chunk.artifactId} chunk hash does not match bytes`);
+    }
+    const existing = this.connection
+      .prepare("SELECT sha256, bytes FROM spool_artifact_chunks WHERE artifact_id = ? AND offset_bytes = ?")
+      .get(chunk.artifactId, chunk.offset) as { readonly sha256: string; readonly bytes: Buffer } | undefined;
+    if (existing !== undefined) {
+      if (existing.sha256 === chunk.sha256 && Buffer.from(existing.bytes).equals(Buffer.from(chunk.bytes))) return;
+      throw new RunnerSpoolError("SpoolIntegrityViolation", `Artifact ${chunk.artifactId} chunk ${chunk.offset} already has different bytes`);
+    }
+    if (this.currentBytes() + chunk.bytes.length > this.hardLimitBytes) {
+      throw new RunnerSpoolError(
+        "SpoolCapacityExceeded",
+        `Appending ${chunk.bytes.length} artifact bytes would exceed the hard spool limit of ${this.hardLimitBytes} bytes`,
+      );
+    }
+    this.connection
+      .prepare(
+        `INSERT INTO spool_artifact_chunks
+          (artifact_id, tenant_id, project_id, run_id, offset_bytes, bytes, sha256, size_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        chunk.artifactId,
+        chunk.tenantId,
+        chunk.projectId,
+        chunk.runId,
+        chunk.offset,
+        Buffer.from(chunk.bytes),
+        chunk.sha256,
+        chunk.bytes.length,
+        this.clock.now(),
+      );
+  }
+
+  async pendingArtifactManifests(runId: string): Promise<readonly ArtifactUploadManifest[]> {
+    this.assertOpen();
+    const rows = this.connection
+      .prepare(
+        `SELECT manifest_json FROM spool_artifact_manifests
+          WHERE run_id = ? ORDER BY created_at, artifact_id`,
+      )
+      .all(runId) as ArtifactManifestRow[];
+    return rows.map((row) => JSON.parse(row.manifest_json) as ArtifactUploadManifest);
+  }
+
+  async pendingArtifactChunks(
+    runId: string,
+    artifactId: string,
+    missingRanges: readonly { readonly offset: number; readonly length: number }[],
+  ): Promise<readonly ArtifactUploadChunk[]> {
+    this.assertOpen();
+    if (missingRanges.length === 0) return [];
+    const rows = this.connection
+      .prepare(
+        `SELECT artifact_id, tenant_id, project_id, run_id, offset_bytes, bytes, sha256
+           FROM spool_artifact_chunks
+          WHERE run_id = ? AND artifact_id = ?
+          ORDER BY offset_bytes`,
+      )
+      .all(runId, artifactId) as ArtifactChunkRow[];
+    return rows
+      .filter((row) => missingRanges.some((range) => row.offset_bytes >= range.offset && row.offset_bytes < range.offset + range.length))
+      .map((row) => ({
+        artifactId: row.artifact_id,
+        tenantId: row.tenant_id,
+        projectId: row.project_id,
+        runId: row.run_id,
+        offset: row.offset_bytes,
+        bytes: new Uint8Array(row.bytes),
+        sha256: row.sha256,
+      }));
+  }
+
+  async artifactUploadProgress(runId: string, artifactId: string): Promise<ArtifactUploadAck | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT progress_json FROM spool_artifact_progress
+          WHERE run_id = ? AND artifact_id = ?`,
+      )
+      .get(runId, artifactId) as ArtifactProgressRow | undefined;
+    if (row === undefined) return undefined;
+    const progress = JSON.parse(row.progress_json) as ArtifactUploadAck;
+    if (progress.runId !== runId || progress.artifactId !== artifactId) {
+      throw new RunnerSpoolError(
+        "SpoolIntegrityViolation",
+        `Artifact ${artifactId} progress does not match the requested Run and Artifact`,
+      );
+    }
+    return progress;
+  }
+
+  async acknowledgeArtifactProgress(progress: ArtifactUploadAck): Promise<void> {
+    this.assertOpen();
+    if (progress.acknowledged) {
+      const remove = this.connection.transaction(() => {
+        this.connection.prepare("DELETE FROM spool_artifact_chunks WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
+        this.connection.prepare("DELETE FROM spool_artifact_progress WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
+        this.connection.prepare("DELETE FROM spool_artifact_manifests WHERE run_id = ? AND artifact_id = ?").run(progress.runId, progress.artifactId);
+      });
+      remove();
+      return;
+    }
+    const rows = this.connection
+      .prepare("SELECT offset_bytes FROM spool_artifact_chunks WHERE run_id = ? AND artifact_id = ?")
+      .all(progress.runId, progress.artifactId) as Array<{ readonly offset_bytes: number }>;
+    const acknowledgedOffsets = rows
+      .map((row) => row.offset_bytes)
+      .filter((offset) => !progress.missingRanges.some((range) => offset >= range.offset && offset < range.offset + range.length));
+    const update = this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          `INSERT INTO spool_artifact_progress
+             (artifact_id, run_id, progress_json, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(artifact_id) DO UPDATE SET
+             run_id = excluded.run_id,
+             progress_json = excluded.progress_json,
+             updated_at = excluded.updated_at`,
+        )
+        .run(progress.artifactId, progress.runId, JSON.stringify(progress), this.clock.now());
+      for (const offset of acknowledgedOffsets) {
+        this.connection.prepare("DELETE FROM spool_artifact_chunks WHERE run_id = ? AND artifact_id = ? AND offset_bytes = ?")
+          .run(progress.runId, progress.artifactId, offset);
+      }
+    });
+    update();
+  }
+
+  async pendingRunIds(): Promise<readonly string[]> {
+    this.assertOpen();
+    const rows = this.connection
+      .prepare(
+        `SELECT run_id FROM spool_events
+         UNION
+         SELECT run_id FROM spool_artifact_manifests
+         ORDER BY run_id`,
+      )
+      .all() as Array<{ readonly run_id: string }>;
+    return rows.map((row) => row.run_id);
+  }
+
   async usage(): Promise<SpoolUsage> {
     this.assertOpen();
     const row = this.connection
       .prepare(
-        "SELECT COUNT(*) AS events, COALESCE(SUM(size_bytes), 0) AS bytes FROM spool_events",
+        `SELECT
+           (SELECT COUNT(*) FROM spool_events) AS events,
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM spool_events) +
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM spool_artifact_chunks) AS bytes`,
       )
       .get() as { readonly events: number; readonly bytes: number };
     return { bytes: Number(row.bytes), events: Number(row.events) };
@@ -332,16 +546,83 @@ export class SqliteRunnerSpool implements RunnerSpool {
 
   async loadLease(jobId: string): Promise<SpoolLeaseRecord | undefined> {
     this.assertOpen();
-    const crypto = this.requireCrypto();
+    this.requireCrypto();
     const row = this.connection
       .prepare(
-        `SELECT run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
+        `SELECT job_id, run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
            FROM spool_leases WHERE job_id = ?`,
       )
       .get(jobId) as LeaseRow | undefined;
-    if (row === undefined) {
-      return undefined;
-    }
+    return row === undefined ? undefined : this.decryptLeaseRow(row.job_id ?? jobId, row);
+  }
+
+  async loadLeaseForRun(runId: string): Promise<SpoolLeaseRecord | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT job_id, run_id, lease_epoch, expires_at, schema_version, encrypted_token, token_nonce, token_tag
+           FROM spool_leases WHERE run_id = ? ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(runId) as LeaseRow | undefined;
+    if (row === undefined || row.job_id === undefined) return undefined;
+    return this.decryptLeaseRow(row.job_id, row);
+  }
+
+  async saveResumeToken(record: SpoolResumeTokenRecord): Promise<void> {
+    this.assertOpen();
+    const crypto = this.requireCrypto();
+    const encrypted = await crypto.encryptResume({
+      schemaVersion: SPOOL_RESUME_SCHEMA_VERSION,
+      sessionId: record.sessionId,
+      secret: record.resumeToken,
+    });
+    this.connection
+      .prepare(
+        `INSERT INTO spool_resume_tokens
+           (id, session_id, schema_version, encrypted_token, token_nonce, token_tag, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           session_id = excluded.session_id,
+           schema_version = excluded.schema_version,
+           encrypted_token = excluded.encrypted_token,
+           token_nonce = excluded.token_nonce,
+           token_tag = excluded.token_tag,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        record.sessionId,
+        encrypted.schemaVersion,
+        encrypted.ciphertext,
+        encrypted.nonce,
+        encrypted.tag,
+        this.clock.now(),
+      );
+  }
+
+  async loadResumeToken(): Promise<SpoolResumeTokenRecord | undefined> {
+    this.assertOpen();
+    const row = this.connection
+      .prepare(
+        `SELECT session_id, schema_version, encrypted_token, token_nonce, token_tag
+           FROM spool_resume_tokens WHERE id = 1`,
+      )
+      .get() as ResumeTokenRow | undefined;
+    if (row === undefined) return undefined;
+    const encrypted: EncryptedResumeSecret = {
+      schemaVersion: row.schema_version,
+      sessionId: row.session_id,
+      nonce: row.token_nonce,
+      ciphertext: row.encrypted_token,
+      tag: row.token_tag,
+    };
+    return {
+      sessionId: row.session_id,
+      resumeToken: await this.requireCrypto().decryptResume(encrypted),
+    };
+  }
+
+  private async decryptLeaseRow(jobId: string, row: LeaseRow): Promise<SpoolLeaseRecord> {
+    const crypto = this.requireCrypto();
     const encrypted: EncryptedLeaseSecret = {
       schemaVersion: row.schema_version,
       jobId,
@@ -373,7 +654,11 @@ export class SqliteRunnerSpool implements RunnerSpool {
 
   private currentBytes(): number {
     const row = this.connection
-      .prepare("SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM spool_events")
+      .prepare(
+        `SELECT
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM spool_events) +
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM spool_artifact_chunks) AS bytes`,
+      )
       .get() as { readonly bytes: number };
     return Number(row.bytes);
   }
@@ -393,4 +678,8 @@ export class SqliteRunnerSpool implements RunnerSpool {
       throw new RunnerSpoolError("SpoolOpenFailed", "The runner spool has been closed");
     }
   }
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }

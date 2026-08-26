@@ -1,6 +1,11 @@
 import type { RunnerCapabilities } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
+  ArtifactUploadAck,
+  ArtifactChunkUpload,
+  ArtifactUploadChunk,
+  ArtifactUploadManifest,
+  ArtifactManifestRegistration,
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -748,6 +753,126 @@ export function eventAckFromWire(wire: Wire): ExecutionEventAck {
     batchId: asString(wire.batch_id),
     runId: asString(wire.run_id),
     nextExpectedSequenceNumber: asNumber(wire.next_expected_sequence_number),
+  };
+}
+
+// --- Artifact upload ------------------------------------------------------
+
+export function artifactManifestToWire(manifest: ArtifactUploadManifest): Wire {
+  return {
+    artifact_id: manifest.artifactId,
+    tenant_id: manifest.tenantId,
+    project_id: manifest.projectId,
+    run_id: manifest.runId,
+    size_bytes: manifest.sizeBytes,
+    sha256: manifest.sha256,
+    media_type: manifest.mediaType,
+    sensitivity: manifest.sensitivity,
+    chunk_size_bytes: manifest.chunkSizeBytes,
+    total_chunks: manifest.totalChunks,
+  };
+}
+
+export function artifactManifestFromWire(wire: Wire): ArtifactUploadManifest {
+  return {
+    artifactId: asString(wire.artifact_id),
+    tenantId: asString(wire.tenant_id),
+    projectId: asString(wire.project_id),
+    runId: asString(wire.run_id),
+    sizeBytes: asNumber(wire.size_bytes),
+    sha256: asString(wire.sha256),
+    mediaType: asString(wire.media_type),
+    sensitivity: asString(wire.sensitivity) as ArtifactUploadManifest["sensitivity"],
+    chunkSizeBytes: asNumber(wire.chunk_size_bytes) as ArtifactUploadManifest["chunkSizeBytes"],
+    totalChunks: asNumber(wire.total_chunks),
+  };
+}
+
+export function artifactManifestRegistrationToWire(registration: ArtifactManifestRegistration): Wire {
+  return {
+    job_id: registration.jobId,
+    run_id: registration.runId,
+    lease_epoch: registration.leaseEpoch,
+    lease_token: registration.leaseToken,
+    manifest: artifactManifestToWire(registration.manifest),
+  };
+}
+
+export function artifactManifestRegistrationFromWire(wire: Wire): ArtifactManifestRegistration {
+  return {
+    jobId: asString(wire.job_id),
+    runId: asString(wire.run_id),
+    leaseEpoch: asNumber(wire.lease_epoch),
+    leaseToken: asString(wire.lease_token),
+    manifest: artifactManifestFromWire((wire.manifest ?? {}) as Wire),
+  };
+}
+
+export function artifactChunkToWire(chunk: ArtifactUploadChunk): Wire {
+  return {
+    artifact_id: chunk.artifactId,
+    tenant_id: chunk.tenantId,
+    project_id: chunk.projectId,
+    run_id: chunk.runId,
+    offset: chunk.offset,
+    bytes: Buffer.from(chunk.bytes),
+    sha256: chunk.sha256,
+  };
+}
+
+export function artifactChunkFromWire(wire: Wire): ArtifactUploadChunk {
+  const bytes = wire.bytes instanceof Uint8Array
+    ? new Uint8Array(wire.bytes)
+    : new Uint8Array(Buffer.from(asString(wire.bytes), "base64"));
+  return {
+    artifactId: asString(wire.artifact_id),
+    tenantId: asString(wire.tenant_id),
+    projectId: asString(wire.project_id),
+    runId: asString(wire.run_id),
+    offset: asNumber(wire.offset),
+    bytes,
+    sha256: asString(wire.sha256),
+  };
+}
+
+export function artifactChunkUploadToWire(upload: ArtifactChunkUpload): Wire {
+  return {
+    job_id: upload.jobId,
+    run_id: upload.runId,
+    lease_epoch: upload.leaseEpoch,
+    lease_token: upload.leaseToken,
+    chunk: artifactChunkToWire(upload.chunk),
+  };
+}
+
+export function artifactChunkUploadFromWire(wire: Wire): ArtifactChunkUpload {
+  return {
+    jobId: asString(wire.job_id),
+    runId: asString(wire.run_id),
+    leaseEpoch: asNumber(wire.lease_epoch),
+    leaseToken: asString(wire.lease_token),
+    chunk: artifactChunkFromWire((wire.chunk ?? {}) as Wire),
+  };
+}
+
+export function artifactUploadAckToWire(ack: ArtifactUploadAck): Wire {
+  return {
+    artifact_id: ack.artifactId,
+    run_id: ack.runId,
+    missing_ranges: ack.missingRanges.map((range) => ({ offset: range.offset, length: range.length })),
+    acknowledged: ack.acknowledged,
+  };
+}
+
+export function artifactUploadAckFromWire(wire: Wire): ArtifactUploadAck {
+  return {
+    artifactId: asString(wire.artifact_id),
+    runId: asString(wire.run_id),
+    missingRanges: asArray<Wire>(wire.missing_ranges).map((range) => ({
+      offset: asNumber(range.offset),
+      length: asNumber(range.length),
+    })),
+    acknowledged: asBoolean(wire.acknowledged),
   };
 }
 

@@ -2,6 +2,9 @@ import * as grpc from "@grpc/grpc-js";
 import { capabilities, negotiateCapabilities, negotiateProtocolMajor } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
+  ArtifactChunkUpload,
+  ArtifactManifestRegistration,
+  ArtifactUploadAck,
   ExecutionCompletion,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -51,6 +54,7 @@ export class RecordingRunnerProtocolApplication implements RunnerProtocolApplica
   private readonly leases = new Map<string, ExecutionJobLease>();
   private readonly cursors = new Map<string, number>();
   private readonly completions = new Map<string, ExecutionCompletion>();
+  private readonly artifacts = new Set<string>();
   private sessionSeq = 0;
 
   constructor(private readonly welcome: WelcomeParameters) {}
@@ -164,6 +168,37 @@ export class RecordingRunnerProtocolApplication implements RunnerProtocolApplica
       batchId: batch.batchId,
       runId: batch.runId,
       nextExpectedSequenceNumber: next,
+    };
+  }
+
+  async registerArtifactManifest(
+    sessionId: string,
+    registration: ArtifactManifestRegistration,
+  ): Promise<ArtifactUploadAck> {
+    this.calls.push("registerArtifactManifest");
+    this.requireSession(sessionId);
+    return {
+      artifactId: registration.manifest.artifactId,
+      runId: registration.runId,
+      missingRanges: registration.manifest.sizeBytes === 0
+        ? []
+        : [{ offset: 0, length: registration.manifest.sizeBytes }],
+      acknowledged: registration.manifest.sizeBytes === 0,
+    };
+  }
+
+  async uploadArtifactChunk(
+    sessionId: string,
+    upload: ArtifactChunkUpload,
+  ): Promise<ArtifactUploadAck> {
+    this.calls.push("uploadArtifactChunk");
+    this.requireSession(sessionId);
+    this.artifacts.add(upload.chunk.artifactId);
+    return {
+      artifactId: upload.chunk.artifactId,
+      runId: upload.runId,
+      missingRanges: [],
+      acknowledged: true,
     };
   }
 

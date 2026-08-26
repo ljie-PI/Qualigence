@@ -32,6 +32,16 @@ export { encodeWireMessage, decodeWireMessage } from "./wire-codec.js";
 export type { RunnerWireMessageName } from "./wire-codec.js";
 
 export {
+  artifactChunkFromWire,
+  artifactChunkToWire,
+  artifactChunkUploadFromWire,
+  artifactChunkUploadToWire,
+  artifactManifestFromWire,
+  artifactManifestRegistrationFromWire,
+  artifactManifestRegistrationToWire,
+  artifactManifestToWire,
+  artifactUploadAckFromWire,
+  artifactUploadAckToWire,
   capabilitiesFromWire,
   capabilitiesToWire,
   eventAckFromWire,

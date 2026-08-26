@@ -1,10 +1,13 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  ARTIFACT_CHUNK_SIZE_BYTES,
   canonicalPayloadHash,
+  type ArtifactUploadChunk,
+  type ArtifactUploadManifest,
   type TraceEvent,
 } from "@qualigence/runner-protocol";
 import {
@@ -50,6 +53,37 @@ function lease(secret: string): SpoolLeaseRecord {
     expiresAt: "2026-08-01T10:00:00.000Z",
     leaseToken: secret,
   };
+}
+
+function artifactManifest(bytes: Uint8Array): ArtifactUploadManifest {
+  return {
+    artifactId: "artifact-1",
+    tenantId: "tenant-a",
+    projectId: "project-a",
+    runId: "r",
+    sizeBytes: bytes.length,
+    sha256: sha256(bytes),
+    mediaType: "application/octet-stream",
+    sensitivity: "internal",
+    chunkSizeBytes: ARTIFACT_CHUNK_SIZE_BYTES,
+    totalChunks: 1,
+  };
+}
+
+function artifactChunk(manifest: ArtifactUploadManifest, bytes: Uint8Array): ArtifactUploadChunk {
+  return {
+    artifactId: manifest.artifactId,
+    tenantId: manifest.tenantId,
+    projectId: manifest.projectId,
+    runId: manifest.runId,
+    offset: 0,
+    bytes,
+    sha256: sha256(bytes),
+  };
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 async function openSpool(
@@ -131,6 +165,20 @@ describe("SqliteRunnerSpool", () => {
     await spool.close();
   });
 
+  it("enumerates runs with pending durable Trace after a restart", async () => {
+    const databaseFile = join(root, "spool.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const spool = await openSpool(databaseFile, crypto);
+    await spool.append(event(1));
+    await spool.close();
+
+    const reopened = await openSpool(databaseFile, crypto);
+    expect(await reopened.pendingRunIds()).toEqual(["r"]);
+    await reopened.acknowledge("r", 2);
+    expect(await reopened.pendingRunIds()).toEqual([]);
+    await reopened.close();
+  });
+
   it("recovers spooled events in order after a restart", async () => {
     const databaseFile = join(root, "spool.db");
     const crypto = new AesGcmSpoolCrypto(randomBytes(32));
@@ -154,16 +202,65 @@ describe("SqliteRunnerSpool", () => {
     await spool.close();
   });
 
-  it("never writes the lease secret to disk in plaintext", async () => {
+  it("saves and loads an encrypted resume token for restart recovery", async () => {
+    const databaseFile = join(root, "spool.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const spool = await openSpool(databaseFile, crypto);
+    await spool.saveResumeToken({ sessionId: "session-1", resumeToken: "resume-secret-value" });
+    await spool.close();
+
+    const reopened = await openSpool(databaseFile, crypto);
+    expect(await reopened.loadResumeToken()).toEqual({ sessionId: "session-1", resumeToken: "resume-secret-value" });
+    await reopened.close();
+  });
+
+  it("persists registered artifact progress for lost-owner restart recovery", async () => {
+    const databaseFile = join(root, "spool.db");
+    const crypto = new AesGcmSpoolCrypto(randomBytes(32));
+    const bytes = new Uint8Array([1, 2, 3]);
+    const manifest = artifactManifest(bytes);
+    const chunk = artifactChunk(manifest, bytes);
+    const spool = await openSpool(databaseFile, crypto);
+    await spool.saveArtifactManifest(manifest);
+    await spool.saveArtifactChunk(chunk);
+    await spool.acknowledgeArtifactProgress({
+      artifactId: manifest.artifactId,
+      runId: manifest.runId,
+      acknowledged: false,
+      missingRanges: [{ offset: 0, length: bytes.length }],
+    });
+    await spool.close();
+
+    const reopened = await openSpool(databaseFile, crypto);
+    expect(await reopened.artifactUploadProgress(manifest.runId, manifest.artifactId)).toEqual({
+      artifactId: manifest.artifactId,
+      runId: manifest.runId,
+      acknowledged: false,
+      missingRanges: [{ offset: 0, length: bytes.length }],
+    });
+    await reopened.acknowledgeArtifactProgress({
+      artifactId: manifest.artifactId,
+      runId: manifest.runId,
+      acknowledged: true,
+      missingRanges: [],
+    });
+    expect(await reopened.artifactUploadProgress(manifest.runId, manifest.artifactId)).toBeUndefined();
+    expect(await reopened.pendingArtifactManifests(manifest.runId)).toEqual([]);
+    await reopened.close();
+  });
+
+  it("never writes lease or resume secrets to disk in plaintext", async () => {
     const databaseFile = join(root, "spool.db");
     const crypto = new AesGcmSpoolCrypto(randomBytes(32));
     const spool = await openSpool(databaseFile, crypto);
     await spool.append(event(1));
     await spool.saveLease(lease("lease-secret-value"));
+    await spool.saveResumeToken({ sessionId: "session-1", resumeToken: "resume-secret-value" });
     await spool.close();
 
     const bytes = await readFile(databaseFile);
     expect(bytes.includes(Buffer.from("lease-secret-value"))).toBe(false);
+    expect(bytes.includes(Buffer.from("resume-secret-value"))).toBe(false);
   });
 
   it("detects a flipped authentication tag as an integrity violation", async () => {

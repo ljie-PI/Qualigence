@@ -271,6 +271,7 @@ export class LeasedJobExecutor {
         ...(this.deps.renewalDelay === undefined ? {} : { renewalDelay: this.deps.renewalDelay }),
       },
     );
+    await saveLease(this.deps.spool, lifecycle.currentLease());
     const window = lifecycle.window;
     this.currentWindow = window;
     const guardedSignal = lifecycle.signal;
@@ -322,5 +323,11 @@ export class LeasedJobExecutor {
       throw renewalError;
     }
     return { lease, completion: runtimeResult.completion, window };
+  }
+}
+
+async function saveLease(spool: RunnerSpool, lease: ExecutionJobLease): Promise<void> {
+  if (spool.saveLease !== undefined) {
+    await spool.saveLease(lease);
   }
 }
