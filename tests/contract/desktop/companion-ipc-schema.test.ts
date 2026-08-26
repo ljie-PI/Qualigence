@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   assertDeclaredFrameLength,
+  buildCompanionProofBytes,
   classifyLocalAuthorization,
   COMPANION_IPC_LIMITS,
   COMPANION_REQUEST_TYPES,
+  COMPANION_RESPONSE_TYPES,
+  COMPANION_UIA_PASSWORD_MASK_VALUE,
   CompanionIpcError,
+  createCompanionRequestEnvelope,
+  expectedResponseTypeForRequest,
   isLocalPermitExpired,
   parseCompanionDecision,
   parseCompanionRequest,
+  parseCompanionResponse,
   parseLocalExecutionPermit,
   parseResolvedDesktopAction,
   validateAppTarget,
-  type CompanionRequest,
+  type CompanionResponse,
   type LocalExecutionPermit,
   type ResolvedDesktopAction,
 } from "@qualigence/desktop-contracts";
@@ -55,12 +61,64 @@ const permit: LocalExecutionPermit = {
   expiresAt: "2026-08-01T00:00:30.000Z",
 };
 
-const executeRequest = {
-  type: "action.execute",
+const executePayload = {
   sessionId: "sess-1",
   action,
   permit,
   deadlineMs: 5000,
+};
+
+const permitRequest = {
+  approvalId: "ap-1",
+  sessionId: "sess-1",
+  runId: "run-1",
+  action,
+  authorization: {
+    decisionId: "dec-1",
+    policyId: "pol-1",
+    actionDigestSha256: "a".repeat(64),
+    risk: "Normal",
+    expiresAt: "2026-08-01T00:00:30.000Z",
+  },
+  safeSummary: "Click the Submit button",
+  expiresAt: "2026-08-01T00:00:30.000Z",
+} as const;
+
+function request(requestId: string, type: string, payload: unknown): Record<string, unknown> {
+  return { protocolMajor: 1, requestId, type, payload };
+}
+
+function response(requestId: string, type: string, payload: unknown): Record<string, unknown> {
+  return { protocolMajor: 1, requestId, type, status: "ok", payload };
+}
+
+const appSession = {
+  sessionId: "sess-1",
+  processId: 1234,
+  processCreationTime: "2026-08-01T00:00:00.000Z",
+  processGroupId: "group-1",
+  rootWindowHandle: "0x100",
+  startedAt: "2026-08-01T00:00:00.000Z",
+};
+
+const uiaCapture = {
+  sessionId: "sess-1",
+  capturedAt: "2026-08-01T00:00:00.000Z",
+  rootNodeIds: ["root"],
+  nodes: [
+    {
+      nodeId: "root",
+      role: "window",
+      controlTypeId: 50032,
+      processId: 1234,
+      isOffscreen: false,
+      isKeyboardFocusable: true,
+      hasKeyboardFocus: false,
+      isPassword: false,
+      patterns: [{ pattern: "Window", available: true }],
+      children: [],
+    },
+  ],
 };
 
 describe("AppTarget validation", () => {
@@ -72,125 +130,132 @@ describe("AppTarget validation", () => {
   });
 
   it("rejects a shell command string instead of executable + argv", () => {
-    expect(() =>
-      validateAppTarget({ ...validTarget, launch: { command: "app.exe --flag" } }),
-    ).toThrowError(/InvalidLaunchConfiguration/);
+    expect(() => validateAppTarget({ ...validTarget, launch: { command: "app.exe --flag" } })).toThrowError(/InvalidLaunchConfiguration/);
   });
 
   it("rejects an executable that carries arguments/spaces", () => {
-    expect(() =>
-      validateAppTarget({
-        ...validTarget,
-        launch: { executable: "C:\\Apps\\Reference.exe --flag", args: [] },
-      }),
-    ).toThrowError(/InvalidLaunchConfiguration/);
+    expect(() => validateAppTarget({ ...validTarget, launch: { executable: "C:\\Apps\\Reference.exe --flag", args: [] } })).toThrowError(/InvalidLaunchConfiguration/);
   });
 
   it("rejects a broad kill image name with a wildcard", () => {
-    expect(() =>
-      validateAppTarget({
-        ...validTarget,
-        process: { expectedImageName: "*.exe", allowedChildImageNames: [] },
-      }),
-    ).toThrowError(/InvalidProcessConfiguration/);
+    expect(() => validateAppTarget({ ...validTarget, process: { expectedImageName: "*.exe", allowedChildImageNames: [] } })).toThrowError(/InvalidProcessConfiguration/);
   });
 
   it("rejects a missing reset deadline", () => {
     const { reset, ...rest } = validTarget;
     void reset;
-    expect(() =>
-      validateAppTarget({ ...rest, reset: { command: "C:\\Apps\\Reset.exe", args: [] } }),
-    ).toThrowError(/InvalidResetConfiguration/);
+    expect(() => validateAppTarget({ ...rest, reset: { command: "C:\\Apps\\Reset.exe", args: [] } })).toThrowError(/InvalidResetConfiguration/);
   });
 
   it("rejects a non-Windows platform", () => {
-    expect(() => validateAppTarget({ ...validTarget, platform: "macos" })).toThrowError(
-      /InvalidPlatform/,
-    );
+    expect(() => validateAppTarget({ ...validTarget, platform: "macos" })).toThrowError(/InvalidPlatform/);
   });
 });
 
-describe("CompanionRequest schema", () => {
-  it("parses every request discriminant", () => {
+describe("Companion IPC envelopes", () => {
+  it("parses every request discriminant through the bounded envelope", () => {
     const requests: unknown[] = [
-      { type: "handshake.begin", protocolMajor: 1, runnerId: "runner-1", certificatePem: "-----BEGIN CERTIFICATE-----" },
-      { type: "handshake.prove", challengeId: "ch-1", signatureBase64: "c2ln" },
-      { type: "session.show", runId: "run-1", targetName: "Reference App" },
-      { type: "session.pause", runId: "run-1" },
-      { type: "session.resume", runId: "run-1" },
-      { type: "session.stop", runId: "run-1" },
-      { type: "session.close", runId: "run-1" },
-      { type: "app.launch", target: validTarget },
-      { type: "app.reset", sessionId: "sess-1" },
-      { type: "app.shutdown", sessionId: "sess-1" },
-      { type: "uia.capture", sessionId: "sess-1", deadlineMs: 2000 },
-      {
-        type: "permit.request",
-        request: {
-          approvalId: "ap-1",
-          sessionId: "sess-1",
-          runId: "run-1",
-          action,
-          authorization: {
-            decisionId: "dec-1",
-            policyId: "pol-1",
-            actionDigestSha256: "a".repeat(64),
-            risk: "Normal",
-            expiresAt: "2026-08-01T00:00:30.000Z",
-          },
-          safeSummary: "Click the Submit button",
-          expiresAt: "2026-08-01T00:00:30.000Z",
-        },
-      },
-      executeRequest,
+      request("req-1", "handshake.begin", { runnerId: "runner-1", certificatePem: "-----BEGIN CERTIFICATE-----" }),
+      request("req-2", "handshake.prove", { challengeId: "ch-1", companionInstanceId: "comp-1", nonceBase64: "bm9uY2U=", signatureBase64: "c2ln", signatureAlgorithm: "ecdsa-p256-sha256" }),
+      request("req-3", "session.show", { runId: "run-1", targetName: "Reference App" }),
+      request("req-4", "session.pause", { runId: "run-1" }),
+      request("req-5", "session.resume", { runId: "run-1" }),
+      request("req-6", "session.stop", { runId: "run-1" }),
+      request("req-7", "session.close", { runId: "run-1" }),
+      request("req-8", "app.launch", { target: validTarget }),
+      request("req-9", "app.reset", { sessionId: "sess-1" }),
+      request("req-10", "app.shutdown", { sessionId: "sess-1" }),
+      request("req-11", "uia.capture", { sessionId: "sess-1", deadlineMs: 2000 }),
+      request("req-12", "permit.request", { request: permitRequest }),
+      request("req-13", "action.execute", executePayload),
     ];
     const parsed = requests.map((r) => parseCompanionRequest(r).type);
     expect(new Set(parsed)).toEqual(new Set(COMPANION_REQUEST_TYPES));
   });
 
-  it("rejects an unknown request type", () => {
-    expect(() => parseCompanionRequest({ type: "session.explode", runId: "r" })).toThrowError(
-      /UnknownRequestType/,
-    );
+  it("parses the complete CompanionResponse union", () => {
+    const responses: CompanionResponse[] = [
+      parseCompanionResponse(response("req-1", "handshake.challenge", { challengeId: "ch-1", companionInstanceId: "comp-1", nonceBase64: "bm9uY2U=" })) as CompanionResponse,
+      parseCompanionResponse(response("req-2", "handshake.accepted", { companionInstanceId: "comp-1", runnerId: "runner-1", certificateSha256Fingerprint: "a".repeat(64), acceptedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-3", "session.show", { runId: "run-1", state: "shown", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-4", "session.pause", { runId: "run-1", state: "paused", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-5", "session.resume", { runId: "run-1", state: "resumed", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-6", "session.stop", { runId: "run-1", state: "stopped", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-7", "session.close", { runId: "run-1", state: "closed", changedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-8", "app.launch", appSession)) as CompanionResponse,
+      parseCompanionResponse(response("req-9", "app.reset", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-10", "app.shutdown", { sessionId: "sess-1", completedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-11", "uia.capture", uiaCapture)) as CompanionResponse,
+      parseCompanionResponse(response("req-12", "permit.request", { status: "denied", approvalId: "ap-1", decidedAt: "2026-08-01T00:00:00.000Z" })) as CompanionResponse,
+      parseCompanionResponse(response("req-13", "action.execute", { status: "failed", errorCode: "ElementNotFound" })) as CompanionResponse,
+    ];
+    expect(new Set(responses.map((r) => r.type))).toEqual(new Set(COMPANION_RESPONSE_TYPES));
   });
 
-  it("rejects an oversized declared frame", () => {
-    expect(() => assertDeclaredFrameLength(COMPANION_IPC_LIMITS.maxFrameBytes + 1)).toThrowError(
-      /CompanionMessageTooLarge/,
-    );
+  it("rejects raw legacy DTOs and unknown envelope fields at runtime", () => {
+    const legacy: unknown = { type: "action.execute", ...executePayload };
+    expect(() => parseCompanionRequest(legacy)).toThrowError(/InvalidRequestShape/);
+    expect(() => parseCompanionRequest({ ...request("req", "app.reset", { sessionId: "s" }), extra: true })).toThrowError(/InvalidRequestShape/);
+    expect(() => parseCompanionResponse({ ...response("req", "app.reset", { sessionId: "s", completedAt: "2026-08-01T00:00:00.000Z" }), extra: true })).toThrowError(/InvalidResponseShape/);
   });
 
-  it("rejects a missing deadline", () => {
-    const { deadlineMs, ...rest } = executeRequest;
-    void deadlineMs;
-    expect(() => parseCompanionRequest(rest)).toThrowError(/MissingDeadline/);
+  it("rejects unknown request and response types", () => {
+    expect(() => parseCompanionRequest(request("req", "session.explode", { runId: "r" }))).toThrowError(/UnknownRequestType/);
+    expect(() => parseCompanionResponse(response("req", "session.explode", {}))).toThrowError(/UnknownResponseType/);
   });
 
-  it("rejects a malformed certificate proof", () => {
-    expect(() =>
-      parseCompanionRequest({ type: "handshake.begin", protocolMajor: 1, runnerId: "r", certificatePem: "" }),
-    ).toThrowError(/InvalidCertificateProof/);
-    expect(() =>
-      parseCompanionRequest({ type: "handshake.prove", challengeId: "ch", signatureBase64: 123 }),
-    ).toThrowError(/InvalidCertificateProof/);
+  it("rejects zero and oversized declared frames", () => {
+    expect(() => assertDeclaredFrameLength(0)).toThrowError(/InvalidRequestShape/);
+    expect(() => assertDeclaredFrameLength(COMPANION_IPC_LIMITS.maxFrameBytes + 1)).toThrowError(/CompanionMessageTooLarge/);
   });
 
-  it("rejects action.execute with a missing permit", () => {
-    expect(() => parseCompanionRequest({ ...executeRequest, permit: undefined })).toThrowError(
-      /LocalPermitInvalid/,
-    );
+  it("rejects a missing deadline and malformed certificate proof payload", () => {
+    expect(() => parseCompanionRequest(request("req", "action.execute", { ...executePayload, deadlineMs: undefined }))).toThrowError(/MissingDeadline/);
+    expect(() => parseCompanionRequest(request("req", "handshake.begin", { runnerId: "r", certificatePem: "" }))).toThrowError(/InvalidCertificateProof/);
+    expect(() => parseCompanionRequest(request("req", "handshake.prove", { challengeId: "ch", companionInstanceId: "comp", nonceBase64: "nonce", signatureBase64: "sig", signatureAlgorithm: "ed25519" }))).toThrowError(/InvalidCertificateProof/);
   });
 
-  it("rejects an action/permit digest mismatch at the caller boundary", () => {
-    const request = parseCompanionRequest(executeRequest) as Extract<
-      CompanionRequest,
-      { type: "action.execute" }
-    >;
-    // The parser preserves both digests; the Companion (Rust) is the authority
-    // that recomputes and compares them, but the DTO must expose both so the
-    // mismatch is observable.
-    expect(request.permit.actionDigestSha256).toBe("a".repeat(64));
-    expect(request.action.actionId).toBe(request.permit.actionId);
+  it("maps request discriminants to strict response discriminants", () => {
+    expect(expectedResponseTypeForRequest("handshake.begin")).toBe("handshake.challenge");
+    expect(expectedResponseTypeForRequest("handshake.prove")).toBe("handshake.accepted");
+    expect(expectedResponseTypeForRequest("uia.capture")).toBe("uia.capture");
+    expect(createCompanionRequestEnvelope("req", "app.reset", { sessionId: "sess-1" }).payload.sessionId).toBe("sess-1");
+  });
+
+  it("builds the exact cross-language Companion proof bytes", () => {
+    const bytes = buildCompanionProofBytes({
+      protocolMajor: 1,
+      companionInstanceId: "companion-α",
+      nonceBase64: "bm9uY2U=",
+      runnerId: "runner-1",
+    });
+    expect(new TextDecoder().decode(bytes)).toBe("qualigence-companion-proof/v1\n1\ncompanion-α\nbm9uY2U=\nrunner-1\n");
+  });
+
+  it("rejects a response DTO/variant with malformed fields", () => {
+    expect(() => parseCompanionResponse(response("req", "uia.capture", { ...uiaCapture, nodes: [{ ...uiaCapture.nodes[0], isPassword: "false" }] }))).toThrowError(/InvalidResponseShape/);
+    expect(() => parseCompanionResponse({ protocolMajor: 1, requestId: "req", type: "action.execute", status: "error", payload: {}, error: { code: "ApplicationError", safeMessage: "bad" } })).toThrowError(/InvalidResponseShape/);
+  });
+
+  it("enforces the fixed UIA password mask on captured password nodes", () => {
+    const maskedPasswordCapture = {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true, value: COMPANION_UIA_PASSWORD_MASK_VALUE }],
+    };
+    const parsed = parseCompanionResponse(response("req", "uia.capture", maskedPasswordCapture));
+    expect(parsed.status).toBe("ok");
+    if (parsed.status === "ok" && parsed.type === "uia.capture") {
+      expect(parsed.payload.nodes[0]?.value).toBe(COMPANION_UIA_PASSWORD_MASK_VALUE);
+    }
+
+    expect(() => parseCompanionResponse(response("req", "uia.capture", {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true, value: "hunter2" }],
+    }))).toThrowError(/password controls must be the fixed UIA password mask token/);
+    expect(() => parseCompanionResponse(response("req", "uia.capture", {
+      ...uiaCapture,
+      nodes: [{ ...uiaCapture.nodes[0], isPassword: true }],
+    }))).toThrowError(/password controls must be the fixed UIA password mask token/);
   });
 });
 
@@ -229,9 +294,7 @@ describe("approval decision + permit classification", () => {
 
 describe("permit + action DTO guards", () => {
   it("rejects a non-desktop action", () => {
-    expect(() => parseResolvedDesktopAction({ ...action, targetKind: "web" })).toThrowError(
-      /InvalidAction/,
-    );
+    expect(() => parseResolvedDesktopAction({ ...action, targetKind: "web" })).toThrowError(/InvalidAction/);
   });
 
   it("rejects a permit that is not an object", () => {

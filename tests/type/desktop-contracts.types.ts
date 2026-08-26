@@ -8,6 +8,7 @@ import {
   type AppTarget,
   type AppSession,
   type CompanionRequest,
+  type CompanionResponse,
   type LocalExecutionPermit,
   type ResolvedDesktopAction,
   type UiaExtensionV1,
@@ -69,14 +70,59 @@ const permit: LocalExecutionPermit = {
 };
 
 const request: CompanionRequest = {
+  protocolMajor: 1,
+  requestId: "req-1",
+  type: "action.execute",
+  payload: {
+    sessionId: "s",
+    action,
+    permit,
+    deadlineMs: 5000,
+  },
+};
+const viaReexportReq: ReexportedRequest = request;
+void viaReexportReq;
+
+const mismatchedRequestPayload = {
+  protocolMajor: 1,
+  requestId: "req-2",
+  type: "action.execute",
+  payload: { sessionId: "s" },
+} as const;
+// @ts-expect-error CompanionRequest payload must match its envelope type.
+const rejectedMismatchedRequestPayload: CompanionRequest = mismatchedRequestPayload;
+void rejectedMismatchedRequestPayload;
+
+const response: CompanionResponse = {
+  protocolMajor: 1,
+  requestId: "req-1",
+  type: "action.execute",
+  status: "ok",
+  payload: { status: "ok" },
+};
+void response;
+
+const mismatchedResponsePayload = {
+  protocolMajor: 1,
+  requestId: "req-2",
+  type: "action.execute",
+  status: "ok",
+  payload: { sessionId: "s", capturedAt: "2026-08-01T00:00:00.000Z", rootNodeIds: [], nodes: [] },
+} as const;
+// @ts-expect-error CompanionResponse payload must match its envelope type.
+const rejectedMismatchedResponsePayload: CompanionResponse = mismatchedResponsePayload;
+void rejectedMismatchedResponsePayload;
+
+const legacyRawRequest = {
   type: "action.execute",
   sessionId: "s",
   action,
   permit,
   deadlineMs: 5000,
-};
-const viaReexportReq: ReexportedRequest = request;
-void viaReexportReq;
+} as const;
+// @ts-expect-error CompanionRequest is an IPC envelope, not a legacy raw DTO union.
+const rejectedLegacyRequest: CompanionRequest = legacyRawRequest;
+void rejectedLegacyRequest;
 
 const uia: UiaExtensionV1 = {
   type: UIA_EXTENSION_TYPE,

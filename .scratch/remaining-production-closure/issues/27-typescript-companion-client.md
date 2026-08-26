@@ -4,7 +4,7 @@
 
 **Blocked by:** 26 — Add Desktop Target protocol.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -30,6 +30,8 @@ This is the complete edit scope.
 - `tests/contract/desktop/**`
 - `.scratch/remaining-production-closure/issues/27-typescript-companion-client.md`
 - Post-review acceptance only: `tests/e2e/windows/companion-client.test.ts`
+
+Maintainer/user-authorized narrow continuation scope expansion (2026-08-26): `tests/type/desktop-contracts.types.ts` may be edited only to align the compile-time public `CompanionRequest` contract with the Ticket 27 envelope request shape `{ protocolMajor, requestId, type, payload }`. This authorization does not permit reintroducing a legacy raw DTO `CompanionRequest` union or weakening the public IPC envelope contract.
 
 No app composition, package manifest, lockfile, Runner Kernel, Runner Protocol, Rust Companion, Windows component fixture, or other E2E file is in scope.
 
@@ -80,6 +82,73 @@ corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts
 
 Run the built TypeScript client against a separate-process authenticated Named Pipe contract fixture. Prove real framing/correlation/deadlines/handshake and negative disconnect/partial/oversized/flood cases. This is explicitly not native Companion, ACL, OS peer-token, UIA, process, or release evidence.
 
+## Comments
+
+### start - 2026-08-26
+
+- Fixed base: `cff217f68f0b3bcaffe517aaed11e3e302abb964` (`ticket-27-typescript-companion-client`, based on current `main` and including merged Ticket 26 PR #112).
+- Predecessor evidence: Ticket 26 is `resolved` with PR #112; reviewed code head `fcd5b2926a20f428ce0009da704022144bb80ea9`, merged in `cff217f68f0b3bcaffe517aaed11e3e302abb964`, and final verification evidence are recorded in `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md` and are present in this worktree base.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs the TypeScript Companion IPC envelope, proof-byte contract, local Named Pipe framing, authentication ordering, bounded correlation/deadline registry, validation, backpressure, and fail-stop close behavior. The terminal persistence row remains N/A because this client owns no durable persistence.
+- Planned focused non-E2E Gate: `CI=true corepack pnpm vitest run tests/contract/desktop`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Scope guard: implementation is limited to `packages/{contracts/desktop,target-adapters/desktop-windows-uia}/src`, `tests/contract/desktop/**`, and this ticket evidence. No app composition, package manifest, lockfile, Runner Kernel, Runner Protocol, Rust Companion, Windows component fixture, or E2E file is in scope for this implementation pass.
+
+### blocked - 2026-08-26
+
+- In-scope implementation reached a safe point: `CompanionRequest` is now the Ticket 27 envelope-only public type, `CompanionResponse` is a bounded discriminated union with validators, the proof byte-vector contract is frozen, and `NamedPipeCompanionClient` implements local Named Pipe endpoint validation, 32-bit BE framing, bounded in-flight correlation, handshake proof signing through an injected Runner certificate signer, deadlines, and fail-stop handling for malformed/oversized/correlation violations.
+- Temporary compatibility note: an earlier local iteration kept `CompanionRequest = CompanionRequestEnvelope | LegacyCompanionRequestPayload` only to avoid touching the existing type test outside scope. Per supervisor direction, that compatibility union was removed because it weakens Ticket 27's public request contract. The legacy raw helper was also removed from the public desktop-contract export surface; `CompanionRequest` is envelope-only.
+- Focused contract/diff evidence now passes within the authorized scope: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 36 tests) and `git diff --check`.
+- Root typecheck is blocked by the pre-existing compile-time type test outside Ticket 27's Allowed Files still constructing the old raw `CompanionRequest` shape:
+  - `tests/type/desktop-contracts.types.ts(73,3): error TS2353: Object literal may only specify known properties, and 'sessionId' does not exist in type 'CompanionRequest'.`
+- Minimal scope expansion needed: authorize a narrow update to `tests/type/desktop-contracts.types.ts` so the compile-time contract test constructs the new `{ protocolMajor: 1, requestId, type, payload }` Companion request envelope and keeps the runner-protocol re-export assertion. No production code outside `packages/contracts/desktop/src` or `packages/target-adapters/desktop-windows-uia/src` is needed.
+- Hard exclusions preserved: no app composition, package manifest, lockfile, Runner Kernel, Runner Protocol source, Rust Companion, Windows component fixture, or E2E file was edited.
+
+### continuation - 2026-08-26
+
+- Maintainer/user authorization recorded under `## Allowed Files` for the single additional type-test file `tests/type/desktop-contracts.types.ts` only.
+- The compile-time desktop contract test now constructs `CompanionRequest` through the public `{ protocolMajor, requestId, type, payload }` envelope and asserts legacy raw DTOs plus mismatched request/response payloads are rejected at the public type boundary.
+- Focused non-E2E Gate is clean on this continuation: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 36 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- No PR was created. Ticket 27 is ready for exact-head complete-matrix review before any post-review acceptance fixture or PR work.
+
+### review-fix - 2026-08-26
+
+- Reviewed head fixed: `024e0f058cbce77d7fc073f046bea988083f3287`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review blockers fixed from the Standards/Spec complete-matrix artifacts:
+  - close/cancel during pending `socketFactory`/connect/auth now rejects the in-flight caller with stable `CompanionUnavailable`, rechecks the closed latch after connect/auth and before writes, destroys sockets that arrive after close, and sends zero frames when closed before dispatch;
+  - handshake `CompanionIdentityRejected`, handshake error responses, and handshake timeouts now fail-stop/destroy the socket so no authenticated or reusable session remains and no later application frame is admitted on the rejected connection;
+  - `permit.request` is classified as side-effecting, so a timeout/disconnect after dispatch surfaces `outcomeUnknown: true` and is not replay-safe;
+  - minor local cleanup removed the unused `performance` import and the unread `PendingRequest.requestType` field.
+- Fix commit: `2432d06307a65eb28d720df845bf727f88fe5abf` (`fix ticket 27 companion fail-closed semantics`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 41 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed).
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
+### review2-fix - 2026-08-26
+
+- Reviewed head fixed: `5559846d246f40b059a4b8295230fbc984136d03`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review2 core blockers fixed from the Standards/Spec complete-matrix artifacts:
+  - TypeScript IPC `uia.capture` response validation now exports and enforces the native fixed UIA password mask token (`••••`) for `isPassword: true` nodes, rejects plaintext/unmasked or absent password values at the contract seam, and keeps non-password values unchanged;
+  - Companion proof signing now races the Runner mTLS signer against the handshake deadline, maps signer/key-profile rejection to a stable non-secret `CompanionIdentityRejected`, fail-stops/destroys the connection on signer timeout or rejection, clears handshake state, and sends no `handshake.prove` or application frame after a stalled or failed signer;
+  - stale socket `data`/`error`/`close` callbacks from a failed connection are ignored after fail-stop so a later reconnect cannot reuse or be killed by the rejected connection.
+- Fix commit: `6b2435051e08745022b2b6029503e512e5a90c92` (`fix ticket 27 review2 core blockers`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 44 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
+### review3-fix - 2026-08-26
+
+- Reviewed head fixed: `4d7cd9d1eefbd122763872c941942663b8608722`; fixed point/base remains `cff217f68f0b3bcaffe517aaed11e3e302abb964`.
+- Review3 Spec core blocker fixed: non-handshake request deadlines now fail-stop/destroy the Companion socket when any inbound response frame bytes are partially buffered, clearing the stale buffer and authenticated state before a later caller can proceed. This prevents truncated bodies from being resumed as part of a later response frame.
+- Contract coverage added for a valid 32-bit frame length followed by only part of the response body: the first request times out, the original socket is destroyed and pending capacity is cleared, and the next caller reconnects/authenticates on a fresh stream instead of reusing stale bytes.
+- Fix commit: `7cf6b87126ff59959eb805e49e81f7c40aeea60f` (`fix ticket 27 partial frame timeout`).
+- Gates run before the fix commit: `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests passed), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed). A fresh post-evidence status/diff check remains required before handoff.
+- No PR was created, no post-review E2E/acceptance fixture was run, and the ticket remains `claimed` pending a fresh complete-matrix review.
+
+### post-review-e2e - 2026-08-26
+
+- Clean complete-matrix review authority for the acceptance start point: reviewed head `d5246d632ee290f270bd2c4a9662e2832c2b2b9b`, fixed point/base `cff217f68f0b3bcaffe517aaed11e3e302abb964`, with no core blockers in review4 Standards/Spec artifacts.
+- Added the required post-review acceptance file `tests/e2e/windows/companion-client.test.ts` only. The fixture is a separate Node process listening on a real local Windows Named Pipe via `node:net`; the client under test imports the built `@qualigence/desktop-windows-uia` package and uses the production `NamedPipeCompanionClient`.
+- Acceptance coverage: authenticated challenge/proof/accepted handshake with ECDSA P-256 proof verification over the exact Ticket 27 proof bytes, 32-bit big-endian frame parsing with declared-length evidence, request ordering before privileged frames, out-of-order request/response correlation, deadline timeout, post-dispatch disconnect outcome-unknown classification, partial-frame timeout/fail-close behavior, oversized-frame rejection, and bounded in-flight flood/backpressure.
+- Evidence commands passed after adding the E2E file: `CI=true corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts` (1 file / 4 tests), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
+- Scope and evidence limits: this is still TypeScript client/separate-process contract acceptance only. It is not native Companion ACL, Windows peer-token, UIA, process/Job Object, RDP/manual, or release evidence; those remain downstream Tickets 29-31. Because this acceptance adds a test file after the clean review head, Ticket 27 needs a fresh complete-matrix review before PR/final acceptance.
+
 ## Behavior Matrix
 
 | Scenario / precondition | Side-effect boundary (`not_started \| started \| outcome_unknown`) | Public result/error | Durable state | Retry/replay rule | Terminal evidence |
@@ -102,7 +171,24 @@ Run the built TypeScript client against a separate-process authenticated Named P
 | Pipe process/client restarts | `not_started` until fresh connect | New unauthenticated session | Old in-memory challenges/requests are gone | Fresh challenge/auth required; callers receive failure for old pending operations | Restart evidence and no proof/request replay |
 | Terminal response persistence fails | `not_started` | N/A: TypeScript client owns no durable persistence | N/A | Owning Runtime/Companion persistence is downstream | N/A reason recorded in review |
 
-- [ ] Request/response unions validate all fields, request IDs, frame sizes, order, deadlines, and unknown variants.
-- [ ] Authentication proves Runner certificate possession and binds protocol/instance/nonce/Runner identity.
-- [ ] No app/capture/permit/action request is admitted before authentication.
-- [ ] Disconnect, timeout, partial, oversized, flood, and correlation errors fail closed.
+- [x] Request/response unions validate all fields, request IDs, frame sizes, order, deadlines, and unknown variants.
+- [x] Authentication proves Runner certificate possession and binds protocol/instance/nonce/Runner identity.
+- [x] No app/capture/permit/action request is admitted before authentication.
+- [x] Disconnect, timeout, partial, oversized, flood, and correlation errors fail closed.
+
+### final - 2026-08-26
+
+- Reviewed code/test head: `6874749192c4da480c71aa6a3a121a9e02a67f8d`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/820a071d-01e4-4cd0-8c7a-23b86416496c/ticket27-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/820a071d-01e4-4cd0-8c7a-23b86416496c/ticket27-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/windows/companion-client.test.ts` (1 file / 4 tests), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 45 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/116`.
+
+## Answer
+
+Implemented the TypeScript Companion client. Desktop contracts now use envelope-only Companion request/response IPC with strict validators, exact proof bytes, password-mask enforcement, stable errors, bounded local Named Pipe framing, correlated request/response handling, handshake authentication through the Runner certificate signer, deadline/backpressure limits, and fail-stop behavior for malformed, oversized, partial, unknown, and correlation failures. The production TypeScript `NamedPipeCompanionClient` sits behind the existing `CompanionClient` port and authenticates before app/capture/permit/action requests. The post-review Windows separate-process E2E proves the built client over a real local Named Pipe contract fixture; native Companion ACL/peer/UIA/process evidence remains downstream scope.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/116`
+
+Reviewed code/test head: `6874749192c4da480c71aa6a3a121a9e02a67f8d`
+
+Final verification: focused Ticket 27 Gate, Windows Companion client E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
