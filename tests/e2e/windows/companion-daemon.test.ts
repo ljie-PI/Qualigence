@@ -41,6 +41,17 @@ describe("Windows Companion daemon native UIA E2E", () => {
     });
     expect(winui.status, `WindowsUiaPrerequisiteUnavailable: WinUI reference build failed\n${winui.stdout}\n${winui.stderr}`).toBe(0);
 
-    throw new Error("WindowsUiaPrerequisiteUnavailable: native daemon WPF/WinUI driver harness is required before Ticket 30 native completion can be claimed");
+    const harness = process.env.QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS;
+    if (harness === undefined || harness.length === 0 || !existsSync(harness)) {
+      throw new Error("WindowsUiaPrerequisiteUnavailable: set QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS to the native daemon WPF/WinUI driver harness");
+    }
+
+    const result = spawnSync(harness, [WPF_PROJECT, WINUI_PROJECT], {
+      cwd: process.cwd(),
+      env: { ...process.env, CI: "true" },
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 });
