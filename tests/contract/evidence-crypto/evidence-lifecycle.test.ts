@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  EvidenceAccessService,
   EvidenceLifecycleError,
   EvidenceLifecycleService,
   type EvidenceAuditEvent,
@@ -14,6 +15,7 @@ const baseRecord: EvidenceLifecycleRecord = {
   capsuleId: "capsule-1",
   tenantId: "tenant-a",
   caseId: "case-1",
+  region: "self-hosted",
   purpose: "investigation",
   keyVersion: "key-1",
   state: "active",
@@ -70,6 +72,15 @@ class RevokeKms implements Pick<KeyManagementProvider, "revoke"> {
   }
 }
 
+class AccessKeyPolicy {
+  calls = 0;
+  fail = false;
+  async assertPlaintextAccess(): Promise<void> {
+    this.calls += 1;
+    if (this.fail) throw new Error("kms unavailable");
+  }
+}
+
 function service(store = new MemoryLifecycleStore(), kms = new RevokeKms()) {
   return {
     store,
@@ -84,6 +95,85 @@ const request = {
   actor: { actorType: "service", actorId: "retention-worker", correlationId: "corr-1" } as const,
   occurredAt: "2026-08-01T00:00:00.000Z",
 };
+
+describe("EvidenceAccessService", () => {
+  const actor = { actorType: "user", actorId: "user-1", correlationId: "corr-access" } as const;
+
+  it("audits metadata before returning it", async () => {
+    const store = new MemoryLifecycleStore();
+    const keyPolicy = new AccessKeyPolicy();
+    const access = new EvidenceAccessService(store, keyPolicy);
+    await expect(access.authorizeMetadata({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      purpose: "investigation",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).resolves.toMatchObject({ downloadAllowed: true });
+    expect(keyPolicy.calls).toBe(0);
+    expect(store.audits.map((event) => `${event.operation}:${event.decision}:${event.reasonCode}`)).toEqual([
+      "profile:allowed:metadata_access",
+    ]);
+  });
+
+  it("fails metadata access closed when audit persistence fails", async () => {
+    const store = new MemoryLifecycleStore();
+    store.failAudit = true;
+    const access = new EvidenceAccessService(store, new AccessKeyPolicy());
+    await expect(access.authorizeMetadata({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      purpose: "investigation",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toMatchObject({ code: "EvidenceAuditUnavailable" });
+  });
+
+  it("audits plaintext access only after lifecycle and KMS permit it", async () => {
+    const store = new MemoryLifecycleStore();
+    const keyPolicy = new AccessKeyPolicy();
+    const access = new EvidenceAccessService(store, keyPolicy);
+    await expect(access.authorizePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      purpose: "investigation",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).resolves.toMatchObject({ downloadAllowed: true });
+    expect(keyPolicy.calls).toBe(1);
+    expect(store.audits.map((event) => `${event.operation}:${event.decision}:${event.reasonCode}`)).toEqual([
+      "unwrap:allowed:plaintext_access",
+    ]);
+  });
+
+  it("blocks plaintext when KMS or lifecycle state denies access", async () => {
+    const store = new MemoryLifecycleStore();
+    const keyPolicy = new AccessKeyPolicy();
+    keyPolicy.fail = true;
+    const access = new EvidenceAccessService(store, keyPolicy);
+    await expect(access.authorizePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      purpose: "investigation",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toMatchObject({ code: "EvidenceAccessUnavailable" });
+    expect(store.audits).toHaveLength(1);
+    expect(store.audits[0]).toMatchObject({ operation: "unwrap", decision: "failed" });
+
+    const revokedStore = new MemoryLifecycleStore();
+    revokedStore.recordValue = { ...baseRecord, state: "revoked" };
+    const revokedAccess = new EvidenceAccessService(revokedStore, new AccessKeyPolicy());
+    await expect(revokedAccess.authorizePlaintext({
+      capsuleId: "capsule-1",
+      tenantId: "tenant-a",
+      purpose: "investigation",
+      actor,
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toMatchObject({ code: "EvidenceAccessDenied" });
+    expect(revokedStore.audits[0]).toMatchObject({ operation: "unwrap", decision: "denied" });
+  });
+});
 
 describe("EvidenceLifecycleService", () => {
   it("orders active -> revoking -> revoked -> deleting -> deleted with audit before deletion", async () => {

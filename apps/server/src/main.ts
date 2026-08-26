@@ -11,6 +11,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { createS3ArtifactClient, S3ArtifactStore } from "@qualigence/artifact-s3";
+import { SelfHostedKms } from "@qualigence/kms-self-hosted";
 import { pathToFileURL } from "node:url";
 import { sql } from "kysely";
 import { ServerIntelligenceResultConsumer } from "@qualigence/core-application";
@@ -20,6 +21,7 @@ import {
   assertPostgresSchemaCurrent,
   createPostgresRuntime,
   OperationScopedPostgresRunnerControlStore,
+  PostgresEvidenceLifecycleStore,
   PostgresIntelligenceResultWakeupStore,
   PostgresReviewTaskRepository,
 } from "@qualigence/postgres-runtime";
@@ -103,6 +105,9 @@ export async function main(
     acquirePostgresOperationLock,
   );
   const artifactStore = artifactStoreFactory(config, systemClock);
+  const evidenceKms = config.evidenceKms === undefined
+    ? undefined
+    : new SelfHostedKms({ rootKey: config.evidenceKms.rootKey, now: systemClock.now });
   const shutdown = new AbortController();
   const resultConsumer = new ServerIntelligenceResultConsumer(provider);
   const resultConsumerLoop = new IntelligenceResultConsumerLoop({
@@ -189,6 +194,8 @@ export async function main(
     clock: systemClock,
     skillSigner: LocalSkillSigner.open(config.skillSigningDataDir ?? ".qualigence-server/skill-signing"),
     artifactStore: (scope) => artifactStore(scope),
+    evidenceLifecycleStore: (stores, tenantId) => new PostgresEvidenceLifecycleStore(stores.db, tenantId),
+    ...(evidenceKms === undefined ? {} : { evidenceKeyPolicy: evidenceKms }),
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
@@ -267,6 +274,7 @@ async function readinessReport(input: ReadinessInput): Promise<ServerReadinessRe
   checks.push(await postgresCheck(input));
   checks.push(await objectStorageCheck(input.config.objectStorageReadinessUrl));
   checks.push(await artifactDataPlaneCheck(input.config.artifactDataDir));
+  checks.push(kmsCheck(input.config));
   checks.push({
     name: "oidc_jwks",
     status: "pass",
@@ -331,6 +339,12 @@ async function artifactDataPlaneCheck(artifactDataDir: string): Promise<ServerRe
   } catch (error) {
     return fail("artifact_data_plane", "Unavailable", "artifact data-plane storage probe failed", { error: errorMessage(error) });
   }
+}
+
+function kmsCheck(config: ServerConfig): ServerReadinessCheck {
+  return config.evidenceKms === undefined
+    ? fail("kms", "NotConfigured", "Evidence KMS root key is not configured; plaintext Evidence access is disabled")
+    : { name: "kms", status: "pass", safeMessage: "Evidence KMS configuration was loaded at startup" };
 }
 
 function runnerGrpcCheck(enabled: boolean, ready: boolean): ServerReadinessCheck {

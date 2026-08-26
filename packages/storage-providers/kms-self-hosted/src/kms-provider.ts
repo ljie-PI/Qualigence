@@ -16,6 +16,8 @@ import type {
   EvidenceKeyScope,
   KeyManagementProvider,
   RemoteEvidenceCapsuleManifest,
+  EvidencePlaintextAccessCheck,
+  EvidencePlaintextAccessKeyPolicy,
 } from "@qualigence/evidence";
 
 const RSA_MODULUS_BITS = 2048;
@@ -175,7 +177,7 @@ export interface SelfHostedKmsOptions {
  * The provider satisfies the frozen `KeyManagementProvider` port so a Vault
  * Transit or other enterprise KMS can be swapped in behind the same contract.
  */
-export class SelfHostedKms implements KeyManagementProvider {
+export class SelfHostedKms implements KeyManagementProvider, EvidencePlaintextAccessKeyPolicy {
   private readonly rootKey: Uint8Array;
   private readonly store: SelfHostedKmsKeyStore;
   private readonly audit: KmsAuditSink | undefined;
@@ -220,9 +222,9 @@ export class SelfHostedKms implements KeyManagementProvider {
   async encryptionProfile(
     input: EvidenceKeyScope,
   ): Promise<EvidenceEncryptionProfile> {
-    this.assertAvailable("profile");
+    await this.assertAvailable("profile");
     const version = this.ensurePrimaryVersion(input);
-    void this.emit("profile", "allowed", "profile_issued", input, version.keyId);
+    await this.emit("profile", "allowed", "profile_issued", input, version.keyId);
     return this.buildProfile(input, version);
   }
 
@@ -230,18 +232,18 @@ export class SelfHostedKms implements KeyManagementProvider {
     profile: EvidenceEncryptionProfile,
     dek: Uint8Array,
   ): Promise<string> {
-    this.assertAvailable("wrap");
+    await this.assertAvailable("wrap");
     const version = this.store.getByKeyId(profile.wrappingKeyId);
     if (version === undefined) {
-      throw this.deny("wrap", "unknown_key", profile.wrappingKeyId);
+      throw await this.deny("wrap", "unknown_key", profile.wrappingKeyId);
     }
     if (version.status !== "active") {
-      throw this.revoked("wrap", version);
+      throw await this.revoked("wrap", version);
     }
     const scope = scopeFromId(version.scopeId);
     const expected = this.buildProfile(scope, version);
     if (!profileMatches(expected, profile)) {
-      throw this.deny(
+      throw await this.deny(
         "wrap",
         "profile_tampered",
         profile.wrappingKeyId,
@@ -256,14 +258,14 @@ export class SelfHostedKms implements KeyManagementProvider {
       },
       Buffer.from(dek),
     );
-    void this.emit("wrap", "allowed", "dek_wrapped", scope, version.keyId);
+    await this.emit("wrap", "allowed", "dek_wrapped", scope, version.keyId);
     return wrapped.toString("base64");
   }
 
   async unwrapDek(
     input: { readonly manifest: RemoteEvidenceCapsuleManifest } & EvidenceKeyScope,
   ): Promise<Uint8Array> {
-    this.assertAvailable("unwrap");
+    await this.assertAvailable("unwrap");
     const scope: EvidenceKeyScope = {
       tenantId: input.tenantId,
       caseId: input.caseId,
@@ -273,7 +275,7 @@ export class SelfHostedKms implements KeyManagementProvider {
     const authenticatedScopeId = scopeId(scope);
     const capsuleId = input.manifest.protectedHeader.capsuleId;
     if (this.revokedCapsules.has(capsuleId)) {
-      throw this.revokedCapsule("unwrap", capsuleId, authenticatedScopeId);
+      throw await this.revokedCapsule("unwrap", capsuleId, authenticatedScopeId);
     }
 
     const wrappingKeyId = input.manifest.protectedHeader.wrappingKeyId;
@@ -281,10 +283,10 @@ export class SelfHostedKms implements KeyManagementProvider {
     // The key must belong to the AUTHENTICATED scope. A wrong scope selects no
     // key it is entitled to, so unwrap is impossible rather than merely denied.
     if (version === undefined || version.scopeId !== authenticatedScopeId) {
-      throw this.deny("unwrap", "scope_mismatch", wrappingKeyId, authenticatedScopeId, capsuleId);
+      throw await this.deny("unwrap", "scope_mismatch", wrappingKeyId, authenticatedScopeId, capsuleId);
     }
     if (version.status !== "active") {
-      throw this.revoked("unwrap", version, capsuleId);
+      throw await this.revoked("unwrap", version, capsuleId);
     }
 
     const privateKey = decryptPrivateKey(version, this.rootKey);
@@ -292,7 +294,7 @@ export class SelfHostedKms implements KeyManagementProvider {
     try {
       dek = privateDecryptWithScope(privateKey, input.manifest.wrappedDekBase64);
     } catch (cause) {
-      void this.emit(
+      await this.emit(
         "unwrap",
         "failed",
         "unwrap_failed",
@@ -306,20 +308,42 @@ export class SelfHostedKms implements KeyManagementProvider {
         { cause },
       );
     }
-    void this.emit("unwrap", "allowed", "dek_unwrapped", scope, wrappingKeyId, capsuleId);
+    await this.emit("unwrap", "allowed", "dek_unwrapped", scope, wrappingKeyId, capsuleId);
     return new Uint8Array(dek);
+  }
+
+  async assertPlaintextAccess(input: EvidencePlaintextAccessCheck): Promise<void> {
+    await this.assertAvailable("unwrap");
+    const scope: EvidenceKeyScope = {
+      tenantId: input.tenantId,
+      caseId: input.caseId,
+      region: input.region,
+      purpose: input.purpose,
+    };
+    const id = scopeId(scope);
+    if (this.revokedCapsules.has(input.capsuleId)) {
+      throw await this.revokedCapsule("unwrap", input.capsuleId, id);
+    }
+    const version = this.store.getByKeyId(input.keyVersion);
+    if (version === undefined || version.scopeId !== id) {
+      throw await this.deny("unwrap", "scope_mismatch", input.keyVersion, id, input.capsuleId);
+    }
+    if (version.status !== "active") {
+      throw await this.revoked("unwrap", version, input.capsuleId);
+    }
+    await this.emit("unwrap", "allowed", "plaintext_access_verified", scope, input.keyVersion, input.capsuleId);
   }
 
   /** Append a new immutable key revision and make it the scope's primary. */
   async rotate(input: EvidenceKeyScope): Promise<EvidenceEncryptionProfile> {
-    this.assertAvailable("rotate");
+    await this.assertAvailable("rotate");
     const version = this.createVersion(input);
-    void this.emit("rotate", "allowed", "key_rotated", input, version.keyId);
+    await this.emit("rotate", "allowed", "key_rotated", input, version.keyId);
     return this.buildProfile(input, version);
   }
 
   async revoke(capsuleId: string, _reason: string): Promise<void> {
-    this.assertAvailable("revoke");
+    await this.assertAvailable("revoke");
     this.revokedCapsules.add(capsuleId);
     await this.emitRaw({
       operation: "revoke",
@@ -332,7 +356,7 @@ export class SelfHostedKms implements KeyManagementProvider {
 
   /** Revoke every wrapping-key version for a scope, disabling future unwraps. */
   async revokeScope(input: EvidenceKeyScope, _reason: string): Promise<void> {
-    this.assertAvailable("revoke");
+    await this.assertAvailable("revoke");
     const id = scopeId(input);
     this.store.markScopeRevoked(id);
     await this.emit("revoke", "allowed", "scope_revoked", input);
@@ -401,11 +425,11 @@ export class SelfHostedKms implements KeyManagementProvider {
     };
   }
 
-  private assertAvailable(
+  private async assertAvailable(
     operation: KmsAuditEvent["operation"],
-  ): void {
+  ): Promise<void> {
     if (!this.available) {
-      void this.emitRaw({
+      await this.emitRaw({
         operation,
         decision: "failed",
         reasonCode: "kms_unavailable",
@@ -418,14 +442,14 @@ export class SelfHostedKms implements KeyManagementProvider {
     }
   }
 
-  private deny(
+  private async deny(
     operation: KmsAuditEvent["operation"],
     reasonCode: string,
     keyId?: string,
     scopeIdValue?: string,
     capsuleId?: string,
-  ): SelfHostedKmsError {
-    void this.emitRaw({
+  ): Promise<SelfHostedKmsError> {
+    await this.emitRaw({
       operation,
       decision: "denied",
       reasonCode,
@@ -440,12 +464,12 @@ export class SelfHostedKms implements KeyManagementProvider {
     );
   }
 
-  private revoked(
+  private async revoked(
     operation: KmsAuditEvent["operation"],
     version: StoredKmsKeyVersion,
     capsuleId?: string,
-  ): SelfHostedKmsError {
-    void this.emitRaw({
+  ): Promise<SelfHostedKmsError> {
+    await this.emitRaw({
       operation,
       decision: "denied",
       reasonCode: "key_revoked",
@@ -460,12 +484,12 @@ export class SelfHostedKms implements KeyManagementProvider {
     );
   }
 
-  private revokedCapsule(
+  private async revokedCapsule(
     operation: KmsAuditEvent["operation"],
     capsuleId: string,
     scopeIdValue: string,
-  ): SelfHostedKmsError {
-    void this.emitRaw({
+  ): Promise<SelfHostedKmsError> {
+    await this.emitRaw({
       operation,
       decision: "denied",
       reasonCode: "capsule_revoked",

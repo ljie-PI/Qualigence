@@ -974,6 +974,10 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       t("revocation_state"),
       t("revoked_at", false),
       t("revoked_reason", false),
+      t("lifecycle_state"),
+      t("lifecycle_updated_at", false),
+      t("deleted_at", false),
+      t("last_lifecycle_error", false),
       t("created_at"),
       t("expires_at"),
     ],
@@ -986,6 +990,10 @@ export const RELATIONAL_TABLES: readonly RelationalTableSpec[] = [
       {
         name: "evidence_capsule_manifests_revocation_state_check",
         predicate: "revocation_state IN ('active', 'revoked')",
+      },
+      {
+        name: "evidence_capsule_manifests_lifecycle_state_check",
+        predicate: "lifecycle_state IN ('active', 'revoking', 'revoked', 'deleting', 'deleted')",
       },
     ],
   },

@@ -102,7 +102,15 @@ async function seedRunApiRows(fx: ServerFixture, tenantId: string): Promise<void
 
 async function seedEvidenceArtifact(
   fx: ServerFixture,
-  input: { tenantId: string; projectId: string; runId: string; artifactId: string; bytes: Uint8Array },
+  input: {
+    tenantId: string;
+    projectId: string;
+    runId: string;
+    artifactId: string;
+    bytes: Uint8Array;
+    lifecycleState?: "active" | "revoking" | "revoked" | "deleting" | "deleted";
+    expiresAt?: string;
+  },
 ): Promise<void> {
   const store = new LocalArtifactStore(join(fx.artifactDataDir, input.tenantId, input.projectId), { now: () => "2026-08-23T00:00:03.000Z" });
   const manifest = await store.write({
@@ -113,6 +121,33 @@ async function seedEvidenceArtifact(
     mediaType: "text/plain",
     bytes: input.bytes,
   });
+  const profile = await fx.evidenceKms.encryptionProfile({
+    tenantId: input.tenantId,
+    caseId: input.projectId,
+    region: "self-hosted",
+    purpose: "investigation",
+  });
+  const lifecycleState = input.lifecycleState ?? "active";
+  const expiresAt = input.expiresAt ?? profile.expiresAt;
+  const protectedHeader = {
+    schemaVersion: profile.aadSchemaVersion,
+    capsuleId: input.artifactId,
+    profileId: profile.profileId,
+    payloadSchemaVersion: "evidence-capsule/v1",
+    tenantId: input.tenantId,
+    caseId: input.projectId,
+    recipient: profile.recipient,
+    region: profile.region,
+    purpose: profile.purpose,
+    policyId: profile.policyId,
+    contentEncryptionAlgorithm: profile.contentEncryptionAlgorithm,
+    keyWrappingAlgorithm: profile.keyWrappingAlgorithm,
+    wrappingKeyId: profile.wrappingKeyId,
+    plaintextSha256: manifest.sha256,
+    plaintextBytes: manifest.size,
+    createdAt: manifest.createdAt,
+    expiresAt,
+  };
   await fx.provider.withTenant(input.tenantId, async ({ db }) => {
     await db.insertInto("missions").values({ tenant_id: input.tenantId, mission_id: `evidence-mission-${input.projectId}`, revision: 1, project_id: input.projectId, plan_id: `evidence-plan-${input.projectId}`, prd_id: `evidence-prd-${input.projectId}`, prd_revision: 1, target_id: `evidence-target-${input.projectId}`, compiled_hash: `evidence-compiled-${input.projectId}`, status: "running", dispatch_json: "{}", stop_on_blocked: 1 } as never).execute();
     await db.insertInto("execution_jobs").values({ tenant_id: input.tenantId, job_id: `evidence-logical-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, test_case_id: `evidence-case-${input.projectId}`, objective: "Evidence API read", required_capabilities_json: "[]", source_refs_json: "[]", snapshot_hash: `evidence-snapshot-${input.projectId}`, snapshot_json: "{}", idempotency_key: `evidence-logical-${input.projectId}`, status: "queued" } as never).execute();
@@ -120,6 +155,21 @@ async function seedEvidenceArtifact(
     await db.insertInto("mission_job_attempts").values({ tenant_id: input.tenantId, attempt_id: `evidence-attempt-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, logical_job_id: `evidence-logical-${input.projectId}`, runner_job_id: `evidence-runner-job-${input.projectId}`, run_id: input.runId, status: "accepted", created_at: "2026-08-23T00:00:00.000Z" } as never).execute();
     await db.insertInto("artifact_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, run_id: manifest.runId, kind: manifest.kind, media_type: manifest.mediaType, relative_path: manifest.relativePath, sha256: manifest.sha256, size_bytes: manifest.size, created_at: manifest.createdAt } as never).execute();
     await db.insertInto("artifact_upload_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, project_id: input.projectId, run_id: manifest.runId, job_id: `evidence-runner-job-${input.tenantId}`, size_bytes: manifest.size, sha256: manifest.sha256, media_type: manifest.mediaType, sensitivity: "sensitive", chunk_size_bytes: ARTIFACT_CHUNK_SIZE_BYTES, total_chunks: Math.ceil(manifest.size / ARTIFACT_CHUNK_SIZE_BYTES), registered_by_runner_id: `runner-${input.projectId}`, registered_lease_epoch: 1, status: "verified", relative_path: manifest.relativePath, created_at: manifest.createdAt, verified_at: manifest.createdAt } as never).execute();
+    await db.insertInto("evidence_encryption_profiles").values({ tenant_id: input.tenantId, profile_id: profile.profileId, case_id: profile.caseId, recipient: profile.recipient, region: profile.region, purpose: profile.purpose, policy_id: profile.policyId, wrapping_key_id: profile.wrappingKeyId, wrapping_public_key_pem: profile.wrappingPublicKeyPem, content_encryption_algorithm: profile.contentEncryptionAlgorithm, key_wrapping_algorithm: profile.keyWrappingAlgorithm, aad_schema_version: profile.aadSchemaVersion, allowed_entry_kinds_json: JSON.stringify(profile.allowedEntryKinds), maximum_entry_bytes: profile.maximumEntryBytes, maximum_plaintext_bytes: profile.maximumPlaintextBytes, maximum_ciphertext_bytes: profile.maximumCiphertextBytes, expires_at: profile.expiresAt, created_at: manifest.createdAt } as never).onConflict((oc) => oc.columns(["tenant_id", "profile_id"]).doNothing()).execute();
+    await db.insertInto("evidence_capsule_manifests").values({ tenant_id: input.tenantId, capsule_id: input.artifactId, revision: 1, parent_revision: null, profile_id: profile.profileId, payload_schema_version: "evidence-capsule/v1", aad_schema_version: profile.aadSchemaVersion, case_id: input.projectId, recipient: profile.recipient, region: profile.region, purpose: profile.purpose, policy_id: profile.policyId, content_encryption_algorithm: profile.contentEncryptionAlgorithm, key_wrapping_algorithm: profile.keyWrappingAlgorithm, wrapping_key_id: profile.wrappingKeyId, plaintext_sha256: manifest.sha256, plaintext_bytes: manifest.size, ciphertext_sha256: manifest.sha256, ciphertext_bytes: manifest.size, ciphertext: Buffer.from(input.bytes), wrapped_dek_base64: "test-wrapped-dek", nonce_base64: "test-nonce", auth_tag_base64: "test-tag", protected_header_json: JSON.stringify(protectedHeader), revocation_state: lifecycleState === "active" || lifecycleState === "revoking" ? "active" : "revoked", revoked_at: lifecycleState === "active" || lifecycleState === "revoking" ? null : manifest.createdAt, revoked_reason: lifecycleState === "active" || lifecycleState === "revoking" ? null : "test", lifecycle_state: lifecycleState, lifecycle_updated_at: manifest.createdAt, deleted_at: lifecycleState === "deleted" ? manifest.createdAt : null, last_lifecycle_error: null, created_at: manifest.createdAt, expires_at: expiresAt } as never).execute();
+  });
+}
+
+async function evidenceAuditReasons(fx: ServerFixture, tenantId: string, capsuleId: string): Promise<readonly string[]> {
+  return fx.provider.withTenant(tenantId, async ({ db }) => {
+    const rows = await db
+      .selectFrom("evidence_audit_events")
+      .select(["operation", "decision", "reason_code"])
+      .where("tenant_id", "=", tenantId)
+      .where("capsule_id", "=", capsuleId)
+      .orderBy("occurred_at", "asc")
+      .execute();
+    return rows.map((row) => `${row.operation}:${row.decision}:${row.reason_code}`);
   });
 }
 
@@ -427,6 +477,10 @@ describe("Public API v1 contract", () => {
       const bytes = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=investigation"), { headers: tenantAHeaders });
       expect(bytes.status).toBe(200);
       expect(await bytes.text()).toBe("tenant-a plaintext evidence");
+      expect(await evidenceAuditReasons(fx, "tenant-a", "evidence-artifact-a")).toEqual([
+        "profile:allowed:metadata_access",
+        "unwrap:allowed:plaintext_access",
+      ]);
 
       const wrongPurpose = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=export"), { headers: tenantAHeaders });
       expect(wrongPurpose.status).toBe(422);
@@ -440,6 +494,125 @@ describe("Public API v1 contract", () => {
       const hidden = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=investigation"), { headers: tenantBHeaders });
       expect(hidden.status).toBe(404);
       expect(await hidden.text()).not.toContain("tenant-a plaintext evidence");
+    });
+
+    it("fails closed before metadata or bytes when audit persistence is unavailable", async () => {
+      const secret = new TextEncoder().encode("unaudited plaintext evidence");
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-audit-project",
+        runId: "evidence-audit-run",
+        artifactId: "evidence-audit-artifact",
+        bytes: secret,
+      });
+
+      fx.setEvidenceAuditAvailable(false);
+      try {
+        const metadata = await fetch(url("/v1/projects/evidence-audit-project/runs/evidence-audit-run/artifacts/evidence-audit-artifact?purpose=investigation"), {
+          headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+        });
+        expect(metadata.status).toBe(503);
+        expect(await metadata.text()).not.toContain("evidence-audit-artifact");
+
+        const bytes = await fetch(url("/v1/projects/evidence-audit-project/runs/evidence-audit-run/artifacts/evidence-audit-artifact/bytes?purpose=investigation"), {
+          headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+        });
+        expect(bytes.status).toBe(503);
+        expect(await bytes.text()).not.toContain("unaudited plaintext evidence");
+      } finally {
+        fx.setEvidenceAuditAvailable(true);
+      }
+      expect(await evidenceAuditReasons(fx, "tenant-a", "evidence-audit-artifact")).toEqual([]);
+    });
+
+    it("runs the production lifecycle delete path before later plaintext reads", async () => {
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-delete-project",
+        runId: "evidence-delete-run",
+        artifactId: "evidence-delete-artifact",
+        bytes: new TextEncoder().encode("delete path plaintext evidence"),
+      });
+
+      const headers = { authorization: `Bearer ${fx.token("tenant-a", ["admin"])}` };
+      const deleted = await fetch(url("/v1/projects/evidence-delete-project/runs/evidence-delete-run/artifacts/evidence-delete-artifact?purpose=investigation"), {
+        method: "DELETE",
+        headers,
+      });
+      expect(deleted.status).toBe(202);
+      expect(await deleted.json()).toEqual({ artifactId: "evidence-delete-artifact", lifecycleState: "deleted" });
+
+      const plaintext = await fetch(url("/v1/projects/evidence-delete-project/runs/evidence-delete-run/artifacts/evidence-delete-artifact/bytes?purpose=investigation"), {
+        headers,
+      });
+      expect(plaintext.status).toBe(404);
+      expect(await plaintext.text()).not.toContain("delete path plaintext evidence");
+      const deleteAudit = await evidenceAuditReasons(fx, "tenant-a", "evidence-delete-artifact");
+      expect(deleteAudit).toEqual(expect.arrayContaining([
+        "revoke:allowed:ok",
+        "delete:allowed:ok",
+        "unwrap:denied:EvidenceLifecycleNotActive",
+      ]));
+      expect(deleteAudit).toHaveLength(3);
+    });
+
+    it("fails closed when KMS is unavailable or lifecycle state is not active", async () => {
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-kms-project",
+        runId: "evidence-kms-run",
+        artifactId: "evidence-kms-artifact",
+        bytes: new TextEncoder().encode("kms protected plaintext evidence"),
+      });
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-revoked-project",
+        runId: "evidence-revoked-run",
+        artifactId: "evidence-revoked-artifact",
+        bytes: new TextEncoder().encode("revoked plaintext evidence"),
+        lifecycleState: "revoked",
+      });
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-expired-project",
+        runId: "evidence-expired-run",
+        artifactId: "evidence-expired-artifact",
+        bytes: new TextEncoder().encode("expired plaintext evidence"),
+        expiresAt: "2026-08-22T00:00:00.000Z",
+      });
+
+      fx.evidenceKms.setAvailable(false);
+      try {
+        const unavailable = await fetch(url("/v1/projects/evidence-kms-project/runs/evidence-kms-run/artifacts/evidence-kms-artifact/bytes?purpose=investigation"), {
+          headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+        });
+        expect(unavailable.status).toBe(503);
+        expect(await unavailable.text()).not.toContain("kms protected plaintext evidence");
+      } finally {
+        fx.evidenceKms.setAvailable(true);
+      }
+
+      const revoked = await fetch(url("/v1/projects/evidence-revoked-project/runs/evidence-revoked-run/artifacts/evidence-revoked-artifact/bytes?purpose=investigation"), {
+        headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+      });
+      expect(revoked.status).toBe(404);
+      expect(await revoked.text()).not.toContain("revoked plaintext evidence");
+
+      const expired = await fetch(url("/v1/projects/evidence-expired-project/runs/evidence-expired-run/artifacts/evidence-expired-artifact/bytes?purpose=investigation"), {
+        headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+      });
+      expect(expired.status).toBe(404);
+      expect(await expired.text()).not.toContain("expired plaintext evidence");
+
+      expect(await evidenceAuditReasons(fx, "tenant-a", "evidence-kms-artifact")).toEqual([
+        "unwrap:failed:EvidenceKmsUnavailable",
+      ]);
+      expect(await evidenceAuditReasons(fx, "tenant-a", "evidence-revoked-artifact")).toEqual([
+        "unwrap:denied:EvidenceLifecycleNotActive",
+      ]);
+      expect(await evidenceAuditReasons(fx, "tenant-a", "evidence-expired-artifact")).toEqual([
+        "unwrap:denied:EvidenceExpired",
+      ]);
     });
 
     it("fails closed when byte storage is unavailable", async () => {

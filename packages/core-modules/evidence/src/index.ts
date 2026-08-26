@@ -52,10 +52,13 @@ export type {
 
 export * from "./capsule/index.js";
 export {
+  EvidenceAccessService,
   EvidenceLifecycleError,
   EvidenceLifecycleService,
 } from "./lifecycle-service.js";
 export type {
+  AuthorizeEvidenceAccessInput,
+  AuthorizeEvidenceAccessResult,
   DeleteEvidenceInput,
   DeleteEvidenceResult,
   EvidenceLifecycleActor,
@@ -63,4 +66,6 @@ export type {
   EvidenceLifecycleState,
   EvidenceLifecycleStore,
   EvidenceLifecycleTransitionResult,
+  EvidencePlaintextAccessCheck,
+  EvidencePlaintextAccessKeyPolicy,
 } from "./lifecycle-service.js";

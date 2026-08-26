@@ -17,10 +17,12 @@ export interface EvidenceLifecycleRecord {
   readonly capsuleId: string;
   readonly tenantId: string;
   readonly caseId: string;
+  readonly region: string;
   readonly purpose: EvidencePurpose;
   readonly keyVersion: string;
   readonly state: EvidenceLifecycleState;
   readonly ciphertextPresent: boolean;
+  readonly expiresAt?: string;
 }
 
 export interface EvidenceLifecycleActor {
@@ -51,6 +53,9 @@ export type EvidenceLifecycleErrorCode =
   | "EvidenceCapsuleNotFound"
   | "EvidenceLifecycleConflict"
   | "EvidenceLifecycleTerminal"
+  | "EvidenceAccessDenied"
+  | "EvidenceAccessUnavailable"
+  | "EvidenceAuditUnavailable"
   | "EvidenceRevocationFailed"
   | "EvidenceDeletionFailed";
 
@@ -75,6 +80,160 @@ export interface DeleteEvidenceInput {
 export interface DeleteEvidenceResult {
   readonly capsuleId: string;
   readonly state: EvidenceLifecycleState;
+}
+
+export interface EvidencePlaintextAccessCheck {
+  readonly tenantId: string;
+  readonly caseId: string;
+  readonly region: string;
+  readonly purpose: EvidencePurpose;
+  readonly keyVersion: string;
+  readonly capsuleId: string;
+  readonly occurredAt: string;
+}
+
+export interface EvidencePlaintextAccessKeyPolicy {
+  assertPlaintextAccess(input: EvidencePlaintextAccessCheck): Promise<void>;
+}
+
+export interface AuthorizeEvidenceAccessInput {
+  readonly capsuleId: string;
+  readonly tenantId: string;
+  readonly purpose: EvidencePurpose;
+  readonly actor: EvidenceLifecycleActor;
+  readonly occurredAt: string;
+}
+
+export interface AuthorizeEvidenceAccessResult {
+  readonly capsuleId: string;
+  readonly state: EvidenceLifecycleState;
+  readonly downloadAllowed: boolean;
+}
+
+/**
+ * Authorizes Public Evidence metadata/byte reads at the durable audit boundary.
+ * Metadata and plaintext-byte access both require a persisted audit row before
+ * the route may return. Plaintext-byte access additionally requires the current
+ * lifecycle to be active, unexpired, and KMS-approved; any lifecycle, KMS, or
+ * audit persistence failure fails the operation closed.
+ */
+export class EvidenceAccessService {
+  constructor(
+    private readonly store: EvidenceLifecycleStore,
+    private readonly keyPolicy: EvidencePlaintextAccessKeyPolicy,
+  ) {}
+
+  async authorizeMetadata(input: AuthorizeEvidenceAccessInput): Promise<AuthorizeEvidenceAccessResult> {
+    const record = await this.loadAndValidateScope(input);
+    await this.audit(record, input.actor, "profile", "allowed", "metadata_access", input.occurredAt);
+    return {
+      capsuleId: record.capsuleId,
+      state: record.state,
+      downloadAllowed: this.isPlaintextAllowed(record, input.occurredAt),
+    };
+  }
+
+  async authorizePlaintext(input: AuthorizeEvidenceAccessInput): Promise<AuthorizeEvidenceAccessResult> {
+    const record = await this.loadAndValidateScope(input);
+    if (!this.isPlaintextAllowed(record, input.occurredAt)) {
+      await this.audit(record, input.actor, "unwrap", "denied", this.denialReason(record, input.occurredAt), input.occurredAt);
+      throw new EvidenceLifecycleError(
+        "EvidenceAccessDenied",
+        `Evidence capsule ${input.capsuleId} is not available for plaintext access.`,
+      );
+    }
+    try {
+      await this.keyPolicy.assertPlaintextAccess({
+        tenantId: record.tenantId,
+        caseId: record.caseId,
+        region: record.region,
+        purpose: record.purpose,
+        keyVersion: record.keyVersion,
+        capsuleId: record.capsuleId,
+        occurredAt: input.occurredAt,
+      });
+    } catch (cause) {
+      await this.audit(record, input.actor, "unwrap", "failed", "EvidenceKmsUnavailable", input.occurredAt);
+      throw new EvidenceLifecycleError(
+        "EvidenceAccessUnavailable",
+        `Evidence KMS access failed for capsule ${input.capsuleId}; refusing plaintext fallback.`,
+        { cause },
+      );
+    }
+    await this.audit(record, input.actor, "unwrap", "allowed", "plaintext_access", input.occurredAt);
+    return { capsuleId: record.capsuleId, state: record.state, downloadAllowed: true };
+  }
+
+  private async loadAndValidateScope(input: AuthorizeEvidenceAccessInput): Promise<EvidenceLifecycleRecord> {
+    let record: EvidenceLifecycleRecord | undefined;
+    try {
+      record = await this.store.load(input.capsuleId);
+    } catch (cause) {
+      throw new EvidenceLifecycleError(
+        "EvidenceAccessUnavailable",
+        `Evidence lifecycle state is unavailable for capsule ${input.capsuleId}.`,
+        { cause },
+      );
+    }
+    if (record === undefined) {
+      throw new EvidenceLifecycleError(
+        "EvidenceCapsuleNotFound",
+        `Evidence capsule ${input.capsuleId} does not exist.`,
+      );
+    }
+    if (record.tenantId !== input.tenantId || record.purpose !== input.purpose) {
+      await this.audit(record, input.actor, "unwrap", "denied", "EvidenceScopeMismatch", input.occurredAt);
+      throw new EvidenceLifecycleError(
+        "EvidenceAccessDenied",
+        `Evidence capsule ${input.capsuleId} is outside the caller scope.`,
+      );
+    }
+    return record;
+  }
+
+  private isPlaintextAllowed(record: EvidenceLifecycleRecord, now: string): boolean {
+    return record.state === "active" && record.ciphertextPresent && (record.expiresAt === undefined || now < record.expiresAt);
+  }
+
+  private denialReason(record: EvidenceLifecycleRecord, now: string): string {
+    if (record.state !== "active") return "EvidenceLifecycleNotActive";
+    if (!record.ciphertextPresent) return "EvidenceCiphertextMissing";
+    if (record.expiresAt !== undefined && now >= record.expiresAt) return "EvidenceExpired";
+    return "EvidenceAccessDenied";
+  }
+
+  private async audit(
+    record: EvidenceLifecycleRecord,
+    actor: EvidenceLifecycleActor,
+    operation: EvidenceAuditEvent["operation"],
+    decision: EvidenceAuditEvent["decision"],
+    reasonCode: string,
+    occurredAt: string,
+  ): Promise<void> {
+    try {
+      await this.store.record({
+        auditId: randomUUID(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        tenantId: record.tenantId,
+        caseId: record.caseId,
+        capsuleId: record.capsuleId,
+        keyVersion: record.keyVersion,
+        purpose: record.purpose,
+        operation,
+        decision,
+        reasonCode,
+        correlationId: actor.correlationId,
+        occurredAt,
+      });
+    } catch (cause) {
+      throw new EvidenceLifecycleError(
+        "EvidenceAuditUnavailable",
+        `Evidence audit persistence failed for capsule ${record.capsuleId}; refusing access.`,
+        { cause },
+      );
+    }
+  }
 }
 
 /**

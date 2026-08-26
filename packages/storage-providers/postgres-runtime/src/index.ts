@@ -64,6 +64,7 @@ export {
   PostgresIntelligenceQueue,
 } from "./postgres-intelligence-queue.js";
 export { PostgresIntelligenceResultWakeupStore } from "./postgres-intelligence-result-wakeup-store.js";
+export { PostgresEvidenceLifecycleStore } from "./postgres-evidence-lifecycle-store.js";
 
 export type {
   AbandonLeaseDisposition,

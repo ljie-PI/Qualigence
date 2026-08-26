@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ArtifactMetadataDto } from "@qualigence/public-api";
+import { EvidenceAccessService, EvidenceLifecycleError, EvidenceLifecycleService } from "@qualigence/evidence";
 import type { ArtifactKind, ArtifactManifest, ArtifactStore } from "@qualigence/evidence";
 import {
   authenticateOidc,
@@ -10,7 +11,7 @@ import {
 } from "../server-context.js";
 import { ApiError, notFound, validationFailed } from "../errors.js";
 
-const EVIDENCE_PURPOSE = "investigation";
+const EVIDENCE_PURPOSE: "investigation" = "investigation";
 
 export function registerEvidenceRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get<{
@@ -29,7 +30,13 @@ export function registerEvidenceRoutes(app: FastifyInstance, deps: ServerDeps): 
       }),
     );
     if (manifest === undefined) throw notFound("Evidence artifact not found");
-    return reply.send(toMetadataDto(manifest));
+    const access = await authorizeEvidenceAccess(deps, principal.tenantId, {
+      capsuleId: manifest.artifactId,
+      actorId: principal.subject,
+      correlationId: request.id,
+      operation: "metadata",
+    });
+    return reply.send(toMetadataDto(manifest, access.downloadAllowed));
   });
 
   app.get<{
@@ -48,6 +55,12 @@ export function registerEvidenceRoutes(app: FastifyInstance, deps: ServerDeps): 
       }),
     );
     if (manifest === undefined) throw notFound("Evidence artifact not found");
+    await authorizeEvidenceAccess(deps, principal.tenantId, {
+      capsuleId: manifest.artifactId,
+      actorId: principal.subject,
+      correlationId: request.id,
+      operation: "bytes",
+    });
     const artifactStore = deps.artifactStore?.({
       tenantId: principal.tenantId,
       projectId: request.params.projectId,
@@ -65,6 +78,30 @@ export function registerEvidenceRoutes(app: FastifyInstance, deps: ServerDeps): 
       .type(manifest.mediaType)
       .header("content-length", String(bytes.byteLength))
       .send(Buffer.from(bytes));
+  });
+
+  app.delete<{
+    Params: { projectId: string; runId: string; artifactId: string };
+    Querystring: { purpose?: string };
+  }>("/v1/projects/:projectId/runs/:runId/artifacts/:artifactId", async (request, reply) => {
+    const principal = await authenticateOidc(deps, request);
+    requireRole(deps, principal, "admin");
+    assertEvidencePurpose(request.query.purpose);
+    const manifest = await withTenant(deps, principal.tenantId, (stores) =>
+      loadAuthorizedArtifact(stores, {
+        tenantId: principal.tenantId,
+        projectId: request.params.projectId,
+        runId: request.params.runId,
+        artifactId: request.params.artifactId,
+      }),
+    );
+    if (manifest === undefined) throw notFound("Evidence artifact not found");
+    const result = await deleteEvidence(deps, principal.tenantId, {
+      capsuleId: manifest.artifactId,
+      actorId: principal.subject,
+      correlationId: request.id,
+    });
+    return reply.status(202).send({ artifactId: manifest.artifactId, lifecycleState: result.state });
   });
 }
 
@@ -129,7 +166,7 @@ async function loadAuthorizedArtifact(
   };
 }
 
-function toMetadataDto(manifest: ArtifactManifest): ArtifactMetadataDto {
+function toMetadataDto(manifest: ArtifactManifest, downloadAllowed: boolean): ArtifactMetadataDto {
   return {
     artifactId: manifest.artifactId,
     runId: manifest.runId,
@@ -137,7 +174,100 @@ function toMetadataDto(manifest: ArtifactManifest): ArtifactMetadataDto {
     mediaType: manifest.mediaType,
     size: manifest.size,
     sha256: manifest.sha256,
-    downloadAllowed: true,
+    downloadAllowed,
+  };
+}
+
+async function authorizeEvidenceAccess(
+  deps: ServerDeps,
+  tenantId: string,
+  input: {
+    readonly capsuleId: string;
+    readonly actorId: string;
+    readonly correlationId: string;
+    readonly operation: "metadata" | "bytes";
+  },
+): Promise<{ readonly downloadAllowed: boolean }> {
+  if (deps.evidenceLifecycleStore === undefined || deps.evidenceKeyPolicy === undefined) {
+    throw evidenceUnavailable("Evidence lifecycle/KMS is not configured");
+  }
+  const outcome = await withTenant(deps, tenantId, async (stores) => {
+    const service = new EvidenceAccessService(
+      deps.evidenceLifecycleStore!(stores, tenantId),
+      deps.evidenceKeyPolicy!,
+    );
+    const request = {
+      capsuleId: input.capsuleId,
+      tenantId,
+      purpose: EVIDENCE_PURPOSE,
+      actor: evidenceActor(input.actorId, input.correlationId),
+      occurredAt: deps.clock.now(),
+    };
+    try {
+      return {
+        ok: true as const,
+        value: input.operation === "metadata"
+          ? await service.authorizeMetadata(request)
+          : await service.authorizePlaintext(request),
+      };
+    } catch (cause) {
+      return { ok: false as const, cause };
+    }
+  });
+  if (outcome.ok) return outcome.value;
+  const cause = outcome.cause;
+  if (cause instanceof EvidenceLifecycleError && cause.code === "EvidenceCapsuleNotFound") {
+    throw notFound("Evidence artifact not found");
+  }
+  if (cause instanceof EvidenceLifecycleError && cause.code === "EvidenceAccessDenied") {
+    throw notFound("Evidence artifact not found");
+  }
+  throw evidenceUnavailable("Evidence access is unavailable", cause);
+}
+
+async function deleteEvidence(
+  deps: ServerDeps,
+  tenantId: string,
+  input: {
+    readonly capsuleId: string;
+    readonly actorId: string;
+    readonly correlationId: string;
+  },
+): Promise<{ readonly state: string }> {
+  if (deps.evidenceLifecycleStore === undefined || deps.evidenceKeyPolicy === undefined) {
+    throw evidenceUnavailable("Evidence lifecycle/KMS is not configured");
+  }
+  const outcome = await withTenant(deps, tenantId, async (stores) => {
+    try {
+      return {
+        ok: true as const,
+        value: await new EvidenceLifecycleService(
+          deps.evidenceLifecycleStore!(stores, tenantId),
+          deps.evidenceKeyPolicy!,
+        ).deleteEvidence({
+          capsuleId: input.capsuleId,
+          reason: "public_api_delete",
+          actor: evidenceActor(input.actorId, input.correlationId),
+          occurredAt: deps.clock.now(),
+        }),
+      };
+    } catch (cause) {
+      return { ok: false as const, cause };
+    }
+  });
+  if (outcome.ok) return outcome.value;
+  const cause = outcome.cause;
+  if (cause instanceof EvidenceLifecycleError && cause.code === "EvidenceCapsuleNotFound") {
+    throw notFound("Evidence artifact not found");
+  }
+  throw evidenceUnavailable("Evidence lifecycle command failed", cause);
+}
+
+function evidenceActor(actorId: string, correlationId: string) {
+  return {
+    actorType: "user" as const,
+    actorId,
+    correlationId,
   };
 }
 

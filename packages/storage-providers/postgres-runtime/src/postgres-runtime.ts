@@ -196,12 +196,23 @@ export async function migratePostgres(
         if (step.version === 15) {
           await sql`
             alter table evidence_capsule_manifests
-            add column lifecycle_state text not null default 'active'
-            check (lifecycle_state in ('active', 'revoking', 'revoked', 'deleting', 'deleted'))
+            add column if not exists lifecycle_state text not null default 'active'
           `.execute(trx);
-          await sql`alter table evidence_capsule_manifests add column lifecycle_updated_at text`.execute(trx);
-          await sql`alter table evidence_capsule_manifests add column deleted_at text`.execute(trx);
-          await sql`alter table evidence_capsule_manifests add column last_lifecycle_error text`.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column if not exists lifecycle_updated_at text`.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column if not exists deleted_at text`.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column if not exists last_lifecycle_error text`.execute(trx);
+          await sql`
+            do $$
+            begin
+              if not exists (
+                select 1 from pg_constraint where conname = 'evidence_capsule_manifests_lifecycle_state_check'
+              ) then
+                alter table evidence_capsule_manifests
+                  add constraint evidence_capsule_manifests_lifecycle_state_check
+                  check (lifecycle_state in ('active', 'revoking', 'revoked', 'deleting', 'deleted'));
+              end if;
+            end $$
+          `.execute(trx);
           await sql`
             update evidence_capsule_manifests
                set lifecycle_state = revocation_state,

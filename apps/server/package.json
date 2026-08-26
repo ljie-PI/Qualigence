@@ -21,6 +21,7 @@
     "@qualigence/evidence": "workspace:*",
     "@qualigence/grpc-runner-protocol": "workspace:*",
     "@qualigence/kms-local": "workspace:*",
+    "@qualigence/kms-self-hosted": "workspace:*",
     "@qualigence/oidc": "workspace:*",
     "@qualigence/mission": "workspace:*",
     "@qualigence/postgres-runtime": "workspace:*",

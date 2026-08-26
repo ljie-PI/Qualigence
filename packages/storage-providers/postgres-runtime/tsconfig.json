@@ -11,6 +11,7 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
+    { "path": "../../core-modules/evidence" },
     { "path": "../../core-modules/intelligence" },
     { "path": "../../core-modules/review" },
     { "path": "../../core-modules/runner-control" },

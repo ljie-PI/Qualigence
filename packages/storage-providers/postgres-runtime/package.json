@@ -12,6 +12,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/context-intake": "workspace:*",
+    "@qualigence/evidence": "workspace:*",
     "@qualigence/intelligence": "workspace:*",
     "@qualigence/relational-kysely": "workspace:*",
     "@qualigence/mission": "workspace:*",

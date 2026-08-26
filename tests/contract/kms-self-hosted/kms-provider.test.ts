@@ -259,4 +259,51 @@ describe("SelfHostedKms", () => {
       expect(serialized).not.toContain(wrapped);
     }
   });
+
+  it("awaits audit persistence before returning sensitive KMS outputs", async () => {
+    let failAudit = false;
+    const audit: KmsAuditEvent[] = [];
+    const audited = new SelfHostedKms({
+      rootKey,
+      now: () => "2026-08-01T00:00:00.000Z",
+      audit: {
+        async record(event: KmsAuditEvent): Promise<void> {
+          audit.push(event);
+          if (failAudit) throw new Error("audit persistence failed");
+        },
+      },
+    });
+
+    failAudit = true;
+    await expect(audited.encryptionProfile(scopeA)).rejects.toThrow("audit persistence failed");
+    failAudit = false;
+    const profile = await audited.encryptionProfile(scopeA);
+    const dek = new Uint8Array(randomBytes(32));
+
+    failAudit = true;
+    await expect(audited.wrapDek(profile, dek)).rejects.toThrow("audit persistence failed");
+    failAudit = false;
+    const wrapped = await audited.wrapDek(profile, dek);
+    const manifest = manifestFor("capsule-audit", profile.wrappingKeyId, wrapped);
+
+    failAudit = true;
+    await expect(audited.unwrapDek({ manifest, ...scopeA })).rejects.toThrow("audit persistence failed");
+    await expect(audited.unwrapDek({ manifest, ...scopeA, tenantId: "tenant-b" })).rejects.toThrow("audit persistence failed");
+    await expect(audited.assertPlaintextAccess({
+      tenantId: scopeA.tenantId,
+      caseId: scopeA.caseId,
+      region: scopeA.region,
+      purpose: scopeA.purpose,
+      keyVersion: profile.wrappingKeyId,
+      capsuleId: "capsule-audit",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    })).rejects.toThrow("audit persistence failed");
+
+    expect(audit.map((event) => `${event.operation}:${event.decision}`)).toEqual(expect.arrayContaining([
+      "profile:allowed",
+      "wrap:allowed",
+      "unwrap:allowed",
+      "unwrap:denied",
+    ]));
+  });
 });

@@ -501,6 +501,9 @@ importers:
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:../../packages/storage-providers/kms-local
+      '@qualigence/kms-self-hosted':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/kms-self-hosted
       '@qualigence/mission':
         specifier: workspace:*
         version: link:../../packages/core-modules/mission
@@ -996,6 +999,9 @@ importers:
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../core-modules/context-intake
+      '@qualigence/evidence':
+        specifier: workspace:*
+        version: link:../../core-modules/evidence
       '@qualigence/intelligence':
         specifier: workspace:*
         version: link:../../core-modules/intelligence
