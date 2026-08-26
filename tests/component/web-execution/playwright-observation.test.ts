@@ -15,6 +15,10 @@ import {
 } from "@qualigence/web-playwright/internal";
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 
+function isPromiseOwnerValidation(functionValue: unknown): boolean {
+  return typeof functionValue === "function" && functionValue.name === "validateSensitivePromiseOwnerRegistryInPage";
+}
+
 const OBSERVATION_FIXTURE = htmlDocument(
   `
     <h1 data-qualigence-observe>Storefront</h1>
@@ -244,10 +248,12 @@ describe("PlaywrightObserver against real Chromium", () => {
 
   it("allows a delayed path change on the configured target origin", async () => {
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => ({
-      candidates: [{ role: "button", name: "Continue" }],
-      viewport: { width: 800, height: 600, devicePixelRatio: 1 },
-    }));
+    const evaluate = vi.fn(async (functionValue: unknown) => isPromiseOwnerValidation(functionValue)
+      ? { status: "ok" }
+      : {
+        candidates: [{ role: "button", name: "Continue" }],
+        viewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      });
     const title = vi.fn(async () => "Same origin");
     const screenshot = vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
     session = new PlaywrightBrowserSession(options());

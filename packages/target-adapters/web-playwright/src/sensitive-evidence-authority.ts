@@ -14,6 +14,7 @@ export const MAX_REFLECTED_REGIONS = 256;
 export const MAX_SENSITIVE_SHADOW_ROOTS = 128;
 export const MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH = 1_024;
 export const MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION = 4_096;
+export const MAX_SENSITIVE_PROMISE_OWNER_REGISTRY_OWNERS = 256;
 
 export interface PreparedSensitiveEvidenceRecord {
   readonly navigationGeneration: number;

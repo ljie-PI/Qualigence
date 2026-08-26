@@ -2,6 +2,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
 import {
+  MAX_SENSITIVE_PROMISE_OWNER_REGISTRY_OWNERS,
   MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH,
   MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION,
   MAX_SENSITIVE_SHADOW_ROOTS,
@@ -77,6 +78,45 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
   );
 }
 
+function validateSensitivePromiseOwnerRegistryInPage(input: {
+  readonly runtimeRegistryProperty: string;
+  readonly maxPromiseOwners: number;
+}): { readonly status: "ok" | "failed"; readonly reason?: string } {
+  type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
+  type RuntimeRegistry = {
+    readonly validatePromiseOwners?: (maxPromiseOwners: number) => PromiseOwnerValidationResult;
+    promiseOwnerValidationFailed?: boolean;
+  };
+  const registry = (globalThis as unknown as Record<string, RuntimeRegistry | undefined>)[input.runtimeRegistryProperty];
+  if (registry === undefined) return { status: "ok" };
+  const validatePromiseOwners = registry.validatePromiseOwners;
+  if (typeof validatePromiseOwners !== "function") return fail(registry, "missing-validator");
+  try {
+    const result = validatePromiseOwners(input.maxPromiseOwners);
+    if (result.status !== "ok") {
+      try {
+        registry.promiseOwnerValidationFailed = true;
+      } catch {
+        // The authoritative validation latch is closure-owned; a read-only debug
+        // surface may reject direct writes. The returned failure is sufficient.
+      }
+    }
+    return result;
+  } catch {
+    return fail(registry, "inspection-threw");
+  }
+
+  function fail(target: RuntimeRegistry, reason: string): { readonly status: "failed"; readonly reason: string } {
+    try {
+      target.promiseOwnerValidationFailed = true;
+    } catch {
+      // Best effort only: validation must fail closed even if page-visible debug
+      // fields are immutable or accessor-backed.
+    }
+    return { status: "failed", reason };
+  }
+}
+
 async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
   if (typeof page.addInitScript !== "function") return;
   await page.addInitScript((input: {
@@ -85,11 +125,45 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     readonly maxShadowRoots: number;
     readonly maxSchedulerRegistrationsPerEpoch: number;
     readonly maxSchedulerRegistrationsPerSession: number;
+    readonly maxPromiseOwners: number;
   }) => {
+    type PromiseMethodName = "then" | "catch" | "finally";
+    type DescriptorSnapshot =
+      | { readonly present: false }
+      | {
+        readonly present: true;
+        readonly kind: "data";
+        readonly configurable: boolean;
+        readonly enumerable: boolean;
+        readonly writable: boolean;
+        readonly value: unknown;
+      }
+      | {
+        readonly present: true;
+        readonly kind: "accessor";
+        readonly configurable: boolean;
+        readonly enumerable: boolean;
+        readonly get: unknown;
+        readonly set: unknown;
+      };
+    type ResolvedMethodOwnerSnapshot =
+      | { readonly present: false }
+      | { readonly present: true; readonly owner: object };
+    type PromiseOwnerRecord = {
+      readonly owner: object;
+      readonly prototype: object | null;
+      readonly descriptors: Readonly<Record<PromiseMethodName, DescriptorSnapshot>>;
+      readonly resolvedMethodOwners: Readonly<Record<PromiseMethodName, ResolvedMethodOwnerSnapshot>>;
+    };
+    type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
     type SensitiveRuntimeRegistry = {
       readonly roots: ShadowRoot[];
       readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
+      readonly promiseOwners?: readonly PromiseOwnerRecord[];
       shadowRootOverflow: boolean;
+      readonly promiseOwnerOverflow?: boolean;
+      readonly promiseOwnerValidationFailed?: boolean;
+      readonly validatePromiseOwners?: (maxPromiseOwners: number) => PromiseOwnerValidationResult;
       readonly originalAttachShadow: typeof Element.prototype.attachShadow;
       readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
       readonly originalSetTimeout: typeof window.setTimeout;
@@ -129,8 +203,12 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       readonly wrapHandlers: boolean;
       consumed: boolean;
     };
+    const promiseMethods: readonly PromiseMethodName[] = ["then", "catch", "finally"];
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
+    const promiseOwnerRecords: PromiseOwnerRecord[] = [];
+    let promiseOwnerOverflow = false;
+    let promiseOwnerValidationFailed = false;
     const registry: SensitiveRuntimeRegistry = {
       roots: [],
       listenerTargets: [],
@@ -146,6 +224,29 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       originalPromiseFinally: Promise.prototype.finally,
       originalReflectApply: Reflect.apply,
     };
+    Object.defineProperties(registry, {
+      promiseOwners: {
+        configurable: false,
+        enumerable: false,
+        get: promiseOwnerDebugSnapshot,
+      },
+      promiseOwnerOverflow: {
+        configurable: false,
+        enumerable: false,
+        get: () => promiseOwnerOverflow,
+      },
+      promiseOwnerValidationFailed: {
+        configurable: false,
+        enumerable: false,
+        get: () => promiseOwnerValidationFailed,
+      },
+      validatePromiseOwners: {
+        configurable: false,
+        enumerable: false,
+        value: validatePromiseOwnerRecords,
+        writable: false,
+      },
+    });
     Object.defineProperty(win, input.shadowRootsProperty, {
       configurable: false,
       enumerable: false,
@@ -236,6 +337,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const epoch = internalCall === undefined
         ? countSensitiveSchedulerRegistration()
         : internalCall.epoch;
+      registerPromiseMethodAuthority(this, "then", epoch);
       const wrapHandlers = internalCall?.wrapHandlers ?? true;
       const handlers = epoch === undefined || !wrapHandlers
         ? { onfulfilled, onrejected }
@@ -259,12 +361,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     ): Promise<unknown | TResult> {
       "use strict";
       const epoch = countSensitiveSchedulerRegistration();
+      registerPromiseMethodAuthority(this, "catch", epoch);
       return invokePromiseThen(this, undefined, onrejected, epoch, true) as Promise<unknown | TResult>;
     };
     Promise.prototype.finally = function promiseFinally(onfinally?: (() => void) | null): Promise<unknown> {
       "use strict";
       const receiver = this;
       const epoch = countSensitiveSchedulerRegistration();
+      registerPromiseMethodAuthority(receiver, "finally", epoch);
       const C = promiseSpeciesConstructor(receiver);
       const finallyHandler = epoch === undefined || typeof onfinally !== "function"
         ? { callback: onfinally }
@@ -341,6 +445,226 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       return (window as unknown as Record<string, SensitiveRuntimeState | undefined>)[input.evidenceStateProperty];
     }
 
+    function registerPromiseMethodAuthority(
+      receiver: unknown,
+      method: PromiseMethodName,
+      epoch: SensitiveSchedulerEpoch | undefined,
+    ): void {
+      const state = sensitiveState();
+      if (state === undefined || epoch === undefined || !shouldTrackPromiseOwnerAuthority(state) || !isObjectLike(receiver)) {
+        return;
+      }
+      try {
+        const owners = traversedMethodOwners(receiver, method);
+        for (const owner of owners) registerPromiseOwner(owner, state, epoch);
+      } catch {
+        poison(state, epoch);
+      }
+    }
+
+    function shouldTrackPromiseOwnerAuthority(state: SensitiveRuntimeState): boolean {
+      // Production sensitive-evidence epochs created by the action executor carry
+      // `records`. Counter-only oracle epochs intentionally omit it so Ticket 42
+      // native Promise trap/order tests remain side-effect-free.
+      return Array.isArray((state as { readonly records?: unknown }).records);
+    }
+
+    function traversedMethodOwners(receiver: object, method: PromiseMethodName): object[] {
+      const owners: object[] = [];
+      const visited = new Set<object>();
+      let current: object | null = receiver;
+      while (current !== null) {
+        if (visited.has(current)) throw new Error("cyclic-prototype-chain");
+        visited.add(current);
+        owners.push(current);
+        if (Object.prototype.hasOwnProperty.call(current, method)) break;
+        current = Object.getPrototypeOf(current);
+      }
+      return owners;
+    }
+
+    function registerPromiseOwner(owner: object, state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
+      const existingIndex = promiseOwnerRecords.findIndex((record) => record.owner === owner);
+      let snapshot: PromiseOwnerRecord;
+      try {
+        snapshot = snapshotPromiseOwner(owner);
+      } catch {
+        poison(state, epoch);
+        return;
+      }
+      if (existingIndex !== -1) {
+        promiseOwnerRecords[existingIndex] = snapshot;
+        return;
+      }
+      if (promiseOwnerRecords.length >= input.maxPromiseOwners) {
+        promiseOwnerOverflow = true;
+        poison(state, epoch);
+        return;
+      }
+      promiseOwnerRecords.push(snapshot);
+    }
+
+    function snapshotPromiseOwner(owner: object): PromiseOwnerRecord {
+      const descriptors = Object.freeze({
+        then: Object.freeze(snapshotOwnDescriptor(owner, "then")),
+        catch: Object.freeze(snapshotOwnDescriptor(owner, "catch")),
+        finally: Object.freeze(snapshotOwnDescriptor(owner, "finally")),
+      });
+      const resolvedMethodOwners = Object.freeze({
+        then: Object.freeze(snapshotResolvedMethodOwner(owner, "then")),
+        catch: Object.freeze(snapshotResolvedMethodOwner(owner, "catch")),
+        finally: Object.freeze(snapshotResolvedMethodOwner(owner, "finally")),
+      });
+      return Object.freeze({
+        owner,
+        prototype: Object.getPrototypeOf(owner),
+        descriptors,
+        resolvedMethodOwners,
+      });
+    }
+
+    function promiseOwnerDebugSnapshot(): readonly PromiseOwnerRecord[] {
+      const records: PromiseOwnerRecord[] = [];
+      for (let index = 0; index < promiseOwnerRecords.length; index += 1) {
+        records[index] = clonePromiseOwnerRecord(promiseOwnerRecords[index]!);
+      }
+      return Object.freeze(records);
+    }
+
+    function clonePromiseOwnerRecord(record: PromiseOwnerRecord): PromiseOwnerRecord {
+      return Object.freeze({
+        owner: record.owner,
+        prototype: record.prototype,
+        descriptors: Object.freeze({
+          then: Object.freeze(cloneDescriptorSnapshot(record.descriptors.then)),
+          catch: Object.freeze(cloneDescriptorSnapshot(record.descriptors.catch)),
+          finally: Object.freeze(cloneDescriptorSnapshot(record.descriptors.finally)),
+        }),
+        resolvedMethodOwners: Object.freeze({
+          then: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.then)),
+          catch: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.catch)),
+          finally: Object.freeze(cloneResolvedMethodOwnerSnapshot(record.resolvedMethodOwners.finally)),
+        }),
+      });
+    }
+
+    function cloneDescriptorSnapshot(snapshot: DescriptorSnapshot): DescriptorSnapshot {
+      if (!snapshot.present) return { present: false };
+      if (snapshot.kind === "data") {
+        return {
+          present: true,
+          kind: "data",
+          configurable: snapshot.configurable,
+          enumerable: snapshot.enumerable,
+          writable: snapshot.writable,
+          value: snapshot.value,
+        };
+      }
+      return {
+        present: true,
+        kind: "accessor",
+        configurable: snapshot.configurable,
+        enumerable: snapshot.enumerable,
+        get: snapshot.get,
+        set: snapshot.set,
+      };
+    }
+
+    function cloneResolvedMethodOwnerSnapshot(snapshot: ResolvedMethodOwnerSnapshot): ResolvedMethodOwnerSnapshot {
+      if (!snapshot.present) return { present: false };
+      return { present: true, owner: snapshot.owner };
+    }
+
+    function snapshotOwnDescriptor(owner: object, method: PromiseMethodName): DescriptorSnapshot {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, method);
+      if (descriptor === undefined) return { present: false };
+      if ("value" in descriptor || "writable" in descriptor) {
+        return {
+          present: true,
+          kind: "data",
+          configurable: descriptor.configurable === true,
+          enumerable: descriptor.enumerable === true,
+          writable: descriptor.writable === true,
+          value: descriptor.value,
+        };
+      }
+      return {
+        present: true,
+        kind: "accessor",
+        configurable: descriptor.configurable === true,
+        enumerable: descriptor.enumerable === true,
+        get: descriptor.get,
+        set: descriptor.set,
+      };
+    }
+
+    function snapshotResolvedMethodOwner(owner: object, method: PromiseMethodName): ResolvedMethodOwnerSnapshot {
+      const visited = new Set<object>();
+      let current: object | null = owner;
+      while (current !== null) {
+        if (visited.has(current)) throw new Error("cyclic-prototype-chain");
+        visited.add(current);
+        if (Object.prototype.hasOwnProperty.call(current, method)) {
+          return { present: true, owner: current };
+        }
+        current = Object.getPrototypeOf(current);
+      }
+      return { present: false };
+    }
+
+    function validatePromiseOwnerRecords(maxPromiseOwners: number): PromiseOwnerValidationResult {
+      if (promiseOwnerOverflow || promiseOwnerValidationFailed) {
+        promiseOwnerValidationFailed = true;
+        return { status: "failed", reason: "poisoned" };
+      }
+      if (promiseOwnerRecords.length > maxPromiseOwners) return failPromiseOwnerValidation("overflow-length");
+      const seen = new Set<object>();
+      try {
+        for (let index = 0; index < promiseOwnerRecords.length; index += 1) {
+          if (!(index in promiseOwnerRecords)) return failPromiseOwnerValidation("incomplete-enumeration");
+          const record = promiseOwnerRecords[index]!;
+          if (!isObjectLike(record) || !isObjectLike(record.owner)) return failPromiseOwnerValidation("invalid-record");
+          if (seen.has(record.owner)) return failPromiseOwnerValidation("duplicate-owner");
+          seen.add(record.owner);
+          if (Object.getPrototypeOf(record.owner) !== record.prototype) return failPromiseOwnerValidation("prototype-mismatch");
+          for (const method of promiseMethods) {
+            if (!sameDescriptorSnapshot(snapshotOwnDescriptor(record.owner, method), record.descriptors[method])) {
+              return failPromiseOwnerValidation(`${method}-descriptor-mismatch`);
+            }
+            if (!sameResolvedMethodOwner(snapshotResolvedMethodOwner(record.owner, method), record.resolvedMethodOwners[method])) {
+              return failPromiseOwnerValidation(`${method}-owner-mismatch`);
+            }
+          }
+        }
+        if (seen.size !== promiseOwnerRecords.length) return failPromiseOwnerValidation("incomplete-enumeration");
+      } catch {
+        return failPromiseOwnerValidation("inspection-threw");
+      }
+      return { status: "ok" };
+    }
+
+    function failPromiseOwnerValidation(reason: string): PromiseOwnerValidationResult {
+      promiseOwnerValidationFailed = true;
+      return { status: "failed", reason };
+    }
+
+    function sameDescriptorSnapshot(left: DescriptorSnapshot, right: DescriptorSnapshot): boolean {
+      if (left.present !== right.present) return false;
+      if (!left.present || !right.present) return true;
+      if (left.kind !== right.kind) return false;
+      if (left.configurable !== right.configurable || left.enumerable !== right.enumerable) return false;
+      if (left.kind === "data") {
+        return right.kind === "data" && left.writable === right.writable && left.value === right.value;
+      }
+      return right.kind === "accessor" && left.get === right.get && left.set === right.set;
+    }
+
+    function sameResolvedMethodOwner(left: ResolvedMethodOwnerSnapshot, right: ResolvedMethodOwnerSnapshot): boolean {
+      if (left.present !== right.present) return false;
+      if (!left.present || !right.present) return true;
+      return left.owner === right.owner;
+    }
+
     function invokePromiseThen(
       receiver: unknown,
       onfulfilled: unknown,
@@ -359,6 +683,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       wrapHandlers: boolean,
     ): { readonly value: unknown; readonly usedDefaultThen: boolean } {
       const then = (receiver as { readonly then?: unknown }).then;
+      registerPromiseMethodAuthority(receiver, "then", epoch);
       const usedDefaultThen = isDefaultPromiseThenFunction(then);
       const internalCall = usedDefaultThen
         ? {
@@ -636,7 +961,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
     }
 
-    function isObjectLike(value: unknown): boolean {
+    function isObjectLike(value: unknown): value is object {
       return (typeof value === "object" && value !== null) || typeof value === "function";
     }
 
@@ -674,6 +999,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
     maxShadowRoots: MAX_SENSITIVE_SHADOW_ROOTS,
     maxSchedulerRegistrationsPerEpoch: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_EPOCH,
     maxSchedulerRegistrationsPerSession: MAX_SENSITIVE_SCHEDULER_REGISTRATIONS_PER_SESSION,
+    maxPromiseOwners: MAX_SENSITIVE_PROMISE_OWNER_REGISTRY_OWNERS,
   });
 }
 
@@ -1024,6 +1350,29 @@ export class PlaywrightBrowserSession {
     if (this.sensitiveEvidenceUnavailable || this.activeSensitiveDispatch !== undefined) {
       throw sensitiveEvidenceUnavailable();
     }
+  }
+
+  async revalidateSensitivePromiseOwners(page: Page, navigationGeneration: number): Promise<void> {
+    this.assertNavigationGeneration(navigationGeneration);
+    this.assertPageTargetOrigin(page, navigationGeneration);
+    this.assertSensitiveEvidenceAvailable();
+    let result: { readonly status: "ok" | "failed"; readonly reason?: string };
+    try {
+      result = await page.evaluate(validateSensitivePromiseOwnerRegistryInPage, {
+        runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+        maxPromiseOwners: MAX_SENSITIVE_PROMISE_OWNER_REGISTRY_OWNERS,
+      });
+    } catch {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    this.assertNavigationGeneration(navigationGeneration);
+    this.assertPageTargetOrigin(page, navigationGeneration);
+    if (result.status !== "ok") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    this.assertSensitiveEvidenceAvailable();
   }
 
   hasPendingSensitiveEvidenceCapture(): boolean {
