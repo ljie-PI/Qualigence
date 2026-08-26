@@ -124,6 +124,15 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 - Acceptance and regression validation passed after the E2E harness fix: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (1 file / 1 test), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (4 files / 35 tests), `CI=true corepack pnpm typecheck`, and `git diff --check`.
 - Status remains `claimed`; no final/PR evidence is added yet. A fresh complete-matrix review remains required because the post-review E2E file changed after the clean review head.
 
+### review3-fix — 2026-08-26
+
+- Reviewed head fixed: `e8c5f417949b2a00ba0463f9d481fc0aaaaadb83` against fixed base `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e`.
+- Core finding fixed: Important Spec blocker that the post-review Chromium E2E passed but did not exercise Ticket 43 Promise owner registry/revalidation acceptance.
+- Fix commit: `788639e5a3015879989235b9e88a5b7b503b60c2` (`test(ticket-43): cover promise owner e2e revalidation`).
+- E2E coverage added in `tests/e2e/web-execution/value-ref.test.ts`: actual `RunnerOfferRuntime` valueRef input jobs register multiple Promise receiver/prototype/custom owners during sensitive epochs, mutate descriptor and prototype identities at both Graph and Artifact capture boundaries, verify native callbacks/page behavior complete, and assert `SensitiveEvidenceUnavailable` with no final observation/artifact/log/Spool plaintext or accepted post-failure evidence.
+- Gates run for the fix: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (passed, 1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (passed, 4 files / 35 tests), `CI=true corepack pnpm typecheck` (passed), and `git diff --check` (passed).
+- Status remains `claimed`; no PR or final merge evidence was created. Fresh complete-matrix review is required on the new head.
+
 ## Acceptance
 
 - [ ] Every observed Promise receiver/traversed owner is retained in a fixed-bound, identity-deduplicated, completely enumerable registry.
