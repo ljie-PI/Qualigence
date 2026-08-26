@@ -21,6 +21,8 @@ import {
 
 export interface PlaywrightObserverHooks {
   readonly afterDomCollection?: (page: Page) => void | Promise<void>;
+  readonly afterGraphAssembly?: (page: Page) => void | Promise<void>;
+  readonly afterScreenshotCapture?: (page: Page) => void | Promise<void>;
 }
 
 async function captureScreenshot(
@@ -636,12 +638,15 @@ export class PlaywrightObserver implements Observer {
         },
       );
       assertCaptureAuthority();
+      await this.hooks.afterGraphAssembly?.(page);
+      await this.session.revalidateSensitivePromiseOwners(page, navigationGeneration);
 
       const maskIds = [...new Set([
         ...(captured.sensitiveMaskIds ?? []),
         ...(preScreenshotCheck.sensitiveMaskIds ?? []),
       ].filter((maskId) => /^[A-Za-z0-9_-]+$/.test(maskId)))];
       const screenshot = await captureScreenshot(page, assertCaptureAuthority, maskIds);
+      await this.hooks.afterScreenshotCapture?.(page);
       const postScreenshotCheck = await collectAuthorizedPageObservation(page, assertCaptureAuthority);
       if (postScreenshotCheck.sensitiveEvidenceUnavailable) {
         this.session.markSensitiveEvidenceUnavailable();
@@ -657,6 +662,7 @@ export class PlaywrightObserver implements Observer {
       }
       this.session.assertSensitiveEvidenceAvailable();
       const artifacts = buildArtifacts(ordinal, graph, screenshot);
+      await this.session.revalidateSensitivePromiseOwners(page, navigationGeneration);
       this.session.registerCapturedObservation(page, graph.graphId, {
         descriptors,
         artifacts,

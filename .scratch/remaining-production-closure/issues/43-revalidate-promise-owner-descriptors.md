@@ -4,7 +4,7 @@
 
 **Blocked by:** 42 - Preserve native Promise semantics with exact causal accounting.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -98,6 +98,15 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 | Concurrent owner registration and capture validation | `started` | Serialized observer either validates one complete snapshot or fails closed | No partially validated accepted evidence | Retry capture after quiescence; never drop an owner | Race/concurrency test |
 | Session close/restart | `started` if registry existed | Registry is cleared; native pending behavior is not cancelled by cleanup | No owner references cross session | New session starts empty | Cleanup/GC-observable cardinality test |
 | Evidence persistence fails after successful revalidation | `outcome_unknown` for terminal evidence | Existing persistence failure; no weakened revalidation | No unsafe fallback | Retry persistence only under existing semantics | Sink failure and exact pre-return validation evidence |
+
+## Comments
+
+### start — 2026-08-26
+
+- Fixed base: `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e` (`main`, after Ticket 42 PR #114, Ticket 11 PR #115, and Ticket 27 PR #116 merge commits present in history).
+- Predecessor merge evidence: Ticket 42 is `resolved` with PR #114 (`https://github.com/ljie-PI/Qualigence/pull/114`), reviewed code/test head `2bd9b04eeb796373cd50386bba4ca10b8dae9337`, documentation evidence commit `a6db2f1`, and merge commit `6123350` in the current base history.
+- Behavior Matrix applicability: complete Ticket 43 matrix is applicable. Bounded enumerable Promise owner/prototype descriptor retention, identity de-duplication, exact revalidation before Graph/Artifact acceptance, overflow/inspection/enumeration fail-closed behavior, current-state restoration boundary, concurrent validation serialization, and session cleanup are in scope. Ticket 42 native Promise semantics/accounting must remain green but is not re-accepted. Immutable first-snapshot/no-reapproval, DOM getter/geometry authority, Runner production files, package manifests/lockfile, and unrelated roots are excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Complete-matrix review and post-review Chromium E2E remain pending after implementation.
 
 ## Acceptance
 
