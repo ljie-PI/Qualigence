@@ -4,7 +4,7 @@
 
 **Blocked by:** 27 — Implement the TypeScript Companion client.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -105,3 +105,20 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
 | Concurrent Web/Desktop Jobs | `started` per accepted Job | Independently scoped outcomes | Runtime resources and Trace remain Job/session scoped | No resource or Permit sharing across Jobs | Concurrency test with distinct runtime/session IDs |
 | Runner restart or cleanup failure | `started` or `outcome_unknown` according to last dispatch | Stable startup/cleanup failure; never false success | Existing Spool retains accepted Trace; Desktop capability is re-probed | No prior action replay after restart | Spool/close evidence and fresh authentication/probe |
 | Terminal Trace/Spool persistence fails | `started` or `outcome_unknown` | Fail closed; no success completion | Existing durable prefix remains; terminal success is absent | Retry only through existing Trace drain/recovery, never action replay | Injected recorder failure and absent completion |
+
+## Comments
+
+### start - 2026-08-26
+
+- Fixed base: `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e` (`ticket-28-dispatch-desktop-target-runtime`, current `main` after merged Ticket 27 PR #116 plus Tickets 11 and 42 merge commits present in history).
+- Predecessor evidence: Ticket 26 is `resolved` with PR #112, reviewed code head `fcd5b2926a20f428ce0009da704022144bb80ea9`, and merge commit `cff217f68f0b3bcaffe517aaed11e3e302abb964`; Ticket 27 is `resolved` with PR #116, reviewed code/test head `6874749192c4da480c71aa6a3a121a9e02a67f8d`, final verification evidence in `.scratch/remaining-production-closure/issues/27-typescript-companion-client.md`, and merge commit `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e` in this worktree base.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs production Runner Target Runtime selection, Web/Desktop executor isolation, Desktop Companion authentication/probe gating, Desktop launch/capture/cleanup ordering, local Permit/action binding, valueRef last-responsible resolution/redaction, fail-closed capability/unavailable outcomes, timeout/unknown-outcome terminalization, and no Web fallback/synthetic UIA.
+- Planned focused Gate: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Scope guard: implementation is limited to the Ticket 28 Allowed Files. Native Companion/Rust, Ticket 29-31 native/manual evidence, package dependencies beyond listed manifests/lockfile, and any out-of-scope Desktop IPC contract changes require an explicit reviewed scope amendment before editing.
+
+### blocked - 2026-08-26
+
+- Implementation stopped before production-code edits because the existing Ticket 27 Desktop IPC contract cannot satisfy a Ticket 28 explicit requirement within the current Allowed Files.
+- Blocking gap: Ticket 28 requires Runner to resolve Desktop `valueRef` at the last responsible moment, bind plaintext SHA-256 and byte length into the action/Permit digest, transmit only bounded short-lived plaintext, and keep plaintext out of Trace/Finding/logs/DTOs/Spool. The current `@qualigence/desktop-contracts` IPC DTOs expose no bounded plaintext field: `ResolvedDesktopAction` input carries only `valueRef`, select carries only `option`, `LocalPermitAuthorization` carries only `decisionId`, `policyId`, `actionDigestSha256`, `risk`, and `expiresAt`, and `action.execute` carries only `{ sessionId, action, permit, deadlineMs }`.
+- Required scope amendment: authorize editing `packages/contracts/desktop/src/**` and its direct type/contract tests to add the minimal public Companion IPC fields for Desktop value binding/transport. At minimum, the contract needs a redaction-safe value binding DTO containing `valueRef`, `valueSha256`, and `valueByteLength`; action/Permit authorization validation must bind those fields into the one-time Permit/action digest; `action.execute` needs a bounded short-lived plaintext value payload for input/select only; validators must reject plaintext in non-action/trace DTOs, mismatched hash/length, missing value binding, oversized plaintext, and unknown fields; and the companion contract tests must cover positive input/select execution plus mismatch/oversize/no-plaintext persistence cases.
+- No production, test, manifest, or lockfile implementation changes were made under this ticket after the blocker was identified. The ticket remains `claimed` and not `resolved` pending a reviewed scope amendment or maintainer direction.
