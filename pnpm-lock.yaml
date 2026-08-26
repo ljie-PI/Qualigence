@@ -489,6 +489,9 @@ importers:
       '@qualigence/evidence':
         specifier: workspace:*
         version: link:../../packages/core-modules/evidence
+      '@qualigence/grpc-runner-protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol-adapters/grpc-runner-protocol
       '@qualigence/kms-local':
         specifier: workspace:*
         version: link:../../packages/storage-providers/kms-local

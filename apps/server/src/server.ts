@@ -56,8 +56,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     void reply.status(404).send(envelope);
   });
 
+  app.get("/livez", async (_request, reply) => {
+    await reply.status(200).send({ status: "live" });
+  });
+
   app.get("/readyz", async (_request, reply) => {
-    const report = deps.readiness?.() ?? {
+    const report = await (deps.readiness?.() ?? {
       status: "not-ready" as const,
       checks: [{
         name: "intelligence_result_consumer" as const,
@@ -65,7 +69,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         code: "NotConfigured",
         safeMessage: "intelligence result consumer readiness is not configured",
       }],
-    };
+    });
     await reply.status(report.status === "ready" ? 200 : 503).send(report);
   });
 

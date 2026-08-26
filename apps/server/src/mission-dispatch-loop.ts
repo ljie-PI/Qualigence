@@ -114,6 +114,16 @@ export interface MissionDispatchLoopOptions {
   readonly maximumBackoffMs?: number;
   readonly setTimeout?: (callback: () => void, delayMs: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
+  readonly onError?: (error: unknown) => void;
+}
+
+export interface MissionDispatchLoopReadiness {
+  readonly status: "ready" | "not-ready";
+  readonly active: boolean;
+  readonly aborted: boolean;
+  readonly inFlight: boolean;
+  readonly consecutiveFailures: number;
+  readonly lastError?: string;
 }
 
 interface BackoffState {
@@ -141,9 +151,13 @@ export class MissionDispatchLoop {
   private readonly setTimer: (callback: () => void, delayMs: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly backoff = new Map<string, BackoffState>();
+  private readonly onError: (error: unknown) => void;
   private timer: unknown;
   private active = false;
   private inFlight: Promise<void> = Promise.resolve();
+  private inFlightActive = false;
+  private consecutiveFailures = 0;
+  private lastError: string | undefined;
 
   constructor(options: MissionDispatchLoopOptions) {
     this.tenantId = nonEmpty(options.tenantId, "tenantId");
@@ -162,6 +176,7 @@ export class MissionDispatchLoop {
     }
     this.setTimer = options.setTimeout ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    this.onError = options.onError ?? (() => undefined);
   }
 
   start(): void {
@@ -177,6 +192,19 @@ export class MissionDispatchLoop {
       this.timer = undefined;
     }
     await this.inFlight;
+  }
+
+  readiness(): MissionDispatchLoopReadiness {
+    const aborted = this.signal?.aborted === true;
+    const status = this.active && !aborted && this.lastError === undefined ? "ready" : "not-ready";
+    return {
+      status,
+      active: this.active,
+      aborted,
+      inFlight: this.inFlightActive,
+      consecutiveFailures: this.consecutiveFailures,
+      ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
+    };
   }
 
   async runOnce(): Promise<MissionDispatchCycleResult> {
@@ -204,10 +232,21 @@ export class MissionDispatchLoop {
     if (!this.active || this.timer !== undefined) return;
     this.timer = this.setTimer(() => {
       this.timer = undefined;
+      this.inFlightActive = true;
       this.inFlight = this.runOnce()
-        .then(() => undefined)
-        .catch(() => undefined)
-        .finally(() => this.schedule(this.intervalMs));
+        .then(() => {
+          this.consecutiveFailures = 0;
+          this.lastError = undefined;
+        })
+        .catch((error: unknown) => {
+          this.consecutiveFailures += 1;
+          this.lastError = errorMessage(error);
+          this.onError(error);
+        })
+        .finally(() => {
+          this.inFlightActive = false;
+          this.schedule(this.intervalMs);
+        });
     }, delayMs);
   }
 

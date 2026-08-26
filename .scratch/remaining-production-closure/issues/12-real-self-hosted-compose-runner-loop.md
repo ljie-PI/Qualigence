@@ -4,7 +4,7 @@
 
 **Blocked by:** 11 — Add resumable Artifact upload to Runner Protocol.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -81,3 +81,7 @@ Run real Compose with a separate external Runner and no in-process substitute. R
 - Every affected context listed above, especially real Self-hosted composition, thin adapters, private infrastructure, readiness stronger than liveness, and external Runner protocol parity.
 - `apps/server/src/main.ts`, `apps/server/src/server.ts`, and `deployments/self-hosted/compose/compose.yaml`.
 - Public API, Runner Protocol, storage, Intelligence, and Evidence contracts delivered by prerequisite tickets, plus the current component/E2E tests named by this ticket's Gates; this ticket composes them without redefining them.
+
+## Comments
+
+- start: base SHA `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e`; predecessor Ticket 11 evidence is merged in current base via PR `https://github.com/ljie-PI/Qualigence/pull/115`, merge commit `bd5155e`, reviewed code/test head `abc350bfe86678dbb87c80fe4ee8e8cc47dffeaf`, and final Ticket 11 Gates/E2E recorded as clean in `.scratch/remaining-production-closure/issues/11-resumable-artifact-upload.md`. Behavior matrix applies in full because the real Self-hosted Compose Runner loop is stateful, side-effecting, authenticated, dependency/readiness-sensitive, retry/reconnect-sensitive, restart-sensitive, timeout/unknown-outcome-sensitive, and terminal-completion-sensitive. Planned Gates: `docker compose --env-file deployments/self-hosted/compose/.env.example -f deployments/self-hosted/compose/compose.yaml config --quiet`, `CI=true corepack pnpm vitest run tests/component/server`, `CI=true corepack pnpm typecheck`, and `git diff --check`. Maintainer-approved ingress exception for this ticket: publish one dedicated authenticated Runner gRPC host port to preserve end-to-end mTLS peer-certificate authentication; PostgreSQL and MinIO remain private/internal-only and no additional public infrastructure ports are in scope. Maintainer-approved lockfile scope expansion: update only the `apps/server` importer in `pnpm-lock.yaml` for the existing workspace dependency `@qualigence/grpc-runner-protocol`, required by the Server-owned Runner gRPC composition and frozen Docker installs.

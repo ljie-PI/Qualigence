@@ -6,6 +6,12 @@ export type {
   IntelligenceResultConsumerLoopOptions,
   IntelligenceResultConsumerLoopReadiness,
 } from "./intelligence-result-consumer-loop.js";
+export { MissionDispatchLoop } from "./mission-dispatch-loop.js";
+export type {
+  MissionDispatchLoopOptions,
+  MissionDispatchLoopReadiness,
+} from "./mission-dispatch-loop.js";
+export { OperationScopedMissionDispatchRepository } from "./operation-scoped-mission-dispatch-repository.js";
 export { bootstrapServerDatabase } from "./bootstrap.js";
 export type { ServerBootstrapInput } from "./bootstrap.js";
 export { provisionAuxSchema } from "./aux-schema.js";

@@ -1,10 +1,12 @@
 # Qualigence Self-hosted edge reverse proxy.
 #
-# The proxy is the ONLY public entrypoint. It terminates TLS, routes /api/* to
-# the Server (stripping the /api prefix so `/api/v1/...` reaches the Server's
-# `/v1/...` routes) and serves everything else from the static Web Console
-# image. The Console responses carry the frozen strict CSP and never expose
-# authorization codes/tokens in proxy logs.
+# The proxy is the public HTTP entrypoint. Ticket 12 publishes the Runner gRPC
+# data plane as a separate Server port so end-to-end mTLS peer-certificate
+# authentication reaches the gRPC server; do not route Runner gRPC through this
+# stock Caddy TLS terminator. Caddy routes /api/* to the Server (stripping the
+# /api prefix so `/api/v1/...` reaches the Server's `/v1/...` routes) and serves
+# everything else from the static Web Console image. The Console responses carry
+# the frozen strict CSP and never expose authorization codes/tokens in proxy logs.
 
 {
 	admin off
@@ -31,6 +33,8 @@
 	}
 
 	# Public API — forward to the Server, stripping the /api prefix.
+	# `/api/readyz` is intentionally the proxy-visible readiness path and is
+	# stronger than `/healthz` because it reflects Server dependencies/loops.
 	handle_path /api/* {
 		reverse_proxy server:8080
 	}

@@ -9,27 +9,32 @@ This is the multi-tenant Team stack — **not** the M1 single-tenant
 
 ```
               ┌───────────────── proxy (Caddy, :443) ─────────────────┐
-   client ──▶ │  TLS · strict CSP · /healthz                          │
+   client ──▶ │  TLS · strict CSP · /healthz · /api/readyz             │
               │    /api/*  ─▶ server:8080  (Public API, /v1/*)         │
               │    else    ─▶ console:8080 (static SPA bundle)         │
               └───────┬───────────────────────────────┬───────────────┘
                       │ internal network only          │
+   runner ──mTLS────▶ ├──── server:50555 (Runner gRPC data plane)      │
+                      │                                                │
              ┌────────▼────────┐              ┌─────────▼─────────┐
              │ server (Node)   │              │ worker (Node)     │
              │ Fastify /v1     │              │ Intelligence loop │
+             │ Runner gRPC     │              │ readiness probe   │
              └───┬─────────┬───┘              └────┬─────────┬────┘
                  │         │                       │         │
            ┌─────▼───┐ ┌───▼──────┐          ┌─────▼───┐ ┌───▼──────┐
-           │postgres │ │ (runner  │          │postgres │ │  minio   │
-           │  :5432  │ │  mTLS in)│          │  :5432  │ │  :9000   │
+           │postgres │ │artifact  │          │postgres │ │  minio   │
+           │  :5432  │ │ dataplane│          │  :5432  │ │  :9000   │
            └─────────┘ └──────────┘          └─────────┘ └──────────┘
 ```
 
-- **Only the proxy is published** (`:443`). PostgreSQL and MinIO have **no**
-  host ports.
-- Runners connect **into** the Server over mTLS using the enrollment CA
-  (`runner_ca_*` secrets); the Server's public routes are reached through the
-  proxy under `/api`.
+- The proxy is the only public **HTTP** entrypoint (`:443`). Ticket 12 also
+  publishes exactly one dedicated Runner gRPC host port (default `:50555`) so
+  the Server receives the Runner's mTLS peer certificate directly. PostgreSQL
+  and MinIO have **no** host ports.
+- Runners connect **into** the Server over end-to-end mTLS using the enrollment
+  CA (`runner_ca_*` plus `runner_server_*` TLS secrets); the Server's public HTTP
+  routes are reached through the proxy under `/api`.
 - The Console is a **static asset image** (Vite `dist/` served by Caddy), never
   a Node process.
 
@@ -71,7 +76,13 @@ docker compose run --rm doctor       # verify DB/RLS/S3/KMS/Server health
 docker compose up -d                 # start postgres, minio, server, worker, console, proxy
 ```
 
-Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness.
+Open `https://<host>/` for the Console; `https://<host>/healthz` for liveness,
+`https://<host>/api/readyz` for dependency/loop readiness, and configure external
+Runners to connect to `grpcs://<host>:${QUALIGENCE_RUNNER_GRPC_PORT:-50555}`.
+Readiness is intentionally stronger than liveness: Server readiness checks
+PostgreSQL, object-storage reachability, artifact data-plane storage, Runner
+gRPC, Mission dispatch loops, and the Intelligence Result consumer; Compose
+healthchecks also probe Worker, Console, and proxy dependencies.
 
 ## Backup, restore & upgrade runbook
 
