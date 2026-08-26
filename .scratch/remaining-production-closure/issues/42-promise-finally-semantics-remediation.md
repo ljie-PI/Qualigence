@@ -148,3 +148,13 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 - Fix commit: `092a0a65257bb993576763af4b4d28b98f6aa8ee` (`Fix Ticket 42 review3 Promise finally semantics`).
 - Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
 - Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### review4-fix — 2026-08-26
+
+- Reviewed head fixed: `2e9d44a3b82d208fcfe1c48fd73e57ad219aec97`.
+- Review4 core blocker fixed: manual `Promise.prototype.catch`/`finally` paths no longer synthesize divergent synchronous `TypeError` messages for non-callable receiver `then`, primitive `finally` receivers, constructor non-object, or invalid/function-valued non-constructor `Symbol.species`. The instrumentation now obtains the corresponding Chromium-native synchronous `TypeError` objects/messages through side-effect-free native Promise probes after the same application-visible Get/order point.
+- Native oracle tightened: synchronous TypeError oracle tagging now compares `errorName` and `errorMessage`, with explicit paired cases for non-callable `then`, primitive `finally` receiver, invalid object species, and arrow species while preserving constructor/species/then getter order checks.
+- Prior fixes preserved: native PromiseResolve/species behavior without public `C.resolve`, Proxy trap-order transparency, accessor default-then counted once, custom receiver methods counted additionally, synchronous throw pending cleanup, epoch/session overflow bounds, and no Ticket43+ owner-registry/snapshot/DOM-geometry scope creep.
+- Fix commit: `4ce7536137ab6ebba7f2302e19b365a5ae76f43b` (`Fix Ticket 42 review4 native TypeErrors`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
