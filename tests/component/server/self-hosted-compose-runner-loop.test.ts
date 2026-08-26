@@ -200,6 +200,23 @@ describe("Self-hosted Docker gate", () => {
     await expect(requireDocker()).resolves.toBeUndefined();
   });
 
+  it("keeps Worker and external Runner harness readiness diagnostics tied to the failing service check", async () => {
+    const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
+    const workerSection = composeServiceSection(compose, "worker");
+    expect(workerSection).toContain("const {Client}=pg.default??pg");
+    expect(workerSection).toContain("console.error(error&&error.stack?error.stack:String(error))");
+
+    const harness = await readFile(join(process.cwd(), "tests/e2e/self-hosted/external-runner-harness.ts"), "utf8");
+    expect(harness).toContain("serverContainerReadiness");
+    expect(harness).toContain("publicProxyReadiness");
+    expect(harness).toContain("formatReadinessProbe");
+    expect(harness).toContain("failingChecks=[");
+    expect(harness).toContain("compose health:");
+    expect(harness).toContain("ExternalRunnerUnavailable: public /api/readyz did not become ready through the proxy");
+    expect(harness).toContain("ExternalRunnerUnavailable: Compose Worker did not become healthy");
+    expect(harness).not.toContain("catch {\n      return undefined;\n    }");
+  });
+
   it("uses the stable DockerUnavailable code when the Docker probe fails", async () => {
     await expect(requireDocker(async () => {
       throw new Error("docker missing");

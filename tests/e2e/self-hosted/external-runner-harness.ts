@@ -85,6 +85,26 @@ interface CommandEnvelope<T> {
   readonly correlationId: string;
 }
 
+interface ReadinessReportDto {
+  readonly status?: string;
+  readonly checks?: readonly {
+    readonly name?: string;
+    readonly status?: string;
+    readonly code?: string;
+    readonly safeMessage?: string;
+    readonly details?: unknown;
+  }[];
+}
+
+interface ReadinessProbeResult {
+  readonly ready: boolean;
+  readonly source: "server-container" | "public-proxy";
+  readonly httpStatus?: number;
+  readonly report?: ReadinessReportDto;
+  readonly body?: string;
+  readonly error?: string;
+}
+
 interface ProjectDto {
   readonly projectId: string;
   readonly version: number;
@@ -208,7 +228,7 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
     return `${output.join("\n")}\n`;
   } catch (error) {
     if (ctx !== undefined) {
-      output.push(await safeComposeLogs(ctx));
+      output.push(await safeComposeDiagnostics(ctx));
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message}\n${output.join("\n")}`, { cause: error });
@@ -403,6 +423,13 @@ console.log("external-runner-harness:database-provisioned");
     "    command: !override []",
     "    volumes:",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    "    healthcheck:",
+    "      test:",
+    "        - CMD-SHELL",
+    "        - >-",
+    "          node -e \"Promise.all([fetch('http://minio:9000/minio/health/ready').then(r=>{if(!r.ok)throw new Error('minio status '+r.status)}),import('pg').then(async (pg)=>{const {Client}=pg.default??pg;const fs=await import('node:fs/promises');const c=new Client({host:process.env.WORKER_PG_HOST,port:Number(process.env.WORKER_PG_PORT),database:process.env.WORKER_PG_DATABASE,user:process.env.WORKER_PG_USER,password:(await fs.readFile(process.env.WORKER_PG_PASSWORD_FILE,'utf8')).trim(),connectionTimeoutMillis:5000});try{await c.connect();await c.query('select 1')}finally{await c.end().catch(()=>undefined)}})]).then(()=>process.exit(0),(error)=>{console.error(error&&error.stack?error.stack:String(error));process.exit(1)})\"",
+    "      timeout: 20s",
+    "      retries: 18",
     "  console:",
     "    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17",
     "    build: !reset null",
@@ -599,30 +626,137 @@ async function waitForDurableEvidence(
 
 async function waitForStackReadiness(ctx: HarnessContext): Promise<void> {
   await poll(async () => {
-    try {
-      const ready = await httpsJson<{ readonly status: string }>(`https://127.0.0.1:${ctx.proxyPort}/api/readyz`, ctx.proxyCaPem, undefined, undefined);
-      return ready.status === "ready" ? true : undefined;
-    } catch {
-      return undefined;
-    }
-  }, 180_000, 2_000, "ExternalRunnerUnavailable: Compose Server readiness did not become ready");
+    const readiness = await serverContainerReadiness(ctx);
+    if (readiness.ready) return true;
+    throw new Error(formatReadinessProbe(readiness));
+  }, 300_000, 2_000, "ExternalRunnerUnavailable: Compose Server readiness did not become ready");
 
-  await poll(async () => (await serviceStatus(ctx, "worker")) === "running" ? true : undefined, 120_000, 2_000, "ExternalRunnerUnavailable: Compose Worker did not keep running");
-  await poll(async () => (await serviceHealth(ctx, "console")) === "healthy" ? true : undefined, 120_000, 2_000, "ExternalRunnerUnavailable: Compose Console did not become healthy");
-  await poll(async () => (await serviceHealth(ctx, "proxy")) === "healthy" ? true : undefined, 120_000, 2_000, "ExternalRunnerUnavailable: Compose proxy did not become healthy");
+  await poll(async () => {
+    const health = await serviceHealth(ctx, "worker");
+    if (health === "healthy") return true;
+    throw new Error(`worker health=${health ?? "missing"}`);
+  }, 120_000, 2_000, "ExternalRunnerUnavailable: Compose Worker did not become healthy");
+  await poll(async () => {
+    const health = await serviceHealth(ctx, "console");
+    if (health === "healthy") return true;
+    throw new Error(`console health=${health ?? "missing"}`);
+  }, 120_000, 2_000, "ExternalRunnerUnavailable: Compose Console did not become healthy");
+  await poll(async () => {
+    const health = await serviceHealth(ctx, "proxy");
+    if (health === "healthy") return true;
+    throw new Error(`proxy health=${health ?? "missing"}`);
+  }, 120_000, 2_000, "ExternalRunnerUnavailable: Compose proxy did not become healthy");
+  await poll(async () => {
+    const readiness = await publicProxyReadiness(ctx);
+    if (readiness.ready) return true;
+    throw new Error(formatReadinessProbe(readiness));
+  }, 120_000, 2_000, "ExternalRunnerUnavailable: public /api/readyz did not become ready through the proxy");
+}
+
+async function serverContainerReadiness(ctx: HarnessContext): Promise<ReadinessProbeResult> {
+  try {
+    const { stdout } = await compose(ctx, [
+      "exec",
+      "-T",
+      "server",
+      "node",
+      "-e",
+      [
+        "fetch('http://127.0.0.1:8080/readyz')",
+        ".then(async (response) => { console.log(JSON.stringify({ status: response.status, body: await response.text() })); })",
+        ".catch((error) => { console.log(JSON.stringify({ error: error && error.stack ? error.stack : String(error) })); })",
+      ].join(""),
+    ], 30_000);
+    const response = parseProbeJson(stdout);
+    return readinessProbeFromText("server-container", response.status, response.body, response.error);
+  } catch (error) {
+    return {
+      ready: false,
+      source: "server-container",
+      error: errorMessage(error),
+    };
+  }
+}
+
+async function publicProxyReadiness(ctx: HarnessContext): Promise<ReadinessProbeResult> {
+  try {
+    const response = await httpsText(`https://127.0.0.1:${ctx.proxyPort}/api/readyz`, ctx.proxyCaPem, undefined, undefined);
+    return readinessProbeFromText("public-proxy", response.status, response.body, undefined);
+  } catch (error) {
+    return {
+      ready: false,
+      source: "public-proxy",
+      error: errorMessage(error),
+    };
+  }
+}
+
+function parseProbeJson(stdout: string): { readonly status?: number; readonly body?: string; readonly error?: string } {
+  const line = stdout.trim().split(/\r?\n/).filter((value) => value.length > 0).at(-1);
+  if (line === undefined) return { error: "empty readiness probe output" };
+  try {
+    const parsed = JSON.parse(line) as { readonly status?: unknown; readonly body?: unknown; readonly error?: unknown };
+    return {
+      ...(typeof parsed.status === "number" ? { status: parsed.status } : {}),
+      ...(typeof parsed.body === "string" ? { body: parsed.body } : {}),
+      ...(typeof parsed.error === "string" ? { error: parsed.error } : {}),
+    };
+  } catch (error) {
+    return { error: `unparseable readiness probe output: ${line}; ${errorMessage(error)}` };
+  }
+}
+
+function readinessProbeFromText(
+  source: ReadinessProbeResult["source"],
+  httpStatus: number | undefined,
+  body: string | undefined,
+  error: string | undefined,
+): ReadinessProbeResult {
+  const report = parseReadinessReport(body);
+  return {
+    ready: httpStatus !== undefined && httpStatus >= 200 && httpStatus < 300 && report?.status === "ready",
+    source,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+    ...(report === undefined ? {} : { report }),
+    ...(body === undefined ? {} : { body }),
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+function parseReadinessReport(body: string | undefined): ReadinessReportDto | undefined {
+  if (body === undefined || body.length === 0) return undefined;
+  try {
+    return JSON.parse(body) as ReadinessReportDto;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatReadinessProbe(result: ReadinessProbeResult): string {
+  const parts = [`${result.source} readiness`];
+  if (result.httpStatus !== undefined) parts.push(`http=${result.httpStatus}`);
+  if (result.report?.status !== undefined) parts.push(`status=${result.report.status}`);
+  const failingChecks = result.report?.checks
+    ?.filter((check) => check.status !== "pass")
+    .map((check) => [
+      check.name ?? "unknown",
+      check.status ?? "unknown",
+      check.code,
+      check.safeMessage,
+      check.details === undefined ? undefined : JSON.stringify(check.details),
+    ].filter((value) => value !== undefined && value.length > 0).join(":"));
+  if (failingChecks !== undefined && failingChecks.length > 0) {
+    parts.push(`failingChecks=[${failingChecks.join("; ")}]`);
+  }
+  if (result.error !== undefined) parts.push(`error=${truncateForDiagnostics(result.error)}`);
+  if (result.report === undefined && result.body !== undefined) parts.push(`body=${truncateForDiagnostics(result.body)}`);
+  return parts.join(" ");
 }
 
 async function serviceHealth(ctx: HarnessContext, service: string): Promise<string | undefined> {
   const id = await serviceContainerId(ctx, service);
   if (id === undefined) return undefined;
   const { stdout } = await runCommand("docker", ["inspect", "-f", "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}", id], { timeout: 30_000 });
-  return stdout.trim();
-}
-
-async function serviceStatus(ctx: HarnessContext, service: string): Promise<string | undefined> {
-  const id = await serviceContainerId(ctx, service);
-  if (id === undefined) return undefined;
-  const { stdout } = await runCommand("docker", ["inspect", "-f", "{{.State.Status}}", id], { timeout: 30_000 });
   return stdout.trim();
 }
 
@@ -790,13 +924,65 @@ async function runCommand(
   }
 }
 
+async function safeComposeDiagnostics(ctx: HarnessContext): Promise<string> {
+  const [state, health, serverReadiness, proxyReadiness, logs] = await Promise.all([
+    safeComposeState(ctx),
+    safeServiceHealthDiagnostics(ctx),
+    serverContainerReadiness(ctx).then(formatReadinessProbe, (error: unknown) => `server-container readiness unavailable: ${errorMessage(error)}`),
+    publicProxyReadiness(ctx).then(formatReadinessProbe, (error: unknown) => `public-proxy readiness unavailable: ${errorMessage(error)}`),
+    safeComposeLogs(ctx),
+  ]);
+  return [
+    "compose diagnostics:",
+    state,
+    health,
+    serverReadiness,
+    proxyReadiness,
+    logs,
+  ].join("\n");
+}
+
+async function safeServiceHealthDiagnostics(ctx: HarnessContext): Promise<string> {
+  const services = ["postgres", "minio", "server", "worker", "console", "proxy"];
+  const diagnostics = await Promise.all(services.map(async (service) => {
+    const id = await serviceContainerId(ctx, service).catch(() => undefined);
+    if (id === undefined) return `${service}: missing`;
+    try {
+      const { stdout } = await runCommand("docker", ["inspect", "-f", "{{json .State.Health}}", id], { timeout: 30_000 });
+      return `${service}: ${truncateForDiagnostics(stdout.trim(), 6_000)}`;
+    } catch (error) {
+      return `${service}: health inspect unavailable: ${errorMessage(error)}`;
+    }
+  }));
+  return `compose health:\n${diagnostics.join("\n")}`;
+}
+
+async function safeComposeState(ctx: HarnessContext): Promise<string> {
+  try {
+    const ps = await compose(ctx, ["ps", "--format", "json"], 60_000);
+    return `compose ps:\n${truncateForDiagnostics(ps.stdout)}`;
+  } catch (error) {
+    return `compose ps unavailable: ${errorMessage(error)}`;
+  }
+}
+
 async function safeComposeLogs(ctx: HarnessContext): Promise<string> {
   try {
-    const logs = await compose(ctx, ["logs", "--no-color", "--tail", "120"], 60_000);
-    return `compose logs (tail):\n${logs.stdout}\n${logs.stderr}`;
+    const logs = await compose(ctx, ["logs", "--no-color", "--tail", "160"], 60_000);
+    return `compose logs (tail):\n${truncateForDiagnostics(`${logs.stdout}\n${logs.stderr}`, 96_000)}`;
   } catch (error) {
-    return `compose logs unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    return `compose logs unavailable: ${errorMessage(error)}`;
   }
+}
+
+function truncateForDiagnostics(value: string, maxLength = 4_000): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}…[truncated ${value.length - maxLength} chars]`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {

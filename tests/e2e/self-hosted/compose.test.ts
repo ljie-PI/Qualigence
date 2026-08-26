@@ -243,6 +243,14 @@ describe("Self-hosted Compose topology invariants", () => {
     }
   });
 
+  it("keeps the Worker healthcheck compatible with the pg CommonJS runtime package", () => {
+    const workerHealthcheck = composeHealthcheckText(config.services.worker);
+    expect(workerHealthcheck).toContain("const {Client}=pg.default??pg");
+    expect(workerHealthcheck).toContain("console.error(error&&error.stack?error.stack:String(error))");
+    expect(workerHealthcheck).toContain("http://minio:9000/minio/health/ready");
+    expect(workerHealthcheck).toContain("select 1");
+  });
+
   it("applies CPU, memory, PID and log-rotation limits", () => {
     for (const name of ["server", "worker"]) {
       const limits = config.services[name]?.deploy?.resources?.limits;
