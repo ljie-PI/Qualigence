@@ -16,6 +16,10 @@ interface AccountingResult {
   readonly omittedThen: RegistrationSnapshot;
   readonly catchCall: RegistrationSnapshot;
   readonly finallyReturningPromise: RegistrationSnapshot;
+  readonly finallyThenableNestedRegistration: RegistrationSnapshot;
+  readonly customCatchDelegatesThen: RegistrationSnapshot;
+  readonly customFinallyDelegatesThen: RegistrationSnapshot;
+  readonly invalidSpeciesThrowCleanup: RegistrationSnapshot;
   readonly nestedApplicationThen: RegistrationSnapshot;
   readonly epochBoundary: RegistrationSnapshot;
   readonly epochOverflow: RegistrationSnapshot;
@@ -25,6 +29,7 @@ interface AccountingResult {
 interface RegistrationSnapshot {
   readonly epochRegistrations: number;
   readonly sessionRegistrations: number;
+  readonly pendingSchedulerCallbacks: number;
   readonly poisoned: boolean;
   readonly callbackRuns: number | string[];
   readonly settlement?: unknown;
@@ -98,6 +103,7 @@ describe("native Promise oracle for sensitive instrumentation", () => {
     expect(accounting.twoHandlerThen).toMatchObject({
       epochRegistrations: 1,
       sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: ["fulfilled"],
       settlement: { status: "fulfilled", value: "ok" },
@@ -105,12 +111,14 @@ describe("native Promise oracle for sensitive instrumentation", () => {
     expect(accounting.omittedThen).toMatchObject({
       epochRegistrations: 1,
       sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       settlement: { status: "fulfilled", value: "pass-through" },
     });
     expect(accounting.catchCall).toMatchObject({
       epochRegistrations: 1,
       sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: ["caught"],
       settlement: { status: "fulfilled", value: "handled" },
@@ -118,13 +126,47 @@ describe("native Promise oracle for sensitive instrumentation", () => {
     expect(accounting.finallyReturningPromise).toMatchObject({
       epochRegistrations: 1,
       sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: ["finally"],
       settlement: { status: "fulfilled", value: "original" },
     });
+    expect(accounting.finallyThenableNestedRegistration).toMatchObject({
+      epochRegistrations: 2,
+      sessionRegistrations: 2,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["finally", "thenable", "nested"],
+      settlement: { status: "fulfilled", value: "original" },
+    });
+    expect(accounting.customCatchDelegatesThen).toMatchObject({
+      epochRegistrations: 2,
+      sessionRegistrations: 2,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["custom-then", "caught"],
+      settlement: { status: "fulfilled", value: "handled" },
+    });
+    expect(accounting.customFinallyDelegatesThen).toMatchObject({
+      epochRegistrations: 2,
+      sessionRegistrations: 2,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: ["custom-then", "finally"],
+      settlement: { status: "fulfilled", value: "custom-finally" },
+    });
+    expect(accounting.invalidSpeciesThrowCleanup).toMatchObject({
+      epochRegistrations: 1,
+      sessionRegistrations: 1,
+      pendingSchedulerCallbacks: 0,
+      poisoned: false,
+      callbackRuns: [],
+      settlement: { status: "threw", reason: { errorName: "TypeError" } },
+    });
     expect(accounting.nestedApplicationThen).toMatchObject({
       epochRegistrations: 2,
       sessionRegistrations: 2,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: ["outer", "nested"],
       settlement: { status: "fulfilled", value: "outer-result" },
@@ -132,18 +174,21 @@ describe("native Promise oracle for sensitive instrumentation", () => {
     expect(accounting.epochBoundary).toMatchObject({
       epochRegistrations: 1024,
       sessionRegistrations: 1024,
+      pendingSchedulerCallbacks: 0,
       poisoned: false,
       callbackRuns: 1024,
     });
     expect(accounting.epochOverflow).toMatchObject({
       epochRegistrations: 1025,
       sessionRegistrations: 1025,
+      pendingSchedulerCallbacks: 0,
       poisoned: true,
       callbackRuns: 1025,
     });
     expect(accounting.sessionOverflow).toMatchObject({
       epochRegistrations: 1,
       sessionRegistrations: 4097,
+      pendingSchedulerCallbacks: 0,
       poisoned: true,
       callbackRuns: ["session-overflow-callback"],
       settlement: { status: "fulfilled", value: "session-overflow" },
@@ -309,19 +354,54 @@ async function runPromiseOracle(input: {
     });
 
     const defaultResult = new DefaultSub<string>((resolve) => resolve("default")).then((value) => value);
-    const baseResult = new BaseSpeciesSub<string>((resolve) => resolve("base")).then((value) => value);
-    const alternateResult = new AlternateSpeciesSub<string>((resolve) => resolve("alternate")).then((value) => value);
-    const nullResult = new NullSpeciesSub<string>((resolve) => resolve("null")).then((value) => value);
-    const invalidResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).then((value) => value));
+    const baseThenResult = new BaseSpeciesSub<string>((resolve) => resolve("base")).then((value) => value);
+    const baseCatchResult = new BaseSpeciesSub<string>((_resolve, reject) => reject("base-catch")).catch((reason) => reason);
+    const baseFinallyResult = new BaseSpeciesSub<string>((resolve) => resolve("base-finally")).finally(() => undefined);
+    const alternateThenResult = new AlternateSpeciesSub<string>((resolve) => resolve("alternate")).then((value) => value);
+    const alternateCatchResult = new AlternateSpeciesSub<string>((_resolve, reject) => reject("alternate-catch")).catch((reason) => reason);
+    const alternateFinallyResult = new AlternateSpeciesSub<string>((resolve) => resolve("alternate-finally")).finally(() => undefined);
+    const nullThenResult = new NullSpeciesSub<string>((resolve) => resolve("null")).then((value) => value);
+    const nullCatchResult = new NullSpeciesSub<string>((_resolve, reject) => reject("null-catch")).catch((reason) => reason);
+    const nullFinallyResult = new NullSpeciesSub<string>((resolve) => resolve("null-finally")).finally(() => undefined);
+    const invalidThenResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).then((value) => value));
+    const invalidCatchResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((_resolve, reject) => reject("invalid")).catch((reason) => reason));
+    const invalidFinallyResult = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).finally(() => undefined));
 
-    await Promise.all([defaultResult, baseResult, alternateResult, nullResult]);
+    await Promise.all([
+      defaultResult,
+      baseThenResult,
+      baseCatchResult,
+      baseFinallyResult,
+      alternateThenResult,
+      alternateCatchResult,
+      alternateFinallyResult,
+      nullThenResult,
+      nullCatchResult,
+      nullFinallyResult,
+    ]);
     return {
       log,
       default: constructorTags(defaultResult, DefaultSub, Alternate),
-      base: constructorTags(baseResult, BaseSpeciesSub, Alternate),
-      alternate: constructorTags(alternateResult, AlternateSpeciesSub, Alternate),
-      null: constructorTags(nullResult, NullSpeciesSub, Alternate),
-      invalid: invalidResult,
+      base: {
+        then: constructorTags(baseThenResult, BaseSpeciesSub, Alternate),
+        catch: constructorTags(baseCatchResult, BaseSpeciesSub, Alternate),
+        finally: constructorTags(baseFinallyResult, BaseSpeciesSub, Alternate),
+      },
+      alternate: {
+        then: constructorTags(alternateThenResult, AlternateSpeciesSub, Alternate),
+        catch: constructorTags(alternateCatchResult, AlternateSpeciesSub, Alternate),
+        finally: constructorTags(alternateFinallyResult, AlternateSpeciesSub, Alternate),
+      },
+      null: {
+        then: constructorTags(nullThenResult, NullSpeciesSub, Alternate),
+        catch: constructorTags(nullCatchResult, NullSpeciesSub, Alternate),
+        finally: constructorTags(nullFinallyResult, NullSpeciesSub, Alternate),
+      },
+      invalid: {
+        then: invalidThenResult,
+        catch: invalidCatchResult,
+        finally: invalidFinallyResult,
+      },
     };
   });
 
@@ -372,7 +452,7 @@ async function runPromiseOracle(input: {
     };
   });
 
-  await runCase("custom-receiver-methods", () => {
+  await runCase("custom-receiver-methods", async () => {
     const log: string[] = [];
     const catchReceiver = Promise.resolve("unused") as Promise<string> & { then: Promise<string>["then"] };
     Object.defineProperty(catchReceiver, "then", {
@@ -400,6 +480,34 @@ async function runPromiseOracle(input: {
     });
     const finallyReturn = finallyReceiver.finally(() => "ignored");
 
+    const delegatedCatchReceiver = Promise.reject("delegated-catch") as Promise<string> & { then: Promise<string>["then"] };
+    Object.defineProperty(delegatedCatchReceiver, "then", {
+      configurable: true,
+      get() {
+        log.push("delegated-catch-get-then");
+        return function (this: Promise<string>, onfulfilled: Parameters<Promise<string>["then"]>[0], onrejected: Parameters<Promise<string>["then"]>[1]) {
+          log.push(`delegated-catch-call-then:${this === delegatedCatchReceiver}:${typeof onfulfilled}:${typeof onrejected}`);
+          return Promise.prototype.then.call(this, onfulfilled, onrejected);
+        };
+      },
+    });
+    const delegatedCatchReturn = delegatedCatchReceiver.catch((reason) => `handled:${reason}`);
+
+    const delegatedFinallyReceiver = Promise.resolve("delegated-finally") as Promise<string> & { then: Promise<string>["then"] };
+    Object.defineProperty(delegatedFinallyReceiver, "then", {
+      configurable: true,
+      get() {
+        log.push("delegated-finally-get-then");
+        return function (this: Promise<string>, onfulfilled: Parameters<Promise<string>["then"]>[0], onrejected: Parameters<Promise<string>["then"]>[1]) {
+          log.push(`delegated-finally-call-then:${this === delegatedFinallyReceiver}:${typeof onfulfilled}:${typeof onrejected}`);
+          return Promise.prototype.then.call(this, onfulfilled, onrejected);
+        };
+      },
+    });
+    const delegatedFinallyReturn = delegatedFinallyReceiver.finally(() => {
+      log.push("delegated-finally-handler");
+    });
+
     const throwingReceiver = Promise.resolve("unused") as Promise<string> & { then: Promise<string>["then"] };
     const accessorReason = { name: "accessor" };
     Object.defineProperty(throwingReceiver, "then", {
@@ -415,6 +523,8 @@ async function runPromiseOracle(input: {
       log,
       catchReturn,
       finallyReturn,
+      delegatedCatch: tagSettlement(await settlement(delegatedCatchReturn)),
+      delegatedFinally: tagSettlement(await settlement(delegatedFinallyReturn)),
       throwingReturn,
     };
   });
@@ -433,6 +543,11 @@ async function runPromiseOracle(input: {
       let cycle: Promise<unknown>;
       cycle = Promise.resolve("cycle").then(() => cycle);
       const cycleSettlement = await settlement(cycle);
+      const handlerThrowReason = { name: "handler-throw" };
+      const handlerThrowSettlement = await settlement(Promise.resolve("throw").then(() => {
+        log.push("handler-throw");
+        throw handlerThrowReason;
+      }));
       await Promise.reject("handled-catch").catch((reason) => {
         log.push(`handled:${reason}`);
       });
@@ -445,6 +560,7 @@ async function runPromiseOracle(input: {
       return {
         log,
         cycle: tagSettlement(cycleSettlement),
+        handlerThrow: tagSettlement(handlerThrowSettlement, { handlerThrowReason }),
         unhandled,
       };
     } finally {
@@ -496,10 +612,23 @@ async function runPromiseAccounting(input: {
       : { status: "rejected", reason: result.reason };
   }
 
+  function tagThrown(value: unknown): unknown {
+    return value instanceof Error ? { errorName: value.name } : value;
+  }
+
+  function synchronousOutcome(operation: () => unknown): unknown {
+    try {
+      return { status: "returned", value: operation() };
+    } catch (reason) {
+      return { status: "threw", reason: tagThrown(reason) };
+    }
+  }
+
   async function measure(
     body: () => {
       readonly callbackRuns: number | string[];
       readonly promise?: Promise<unknown>;
+      readonly settlement?: unknown;
       readonly afterSettle?: () => Promise<void>;
     },
     sessionSeed = 0,
@@ -516,12 +645,17 @@ async function runPromiseAccounting(input: {
       state.active = null;
       state.retainedSchedulerEpochs = [epoch];
     }
-    const settled = plan.promise === undefined ? undefined : tagSettlement(await settlement(plan.promise));
-    await plan.afterSettle?.();
+    if (plan.afterSettle === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } else {
+      await plan.afterSettle();
+    }
+    const settled = plan.promise === undefined ? plan.settlement : tagSettlement(await settlement(plan.promise));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const snapshot = {
       epochRegistrations: epoch.schedulerRegistrations ?? 0,
       sessionRegistrations: state?.schedulerSessionRegistrations ?? 0,
+      pendingSchedulerCallbacks: (epoch as { pendingSchedulerCallbacks?: number }).pendingSchedulerCallbacks ?? 0,
       poisoned: state?.poisoned === true || epoch.poisoned === true,
       callbackRuns: plan.callbackRuns,
       ...(settled === undefined ? {} : { settlement: settled }),
@@ -564,6 +698,74 @@ async function runPromiseAccounting(input: {
         return Promise.resolve("ignored");
       });
       return { callbackRuns, promise };
+    }),
+    finallyThenableNestedRegistration: await measure(() => {
+      const callbackRuns: string[] = [];
+      const promise = Promise.resolve("original").finally(() => {
+        callbackRuns.push("finally");
+        return {
+          then(resolve: (value: string) => void) {
+            callbackRuns.push("thenable");
+            Promise.resolve().then(() => {
+              callbackRuns.push("nested");
+            });
+            resolve("ignored");
+          },
+        };
+      });
+      return {
+        callbackRuns,
+        promise,
+        afterSettle: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+      };
+    }),
+    customCatchDelegatesThen: await measure(() => {
+      const callbackRuns: string[] = [];
+      const receiver = Promise.reject("boom") as Promise<string> & { then: Promise<string>["then"] };
+      Object.defineProperty(receiver, "then", {
+        configurable: true,
+        get() {
+          return function (this: Promise<string>, onfulfilled: Parameters<Promise<string>["then"]>[0], onrejected: Parameters<Promise<string>["then"]>[1]) {
+            callbackRuns.push("custom-then");
+            return Promise.prototype.then.call(this, onfulfilled, onrejected);
+          };
+        },
+      });
+      const promise = receiver.catch(() => {
+        callbackRuns.push("caught");
+        return "handled";
+      });
+      return { callbackRuns, promise };
+    }),
+    customFinallyDelegatesThen: await measure(() => {
+      const callbackRuns: string[] = [];
+      const receiver = Promise.resolve("custom-finally") as Promise<string> & { then: Promise<string>["then"] };
+      Object.defineProperty(receiver, "then", {
+        configurable: true,
+        get() {
+          return function (this: Promise<string>, onfulfilled: Parameters<Promise<string>["then"]>[0], onrejected: Parameters<Promise<string>["then"]>[1]) {
+            callbackRuns.push("custom-then");
+            return Promise.prototype.then.call(this, onfulfilled, onrejected);
+          };
+        },
+      });
+      const promise = receiver.finally(() => {
+        callbackRuns.push("finally");
+      });
+      return { callbackRuns, promise };
+    }),
+    invalidSpeciesThrowCleanup: await measure(() => {
+      class InvalidSpeciesSub<T> extends Promise<T> {}
+      Object.defineProperty(InvalidSpeciesSub, Symbol.species, {
+        configurable: true,
+        get() {
+          return {};
+        },
+      });
+      const outcome = synchronousOutcome(() => new InvalidSpeciesSub<string>((resolve) => resolve("invalid")).then((value) => value));
+      return { callbackRuns: [], settlement: outcome };
     }),
     nestedApplicationThen: await measure(() => {
       const callbackRuns: string[] = [];
