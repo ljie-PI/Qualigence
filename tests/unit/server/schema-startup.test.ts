@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PostgresSchemaError } from "@qualigence/postgres-runtime";
 import { main } from "../../../apps/server/src/main.js";
+import type { ServerConfig } from "../../../apps/server/src/config.js";
 
 describe("Server schema startup guard", () => {
   for (const code of ["SchemaMalformed", "SchemaAhead", "SchemaBehind"] as const) {
@@ -15,7 +16,7 @@ describe("Server schema startup guard", () => {
   }
 });
 
-function serverConfig() {
+function serverConfig(): ServerConfig {
   return {
     host: "127.0.0.1",
     port: 8080,
@@ -34,7 +35,7 @@ function serverConfig() {
       issuer: "https://issuer.example",
       audience: "qualigence",
       allowedAlgorithms: ["RS256" as const],
-      jwksJson: "[]",
+      jwks: { kind: "static", jwksJson: "[]" },
       claimMapper: {
         tenantClaim: "tenant",
         rolesClaim: "roles",

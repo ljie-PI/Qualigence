@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
 import type { PostgresConnectionConfig } from "@qualigence/postgres-runtime";
-import type { ClaimMapperConfig } from "@qualigence/oidc";
-import type { OidcAlgorithm } from "@qualigence/oidc";
+import type { ClaimMapperConfig, OidcAlgorithm } from "@qualigence/oidc";
+
+export type ServerOidcJwksConfig =
+  | { readonly kind: "static"; readonly jwksJson: string }
+  | {
+      readonly kind: "remote";
+      readonly jwksUri: string;
+      readonly timeoutMs: number;
+      readonly cacheTtlMs: number;
+      readonly rotationCooldownMs: number;
+    };
 
 /** Resolved runtime configuration for the Public API Server. */
 export interface ServerConfig {
@@ -37,7 +46,9 @@ export interface ServerConfig {
     readonly issuer: string;
     readonly audience: string;
     readonly allowedAlgorithms: readonly OidcAlgorithm[];
-    readonly jwksJson: string;
+    readonly jwks?: ServerOidcJwksConfig;
+    /** Backward-compatible static JWKS fixture path for direct test composition; runtime config writes `jwks`. */
+    readonly jwksJson?: string;
     readonly claimMapper: ClaimMapperConfig;
   };
   readonly runnerCa: {
@@ -101,12 +112,65 @@ function positiveInteger(raw: string, name: string, maximum: number): number {
   return value;
 }
 
+function nonNegativeInteger(raw: string, name: string, maximum: number): number {
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) throw new Error(`${name} must be a non-negative integer.`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > maximum) throw new Error(`${name} exceeds its maximum.`);
+  return value;
+}
+
+function parseAlgorithms(raw: string): readonly OidcAlgorithm[] {
+  const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  if (values.length === 0 || !values.every((value): value is OidcAlgorithm => value === "RS256" || value === "ES256")) {
+    throw new Error("SERVER_OIDC_ALGORITHMS must contain only RS256 or ES256.");
+  }
+  return [...new Set(values)];
+}
+
+function validateHttpUrl(raw: string, name: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an absolute URL.`);
+  }
+  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username !== "" || parsed.password !== "") {
+    throw new Error(`${name} must use HTTP(S) without credentials.`);
+  }
+  if (parsed.protocol === "http:" && !isLoopback(parsed.hostname)) {
+    throw new Error(`${name} permits HTTP only on loopback.`);
+  }
+  return parsed.toString();
+}
+
+function isLoopback(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
 function tenantList(raw: string | undefined, fallback: readonly string[]): readonly string[] {
   const values = (raw === undefined ? fallback : raw.split(","))
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   if (values.length === 0) throw new Error("At least one Server tenant id must be configured for dispatch readiness.");
   return [...new Set(values)];
+}
+
+function oidcJwksConfig(env: NodeJS.ProcessEnv): ServerOidcJwksConfig {
+  const jwksUri = optionalFromFileOrValue("SERVER_OIDC_JWKS_URI", env);
+  const jwksFile = env.SERVER_OIDC_JWKS_FILE;
+  if (jwksUri !== undefined) {
+    return {
+      kind: "remote",
+      jwksUri: validateHttpUrl(jwksUri, "SERVER_OIDC_JWKS_URI"),
+      timeoutMs: positiveInteger(env.SERVER_OIDC_JWKS_TIMEOUT_MS ?? "5000", "SERVER_OIDC_JWKS_TIMEOUT_MS", 60_000),
+      cacheTtlMs: positiveInteger(env.SERVER_OIDC_JWKS_CACHE_TTL_MS ?? "600000", "SERVER_OIDC_JWKS_CACHE_TTL_MS", 24 * 60 * 60 * 1000),
+      rotationCooldownMs: nonNegativeInteger(env.SERVER_OIDC_JWKS_ROTATION_COOLDOWN_MS ?? "30000", "SERVER_OIDC_JWKS_ROTATION_COOLDOWN_MS", 60_000),
+    };
+  }
+  if (jwksFile !== undefined && jwksFile.length > 0) {
+    return { kind: "static", jwksJson: fileContents("SERVER_OIDC_JWKS_FILE", env) };
+  }
+  throw new Error("SERVER_OIDC_JWKS_URI or SERVER_OIDC_JWKS_FILE is required.");
 }
 
 function optionalRootKey(env: NodeJS.ProcessEnv): Uint8Array | undefined {
@@ -126,6 +190,8 @@ function optionalRootKey(env: NodeJS.ProcessEnv): Uint8Array | undefined {
  */
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const claimMapper = JSON.parse(fileContents("SERVER_OIDC_CLAIM_MAP_FILE", env)) as ClaimMapperConfig;
+  const allowedAlgorithms = parseAlgorithms(env.SERVER_OIDC_ALGORITHMS ?? "RS256");
+  const jwks = oidcJwksConfig(env);
   const runnerGrpcEnabled = env.SERVER_RUNNER_GRPC_ENABLED !== "false";
   const kmsRootKey = optionalRootKey(env);
   const runnerGrpcCert = runnerGrpcEnabled ? optionalFileContents("SERVER_RUNNER_GRPC_TLS_CERT_FILE", env) : undefined;
@@ -173,10 +239,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     oidc: {
       issuer: required("SERVER_OIDC_ISSUER", env),
       audience: required("SERVER_OIDC_AUDIENCE", env),
-      allowedAlgorithms: (env.SERVER_OIDC_ALGORITHMS ?? "RS256")
-        .split(",")
-        .map((value) => value.trim()) as OidcAlgorithm[],
-      jwksJson: fileContents("SERVER_OIDC_JWKS_FILE", env),
+      allowedAlgorithms,
+      jwks,
       claimMapper,
     },
     runnerCa: {

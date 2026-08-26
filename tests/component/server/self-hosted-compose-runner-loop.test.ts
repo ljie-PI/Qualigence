@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadServerConfig, type ServerConfig } from "../../../apps/server/src/config.js";
 import { main } from "../../../apps/server/src/main.js";
+import { buildServer } from "../../../apps/server/src/server.js";
+import type { ServerDeps, ServerReadinessReport } from "../../../apps/server/src/server-context.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,18 +27,45 @@ describe("Self-hosted Server readiness endpoints", () => {
     expect(source).toContain('report.status === "ready" ? 200 : 503');
   });
 
-  it("wires readiness checks for private infrastructure, Runner gRPC, dispatch, and Result consumption", async () => {
+  it("wires readiness checks for private infrastructure, OIDC/JWKS, Runner gRPC, dispatch, and Result consumption", async () => {
     const source = await readFile(join(process.cwd(), "apps/server/src/main.ts"), "utf8");
     for (const check of [
       "postgres",
       "object_storage",
       "artifact_data_plane",
       "kms",
+      "oidc_jwks",
       "runner_grpc",
       "mission_dispatch",
       "intelligence_result_consumer",
     ]) {
       expect(source).toContain(`name: "${check}"`);
+    }
+  });
+
+  it("reports readiness failure and recovery transitions through the Server endpoint", async () => {
+    let report: ServerReadinessReport = {
+      status: "not-ready",
+      checks: [{ name: "oidc_jwks", status: "fail", code: "Unavailable", safeMessage: "OIDC JWKS dependency probe failed" }],
+    };
+    const app = buildServer({ readiness: () => report } as unknown as ServerDeps);
+    try {
+      const failing = await app.inject({ method: "GET", url: "/readyz" });
+      expect(failing.statusCode).toBe(503);
+      expect(failing.json()).toMatchObject({
+        status: "not-ready",
+        checks: [expect.objectContaining({ name: "oidc_jwks", status: "fail" })],
+      });
+
+      report = {
+        status: "ready",
+        checks: [{ name: "oidc_jwks", status: "pass", safeMessage: "OIDC JWKS dependency is available" }],
+      };
+      const recovered = await app.inject({ method: "GET", url: "/readyz" });
+      expect(recovered.statusCode).toBe(200);
+      expect(recovered.json()).toMatchObject({ status: "ready" });
+    } finally {
+      await app.close();
     }
   });
 });
@@ -72,7 +101,10 @@ describe("Self-hosted Server configuration", () => {
       SERVER_SKILL_SIGNING_DATA_DIR: "/var/lib/qualigence/skill-signing",
       SERVER_OIDC_ISSUER: "https://issuer.example.com",
       SERVER_OIDC_AUDIENCE: "qualigence-self-hosted",
-      SERVER_OIDC_JWKS_FILE: files.jwks,
+      SERVER_OIDC_JWKS_URI: "https://issuer.example.com/.well-known/jwks.json",
+      SERVER_OIDC_JWKS_TIMEOUT_MS: "1500",
+      SERVER_OIDC_JWKS_CACHE_TTL_MS: "120000",
+      SERVER_OIDC_JWKS_ROTATION_COOLDOWN_MS: "250",
       SERVER_OIDC_CLAIM_MAP_FILE: files.claimMap,
       SERVER_RUNNER_CA_CERT_FILE: files.runnerCaCert,
       SERVER_RUNNER_CA_KEY_FILE: files.runnerCaKey,
@@ -89,6 +121,13 @@ describe("Self-hosted Server configuration", () => {
       enabled: true,
       tenantIds: ["tenant-a", "tenant-b"],
       batchSize: 32,
+    });
+    expect(config.oidc.jwks).toEqual({
+      kind: "remote",
+      jwksUri: "https://issuer.example.com/.well-known/jwks.json",
+      timeoutMs: 1500,
+      cacheTtlMs: 120000,
+      rotationCooldownMs: 250,
     });
     expect(config.objectStorageReadinessUrl).toBe("http://minio:9000/minio/health/ready");
     expect(config.artifactS3).toMatchObject({
@@ -147,7 +186,7 @@ describe("Self-hosted Server configuration", () => {
         issuer: "https://issuer.example.com",
         audience: "qualigence-self-hosted",
         allowedAlgorithms: ["RS256"],
-        jwksJson: "[]",
+        jwks: { kind: "static", jwksJson: "[]" },
         claimMapper: {
           tenantClaim: "tenant",
           rolesClaim: "roles",
@@ -210,6 +249,8 @@ describe("Self-hosted Docker gate", () => {
     expect(serverSection).toContain("SERVER_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id");
     expect(serverSection).toContain("SERVER_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key");
     expect(serverSection).toContain("SERVER_KMS_ROOT_KEY_BASE64_FILE: /run/secrets/kms_root_key");
+    expect(serverSection).toContain("SERVER_OIDC_JWKS_URI: ${QUALIGENCE_OIDC_JWKS_URI:-}");
+    expect(serverSection).toContain("SERVER_OIDC_JWKS_TIMEOUT_MS: \"5000\"");
     expect(serverSection).toContain("- s3_access_key_id");
     expect(serverSection).toContain("- s3_secret_access_key");
     expect(serverSection).toContain("- kms_root_key");
@@ -233,7 +274,9 @@ describe("Self-hosted Docker gate", () => {
   it("keeps Worker and external Runner harness readiness diagnostics tied to the failing service check", async () => {
     const compose = await readFile(join(process.cwd(), "deployments/self-hosted/compose/compose.yaml"), "utf8");
     const workerSection = composeServiceSection(compose, "worker");
-    expect(workerSection).toContain("const {Client}=pg.default??pg");
+    expect(workerSection).toContain("WORKER_OBJECT_STORAGE_READY_URL: http://minio:9000/minio/health/ready");
+    expect(workerSection).toContain("WORKER_HEALTH_PORT: \"8081\"");
+    expect(workerSection).toContain("http://127.0.0.1:8081/readyz");
     expect(workerSection).toContain("console.error(error&&error.stack?error.stack:String(error))");
 
     const harness = await readFile(join(process.cwd(), "tests/e2e/self-hosted/external-runner-harness.ts"), "utf8");

@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:http";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   ClaimMapper,
   OidcAuthenticator,
   OidcError,
   RbacAuthorizer,
+  RemoteJwksResolver,
   StaticJwksResolver,
   type ClaimMapperConfig,
 } from "@qualigence/oidc";
@@ -42,12 +44,30 @@ function makeAuthenticator(issuer = createTestJwtIssuer("RS256")): {
   return { authenticator, issuer };
 }
 
+const openServers: Server[] = [];
+
+afterEach(async () => {
+  await Promise.all(openServers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+});
+
 function tokenClaims(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return standardClaims({
     [TENANT_CLAIM]: "tenant-a",
     [ROLES_CLAIM]: ["qualigence:tester"],
     ...overrides,
   });
+}
+
+async function startJwksServer(currentJwks: () => unknown, status = () => 200): Promise<string> {
+  const server = createServer((_request, response) => {
+    response.writeHead(status(), { "content-type": "application/json" });
+    response.end(JSON.stringify(currentJwks()));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  openServers.push(server);
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("JWKS test server did not bind");
+  return `http://127.0.0.1:${address.port}/jwks`;
 }
 
 describe("OidcAuthenticator", () => {
@@ -98,6 +118,68 @@ describe("OidcAuthenticator", () => {
     ).rejects.toMatchObject({ code: "SigningKeyUnknown" });
   });
 
+  it("fetches remote JWKS with a bounded cache and refreshes on issuer key rotation", async () => {
+    const first = createTestJwtIssuer("RS256", "first-key");
+    let servedJwks = first.jwks;
+    let fetches = 0;
+    const jwksUri = await startJwksServer(() => {
+      fetches += 1;
+      return servedJwks;
+    });
+    const jwks = new RemoteJwksResolver({
+      jwksUri,
+      allowedAlgorithms: ["RS256"],
+      timeoutMs: 1_000,
+      cacheTtlMs: 60_000,
+      rotationCooldownMs: 0,
+      clock,
+    });
+    const authenticator = new OidcAuthenticator({
+      issuer: "https://oidc.example.test/",
+      audience: "qualigence-self-hosted",
+      allowedAlgorithms: ["RS256"],
+      jwks,
+      clock,
+      claimMapper: new ClaimMapper(claimMapperConfig),
+    });
+
+    await expect(authenticator.authenticate(first.sign(tokenClaims()))).resolves.toMatchObject({ tenantId: "tenant-a" });
+    await expect(authenticator.authenticate(first.sign(tokenClaims()))).resolves.toMatchObject({ tenantId: "tenant-a" });
+    expect(fetches).toBe(1);
+
+    const rotated = createTestJwtIssuer("RS256", "rotated-key");
+    servedJwks = rotated.jwks;
+    await expect(authenticator.authenticate(rotated.sign(tokenClaims()))).resolves.toMatchObject({ subject: "user-123" });
+    expect(fetches).toBe(2);
+  });
+
+  it("fails closed when remote JWKS is unavailable or times out", async () => {
+    let status = 503;
+    const issuer = createTestJwtIssuer("RS256", "available-after-recovery");
+    const jwksUri = await startJwksServer(() => issuer.jwks, () => status);
+    const unavailable = new RemoteJwksResolver({
+      jwksUri,
+      allowedAlgorithms: ["RS256"],
+      timeoutMs: 1_000,
+      cacheTtlMs: 60_000,
+      rotationCooldownMs: 0,
+      clock,
+    });
+    await expect(unavailable.resolve("missing")).rejects.toMatchObject({ code: "JwksUnavailable" });
+    status = 200;
+    await expect(unavailable.refresh()).resolves.toBeUndefined();
+    expect(unavailable.readiness()).toMatchObject({ status: "ready", keyCount: 1 });
+
+    const timeout = new RemoteJwksResolver({
+      jwksUri: "http://127.0.0.1:1/jwks",
+      allowedAlgorithms: ["RS256"],
+      timeoutMs: 1,
+      fetcher: async () => new Promise<Response>(() => undefined),
+      clock,
+    });
+    await expect(timeout.resolve("any")).rejects.toMatchObject({ code: "JwksTimeout" });
+  });
+
   it("rejects a token whose signature does not verify", async () => {
     const { authenticator, issuer } = makeAuthenticator();
     const token = issuer.sign(tokenClaims());
@@ -128,6 +210,16 @@ describe("OidcAuthenticator", () => {
     const { authenticator, issuer } = makeAuthenticator();
     await expect(
       authenticator.authenticate(issuer.sign(tokenClaims({ [ROLES_CLAIM]: ["superuser"] }))),
+    ).rejects.toMatchObject({ code: "RoleNotAllowed" });
+  });
+
+  it("rejects malformed subject and role claims (fail closed)", async () => {
+    const { authenticator, issuer } = makeAuthenticator();
+    await expect(
+      authenticator.authenticate(issuer.sign(tokenClaims({ sub: "" }))),
+    ).rejects.toMatchObject({ code: "TokenMalformed" });
+    await expect(
+      authenticator.authenticate(issuer.sign(tokenClaims({ [ROLES_CLAIM]: ["qualigence:tester", 42] }))),
     ).rejects.toMatchObject({ code: "RoleNotAllowed" });
   });
 });

@@ -14,6 +14,7 @@ import {
   PostgresSchemaError,
 } from "@qualigence/postgres-runtime";
 import { main as serverMain } from "../../../apps/server/src/main.js";
+import type { ServerConfig } from "../../../apps/server/src/config.js";
 import { main as workerMain } from "../../../apps/intelligence-worker/src/main.js";
 import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 
@@ -366,7 +367,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     };
   }
 
-  function serverStartupConfig(input: SelfHostedAdminConfig) {
+  function serverStartupConfig(input: SelfHostedAdminConfig): ServerConfig {
     return {
       host: "127.0.0.1",
       port: 8080,
@@ -385,7 +386,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
         issuer: "https://issuer.example",
         audience: "qualigence",
         allowedAlgorithms: ["RS256" as const],
-        jwksJson: "[]",
+        jwks: { kind: "static", jwksJson: "[]" },
         claimMapper: {
           tenantClaim: "tenant",
           rolesClaim: "roles",

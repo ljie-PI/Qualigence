@@ -28,7 +28,7 @@ export class ClaimMapper {
 
   map(subject: string, claims: Readonly<Record<string, unknown>>): RequestPrincipal {
     const tenantValue = claims[this.config.tenantClaim];
-    if (typeof tenantValue !== "string" || tenantValue.length === 0) {
+    if (typeof tenantValue !== "string" || tenantValue.trim().length === 0) {
       throw new OidcError("TenantClaimMissing", `missing claim ${this.config.tenantClaim}`);
     }
     if (!this.allowedTenants.has(tenantValue)) {
@@ -36,13 +36,16 @@ export class ClaimMapper {
     }
 
     const rawRoles = claims[this.config.rolesClaim];
-    const roleValues =
-      typeof rawRoles === "string"
-        ? [rawRoles]
-        : Array.isArray(rawRoles)
-          ? rawRoles.filter((value): value is string => typeof value === "string")
-          : undefined;
-    if (roleValues === undefined || roleValues.length === 0) {
+    let roleValues: readonly string[] | undefined;
+    if (typeof rawRoles === "string") {
+      roleValues = [rawRoles];
+    } else if (Array.isArray(rawRoles)) {
+      if (!rawRoles.every((value): value is string => typeof value === "string")) {
+        throw new OidcError("RoleNotAllowed", `claim ${this.config.rolesClaim} contains a non-string role`);
+      }
+      roleValues = rawRoles;
+    }
+    if (roleValues === undefined || roleValues.length === 0 || roleValues.some((value) => value.trim().length === 0)) {
       throw new OidcError("RoleClaimMissing", `missing claim ${this.config.rolesClaim}`);
     }
 

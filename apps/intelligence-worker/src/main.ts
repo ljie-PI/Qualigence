@@ -11,6 +11,7 @@ import type { IntelligenceJobType } from "@qualigence/intelligence";
 import { loadWorkerConfig } from "./config.js";
 import { InvestigationJobProcessor } from "./investigation-job-processor.js";
 import { S3ContextSource } from "./s3-context-source.js";
+import { WorkerHealthServer } from "./health-server.js";
 import { WorkerLoop } from "./worker-loop.js";
 
 const ACCEPTED_TYPES: readonly IntelligenceJobType[] = [
@@ -62,6 +63,15 @@ export async function main(
       console.error("[intelligence-worker] job processing failed", error);
     },
   });
+  const health = new WorkerHealthServer({
+    host: config.health.host,
+    port: config.health.port,
+    postgresProbe: async () => {
+      await assertSchema(config.postgres, config.serverPostgresRole);
+    },
+    ...(config.objectStorageReadinessUrl === undefined ? {} : { objectStorageReadinessUrl: config.objectStorageReadinessUrl }),
+    loopReadiness: () => loop.readiness(),
+  });
 
   const abort = new AbortController();
   const shutdown = (): void => {
@@ -70,10 +80,12 @@ export async function main(
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
+  await health.listen();
   console.error(`[intelligence-worker] ${config.workerId} started`);
   try {
     await loop.run(abort.signal);
   } finally {
+    await health.close().catch((error) => console.error("[intelligence-worker] health server close failed", error));
     await queue.close();
     console.error(`[intelligence-worker] ${config.workerId} stopped`);
   }

@@ -2,8 +2,10 @@ import {
   ClaimMapper,
   OidcAuthenticator,
   RbacAuthorizer,
+  RemoteJwksResolver,
   StaticJwksResolver,
   signingKeyFromPem,
+  type JwksResolver,
   type OidcAlgorithm,
   type OidcSigningKey,
 } from "@qualigence/oidc";
@@ -77,6 +79,30 @@ function artifactStoreFactory(config: ServerConfig, clock: Clock): ArtifactStore
   );
 }
 
+function buildJwksResolver(config: ServerConfig): JwksResolver {
+  const jwksConfig = config.oidc.jwks ?? (config.oidc.jwksJson === undefined
+    ? undefined
+    : { kind: "static" as const, jwksJson: config.oidc.jwksJson });
+  if (jwksConfig === undefined) {
+    throw new Error("OIDC JWKS configuration is required");
+  }
+  if (jwksConfig.kind === "remote") {
+    return new RemoteJwksResolver({
+      jwksUri: jwksConfig.jwksUri,
+      allowedAlgorithms: config.oidc.allowedAlgorithms,
+      timeoutMs: jwksConfig.timeoutMs,
+      cacheTtlMs: jwksConfig.cacheTtlMs,
+      rotationCooldownMs: jwksConfig.rotationCooldownMs,
+      clock: systemClock,
+    });
+  }
+  const jwksEntries = JSON.parse(jwksConfig.jwksJson) as readonly JwksEntry[];
+  const keys: OidcSigningKey[] = jwksEntries.map((entry) =>
+    signingKeyFromPem(entry.kid, entry.alg, entry.publicKeyPem),
+  );
+  return new StaticJwksResolver(keys);
+}
+
 /** Boot the Public API Server: wire OIDC/RBAC, PostgreSQL runtime, and the Runner CA. */
 export async function main(
   env: NodeJS.ProcessEnv = process.env,
@@ -86,16 +112,13 @@ export async function main(
   const config = loadConfig(env);
   await assertSchema(config.postgres, config.postgres.user);
 
-  const jwksEntries = JSON.parse(config.oidc.jwksJson) as readonly JwksEntry[];
-  const keys: OidcSigningKey[] = jwksEntries.map((entry) =>
-    signingKeyFromPem(entry.kid, entry.alg, entry.publicKeyPem),
-  );
+  const jwks = buildJwksResolver(config);
 
   const oidc = new OidcAuthenticator({
     issuer: config.oidc.issuer,
     audience: config.oidc.audience,
     allowedAlgorithms: config.oidc.allowedAlgorithms,
-    jwks: new StaticJwksResolver(keys),
+    jwks,
     clock: systemClock,
     claimMapper: new ClaimMapper(config.oidc.claimMapper),
   });
@@ -210,6 +233,7 @@ export async function main(
       runnerGrpcReady,
       missionDispatchLoops,
       resultConsumerLoop,
+      jwks,
     }),
   };
 
@@ -272,6 +296,7 @@ interface ReadinessInput {
   readonly runnerGrpcReady: boolean;
   readonly missionDispatchLoops: readonly MissionDispatchLoop[];
   readonly resultConsumerLoop: IntelligenceResultConsumerLoop;
+  readonly jwks: JwksResolver;
 }
 
 async function readinessReport(input: ReadinessInput): Promise<ServerReadinessReport> {
@@ -280,11 +305,7 @@ async function readinessReport(input: ReadinessInput): Promise<ServerReadinessRe
   checks.push(await objectStorageCheck(input.config.objectStorageReadinessUrl));
   checks.push(await artifactDataPlaneCheck(input.config.artifactDataDir));
   checks.push(kmsCheck(input.config));
-  checks.push({
-    name: "oidc_jwks",
-    status: "pass",
-    safeMessage: "OIDC issuer, audience and JWKS were loaded at startup",
-  });
+  checks.push(await oidcJwksCheck(input.jwks));
   checks.push(runnerGrpcCheck(input.config.runnerGrpc?.enabled === true, input.runnerGrpcReady));
   checks.push(missionDispatchCheck(input.config.missionDispatch?.enabled === true, input.missionDispatchLoops));
   checks.push(intelligenceResultConsumerCheck(input.config.intelligenceResultConsumer.enabled, input.resultConsumerLoop.readiness()));
@@ -343,6 +364,25 @@ async function artifactDataPlaneCheck(artifactDataDir: string): Promise<ServerRe
     return { name: "artifact_data_plane", status: "pass", safeMessage: "artifact data-plane storage is writable and readable" };
   } catch (error) {
     return fail("artifact_data_plane", "Unavailable", "artifact data-plane storage probe failed", { error: errorMessage(error) });
+  }
+}
+
+async function oidcJwksCheck(jwks: JwksResolver): Promise<ServerReadinessCheck> {
+  try {
+    await jwks.refresh?.();
+    const readiness = jwks.readiness?.();
+    const pass = readiness === undefined || readiness.status === "ready";
+    return {
+      name: "oidc_jwks",
+      status: pass ? "pass" : "fail",
+      ...(pass ? {} : { code: "Unavailable" }),
+      safeMessage: pass
+        ? "OIDC JWKS dependency is available with bounded cache/rotation policy"
+        : "OIDC JWKS dependency is not ready",
+      ...(readiness === undefined ? {} : { details: readiness as unknown as Readonly<Record<string, unknown>> }),
+    };
+  } catch (error) {
+    return fail("oidc_jwks", "Unavailable", "OIDC JWKS dependency probe failed", { error: errorMessage(error) });
   }
 }
 

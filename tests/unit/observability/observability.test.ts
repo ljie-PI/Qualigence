@@ -36,13 +36,14 @@ describe("StructuredLogger", () => {
     logger.info("connecting", {
       user: "server_role",
       password: "hunter2",
-      nested: { apiKey: "sk-live-123", token: "tok_abc" },
+      nested: { apiKey: "sk-live-123", token: "tok_abc", "artifact-id": "artifact-123" },
       list: [{ secretAccessKey: "aws-secret" }],
     });
     const record = records[0]!;
     expect(record.password).toBe(REDACTED);
     expect((record.nested as Record<string, unknown>).apiKey).toBe(REDACTED);
     expect((record.nested as Record<string, unknown>).token).toBe(REDACTED);
+    expect((record.nested as Record<string, unknown>)["artifact-id"]).toBe(REDACTED);
     const list = record.list as Array<Record<string, unknown>>;
     expect(list[0]!.secretAccessKey).toBe(REDACTED);
     // Non-sensitive fields survive.
@@ -97,6 +98,8 @@ describe("MetricsRegistry", () => {
       /disallowed metric label/i,
     );
     expect(() => counter.inc(1, { prompt: "hi" })).toThrow(/disallowed metric label/i);
-    expect(() => counter.inc(1, { artifactId: "abc" })).toThrow(/disallowed metric label/i);
+    expect(() => counter.inc(1, { "artifact-id": "abc" })).toThrow(/disallowed metric label/i);
+    expect(() => counter.inc(1, { operation: "GET /evidence?artifactId=abc" })).toThrow(/disallowed metric label value/i);
+    expect(() => counter.inc(1, { operation: `Bearer ${"x".repeat(96)}` })).toThrow(/disallowed metric label value/i);
   });
 });

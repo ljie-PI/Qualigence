@@ -250,7 +250,11 @@ services:
       SERVER_OIDC_ISSUER: ${QUALIGENCE_OIDC_ISSUER:?set the OIDC issuer}
       SERVER_OIDC_AUDIENCE: ${QUALIGENCE_OIDC_AUDIENCE:?set the OIDC audience}
       SERVER_OIDC_ALGORITHMS: "RS256,ES256"
+      SERVER_OIDC_JWKS_URI: ${QUALIGENCE_OIDC_JWKS_URI:-}
       SERVER_OIDC_JWKS_FILE: /run/secrets/oidc_jwks
+      SERVER_OIDC_JWKS_TIMEOUT_MS: "5000"
+      SERVER_OIDC_JWKS_CACHE_TTL_MS: "600000"
+      SERVER_OIDC_JWKS_ROTATION_COOLDOWN_MS: "30000"
       SERVER_OIDC_CLAIM_MAP_FILE: /run/secrets/oidc_claim_map
       SERVER_RUNNER_CA_CERT_FILE: /run/secrets/runner_ca_cert
       SERVER_RUNNER_CA_KEY_FILE: /run/secrets/runner_ca_key
@@ -321,6 +325,9 @@ services:
       WORKER_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id
       WORKER_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key
       WORKER_S3_FORCE_PATH_STYLE: "true"
+      WORKER_OBJECT_STORAGE_READY_URL: http://minio:9000/minio/health/ready
+      WORKER_HEALTH_HOST: 127.0.0.1
+      WORKER_HEALTH_PORT: "8081"
       WORKER_MODEL_BASE_URL: ${QUALIGENCE_MODEL_BASE_URL:?set the model base URL}
       WORKER_MODEL_API_KEY_FILE: /run/secrets/worker_model_api_key
       WORKER_MODEL_NAME: ${QUALIGENCE_MODEL_NAME:?set the model name}
@@ -334,13 +341,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          node -e "Promise.all([
-          fetch('http://minio:9000/minio/health/ready').then(r=>{if(!r.ok)throw new Error('minio status '+r.status)}),
-          import('pg').then(async (pg)=>{const {Client}=pg.default??pg;const fs=await import('node:fs/promises');const c=new Client({host:process.env.WORKER_PG_HOST,port:Number(process.env.WORKER_PG_PORT),database:process.env.WORKER_PG_DATABASE,user:process.env.WORKER_PG_USER,password:(await fs.readFile(process.env.WORKER_PG_PASSWORD_FILE,'utf8')).trim(),connectionTimeoutMillis:2000});try{await c.connect();await c.query('select 1')}finally{await c.end().catch(()=>undefined)}})
-          ]).then(()=>process.exit(0),(error)=>{console.error(error&&error.stack?error.stack:String(error));process.exit(1)})"
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8081/readyz').then(r=>r.ok?process.exit(0):r.text().then(t=>{console.error(t);process.exit(1)})).catch((error)=>{console.error(error&&error.stack?error.stack:String(error));process.exit(1)})\""]
       interval: 10s
       timeout: 5s
       retries: 12
