@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
+import { ARTIFACT_CHUNK_SIZE_BYTES } from "@qualigence/runner-protocol";
 import pg from "pg";
 import { PostgresSkillStore, type PostgresConnectionConfig } from "@qualigence/postgres-runtime";
 import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES } from "@qualigence/skill";
@@ -94,6 +97,29 @@ async function seedRunApiRows(fx: ServerFixture, tenantId: string): Promise<void
     await db.insertInto("trace_events").values({ tenant_id: tenantId, run_id: `api-run-${tenantId}`, sequence_number: 1, message_id: `api-message-${tenantId}`, idempotency_key: `api-trace-${tenantId}`, stage: "observation", occurred_at: "2026-08-23T00:00:01.000Z", payload_hash: "a".repeat(64), envelope_json: "{}" } as never).execute();
     await db.insertInto("findings").values({ tenant_id: tenantId, finding_id: `finding-${tenantId}`, run_id: `api-run-${tenantId}`, payload_hash: "b".repeat(64), envelope_json: "{}", created_at: "2026-08-23T00:00:02.000Z" } as never).execute();
     await db.insertInto("artifact_manifests").values({ tenant_id: tenantId, artifact_id: `artifact-${tenantId}`, run_id: `api-run-${tenantId}`, kind: "screenshot", media_type: "image/png", relative_path: `api-run-${tenantId}/screen.png`, sha256: "c".repeat(64), size_bytes: 16, created_at: "2026-08-23T00:00:03.000Z" } as never).execute();
+  });
+}
+
+async function seedEvidenceArtifact(
+  fx: ServerFixture,
+  input: { tenantId: string; projectId: string; runId: string; artifactId: string; bytes: Uint8Array },
+): Promise<void> {
+  const store = new LocalArtifactStore(join(fx.artifactDataDir, input.tenantId, input.projectId), { now: () => "2026-08-23T00:00:03.000Z" });
+  const manifest = await store.write({
+    artifactId: input.artifactId,
+    runId: input.runId,
+    name: `${input.artifactId}.txt`,
+    kind: "log",
+    mediaType: "text/plain",
+    bytes: input.bytes,
+  });
+  await fx.provider.withTenant(input.tenantId, async ({ db }) => {
+    await db.insertInto("missions").values({ tenant_id: input.tenantId, mission_id: `evidence-mission-${input.projectId}`, revision: 1, project_id: input.projectId, plan_id: `evidence-plan-${input.projectId}`, prd_id: `evidence-prd-${input.projectId}`, prd_revision: 1, target_id: `evidence-target-${input.projectId}`, compiled_hash: `evidence-compiled-${input.projectId}`, status: "running", dispatch_json: "{}", stop_on_blocked: 1 } as never).execute();
+    await db.insertInto("execution_jobs").values({ tenant_id: input.tenantId, job_id: `evidence-logical-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, test_case_id: `evidence-case-${input.projectId}`, objective: "Evidence API read", required_capabilities_json: "[]", source_refs_json: "[]", snapshot_hash: `evidence-snapshot-${input.projectId}`, snapshot_json: "{}", idempotency_key: `evidence-logical-${input.projectId}`, status: "queued" } as never).execute();
+    await db.insertInto("execution_runs").values({ tenant_id: input.tenantId, run_id: input.runId, job_id: `evidence-runner-job-${input.projectId}`, target_kind: "web", objective: "Evidence API read", status: "running", next_sequence_number: 1, created_at: "2026-08-23T00:00:00.000Z", completed_at: null, error_code: null } as never).execute();
+    await db.insertInto("mission_job_attempts").values({ tenant_id: input.tenantId, attempt_id: `evidence-attempt-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, logical_job_id: `evidence-logical-${input.projectId}`, runner_job_id: `evidence-runner-job-${input.projectId}`, run_id: input.runId, status: "accepted", created_at: "2026-08-23T00:00:00.000Z" } as never).execute();
+    await db.insertInto("artifact_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, run_id: manifest.runId, kind: manifest.kind, media_type: manifest.mediaType, relative_path: manifest.relativePath, sha256: manifest.sha256, size_bytes: manifest.size, created_at: manifest.createdAt } as never).execute();
+    await db.insertInto("artifact_upload_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, project_id: input.projectId, run_id: manifest.runId, job_id: `evidence-runner-job-${input.tenantId}`, size_bytes: manifest.size, sha256: manifest.sha256, media_type: manifest.mediaType, sensitivity: "sensitive", chunk_size_bytes: ARTIFACT_CHUNK_SIZE_BYTES, total_chunks: Math.ceil(manifest.size / ARTIFACT_CHUNK_SIZE_BYTES), registered_by_runner_id: `runner-${input.projectId}`, registered_lease_epoch: 1, status: "verified", relative_path: manifest.relativePath, created_at: manifest.createdAt, verified_at: manifest.createdAt } as never).execute();
   });
 }
 
@@ -364,6 +390,87 @@ describe("Public API v1 contract", () => {
       expect(hidden.status).toBe(404);
       const hiddenTrace = await fetch(url("/v1/runs/api-run-tenant-b/trace"), { headers });
       expect(hiddenTrace.status).toBe(404);
+    });
+  });
+
+  describe("Evidence API", () => {
+    it("serves authorized artifact metadata and bytes without exposing cross-tenant or wrong-purpose plaintext", async () => {
+      const secret = new TextEncoder().encode("tenant-a plaintext evidence");
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-project-a",
+        runId: "evidence-run-a",
+        artifactId: "evidence-artifact-a",
+        bytes: secret,
+      });
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-b",
+        projectId: "evidence-project-b",
+        runId: "evidence-run-b",
+        artifactId: "evidence-artifact-b",
+        bytes: new TextEncoder().encode("tenant-b plaintext evidence"),
+      });
+
+      const tenantAHeaders = { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` };
+      const metadata = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a?purpose=investigation"), { headers: tenantAHeaders });
+      expect(metadata.status).toBe(200);
+      expect(await metadata.json()).toEqual({
+        artifactId: "evidence-artifact-a",
+        runId: "evidence-run-a",
+        kind: "log",
+        mediaType: "text/plain",
+        size: secret.byteLength,
+        sha256: createHash("sha256").update(secret).digest("hex"),
+        downloadAllowed: true,
+      });
+
+      const bytes = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=investigation"), { headers: tenantAHeaders });
+      expect(bytes.status).toBe(200);
+      expect(await bytes.text()).toBe("tenant-a plaintext evidence");
+
+      const wrongPurpose = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=export"), { headers: tenantAHeaders });
+      expect(wrongPurpose.status).toBe(422);
+      expect(await wrongPurpose.text()).not.toContain("tenant-a plaintext evidence");
+
+      const wrongProject = await fetch(url("/v1/projects/evidence-project-b/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=investigation"), { headers: tenantAHeaders });
+      expect(wrongProject.status).toBe(404);
+      expect(await wrongProject.text()).not.toContain("tenant-a plaintext evidence");
+
+      const tenantBHeaders = { authorization: `Bearer ${fx.token("tenant-b", ["viewer"])}` };
+      const hidden = await fetch(url("/v1/projects/evidence-project-a/runs/evidence-run-a/artifacts/evidence-artifact-a/bytes?purpose=investigation"), { headers: tenantBHeaders });
+      expect(hidden.status).toBe(404);
+      expect(await hidden.text()).not.toContain("tenant-a plaintext evidence");
+    });
+
+    it("fails closed when byte storage is unavailable", async () => {
+      const secret = new TextEncoder().encode("unavailable plaintext evidence");
+      await seedEvidenceArtifact(fx, {
+        tenantId: "tenant-a",
+        projectId: "evidence-unavailable-project",
+        runId: "evidence-unavailable-run",
+        artifactId: "evidence-unavailable-artifact",
+        bytes: secret,
+      });
+      await fx.provider.withTenant("tenant-a", async ({ db }) => {
+        await db
+          .updateTable("artifact_manifests")
+          .set({ relative_path: "evidence-unavailable-run/missing.txt" })
+          .where("tenant_id", "=", "tenant-a")
+          .where("artifact_id", "=", "evidence-unavailable-artifact")
+          .execute();
+        await db
+          .updateTable("artifact_upload_manifests")
+          .set({ relative_path: "evidence-unavailable-run/missing.txt" })
+          .where("tenant_id", "=", "tenant-a")
+          .where("artifact_id", "=", "evidence-unavailable-artifact")
+          .execute();
+      });
+
+      const res = await fetch(url("/v1/projects/evidence-unavailable-project/runs/evidence-unavailable-run/artifacts/evidence-unavailable-artifact/bytes?purpose=investigation"), {
+        headers: { authorization: `Bearer ${fx.token("tenant-a", ["viewer"])}` },
+      });
+      expect(res.status).toBe(503);
+      expect(await res.text()).not.toContain("unavailable plaintext evidence");
     });
   });
 

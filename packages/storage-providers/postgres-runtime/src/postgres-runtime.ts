@@ -193,6 +193,22 @@ export async function migratePostgres(
                   updated_at = least(intelligence_result_wakeups.updated_at, excluded.updated_at)
           `.execute(trx);
         }
+        if (step.version === 15) {
+          await sql`
+            alter table evidence_capsule_manifests
+            add column lifecycle_state text not null default 'active'
+            check (lifecycle_state in ('active', 'revoking', 'revoked', 'deleting', 'deleted'))
+          `.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column lifecycle_updated_at text`.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column deleted_at text`.execute(trx);
+          await sql`alter table evidence_capsule_manifests add column last_lifecycle_error text`.execute(trx);
+          await sql`
+            update evidence_capsule_manifests
+               set lifecycle_state = revocation_state,
+                   lifecycle_updated_at = coalesce(revoked_at, created_at)
+             where lifecycle_state = 'active'
+          `.execute(trx);
+        }
         if (input.roles !== undefined) {
           await applyRowLevelSecurity(trx, input.roles, step.tables);
         }

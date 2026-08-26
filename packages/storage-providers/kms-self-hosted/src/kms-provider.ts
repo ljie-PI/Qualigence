@@ -319,8 +319,9 @@ export class SelfHostedKms implements KeyManagementProvider {
   }
 
   async revoke(capsuleId: string, _reason: string): Promise<void> {
+    this.assertAvailable("revoke");
     this.revokedCapsules.add(capsuleId);
-    void this.emitRaw({
+    await this.emitRaw({
       operation: "revoke",
       decision: "allowed",
       reasonCode: "capsule_revoked",
@@ -331,9 +332,10 @@ export class SelfHostedKms implements KeyManagementProvider {
 
   /** Revoke every wrapping-key version for a scope, disabling future unwraps. */
   async revokeScope(input: EvidenceKeyScope, _reason: string): Promise<void> {
+    this.assertAvailable("revoke");
     const id = scopeId(input);
     this.store.markScopeRevoked(id);
-    void this.emit("revoke", "allowed", "scope_revoked", input);
+    await this.emit("revoke", "allowed", "scope_revoked", input);
   }
 
   private ensurePrimaryVersion(scope: EvidenceKeyScope): StoredKmsKeyVersion {

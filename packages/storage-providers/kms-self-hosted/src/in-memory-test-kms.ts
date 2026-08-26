@@ -170,6 +170,7 @@ export class InMemoryTestKms implements KeyManagementProvider {
   }
 
   async revoke(capsuleId: string, _reason: string): Promise<void> {
+    this.assertAvailable();
     this.revokedCapsules.add(capsuleId);
   }
 

@@ -14,8 +14,9 @@ import { migration011 } from "./migrations/011-exploration-attempt-progress.js";
 import { migration012 } from "./migrations/012-intelligence-leases-results.js";
 import { migration013 } from "./migrations/013-intelligence-result-wakeups-dispositions.js";
 import { migration014 } from "./migrations/014-artifact-upload.js";
+import { migration015 } from "./migrations/015-evidence-lifecycle.js";
 
-export const SUPPORTED_SCHEMA_VERSION = 14;
+export const SUPPORTED_SCHEMA_VERSION = 15;
 
 export interface Migration {
   readonly version: number;
@@ -148,4 +149,5 @@ export const MIGRATIONS: readonly Migration[] = [
   migration012,
   migration013,
   migration014,
+  migration015,
 ];

@@ -45,6 +45,14 @@ export interface ServerConfig {
     readonly privateKeyPem: string;
   };
   readonly artifactDataDir: string;
+  readonly artifactS3?: {
+    readonly region: string;
+    readonly endpoint?: string;
+    readonly bucket: string;
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly forcePathStyle: boolean;
+  };
   readonly objectStorageReadinessUrl?: string;
   readonly skillSigningDataDir?: string;
 }
@@ -59,6 +67,14 @@ function required(name: string, env: NodeJS.ProcessEnv): string {
 
 function fileContents(name: string, env: NodeJS.ProcessEnv): string {
   return readFileSync(required(name, env), "utf8");
+}
+
+function fromFileOrValue(name: string, env: NodeJS.ProcessEnv): string {
+  const filePath = env[`${name}_FILE`];
+  if (filePath !== undefined && filePath.length > 0) {
+    return readFileSync(filePath, "utf8").trim();
+  }
+  return required(name, env);
 }
 
 function optionalFileContents(name: string, env: NodeJS.ProcessEnv): Buffer | undefined {
@@ -145,6 +161,18 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       privateKeyPem: fileContents("SERVER_RUNNER_CA_KEY_FILE", env),
     },
     artifactDataDir: env.SERVER_ARTIFACT_DATA_DIR ?? ".qualigence-server/artifacts",
+    ...(env.SERVER_S3_BUCKET === undefined
+      ? {}
+      : {
+          artifactS3: {
+            region: env.SERVER_S3_REGION ?? "us-east-1",
+            ...(env.SERVER_S3_ENDPOINT === undefined ? {} : { endpoint: env.SERVER_S3_ENDPOINT }),
+            bucket: env.SERVER_S3_BUCKET,
+            accessKeyId: fromFileOrValue("SERVER_S3_ACCESS_KEY_ID", env),
+            secretAccessKey: fromFileOrValue("SERVER_S3_SECRET_ACCESS_KEY", env),
+            forcePathStyle: env.SERVER_S3_FORCE_PATH_STYLE !== "false",
+          },
+        }),
     ...(env.SERVER_OBJECT_STORAGE_READY_URL === undefined
       ? {}
       : { objectStorageReadinessUrl: env.SERVER_OBJECT_STORAGE_READY_URL }),

@@ -1633,6 +1633,7 @@ export const RELATIONAL_SCHEMA_VERSIONS: readonly RelationalSchemaVersion[] = [
   { version: 12, name: "intelligence-leases-results", tables: tablesFromTo("intelligence_leases", "intelligence_result_inbox") },
   { version: 13, name: "intelligence-result-wakeups-dispositions", tables: tablesFromTo("intelligence_result_wakeups", "intelligence_result_dispositions") },
   { version: 14, name: "artifact-upload", tables: tablesFromTo("artifact_upload_manifests", "artifact_upload_chunks") },
+  { version: 15, name: "evidence-lifecycle", tables: [] },
 ];
 
 function tablesThrough(last: string): readonly string[] {

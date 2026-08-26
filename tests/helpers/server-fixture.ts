@@ -1,4 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
 import { ClaimMapper, OidcAuthenticator, RbacAuthorizer, StaticJwksResolver } from "@qualigence/oidc";
 import {
   createPostgresRuntime,
@@ -39,6 +42,7 @@ export interface ServerFixture {
   readonly provider: TenantTransactionProvider;
   readonly container: StartedPostgres;
   readonly skillSigner: SkillSigner;
+  readonly artifactDataDir: string;
   /** Mint a valid access token for a tenant with the given roles. */
   token(tenantId: string, roles: readonly string[], overrides?: Record<string, unknown>): string;
   stop(): Promise<void>;
@@ -101,6 +105,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caPrivateKeyPem: ca.keyPem,
   });
   const skillSigner = LocalSkillSigner.generate();
+  const artifactDataDir = await mkdtemp(join(process.cwd(), ".tmp-server-artifacts-"));
 
   const deps: ServerDeps = {
     provider,
@@ -110,6 +115,10 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     caCertificatePem: ca.certPem,
     clock: fixedClock,
     skillSigner,
+    artifactStore: ({ tenantId, projectId }) => new LocalArtifactStore(
+      projectId === undefined ? join(artifactDataDir, tenantId) : join(artifactDataDir, tenantId, projectId),
+      fixedClock,
+    ),
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),
@@ -152,11 +161,13 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     provider,
     container,
     skillSigner,
+    artifactDataDir,
     token,
     async stop() {
       await app.close();
       await provider.close();
       await container.stop();
+      await rm(artifactDataDir, { recursive: true, force: true });
     },
   };
 }

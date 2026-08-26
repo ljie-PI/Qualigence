@@ -15,6 +15,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@qualigence/artifact-fs": "workspace:*",
+    "@qualigence/artifact-s3": "workspace:*",
     "@qualigence/context-intake": "workspace:*",
     "@qualigence/core-application": "workspace:*",
     "@qualigence/evidence": "workspace:*",

@@ -1,3 +1,7 @@
+import type { ColumnType } from "kysely";
+
+export type WithDefault<T> = ColumnType<T, T | undefined, T>;
+
 export interface SchemaMigrationsTable {
   version: number;
   name: string;
@@ -552,6 +556,10 @@ export interface EvidenceCapsuleManifestsTable {
   revocation_state: string;
   revoked_at: string | null;
   revoked_reason: string | null;
+  lifecycle_state: WithDefault<string>;
+  lifecycle_updated_at: string | null;
+  deleted_at: string | null;
+  last_lifecycle_error: string | null;
   created_at: string;
   expires_at: string;
 }

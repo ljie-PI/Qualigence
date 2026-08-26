@@ -483,6 +483,9 @@ importers:
       '@qualigence/artifact-fs':
         specifier: workspace:*
         version: link:../../packages/storage-providers/artifact-fs
+      '@qualigence/artifact-s3':
+        specifier: workspace:*
+        version: link:../../packages/storage-providers/artifact-s3
       '@qualigence/context-intake':
         specifier: workspace:*
         version: link:../../packages/core-modules/context-intake

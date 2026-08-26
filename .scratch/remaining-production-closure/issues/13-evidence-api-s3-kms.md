@@ -4,7 +4,7 @@
 
 **Blocked by:** 12 — Deliver the real Self-hosted Compose Runner loop.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -103,3 +103,7 @@ Run authorized S3/KMS lifecycle and unavailable-provider failure cases.
 - The affected context documents listed above, especially Evidence authorization, revoke-before-delete, audit-fail-closed behavior, tenant isolation, and public DTO boundaries.
 - `packages/core-modules/evidence/src/capsule/contracts.ts` (`KeyManagementProvider`), `packages/core-modules/evidence/src/persistence-ports.ts`, and the S3/KMS provider contracts named by the Gate.
 - `packages/contracts/public-api/src/v1.ts` and the Public API/investigation contracts named by the focused Gate.
+
+## Comments
+
+- start: base SHA `6a0a0adc0ae35359e137d89163b72bca38c65a51`; predecessor Ticket 12 evidence is merged in current base via PR `https://github.com/ljie-PI/Qualigence/pull/119`, reviewed code/test head `28eb6fb1b1ad368a3dd7431e96b6fbed7903fd46`, and Ticket 12 final focused Gate plus Compose/external Runner E2E recorded as clean in `.scratch/remaining-production-closure/issues/12-real-self-hosted-compose-runner-loop.md`. Behavior matrix applies in full because Evidence API access, S3 Artifact IO, KMS unwrap/revoke, lifecycle delete, retries, concurrency, and dependency-unavailable paths are stateful, side-effecting, authorization-sensitive, retry-sensitive, and terminal-state-sensitive. Planned Gates: `CI=true corepack pnpm vitest run tests/contract/evidence-crypto tests/contract/kms-self-hosted tests/contract/artifact-s3 tests/contract/public-api/api-v1.test.ts tests/component/investigation`, `CI=true corepack pnpm typecheck`, and `git diff --check`.

@@ -229,8 +229,15 @@ describe("SelfHostedKms", () => {
 
   it("fails closed when the KMS is marked unavailable", async () => {
     const { kms } = newKms();
+    const profile = await kms.encryptionProfile(scopeA);
     kms.setAvailable(false);
     await expect(kms.encryptionProfile(scopeA)).rejects.toMatchObject({
+      code: "KmsUnavailable",
+    });
+    await expect(kms.wrapDek(profile, new Uint8Array(randomBytes(32)))).rejects.toMatchObject({
+      code: "KmsUnavailable",
+    });
+    await expect(kms.revoke("capsule-unavailable", "ttl_expired")).rejects.toMatchObject({
       code: "KmsUnavailable",
     });
   });

@@ -9,6 +9,8 @@ import {
 } from "@qualigence/oidc";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
+import { createS3ArtifactClient, S3ArtifactStore } from "@qualigence/artifact-s3";
 import { pathToFileURL } from "node:url";
 import { sql } from "kysely";
 import { ServerIntelligenceResultConsumer } from "@qualigence/core-application";
@@ -48,6 +50,30 @@ interface JwksEntry {
 
 const systemClock: Clock = { now: () => new Date().toISOString() };
 
+type ArtifactStoreFactory = (scope: {
+  readonly tenantId: string;
+  readonly projectId?: string;
+}) => LocalArtifactStore | S3ArtifactStore;
+
+function artifactStoreFactory(config: ServerConfig, clock: Clock): ArtifactStoreFactory {
+  if (config.artifactS3 !== undefined) {
+    const client = createS3ArtifactClient(config.artifactS3);
+    return ({ tenantId, projectId }) => new S3ArtifactStore({
+      client,
+      bucket: config.artifactS3!.bucket,
+      tenantId,
+      projectId: projectId ?? "unscoped",
+      clock,
+    });
+  }
+  return ({ tenantId, projectId }) => new LocalArtifactStore(
+    projectId === undefined
+      ? join(config.artifactDataDir, tenantId)
+      : join(config.artifactDataDir, tenantId, projectId),
+    clock,
+  );
+}
+
 /** Boot the Public API Server: wire OIDC/RBAC, PostgreSQL runtime, and the Runner CA. */
 export async function main(
   env: NodeJS.ProcessEnv = process.env,
@@ -76,6 +102,7 @@ export async function main(
     config.postgres,
     acquirePostgresOperationLock,
   );
+  const artifactStore = artifactStoreFactory(config, systemClock);
   const shutdown = new AbortController();
   const resultConsumer = new ServerIntelligenceResultConsumer(provider);
   const resultConsumerLoop = new IntelligenceResultConsumerLoop({
@@ -115,6 +142,7 @@ export async function main(
         applicationResolver: selfHostedRunnerApplicationResolver({
           provider,
           artifactDataDir: config.artifactDataDir,
+          artifactStore: (scope) => artifactStore(scope),
           clock: systemClock,
           leaseDurationMs: 30_000,
           welcome: {
@@ -160,6 +188,7 @@ export async function main(
     caCertificatePem: config.runnerCa.certificatePem,
     clock: systemClock,
     skillSigner: LocalSkillSigner.open(config.skillSigningDataDir ?? ".qualigence-server/skill-signing"),
+    artifactStore: (scope) => artifactStore(scope),
     enrollmentStore: (stores: TenantStores) => new PostgresRunnerEnrollmentStore(stores.aux),
     principalStore: (stores: TenantStores) => new PostgresRunnerPrincipalStore(stores.aux),
     reviewRepository: (stores: TenantStores) => new PostgresReviewTaskRepository(stores.db),

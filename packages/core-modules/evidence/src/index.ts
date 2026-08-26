@@ -51,3 +51,16 @@ export type {
 } from "./persistence-ports.js";
 
 export * from "./capsule/index.js";
+export {
+  EvidenceLifecycleError,
+  EvidenceLifecycleService,
+} from "./lifecycle-service.js";
+export type {
+  DeleteEvidenceInput,
+  DeleteEvidenceResult,
+  EvidenceLifecycleActor,
+  EvidenceLifecycleRecord,
+  EvidenceLifecycleState,
+  EvidenceLifecycleStore,
+  EvidenceLifecycleTransitionResult,
+} from "./lifecycle-service.js";

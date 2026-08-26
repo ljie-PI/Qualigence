@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Kysely } from "kysely";
 import type { Clock } from "@qualigence/shared-kernel";
+import type { ArtifactStore } from "@qualigence/evidence";
 import type {
   PublicApiRole,
   RequestPrincipal,
@@ -77,6 +78,7 @@ export interface ServerDeps {
   readonly prdMissionRepository?: (stores: TenantStores, tenantId: string) => PrdMissionRepository;
   readonly skillRepository?: (stores: TenantStores, tenantId: string) => SkillRepository;
   readonly skillSigner?: SkillSigner;
+  readonly artifactStore?: (scope: { readonly tenantId: string; readonly projectId: string }) => ArtifactStore;
   readonly missionSchedulingIds?: MissionSchedulingIds;
   readonly readiness?: () => ServerReadinessReport | Promise<ServerReadinessReport>;
 }

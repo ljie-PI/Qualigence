@@ -7,7 +7,7 @@ import {
   type TenantRunnerApplicationResolverOptions,
 } from "@qualigence/core-application";
 import { LocalArtifactStore } from "@qualigence/artifact-fs";
-import { ArtifactUploadService } from "@qualigence/evidence";
+import { ArtifactUploadService, type ArtifactStore } from "@qualigence/evidence";
 import {
   OperationScopedPostgresArtifactManifestStore,
   OperationScopedPostgresArtifactUploadStore,
@@ -44,6 +44,7 @@ export interface SelfHostedRunnerApplicationResolverOptions {
   readonly leaseDurationMs?: number;
   readonly completionSink?: RunCompletionSink;
   readonly artifactDataDir: string;
+  readonly artifactStore?: (scope: { readonly tenantId: string; readonly projectId?: string }) => ArtifactStore;
 }
 
 /**
@@ -92,11 +93,8 @@ export function selfHostedRunnerApplicationResolver(
     traceStore: (tenantId) => new OperationScopedPostgresTraceStore(options.provider, tenantId, options.clock),
     artifactUploads: (tenantId) => new ArtifactUploadService({
       uploads: new OperationScopedPostgresArtifactUploadStore(options.provider, tenantId),
-      artifactStore: new LocalArtifactStore(tenantArtifactRoot(options.artifactDataDir, tenantId), options.clock),
-      artifactStoreForManifest: (manifest) => new LocalArtifactStore(
-        tenantArtifactRoot(options.artifactDataDir, tenantId, manifest.projectId),
-        options.clock,
-      ),
+      artifactStore: artifactStoreFor(options, tenantId),
+      artifactStoreForManifest: (manifest) => artifactStoreFor(options, tenantId, manifest.projectId),
       manifestStore: new OperationScopedPostgresArtifactManifestStore(options.provider, tenantId),
       clock: options.clock,
     }),
@@ -105,6 +103,18 @@ export function selfHostedRunnerApplicationResolver(
     ...(options.leaseDurationMs === undefined ? {} : { leaseDurationMs: options.leaseDurationMs }),
     ...(options.completionSink === undefined ? {} : { completionSink: options.completionSink }),
   });
+}
+
+function artifactStoreFor(
+  options: SelfHostedRunnerApplicationResolverOptions,
+  tenantId: string,
+  projectId?: string,
+): ArtifactStore {
+  const scope = projectId === undefined ? { tenantId } : { tenantId, projectId };
+  return options.artifactStore?.(scope) ?? new LocalArtifactStore(
+    tenantArtifactRoot(options.artifactDataDir, tenantId, projectId),
+    options.clock,
+  );
 }
 
 function tenantArtifactRoot(root: string, tenantId: string, projectId?: string): string {
