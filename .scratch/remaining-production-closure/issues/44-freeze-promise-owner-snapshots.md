@@ -126,6 +126,17 @@ The Chromium E2E must mutate and restore descriptors/prototypes after first appr
 - Ticket 44 must preserve native Promise/application behavior and must not use intrusive descriptor wrapping, freezing, sealing, proxying, or equivalent behavioral interposition merely to observe otherwise unobservable mutation history.
 - Ticket 44 still requires first-approved immutable owner/session snapshots and one-way unsafe latching for mutations observed through controlled/captured intrinsic Object/Reflect APIs, through instrumented Promise owner re-observation while changed, through capture-boundary validation mismatch, inspection failure, incomplete enumeration, overflow, or other observable owner/prototype/descriptor authority failure. Re-instrumentation/re-registration after an observed mutation cannot replace the first snapshot or clear the unsafe latch.
 
+### review-fix — 2026-08-26
+
+- Reviewed head fixed: `d8e1a082ea21641155bdffdd306c89b00e37bb59`.
+- Fix commit: `96be27df699fd3014a4b3aa41383bd8cd1c5d1d0` (`fix(ticket-44): close promise owner review blockers`).
+- Findings fixed:
+  - Captured-intrinsic authority now uses captured native Array and Set prototype operations for owner discovery/storage/enumeration/validation and related controlled runtime arrays; added coverage for page tampering of `Array.prototype.push` and `Set.prototype.has`/`add`/`size` before sensitive Promise use and validation.
+  - Guarded `Object.assign` and `Object.defineProperties` now latch an already approved Promise owner when the native API reaches a partial-mutation boundary and then throws, without changing native thrown/result behavior; added direct-restore tests for both APIs.
+  - Observed Promise owner mutation latches now notify the host session so the one-way `SensitiveEvidenceUnavailable` state survives same-session navigation until session close; added navigation/restart coverage.
+- Gates run on the fix worktree before the fix commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts tests/component/web-execution/promise-owner-snapshot.test.ts` (pass, 5 files / 45 tests), `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` (pass, 1 file / 2 tests), `CI=true corepack pnpm typecheck` (pass), and `git diff --check` (pass).
+- Status remains `claimed`; this is not final/PR evidence and no PR was created or merged.
+
 ## Acceptance
 
 - [ ] Controlled instrumentation completes before exactly one immutable first-approved snapshot is stored per owner.
