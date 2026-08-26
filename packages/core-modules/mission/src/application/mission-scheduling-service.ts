@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { TargetConfiguration } from "@qualigence/project-target";
 import type { Clock } from "@qualigence/shared-kernel";
 import type { ApprovedExecutionPolicy } from "../exploration-policy.js";
 import type { IntentStep, TestCase } from "../domain/test-plan-revision.js";
@@ -12,11 +13,15 @@ export interface StartMissionCommand {
 }
 
 /** Structural twin of the Runner Protocol AcceptedExecutionJob at this neutral seam. */
+export type AcceptedMissionTargetRef =
+  | { readonly kind: "web"; readonly url: string }
+  | { readonly kind: "desktop"; readonly app: Extract<TargetConfiguration, { readonly kind: "desktop" }>["app"] };
+
 export interface AcceptedMissionExecutionJob {
   readonly jobId: string;
   readonly runId: string;
   readonly projectId: string;
-  readonly target: { readonly kind: "web"; readonly url: string };
+  readonly target: AcceptedMissionTargetRef;
   readonly objective: string;
   readonly policy: ApprovedExecutionPolicy;
   readonly plan: {
@@ -145,6 +150,36 @@ function expectedClaimIds(testCase: TestCase): readonly [string, ...string[]] {
   return [first, ...rest];
 }
 
+const DESKTOP_UIA_V1_REQUIRED_CAPABILITIES = [
+  "target:desktop-windows-uia",
+  "observation:observation-graph/v1",
+  "observation:uia/v1",
+] as const;
+
+function missionTargetRef(
+  targetUrl: string,
+  configuration: TargetConfiguration,
+): AcceptedMissionTargetRef {
+  switch (configuration.kind) {
+    case "web":
+      return { kind: "web", url: targetUrl };
+    case "desktop":
+      return { kind: "desktop", app: configuration.app };
+  }
+}
+
+function requiredCapabilitiesForTarget(
+  requiredCapabilities: readonly string[],
+  target: AcceptedMissionTargetRef,
+): readonly string[] {
+  if (target.kind === "web") return requiredCapabilities;
+  const present = new Set(requiredCapabilities);
+  const missingDesktopCapabilities = DESKTOP_UIA_V1_REQUIRED_CAPABILITIES.filter((token) => !present.has(token));
+  return missingDesktopCapabilities.length === 0
+    ? requiredCapabilities
+    : [...requiredCapabilities, ...missingDesktopCapabilities];
+}
+
 export class MissionSchedulingService {
   constructor(
     private readonly repository: PrdMissionRepository,
@@ -164,12 +199,6 @@ export class MissionSchedulingService {
     if (binding === undefined) {
       throw new MissionSchedulingError("MissionHashConflict", "Mission provenance binding is missing");
     }
-    if (binding.configuration.kind !== "web") {
-      throw new MissionSchedulingError(
-        "MissionTargetUnsupported",
-        "Desktop Runner dispatch is not available in this protocol version",
-      );
-    }
 
     return this.repository.scheduleMission({
       command,
@@ -179,18 +208,19 @@ export class MissionSchedulingService {
         const attemptId = this.ids.allocateAttemptId();
         const runnerJobId = this.ids.allocateRunnerJobId();
         const runId = this.ids.allocateRunId();
+        const target = missionTargetRef(mission.dispatch.targetUrl, binding.configuration);
         return {
           logicalJobId: logicalJob.jobId,
           attemptId,
           runnerId: binding.runnerId,
-          requiredCapabilities: logicalJob.requiredCapabilities,
+          requiredCapabilities: requiredCapabilitiesForTarget(logicalJob.requiredCapabilities, target),
           testCaseSnapshot: logicalJob.snapshot,
           testCaseSnapshotHash: logicalJob.snapshotHash,
           job: {
             jobId: runnerJobId,
             runId,
             projectId: mission.projectId,
-            target: { kind: "web", url: mission.dispatch.targetUrl },
+            target,
             objective: logicalJob.objective,
             policy: mission.executionPolicy,
             plan: {

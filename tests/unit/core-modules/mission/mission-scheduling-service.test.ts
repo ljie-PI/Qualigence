@@ -5,10 +5,38 @@ import {
   type SchedulingMission,
   type ScheduledMission,
 } from "@qualigence/mission";
-import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS } from "@qualigence/runner-protocol";
+import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+  type AcceptedExecutionJob,
+} from "@qualigence/runner-protocol";
+import { offerFromWire, offerToWire } from "@qualigence/grpc-runner-protocol";
 import { PrdMissionRepositoryTestStub } from "../../../helpers/prd-mission-repository.js";
 
 const WEB_JOB_CAPABILITIES = ["action:click", "model:structured-output", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS, "target:web-playwright"] as const;
+const DESKTOP_COMPILED_CAPABILITIES = ["action:click", "model:structured-output", "target:desktop-windows-uia"] as const;
+const DESKTOP_SCHEDULED_CAPABILITIES = [
+  "action:click",
+  "model:structured-output",
+  ...DESKTOP_UIA_V1_CAPABILITY_TOKENS,
+] as const;
+
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows",
+  launch: {
+    executable: "C:\\Apps\\Reference\\Reference.exe",
+    args: ["--fixture", "default", "ref:credentials/test-user"],
+    workingDirectory: "C:\\Apps\\Reference",
+  },
+  process: {
+    expectedImageName: "Reference.exe",
+    allowedChildImageNames: ["ReferenceHelper.exe"],
+  },
+  window: { titlePattern: "Reference App", automationId: "MainWindow" },
+  reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: ["--clean"], timeoutMs: 5000 },
+  shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: true },
+} as const;
 
 const scheduled: ScheduledMission = {
   missionId: "mission-1",
@@ -143,9 +171,72 @@ describe("MissionSchedulingService", () => {
           jobId: "runner-job-1",
           runId: "run-1",
           projectId: "project-1",
+          target: { kind: "web", url: "https://example.test/" },
           policy: mission.executionPolicy,
           plan: expect.objectContaining({ missionId: "mission-1", missionRevision: 1, testCaseId: "case-1" }),
         }),
       })]);
+  });
+
+  it("constructs an authorized Desktop Runner Job without dropping AppTarget fields", async () => {
+    type ScheduleMission = PrdMissionRepository["scheduleMission"];
+    let scheduledInput: Parameters<ScheduleMission>[0] | undefined;
+    const scheduleMission = vi.fn(async (input: Parameters<ScheduleMission>[0]) => {
+      scheduledInput = input;
+      return scheduled;
+    });
+    const desktopMission: SchedulingMission = {
+      ...mission,
+      dispatch: {
+        ...mission.dispatch,
+        binding: {
+          targetId: "wpf-reference",
+          targetVersion: 4,
+          targetSnapshotHash: "desktop-target-hash",
+          runnerId: "runner-windows",
+          planVersion: 2,
+          planSnapshotHash: "plan-hash",
+          configuration: { kind: "desktop", app: desktopAppTarget },
+        },
+      },
+      targetVersion: 4,
+      targetSnapshotHash: "desktop-target-hash",
+      jobs: mission.jobs.map((job) => ({ ...job, requiredCapabilities: DESKTOP_COMPILED_CAPABILITIES })),
+    };
+    const repository = Object.assign(new PrdMissionRepositoryTestStub(), {
+      replayMissionSchedule: vi.fn(async () => undefined),
+      loadMissionForScheduling: vi.fn(async () => desktopMission),
+      scheduleMission,
+    });
+    const service = new MissionSchedulingService(repository, {
+      allocateAttemptId: () => "attempt-1",
+      allocateRunnerJobId: () => "runner-job-1",
+      allocateRunId: () => "run-1",
+    }, { now: () => "2026-08-22T00:00:00.000Z" });
+
+    await service.start({ missionId: "mission-1", expectedVersion: 1, idempotencyKey: "start-1" });
+
+    const [created] = scheduledInput?.createJobs() ?? [];
+    expect(created).toEqual(expect.objectContaining({
+      logicalJobId: "logical-job-1",
+      attemptId: "attempt-1",
+      runnerId: "runner-windows",
+      requiredCapabilities: DESKTOP_SCHEDULED_CAPABILITIES,
+    }));
+    expect(created?.job).toEqual(expect.objectContaining({
+      jobId: "runner-job-1",
+      runId: "run-1",
+      projectId: "project-1",
+      target: { kind: "desktop", app: desktopAppTarget },
+      policy: mission.executionPolicy,
+      plan: expect.objectContaining({ missionId: "mission-1", missionRevision: 1, testCaseId: "case-1" }),
+    }));
+    expect(created?.job.target).toEqual({ kind: "desktop", app: desktopAppTarget });
+    expect(offerFromWire(offerToWire({
+      offerId: "offer-desktop",
+      job: created?.job as AcceptedExecutionJob,
+      requiredCapabilities: created?.requiredCapabilities ?? [],
+      leaseDurationMs: 30_000,
+    })).requiredCapabilities).toEqual(DESKTOP_SCHEDULED_CAPABILITIES);
   });
 });

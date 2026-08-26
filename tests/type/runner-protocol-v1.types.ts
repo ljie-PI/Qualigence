@@ -3,6 +3,7 @@ import type { RunnerProtocolErrorCode } from "@qualigence/grpc-runner-protocol";
 import { capabilities, negotiateCapabilities, negotiateProtocolMajor } from "@qualigence/runner-protocol";
 import type {
   AcceptedExecutionJob,
+  AppTarget,
   CapabilityMismatch,
   ExecutionEventAck,
   ExecutionEventBatch,
@@ -86,6 +87,40 @@ const offer: ExecutionJobOffer = {
 };
 
 offer satisfies ExecutionJobOffer;
+
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows",
+  launch: { executable: "C:\\Apps\\Reference\\Reference.exe", args: ["--fixture", "default"] },
+  process: { expectedImageName: "Reference.exe", allowedChildImageNames: [] },
+  window: {},
+  reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: [], timeoutMs: 5000 },
+  shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: true },
+} as const satisfies AppTarget;
+
+const desktopOffer: ExecutionJobOffer = {
+  ...offer,
+  job: {
+    ...offer.job,
+    target: { kind: "desktop", app: desktopAppTarget },
+  },
+  requiredCapabilities: ["target:desktop-windows-uia", "observation:observation-graph/v1", "observation:uia/v1", "action:click"],
+};
+
+desktopOffer satisfies ExecutionJobOffer;
+
+const desktopJob = desktopOffer.job;
+if (desktopJob.target.kind === "desktop") {
+  desktopJob.target.app satisfies AppTarget;
+}
+
+const appTargetlessDesktopJob = {
+  ...offer.job,
+  target: { kind: "desktop" as const },
+};
+// @ts-expect-error Desktop TargetRef must carry the immutable AppTarget
+const typedAppTargetlessDesktopJob: AcceptedExecutionJob = appTargetlessDesktopJob;
+void typedAppTargetlessDesktopJob;
 
 const indexedPlanSteps = [
   { stepIndex: 0, kind: "navigate", path: "/checkout" },

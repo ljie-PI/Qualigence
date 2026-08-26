@@ -51,6 +51,23 @@ const plannedJob: AcceptedExecutionJob = {
   plan: planSnapshot,
 };
 
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows",
+  launch: {
+    executable: "C:\\Apps\\Reference\\Reference.exe",
+    args: ["--fixture", "default", "ref:credentials/test-user"],
+    workingDirectory: "C:\\Apps\\Reference",
+  },
+  process: {
+    expectedImageName: "Reference.exe",
+    allowedChildImageNames: ["ReferenceHelper.exe"],
+  },
+  window: { titlePattern: "Reference App", automationId: "MainWindow" },
+  reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: ["--clean"], timeoutMs: 5000 },
+  shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: true },
+} as const;
+
 describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
   it("freezes policy as a required immutable execution snapshot", () => {
     expect(legacyJob.policy.policyId).toBe("policy-test");
@@ -137,6 +154,33 @@ describe("AcceptedExecutionJob.plan (additive snapshot)", () => {
 
     expect(job.plan?.steps).toEqual(planSnapshot.steps);
     expect(job.plan?.steps.every((step) => !("stepIndex" in step))).toBe(true);
+  });
+
+  it("accepts a Desktop TargetRef carrying the complete immutable AppTarget", () => {
+    const job = parseExecutionJob({
+      ...legacyJob,
+      target: { kind: "desktop", app: desktopAppTarget },
+    });
+
+    expect(job.target).toEqual({ kind: "desktop", app: desktopAppTarget });
+    expect(job.target.kind).toBe("desktop");
+    if (job.target.kind === "desktop") {
+      expect(job.target.app.launch).toEqual(desktopAppTarget.launch);
+      expect(job.target.app.process).toEqual(desktopAppTarget.process);
+      expect(job.target.app.window).toEqual(desktopAppTarget.window);
+      expect(job.target.app.reset).toEqual(desktopAppTarget.reset);
+      expect(job.target.app.shutdown).toEqual(desktopAppTarget.shutdown);
+    }
+  });
+
+  it.each([
+    ["missing target kind", { url: "https://example.test/" }],
+    ["unknown target kind", { kind: "mobile", url: "https://example.test/" }],
+    ["web target carrying Desktop fields", { kind: "web", url: "https://example.test/", app: desktopAppTarget }],
+    ["desktop target carrying Web fields", { kind: "desktop", url: "https://example.test/", app: desktopAppTarget }],
+    ["desktop target with malformed AppTarget", { kind: "desktop", app: { ...desktopAppTarget, platform: "linux" } }],
+  ])("rejects a malformed TargetRef: %s", (_name, target) => {
+    expect(() => parseExecutionJob({ ...legacyJob, target })).toThrow();
   });
 
   it.each([

@@ -17,6 +17,9 @@ import type {
   RunId,
 } from "@qualigence/runner-protocol";
 import {
+  WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
+} from "@qualigence/runner-protocol";
+import {
   RunnerBackedRunResourceFactory,
 } from "../../../apps/core-daemon/src/index.js";
 
@@ -89,6 +92,16 @@ function request(): RunExecutionRequest {
   };
 }
 
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows" as const,
+  launch: { executable: "C:\\Apps\\Reference\\Reference.exe", args: ["--fixture", "default"] },
+  process: { expectedImageName: "Reference.exe", allowedChildImageNames: [] },
+  window: {},
+  reset: { command: "C:\\Apps\\Reference\\reset.exe", args: ["--clean"], timeoutMs: 5_000 },
+  shutdown: { gracefulTimeoutMs: 5_000, forceAfterTimeout: true },
+};
+
 describe("RunnerBackedRunResourceFactory", () => {
   it("rejects a legacy injected policy gate at the public constructor", () => {
     expect(() => new RunnerBackedRunResourceFactory({
@@ -153,7 +166,7 @@ describe("RunnerBackedRunResourceFactory", () => {
     expect(result.status).toBe("passed");
     // A single-owner lease was acquired via the RunnerConnectionPort and released.
     expect(offer).toHaveBeenCalledOnce();
-    expect(offer.mock.calls[0]?.[1]).toEqual(["target:web-playwright"]);
+    expect(offer.mock.calls[0]?.[1]).toEqual(["target:web-playwright", ...WEB_OBSERVATION_V1_CAPABILITY_TOKENS]);
     expect(offer.mock.calls[0]?.[0].policy).toBe(runRequest.policy);
     expect(offer.mock.calls[0]?.[0].projectId).toBe(runRequest.projectId);
     expect(awaitCompletion).toHaveBeenCalledWith(lease);
@@ -185,6 +198,36 @@ describe("RunnerBackedRunResourceFactory", () => {
         objective: runRequest.objective,
         policy: runRequest.policy,
       })).rejects.toThrow(/project provenance/);
+      expect(offer).not.toHaveBeenCalled();
+    } finally {
+      await scope.close();
+    }
+  });
+
+  it("rejects a Desktop Job on the Web-only run resource seam before offering it to a Runner", async () => {
+    const offer = vi.fn();
+    const factory = new RunnerBackedRunResourceFactory({
+      connection: { authenticatedRunner: runnerSnapshot, offer, cancel: vi.fn() },
+      openStores: async () => ({
+        runs: new InMemoryRunStore(),
+        traces: new InMemoryTraceStore(),
+        artifacts: artifactStore,
+        manifests: new InMemoryManifestStore(),
+        close: async () => undefined,
+      }),
+      awaitCompletion: vi.fn(),
+    });
+    const runRequest = request();
+    const scope = await factory.open("run-1", runRequest);
+    try {
+      await expect(scope.execute({
+        jobId: "job-1",
+        runId: "run-1",
+        projectId: runRequest.projectId,
+        target: { kind: "desktop", app: desktopAppTarget },
+        objective: runRequest.objective,
+        policy: runRequest.policy,
+      })).rejects.toThrow(/opened run request/);
       expect(offer).not.toHaveBeenCalled();
     } finally {
       await scope.close();

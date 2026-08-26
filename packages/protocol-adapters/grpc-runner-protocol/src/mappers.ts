@@ -18,12 +18,15 @@ import type {
   TargetRef,
   TraceEvent,
   TraceStage,
+  AppTarget,
 } from "@qualigence/runner-protocol";
 import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
   ExecutionPolicySnapshotError,
   ObservationError,
   WEB_OBSERVATION_V1_CAPABILITY_TOKENS,
   requireGraphExtensionMajor,
+  validateAppTarget,
   validateObservationGraphV1,
   parseExecutionJob,
   parseExecutionPolicySnapshot,
@@ -150,14 +153,214 @@ export function welcomeFromWire(wire: Wire): RunnerWelcome {
 
 // --- TargetRef / AcceptedExecutionJob -------------------------------------
 
+function appTargetToWire(app: AppTarget): Wire {
+  const launch: Wire = {
+    executable: app.launch.executable,
+    args: [...app.launch.args],
+  };
+  if (app.launch.workingDirectory !== undefined) {
+    launch.working_directory = app.launch.workingDirectory;
+  }
+  const window: Wire = {};
+  if (app.window.titlePattern !== undefined) {
+    window.title_pattern = app.window.titlePattern;
+  }
+  if (app.window.automationId !== undefined) {
+    window.automation_id = app.window.automationId;
+  }
+  return {
+    target_id: app.targetId,
+    platform: app.platform,
+    launch,
+    process: {
+      expected_image_name: app.process.expectedImageName,
+      allowed_child_image_names: [...app.process.allowedChildImageNames],
+    },
+    window,
+    reset: {
+      command: app.reset.command,
+      args: [...app.reset.args],
+      timeout_ms: app.reset.timeoutMs,
+    },
+    shutdown: {
+      graceful_timeout_ms: app.shutdown.gracefulTimeoutMs,
+      force_after_timeout: app.shutdown.forceAfterTimeout,
+    },
+  };
+}
+
+function hasWireField(wire: Wire, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(wire, field) && wire[field] !== undefined;
+}
+
+function requireWireField(wire: Wire, field: string, message: string): void {
+  if (!hasWireField(wire, field)) {
+    throw new RunnerProtocolError("ProtocolViolation", message);
+  }
+}
+
+function requireWireObject(wire: Wire, field: string, message: string): Wire {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be an object`);
+  }
+  return value as Wire;
+}
+
+function requireWireString(wire: Wire, field: string, message: string): string {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "string") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a string`);
+  }
+  return value;
+}
+
+function optionalWireString(wire: Wire, field: string, message: string): string | undefined {
+  if (!hasWireField(wire, field)) return undefined;
+  const value = wire[field];
+  if (typeof value !== "string") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a string`);
+  }
+  return value;
+}
+
+function wireStringArray(wire: Wire, field: string, message: string): readonly string[] {
+  if (!hasWireField(wire, field)) return [];
+  const value = wire[field];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be an array of strings`);
+  }
+  return value;
+}
+
+function requireWireNumber(wire: Wire, field: string, message: string): number {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "number") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a number`);
+  }
+  return value;
+}
+
+function requireWireBoolean(wire: Wire, field: string, message: string): boolean {
+  requireWireField(wire, field, message);
+  const value = wire[field];
+  if (typeof value !== "boolean") {
+    throw new RunnerProtocolError("ProtocolViolation", `${message}; field must be a boolean`);
+  }
+  return value;
+}
+
+function appTargetFromWire(wire: unknown): AppTarget {
+  if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
+    throw new RunnerProtocolError("ProtocolViolation", "Desktop TargetRef is missing AppTarget fields");
+  }
+  const app = wire as Wire;
+  const launch = requireWireObject(app, "launch", "Desktop TargetRef AppTarget launch is missing");
+  const process = requireWireObject(app, "process", "Desktop TargetRef AppTarget process is missing");
+  const window = requireWireObject(app, "window", "Desktop TargetRef AppTarget window is missing");
+  const reset = requireWireObject(app, "reset", "Desktop TargetRef AppTarget reset is missing");
+  const shutdown = requireWireObject(app, "shutdown", "Desktop TargetRef AppTarget shutdown is missing");
+  const workingDirectory = optionalWireString(
+    launch,
+    "working_directory",
+    "Desktop TargetRef AppTarget launch.working_directory is malformed",
+  );
+  const titlePattern = optionalWireString(
+    window,
+    "title_pattern",
+    "Desktop TargetRef AppTarget window.title_pattern is malformed",
+  );
+  const automationId = optionalWireString(
+    window,
+    "automation_id",
+    "Desktop TargetRef AppTarget window.automation_id is malformed",
+  );
+  try {
+    return validateAppTarget({
+      targetId: requireWireString(app, "target_id", "Desktop TargetRef AppTarget target_id is missing"),
+      platform: requireWireString(app, "platform", "Desktop TargetRef AppTarget platform is missing"),
+      launch: {
+        executable: requireWireString(launch, "executable", "Desktop TargetRef AppTarget launch.executable is missing"),
+        args: wireStringArray(launch, "args", "Desktop TargetRef AppTarget launch.args is malformed"),
+        ...(workingDirectory === undefined ? {} : { workingDirectory }),
+      },
+      process: {
+        expectedImageName: requireWireString(
+          process,
+          "expected_image_name",
+          "Desktop TargetRef AppTarget process.expected_image_name is missing",
+        ),
+        allowedChildImageNames: wireStringArray(
+          process,
+          "allowed_child_image_names",
+          "Desktop TargetRef AppTarget process.allowed_child_image_names is malformed",
+        ),
+      },
+      window: {
+        ...(titlePattern === undefined ? {} : { titlePattern }),
+        ...(automationId === undefined ? {} : { automationId }),
+      },
+      reset: {
+        command: requireWireString(reset, "command", "Desktop TargetRef AppTarget reset.command is missing"),
+        args: wireStringArray(reset, "args", "Desktop TargetRef AppTarget reset.args is malformed"),
+        timeoutMs: requireWireNumber(reset, "timeout_ms", "Desktop TargetRef AppTarget reset.timeout_ms is missing"),
+      },
+      shutdown: {
+        gracefulTimeoutMs: requireWireNumber(
+          shutdown,
+          "graceful_timeout_ms",
+          "Desktop TargetRef AppTarget shutdown.graceful_timeout_ms is missing",
+        ),
+        forceAfterTimeout: requireWireBoolean(
+          shutdown,
+          "force_after_timeout",
+          "Desktop TargetRef AppTarget shutdown.force_after_timeout is missing",
+        ),
+      },
+    });
+  } catch (error) {
+    throw new RunnerProtocolError("ProtocolViolation", "Desktop TargetRef AppTarget is malformed", { cause: error });
+  }
+}
+
 function targetToWire(target: TargetRef): Wire {
-  return { web: { url: target.url } };
+  switch (target.kind) {
+    case "web":
+      return { web: { url: target.url } };
+    case "desktop":
+      return { desktop: { app: appTargetToWire(target.app) } };
+  }
 }
 
 function targetFromWire(wire: unknown): TargetRef {
-  const record = (wire ?? {}) as Wire;
-  const web = (record.web ?? {}) as Wire;
-  return { kind: "web", url: asString(web.url) };
+  if (wire === undefined || wire === null || typeof wire !== "object" || Array.isArray(wire)) {
+    throw new RunnerProtocolError("ProtocolViolation", "TargetRef is missing");
+  }
+  const record = wire as Wire;
+  const hasWeb = record.web !== undefined && record.web !== null;
+  const hasDesktop = record.desktop !== undefined && record.desktop !== null;
+  const selectedKind = typeof record.target === "string" ? record.target : undefined;
+  if (selectedKind !== undefined && selectedKind !== "web" && selectedKind !== "desktop") {
+    throw new RunnerProtocolError("ProtocolViolation", "TargetRef carries an unknown target kind");
+  }
+  if ((hasWeb ? 1 : 0) + (hasDesktop ? 1 : 0) !== 1) {
+    throw new RunnerProtocolError("ProtocolViolation", "TargetRef must carry exactly one target kind");
+  }
+  if (selectedKind === "web" && !hasWeb) {
+    throw new RunnerProtocolError("ProtocolViolation", "TargetRef oneof discriminator does not match web payload");
+  }
+  if (selectedKind === "desktop" && !hasDesktop) {
+    throw new RunnerProtocolError("ProtocolViolation", "TargetRef oneof discriminator does not match desktop payload");
+  }
+  if (hasWeb) {
+    const web = record.web as Wire;
+    return { kind: "web", url: asString(web.url) };
+  }
+  const desktop = record.desktop as Wire;
+  return { kind: "desktop", app: appTargetFromWire(desktop.app) };
 }
 
 function policyToWire(policy: ExecutionPolicySnapshot): Wire {
@@ -377,15 +580,17 @@ function assertOfferObservationCapabilities(
   job: AcceptedExecutionJob,
   requiredCapabilities: readonly string[],
 ): void {
-  if (job.target.kind !== "web") {
-    return;
-  }
   const present = new Set(requiredCapabilities);
-  const missing = WEB_OBSERVATION_V1_CAPABILITY_TOKENS.filter((token) => !present.has(token));
+  const required = job.target.kind === "web"
+    ? WEB_OBSERVATION_V1_CAPABILITY_TOKENS
+    : DESKTOP_UIA_V1_CAPABILITY_TOKENS;
+  const missing = required.filter((token) => !present.has(token));
   if (missing.length > 0) {
     throw new RunnerProtocolError(
       "CapabilityMismatch",
-      "web execution offers must require Observation Graph v1 and web/v1 before payload admission",
+      job.target.kind === "web"
+        ? "web execution offers must require Observation Graph v1 and web/v1 before payload admission"
+        : "desktop execution offers must require Desktop UIA, Observation Graph v1, and uia/v1 before payload admission",
       { details: { missingCapabilities: missing } },
     );
   }

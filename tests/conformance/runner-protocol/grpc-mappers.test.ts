@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
   OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
   OBSERVATION_GRAPH_V1_SCHEMA,
   WEB_EXTENSION_V1_TYPE,
@@ -46,6 +47,42 @@ function wireRoundTrip<TDomain>(
   const bytes = encodeWireMessage(name, wire);
   const decoded = decodeWireMessage(name, bytes);
   return fromWire(decoded);
+}
+
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows",
+  launch: {
+    executable: "C:\\Apps\\Reference\\Reference.exe",
+    args: ["--fixture", "default", "ref:credentials/test-user"],
+    workingDirectory: "C:\\Apps\\Reference",
+  },
+  process: {
+    expectedImageName: "Reference.exe",
+    allowedChildImageNames: ["ReferenceHelper.exe"],
+  },
+  window: { titlePattern: "Reference App", automationId: "MainWindow" },
+  reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: ["--clean"], timeoutMs: 5000 },
+  shutdown: { gracefulTimeoutMs: 3000, forceAfterTimeout: false },
+} as const;
+
+function wireDesktopAppTarget() {
+  return {
+    target_id: "wpf-reference",
+    platform: "windows",
+    launch: {
+      executable: "C:\\Apps\\Reference\\Reference.exe",
+      args: ["--fixture", "default", "ref:credentials/test-user"],
+      working_directory: "C:\\Apps\\Reference",
+    },
+    process: {
+      expected_image_name: "Reference.exe",
+      allowed_child_image_names: ["ReferenceHelper.exe"],
+    },
+    window: { title_pattern: "Reference App", automation_id: "MainWindow" },
+    reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: ["--clean"], timeout_ms: 5000 },
+    shutdown: { graceful_timeout_ms: 3000, force_after_timeout: false },
+  };
 }
 
 function graphV1(graphId: string) {
@@ -218,6 +255,91 @@ describe("grpc runner protocol mappers", () => {
       leaseDurationMs: 30_000,
     };
     expect(wireRoundTrip("ExecutionJobOffer", offerToWire, offerFromWire, offer)).toEqual(offer);
+  });
+
+  it("round-trips a Desktop TargetRef through structured protobuf fields", () => {
+    const offer: ExecutionJobOffer = {
+      offerId: "offer-desktop",
+      job: {
+        jobId: "job-desktop",
+        runId: "run-desktop",
+        projectId: "project-1",
+        target: { kind: "desktop", app: desktopAppTarget },
+        objective: "drive the WPF reference app",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click", "input", "select", "scroll", "window"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+      },
+      requiredCapabilities: [...DESKTOP_UIA_V1_CAPABILITY_TOKENS, "action:click"],
+      leaseDurationMs: 30_000,
+    };
+
+    const wire = offerToWire(offer);
+    expect(wire).toMatchObject({
+      job: {
+        target: {
+          desktop: {
+            app: {
+              target_id: "wpf-reference",
+              platform: "windows",
+              launch: { executable: "C:\\Apps\\Reference\\Reference.exe", args: ["--fixture", "default", "ref:credentials/test-user"], working_directory: "C:\\Apps\\Reference" },
+              process: { expected_image_name: "Reference.exe", allowed_child_image_names: ["ReferenceHelper.exe"] },
+              window: { title_pattern: "Reference App", automation_id: "MainWindow" },
+              reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: ["--clean"], timeout_ms: 5000 },
+              shutdown: { graceful_timeout_ms: 3000, force_after_timeout: false },
+            },
+          },
+        },
+      },
+    });
+    expect(wireRoundTrip("ExecutionJobOffer", offerToWire, offerFromWire, offer)).toEqual(offer);
+  });
+
+  it.each([
+    ["missing kind", {}],
+    ["unknown kind", { target: "mobile" }],
+    ["multiple oneof payloads", { web: { url: "https://example.test/" }, desktop: { app: {} } }],
+    ["desktop app missing required fields", { desktop: { app: { target_id: "wpf-reference" } } }],
+    ["desktop app missing reset timeout", { desktop: { app: { ...wireDesktopAppTarget(), reset: { command: "C:\\Apps\\Reference\\Reset.exe", args: [] } } } }],
+    ["desktop app missing explicit shutdown decision", { desktop: { app: { ...wireDesktopAppTarget(), shutdown: { graceful_timeout_ms: 3000 } } } }],
+    ["desktop launch args is not an array", { desktop: { app: { ...wireDesktopAppTarget(), launch: { ...wireDesktopAppTarget().launch, args: "--fixture default" } } } }],
+    ["desktop process child images is not an array", { desktop: { app: { ...wireDesktopAppTarget(), process: { ...wireDesktopAppTarget().process, allowed_child_image_names: "ReferenceHelper.exe" } } } }],
+    ["desktop reset args is not an array", { desktop: { app: { ...wireDesktopAppTarget(), reset: { ...wireDesktopAppTarget().reset, args: "--clean" } } } }],
+    ["desktop reset timeout is not a number", { desktop: { app: { ...wireDesktopAppTarget(), reset: { ...wireDesktopAppTarget().reset, timeout_ms: "5000" } } } }],
+    ["desktop shutdown force flag is not a boolean", { desktop: { app: { ...wireDesktopAppTarget(), shutdown: { ...wireDesktopAppTarget().shutdown, force_after_timeout: "false" } } } }],
+    ["desktop optional window scalar is malformed", { desktop: { app: { ...wireDesktopAppTarget(), window: { ...wireDesktopAppTarget().window, title_pattern: 42 } } } }],
+  ])("rejects malformed TargetRef wire before producing a Job: %s", (_name, target) => {
+    expect(() => jobFromWire({
+      job_id: "job-bad-target",
+      run_id: "run-bad-target",
+      project_id: "project-1",
+      target,
+      objective: "must not dispatch",
+      policy: {
+        policy_id: "policy-1", environment: "isolated_test", allowed_origins: ["https://example.test"],
+        allowed_action_kinds: ["click"], maximum_risk: "Normal", exploration_allowed: false,
+        issued_at: "2026-08-18T00:00:00.000Z", expires_at: "2026-08-18T00:01:00.000Z",
+      },
+    })).toThrow(expect.objectContaining({ code: "ProtocolViolation" }));
+  });
+
+  it("rejects a Desktop offer whose capability requirements omit Desktop/Graph/UIA tokens", () => {
+    const offer: ExecutionJobOffer = {
+      offerId: "offer-desktop-missing-cap",
+      job: {
+        jobId: "job-desktop",
+        runId: "run-desktop",
+        projectId: "project-1",
+        target: { kind: "desktop", app: desktopAppTarget },
+        objective: "drive the WPF reference app",
+        policy: { policyId: "policy-1", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T00:01:00.000Z" },
+      },
+      requiredCapabilities: ["action:click"],
+      leaseDurationMs: 30_000,
+    };
+
+    expect(() => offerToWire(offer)).toThrow(expect.objectContaining({
+      code: "CapabilityMismatch",
+      details: { missingCapabilities: [...DESKTOP_UIA_V1_CAPABILITY_TOKENS] },
+    }));
   });
 
   it("round-trips ExecutionJobLease through the protobuf wire", () => {

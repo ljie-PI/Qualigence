@@ -9,6 +9,7 @@ import type {
   TraceEvent,
 } from "@qualigence/runner-protocol";
 import {
+  DESKTOP_UIA_V1_CAPABILITY_TOKENS,
   OBSERVATION_GRAPH_V1_CAPABILITY_TOKEN,
   WEB_OBSERVATION_EXTENSION_V1_CAPABILITY_TOKEN,
   advertisedCapabilityTokens,
@@ -116,6 +117,16 @@ const STARTUP_LEASE: ExecutionJobLease = {
   leaseToken: "lease-token",
   leaseEpoch: 1,
   expiresAt: "2099-08-18T00:01:00.000Z",
+};
+
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows" as const,
+  launch: { executable: "C:\\Apps\\Reference\\Reference.exe", args: ["--fixture", "default"] },
+  process: { expectedImageName: "Reference.exe", allowedChildImageNames: [] },
+  window: {},
+  reset: { command: "C:\\Apps\\Reference\\reset.exe", args: ["--clean"], timeoutMs: 5_000 },
+  shutdown: { gracefulTimeoutMs: 5_000, forceAfterTimeout: true },
 };
 
 function admittedOffer(): ExecutionJobOffer {
@@ -323,6 +334,36 @@ describe("RunnerOfferRuntime", () => {
       ...admittedOffer(),
       requiredCapabilities: ["observation:observation-graph/v2", "observation:web/v2"],
     })).rejects.toMatchObject({ code: "CapabilityMismatch" });
+
+    expect(session.accept).not.toHaveBeenCalled();
+    expect(session.complete).not.toHaveBeenCalled();
+    expect(createTarget).not.toHaveBeenCalled();
+    expect(modelConstructions).toEqual([]);
+  });
+
+  it("defers Desktop target runtime support before lease acceptance or Web target construction", async () => {
+    const createTarget = vi.fn();
+    const session = {
+      accept: vi.fn(),
+      complete: vi.fn(),
+    };
+    const runtime = new RunnerOfferRuntime({
+      createTarget,
+      session: session as never,
+      spool: {} as never,
+      config: config(),
+    });
+
+    await expect(runtime.run({
+      ...admittedOffer(),
+      job: {
+        ...admittedOffer().job,
+        target: { kind: "desktop", app: desktopAppTarget },
+      },
+    })).rejects.toMatchObject({
+      code: "CapabilityMismatch",
+      details: { missingCapabilities: DESKTOP_UIA_V1_CAPABILITY_TOKENS },
+    });
 
     expect(session.accept).not.toHaveBeenCalled();
     expect(session.complete).not.toHaveBeenCalled();

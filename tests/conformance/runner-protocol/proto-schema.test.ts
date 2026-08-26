@@ -253,4 +253,43 @@ describe("runner protocol v1 proto schema", () => {
     ]));
     expect(messages.get("TraceEventEnvelope")?.fields.get("step_index")).toBe(11);
   });
+
+  it("adds Desktop TargetRef structured AppTarget fields without changing the Web tag", () => {
+    expect(messages.get("TargetRef")?.fields).toEqual(new Map([
+      ["web", 1],
+      ["desktop", 2],
+    ]));
+    expect(messages.get("DesktopTarget")?.fields).toEqual(new Map([["app", 1]]));
+    expect(messages.get("AppTarget")?.fields).toEqual(new Map([
+      ["target_id", 1],
+      ["platform", 2],
+      ["launch", 3],
+      ["process", 4],
+      ["window", 5],
+      ["reset", 6],
+      ["shutdown", 7],
+    ]));
+    expect(messages.get("AppTargetLaunch")?.fields).toEqual(new Map([
+      ["executable", 1],
+      ["args", 2],
+      ["working_directory", 3],
+    ]));
+    expect(messages.get("AppTargetProcess")?.fields).toEqual(new Map([
+      ["expected_image_name", 1],
+      ["allowed_child_image_names", 2],
+    ]));
+    expect(messages.get("AppTargetWindow")?.fields).toEqual(new Map([
+      ["title_pattern", 1],
+      ["automation_id", 2],
+    ]));
+    expect(messages.get("AppTargetReset")?.fields).toEqual(new Map([
+      ["command", 1],
+      ["args", 2],
+      ["timeout_ms", 3],
+    ]));
+    expect(messages.get("AppTargetShutdown")?.fields).toEqual(new Map([
+      ["graceful_timeout_ms", 1],
+      ["force_after_timeout", 2],
+    ]));
+  });
 });

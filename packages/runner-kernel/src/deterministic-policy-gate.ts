@@ -51,14 +51,21 @@ export class DeterministicRunnerPolicyGate implements RunnerPolicyGate {
     if (Date.parse(policy.expiresAt) <= (options.now ?? Date.now)()) {
       return { status: "denied", code: "PolicyDenied", message: "PolicyExpired" };
     }
-    let target: URL;
-    try {
-      target = new URL(accepted.target.url);
-    } catch {
-      return { status: "denied", code: "PolicyDenied", message: "TargetInvalid" };
-    }
-    if ((target.protocol !== "http:" && target.protocol !== "https:") || !policy.allowedOrigins.includes(target.origin)) {
-      return { status: "denied", code: "PolicyDenied", message: "TargetOriginDenied" };
+    switch (accepted.target.kind) {
+      case "web": {
+        let target: URL;
+        try {
+          target = new URL(accepted.target.url);
+        } catch {
+          return { status: "denied", code: "PolicyDenied", message: "TargetInvalid" };
+        }
+        if ((target.protocol !== "http:" && target.protocol !== "https:") || !policy.allowedOrigins.includes(target.origin)) {
+          return { status: "denied", code: "PolicyDenied", message: "TargetOriginDenied" };
+        }
+        break;
+      }
+      case "desktop":
+        return { status: "denied", code: "PolicyDenied", message: "DesktopTargetUnsupported" };
     }
     if (accepted.plan?.steps.some((step) =>
       step.stepIndex !== undefined && step.kind !== "verify" && !policy.allowedActionKinds.includes(step.kind)
@@ -101,6 +108,7 @@ function denied(reason: string): PolicyDecision {
 }
 
 function originOf(job: AcceptedExecutionJob): string {
+  if (job.target.kind !== "web") return "";
   try {
     return new URL(job.target.url).origin;
   } catch {

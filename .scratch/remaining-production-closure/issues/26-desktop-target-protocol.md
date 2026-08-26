@@ -4,7 +4,7 @@
 
 **Blocked by:** 25 — Contract legacy Graph and close candidate Gate.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -29,6 +29,11 @@ This is the complete edit scope.
 - `packages/{core-modules/project-target,contracts/desktop,contracts/runner-protocol,protocol-adapters/grpc-runner-protocol}/src`
 - `packages/core-modules/mission/src/application/mission-scheduling-service.ts`
 - `packages/contracts/runner-protocol/proto`
+- `packages/runner-kernel/src/deterministic-policy-gate.ts` (maintainer-authorized narrow compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/core-daemon/src/main.ts` (maintainer-authorized narrow compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts` (maintainer-authorized narrow fail-closed compatibility edit for additive Desktop `TargetRef` typing only)
+- `apps/runner/src/offer-runtime.ts` (maintainer-authorized narrow fail-closed compatibility edit for additive Desktop `TargetRef` typing only)
+- Direct existing tests for the four compatibility files above may be updated only if needed to preserve their existing Web behavior or assert Desktop fail-closed/deferred behavior; no new test roots are authorized.
 - `tests/{type,contract/desktop,unit/core-modules/project-target,unit/core-modules/mission,conformance/runner-protocol}`
 - `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md`
 
@@ -36,7 +41,7 @@ This is the complete edit scope.
 
 N/A. This ticket and the umbrella spec assign no external/component E2E or additive acceptance file to ticket 26. Post-review verification is ticket/PR evidence that the focused Gate covers domain validation, Mission scheduling construction, protobuf schema, mappers, and Web/Desktop round trips. It is not permission to borrow ticket 28's E2E.
 
-Files outside **Allowed Files**, including any `packages/core-modules/mission` file not listed above, `packages/core-application`, `apps/server`, `apps/runner`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them.
+Files outside **Allowed Files**, including any `packages/core-modules/mission` file not listed above, `packages/core-application`, `apps/server`, package manifests, `pnpm-lock.yaml`, and component/E2E tests, are not allowed; stop and request an explicit maintainer scope decision before editing them. The only `apps/runner` file in scope is `apps/runner/src/offer-runtime.ts` for the narrow compatibility edit listed above.
 
 ## Authority
 
@@ -100,7 +105,80 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
 | Concurrent mapping/restart | `not_started` | Identical deterministic output | N/A: stateless operation | Safe to recompute | Pure/stateless review evidence |
 | Terminal persistence failure | `not_started` | N/A: Target/Mission repository and queue persistence are outside scope | N/A | Owned by existing product/dispatch contracts | N/A reason recorded in review |
 
-- [ ] Target discriminated union carries complete Web or Desktop snapshot and rejects malformed/multiple kinds.
-- [ ] Project, policy, plan, Target revision/hash, and Runner binding remain lossless.
-- [ ] Public Target/Mission producer can create an authorized Desktop Job.
-- [ ] Existing Web round trips and admission remain unchanged.
+- [x] Target discriminated union carries complete Web or Desktop snapshot and rejects malformed/multiple kinds.
+- [x] Project, policy, plan, Target revision/hash, and Runner binding remain lossless.
+- [x] Public Target/Mission producer can create an authorized Desktop Job.
+- [x] Existing Web round trips and admission remain unchanged.
+
+## Comments
+
+### start - 2026-08-25
+
+- Fixed base: `05e05ebd762a9222b5fc031503c29612424d0105` (`ticket-26-desktop-target-protocol`, based on current `main` and including merged Ticket 25 PR #110).
+- Predecessor evidence: Ticket 25 is `resolved` with PR #110; reviewed code head `d25c3d4d5c7c58777ce76f6e231c778c91591047` and final verification evidence are recorded in `.scratch/remaining-production-closure/issues/25-contract-legacy-graph-candidate.md` and are present in this worktree base.
+- Behavior Matrix applicability: applicable. The frozen matrix in this ticket governs Desktop/Web TargetRef parsing, lossless AppTarget protobuf/mappers, provider-neutral Target validation, explicit capability/provenance rejection, and Mission scheduling's pure Desktop `AcceptedExecutionJob` construction. Rows for auth, timeout/cancel, unknown outcome, and terminal persistence remain N/A for implementation because this ticket owns no authentication boundary, async transport session, process dispatch, or persistence implementation.
+- Planned focused non-E2E Gate: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Mission-scheduling scope decision: implementation is limited to `packages/core-modules/mission/src/application/mission-scheduling-service.ts` and unit tests; Ticket 26 owns authorized Desktop job construction and Runner Protocol mapping only. Server routes, Runner runtime composition, package manifests/lockfiles, storage migrations, component tests, and E2E proof remain out of scope.
+
+### blocked - 2026-08-25
+
+- In-scope implementation reached a safe point: `TargetRef` now has an additive Web/Desktop domain shape, structured Desktop `AppTarget` protobuf/wire mapping, Desktop capability tokens, mapper/oneof rejection tests, provider-neutral Target tests, and Mission scheduling Desktop `AcceptedExecutionJob` construction limited to `mission-scheduling-service.ts`.
+- Focused non-E2E Vitest Gate passed after building the touched packages for local dist availability: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol` (14 files / 168 tests).
+- Root typecheck is blocked by required compatibility edits outside this ticket's explicit allowed scope after widening `TargetRef`:
+  - `packages/runner-kernel/src/deterministic-policy-gate.ts(56,40): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `packages/runner-kernel/src/deterministic-policy-gate.ts(105,31): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `apps/core-daemon/src/main.ts(144,69): error TS2322: Type '"web" | "desktop"' is not assignable to type '"web" | "app"'. Type '"desktop"' is not assignable to type '"web" | "app"'.`
+  - `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts(104,65): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+  - `apps/runner/src/offer-runtime.ts(81,40): error TS2339: Property 'url' does not exist on type 'TargetRef'. Property 'url' does not exist on type 'DesktopTargetRef'.`
+- Minimal scope expansion needed: allow narrow fail-closed compatibility edits in the directly affected Desktop-unaware consumers listed above so each switches on `target.kind` and either preserves Web behavior or rejects/defers Desktop until Ticket 28 owns runtime execution. Without that expansion, the widened public `TargetRef` contract cannot remain type-safe under the required root `corepack pnpm typecheck`.
+- No Server routes, storage migrations, package manifests/lockfile, Runner runtime composition beyond the listed blocked consumers, component tests, or E2E tests were edited.
+
+- scope-decision: Maintainer authorized a narrow Ticket 26 scope expansion after the in-scope Desktop `TargetRef` implementation reached root typecheck blockers. The added files are limited to `packages/runner-kernel/src/deterministic-policy-gate.ts`, `apps/core-daemon/src/main.ts`, `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts`, and `apps/runner/src/offer-runtime.ts`, plus direct existing tests only if necessary. The edits must switch on `target.kind`, preserve Web behavior, and fail closed/defer Desktop runtime handling until Ticket 28; they do not authorize Server routes, Runner runtime execution, package manifests, lockfile changes, storage migrations, component/E2E tests, or broader app composition.
+
+### scope-decision implementation - 2026-08-26
+
+- Implemented the maintainer-authorized compatibility scope only. `DeterministicRunnerPolicyGate` now branches on `accepted.target.kind`: Web still validates URL/origin exactly as before; Desktop jobs are parsed but denied with `PolicyDenied` / `DesktopTargetUnsupported` because Desktop runtime admission belongs to Ticket 28. In-memory authorization also treats non-Web job origins as absent, so Desktop contexts fail closed rather than reading a non-existent URL.
+- `apps/runner/src/offer-runtime.ts` now branches before Web runtime setup: Web offers keep the existing Observation Graph v1 / `web/v1` capability requirements and Playwright path, while Desktop offers raise stable `CapabilityMismatch` with the deferred Desktop UIA capability tokens before lease acceptance, model construction, or Web target creation.
+- `apps/core-daemon/src/runner/runner-backed-run-resource-factory.ts` now requires accepted jobs to remain Web and match the opened Web request before offering to a Runner. A Desktop job at this Web-only seam is rejected before offer, deferring Desktop target-runtime composition to Ticket 28.
+- `apps/core-daemon/src/main.ts` records Runner Protocol Desktop jobs as the existing evidence-store `app` target kind through an explicit `target.kind` switch, preserving the pre-existing `web` storage value and avoiding a new storage migration.
+- Direct compatibility tests added/updated only under existing roots for the four added files: policy-gate Desktop admission denial, Runner offer-runtime Desktop deferral before lease/Web startup, and Runner-backed Web seam Desktop rejection. The existing Web expectation in the Runner-backed factory test was updated to match the already-required Web Observation Graph v1 capability tokens.
+- Scope exclusions preserved: no package manifests, lockfile, Server routes, storage migrations, component/E2E tests, Runner runtime execution outside `offer-runtime.ts`, generated protobuf output outside the prior in-scope protocol source, or broader app composition were edited.
+- Gate evidence after the scope-decision fix:
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts` (3 files / 67 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol` (14 files / 168 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- Post-review acceptance remains N/A for Ticket 26: no external/component E2E is allocated to this ticket, and Desktop runtime execution plus target-runtime composition remain Ticket 28. The focused Gate continues to cover AppTarget validation, project-target compatibility, Mission scheduling construction, Runner Protocol schema/mappers/round trips, malformed oneof handling, and unchanged Web protocol behavior.
+- Ready for a fresh complete-matrix review of the whole Ticket 26 diff from fixed point `05e05ebd762a9222b5fc031503c29612424d0105` after this compatibility-fix commit is recorded.
+
+### complete-matrix blocker fix 2 - 2026-08-26
+
+- Reviewed head fixed: `8901d6f0396f09b78271e9f42ac19a5f2b00c865` from the Ticket 26 complete-matrix review over fixed point `05e05ebd762a9222b5fc031503c29612424d0105`.
+- Fix commit: `4b25a1dcf486d31897137aa43d9d91afefc48616` (`fix(ticket-26): align desktop protocol admission`).
+- Fixed core blocker 1: Desktop Mission scheduling now augments Desktop `ScheduleMissionJob.requiredCapabilities` at the authorized `mission-scheduling-service.ts` construction seam with the complete Runner Protocol Desktop admission set: `target:desktop-windows-uia`, `observation:observation-graph/v1`, and `observation:uia/v1`. Web job capability behavior is unchanged. Unit coverage now starts from the existing Mission-produced Desktop target token and proves the scheduled Desktop offer is accepted by the Runner Protocol mapper without missing Graph/UIA requirements.
+- Fixed core blocker 2: Desktop wire `AppTarget` mapping now rejects malformed Desktop scalar/repeated fields instead of coercing them to empty arrays, zero, or false. Negative conformance coverage rejects malformed Desktop repeated fields (`launch.args`, `process.allowed_child_image_names`, `reset.args`), malformed scalar fields (`reset.timeout_ms`, `shutdown.force_after_timeout`, optional window scalar), and existing missing-field cases before producing a Job.
+- Gates run after the fix commit's code/test diff:
+  - Passed: `CI=true corepack pnpm vitest run tests/contract/desktop tests/unit/core-modules/project-target tests/unit/core-modules/mission tests/conformance/runner-protocol` (14 files / 174 tests).
+  - Passed: `CI=true corepack pnpm vitest run tests/unit/runner-kernel/deterministic-policy-gate.test.ts tests/unit/runner/offer-runtime.test.ts tests/unit/core-daemon/runner-backed-run-resource-factory.test.ts` (3 files / 67 tests).
+  - Passed: `CI=true corepack pnpm typecheck`.
+  - Passed: `git diff --check`.
+- Post-review acceptance remains N/A for Ticket 26: no external/component E2E is allocated to this ticket, no PR evidence is being added here, and Desktop runtime execution plus Target Runtime composition remain Ticket 28 scope. This fix only aligns Mission-produced Desktop protocol requirements and fail-closed Desktop wire parsing within Ticket 26's allowed/authorized files.
+- Ready for a fresh complete-matrix review of the whole Ticket 26 diff from fixed point `05e05ebd762a9222b5fc031503c29612424d0105` after this blocker-fix evidence commit is recorded.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `fcd5b2926a20f428ce0009da704022144bb80ea9`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/67299a12-f10e-42b6-916b-1df54fdc8a61/ticket26-review2/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/67299a12-f10e-42b6-916b-1df54fdc8a61/ticket26-review2/spec.md`).
+- Post-review acceptance: N/A by ticket authority; no external/component E2E is allocated to Ticket 26. Final verification used the focused contract/type/conformance Gate, direct compatibility tests, `corepack pnpm typecheck`, and `git diff --check`.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/112`.
+
+## Answer
+
+Implemented the additive Desktop Target protocol. `TargetRef` now carries Web or structured Desktop `AppTarget` values, protobuf/mappers round-trip AppTarget fields losslessly and reject malformed/multiple target kinds, Mission scheduling constructs authorized Desktop `AcceptedExecutionJob` values with complete Desktop/Graph/UIA capability requirements, existing Web round trips remain unchanged, and current Web/runtime consumers fail closed or defer Desktop execution to Ticket 28.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/112`
+
+Reviewed code head: `fcd5b2926a20f428ce0009da704022144bb80ea9`
+
+Final verification: focused Ticket 26 Gate, direct compatibility tests, `corepack pnpm typecheck`, and `git diff --check` passed. Post-review acceptance is N/A for this ticket.

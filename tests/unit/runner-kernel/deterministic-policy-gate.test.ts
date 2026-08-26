@@ -23,6 +23,16 @@ const policy = {
   expiresAt: "2026-08-18T00:01:00.000Z",
 };
 
+const desktopAppTarget = {
+  targetId: "wpf-reference",
+  platform: "windows" as const,
+  launch: { executable: "C:\\Apps\\Reference\\Reference.exe", args: ["--fixture", "default"] },
+  process: { expectedImageName: "Reference.exe", allowedChildImageNames: [] },
+  window: {},
+  reset: { command: "C:\\Apps\\Reference\\reset.exe", args: ["--clean"], timeoutMs: 5_000 },
+  shutdown: { gracefulTimeoutMs: 5_000, forceAfterTimeout: true },
+};
+
 describe("DeterministicRunnerPolicyGate", () => {
   const job = (overrides: Partial<AcceptedExecutionJob> = {}): AcceptedExecutionJob => ({
     jobId: "job-1",
@@ -191,6 +201,7 @@ describe("DeterministicRunnerPolicyGate", () => {
   it("admits only a non-expired HTTP(S) target in its explicit policy origins", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });
+    expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "desktop", app: desktopAppTarget } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied", message: "DesktopTargetUnsupported" });
     const { projectId: _projectId, ...projectless } = job();
     expect(DeterministicRunnerPolicyGate.admitJob(projectless, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyMissing" });
   });
