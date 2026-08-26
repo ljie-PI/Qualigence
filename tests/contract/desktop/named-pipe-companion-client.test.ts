@@ -134,7 +134,13 @@ function clientWithServer(options: {
   readonly requestIds?: readonly string[];
   readonly maxInFlightRequests?: number;
   readonly defaultRequestDeadlineMs?: number;
-} = {}): { readonly client: NamedPipeCompanionClient; readonly server: MemorySocket; readonly seen: CompanionRequestEnvelope[]; readonly proofs: string[] } {
+} = {}): {
+  readonly client: NamedPipeCompanionClient;
+  readonly clientSocket: MemorySocket;
+  readonly server: MemorySocket;
+  readonly seen: CompanionRequestEnvelope[];
+  readonly proofs: string[];
+} {
   const [clientSocket, server] = socketPair();
   const seen: CompanionRequestEnvelope[] = [];
   const proofs: string[] = [];
@@ -153,6 +159,7 @@ function clientWithServer(options: {
       defaultRequestDeadlineMs: options.defaultRequestDeadlineMs ?? 50,
       ...(options.maxInFlightRequests === undefined ? {} : { maxInFlightRequests: options.maxInFlightRequests }),
     }),
+    clientSocket,
     server,
     seen,
     proofs,
@@ -206,8 +213,8 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
     server.destroy();
   });
 
-  it("does not send an application request when the handshake is rejected", async () => {
-    const { client, server, seen } = clientWithServer({
+  it("does not send an application request and closes the socket when the handshake is rejected", async () => {
+    const { client, clientSocket, server, seen } = clientWithServer({
       onFrame(frame, socket) {
         if (frame.type === "handshake.begin") {
           socket.write(encodeFrame({
@@ -223,6 +230,130 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
 
     await expect(client.launch(target)).rejects.toMatchObject({ responseError: { code: "CompanionIdentityRejected" } });
     expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(clientSocket.destroyed).toBe(true);
+    server.destroy();
+  });
+
+  it("fails closed when the proof handshake is rejected", async () => {
+    const { client, clientSocket, server, seen } = clientWithServer({
+      onFrame(frame, socket) {
+        if (frame.type === "handshake.begin") {
+          socket.write(encodeFrame(ok(frame.requestId, "handshake.challenge", {
+            challengeId: "challenge-1",
+            companionInstanceId: "companion-1",
+            nonceBase64: "bm9uY2U=",
+          })));
+          return;
+        }
+        if (frame.type === "handshake.prove") {
+          socket.write(encodeFrame({
+            protocolMajor: 1,
+            requestId: frame.requestId,
+            type: "handshake.accepted",
+            status: "error",
+            error: { code: "CompanionIdentityRejected", safeMessage: "proof rejected" },
+          }));
+        }
+      },
+    });
+
+    await expect(client.launch(target)).rejects.toMatchObject({ responseError: { code: "CompanionIdentityRejected" } });
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove"]);
+    expect(clientSocket.destroyed).toBe(true);
+    server.destroy();
+  });
+
+  it("fails closed on handshake timeout before admitting application frames", async () => {
+    const { client, clientSocket, server, seen } = clientWithServer();
+
+    await expect(client.launch(target)).rejects.toMatchObject({ code: "CompanionRequestTimeout" });
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(clientSocket.destroyed).toBe(true);
+    server.destroy();
+  });
+
+  it("rejects close during pending connect and sends zero frames", async () => {
+    const [clientSocket, server] = socketPair();
+    const seen: CompanionRequestEnvelope[] = [];
+    const proofs: string[] = [];
+    attachFrameReader(server, (frame) => {
+      seen.push(frame);
+    });
+    let resolveSocket: ((socket: MemorySocket) => void) | undefined;
+    const socketPromise = new Promise<MemorySocket>((resolve) => {
+      resolveSocket = resolve;
+    });
+    const client = new NamedPipeCompanionClient({
+      pipePath: "\\\\.\\pipe\\qualigence-companion-test",
+      signer: signer(proofs),
+      socketFactory: () => socketPromise,
+      requestIdFactory: () => "req-pending-connect",
+      handshakeDeadlineMs: 50,
+      defaultRequestDeadlineMs: 50,
+    });
+
+    const launch = client.launch(target);
+    client.close();
+    await expect(launch).rejects.toMatchObject({ code: "CompanionUnavailable" });
+    resolveSocket?.(clientSocket);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(clientSocket.destroyed).toBe(true);
+    expect(seen).toEqual([]);
+    expect(proofs).toEqual([]);
+    server.destroy();
+  });
+
+  it("rejects close during pending authentication and sends no proof or app frame", async () => {
+    const [clientSocket, server] = socketPair();
+    const seen: CompanionRequestEnvelope[] = [];
+    const proofs: string[] = [];
+    let sawSignatureRequest: (() => void) | undefined;
+    const signatureRequested = new Promise<void>((resolve) => {
+      sawSignatureRequest = resolve;
+    });
+    let resolveSignature: ((signature: CompanionProofSignature) => void) | undefined;
+    const pendingSigner: RunnerCertificateProofSigner = {
+      runnerId: "runner-1",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nredacted\n-----END CERTIFICATE-----",
+      certificateSha256Fingerprint: "b".repeat(64),
+      signCompanionProof(bytes: Uint8Array): Promise<CompanionProofSignature> {
+        proofs.push(new TextDecoder().decode(bytes));
+        sawSignatureRequest?.();
+        return new Promise((resolve) => {
+          resolveSignature = resolve;
+        });
+      },
+    };
+    attachFrameReader(server, (frame) => {
+      seen.push(frame);
+      if (frame.type === "handshake.begin") {
+        server.write(encodeFrame(ok(frame.requestId, "handshake.challenge", {
+          challengeId: "challenge-1",
+          companionInstanceId: "companion-1",
+          nonceBase64: "bm9uY2U=",
+        })));
+      }
+    });
+    const client = new NamedPipeCompanionClient({
+      pipePath: "\\\\.\\pipe\\qualigence-companion-test",
+      signer: pendingSigner,
+      socketFactory: () => clientSocket,
+      requestIdFactory: () => `req-${seen.length + 1}`,
+      handshakeDeadlineMs: 50,
+      defaultRequestDeadlineMs: 50,
+    });
+
+    const launch = client.launch(target);
+    await signatureRequested;
+    client.close();
+    await expect(launch).rejects.toMatchObject({ code: "CompanionUnavailable" });
+    resolveSignature?.({ signatureBase64: "c2ln", signatureAlgorithm: "ecdsa-p256-sha256" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(seen.map((entry) => entry.type)).toEqual(["handshake.begin"]);
+    expect(proofs).toEqual(["qualigence-companion-proof/v1\n1\ncompanion-1\nbm9uY2U=\nrunner-1\n"]);
+    expect(clientSocket.destroyed).toBe(true);
     server.destroy();
   });
 
@@ -307,6 +438,28 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
     server.destroy();
   });
 
+  it("marks a dispatched permit timeout as outcome unknown", async () => {
+    const { client, server, seen } = clientWithServer({ defaultRequestDeadlineMs: 20, onFrame: handshakeResponder });
+
+    await expect(client.requestPermit({
+      approvalId: "ap-1",
+      sessionId: "sess-1",
+      runId: "run-1",
+      action,
+      authorization: {
+        decisionId: "dec-1",
+        policyId: "pol-1",
+        actionDigestSha256: "a".repeat(64),
+        risk: "Normal",
+        expiresAt: "2026-08-01T00:00:30.000Z",
+      },
+      safeSummary: "Click",
+      expiresAt: "2026-08-01T00:00:30.000Z",
+    })).rejects.toMatchObject({ code: "CompanionRequestTimeout", outcomeUnknown: true });
+    expect(seen.map((entry) => entry.type)).toContain("permit.request");
+    server.destroy();
+  });
+
   it("enforces a bounded in-flight request registry", async () => {
     const { client, server } = clientWithServer({ maxInFlightRequests: 1, onFrame: handshakeResponder });
     await client.authenticate();
@@ -341,7 +494,7 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
       safeSummary: "Click",
       expiresAt: "2026-08-01T00:00:30.000Z",
     })).rejects.toMatchObject({ code: "CompanionBackpressure" });
-    await expect(first).rejects.toMatchObject({ code: "CompanionRequestTimeout" });
+    await expect(first).rejects.toMatchObject({ code: "CompanionRequestTimeout", outcomeUnknown: true });
     server.destroy();
   });
 });

@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
-import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import {
   buildCompanionProofBytes,
@@ -104,9 +103,9 @@ export interface NamedPipeCompanionClientOptions {
 
 interface PendingRequest {
   readonly requestId: string;
-  readonly requestType: CompanionRequestType;
   readonly expectedResponseType: CompanionResponseType;
   readonly sideEffecting: boolean;
+  readonly failStopOnFailure: boolean;
   dispatched: boolean;
   readonly deadlineTimer: ReturnType<typeof setTimeout>;
   readonly resolve: (value: unknown) => void;
@@ -162,7 +161,11 @@ function mapStableErrorCode(code: CompanionStableError["code"]): NamedPipeCompan
 }
 
 function isSideEffectingRequest(type: CompanionRequestType): boolean {
-  return type === "app.launch" || type === "app.reset" || type === "app.shutdown" || type === "action.execute";
+  return type === "app.launch" || type === "app.reset" || type === "app.shutdown" || type === "permit.request" || type === "action.execute";
+}
+
+function isHandshakeRequest(type: CompanionRequestType): boolean {
+  return type === "handshake.begin" || type === "handshake.prove";
 }
 
 export class NamedPipeCompanionClient implements CompanionClient {
@@ -183,6 +186,8 @@ export class NamedPipeCompanionClient implements CompanionClient {
   private readonly pending = new Map<string, PendingRequest>();
   private connectionPromise: Promise<void> | undefined;
   private authenticationPromise: Promise<void> | undefined;
+  private readonly closeWaiters = new Set<(error: NamedPipeCompanionClientError) => void>();
+  private closeReason: NamedPipeCompanionClientError | undefined;
   private authenticated = false;
   private closed = false;
 
@@ -202,6 +207,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
   }
 
   async authenticate(): Promise<void> {
+    this.throwIfClosed();
     if (this.authenticated) {
       return;
     }
@@ -209,11 +215,18 @@ export class NamedPipeCompanionClient implements CompanionClient {
       this.authenticationPromise = undefined;
     });
     await this.authenticationPromise;
+    this.throwIfClosed();
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
+    const error = new NamedPipeCompanionClientError("CompanionUnavailable", "Companion client closed");
     this.closed = true;
-    this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion client closed"));
+    this.closeReason = error;
+    this.rejectCloseWaiters(error);
+    this.failStop(error);
   }
 
   async launch(target: AppTarget): Promise<AppSession> {
@@ -256,12 +269,52 @@ export class NamedPipeCompanionClient implements CompanionClient {
     }
   }
 
+  private closedError(): NamedPipeCompanionClientError {
+    return this.closeReason ?? new NamedPipeCompanionClientError("CompanionUnavailable", "Companion client is closed");
+  }
+
+  private throwIfClosed(): void {
+    if (this.closed) {
+      throw this.closedError();
+    }
+  }
+
+  private raceClosed<T>(promise: Promise<T>): Promise<T> {
+    this.throwIfClosed();
+    return new Promise<T>((resolve, reject) => {
+      const onClose = (error: NamedPipeCompanionClientError): void => {
+        reject(error);
+      };
+      this.closeWaiters.add(onClose);
+      promise.then(resolve, reject).finally(() => {
+        this.closeWaiters.delete(onClose);
+      });
+    });
+  }
+
+  private rejectCloseWaiters(error: NamedPipeCompanionClientError): void {
+    for (const waiter of this.closeWaiters) {
+      waiter(error);
+    }
+    this.closeWaiters.clear();
+  }
+
+  private assertCurrentSocket(socket: CompanionSocket | undefined): void {
+    this.throwIfClosed();
+    if (socket === undefined || this.socket !== socket || socket.destroyed) {
+      throw new NamedPipeCompanionClientError("CompanionUnavailable", "Companion authentication connection was closed");
+    }
+  }
+
   private async authenticateOnce(): Promise<void> {
     await this.ensureConnected();
+    const handshakeSocket = this.socket;
+    this.assertCurrentSocket(handshakeSocket);
     const challenge = await this.requestWithoutAuthentication("handshake.begin", {
       runnerId: this.signer.runnerId,
       certificatePem: this.signer.certificatePem,
     }, this.handshakeDeadlineMs);
+    this.assertCurrentSocket(handshakeSocket);
 
     if (this.expectedCompanionInstanceId !== undefined && challenge.companionInstanceId !== this.expectedCompanionInstanceId) {
       this.failStop(new NamedPipeCompanionClientError("CompanionIdentityRejected", "Companion instance mismatch"));
@@ -274,7 +327,8 @@ export class NamedPipeCompanionClient implements CompanionClient {
       nonceBase64: challenge.nonceBase64,
       runnerId: this.signer.runnerId,
     });
-    const signature = await this.signer.signCompanionProof(proofBytes);
+    const signature = await this.raceClosed(this.signer.signCompanionProof(proofBytes));
+    this.assertCurrentSocket(handshakeSocket);
     if (!isProofAlgorithm(signature.signatureAlgorithm) || signature.signatureBase64.length === 0) {
       this.failStop(new NamedPipeCompanionClientError("CompanionIdentityRejected", "Runner certificate signer returned an invalid proof"));
       throw new NamedPipeCompanionClientError("CompanionIdentityRejected", "Runner certificate signer returned an invalid proof");
@@ -287,6 +341,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
       signatureBase64: signature.signatureBase64,
       signatureAlgorithm: signature.signatureAlgorithm,
     }, this.handshakeDeadlineMs);
+    this.assertCurrentSocket(handshakeSocket);
 
     if (accepted.runnerId !== this.signer.runnerId || accepted.companionInstanceId !== challenge.companionInstanceId) {
       this.failStop(new NamedPipeCompanionClientError("CompanionIdentityRejected", "Companion accepted identity does not match the proof"));
@@ -305,20 +360,34 @@ export class NamedPipeCompanionClient implements CompanionClient {
   }
 
   private async ensureConnected(): Promise<void> {
+    this.throwIfClosed();
     if (this.socket !== undefined && !this.socket.destroyed) {
+      this.throwIfClosed();
       return;
-    }
-    if (this.closed) {
-      throw new NamedPipeCompanionClientError("CompanionUnavailable", "Companion client is closed");
     }
     this.connectionPromise ??= this.connectOnce().finally(() => {
       this.connectionPromise = undefined;
     });
     await this.connectionPromise;
+    this.throwIfClosed();
   }
 
   private async connectOnce(): Promise<void> {
-    const socket = await this.socketFactory(this.pipePath);
+    this.throwIfClosed();
+    const socketPromise = Promise.resolve(this.socketFactory(this.pipePath));
+    socketPromise.then((socket) => {
+      if (this.closed && !socket.destroyed) {
+        socket.destroy();
+      }
+    }).catch(() => undefined);
+
+    const socket = await this.raceClosed(socketPromise);
+    if (this.closed) {
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+      throw this.closedError();
+    }
     this.socket = socket;
     this.authenticated = false;
     this.buffered = Buffer.alloc(0);
@@ -328,9 +397,10 @@ export class NamedPipeCompanionClient implements CompanionClient {
     socket.on("close", () => this.failStop(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe closed")));
 
     if ((socket as { readonly connecting?: boolean }).connecting !== true) {
+      this.throwIfClosed();
       return;
     }
-    await new Promise<void>((resolve, reject) => {
+    await this.raceClosed(new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
         socket.destroy();
@@ -340,6 +410,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
         clearTimeout(timer);
         socket.off("connect", onConnect);
         socket.off("error", onError);
+        socket.off("close", onClose);
       };
       const onConnect = (): void => {
         cleanup();
@@ -349,9 +420,15 @@ export class NamedPipeCompanionClient implements CompanionClient {
         cleanup();
         reject(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe connect failed"));
       };
+      const onClose = (): void => {
+        cleanup();
+        reject(new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe closed before connect"));
+      };
       socket.once("connect", onConnect);
       socket.once("error", onError);
-    });
+      socket.once("close", onClose);
+    }));
+    this.throwIfClosed();
   }
 
   private requestWithoutAuthentication<T extends CompanionRequestType>(
@@ -367,6 +444,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
     payload: CompanionRequestPayloadByType[T],
     deadlineMs: number,
   ): Promise<CompanionResponsePayloadByType[ExpectedCompanionResponseType<T>]> {
+    this.throwIfClosed();
     if (!this.authenticated) {
       throw new NamedPipeCompanionClientError("CompanionUnauthenticated", "Companion request attempted before authentication");
     }
@@ -379,6 +457,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
     deadlineMs: number,
   ): Promise<CompanionResponsePayloadByType[ExpectedCompanionResponseType<T>]> {
     await this.ensureConnected();
+    this.throwIfClosed();
     if (deadlineMs < COMPANION_IPC_LIMITS.minDeadlineMs || deadlineMs > COMPANION_IPC_LIMITS.maxDeadlineMs) {
       throw new NamedPipeCompanionClientError("CompanionRequestTimeout", "Companion request deadline is outside the allowed bound");
     }
@@ -394,27 +473,33 @@ export class NamedPipeCompanionClient implements CompanionClient {
     if (socket === undefined || socket.destroyed) {
       throw new NamedPipeCompanionClientError("CompanionUnavailable", "Companion pipe is not connected");
     }
+    this.throwIfClosed();
 
     return await new Promise<CompanionResponsePayloadByType[ExpectedCompanionResponseType<T>]>((resolve, reject) => {
       const entry: PendingRequest = {
         requestId,
-        requestType: type,
         expectedResponseType,
         sideEffecting: isSideEffectingRequest(type),
+        failStopOnFailure: isHandshakeRequest(type),
         dispatched: false,
         deadlineTimer: setTimeout(() => {
           this.pending.delete(requestId);
-          reject(new NamedPipeCompanionClientError(
+          const error = new NamedPipeCompanionClientError(
             "CompanionRequestTimeout",
             "Companion request deadline expired",
             { outcomeUnknown: entry.dispatched && entry.sideEffecting },
-          ));
+          );
+          reject(error);
+          if (entry.failStopOnFailure) {
+            this.failStop(error);
+          }
         }, deadlineMs),
         resolve: (value: unknown) => resolve(value as CompanionResponsePayloadByType[ExpectedCompanionResponseType<T>]),
         reject,
       };
       this.pending.set(requestId, entry);
       try {
+        this.throwIfClosed();
         entry.dispatched = true;
         socket.write(frame);
       } catch (error) {
@@ -480,15 +565,18 @@ export class NamedPipeCompanionClient implements CompanionClient {
     clearTimeout(entry.deadlineTimer);
     if (response.status === "error") {
       const mapped = mapStableErrorCode(response.error.code);
+      const outcomeUnknown = entry.dispatched && entry.sideEffecting;
       if (mapped === "CompanionProtocolViolation" || mapped === "CompanionCorrelationError") {
-        const protocolError = new NamedPipeCompanionClientError(mapped, response.error.safeMessage, {
-          outcomeUnknown: entry.dispatched && entry.sideEffecting,
-        });
+        const protocolError = new NamedPipeCompanionClientError(mapped, response.error.safeMessage, { outcomeUnknown });
         entry.reject(protocolError);
         this.failStop(protocolError);
         return;
       }
-      entry.reject(new CompanionResponseError(response.error, { outcomeUnknown: entry.dispatched && entry.sideEffecting }));
+      const responseError = new CompanionResponseError(response.error, { outcomeUnknown });
+      entry.reject(responseError);
+      if (entry.failStopOnFailure) {
+        this.failStop(responseError);
+      }
       return;
     }
     entry.resolve(response.payload);
