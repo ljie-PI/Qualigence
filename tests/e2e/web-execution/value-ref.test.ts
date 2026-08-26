@@ -578,22 +578,24 @@ describe("production valueRef browser execution", () => {
       expect(Buffer.from(pngArtifact(firstArtifacts).bytes).toString("utf8")).not.toContain(reflectedSecret);
 
       await session.withPage(async (page) => {
-        await page.evaluate((secret) => {
-          type MutableElement = {
+        await page.evaluate((input) => {
+          type MutableElement = Element & {
             id: string;
             textContent: string | null;
             readonly style: Record<string, string>;
             setAttribute(name: string, value: string): void;
           };
-          const host = globalThis as unknown as {
+          const host = globalThis as unknown as Record<string, unknown> & {
+            WeakMap: WeakMapConstructor;
             readonly document: {
+              title: string;
               createElement(tagName: string): MutableElement;
               readonly body: { append(element: unknown): void };
             };
           };
           const reflected = host.document.createElement("div");
           reflected.id = "later-retired-reflection";
-          reflected.textContent = secret;
+          reflected.textContent = input.secret;
           reflected.setAttribute("data-qualigence-observe", "true");
           Object.assign(reflected.style, {
             position: "absolute",
@@ -605,7 +607,20 @@ describe("production valueRef browser execution", () => {
             color: "blue",
           });
           host.document.body.append(reflected);
-        }, reflectedSecret);
+          host.document.title = `later ${input.secret}`;
+          const state = host[input.stateProperty] as {
+            retiredRecords?: Array<{ baseline?: WeakMap<Element, readonly string[]> }>;
+          } | undefined;
+          const record = state?.retiredRecords?.[0];
+          if (record !== undefined) {
+            const forgedBaseline = new host.WeakMap<Element, readonly string[]>();
+            forgedBaseline.set(reflected, [input.secret]);
+            record.baseline = forgedBaseline;
+          }
+        }, {
+          stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+          secret: reflectedSecret,
+        });
       });
 
       await expect(observer.capture({ ...e2eJob("retired-reflection"), target: { kind: "web", url: fixture.url } }))

@@ -174,6 +174,18 @@ export class SensitiveEvidenceAuthority {
     return this.redactFieldWithStatus(sensitiveTargetIds, value, sensitiveMaskId);
   }
 
+  redactMetadataField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+    sensitiveMaskId?: string,
+  ): SensitiveEvidenceRedactionResult {
+    const result = this.redactFieldWithStatus(sensitiveTargetIds, value, sensitiveMaskId);
+    if (result.status !== "unchanged") return result;
+    return this.carriesAnySensitiveForm(value)
+      ? { status: "redacted", value: REDACTED_SENSITIVE_TEXT }
+      : result;
+  }
+
   redactFieldWithStatus(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
@@ -245,6 +257,13 @@ export class SensitiveEvidenceAuthority {
     pendingMarkerIds: readonly string[],
   ): boolean {
     return this.validatePendingPageStateSnapshot(snapshot, pendingMarkerIds, "exact") !== undefined;
+  }
+
+  private carriesAnySensitiveForm(value: string): boolean {
+    for (const record of this.records.values()) {
+      if (carriesSensitiveForm(value, record.forms)) return true;
+    }
+    return false;
   }
 
   private validatePendingPageStateSnapshot(

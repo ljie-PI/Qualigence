@@ -138,6 +138,7 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\b(?:candidate|target|element|node|root|option)\.options\b/g, label: ".options" },
   { pattern: /(^|[^.\w$])getComputedStyle\s*\(/g, label: "getComputedStyle(" },
   { pattern: /\bstyle\.(?:display|visibility)\b/g, label: "style.display/visibility" },
+  { pattern: /\.(?:includes|toLowerCase|trim|replace|normalize)\s*\(/g, label: "mutable String.prototype method" },
 ];
 
 const dynamicCallbackConstruction: readonly RegExp[] = [
@@ -223,6 +224,11 @@ describe("page callback authority inventory", () => {
       const weakCall = WeakMap.prototype.get.call(weak, target);
       const display = style.display;
       const visibility = style.visibility;
+      const lower = value.toLowerCase();
+      const trimmed = value.trim();
+      const normalized = value.normalize('NFC');
+      const replaced = value.replace(/secret/g, 'x');
+      const matched = value.includes(secret);
       if (target[handlerName]) console.log('dynamic');
       if (target[handlerName, otherName]) console.log('comma dynamic');
       if (target[...handlerNames]) console.log('spread dynamic');
@@ -251,6 +257,11 @@ describe("page callback authority inventory", () => {
       "WeakMap.prototype",
       "style.display/visibility",
       "style.display/visibility",
+      "mutable String.prototype method",
+      "mutable String.prototype method",
+      "mutable String.prototype method",
+      "mutable String.prototype method",
+      "mutable String.prototype method",
     ]));
     expect(unapprovedComputedReads(previouslyCitedAmbientReads)).toEqual(expect.arrayContaining([
       "[handlerName]",
@@ -262,6 +273,20 @@ describe("page callback authority inventory", () => {
       "Symbol.iterator",
       "[Symbol.iterator]",
     ]));
+    expect(unauthorizedRetiredBaselineAuthority(`
+      const record = state.retiredRecords[0];
+      if (record.baseline.get(element).includes(secret)) return false;
+      if (record.shadowBaseline.get(root).includes(secret)) return false;
+    `)).toEqual(expect.arrayContaining([
+      "retiredRecords",
+      "retired baseline",
+      "retired shadowBaseline",
+    ]));
+  });
+
+  it("does not use page-owned retired baselines as sensitive reflection authority", () => {
+    const collectSource = extractInventorySource(callbackInventory.find((entry) => entry.id === "collectPageObservation")!);
+    expect(unauthorizedRetiredBaselineAuthority(collectSource)).toEqual([]);
   });
 
   it("keeps production screenshot masking on CDP/backend-node authority and rejects dynamic callbacks", () => {
@@ -428,6 +453,15 @@ function unauthorizedMutableIteration(source: string): string[] {
   for (const pattern of forbiddenMutableIterationPatterns) {
     if (new RegExp(pattern.pattern.source, "g").test(body)) findings.push(pattern.label);
   }
+  return findings;
+}
+
+function unauthorizedRetiredBaselineAuthority(source: string): string[] {
+  const body = stripCommentsAndStrings(source);
+  const findings: string[] = [];
+  if (/\.retiredRecords\b/.test(body)) findings.push("retiredRecords");
+  if (/\.retiredRecords\b[\s\S]*\.baseline\b/.test(body)) findings.push("retired baseline");
+  if (/\.retiredRecords\b[\s\S]*\.shadowBaseline\b/.test(body)) findings.push("retired shadowBaseline");
   return findings;
 }
 

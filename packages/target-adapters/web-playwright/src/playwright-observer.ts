@@ -640,6 +640,11 @@ function collectPageObservation(
     readonly arrayFrom: typeof Array.from;
     readonly arrayIsArray: typeof Array.isArray;
     readonly reflectApply: typeof Reflect.apply;
+    readonly stringIncludes: typeof String.prototype.includes;
+    readonly stringNormalize: typeof String.prototype.normalize;
+    readonly stringReplace: typeof String.prototype.replace;
+    readonly stringToLowerCase: typeof String.prototype.toLowerCase;
+    readonly stringTrim: typeof String.prototype.trim;
     readonly weakMapGet: typeof WeakMap.prototype.get;
     readonly cssStyleDeclarationGetPropertyValue: typeof CSSStyleDeclaration.prototype.getPropertyValue;
     readonly documentGetElementById: typeof Document.prototype.getElementById;
@@ -674,12 +679,18 @@ function collectPageObservation(
   };
   const nativeDom = ((window as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.sensitiveShadowRootsProperty])?.nativeDom;
   if (nativeDom === undefined || typeof nativeDom.reflectApply !== "function" ||
+    typeof nativeDom.stringIncludes !== "function" || typeof nativeDom.stringNormalize !== "function" ||
+    typeof nativeDom.stringReplace !== "function" || typeof nativeDom.stringToLowerCase !== "function" ||
+    typeof nativeDom.stringTrim !== "function" ||
     typeof nativeDom.weakMapGet !== "function" || typeof nativeDom.cssStyleDeclarationGetPropertyValue !== "function") {
     return failedPageObservation();
   }
   const dom: NativeDomAuthority = nativeDom;
 
   const apply = <T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T => dom.reflectApply(fn, receiver, args as never[]) as T;
+  const stringIncludes = (value: string, search: string): boolean => apply(dom.stringIncludes as (...args: never[]) => boolean, value, [search]);
+  const stringToLowerCase = (value: string): string => apply(dom.stringToLowerCase as (...args: never[]) => string, value);
+  const stringTrim = (value: string): string => apply(dom.stringTrim as (...args: never[]) => string, value);
   const arrayFrom = <T>(items: ArrayLike<T>): T[] => {
     const length = arrayLikeLength(items);
     if (length === undefined) throw new Error("Untrusted array-like length.");
@@ -705,7 +716,7 @@ function collectPageObservation(
   const queryDocumentOne = (selector: string): Element | null => apply(dom.documentQuerySelector, document, [selector]);
   const queryRoot = (root: ShadowRoot, selector: string): Element[] => arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
   const closest = (element: Element, selector: string): Element | null => apply(dom.elementClosest, element, [selector]);
-  const tagName = (element: Element): string => apply(dom.elementTagNameGet!, element).toLowerCase();
+  const tagName = (element: Element): string => stringToLowerCase(apply(dom.elementTagNameGet!, element));
   const textContent = (node: Node): string => apply(dom.nodeTextContentGet!, node) ?? "";
   const childNodes = (node: Node): ChildNode[] => arrayFrom(apply(dom.nodeChildNodesGet!, node));
   const getRootNode = (node: Node): Node => apply(dom.nodeGetRootNode, node);
@@ -758,7 +769,7 @@ function collectPageObservation(
       return "textbox";
     }
     if (tag === "input") {
-      const type = (getAttribute(element, "type") ?? "text").toLowerCase();
+      const type = stringToLowerCase(getAttribute(element, "type") ?? "text");
       if (type === "button" || type === "submit" || type === "reset") {
         return "button";
       }
@@ -775,7 +786,7 @@ function collectPageObservation(
 
   function accessibleName(element: Element): string {
     const ariaLabel = getAttribute(element, "aria-label");
-    if (ariaLabel && ariaLabel.trim() !== "") {
+    if (ariaLabel && stringTrim(ariaLabel) !== "") {
       return ariaLabel;
     }
     const labelledBy = getAttribute(element, "aria-labelledby");
@@ -787,7 +798,7 @@ function collectPageObservation(
         const node = apply(dom.documentGetElementById, document, [id]);
         if (node !== null) labels[labels.length] = textContent(node);
       }
-      const joined = labels.join(" ").trim();
+      const joined = stringTrim(labels.join(" "));
       if (joined !== "") {
         return joined;
       }
@@ -796,24 +807,24 @@ function collectPageObservation(
     if (/^[A-Za-z][A-Za-z0-9_-]*$/.test(elementId)) {
       const label = queryDocumentOne(`label[for="${elementId}"]`);
       const labelText = label === null ? "" : textContent(label);
-      if (labelText.trim() !== "") {
+      if (stringTrim(labelText) !== "") {
         return labelText;
       }
     }
     const wrapping = closest(element, "label");
     const wrappingText = wrapping === null ? "" : textContent(wrapping);
-    if (wrappingText.trim() !== "") {
+    if (stringTrim(wrappingText) !== "") {
       return wrappingText;
     }
     const tag = tagName(element);
     if (tag === "button" || tag === "a" || getAttribute(element, "role") === "button") {
       const content = textContent(element);
-      if (content.trim() !== "") {
+      if (stringTrim(content) !== "") {
         return content;
       }
     }
     if (isTag(element, "input")) {
-      const type = (getAttribute(element, "type") ?? "text").toLowerCase();
+      const type = stringToLowerCase(getAttribute(element, "type") ?? "text");
       const value = inputValue(element);
       if (
         (type === "submit" || type === "button" || type === "reset") &&
@@ -912,7 +923,7 @@ function collectPageObservation(
   function carriesForm(value: string, forms: readonly string[]): boolean {
     for (let index = 0; index < forms.length; index += 1) {
       const form = forms[index]!;
-      if (value === form || (form !== "" && value.includes(form))) return true;
+      if (value === form || (form !== "" && stringIncludes(value, form))) return true;
     }
     return false;
   }
@@ -931,19 +942,15 @@ function collectPageObservation(
   }
 
   function findPageSensitiveRecord<T extends { readonly markerId: string }>(
-    state: { readonly records?: readonly T[]; readonly retiredRecords?: readonly T[] } | undefined,
+    state: { readonly records?: readonly T[] } | undefined,
     markerId: string,
   ): T | undefined {
-    return findRecord(state?.records, markerId) ?? findRecord(state?.retiredRecords, markerId);
+    return findRecord(state?.records, markerId);
   }
 
   function baselineAllows(element: Element, markerId: string, value: string): boolean {
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly {
-        readonly markerId: string;
-        readonly baseline?: WeakMap<Element, readonly string[]>;
-      }[];
-      readonly retiredRecords?: readonly {
         readonly markerId: string;
         readonly baseline?: WeakMap<Element, readonly string[]>;
       }[];
@@ -956,10 +963,6 @@ function collectPageObservation(
   function shadowBaselineAllows(node: Node, markerId: string, value: string): boolean {
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly {
-        readonly markerId: string;
-        readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
-      }[];
-      readonly retiredRecords?: readonly {
         readonly markerId: string;
         readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
       }[];
@@ -993,12 +996,13 @@ function collectPageObservation(
         for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
           const value = values[valueIndex]!;
           if (!carriesForm(value, record.forms)) continue;
-          if (baselineAllows(element, record.markerId, value)) continue;
+          if (pendingPageRecord && baselineAllows(element, record.markerId, value)) continue;
           if (sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
           return true;
         }
       }
     }
+    if (metadataValueUnavailable(apply(dom.documentTitleGet!, document), queryDocumentOne("title"))) return true;
     const roots = shadowRoots();
     for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
       const root = roots[rootIndex]!;
@@ -1008,7 +1012,7 @@ function collectPageObservation(
         const rootValues = shadowRootValues(root);
         for (let valueIndex = 0; valueIndex < rootValues.length; valueIndex += 1) {
           const value = rootValues[valueIndex]!;
-          if (!carriesForm(value, record.forms) || shadowBaselineAllows(root, record.markerId, value)) {
+          if (!carriesForm(value, record.forms) || (pendingPageRecord && shadowBaselineAllows(root, record.markerId, value))) {
             continue;
           }
           if (shadowRootMode(root) === "open" && openRootValueCoveredBySensitiveMarker(root, record, value, pendingPageRecord)) {
@@ -1025,7 +1029,7 @@ function collectPageObservation(
             const value = values[valueIndex]!;
             if (!carriesForm(value, record.forms)) continue;
             if (shadowRootMode(root) === "open" && sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
-            if (shadowBaselineAllows(element, record.markerId, value)) continue;
+            if (pendingPageRecord && shadowBaselineAllows(element, record.markerId, value)) continue;
             return true;
           }
         }
@@ -1068,11 +1072,28 @@ function collectPageObservation(
   }
 
   function sensitiveElementCoveredByAnyTrustedMask(element: Element): boolean {
-    if (!isMaskableElement(element) || !isVisible(element)) return true;
+    if (!isMaskableElement(element)) return false;
+    if (!isVisible(element)) return true;
     const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
     if (maskId === null) return false;
     for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
       if (arrayHasString(hostSensitiveRecords[recordIndex]!.maskIds, maskId)) return true;
+    }
+    return false;
+  }
+
+  function metadataValueUnavailable(value: string, element: Element | null): boolean {
+    if (value === "") return false;
+    const ids = element === null ? [] : readSensitiveTargetIds(element);
+    const state = (window as unknown as Record<string, {
+      readonly records?: readonly { readonly markerId: string }[];
+    } | undefined>)[input.sensitiveEvidenceStateProperty];
+    for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+      const record = hostSensitiveRecords[recordIndex]!;
+      if (!carriesForm(value, record.forms)) continue;
+      const pendingPageRecord = findRecord(state?.records, record.markerId) !== undefined;
+      if (element !== null && sensitiveElementCoveredByAuthority(element, ids, record, pendingPageRecord)) continue;
+      return true;
     }
     return false;
   }
@@ -1087,7 +1108,7 @@ function collectPageObservation(
       const values = sensitiveValues(element);
       for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
         const candidate = values[valueIndex]!;
-        if (value === candidate || (candidate !== "" && value.includes(candidate))) {
+        if (value === candidate || (candidate !== "" && stringIncludes(value, candidate))) {
           return true;
         }
       }
@@ -1299,11 +1320,11 @@ function collectPageObservation(
       continue;
     }
     const role = roleOf(element);
-    const name = accessibleName(element).trim();
+    const name = stringTrim(accessibleName(element));
     const isFormField = isTag(element, "input") || isTag(element, "textarea");
     let value: string | undefined;
     if (isTag(element, "input")) {
-      const type = (getAttribute(element, "type") ?? "text").toLowerCase();
+      const type = stringToLowerCase(getAttribute(element, "type") ?? "text");
       const observedValue = inputValue(element);
       if (type !== "password" && observedValue !== "") {
         value = observedValue;
@@ -1327,13 +1348,13 @@ function collectPageObservation(
     let text: string | undefined;
     if (!interactive || hasAttribute(element, "data-qualigence-observe")) {
       const content = textContent(element);
-      if (content.trim() !== "") {
+      if (stringTrim(content) !== "") {
         text = content;
       }
     } else if (isSensitiveTarget && isTag(element, "select")) {
       const selected = selectedOptions(element)[0];
       const selectedText = selected === undefined ? "" : optionText(selected);
-      if (selectedText.trim() !== "") {
+      if (stringTrim(selectedText) !== "") {
         text = selectedText;
       }
     }

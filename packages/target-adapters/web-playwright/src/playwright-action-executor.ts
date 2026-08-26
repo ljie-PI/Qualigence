@@ -744,6 +744,11 @@ async function beginPageSensitiveActionEpoch(
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly stringIncludes: typeof String.prototype.includes;
+      readonly stringNormalize: typeof String.prototype.normalize;
+      readonly stringReplace: typeof String.prototype.replace;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
+      readonly stringTrim: typeof String.prototype.trim;
       readonly weakMap: WeakMapConstructor;
       readonly weakMapGet: typeof WeakMap.prototype.get;
       readonly weakMapSet: typeof WeakMap.prototype.set;
@@ -905,6 +910,11 @@ async function beginPageSensitiveActionEpoch(
         candidate.arrayIsArray,
         candidate.objectDefineProperty,
         candidate.reflectApply,
+        candidate.stringIncludes,
+        candidate.stringNormalize,
+        candidate.stringReplace,
+        candidate.stringToLowerCase,
+        candidate.stringTrim,
         candidate.weakMap,
         candidate.weakMapGet,
         candidate.weakMapSet,
@@ -943,6 +953,26 @@ async function beginPageSensitiveActionEpoch(
 
     function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
       return dom.reflectApply(fn, receiver, args as never[]) as T;
+    }
+
+    function stringIncludes(value: string, search: string): boolean {
+      return apply(dom.stringIncludes as (...args: never[]) => boolean, value, [search]);
+    }
+
+    function stringNormalize(value: string, form: string): string {
+      return apply(dom.stringNormalize as (...args: never[]) => string, value, [form]);
+    }
+
+    function stringReplace(value: string, pattern: string | RegExp, replacement: string): string {
+      return apply(dom.stringReplace as (...args: never[]) => string, value, [pattern, replacement]);
+    }
+
+    function stringToLowerCase(value: string): string {
+      return apply(dom.stringToLowerCase as (...args: never[]) => string, value);
+    }
+
+    function stringTrim(value: string): string {
+      return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
     function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
@@ -986,7 +1016,7 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function tagName(candidate: Element): string {
-      return apply(dom.elementTagNameGet!, candidate).toLowerCase();
+      return stringToLowerCase(apply(dom.elementTagNameGet!, candidate));
     }
 
     function childNodes(node: Node): ChildNode[] {
@@ -1109,9 +1139,7 @@ async function beginPageSensitiveActionEpoch(
       const values: string[] = [];
       pushUniqueNonEmpty(values, source);
       if (actionKind === "input") {
-        const lineFeed = String.fromCharCode(10);
-        const carriageReturn = String.fromCharCode(13);
-        const browserValue = source.split(carriageReturn + lineFeed).join(lineFeed).split(carriageReturn).join(lineFeed);
+        const browserValue = stringReplace(stringReplace(source, /\r\n/g, "\n"), /\r/g, "\n");
         pushUniqueNonEmpty(values, browserValue);
         pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(browserValue));
       }
@@ -1593,13 +1621,13 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function normalizeVisibleSensitiveForm(value: string): string {
-      return value.normalize("NFC").replace(/\s+/g, " ").trim();
+      return stringTrim(stringReplace(stringNormalize(value, "NFC"), /\s+/g, " "));
     }
 
     function carriesForm(value: string, form: string | readonly string[]): boolean {
       const forms = dom.arrayIsArray(form) ? form : [form];
       for (const candidate of forms) {
-        if (value === candidate || (candidate !== "" && value.includes(candidate))) return true;
+        if (value === candidate || (candidate !== "" && stringIncludes(value, candidate))) return true;
       }
       return false;
     }
@@ -1693,6 +1721,11 @@ async function endPageSensitiveActionEpoch(
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly stringIncludes: typeof String.prototype.includes;
+      readonly stringNormalize: typeof String.prototype.normalize;
+      readonly stringReplace: typeof String.prototype.replace;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
+      readonly stringTrim: typeof String.prototype.trim;
       readonly weakMap: WeakMapConstructor;
       readonly weakMapGet: typeof WeakMap.prototype.get;
       readonly weakMapSet: typeof WeakMap.prototype.set;
@@ -1790,6 +1823,11 @@ async function endPageSensitiveActionEpoch(
         candidate.arrayIsArray,
         candidate.objectDefineProperty,
         candidate.reflectApply,
+        candidate.stringIncludes,
+        candidate.stringNormalize,
+        candidate.stringReplace,
+        candidate.stringToLowerCase,
+        candidate.stringTrim,
         candidate.weakMap,
         candidate.weakMapGet,
         candidate.weakMapSet,
@@ -1828,6 +1866,26 @@ async function endPageSensitiveActionEpoch(
 
     function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
       return dom.reflectApply(fn, receiver, args as never[]) as T;
+    }
+
+    function stringIncludes(value: string, search: string): boolean {
+      return apply(dom.stringIncludes as (...args: never[]) => boolean, value, [search]);
+    }
+
+    function stringNormalize(value: string, form: string): string {
+      return apply(dom.stringNormalize as (...args: never[]) => string, value, [form]);
+    }
+
+    function stringReplace(value: string, pattern: string | RegExp, replacement: string): string {
+      return apply(dom.stringReplace as (...args: never[]) => string, value, [pattern, replacement]);
+    }
+
+    function stringToLowerCase(value: string): string {
+      return apply(dom.stringToLowerCase as (...args: never[]) => string, value);
+    }
+
+    function stringTrim(value: string): string {
+      return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
     function arrayFrom<T>(items: ArrayLike<T> | Iterable<T>): T[] {
@@ -1875,7 +1933,7 @@ async function endPageSensitiveActionEpoch(
     }
 
     function tagName(candidate: Element): string {
-      return apply(dom.elementTagNameGet!, candidate).toLowerCase();
+      return stringToLowerCase(apply(dom.elementTagNameGet!, candidate));
     }
 
     function childNodes(node: Node): ChildNode[] {
@@ -2025,7 +2083,7 @@ async function endPageSensitiveActionEpoch(
           return maskIds;
         }
         ordinal += 1;
-        const maskId = `qm-${epochToUpdate.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
+        const maskId = `qm-${stringReplace(epochToUpdate.markerId, /[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
         setAttribute(candidate, input.maskAttribute, maskId);
         if (getAttribute(candidate, input.maskAttribute) !== maskId) {
           epochToUpdate.poisoned = true;
@@ -2368,7 +2426,7 @@ async function endPageSensitiveActionEpoch(
       if (actionKind === "input" && (tagName(target) === "input" || tagName(target) === "textarea")) {
         const currentValue = fieldValue(target);
         pushUniqueNonEmpty(values, currentValue);
-        pushUniqueNonEmpty(values, currentValue.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+        pushUniqueNonEmpty(values, stringReplace(stringReplace(currentValue, /\r\n/g, "\n"), /\r/g, "\n"));
         pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(currentValue));
       }
       if (actionKind === "select" && tagName(target) === "select") {
@@ -2390,7 +2448,7 @@ async function endPageSensitiveActionEpoch(
     }
 
     function normalizeVisibleSensitiveForm(value: string): string {
-      return value.normalize("NFC").replace(/\s+/g, " ").trim();
+      return stringTrim(stringReplace(stringNormalize(value, "NFC"), /\s+/g, " "));
     }
 
     function fieldValue(candidate: Element): string {
@@ -2441,7 +2499,7 @@ async function endPageSensitiveActionEpoch(
     }
 
     function carriesForm(value: string, form: string): boolean {
-      return value === form || (form !== "" && value.includes(form));
+      return value === form || (form !== "" && stringIncludes(value, form));
     }
   }, {
     markerId: prepared.markerId,
@@ -2520,13 +2578,14 @@ async function readInputSensitiveForms(locator: Locator): Promise<InputSensitive
     type NativeDomAuthority = {
       readonly arrayIsArray: typeof Array.isArray;
       readonly reflectApply: typeof Reflect.apply;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
       readonly elementTagNameGet: (() => string) | undefined;
       readonly htmlInputElementValueGet: (() => string) | undefined;
       readonly htmlTextAreaElementValueGet: (() => string) | undefined;
     };
     const ids = (element as unknown as Element & Record<string, unknown>)[input.property];
     const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
-    if (dom === undefined || dom.elementTagNameGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
+    if (dom === undefined || dom.elementTagNameGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function" || typeof dom.stringToLowerCase !== "function") {
       throw new Error("Sensitive DOM authority is unavailable.");
     }
     const sensitiveTargetIds = dom.arrayIsArray(ids) && allStrings(ids)
@@ -2538,7 +2597,7 @@ async function readInputSensitiveForms(locator: Locator): Promise<InputSensitive
       }
       return true;
     }
-    const tag = (dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase();
+    const tag = dom.reflectApply(dom.stringToLowerCase, dom.reflectApply(dom.elementTagNameGet, element, []) as string, []) as string;
     if (tag === "input") {
       if (dom.htmlInputElementValueGet === undefined) throw new Error("Sensitive input value authority is unavailable.");
       return { sensitiveTargetIds, value: dom.reflectApply(dom.htmlInputElementValueGet, element, []) as string };
@@ -2559,6 +2618,7 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
     type NativeDomAuthority = {
       readonly arrayIsArray: typeof Array.isArray;
       readonly reflectApply: typeof Reflect.apply;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
       readonly elementTagNameGet: (() => string) | undefined;
       readonly htmlOptionElementTextGet: (() => string) | undefined;
       readonly htmlOptionElementValueGet: (() => string) | undefined;
@@ -2569,7 +2629,7 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
     const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
     if (dom === undefined || dom.elementTagNameGet === undefined || dom.htmlSelectElementValueGet === undefined ||
       dom.htmlSelectElementSelectedOptionsGet === undefined || dom.htmlOptionElementValueGet === undefined ||
-      dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
+      dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function" || typeof dom.stringToLowerCase !== "function") {
       throw new Error("Sensitive select authority is unavailable.");
     }
     const sensitiveTargetIds = dom.arrayIsArray(ids) && allStrings(ids)
@@ -2581,7 +2641,7 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
       }
       return true;
     }
-    if ((dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase() !== "select") {
+    if ((dom.reflectApply(dom.stringToLowerCase, dom.reflectApply(dom.elementTagNameGet, element, []) as string, []) as string) !== "select") {
       throw new Error("Sensitive select target is not a select field.");
     }
     const selectedOption = (dom.reflectApply(dom.htmlSelectElementSelectedOptionsGet, element, []) as HTMLCollectionOf<HTMLOptionElement>)[0];

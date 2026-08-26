@@ -168,6 +168,11 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly arrayIsArray: typeof Array.isArray;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
+      readonly stringIncludes: typeof String.prototype.includes;
+      readonly stringNormalize: typeof String.prototype.normalize;
+      readonly stringReplace: typeof String.prototype.replace;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
+      readonly stringTrim: typeof String.prototype.trim;
       readonly weakMap: WeakMapConstructor;
       readonly weakMapGet: typeof WeakMap.prototype.get;
       readonly weakMapSet: typeof WeakMap.prototype.set;
@@ -285,6 +290,11 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeObjectPrototypeHasOwnProperty: typeof Object.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
     const nativeReflectApply: typeof Reflect.apply = Reflect.apply;
     const nativeReflectDefineProperty: typeof Reflect.defineProperty = Reflect.defineProperty;
+    const nativeStringPrototypeIncludes: typeof String.prototype.includes = String.prototype.includes;
+    const nativeStringPrototypeNormalize: typeof String.prototype.normalize = String.prototype.normalize;
+    const nativeStringPrototypeReplace: typeof String.prototype.replace = String.prototype.replace;
+    const nativeStringPrototypeToLowerCase: typeof String.prototype.toLowerCase = String.prototype.toLowerCase;
+    const nativeStringPrototypeTrim: typeof String.prototype.trim = String.prototype.trim;
     const nativeReflectDeleteProperty: typeof Reflect.deleteProperty = Reflect.deleteProperty;
     const nativeReflectSet: typeof Reflect.set = Reflect.set;
     const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
@@ -331,6 +341,11 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       arrayIsArray: Array.isArray,
       objectDefineProperty: nativeObjectDefineProperty,
       reflectApply: nativeReflectApply,
+      stringIncludes: nativeStringPrototypeIncludes,
+      stringNormalize: nativeStringPrototypeNormalize,
+      stringReplace: nativeStringPrototypeReplace,
+      stringToLowerCase: nativeStringPrototypeToLowerCase,
+      stringTrim: nativeStringPrototypeTrim,
       weakMap: NativeWeakMap,
       weakMapGet: nativeWeakMapPrototypeGet,
       weakMapSet: nativeWeakMapPrototypeSet,
@@ -391,6 +406,11 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeObjectPrototypeHasOwnProperty,
       nativeReflectApply,
       nativeReflectDefineProperty,
+      nativeStringPrototypeIncludes,
+      nativeStringPrototypeNormalize,
+      nativeStringPrototypeReplace,
+      nativeStringPrototypeToLowerCase,
+      nativeStringPrototypeTrim,
       nativeReflectDeleteProperty,
       nativeReflectSet,
       nativeReflectSetPrototypeOf,
@@ -415,6 +435,11 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeDomAuthority.arrayIsArray,
       nativeDomAuthority.objectDefineProperty,
       nativeDomAuthority.reflectApply,
+      nativeDomAuthority.stringIncludes,
+      nativeDomAuthority.stringNormalize,
+      nativeDomAuthority.stringReplace,
+      nativeDomAuthority.stringToLowerCase,
+      nativeDomAuthority.stringTrim,
       nativeDomAuthority.weakMap,
       nativeDomAuthority.weakMapGet,
       nativeDomAuthority.weakMapSet,
@@ -2038,7 +2063,7 @@ export class PlaywrightBrowserSession {
     sensitiveMaskId?: string,
   ): string {
     this.assertSensitiveEvidenceAvailable();
-    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value, sensitiveMaskId);
+    const result = this.sensitiveEvidence.redactMetadataField(sensitiveTargetIds, value, sensitiveMaskId);
     if (result.status === "unavailable") {
       this.markSensitiveEvidenceUnavailable();
       throw sensitiveEvidenceUnavailable();

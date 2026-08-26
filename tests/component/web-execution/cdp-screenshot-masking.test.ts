@@ -462,6 +462,192 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when page string prototype methods hide a later unmarked substring reflection", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        type MutableElement = {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        String.prototype.includes = () => false;
+        String.prototype.toLowerCase = () => "hostile";
+        String.prototype.trim = () => "";
+        String.prototype.replace = () => "hostile";
+        String.prototype.normalize = () => "hostile";
+        const reflected = host.document.createElement("div");
+        reflected.id = "later-string-prototype-reflection";
+        reflected.textContent = `prefix ${secret} suffix`;
+        reflected.setAttribute("data-qualigence-observe", "true");
+        Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "260px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        host.document.body.append(reflected);
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when a later same-page title reflects a retired host-known valueRef form", async () => {
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #secret { position: absolute; left: 40px; top: 70px; width: 96px; height: 24px; }
+          #mirror { position: absolute; left: 40px; top: 120px; width: 180px; height: 24px; }
+        </style>
+        <label>Email <input id="secret" aria-label="Email" /></label>
+        <div id="mirror" data-qualigence-observe>pending</div>
+        <script>
+          const secret = document.getElementById('secret');
+          const mirror = document.getElementById('mirror');
+          secret.addEventListener('input', () => {
+            mirror.textContent = secret.value;
+          });
+        </script>
+      `, "Post-retirement title reflection"),
+    });
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((secret) => {
+        const host = globalThis as unknown as { readonly document: { title: string } };
+        host.document.title = `later ${secret}`;
+      }, SECRET);
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when page-mutated retired baseline state whitelists new reflected plaintext", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((input) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as Record<string, unknown> & {
+          WeakMap: WeakMapConstructor;
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const state = host[input.stateProperty] as {
+          retiredRecords?: Array<{ baseline?: WeakMap<Element, readonly string[]> }>;
+        } | undefined;
+        const record = state?.retiredRecords?.[0];
+        if (record === undefined) throw new Error("Missing retired sensitive record.");
+        const reflected = host.document.createElement("div");
+        reflected.id = "forged-retired-baseline-reflection";
+        reflected.textContent = input.secret;
+        reflected.setAttribute("data-qualigence-observe", "true");
+        Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "240px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        host.document.body.append(reflected);
+        const forgedBaseline = new host.WeakMap<Element, readonly string[]>();
+        forgedBaseline.set(reflected, [input.secret]);
+        record.baseline = forgedBaseline;
+      }, {
+        stateProperty: "__qualigenceSensitiveEvidenceState",
+        secret: SECRET,
+      });
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("uses captured string intrinsics when page prototypes are replaced before substring reflection scanning", async () => {
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; background: rgb(255, 255, 255); }
+          #secret { position: absolute; left: 40px; top: 70px; width: 96px; height: 24px; background: white; color: blue; }
+          #mirror { position: absolute; left: 40px; top: 120px; width: 240px; height: 24px; background: white; color: blue; }
+        </style>
+        <label>Email <input id="secret" aria-label="Email" /></label>
+        <div id="mirror" data-qualigence-observe>pending</div>
+        <script>
+          const secret = document.getElementById('secret');
+          const mirror = document.getElementById('mirror');
+          secret.addEventListener('input', () => {
+            mirror.textContent = 'prefix ' + secret.value + ' suffix';
+          });
+        </script>
+      `, "String prototype tamper"),
+    });
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const before = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = before.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    await session.withPage(async (page) => {
+      await page.evaluate(() => {
+        String.prototype.includes = () => false;
+        String.prototype.toLowerCase = () => "hostile";
+        String.prototype.trim = () => "";
+        String.prototype.replace = () => "hostile";
+        String.prototype.normalize = () => "hostile";
+      });
+    });
+
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, before);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const mirror = await expectedRectFromCdp(session, "#mirror");
+    const graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, Math.floor((mirror.left + mirror.right) / 2), Math.floor((mirror.top + mirror.bottom) / 2))).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
   it("keeps delayed scheduler authority host-held when page code forges an early retirement", async () => {
     const delayedSecret = "cdp-delayed-scheduler-secret";
     await fixture.close();
