@@ -4,7 +4,7 @@
 
 **Blocked by:** 25 — Contract legacy Graph and close candidate Gate.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -105,10 +105,10 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
 | Concurrent mapping/restart | `not_started` | Identical deterministic output | N/A: stateless operation | Safe to recompute | Pure/stateless review evidence |
 | Terminal persistence failure | `not_started` | N/A: Target/Mission repository and queue persistence are outside scope | N/A | Owned by existing product/dispatch contracts | N/A reason recorded in review |
 
-- [ ] Target discriminated union carries complete Web or Desktop snapshot and rejects malformed/multiple kinds.
-- [ ] Project, policy, plan, Target revision/hash, and Runner binding remain lossless.
-- [ ] Public Target/Mission producer can create an authorized Desktop Job.
-- [ ] Existing Web round trips and admission remain unchanged.
+- [x] Target discriminated union carries complete Web or Desktop snapshot and rejects malformed/multiple kinds.
+- [x] Project, policy, plan, Target revision/hash, and Runner binding remain lossless.
+- [x] Public Target/Mission producer can create an authorized Desktop Job.
+- [x] Existing Web round trips and admission remain unchanged.
 
 ## Comments
 
@@ -164,3 +164,21 @@ N/A: no post-review external/component E2E is allocated. After clean review, ver
   - Passed: `git diff --check`.
 - Post-review acceptance remains N/A for Ticket 26: no external/component E2E is allocated to this ticket, no PR evidence is being added here, and Desktop runtime execution plus Target Runtime composition remain Ticket 28 scope. This fix only aligns Mission-produced Desktop protocol requirements and fail-closed Desktop wire parsing within Ticket 26's allowed/authorized files.
 - Ready for a fresh complete-matrix review of the whole Ticket 26 diff from fixed point `05e05ebd762a9222b5fc031503c29612424d0105` after this blocker-fix evidence commit is recorded.
+
+
+### final — 2026-08-25
+
+- Reviewed code head: `fcd5b2926a20f428ce0009da704022144bb80ea9`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/67299a12-f10e-42b6-916b-1df54fdc8a61/ticket26-review2/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/67299a12-f10e-42b6-916b-1df54fdc8a61/ticket26-review2/spec.md`).
+- Post-review acceptance: N/A by ticket authority; no external/component E2E is allocated to Ticket 26. Final verification used the focused contract/type/conformance Gate, direct compatibility tests, `corepack pnpm typecheck`, and `git diff --check`.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/112`.
+
+## Answer
+
+Implemented the additive Desktop Target protocol. `TargetRef` now carries Web or structured Desktop `AppTarget` values, protobuf/mappers round-trip AppTarget fields losslessly and reject malformed/multiple target kinds, Mission scheduling constructs authorized Desktop `AcceptedExecutionJob` values with complete Desktop/Graph/UIA capability requirements, existing Web round trips remain unchanged, and current Web/runtime consumers fail closed or defer Desktop execution to Ticket 28.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/112`
+
+Reviewed code head: `fcd5b2926a20f428ce0009da704022144bb80ea9`
+
+Final verification: focused Ticket 26 Gate, direct compatibility tests, `corepack pnpm typecheck`, and `git diff --check` passed. Post-review acceptance is N/A for this ticket.
