@@ -529,6 +529,71 @@ describe("NamedPipeCompanionClient framing, handshake, correlation, and deadline
     server.destroy();
   });
 
+  it("fail-stops a partial inbound response on deadline and reconnects before the next caller", async () => {
+    let requestCounter = 0;
+    let resolvePartialSent: (() => void) | undefined;
+    const partialSent = new Promise<void>((resolve) => {
+      resolvePartialSent = resolve;
+    });
+    const connections: Array<{ readonly clientSocket: MemorySocket; readonly server: MemorySocket; readonly seen: CompanionRequestEnvelope[] }> = [];
+    const client = new NamedPipeCompanionClient({
+      pipePath: "\\\\.\\pipe\\qualigence-companion-test",
+      signer: signer([]),
+      socketFactory: () => {
+        const [clientSocket, server] = socketPair();
+        const seen: CompanionRequestEnvelope[] = [];
+        const connectionIndex = connections.length;
+        attachFrameReader(server, (frame) => {
+          seen.push(frame);
+          if (handshakeResponder(frame, server)) {
+            return;
+          }
+          if (frame.type !== "uia.capture") {
+            throw new Error(`unexpected request type ${frame.type}`);
+          }
+          const response = encodeFrame(ok(frame.requestId, "uia.capture", {
+            sessionId: frame.payload.sessionId,
+            capturedAt: "2026-08-01T00:00:00.000Z",
+            rootNodeIds: [],
+            nodes: [],
+          }));
+          if (connectionIndex === 0) {
+            server.write(response.subarray(0, 12));
+            resolvePartialSent?.();
+            return;
+          }
+          server.write(response);
+        });
+        connections.push({ clientSocket, server, seen });
+        return clientSocket;
+      },
+      requestIdFactory: () => `req-${++requestCounter}`,
+      handshakeDeadlineMs: 50,
+      defaultRequestDeadlineMs: 20,
+      maxInFlightRequests: 1,
+    });
+
+    const firstCapture = client.capture({ sessionId: "sess-1", deadlineMs: 50 });
+    await partialSent;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(firstCapture).rejects.toMatchObject({ code: "CompanionRequestTimeout" });
+    expect(connections).toHaveLength(1);
+    expect(connections[0]?.clientSocket.destroyed).toBe(true);
+    expect(connections[0]?.seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "uia.capture"]);
+
+    await expect(client.capture({ sessionId: "sess-2", deadlineMs: 50 })).resolves.toEqual({
+      sessionId: "sess-2",
+      capturedAt: "2026-08-01T00:00:00.000Z",
+      rootNodeIds: [],
+      nodes: [],
+    });
+    expect(connections).toHaveLength(2);
+    expect(connections[1]?.seen.map((entry) => entry.type)).toEqual(["handshake.begin", "handshake.prove", "uia.capture"]);
+    for (const connection of connections) {
+      connection.server.destroy();
+    }
+  });
+
   it("maps an action timeout after dispatch to non-replayable ActionOutcomeUnknown", async () => {
     const { client, server, seen } = clientWithServer({ defaultRequestDeadlineMs: 20, onFrame: handshakeResponder });
 

@@ -566,7 +566,7 @@ export class NamedPipeCompanionClient implements CompanionClient {
             { outcomeUnknown: entry.dispatched && entry.sideEffecting },
           );
           reject(error);
-          if (entry.failStopOnFailure) {
+          if (entry.failStopOnFailure || this.hasPartialInboundFrame()) {
             this.failStop(error);
           }
         }, deadlineMs),
@@ -592,6 +592,10 @@ export class NamedPipeCompanionClient implements CompanionClient {
       throw new NamedPipeCompanionClientError("CompanionCorrelationError", "invalid or duplicate Companion requestId");
     }
     return requestId;
+  }
+
+  private hasPartialInboundFrame(): boolean {
+    return this.buffered.byteLength > 0;
   }
 
   private onData(chunk: Buffer): void {
