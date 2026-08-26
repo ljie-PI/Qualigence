@@ -202,13 +202,13 @@ Record the base SHA before editing and every reviewed head under `## Comments`. 
 - Reviewed code/test head: `e255a7b1fe3459ebf06ec58c107fe112c76be530`.
 - Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/4343cf26-5283-4161-b7f6-16773fc32702/ticket28-review4/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/4343cf26-5283-4161-b7f6-16773fc32702/ticket28-review4/spec.md`).
 - Final verification: `CI=true corepack pnpm vitest run tests/e2e/windows/desktop-runner.test.ts` (1 file / 2 tests), `CI=true corepack pnpm vitest run tests/unit/runner-kernel/target-kind-discriminator.test.ts tests/contract/desktop/companion-action.test.ts tests/component/windows-uia/reference-app-pipeline.test.ts tests/component/web-execution/playwright-web-target.test.ts` (4 files / 32 passed / 2 skipped), `CI=true corepack pnpm vitest run tests/contract/desktop` (3 files / 53 tests), `CI=true corepack pnpm vitest run tests/unit/runner/offer-runtime.test.ts --testTimeout=10000` (1 file / 48 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
-- Pull request: pending creation.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/118`
 
 ## Answer
 
 Implemented Ticket 28 Desktop Target Runtime composition. Runner now selects Web or Desktop resources through `TargetRuntimeFactory`, preserves Web Playwright behavior, gates Desktop capability on authenticated/probed Companion readiness, opens Desktop sessions through the TypeScript Windows UIA adapter stack, binds Desktop Permit/action requests to action/decision/policy/session/run/valueRef/hash/length/expiry/nonce, resolves plaintext only at dispatch, prevents Web fallback/synthetic UIA, closes opened resources in `finally`, and terminalizes post-dispatch failures as `ActionOutcomeUnknown`. The post-review Windows Desktop Runner E2E proves the TypeScript Runner/Companion boundary with a separate-process authenticated Companion fixture; native Windows/Rust/manual evidence remains downstream scope.
 
-Pull request: pending creation.
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/118`
 
 Reviewed code/test head: `e255a7b1fe3459ebf06ec58c107fe112c76be530`
 
