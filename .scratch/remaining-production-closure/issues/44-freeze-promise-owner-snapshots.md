@@ -4,7 +4,7 @@
 
 **Blocked by:** 43 - Revalidate bounded Promise owner descriptors.
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Tracked scope
 
@@ -100,6 +100,22 @@ The Chromium E2E must mutate and restore descriptors/prototypes after first appr
 | Cancel/timeout before/after owner mutation | `started` if mutation/application behavior occurred | Native behavior remains; evidence stays unsafe when mutation occurred | Unsafe latch survives until close | Never replay action/callback or clear latch | Cancellation and latch evidence |
 | Session closes/restarts | `started` if snapshots existed | Session-local snapshots/latches clear after close; new session recaptures fresh native authority | No owner references cross session | New authorization/action required | Cleanup/restart evidence |
 | Evidence persistence fails after valid snapshot checks | `outcome_unknown` for terminal evidence | Existing persistence failure; snapshot authority is not weakened | No unsafe fallback evidence | Retry persistence only | Sink failure and unchanged snapshot evidence |
+
+## Comments
+
+### start — 2026-08-26
+
+- Fixed base: `5f6ee13e8cb9bfcd8e0f401e9d3bccd3a1782199` (`main` after Ticket 43 and Ticket 28 merge commits; current branch `ticket-44-freeze-promise-owner-snapshots`).
+- Predecessor Ticket 43 evidence: resolved with PR #117 (`https://github.com/ljie-PI/Qualigence/pull/117`), reviewed code/test head `57547dce98cae1b43788856a8573dbcf0c14e6a6`, final evidence commit `de3873eef4f9268144d450d5adf02f7d53bbd0c1`, PR evidence commit `6fbc2c4d78dab248187bda30d8da8a709b7afd96`, and merge commit `6579bbbaedb1f0cb1361701d4778081d5c7db73b` present in the current base history.
+- Behavior Matrix applicability: complete Ticket 44 matrix is applicable. In-scope rows cover controlled instrumentation and first immutable owner snapshot creation, repeated exact observations without snapshot rewrite, data/accessor/method/descriptor/prototype mutation latching, delete/restore and re-registration attacks, captured-native-intrinsic descriptor/prototype authority, 256-owner overflow, no snapshot creation for pre-sensitive rejections, cancellation/timeout persistence of unsafe latches when mutation occurred, session-close cleanup, and evidence persistence fail-closed behavior. Ticket 45 DOM getter/geometry inventory, Runner production files, package manifests/lockfile, migrations, and unrelated roots are excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts tests/component/web-execution/promise-owner-snapshot.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Complete-matrix review and post-review Chromium E2E (`CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`) remain pending after implementation.
+
+### blocked — 2026-08-26
+
+- Blocker: the Ticket 44 matrix rows for direct assignment/deletion followed by exact restoration before capture cannot be satisfied non-intrusively for ordinary page objects/Promise owners. ECMAScript exposes no hook for `owner.then = replacement` or `delete owner.then` on a plain object when the page restores the original descriptor/prototype before any instrumented Promise method, guarded `Object`/`Reflect` helper, or capture-time validation observes the changed state.
+- Implemented prototype in the worktree can latch guarded `Object.defineProperty`/`Object.defineProperties`/`Object.assign`/`Object.setPrototypeOf` and `Reflect.*` mutations, and can latch direct assignment when a sensitive epoch re-observes the owner while it is still changed; it cannot prove an unobserved direct set/delete+restore history.
+- Intrusive alternatives would require wrapping/freezing/redefining approved owner descriptors, interposing proxies, or otherwise changing object/prototype semantics. Those options would alter observable descriptor state or assignment/delete behavior and violate the native Promise/application behavior requirement.
+- Status set to `needs-info`; no PR/final evidence should be created until maintainers resolve the authority conflict.
 
 ## Acceptance
 
