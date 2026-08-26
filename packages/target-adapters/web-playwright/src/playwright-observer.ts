@@ -593,9 +593,17 @@ function retirePageSensitiveEvidence(stateProperty: string): SensitiveEvidenceRe
 function collectPageObservation(
   input: BrowserObservationCaptureInput,
 ): BrowserObservationCapture {
+  const failedPageObservation = (): BrowserObservationCapture => ({
+    candidates: [],
+    sensitiveMaskIds: [],
+    viewport: { width: 1, height: 1, devicePixelRatio: 1 },
+    sensitiveEvidenceUnavailable: true,
+  });
+  try {
   type NativeDomAuthority = {
     readonly arrayFrom: typeof Array.from;
     readonly arrayIsArray: typeof Array.isArray;
+    readonly reflectApply: typeof Reflect.apply;
     readonly documentGetElementById: typeof Document.prototype.getElementById;
     readonly documentQuerySelector: typeof Document.prototype.querySelector;
     readonly documentTitleGet: (() => string) | undefined;
@@ -627,52 +635,48 @@ function collectPageObservation(
     readonly windowGetComputedStyle: typeof window.getComputedStyle;
   };
   const nativeDom = ((window as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.sensitiveShadowRootsProperty])?.nativeDom;
-  if (nativeDom === undefined) {
-    return {
-      candidates: [],
-      sensitiveMaskIds: [],
-      viewport: { width: 1, height: 1, devicePixelRatio: 1 },
-      sensitiveEvidenceUnavailable: true,
-    };
+  if (nativeDom === undefined || typeof nativeDom.reflectApply !== "function") {
+    return failedPageObservation();
   }
   const dom: NativeDomAuthority = nativeDom;
 
-  const arrayFrom = <T>(items: ArrayLike<T> | Iterable<T>): T[] => dom.arrayFrom(items as ArrayLike<T>) as T[];
-  const getAttribute = (element: Element, name: string): string | null => dom.elementGetAttribute.call(element, name);
-  const hasAttribute = (element: Element, name: string): boolean => dom.elementHasAttribute.call(element, name);
-  const removeAttribute = (element: Element, name: string): void => { dom.elementRemoveAttribute.call(element, name); };
-  const setAttribute = (element: Element, name: string, value: string): void => { dom.elementSetAttribute.call(element, name, value); };
-  const queryDocument = (selector: string): Element[] => arrayFrom(dom.documentQuerySelectorAll.call(document, selector));
-  const queryDocumentOne = (selector: string): Element | null => dom.documentQuerySelector.call(document, selector);
-  const queryRoot = (root: ShadowRoot, selector: string): Element[] => arrayFrom(dom.documentFragmentQuerySelectorAll.call(root, selector));
-  const closest = (element: Element, selector: string): Element | null => dom.elementClosest.call(element, selector);
-  const tagName = (element: Element): string => dom.elementTagNameGet!.call(element).toLowerCase();
-  const textContent = (node: Node): string => dom.nodeTextContentGet!.call(node) ?? "";
-  const childNodes = (node: Node): ChildNode[] => arrayFrom(dom.nodeChildNodesGet!.call(node));
-  const getRootNode = (node: Node): Node => dom.nodeGetRootNode.call(node);
-  const textData = (node: Text): string => dom.characterDataDataGet!.call(node);
-  const shadowRoot = (element: Element): ShadowRoot | null => dom.elementShadowRootGet!.call(element);
-  const shadowRootMode = (root: ShadowRoot): ShadowRootMode => dom.shadowRootModeGet!.call(root);
-  const shadowRootHost = (root: ShadowRoot): Element => dom.shadowRootHostGet!.call(root);
-  const inputValue = (element: Element): string => dom.htmlInputElementValueGet!.call(element);
-  const inputPlaceholder = (element: Element): string => dom.htmlInputElementPlaceholderGet!.call(element);
-  const textareaValue = (element: Element): string => dom.htmlTextAreaElementValueGet!.call(element);
-  const textareaPlaceholder = (element: Element): string => dom.htmlTextAreaElementPlaceholderGet!.call(element);
-  const selectValue = (element: Element): string => dom.htmlSelectElementValueGet!.call(element);
-  const selectedOptions = (element: Element): HTMLOptionElement[] => arrayFrom(dom.htmlSelectElementSelectedOptionsGet!.call(element));
-  const optionText = (option: HTMLOptionElement): string => dom.htmlOptionElementTextGet!.call(option);
-  const optionValue = (option: HTMLOptionElement): string => dom.htmlOptionElementValueGet!.call(option);
+  const apply = <T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T => dom.reflectApply(fn, receiver, args as never[]) as T;
+  const arrayFrom = <T>(items: ArrayLike<T> | Iterable<T>): T[] => apply(dom.arrayFrom as (...args: never[]) => T[], Array, [items]);
+  const getAttribute = (element: Element, name: string): string | null => apply(dom.elementGetAttribute, element, [name]);
+  const hasAttribute = (element: Element, name: string): boolean => apply(dom.elementHasAttribute, element, [name]);
+  const removeAttribute = (element: Element, name: string): void => { apply(dom.elementRemoveAttribute, element, [name]); };
+  const setAttribute = (element: Element, name: string, value: string): void => { apply(dom.elementSetAttribute, element, [name, value]); };
+  const queryDocument = (selector: string): Element[] => arrayFrom(apply(dom.documentQuerySelectorAll, document, [selector]));
+  const queryDocumentOne = (selector: string): Element | null => apply(dom.documentQuerySelector, document, [selector]);
+  const queryRoot = (root: ShadowRoot, selector: string): Element[] => arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+  const closest = (element: Element, selector: string): Element | null => apply(dom.elementClosest, element, [selector]);
+  const tagName = (element: Element): string => apply(dom.elementTagNameGet!, element).toLowerCase();
+  const textContent = (node: Node): string => apply(dom.nodeTextContentGet!, node) ?? "";
+  const childNodes = (node: Node): ChildNode[] => arrayFrom(apply(dom.nodeChildNodesGet!, node));
+  const getRootNode = (node: Node): Node => apply(dom.nodeGetRootNode, node);
+  const textData = (node: Text): string => apply(dom.characterDataDataGet!, node);
+  const shadowRoot = (element: Element): ShadowRoot | null => apply(dom.elementShadowRootGet!, element);
+  const shadowRootMode = (root: ShadowRoot): ShadowRootMode => apply(dom.shadowRootModeGet!, root);
+  const shadowRootHost = (root: ShadowRoot): Element => apply(dom.shadowRootHostGet!, root);
+  const inputValue = (element: Element): string => apply(dom.htmlInputElementValueGet!, element);
+  const inputPlaceholder = (element: Element): string => apply(dom.htmlInputElementPlaceholderGet!, element);
+  const textareaValue = (element: Element): string => apply(dom.htmlTextAreaElementValueGet!, element);
+  const textareaPlaceholder = (element: Element): string => apply(dom.htmlTextAreaElementPlaceholderGet!, element);
+  const selectValue = (element: Element): string => apply(dom.htmlSelectElementValueGet!, element);
+  const selectedOptions = (element: Element): HTMLOptionElement[] => arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, element));
+  const optionText = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementTextGet!, option);
+  const optionValue = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementValueGet!, option);
   const isTag = (element: Element, name: string): boolean => tagName(element) === name;
 
   function isVisible(element: Element): boolean {
-    const style = dom.windowGetComputedStyle.call(window, element);
-    if (dom.htmlElementHiddenGet !== undefined && dom.htmlElementHiddenGet.call(element) === true) {
+    const style = apply(dom.windowGetComputedStyle, window, [element]);
+    if (dom.htmlElementHiddenGet !== undefined && apply(dom.htmlElementHiddenGet, element) === true) {
       return false;
     }
     if (style.display === "none" || style.visibility === "hidden") {
       return false;
     }
-    return dom.elementGetClientRects.call(element).length > 0;
+    return apply(dom.elementGetClientRects, element).length > 0;
   }
 
   function roleOf(element: Element): string {
@@ -716,13 +720,12 @@ function collectPageObservation(
     }
     const labelledBy = getAttribute(element, "aria-labelledby");
     if (labelledBy) {
-      const joined = labelledBy
-        .split(/\s+/)
-        .map((id) => dom.documentGetElementById.call(document, id))
-        .filter((node): node is HTMLElement => node !== null)
-        .map((node) => textContent(node))
-        .join(" ")
-        .trim();
+      const labels: string[] = [];
+      for (const id of labelledBy.split(/\s+/)) {
+        const node = apply(dom.documentGetElementById, document, [id]);
+        if (node !== null) labels[labels.length] = textContent(node);
+      }
+      const joined = labels.join(" ").trim();
       if (joined !== "") {
         return joined;
       }
@@ -765,10 +768,10 @@ function collectPageObservation(
   }
 
   function readSensitiveTargetIds(element: Element): readonly string[] {
-    const ids = new Set<string>();
+    const ids: string[] = [];
     const value = (element as unknown as Element & Record<string, unknown>)[input.sensitiveTargetIdsProperty];
-    if (dom.arrayIsArray(value) && value.every((entry) => typeof entry === "string")) {
-      for (const markerId of value) ids.add(markerId);
+    if (dom.arrayIsArray(value) && allStrings(value)) {
+      for (const markerId of value) pushUniqueString(ids, markerId);
     }
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly { readonly markerId: string; readonly classifiedElements?: readonly Element[] }[];
@@ -777,10 +780,35 @@ function collectPageObservation(
     if (dom.arrayIsArray(records)) {
       for (const record of records) {
         if (typeof record.markerId !== "string" || !dom.arrayIsArray(record.classifiedElements)) continue;
-        if (record.classifiedElements.includes(element)) ids.add(record.markerId);
+        if (arrayHasIdentity(record.classifiedElements, element)) pushUniqueString(ids, record.markerId);
       }
     }
-    return [...ids];
+    return ids;
+  }
+
+  function allStrings(values: readonly unknown[]): boolean {
+    for (const value of values) {
+      if (typeof value !== "string") return false;
+    }
+    return true;
+  }
+
+  function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
+    for (const value of values) {
+      if (value === candidate) return true;
+    }
+    return false;
+  }
+
+  function arrayHasString(values: readonly string[], candidate: string): boolean {
+    for (const value of values) {
+      if (value === candidate) return true;
+    }
+    return false;
+  }
+
+  function pushUniqueString(values: string[], candidate: string): void {
+    if (!arrayHasString(values, candidate)) values[values.length] = candidate;
   }
 
   function sensitiveValues(element: Element): readonly string[] {
@@ -814,10 +842,11 @@ function collectPageObservation(
   }
 
   function directText(element: Element): string {
-    return childNodes(element)
-      .filter((node): node is Text => node.nodeType === 3)
-      .map((node) => textData(node))
-      .join("");
+    let text = "";
+    for (const node of childNodes(element)) {
+      if (node.nodeType === 3) text += textData(node as Text);
+    }
+    return text;
   }
 
   function carriesForm(value: string, forms: readonly string[]): boolean {
@@ -828,29 +857,37 @@ function collectPageObservation(
   }
 
   function hasSensitiveTargetId(ids: readonly string[], markerId: string): boolean {
-    return ids.includes(markerId);
+    return arrayHasString(ids, markerId);
+  }
+
+  function findRecord<T extends { readonly markerId: string }>(records: readonly T[] | undefined, markerId: string): T | undefined {
+    if (records === undefined || !dom.arrayIsArray(records)) return undefined;
+    for (const record of records) {
+      if (record.markerId === markerId) return record;
+    }
+    return undefined;
   }
 
   function baselineAllows(element: Element, markerId: string, value: string): boolean {
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly {
         readonly markerId: string;
-        readonly baseline?: WeakMap<Element, ReadonlySet<string>>;
+        readonly baseline?: WeakMap<Element, readonly string[]>;
       }[];
     } | undefined;
-    const record = state?.records?.find((candidate) => candidate.markerId === markerId);
-    return record?.baseline?.get(element)?.has(value) === true;
+    const record = findRecord(state?.records, markerId);
+    return arrayHasString(record?.baseline?.get(element) ?? [], value);
   }
 
   function shadowBaselineAllows(node: Node, markerId: string, value: string): boolean {
     const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
       readonly records?: readonly {
         readonly markerId: string;
-        readonly shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
+        readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
       }[];
     } | undefined;
-    const record = state?.records?.find((candidate) => candidate.markerId === markerId);
-    return record?.shadowBaseline?.get(node)?.has(value) === true;
+    const record = findRecord(state?.records, markerId);
+    return arrayHasString(record?.shadowBaseline?.get(node) ?? [], value);
   }
 
   function sensitiveEvidenceUnavailable(): boolean {
@@ -860,7 +897,7 @@ function collectPageObservation(
       readonly records?: readonly {
         readonly markerId: string;
         readonly forms: readonly string[];
-        readonly shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
+        readonly shadowBaseline?: WeakMap<Node, readonly string[]>;
       }[];
     } | undefined;
     if (state === undefined) return false;
@@ -906,20 +943,20 @@ function collectPageObservation(
 
   function shadowRootValues(root: ShadowRoot): readonly string[] {
     const values: string[] = [];
-    const direct = childNodes(root)
-      .filter((node): node is Text => node.nodeType === 3)
-      .map((node) => textData(node))
-      .join("");
-    if (direct !== "") values.push(direct);
+    let direct = "";
+    for (const node of childNodes(root)) {
+      if (node.nodeType === 3) direct += textData(node as Text);
+    }
+    if (direct !== "") values[values.length] = direct;
     const fullText = textContent(root);
-    if (fullText !== "" && fullText !== direct) values.push(fullText);
+    if (fullText !== "" && fullText !== direct) values[values.length] = fullText;
     return values;
   }
 
   function observableElements(selector: string): Element[] {
     const elements = queryDocument(selector);
-    for (const root of shadowRoots().filter((candidate) => shadowRootMode(candidate) === "open")) {
-      elements.push(...queryRoot(root, selector));
+    for (const root of shadowRoots()) {
+      if (shadowRootMode(root) === "open") elements.push(...queryRoot(root, selector));
     }
     return elements;
   }
@@ -928,8 +965,10 @@ function collectPageObservation(
     if (hasSensitiveTargetId(readSensitiveTargetIds(shadowRootHost(root)), markerId)) return true;
     for (const element of queryRoot(root, "*")) {
       if (!hasSensitiveTargetId(readSensitiveTargetIds(element), markerId)) continue;
-      if (sensitiveValues(element).some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)))) {
-        return true;
+      for (const candidate of sensitiveValues(element)) {
+        if (value === candidate || (candidate !== "" && value.includes(candidate))) {
+          return true;
+        }
       }
     }
     return false;
@@ -950,21 +989,21 @@ function collectPageObservation(
         readonly markerId: string;
         readonly forms?: readonly string[];
         readonly classifiedElements?: readonly Element[];
-        readonly classifiedRegions?: ReadonlySet<string>;
+        readonly classifiedRegions?: readonly string[];
         readonly poisoned?: boolean;
       }[];
       readonly poisoned?: boolean;
     } | undefined;
     if (state === undefined) return { status: "ok", ids: [] };
     if (state.poisoned === true) return { status: "failed" };
-    const maskIds = new Set<string>();
+    const maskIds: string[] = [];
     const records = state.records ?? [];
     if (!dom.arrayIsArray(records)) return { status: "failed" };
     for (const record of records) {
       if (record.poisoned === true) return { status: "failed" };
       const elements = record.classifiedElements ?? [];
       if (!dom.arrayIsArray(elements)) return { status: "failed" };
-      if ((record.classifiedRegions?.size ?? elements.length) > input.maxMaskRegions) return { status: "failed" };
+      if ((record.classifiedRegions?.length ?? elements.length) > input.maxMaskRegions) return { status: "failed" };
       let ordinal = 0;
       for (const element of elements) {
         if (element.nodeType !== 1) return { status: "failed" };
@@ -980,8 +1019,8 @@ function collectPageObservation(
         const id = `qm-${record.markerId.replace(/[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
         setAttribute(element, input.sensitiveMaskIdAttribute, id);
         if (getAttribute(element, input.sensitiveMaskIdAttribute) !== id) return { status: "failed" };
-        maskIds.add(id);
-        if (maskIds.size > input.maxMaskRegions) return { status: "failed" };
+        pushUniqueString(maskIds, id);
+        if (maskIds.length > input.maxMaskRegions) return { status: "failed" };
       }
     }
     return { status: "ok", ids: [...maskIds] };
@@ -992,7 +1031,7 @@ function collectPageObservation(
   }
 
   function shadowRoots(): ShadowRoot[] {
-    const roots = new Set<ShadowRoot>();
+    const roots: ShadowRoot[] = [];
     const pending: ShadowRoot[] = [];
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly roots?: readonly unknown[];
@@ -1002,13 +1041,13 @@ function collectPageObservation(
       if (registry !== undefined) registry.shadowRootOverflow = true;
     };
     const addRoot = (root: ShadowRoot): boolean => {
-      if (roots.has(root)) return true;
+      if (arrayHasIdentity(roots, root)) return true;
       if (pending.length >= input.maxShadowRoots) {
         noteOverflow();
         return false;
       }
-      roots.add(root);
-      pending.push(root);
+      roots[roots.length] = root;
+      pending[pending.length] = root;
       return true;
     };
     for (const root of registry?.roots ?? []) {
@@ -1033,7 +1072,7 @@ function collectPageObservation(
     `button, a[href], input, textarea, select, [role], [data-qualigence-observe], [${input.sensitiveMaskIdAttribute}]`;
   const elements = observableElements(selector);
   const candidates: BrowserObservationCandidate[] = [];
-  const sensitiveMaskIds = new Set<string>(maskAuthority.status === "ok" ? maskAuthority.ids : []);
+  const sensitiveMaskIds = maskAuthority.status === "ok" ? maskAuthority.ids : [];
   const titleElement = queryDocumentOne("title");
 
   for (const element of elements) {
@@ -1101,16 +1140,19 @@ function collectPageObservation(
 
   return {
     candidates,
-    sensitiveMaskIds: [...sensitiveMaskIds],
+    sensitiveMaskIds,
     viewport: {
       width: Math.max(1, Math.trunc(window.innerWidth)),
       height: Math.max(1, Math.trunc(window.innerHeight)),
       devicePixelRatio: window.devicePixelRatio,
     },
-    title: dom.documentTitleGet!.call(document),
+    title: apply(dom.documentTitleGet!, document),
     ...(titleElement === null ? {} : { titleSensitiveTargetIds: readSensitiveTargetIds(titleElement) }),
     sensitiveEvidenceUnavailable: maskAuthority.status === "failed" || sensitiveEvidenceUnavailable(),
   };
+  } catch {
+    return failedPageObservation();
+  }
 }
 
 function buildArtifacts(

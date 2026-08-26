@@ -43,12 +43,22 @@ function pageHtml(): string {
       html, body { margin: 0; background: rgb(255, 255, 255); }
       #spacer { height: 90px; }
       #secret { position: absolute; left: 40px; top: 140px; width: 96px; height: 24px; background: rgb(255, 255, 255); color: rgb(0, 0, 255); }
+      #mirror { position: absolute; left: 40px; top: 180px; width: 180px; height: 24px; background: rgb(255, 255, 255); color: rgb(0, 0, 255); }
       #unrelated { position: absolute; left: 220px; top: 145px; width: 32px; height: 32px; background: rgb(255, 0, 0); }
     </style>
     <div id="spacer"></div>
     <label>Email <input id="secret" aria-label="Email" /></label>
+    <div id="mirror" data-qualigence-observe>Mirror pending</div>
     <div id="unrelated" data-qualigence-observe></div>
-    <script>scrollTo(0, 80);</script>
+    <script>
+      const secret = document.getElementById('secret');
+      const mirror = document.getElementById('mirror');
+      secret.addEventListener('input', () => {
+        document.title = secret.value;
+        mirror.textContent = secret.value;
+      });
+      scrollTo(0, 80);
+    </script>
   `, "CDP mask");
 }
 
@@ -124,6 +134,66 @@ describe("CDP screenshot masking", () => {
     expect(JSON.stringify(graph)).not.toContain(SECRET);
   }, 60_000);
 
+  it("ignores page-replaced Function.prototype.call during sensitive observation", async () => {
+    await enterSecret();
+    await session.withPage(async (page) => {
+      await page.evaluate(() => {
+        const host = globalThis as unknown as {
+          readonly Element: { readonly prototype: Record<string, unknown> };
+          readonly Function: { readonly prototype: { call: (receiver: unknown, ...args: unknown[]) => unknown } };
+          readonly Reflect: { readonly apply: (target: unknown, receiver: unknown, args: readonly unknown[]) => unknown };
+          readonly getComputedStyle: unknown;
+        };
+        const nativeReflectApply = host.Reflect.apply;
+        const nativeCall = host.Function.prototype.call;
+        host.Function.prototype.call = function call(receiver: unknown, ...args: unknown[]) {
+          if (this === host.Element.prototype.getAttribute || this === host.Element.prototype.hasAttribute || this === host.Element.prototype.getClientRects || this === host.getComputedStyle) {
+            return this === host.Element.prototype.hasAttribute ? false : null;
+          }
+          return nativeReflectApply(nativeCall, this, [receiver, ...args]);
+        };
+      });
+    });
+
+    const mirror = await expectedRectFromCdp(session, "#mirror");
+    const graph = await new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, Math.floor((mirror.left + mirror.right) / 2), Math.floor((mirror.top + mirror.bottom) / 2))).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
+  it("uses captured Array.from/Set-independent classification when page intrinsics are replaced", async () => {
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    let graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = graph.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    await session.withPage(async (page) => {
+      await page.evaluate(() => {
+        Array.from = () => [];
+        (globalThis as unknown as { Set: unknown }).Set = class HostileSet {
+          readonly size = 0;
+          add(): this { return this; }
+          has(): boolean { return false; }
+          [Symbol.iterator](): Iterator<unknown> { return [][Symbol.iterator](); }
+        };
+      });
+    });
+
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, graph);
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const mirror = await expectedRectFromCdp(session, "#mirror");
+    graph = await new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+
+    expect(pixelAt(image, Math.floor((mirror.left + mirror.right) / 2), Math.floor((mirror.top + mirror.bottom) / 2))).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
+  }, 60_000);
+
   it("masks when the page removes marker attributes and overrides marker accessors", async () => {
     await enterSecret();
     await session.withPage(async (page) => {
@@ -188,6 +258,57 @@ describe("CDP screenshot masking", () => {
 
     await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed when reflected sensitive regions exceed the 256-region cap", async () => {
+    await fixture.close();
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <label>Email <input id="secret" aria-label="Email" /></label>
+        ${Array.from({ length: 257 }, (_, index) => `<span id="mirror-${index}" data-qualigence-observe>pending</span>`).join("\n")}
+        <script>
+          const secret = document.getElementById('secret');
+          secret.addEventListener('input', () => {
+            for (let index = 0; index < 257; index += 1) {
+              document.getElementById('mirror-' + index).textContent = secret.value;
+            }
+          });
+        </script>
+      `, "Too many sensitive regions"),
+    });
+    session = new PlaywrightBrowserSession(options());
+    await session.start();
+    const observer = new PlaywrightObserver(session);
+    const resolver = new PlaywrightActionResolver(session);
+    const executor = new PlaywrightActionExecutor(session, { resolve: async () => SECRET });
+    const before = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const email = before.nodes.find((node) => node.name === "Email");
+    if (email === undefined) throw new Error("Missing Email node.");
+    const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.email", reason: "test" }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it("fails closed with zero accepted bytes when screenshot returns invalid PNG bytes", async () => {
+    await enterSecret();
+    let screenshotCalls = 0;
+    await session.withPage(async (page) => {
+      page.screenshot = async () => {
+        screenshotCalls += 1;
+        return Buffer.from("not-a-png");
+      };
+    });
+
+    await expect(new PlaywrightObserver(session).capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+
+    expect(screenshotCalls).toBe(1);
     expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);

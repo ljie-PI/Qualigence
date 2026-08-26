@@ -634,11 +634,11 @@ async function beginPageSensitiveActionEpoch(
       forms: string[];
       mutationOrdinal: number;
       deferredRecords: MutationRecord[];
-      classifiedNodes: Set<string>;
-      classifiedRegions: Set<string>;
+      classifiedNodes: string[];
+      classifiedRegions: string[];
       classifiedElements: Element[];
-      baseline: WeakMap<Element, ReadonlySet<string>>;
-      shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
+      baseline: WeakMap<Element, readonly string[]>;
+      shadowBaseline: WeakMap<Node, readonly string[]>;
       observer: MutationObserver;
       processSchedulerCallback?: () => void;
       targetCaptureListener: EventListener;
@@ -652,10 +652,10 @@ async function beginPageSensitiveActionEpoch(
     type BrowserSensitiveRecord = {
       markerId: string;
       forms: string[];
-      baseline: WeakMap<Element, ReadonlySet<string>>;
-      shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
-      classifiedNodes: Set<string>;
-      classifiedRegions: Set<string>;
+      baseline: WeakMap<Element, readonly string[]>;
+      shadowBaseline: WeakMap<Node, readonly string[]>;
+      classifiedNodes: string[];
+      classifiedRegions: string[];
       classifiedElements: Element[];
       schedulerRegistrations: number;
       poisoned: boolean;
@@ -766,8 +766,8 @@ async function beginPageSensitiveActionEpoch(
       forms,
       mutationOrdinal: 0,
       deferredRecords: [],
-      classifiedNodes: new Set<string>(),
-      classifiedRegions: new Set<string>(),
+      classifiedNodes: [],
+      classifiedRegions: [],
       classifiedElements: [],
       baseline,
       shadowBaseline,
@@ -851,7 +851,10 @@ async function beginPageSensitiveActionEpoch(
         candidate.shadowRootHostGet,
         candidate.shadowRootModeGet,
       ];
-      return required.every((fn) => typeof fn === "function") ? candidate : undefined;
+      for (const fn of required) {
+        if (typeof fn !== "function") return undefined;
+      }
+      return candidate;
     }
 
     function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
@@ -980,43 +983,70 @@ async function beginPageSensitiveActionEpoch(
       return node.nodeType === 3;
     }
 
+    function arrayHasString(values: readonly string[], candidate: string): boolean {
+      for (const value of values) {
+        if (value === candidate) return true;
+      }
+      return false;
+    }
+
+    function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
+      for (const value of values) {
+        if (value === candidate) return true;
+      }
+      return false;
+    }
+
+    function pushUniqueNonEmpty(values: string[], candidate: string): void {
+      if (candidate !== "" && !arrayHasString(values, candidate)) values[values.length] = candidate;
+    }
+
+    function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
+      if (baseline === undefined) return false;
+      for (const value of matches) {
+        if (!arrayHasString(baseline, value)) return false;
+      }
+      return true;
+    }
+
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select", source: string): string[] {
-      const values = new Set<string>([source]);
+      const values: string[] = [];
+      pushUniqueNonEmpty(values, source);
       if (actionKind === "input") {
         const lineFeed = String.fromCharCode(10);
         const carriageReturn = String.fromCharCode(13);
         const browserValue = source.split(carriageReturn + lineFeed).join(lineFeed).split(carriageReturn).join(lineFeed);
-        values.add(browserValue);
-        values.add(normalizeVisibleSensitiveForm(browserValue));
+        pushUniqueNonEmpty(values, browserValue);
+        pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(browserValue));
       }
       if (actionKind === "select" && tagName(target) === "select") {
         for (const option of selectOptions(target)) {
           if (optionValue(option) === source || optionText(option) === source || optionLabel(option) === source) {
-            values.add(optionValue(option));
-            values.add(optionText(option));
-            values.add(optionLabel(option));
+            pushUniqueNonEmpty(values, optionValue(option));
+            pushUniqueNonEmpty(values, optionText(option));
+            pushUniqueNonEmpty(values, optionLabel(option));
           }
         }
       }
-      return Array.from(values).filter((value) => value !== "");
+      return values;
     }
-    function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, ReadonlySet<string>> {
-      const result = new WeakMap<Element, ReadonlySet<string>>();
+    function baselineSensitiveForms(document: Document, formsToMatch: readonly string[]): WeakMap<Element, readonly string[]> {
+      const result = new WeakMap<Element, readonly string[]>();
       void document;
       for (const candidate of observableElements()) {
-        const matches = new Set<string>();
+        const matches: string[] = [];
         for (const value of sensitiveValues(candidate)) {
           for (const form of formsToMatch) {
-            if (carriesForm(value, form)) matches.add(value);
+            if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
           }
         }
-        if (matches.size > 0) result.set(candidate, matches);
+        if (matches.length > 0) result.set(candidate, matches);
       }
       return result;
     }
 
-    function baselineShadowSensitiveForms(formsToMatch: readonly string[]): WeakMap<Node, ReadonlySet<string>> {
-      const result = new WeakMap<Node, ReadonlySet<string>>();
+    function baselineShadowSensitiveForms(formsToMatch: readonly string[]): WeakMap<Node, readonly string[]> {
+      const result = new WeakMap<Node, readonly string[]>();
       for (const root of shadowRoots()) {
         rememberSensitiveBaseline(result, root, shadowRootValues(root), formsToMatch);
         for (const candidate of queryRoot(root, "*")) {
@@ -1027,24 +1057,29 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function rememberSensitiveBaseline(
-      result: WeakMap<Node, ReadonlySet<string>>,
+      result: WeakMap<Node, readonly string[]>,
       node: Node,
       values: readonly string[],
       formsToMatch: readonly string[],
     ): void {
-      const matches = new Set<string>();
+      const matches: string[] = [];
       for (const value of values) {
         for (const form of formsToMatch) {
-          if (carriesForm(value, form)) matches.add(value);
+          if (carriesForm(value, form)) pushUniqueNonEmpty(matches, value);
         }
       }
-      if (matches.size > 0) result.set(node, matches);
+      if (matches.length > 0) result.set(node, matches);
     }
 
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
       const matches: string[] = [];
       for (const value of sensitiveValues(candidate)) {
-        if (formsToMatch.some((form) => carriesForm(value, form))) matches.push(value);
+        for (const form of formsToMatch) {
+          if (carriesForm(value, form)) {
+            matches[matches.length] = value;
+            break;
+          }
+        }
       }
       return matches;
     }
@@ -1138,7 +1173,7 @@ async function beginPageSensitiveActionEpoch(
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-        if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
+        if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
           continue;
         }
         if (!allowClassification) {
@@ -1178,8 +1213,12 @@ async function beginPageSensitiveActionEpoch(
       records: readonly MutationRecord[],
       allowClassification: boolean,
     ): void {
-      const applicationRecords = records.filter((record) =>
-        record.type !== "attributes" || record.attributeName !== input.maskAttribute);
+      const applicationRecords: MutationRecord[] = [];
+      for (const record of records) {
+        if (record.type !== "attributes" || record.attributeName !== input.maskAttribute) {
+          applicationRecords[applicationRecords.length] = record;
+        }
+      }
       epochToUpdate.mutationOrdinal += applicationRecords.length;
       if (epochToUpdate.mutationOrdinal > input.maxMutationRecords) {
         poison(epochToUpdate);
@@ -1194,7 +1233,7 @@ async function beginPageSensitiveActionEpoch(
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-          if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
+          if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
             continue;
           }
           if (!allowClassification) {
@@ -1207,18 +1246,19 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
-      const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
-      return touchedNodes.some((node) => {
+      const touchedNodes = [record.target, ...arrayFrom(record.addedNodes)];
+      for (const node of touchedNodes) {
         const root = isShadowRootNode(node) ? node : getRootNode(node);
-        return isShadowRootNode(root) && shadowRootMode(root) !== "open";
-      });
+        if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
+      }
+      return false;
     }
 
     function mutationCandidateElements(record: MutationRecord): Element[] {
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        for (const node of Array.from(record.addedNodes)) addNode(node, candidates);
+        for (const node of arrayFrom(record.addedNodes)) addNode(node, candidates);
       }
       return candidates;
     }
@@ -1226,7 +1266,7 @@ async function beginPageSensitiveActionEpoch(
     function addNode(node: Node, candidates: Element[]): void {
       if (isElementNode(node)) {
         candidates.push(node);
-        candidates.push(...Array.from(queryDescendants(node)));
+        candidates.push(...queryDescendants(node));
         candidates.push(...observedAncestors(node));
         return;
       }
@@ -1253,18 +1293,18 @@ async function beginPageSensitiveActionEpoch(
         return;
       }
       const nodeKey = `${input.markerId}:${nodeIdentity(candidate)}`;
-      if (!epochToUpdate.classifiedNodes.has(nodeKey)) {
-        epochToUpdate.classifiedNodes.add(nodeKey);
+      if (!arrayHasString(epochToUpdate.classifiedNodes, nodeKey)) {
+        epochToUpdate.classifiedNodes[epochToUpdate.classifiedNodes.length] = nodeKey;
         epochToUpdate.classifiedElements.push(candidate);
-        if (epochToUpdate.classifiedNodes.size > input.maxClassifiedNodes) {
+        if (epochToUpdate.classifiedNodes.length > input.maxClassifiedNodes) {
           poison(epochToUpdate);
           return;
         }
       }
       const regionKey = nodeKey;
-      if (!epochToUpdate.classifiedRegions.has(regionKey)) {
-        epochToUpdate.classifiedRegions.add(regionKey);
-        if (epochToUpdate.classifiedRegions.size > input.maxMaskRegions) {
+      if (!arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
+        epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
+        if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           poison(epochToUpdate);
           return;
         }
@@ -1288,9 +1328,9 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function observableElements(): Element[] {
-      const elements = Array.from(queryDocument("*"));
-      for (const root of shadowRoots().filter((candidate) => shadowRootMode(candidate) === "open")) {
-        elements.push(...queryRoot(root, "*"));
+      const elements = queryDocument("*");
+      for (const root of shadowRoots()) {
+        if (shadowRootMode(root) === "open") elements.push(...queryRoot(root, "*"));
       }
       return elements;
     }
@@ -1325,7 +1365,7 @@ async function beginPageSensitiveActionEpoch(
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
       if (dom.arrayIsArray(current)) {
-        if (!current.includes(markerId)) current.push(markerId);
+        if (!arrayHasString(current, markerId)) current.push(markerId);
       } else {
         apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
           configurable: false,
@@ -1342,7 +1382,7 @@ async function beginPageSensitiveActionEpoch(
 
     function isMarkedSensitive(candidate: Element, markerId: string): boolean {
       const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-      return dom.arrayIsArray(ids) && ids.includes(markerId);
+      return dom.arrayIsArray(ids) && arrayHasString(ids, markerId);
     }
 
     function fieldValue(candidate: Element): string {
@@ -1394,18 +1434,19 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function directText(candidate: Element): string {
-      return childNodes(candidate)
-        .filter((node): node is Text => isTextNode(node))
-        .map((node) => textData(node))
-        .join("");
+      let text = "";
+      for (const node of childNodes(candidate)) {
+        if (isTextNode(node)) text += textData(node);
+      }
+      return text;
     }
 
     function shadowRootValues(root: ShadowRoot): readonly string[] {
       const values: string[] = [];
-      const direct = childNodes(root)
-        .filter((node): node is Text => isTextNode(node))
-        .map((node) => textData(node))
-        .join("");
+      let direct = "";
+      for (const node of childNodes(root)) {
+        if (isTextNode(node)) direct += textData(node);
+      }
       if (direct !== "") values.push(direct);
       const fullText = textContent(root);
       if (fullText !== "" && fullText !== direct) values.push(fullText);
@@ -1413,7 +1454,7 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function shadowRoots(): ShadowRoot[] {
-      const roots = new Set<ShadowRoot>();
+      const roots: ShadowRoot[] = [];
       const pending: ShadowRoot[] = [];
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly roots?: readonly unknown[];
@@ -1424,13 +1465,13 @@ async function beginPageSensitiveActionEpoch(
         state.poisoned = true;
       };
       const addRoot = (root: ShadowRoot): boolean => {
-        if (roots.has(root)) return true;
+        if (arrayHasIdentity(roots, root)) return true;
         if (pending.length >= input.maxShadowRoots) {
           noteOverflow();
           return false;
         }
-        roots.add(root);
-        pending.push(root);
+        roots[roots.length] = root;
+        pending[pending.length] = root;
         return true;
       };
       for (const root of registry?.roots ?? []) {
@@ -1456,11 +1497,14 @@ async function beginPageSensitiveActionEpoch(
 
     function carriesForm(value: string, form: string | readonly string[]): boolean {
       const forms = dom.arrayIsArray(form) ? form : [form];
-      return forms.some((candidate) => value === candidate || (candidate !== "" && value.includes(candidate)));
+      for (const candidate of forms) {
+        if (value === candidate || (candidate !== "" && value.includes(candidate))) return true;
+      }
+      return false;
     }
 
     function shadowBaselineAllows(node: Node, epochToUpdate: BrowserSensitiveEpoch, value: string): boolean {
-      return epochToUpdate.shadowBaseline.get(node)?.has(value) === true;
+      return arrayHasString(epochToUpdate.shadowBaseline.get(node) ?? [], value);
     }
 
     function shadowRootOverflow(): boolean {
@@ -1502,15 +1546,15 @@ async function endPageSensitiveActionEpoch(
       active?: {
         markerId: string;
         forms: string[];
-        baseline: WeakMap<Element, ReadonlySet<string>>;
-        shadowBaseline: WeakMap<Node, ReadonlySet<string>>;
+        baseline: WeakMap<Element, readonly string[]>;
+        shadowBaseline: WeakMap<Node, readonly string[]>;
         observer: MutationObserver;
         targetCaptureListener: EventListener;
         documentBubbleListener: EventListener;
         mutationOrdinal: number;
         deferredRecords: MutationRecord[];
-        classifiedNodes: Set<string>;
-        classifiedRegions: Set<string>;
+        classifiedNodes: string[];
+        classifiedRegions: string[];
         classifiedElements?: Element[];
         hasDelegatedListener: boolean;
         inTargetDispatch: boolean;
@@ -1521,10 +1565,10 @@ async function endPageSensitiveActionEpoch(
       records: {
         markerId: string;
         forms: string[];
-        baseline: WeakMap<Element, ReadonlySet<string>>;
-        shadowBaseline?: WeakMap<Node, ReadonlySet<string>>;
-        classifiedNodes?: Set<string>;
-        classifiedRegions?: Set<string>;
+        baseline: WeakMap<Element, readonly string[]>;
+        shadowBaseline?: WeakMap<Node, readonly string[]>;
+        classifiedNodes?: string[];
+        classifiedRegions?: string[];
         classifiedElements?: Element[];
         schedulerRegistrations?: number;
         poisoned?: boolean;
@@ -1658,7 +1702,10 @@ async function endPageSensitiveActionEpoch(
         candidate.shadowRootHostGet,
         candidate.shadowRootModeGet,
       ];
-      return required.every((fn) => typeof fn === "function") ? candidate : undefined;
+      for (const fn of required) {
+        if (typeof fn !== "function") return undefined;
+      }
+      return candidate;
     }
 
     function apply<T>(fn: (...args: never[]) => T, receiver: unknown, args: readonly unknown[] = []): T {
@@ -1796,13 +1843,42 @@ async function endPageSensitiveActionEpoch(
       return node.nodeType === 3;
     }
 
+    function arrayHasString(values: readonly string[], candidate: string): boolean {
+      for (const value of values) {
+        if (value === candidate) return true;
+      }
+      return false;
+    }
+
+    function arrayHasIdentity<T>(values: readonly T[], candidate: T): boolean {
+      for (const value of values) {
+        if (value === candidate) return true;
+      }
+      return false;
+    }
+
+    function pushUniqueNonEmpty(values: string[], candidate: string): void {
+      if (candidate !== "" && !arrayHasString(values, candidate)) values[values.length] = candidate;
+    }
+
+    function baselineContainsAll(baseline: readonly string[] | undefined, matches: readonly string[]): boolean {
+      if (baseline === undefined) return false;
+      for (const value of matches) {
+        if (!arrayHasString(baseline, value)) return false;
+      }
+      return true;
+    }
+
     function cleanupSensitiveMarkers(markerId: string, classifiedElements: readonly Element[]): void {
-      const candidates = new Set<Element>(classifiedElements);
-      candidates.add(element);
+      const candidates: Element[] = [];
+      for (const candidate of classifiedElements) {
+        if (!arrayHasIdentity(candidates, candidate)) candidates[candidates.length] = candidate;
+      }
+      if (!arrayHasIdentity(candidates, element)) candidates[candidates.length] = element;
       for (const candidate of queryDocument("*")) {
         const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-        if (dom.arrayIsArray(ids) && ids.includes(markerId)) {
-          candidates.add(candidate);
+        if (dom.arrayIsArray(ids) && arrayHasString(ids, markerId) && !arrayHasIdentity(candidates, candidate)) {
+          candidates[candidates.length] = candidate;
         }
       }
       for (const candidate of candidates) {
@@ -1816,7 +1892,10 @@ async function endPageSensitiveActionEpoch(
       if (!dom.arrayIsArray(ids)) {
         return;
       }
-      const remaining = ids.filter((id) => id !== markerId);
+      const remaining: string[] = [];
+      for (const id of ids) {
+        if (id !== markerId) remaining[remaining.length] = id;
+      }
       if (remaining.length === 0) {
         delete host[input.targetIdsProperty];
         removeAttribute(candidate, input.maskAttribute);
@@ -1833,7 +1912,7 @@ async function endPageSensitiveActionEpoch(
         const matches = sensitiveMatches(candidate, epochToUpdate.forms);
         if (matches.length === 0) continue;
         if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-        if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) continue;
+        if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) continue;
         classifyElement(stateToUpdate, epochToUpdate, candidate);
         if (epochToUpdate.poisoned) return;
       }
@@ -1845,8 +1924,12 @@ async function endPageSensitiveActionEpoch(
       records: readonly MutationRecord[],
       allowClassification: boolean,
     ): void {
-      const applicationRecords = records.filter((record) =>
-        record.type !== "attributes" || record.attributeName !== input.maskAttribute);
+      const applicationRecords: MutationRecord[] = [];
+      for (const record of records) {
+        if (record.type !== "attributes" || record.attributeName !== input.maskAttribute) {
+          applicationRecords[applicationRecords.length] = record;
+        }
+      }
       epochToUpdate.mutationOrdinal += applicationRecords.length;
       if (epochToUpdate.mutationOrdinal > input.maxMutationRecords) {
         epochToUpdate.poisoned = true;
@@ -1863,7 +1946,7 @@ async function endPageSensitiveActionEpoch(
           const matches = sensitiveMatches(candidate, epochToUpdate.forms);
           if (matches.length === 0) continue;
           if (isMarkedSensitive(candidate, epochToUpdate.markerId)) continue;
-          if (matches.every((value) => epochToUpdate.baseline.get(candidate)?.has(value) === true)) {
+          if (baselineContainsAll(epochToUpdate.baseline.get(candidate), matches)) {
             continue;
           }
           if (!allowClassification) {
@@ -1877,18 +1960,19 @@ async function endPageSensitiveActionEpoch(
     }
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
-      const touchedNodes = [record.target, ...Array.from(record.addedNodes)];
-      return touchedNodes.some((node) => {
+      const touchedNodes = [record.target, ...arrayFrom(record.addedNodes)];
+      for (const node of touchedNodes) {
         const root = isShadowRootNode(node) ? node : getRootNode(node);
-        return isShadowRootNode(root) && shadowRootMode(root) !== "open";
-      });
+        if (isShadowRootNode(root) && shadowRootMode(root) !== "open") return true;
+      }
+      return false;
     }
 
     function mutationCandidateElements(record: MutationRecord): Element[] {
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        for (const node of Array.from(record.addedNodes)) addNode(node, candidates);
+        for (const node of arrayFrom(record.addedNodes)) addNode(node, candidates);
       }
       return candidates;
     }
@@ -1896,7 +1980,7 @@ async function endPageSensitiveActionEpoch(
     function addNode(node: Node, candidates: Element[]): void {
       if (isElementNode(node)) {
         candidates.push(node);
-        candidates.push(...Array.from(queryDescendants(node)));
+        candidates.push(...queryDescendants(node));
         candidates.push(...observedAncestors(node));
         return;
       }
@@ -1910,7 +1994,12 @@ async function endPageSensitiveActionEpoch(
     function sensitiveMatches(candidate: Element, formsToMatch: readonly string[]): string[] {
       const matches: string[] = [];
       for (const value of sensitiveValues(candidate)) {
-        if (formsToMatch.some((form) => carriesForm(value, form))) matches.push(value);
+        for (const form of formsToMatch) {
+          if (carriesForm(value, form)) {
+            matches[matches.length] = value;
+            break;
+          }
+        }
       }
       return matches;
     }
@@ -2008,21 +2097,21 @@ async function endPageSensitiveActionEpoch(
         return;
       }
       const nodeKey = `${input.markerId}:${nodeIdentity(stateToUpdate, candidate)}`;
-      if (!epochToUpdate.classifiedNodes.has(nodeKey)) {
-        epochToUpdate.classifiedNodes.add(nodeKey);
+      if (!arrayHasString(epochToUpdate.classifiedNodes, nodeKey)) {
+        epochToUpdate.classifiedNodes[epochToUpdate.classifiedNodes.length] = nodeKey;
         if (epochToUpdate.classifiedElements !== undefined) {
           epochToUpdate.classifiedElements.push(candidate);
         }
-        if (epochToUpdate.classifiedNodes.size > input.maxClassifiedNodes) {
+        if (epochToUpdate.classifiedNodes.length > input.maxClassifiedNodes) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
           return;
         }
       }
       const regionKey = nodeKey;
-      if (!epochToUpdate.classifiedRegions.has(regionKey)) {
-        epochToUpdate.classifiedRegions.add(regionKey);
-        if (epochToUpdate.classifiedRegions.size > input.maxMaskRegions) {
+      if (!arrayHasString(epochToUpdate.classifiedRegions, regionKey)) {
+        epochToUpdate.classifiedRegions[epochToUpdate.classifiedRegions.length] = regionKey;
+        if (epochToUpdate.classifiedRegions.length > input.maxMaskRegions) {
           epochToUpdate.poisoned = true;
           stateToUpdate.poisoned = true;
           return;
@@ -2080,7 +2169,7 @@ async function endPageSensitiveActionEpoch(
       const host = candidate as unknown as Element & Record<string, unknown>;
       const current = host[input.targetIdsProperty];
       if (dom.arrayIsArray(current)) {
-        if (!current.includes(markerId)) current.push(markerId);
+        if (!arrayHasString(current, markerId)) current.push(markerId);
       } else {
         apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
           configurable: false,
@@ -2097,31 +2186,33 @@ async function endPageSensitiveActionEpoch(
 
     function isMarkedSensitive(candidate: Element, markerId: string): boolean {
       const ids = (candidate as unknown as Element & Record<string, unknown>)[input.targetIdsProperty];
-      return dom.arrayIsArray(ids) && ids.includes(markerId);
+      return dom.arrayIsArray(ids) && arrayHasString(ids, markerId);
     }
 
     function reflectedCandidateForms(target: Element, actionKind: "input" | "select"): string[] {
-      const values = new Set<string>();
+      const values: string[] = [];
       if (actionKind === "input" && (tagName(target) === "input" || tagName(target) === "textarea")) {
-        values.add(fieldValue(target));
-        values.add(fieldValue(target).replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
-        values.add(normalizeVisibleSensitiveForm(fieldValue(target)));
+        const currentValue = fieldValue(target);
+        pushUniqueNonEmpty(values, currentValue);
+        pushUniqueNonEmpty(values, currentValue.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+        pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(currentValue));
       }
       if (actionKind === "select" && tagName(target) === "select") {
-        values.add(fieldValue(target));
+        pushUniqueNonEmpty(values, fieldValue(target));
         for (const option of selectedOptions(target)) {
-          values.add(optionValue(option));
-          values.add(optionText(option));
-          values.add(optionLabel(option));
+          pushUniqueNonEmpty(values, optionValue(option));
+          pushUniqueNonEmpty(values, optionText(option));
+          pushUniqueNonEmpty(values, optionLabel(option));
         }
       }
-      return Array.from(values).filter((value) => value !== "");
+      return values;
     }
 
     function mergeSensitiveForms(current: string[], next: readonly string[]): string[] {
-      const merged = new Set(current);
-      for (const value of next) merged.add(value);
-      return Array.from(merged).filter((value) => value !== "");
+      const merged: string[] = [];
+      for (const value of current) pushUniqueNonEmpty(merged, value);
+      for (const value of next) pushUniqueNonEmpty(merged, value);
+      return merged;
     }
 
     function normalizeVisibleSensitiveForm(value: string): string {
@@ -2168,10 +2259,11 @@ async function endPageSensitiveActionEpoch(
     }
 
     function directText(candidate: Element): string {
-      return childNodes(candidate)
-        .filter((node): node is Text => isTextNode(node))
-        .map((node) => textData(node))
-        .join("");
+      let text = "";
+      for (const node of childNodes(candidate)) {
+        if (isTextNode(node)) text += textData(node);
+      }
+      return text;
     }
 
     function carriesForm(value: string, form: string): boolean {
@@ -2216,7 +2308,11 @@ async function markSensitiveTarget(
       const host = element as unknown as Element & Record<string, unknown>;
       const current = host[input.property];
       if (dom.arrayIsArray(current)) {
-        if (!current.includes(input.markerId)) current.push(input.markerId);
+        let found = false;
+        for (const markerId of current) {
+          if (markerId === input.markerId) found = true;
+        }
+        if (!found) current.push(input.markerId);
         return;
       }
       if (current !== undefined) throw new Error("Sensitive target marker is unavailable.");
@@ -2259,9 +2355,15 @@ async function readInputSensitiveForms(locator: Locator): Promise<InputSensitive
     if (dom === undefined || dom.elementTagNameGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
       throw new Error("Sensitive DOM authority is unavailable.");
     }
-    const sensitiveTargetIds = dom.arrayIsArray(ids) && ids.every((entry) => typeof entry === "string")
+    const sensitiveTargetIds = dom.arrayIsArray(ids) && allStrings(ids)
       ? ids
       : [];
+    function allStrings(values: readonly unknown[]): boolean {
+      for (const entry of values) {
+        if (typeof entry !== "string") return false;
+      }
+      return true;
+    }
     const tag = (dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase();
     if (tag === "input") {
       if (dom.htmlInputElementValueGet === undefined) throw new Error("Sensitive input value authority is unavailable.");
@@ -2296,9 +2398,15 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
       dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function") {
       throw new Error("Sensitive select authority is unavailable.");
     }
-    const sensitiveTargetIds = dom.arrayIsArray(ids) && ids.every((entry) => typeof entry === "string")
+    const sensitiveTargetIds = dom.arrayIsArray(ids) && allStrings(ids)
       ? ids
       : [];
+    function allStrings(values: readonly unknown[]): boolean {
+      for (const entry of values) {
+        if (typeof entry !== "string") return false;
+      }
+      return true;
+    }
     if ((dom.reflectApply(dom.elementTagNameGet, element, []) as string).toLowerCase() !== "select") {
       throw new Error("Sensitive select target is not a select field.");
     }

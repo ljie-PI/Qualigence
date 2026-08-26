@@ -376,7 +376,7 @@ describe("production valueRef browser execution", () => {
         </style>
         <div id="spacer"></div>
         <label>Ticket 45 Secret <input id="ticket45-secret" aria-label="Ticket 45 Secret" /></label>
-        <div id="ticket45-unrelated" data-qualigence-observe>safe-pixel</div>
+        <div id="ticket45-unrelated" data-qualigence-observe></div>
         <script>
           const input = document.getElementById('ticket45-secret');
           input.addEventListener('input', () => {
@@ -384,8 +384,11 @@ describe("production valueRef browser execution", () => {
             document.title = actual;
             input.setAttribute('title', actual);
             Object.defineProperty(input, 'value', { configurable: true, get: () => 'attacker-own-value' });
+            Object.defineProperty(HTMLInputElement.prototype, 'value', { configurable: true, get: () => 'attacker-prototype-value', set: () => {} });
             Object.defineProperty(HTMLInputElement.prototype, 'placeholder', { configurable: true, get: () => 'attacker-placeholder' });
+            Object.defineProperty(HTMLElement.prototype, 'hidden', { configurable: true, get: () => true });
             Object.defineProperty(Node.prototype, 'textContent', { configurable: true, get: () => 'attacker-text', set: () => {} });
+            window.getComputedStyle = () => ({ display: 'none', visibility: 'hidden' });
             Element.prototype.getAttribute = function(name) { return name === 'aria-label' || name === 'title' || name === 'data-qualigence-sensitive-mask' ? null : ''; };
             Element.prototype.hasAttribute = function(name) { return name !== 'data-qualigence-sensitive-mask' && name !== 'title'; };
             Element.prototype.getBoundingClientRect = function() { return { x: 120, y: 142, left: 120, top: 142, right: 148, bottom: 170, width: 28, height: 28, toJSON: () => ({}) }; };
@@ -447,7 +450,13 @@ describe("production valueRef browser execution", () => {
       });
       expect(expected.left).toBe(0);
       expect(pixelAt(image, Math.floor((expected.left + expected.right) / 2), Math.floor((expected.top + expected.bottom) / 2))).toEqual([0, 0, 0, 255]);
-      void unrelated;
+      expect(unrelated.right - unrelated.left).toBeGreaterThan(0);
+      expect(unrelated.bottom - unrelated.top).toBeGreaterThan(0);
+      for (let y = unrelated.top; y < unrelated.bottom; y += 1) {
+        for (let x = unrelated.left; x < unrelated.right; x += 1) {
+          expect(pixelAt(image, x, y)).toEqual([222, 11, 44, 255]);
+        }
+      }
       expect(pixelAt(image, image.width - 1, image.height - 1)).toEqual([255, 255, 255, 255]);
       expect(JSON.stringify(graph)).not.toContain(ticket45Secret);
 
@@ -494,6 +503,8 @@ describe("production valueRef browser execution", () => {
       }).capture({ ...e2eJob("ticket45"), target: { kind: "web", url: fixture.url } }))
         .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
       expect(secondRaceScreenshotCalls).toBe(2);
+      expect(() => session.artifactsFor("run-ticket45:observation:4"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
       expect(JSON.stringify(logs)).not.toContain(ticket45Secret);
     } catch (error) {
       if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
