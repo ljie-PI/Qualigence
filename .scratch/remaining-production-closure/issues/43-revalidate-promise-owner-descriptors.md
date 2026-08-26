@@ -108,6 +108,14 @@ The Chromium E2E must register multiple receiver/prototype owners, mutate descri
 - Behavior Matrix applicability: complete Ticket 43 matrix is applicable. Bounded enumerable Promise owner/prototype descriptor retention, identity de-duplication, exact revalidation before Graph/Artifact acceptance, overflow/inspection/enumeration fail-closed behavior, current-state restoration boundary, concurrent validation serialization, and session cleanup are in scope. Ticket 42 native Promise semantics/accounting must remain green but is not re-accepted. Immutable first-snapshot/no-reapproval, DOM getter/geometry authority, Runner production files, package manifests/lockfile, and unrelated roots are excluded.
 - Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Complete-matrix review and post-review Chromium E2E remain pending after implementation.
 
+### review-fix — 2026-08-26
+
+- Reviewed head fixed: `a5ed05b48c09b22bba7554c6e0293bb62ea38c94` against fixed base `34aeb423ef655ca04f8c69736e0a4d8b1ac9621e`.
+- Core findings fixed: diff hygiene for `tests/component/web-execution/promise-owner-integrity.test.ts`; Critical mutable page-visible Promise owner registry/record snapshots; compacting/truncating/removing page-visible owner entries; and descriptor/prototype/resolved-method-owner page-visible record rewrite attempts after owner mutation.
+- Fix commit: `5669473ffaf32c666b3eb32a9a8940ad42909575` (`Fix Ticket 43 Promise owner registry tamper`).
+- Gates run for the fix: `CI=true corepack pnpm typecheck` (passed), `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/promise-native-oracle.test.ts tests/component/web-execution/promise-owner-integrity.test.ts` (passed, 4 files / 35 tests), and `git diff --check` (passed).
+- Status remains `claimed`; complete-matrix review and post-review Chromium E2E remain pending. No PR/final evidence was created.
+
 ## Acceptance
 
 - [ ] Every observed Promise receiver/traversed owner is retained in a fixed-bound, identity-deduplicated, completely enumerable registry.
