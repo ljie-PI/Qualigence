@@ -4,7 +4,7 @@
 
 **Blocked by:** 41 - Close Shadow DOM, scheduler, and Runner log gaps.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -102,11 +102,11 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 
 ## Acceptance
 
-- [ ] `then`, `catch`, and `finally` match the uninstrumented native oracle for base/subclass/species/custom-method/thenable/throw/cycle cases.
-- [ ] Each application-visible causal registration is counted exactly once before native registration; instrumentation internals are not charged and outer assimilation is not suppressed.
-- [ ] Bound overflow poisons evidence while preserving native registration, callbacks, values, reasons, constructor identities, and invocation order.
-- [ ] Ticket 41 scheduler/Shadow DOM/log behavior remains green but is not re-claimed as Ticket 42 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] `then`, `catch`, and `finally` match the uninstrumented native oracle for base/subclass/species/custom-method/thenable/throw/cycle cases.
+- [x] Each application-visible causal registration is counted exactly once before native registration; instrumentation internals are not charged and outer assimilation is not suppressed.
+- [x] Bound overflow poisons evidence while preserving native registration, callbacks, values, reasons, constructor identities, and invocation order.
+- [x] Ticket 41 scheduler/Shadow DOM/log behavior remains green but is not re-claimed as Ticket 42 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
 
 ## Comments
 
@@ -158,3 +158,20 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 - Fix commit: `4ce7536137ab6ebba7f2302e19b365a5ae76f43b` (`Fix Ticket 42 review4 native TypeErrors`).
 - Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
 - Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `2bd9b04eeb796373cd50386bba4ca10b8dae9337`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/09cc36c3-4bdb-497c-b834-81f4bc0855f1/ticket42-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/09cc36c3-4bdb-497c-b834-81f4bc0855f1/ticket42-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`, `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/114`.
+
+## Answer
+
+Implemented Ticket 42 Promise semantics remediation. Sensitive-epoch Promise instrumentation now preserves native `then`, `catch`, and `finally` behavior across base promises, subclasses, species, PromiseResolve/finally assimilation, thenables, custom receivers/accessors, synchronous TypeErrors, handler throws, cycles, and overflow boundaries while counting each application-visible causal registration exactly once and leaving instrumentation-internal registrations uncharged.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/114`
+
+Reviewed code/test head: `2bd9b04eeb796373cd50386bba4ca10b8dae9337`
+
+Final verification: focused Ticket 42 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
