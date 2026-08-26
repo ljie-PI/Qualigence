@@ -99,10 +99,18 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       readonly originalPromiseThen: typeof Promise.prototype.then;
       readonly originalPromiseCatch: typeof Promise.prototype.catch;
       readonly originalPromiseFinally: typeof Promise.prototype.finally;
+      readonly originalReflectApply: typeof Reflect.apply;
+    };
+    type PendingSchedulerCallback = {
+      settled: boolean;
+      readonly settles: boolean;
+      readonly retainObjectResult: boolean;
+      retainedAfterReturn: boolean;
     };
     type SensitiveSchedulerEpoch = {
       schedulerRegistrations?: number;
       pendingSchedulerCallbacks?: number;
+      retainedSchedulerCallbacks?: number;
       inSchedulerCallback?: boolean;
       poisoned?: boolean;
       processSchedulerCallback?: () => void;
@@ -112,6 +120,14 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       poisoned?: boolean;
       schedulerSessionRegistrations?: number;
       retainedSchedulerEpochs?: SensitiveSchedulerEpoch[];
+    };
+    type InternalPromiseThenCall = {
+      readonly receiver: unknown;
+      readonly onfulfilled?: unknown;
+      readonly onrejected?: unknown;
+      readonly epoch: SensitiveSchedulerEpoch | undefined;
+      readonly wrapHandlers: boolean;
+      consumed: boolean;
     };
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
@@ -128,6 +144,7 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       originalPromiseThen: Promise.prototype.then,
       originalPromiseCatch: Promise.prototype.catch,
       originalPromiseFinally: Promise.prototype.finally,
+      originalReflectApply: Reflect.apply,
     };
     Object.defineProperty(win, input.shadowRootsProperty, {
       configurable: false,
@@ -206,37 +223,282 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
         epoch === undefined ? callback : wrapSchedulerCallback(callback, epoch, true),
       );
     };
-    Promise.prototype.then = function then<TResult1 = unknown, TResult2 = never>(
+    const internalPromiseThenCalls: InternalPromiseThenCall[] = [];
+    const retainedInternalPromiseThenCalls: InternalPromiseThenCall[] = [];
+
+    const instrumentedPromiseThen = function then<TResult1 = unknown, TResult2 = never>(
+      this: unknown,
       onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
       onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
     ): Promise<TResult1 | TResult2> {
-      const fulfilledEpoch = typeof onfulfilled === "function" ? countSensitiveSchedulerRegistration() : undefined;
-      const rejectedEpoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
-      return registry.originalPromiseThen.call(
-        this,
-        fulfilledEpoch === undefined || typeof onfulfilled !== "function" ? onfulfilled : wrapSchedulerCallback(onfulfilled, fulfilledEpoch, true),
-        rejectedEpoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, rejectedEpoch, true),
-      ) as Promise<TResult1 | TResult2>;
+      "use strict";
+      const internalCall = consumeInternalPromiseThenCall(this, onfulfilled, onrejected);
+      const epoch = internalCall === undefined
+        ? countSensitiveSchedulerRegistration()
+        : internalCall.epoch;
+      const wrapHandlers = internalCall?.wrapHandlers ?? true;
+      const handlers = epoch === undefined || !wrapHandlers
+        ? { onfulfilled, onrejected }
+        : wrapPromiseReactionHandlers(onfulfilled, onrejected, epoch);
+      try {
+        return registry.originalPromiseThen.call(
+          this,
+          handlers.onfulfilled,
+          handlers.onrejected,
+        ) as Promise<TResult1 | TResult2>;
+      } catch (error) {
+        if ("pending" in handlers && handlers.pending !== undefined) {
+          settlePendingSchedulerCallback(epoch, handlers.pending);
+        }
+        throw error;
+      }
     };
+    Promise.prototype.then = instrumentedPromiseThen;
     Promise.prototype.catch = function promiseCatch<TResult = never>(
       onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
     ): Promise<unknown | TResult> {
-      const epoch = typeof onrejected === "function" ? countSensitiveSchedulerRegistration() : undefined;
-      return registry.originalPromiseCatch.call(
-        this,
-        epoch === undefined || typeof onrejected !== "function" ? onrejected : wrapSchedulerCallback(onrejected, epoch, true),
-      ) as Promise<unknown | TResult>;
+      "use strict";
+      const epoch = countSensitiveSchedulerRegistration();
+      return invokePromiseThen(this, undefined, onrejected, epoch, true) as Promise<unknown | TResult>;
     };
     Promise.prototype.finally = function promiseFinally(onfinally?: (() => void) | null): Promise<unknown> {
-      const epoch = typeof onfinally === "function" ? countSensitiveSchedulerRegistration() : undefined;
-      return registry.originalPromiseFinally.call(
-        this,
-        epoch === undefined || typeof onfinally !== "function" ? onfinally : wrapSchedulerCallback(onfinally, epoch, true),
-      ) as Promise<unknown>;
+      "use strict";
+      const receiver = this;
+      const epoch = countSensitiveSchedulerRegistration();
+      const C = promiseSpeciesConstructor(receiver);
+      const finallyHandler = epoch === undefined || typeof onfinally !== "function"
+        ? { callback: onfinally }
+        : wrapPromiseFinallyHandler(onfinally, epoch);
+      const finallyCallback = finallyHandler.callback;
+      const onFulfilled = typeof finallyCallback === "function"
+        ? (value: unknown) => {
+          const result = finallyCallback();
+          const promise = promiseResolve(C, result);
+          const continuation = invokePromiseThenResult(promise, () => value, undefined, epoch, false);
+          retainReturnedPromiseAssimilation(continuation, epoch);
+          return continuation.value;
+        }
+        : finallyCallback;
+      const onRejected = typeof finallyCallback === "function"
+        ? (reason: unknown) => {
+          const result = finallyCallback();
+          const promise = promiseResolve(C, result);
+          const continuation = invokePromiseThenResult(promise, () => { throw reason; }, undefined, epoch, false);
+          retainReturnedPromiseAssimilation(continuation, epoch);
+          return continuation.value;
+        }
+        : finallyCallback;
+      try {
+        return invokePromiseThen(receiver, onFulfilled, onRejected, epoch, false) as Promise<unknown>;
+      } catch (error) {
+        if ("pending" in finallyHandler && finallyHandler.pending !== undefined) {
+          settlePendingSchedulerCallback(epoch, finallyHandler.pending);
+        }
+        throw error;
+      }
     };
+
+    function withInternalPromiseThenCall<T>(call: InternalPromiseThenCall, operation: () => T): T {
+      internalPromiseThenCalls.push(call);
+      try {
+        return operation();
+      } finally {
+        const index = internalPromiseThenCalls.lastIndexOf(call);
+        if (index !== -1) internalPromiseThenCalls.splice(index, 1);
+      }
+    }
+
+    function consumeInternalPromiseThenCall(
+      receiver: unknown,
+      onfulfilled: unknown,
+      onrejected: unknown,
+    ): InternalPromiseThenCall | undefined {
+      const stacked = consumeMatchingInternalPromiseThenCall(internalPromiseThenCalls, receiver, onfulfilled, onrejected);
+      if (stacked !== undefined) return stacked;
+      return consumeMatchingInternalPromiseThenCall(retainedInternalPromiseThenCalls, receiver, onfulfilled, onrejected);
+    }
+
+    function consumeMatchingInternalPromiseThenCall(
+      calls: InternalPromiseThenCall[],
+      receiver: unknown,
+      onfulfilled: unknown,
+      onrejected: unknown,
+    ): InternalPromiseThenCall | undefined {
+      for (let index = calls.length - 1; index >= 0; index -= 1) {
+        const call = calls[index]!;
+        if (call.consumed || call.receiver !== receiver) continue;
+        const fulfilledMatches = call.onfulfilled === undefined || call.onfulfilled === onfulfilled;
+        const rejectedMatches = call.onrejected === undefined || call.onrejected === onrejected;
+        if (!fulfilledMatches || !rejectedMatches) continue;
+        call.consumed = true;
+        if (calls === retainedInternalPromiseThenCalls) calls.splice(index, 1);
+        return call;
+      }
+      return undefined;
+    }
 
     function sensitiveState(): SensitiveRuntimeState | undefined {
       return (window as unknown as Record<string, SensitiveRuntimeState | undefined>)[input.evidenceStateProperty];
+    }
+
+    function invokePromiseThen(
+      receiver: unknown,
+      onfulfilled: unknown,
+      onrejected: unknown,
+      epoch: SensitiveSchedulerEpoch | undefined,
+      wrapHandlers: boolean,
+    ): unknown {
+      return invokePromiseThenResult(receiver, onfulfilled, onrejected, epoch, wrapHandlers).value;
+    }
+
+    function invokePromiseThenResult(
+      receiver: unknown,
+      onfulfilled: unknown,
+      onrejected: unknown,
+      epoch: SensitiveSchedulerEpoch | undefined,
+      wrapHandlers: boolean,
+    ): { readonly value: unknown; readonly usedDefaultThen: boolean } {
+      const then = (receiver as { readonly then?: unknown }).then;
+      const usedDefaultThen = isDefaultPromiseThenFunction(then);
+      const internalCall = usedDefaultThen
+        ? {
+          receiver,
+          onfulfilled,
+          onrejected,
+          epoch,
+          wrapHandlers,
+          consumed: false,
+        }
+        : undefined;
+      const operation = () => callFunction(then, receiver, [onfulfilled, onrejected]);
+      const value = internalCall === undefined
+        ? operation()
+        : withInternalPromiseThenCall(internalCall, operation);
+      return { value, usedDefaultThen };
+    }
+
+    function retainReturnedPromiseAssimilation(
+      continuation: { readonly value: unknown; readonly usedDefaultThen: boolean },
+      epoch: SensitiveSchedulerEpoch | undefined,
+    ): void {
+      if (!continuation.usedDefaultThen || !isObjectLike(continuation.value)) return;
+      retainedInternalPromiseThenCalls.push({
+        receiver: continuation.value,
+        epoch,
+        wrapHandlers: false,
+        consumed: false,
+      });
+    }
+
+    function isDefaultPromiseThenFunction(value: unknown): boolean {
+      return value === instrumentedPromiseThen || value === registry.originalPromiseThen;
+    }
+
+    function callFunction(fn: unknown, thisArg: unknown, args: unknown[]): unknown {
+      if (typeof fn !== "function") {
+        throw nativeNonCallableThenError(fn);
+      }
+      return registry.originalReflectApply(fn as (...callArgs: unknown[]) => unknown, thisArg, args);
+    }
+
+    function promiseSpeciesConstructor(receiver: unknown): PromiseConstructor {
+      if (!isObjectLike(receiver)) {
+        throw nativeFinallyReceiverError(receiver);
+      }
+      const constructorValue = (receiver as { readonly constructor?: unknown }).constructor;
+      if (constructorValue === undefined) return Promise;
+      if (!isObjectLike(constructorValue)) {
+        throw nativePromiseConstructorError(constructorValue);
+      }
+      const species = (constructorValue as { readonly [Symbol.species]?: unknown })[Symbol.species];
+      if (species === undefined || species === null) return Promise;
+      if (!isConstructor(species)) {
+        throw nativePromiseSpeciesError(species);
+      }
+      return species as PromiseConstructor;
+    }
+
+    function nativeNonCallableThenError(then: unknown): unknown {
+      try {
+        registry.originalPromiseCatch.call({ then }, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise method is not callable");
+    }
+
+    function nativeFinallyReceiverError(receiver: unknown): unknown {
+      try {
+        registry.originalPromiseFinally.call(receiver, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise receiver is not an object");
+    }
+
+    function nativePromiseConstructorError(constructorValue: unknown): unknown {
+      const probe = new Promise((resolve) => resolve(undefined));
+      Object.defineProperty(probe, "constructor", {
+        configurable: true,
+        value: constructorValue,
+      });
+      try {
+        registry.originalPromiseThen.call(probe, undefined, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise constructor is not an object");
+    }
+
+    function nativePromiseSpeciesError(species: unknown): unknown {
+      const probe = new Promise((resolve) => resolve(undefined));
+      Object.defineProperty(probe, "constructor", {
+        configurable: true,
+        value: { [Symbol.species]: species },
+      });
+      try {
+        registry.originalPromiseThen.call(probe, undefined, undefined);
+      } catch (error) {
+        return error;
+      }
+      return new TypeError("Promise species is not a constructor");
+    }
+
+    function promiseResolve(C: PromiseConstructor, value: unknown): unknown {
+      if (isObjectLike(value) && value instanceof Promise && (value as { readonly constructor?: unknown }).constructor === C) {
+        return value;
+      }
+      let resolveCapability: unknown;
+      let rejectCapability: unknown;
+      let executorCalled = false;
+      const promise = new (C as unknown as new (executor: (resolve: unknown, reject: unknown) => void) => unknown)((resolve, reject) => {
+        if (executorCalled) {
+          throw new TypeError("Promise capability executor was already invoked");
+        }
+        executorCalled = true;
+        resolveCapability = resolve;
+        rejectCapability = reject;
+      });
+      if (typeof resolveCapability !== "function" || typeof rejectCapability !== "function") {
+        throw new TypeError("Promise capability functions are not callable");
+      }
+      callFunction(resolveCapability, undefined, [value]);
+      return promise;
+    }
+
+    function isConstructor(value: unknown): boolean {
+      if (typeof value !== "function") return false;
+      try {
+        const constructorProbe = new Proxy(value as new () => object, {
+          construct() {
+            return {};
+          },
+        });
+        new constructorProbe();
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
@@ -256,27 +518,126 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       return epoch;
     }
 
+    function wrapPromiseReactionHandlers<TResult1, TResult2>(
+      onfulfilled: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null | undefined,
+      onrejected: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null | undefined,
+      epoch: SensitiveSchedulerEpoch,
+    ): {
+      readonly onfulfilled: typeof onfulfilled;
+      readonly onrejected: typeof onrejected;
+      readonly pending?: PendingSchedulerCallback;
+    } {
+      if (typeof onfulfilled !== "function" && typeof onrejected !== "function") {
+        return { onfulfilled, onrejected };
+      }
+      const reaction = beginPendingSchedulerCallback(epoch, true, true);
+      return {
+        onfulfilled: wrapSchedulerCallbackWithPending(
+          typeof onfulfilled === "function"
+            ? onfulfilled
+            : ((value: unknown) => value),
+          epoch,
+          reaction,
+        ) as typeof onfulfilled,
+        onrejected: wrapSchedulerCallbackWithPending(
+          typeof onrejected === "function"
+            ? onrejected
+            : ((reason: unknown) => { throw reason; }),
+          epoch,
+          reaction,
+        ) as typeof onrejected,
+        pending: reaction,
+      };
+    }
+
+    function wrapPromiseFinallyHandler<T extends (...args: any[]) => unknown>(
+      callback: T,
+      epoch: SensitiveSchedulerEpoch,
+    ): { readonly callback: T; readonly pending: PendingSchedulerCallback } {
+      const pending = beginPendingSchedulerCallback(epoch, true, true);
+      return {
+        callback: wrapSchedulerCallbackWithPending(callback, epoch, pending),
+        pending,
+      };
+    }
+
     function wrapSchedulerCallback<T extends (...args: any[]) => unknown>(callback: T, epoch: SensitiveSchedulerEpoch, settles: boolean): T {
+      return wrapSchedulerCallbackWithPending(callback, epoch, beginPendingSchedulerCallback(epoch, settles, false));
+    }
+
+    function beginPendingSchedulerCallback(epoch: SensitiveSchedulerEpoch, settles: boolean, retainObjectResult: boolean): PendingSchedulerCallback {
       epoch.pendingSchedulerCallbacks = (epoch.pendingSchedulerCallbacks ?? 0) + 1;
-      return function sensitiveSchedulerCallback(this: unknown, ...args: any[]): unknown {
+      return { settled: false, settles, retainObjectResult, retainedAfterReturn: false };
+    }
+
+    function wrapSchedulerCallbackWithPending<T extends (...args: any[]) => unknown>(
+      callback: T,
+      epoch: SensitiveSchedulerEpoch,
+      pending: PendingSchedulerCallback,
+    ): T {
+      return function sensitiveSchedulerCallback(this: unknown): unknown {
+        "use strict";
+        const args = Array.prototype.slice.call(arguments) as any[];
         const previous = epoch.inSchedulerCallback === true;
         epoch.inSchedulerCallback = true;
+        let callbackResult: unknown;
+        let callbackCompleted = false;
         try {
-          return callback.apply(this, args);
+          callbackResult = callback.apply(this, args);
+          callbackCompleted = true;
+          return callbackResult;
         } finally {
+          epoch.inSchedulerCallback = previous;
+          if (callbackCompleted && pending.retainObjectResult && isObjectLike(callbackResult)) {
+            pending.retainedAfterReturn = true;
+            epoch.retainedSchedulerCallbacks = (epoch.retainedSchedulerCallbacks ?? 0) + 1;
+          }
           processSchedulerCallbackEpoch(epoch);
-          registry.originalQueueMicrotask.call(window, () => {
-            try {
-              processSchedulerCallbackEpoch(epoch);
-            } finally {
-              if (settles) {
-                epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
-              }
-              epoch.inSchedulerCallback = previous;
-            }
-          });
+          queuePendingSchedulerSettle(epoch, pending);
         }
       } as T;
+    }
+
+    function queuePendingSchedulerSettle(epoch: SensitiveSchedulerEpoch, pending: PendingSchedulerCallback): void {
+      const settle = () => {
+        try {
+          processSchedulerCallbackEpoch(epoch);
+        } finally {
+          settlePendingSchedulerCallback(epoch, pending);
+        }
+      };
+      if (pending.retainedAfterReturn) {
+        queueMicrotaskAfterPromiseAssimilation(settle);
+        return;
+      }
+      registry.originalQueueMicrotask.call(window, settle);
+    }
+
+    function queueMicrotaskAfterPromiseAssimilation(callback: () => void): void {
+      let remainingTurns = 8;
+      const step = () => {
+        remainingTurns -= 1;
+        if (remainingTurns <= 0) {
+          callback();
+          return;
+        }
+        registry.originalQueueMicrotask.call(window, step);
+      };
+      registry.originalQueueMicrotask.call(window, step);
+    }
+
+    function settlePendingSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, pending: PendingSchedulerCallback): void {
+      if (epoch === undefined || !pending.settles || pending.settled) return;
+      pending.settled = true;
+      if (pending.retainedAfterReturn) {
+        epoch.retainedSchedulerCallbacks = Math.max(0, (epoch.retainedSchedulerCallbacks ?? 0) - 1);
+        pending.retainedAfterReturn = false;
+      }
+      epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
+    }
+
+    function isObjectLike(value: unknown): boolean {
+      return (typeof value === "object" && value !== null) || typeof value === "function";
     }
 
     function poisonUnwrappedSensitiveSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, handler: TimerHandler): void {
@@ -289,7 +650,9 @@ async function installSensitiveEvidenceRuntime(page: Page): Promise<void> {
       const active = state.active;
       return active !== undefined && active !== null
         ? active
-        : state.retainedSchedulerEpochs?.find((candidate) => candidate.inSchedulerCallback === true);
+        : state.retainedSchedulerEpochs?.find((candidate) =>
+          candidate.inSchedulerCallback === true || (candidate.retainedSchedulerCallbacks ?? 0) > 0,
+        );
     }
 
     function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {

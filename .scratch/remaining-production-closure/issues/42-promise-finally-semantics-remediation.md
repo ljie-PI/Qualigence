@@ -4,7 +4,7 @@
 
 **Blocked by:** 41 - Close Shadow DOM, scheduler, and Runner log gaps.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -102,8 +102,76 @@ The Chromium E2E must use Promise chains to causally reflect input/select values
 
 ## Acceptance
 
-- [ ] `then`, `catch`, and `finally` match the uninstrumented native oracle for base/subclass/species/custom-method/thenable/throw/cycle cases.
-- [ ] Each application-visible causal registration is counted exactly once before native registration; instrumentation internals are not charged and outer assimilation is not suppressed.
-- [ ] Bound overflow poisons evidence while preserving native registration, callbacks, values, reasons, constructor identities, and invocation order.
-- [ ] Ticket 41 scheduler/Shadow DOM/log behavior remains green but is not re-claimed as Ticket 42 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+- [x] `then`, `catch`, and `finally` match the uninstrumented native oracle for base/subclass/species/custom-method/thenable/throw/cycle cases.
+- [x] Each application-visible causal registration is counted exactly once before native registration; instrumentation internals are not charged and outer assimilation is not suppressed.
+- [x] Bound overflow poisons evidence while preserving native registration, callbacks, values, reasons, constructor identities, and invocation order.
+- [x] Ticket 41 scheduler/Shadow DOM/log behavior remains green but is not re-claimed as Ticket 42 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test head.
+
+## Comments
+
+### start — 2026-08-26
+
+- Fixed base: `184fb79de67cf821ffd8da8d0d2a86ba1ffae29e` (`main`, merge commit for Ticket 41 PR #113).
+- Predecessor merge evidence: Ticket 41 is `resolved` with PR #113, final reviewed code head `9286fbce9bda41df7ef017d595febe20ce885e38`, and merge commit `184fb79de67cf821ffd8da8d0d2a86ba1ffae29e`; current branch starts from that merge.
+- Behavior Matrix applicability: complete Ticket 42 matrix is applicable. Promise `then`/`catch`/`finally` native transparency, species construction, thenable assimilation, custom receiver methods/accessors, throw/cycle propagation, exact per-application registration accounting, and epoch/session overflow evidence poisoning are in scope. Runner production, owner descriptor registry/snapshot hardening, DOM geometry hardening, package manifests/lockfile, and predecessor Ticket 41 Shadow DOM/scheduler/log acceptance are excluded.
+- Planned Gates: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`. Post-review Chromium E2E remains parent-owned after clean complete-matrix review.
+
+### review-fix — 2026-08-26
+
+- Reviewed head fixed: `2d9c79e9d3b035eda9b8e3919ba5c85d64f8a15a`.
+- Core blockers fixed: retained Promise authority now remains available across native thenable/finally assimilation long enough for application-provided thenables that explicitly perform `Promise.prototype.then` to be counted, while native `catch`/`finally` internal delegation and native `finally` continuation registrations are suppressed as instrumentation-internal accounting.
+- Core blockers fixed: custom receiver `catch`/`finally` methods that explicitly delegate to `Promise.prototype.then` no longer consume the native-delegation marker and are counted as the additional application-visible registration.
+- Core blockers fixed: synchronous native registration throws, including invalid `Symbol.species`, now release any pending scheduler callback record while preserving the attempted-registration count and native thrown value.
+- Native oracle/accounting coverage expanded: `catch`/`finally` species behavior, delegated custom receiver registrations, `finally`-returned thenable nested registrations, handler throws, invalid-species pending cleanup, and pending-zero boundary/overflow snapshots.
+- Fix commit: `93fa730dfce93ba74f366493e397cde3cbb9f562` (`Fix Ticket 42 Promise accounting blockers`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, or DOM geometry work is added pending a fresh complete-matrix review.
+
+### review2-fix — 2026-08-26
+
+- Reviewed head fixed: `04538b8852ccd5098fe03d50ab88f8cee679f681`.
+- Review2 core blockers fixed: custom receiver `catch`/`finally` native-delegation suppression now keys off the actual `then` value obtained by the native-equivalent `Get`/`Invoke` path, so Proxy receivers no longer see extra `getOwnPropertyDescriptor` or `getPrototypeOf` traps before the native incompatible-receiver `TypeError`.
+- Review2 core blockers fixed: custom receiver `then` accessors that return the default `Promise.prototype.then` are treated as native internal `catch`/`finally` delegation, so one direct application `catch`/`finally` call counts once; custom receiver methods that explicitly call `Promise.prototype.then` still count the additional registration exactly once.
+- Native oracle/accounting coverage expanded: Proxy trap-order `catch`/`finally` cases now compare instrumented Chromium with the uninstrumented native realm, and accounting covers accessor-returned default `then` for direct `catch`/`finally` calls.
+- Fix commit: `e7d88d8665ed0b6bdaafb11ed83fb315709f3989` (`Fix Ticket 42 review2 Promise transparency blockers`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### review3-fix — 2026-08-26
+
+- Reviewed head fixed: `dfdb3cef2391744c2df48868d5b950e0f037da0a`.
+- Review3 core blockers fixed: manual `Promise.prototype.finally` no longer reads or calls public/application-overridable `C.resolve` while assimilating `finally` handler results. The helper now uses a PromiseCapability-style construction path for native `PromiseResolve(C, result)` behavior and preserves the same-constructor Promise short-circuit.
+- Review3 core blockers fixed: function-valued but non-constructor `Symbol.species` values now throw before native `then` can observe species a second time, matching native arrow-function species timing while preserving prior invalid-species pending cleanup.
+- Native oracle/accounting coverage expanded: paired Chromium oracle now covers base `Promise.resolve` getter throws, subclass species static `resolve` getter returning a rejected promise, subclass species static `resolve` function throws, and arrow-function species; accounting covers arrow-species `finally` synchronous throw cleanup.
+- Prior fixes preserved: Proxy trap-order transparency, accessor default-then counted once, custom receiver methods counted additionally, synchronous throw pending cleanup, epoch/session overflow bounds, and no Ticket43+ owner-registry/snapshot/DOM-geometry scope creep.
+- Fix commit: `092a0a65257bb993576763af4b4d28b98f6aa8ee` (`Fix Ticket 42 review3 Promise finally semantics`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### review4-fix — 2026-08-26
+
+- Reviewed head fixed: `2e9d44a3b82d208fcfe1c48fd73e57ad219aec97`.
+- Review4 core blocker fixed: manual `Promise.prototype.catch`/`finally` paths no longer synthesize divergent synchronous `TypeError` messages for non-callable receiver `then`, primitive `finally` receivers, constructor non-object, or invalid/function-valued non-constructor `Symbol.species`. The instrumentation now obtains the corresponding Chromium-native synchronous `TypeError` objects/messages through side-effect-free native Promise probes after the same application-visible Get/order point.
+- Native oracle tightened: synchronous TypeError oracle tagging now compares `errorName` and `errorMessage`, with explicit paired cases for non-callable `then`, primitive `finally` receiver, invalid object species, and arrow species while preserving constructor/species/then getter order checks.
+- Prior fixes preserved: native PromiseResolve/species behavior without public `C.resolve`, Proxy trap-order transparency, accessor default-then counted once, custom receiver methods counted additionally, synchronous throw pending cleanup, epoch/session overflow bounds, and no Ticket43+ owner-registry/snapshot/DOM-geometry scope creep.
+- Fix commit: `4ce7536137ab6ebba7f2302e19b365a5ae76f43b` (`Fix Ticket 42 review4 native TypeErrors`).
+- Gates run/pass on the fix before commit: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests); `CI=true corepack pnpm typecheck`; `git diff --check`.
+- Status remains `claimed`; no resolved status, PR evidence, owner registry/snapshot, DOM geometry, package/lockfile, or Runner production work is added pending a fresh complete-matrix review.
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `2bd9b04eeb796373cd50386bba4ca10b8dae9337`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/09cc36c3-4bdb-497c-b834-81f4bc0855f1/ticket42-review5/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/09cc36c3-4bdb-497c-b834-81f4bc0855f1/ticket42-review5/spec.md`).
+- Final verification: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts`, `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/shadow-dom-scheduler-log.test.ts tests/component/web-execution/promise-native-oracle.test.ts` (4 files / 38 tests), `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Pull request: `https://github.com/ljie-PI/Qualigence/pull/114`.
+
+## Answer
+
+Implemented Ticket 42 Promise semantics remediation. Sensitive-epoch Promise instrumentation now preserves native `then`, `catch`, and `finally` behavior across base promises, subclasses, species, PromiseResolve/finally assimilation, thenables, custom receivers/accessors, synchronous TypeErrors, handler throws, cycles, and overflow boundaries while counting each application-visible causal registration exactly once and leaving instrumentation-internal registrations uncharged.
+
+Pull request: `https://github.com/ljie-PI/Qualigence/pull/114`
+
+Reviewed code/test head: `2bd9b04eeb796373cd50386bba4ca10b8dae9337`
+
+Final verification: focused Ticket 42 Gate, Chromium valueRef E2E, `corepack pnpm typecheck`, and `git diff --check` passed.
