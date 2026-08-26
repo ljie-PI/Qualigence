@@ -4,7 +4,7 @@
 
 **Blocked by:** 28 — Dispatch Desktop Jobs through Target Runtime.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -42,16 +42,16 @@ This is the complete edit scope, including post-review native acceptance files:
 
 ## Requirements
 
-- [ ] Pipe name/DACL permit only current logon SID and LocalSystem and reject remote/network/anonymous clients.
-- [ ] Server verifies PID, token SID, interactive session, image/signature allowlist, certificate chain/EKU/SAN/fingerprint, and ECDSA/RSA-PSS proof.
-- [ ] Challenges are one-use/expiring; framing, queues, concurrency, and deadlines are bounded.
-- [ ] Windows 11 native tests prove all negative identity and replay cases.
-- [ ] `rust-toolchain.toml` pins the minimum compiling toolchain and required components; floating `stable` is forbidden.
-- [ ] The pipe uses the current logon SID in its name, `FILE_FLAG_FIRST_PIPE_INSTANCE`, overlapped I/O, `PIPE_REJECT_REMOTE_CLIENTS`, and an explicit DACL granting only current logon SID and LocalSystem.
-- [ ] Connected-client admission calls `GetNamedPipeClientProcessId`, then verifies process token user SID, interactive session ID, canonical image path, and configured binary signature/allowlist before issuing a challenge.
-- [ ] The 256-bit nonce proof binds `{ protocolMajor, companionInstanceId, nonce, runnerId }` and reuses the enrolled Runner mTLS key profile: ECDSA P-256/SHA-256 or RSA-PSS/SHA-256 according to the certificate key.
-- [ ] Certificate chain, expiry, client-auth EKU, Runner SAN/scope, configured fingerprint, and proof all pass before any application request is admitted; claimed fingerprint alone never authenticates.
-- [ ] Unknown/truncated/oversized frames, queue or concurrency overflow, request-before-auth, challenge expiry/replay, disconnect, and deadline expiry fail with stable non-secret errors and never reveal expected identity details.
+- [x] Pipe name/DACL permit only current logon SID and LocalSystem and reject remote/network/anonymous clients.
+- [x] Server verifies PID, token SID, interactive session, image/signature allowlist, certificate chain/EKU/SAN/fingerprint, and ECDSA/RSA-PSS proof.
+- [x] Challenges are one-use/expiring; framing, queues, concurrency, and deadlines are bounded.
+- [x] Windows 11 native tests prove all negative identity and replay cases.
+- [x] `rust-toolchain.toml` pins the minimum compiling toolchain and required components; floating `stable` is forbidden.
+- [x] The pipe uses the current logon SID in its name, `FILE_FLAG_FIRST_PIPE_INSTANCE`, overlapped I/O, `PIPE_REJECT_REMOTE_CLIENTS`, and an explicit DACL granting only current logon SID and LocalSystem.
+- [x] Connected-client admission calls `GetNamedPipeClientProcessId`, then verifies process token user SID, interactive session ID, canonical image path, and configured binary signature/allowlist before issuing a challenge.
+- [x] The 256-bit nonce proof binds `{ protocolMajor, companionInstanceId, nonce, runnerId }` and reuses the enrolled Runner mTLS key profile: ECDSA P-256/SHA-256 or RSA-PSS/SHA-256 according to the certificate key.
+- [x] Certificate chain, expiry, client-auth EKU, Runner SAN/scope, configured fingerprint, and proof all pass before any application request is admitted; claimed fingerprint alone never authenticates.
+- [x] Unknown/truncated/oversized frames, queue or concurrency overflow, request-before-auth, challenge expiry/replay, disconnect, and deadline expiry fail with stable non-secret errors and never reveal expected identity details.
 
 ## Focused Gate
 
@@ -150,3 +150,21 @@ Record the base SHA and each reviewed head in `## Comments`. Every review covers
 - Preserved prior fixes: TypeScript-compatible envelope parsing and `companion.probe`/`app.launch` variants, production Authenticode primitive, certificate chain/EKU/SAN/fingerprint/scope validation, bounded queue/in-flight native request path, DACL/first-instance/overlapped/remote-rejection flags, and non-Windows `Windows11Unavailable` behavior.
 - Gates run before the code fix commit: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check` passed; `cargo build --workspace` passed; `cargo test --workspace` passed; `cargo test --workspace --test companion_windows_named_pipe` passed (14 tests); `CI=true corepack pnpm vitest run tests/contract/desktop/named-pipe-companion-client.test.ts` passed (18 tests); `CI=true corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts` passed (1 test wrapping the native suite); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Residual environment limitation for fresh complete-matrix review: this host still does not provide a second logon user/session, remote SMB/network pipe client, anonymous token, or RDP/other-user fixture, so those environment-authority rows remain explicitly limited and are not claimed as release/native-completion evidence.
+
+### final - 2026-08-26
+
+- Reviewed code/test head: `16f4f90df56a21e589d64b3748fdbb90180a6cb4`.
+- Complete-matrix review: Standards and Spec review reported no core blockers (`Q:/Qualigence/.pi-subagents/artifacts/outputs/a6e2cfec-44fa-4449-9d83-c7830b19d475/ticket29-review4/standards.md`, `Q:/Qualigence/.pi-subagents/artifacts/outputs/a6e2cfec-44fa-4449-9d83-c7830b19d475/ticket29-review4/spec.md`).
+- Final verification: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `cargo build --workspace`, `cargo test --workspace`, `cargo test --workspace --test companion_windows_named_pipe`, `CI=true corepack pnpm vitest run tests/contract/desktop/named-pipe-companion-client.test.ts`, `CI=true corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed.
+- Residual environment limitation: this host does not provide second logon user/session, remote SMB/network pipe client, anonymous-token client, or RDP/other-user fixture; those rows are not claimed as release/native-completion evidence and remain for downstream native/release acceptance environments.
+- Pull request: pending creation.
+
+## Answer
+
+Implemented native Windows Named Pipe authority for the Companion IPC boundary. The Windows pipe now uses current-logon SID naming, a LocalSystem/current-logon-SID DACL, first-instance and remote-client rejection flags, overlapped bounded I/O, real PID/token/session/image admission, Authenticode signer allowlist checks, current TypeScript request envelopes, bounded request admission, and certificate challenge-response proof with bounded one-use nonce state. Native Rust and Windows E2E coverage prove the feasible local Windows 11 admission, proof, framing, bounded admission, disconnect, and restart paths; unavailable cross-user/remote/anonymous/RDP identity fixtures are explicitly not claimed as release evidence.
+
+Pull request: pending creation.
+
+Reviewed code/test head: `16f4f90df56a21e589d64b3748fdbb90180a6cb4`
+
+Final verification: native Rust Gate, Windows named-pipe E2E, current named-pipe Companion client contract, `corepack pnpm typecheck`, and `git diff --check` passed.
