@@ -202,6 +202,13 @@ describe("page callback authority inventory", () => {
     }
   });
 
+  it("does not expose original attachShadow authority to page code", () => {
+    const source = sources.get("browser-session.ts")!;
+    expect(source).toContain("validateShadowRootAuthority");
+    expect(source).toContain("nativeElementAttachShadow");
+    expect(source).not.toContain("originalAttachShadow");
+  });
+
   it("rejects sensitive callbacks that read security-relevant DOM state through mutable ambient APIs", () => {
     for (const entry of callbackInventory.filter((item) => item.sensitiveDomAuthority)) {
       const source = extractInventorySource(entry);

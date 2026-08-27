@@ -1227,10 +1227,24 @@ function collectPageObservation(
     return false;
   }
 
+  function shadowRootAuthorityUnavailable(): boolean {
+    const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
+      readonly validateShadowRootAuthority?: () => { readonly status: "ok" | "failed"; readonly reason?: string };
+    } | undefined;
+    const validate = registry?.validateShadowRootAuthority;
+    if (typeof validate !== "function") return true;
+    try {
+      return validate().status !== "ok";
+    } catch {
+      return true;
+    }
+  }
+
   function shadowRootOverflow(): boolean {
     const registry = (window as unknown as Record<string, unknown>)[input.sensitiveShadowRootsProperty] as {
       readonly shadowRootOverflow?: unknown;
     } | undefined;
+    if (shadowRootAuthorityUnavailable()) return true;
     if (registry?.shadowRootOverflow === true) return true;
     shadowRoots();
     return registry?.shadowRootOverflow === true;

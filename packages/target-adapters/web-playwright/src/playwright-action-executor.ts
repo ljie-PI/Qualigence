@@ -818,6 +818,9 @@ async function beginPageSensitiveActionEpoch(
       state.poisoned = true;
       return { status: "failed" };
     }
+    if (shadowRootAuthorityUnavailable()) {
+      return { status: "failed" };
+    }
 
     const forms = reflectedCandidateForms(element, input.kind, input.sourceValue);
     const baseline = baselineSensitiveForms(element.ownerDocument, forms);
@@ -1833,10 +1836,29 @@ async function beginPageSensitiveActionEpoch(
       return arrayHasString(weakMapGet(epochToUpdate.shadowBaseline, node) ?? [], value);
     }
 
+    function shadowRootAuthorityUnavailable(): boolean {
+      const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
+        readonly validateShadowRootAuthority?: () => { readonly status: "ok" | "failed"; readonly reason?: string };
+      } | undefined;
+      const validate = registry?.validateShadowRootAuthority;
+      if (typeof validate !== "function") {
+        state.poisoned = true;
+        return true;
+      }
+      try {
+        if (validate().status === "ok") return false;
+      } catch {
+        // Fall through to the fail-closed state below.
+      }
+      state.poisoned = true;
+      return true;
+    }
+
     function shadowRootOverflow(): boolean {
       const registry = (win as unknown as Record<string, unknown>)[input.runtimeRegistryProperty] as {
         readonly shadowRootOverflow?: unknown;
       } | undefined;
+      if (shadowRootAuthorityUnavailable()) return true;
       if (registry?.shadowRootOverflow === true) return true;
       shadowRoots();
       return registry?.shadowRootOverflow === true;

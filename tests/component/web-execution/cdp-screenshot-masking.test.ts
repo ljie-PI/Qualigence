@@ -605,6 +605,74 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when page code restores/replaces attachShadow before reflecting valueRef plaintext into a closed root", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+    expect(Buffer.concat(session.artifactsFor(firstGraph.graphId).map((artifact) => Buffer.from(artifact.bytes))).toString("utf8"))
+      .not.toContain(SECRET);
+
+    let originalAttachShadowWasExposed = true;
+    await session.withPage(async (page) => {
+      originalAttachShadowWasExposed = await page.evaluate((secret) => {
+        type ShadowRuntimeRegistry = {
+          readonly originalAttachShadow?: unknown;
+        };
+        type MutableElement = HTMLElement & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          attachShadow(init: { readonly mode: "open" | "closed" }): { append(node: unknown): void };
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly Object: typeof Object;
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+          readonly Element: { readonly prototype: { attachShadow(this: Element, init: { readonly mode: "open" | "closed" }): unknown } };
+          readonly Reflect: typeof Reflect;
+          readonly __qualigenceSensitiveShadowRoots?: ShadowRuntimeRegistry;
+        };
+        const exposedOriginal = host.__qualigenceSensitiveShadowRoots?.originalAttachShadow;
+        const wrapper = host.Element.prototype.attachShadow;
+        try {
+          host.Element.prototype.attachShadow = function replacement(this: Element, init: { readonly mode: "open" | "closed" }): unknown {
+            return host.Reflect.apply(wrapper, this, [init]);
+          };
+        } catch {
+          // A non-configurable attachShadow authority is also acceptable; capture
+          // must still fail closed once sensitive plaintext is rendered below.
+        }
+        const reflected = host.document.createElement("div");
+        reflected.id = "closed-shadow-plaintext-reflection";
+        reflected.setAttribute("data-qualigence-observe", "true");
+        host.Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "260px",
+          minHeight: "28px",
+          background: "white",
+          color: "blue",
+        });
+        const root = reflected.attachShadow({ mode: "closed" });
+        const text = host.document.createElement("span");
+        text.textContent = secret;
+        root.append(text);
+        host.document.body.append(reflected);
+        return exposedOriginal !== undefined;
+      }, SECRET);
+    });
+    expect(originalAttachShadowWasExposed).toBe(false);
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when a page reuses a retired same-record marker on a new unmasked visible valueRef element", async () => {
     const observer = await enterSecret();
     const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
