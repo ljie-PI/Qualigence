@@ -767,7 +767,7 @@ mod windows_host {
             pid: u32,
             selector: &AppWindowSelector,
         ) -> Option<String> {
-            for _ in 0..20 {
+            for _ in 0..200 {
                 if let Some(hwnd) = root_window_handle_for_pid(pid, selector) {
                     return Some(format!("0x{:X}", hwnd as usize));
                 }

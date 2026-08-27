@@ -294,7 +294,8 @@ fn run_daemon() {
                                 _ => ScriptedApprover::always(ApprovalOutcome::TimedOut),
                             };
                         let approval = ApprovalState::new(run_id.to_string(), approver);
-                        let permits = PermitStore::new(clock, 30_000);
+                        let permit_ttl_ms = test_permit_ttl_ms();
+                        let permits = PermitStore::new(clock, permit_ttl_ms);
                         Arc::new(Mutex::new(Companion::new(
                             session_id.to_string(),
                             approval,
@@ -369,6 +370,11 @@ fn run_daemon() {
             let event = match processor.process_next_request(&mut connection) {
                 Ok(event) => event,
                 Err(error) => {
+                    action_threads.retain(|handle| !handle.is_finished());
+                    if !action_threads.is_empty() {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
                     let _ = response_writer.write_error(
                         "unknown",
                         "companion.probe",
@@ -1038,6 +1044,44 @@ fn run_daemon() {
                     frame_limits,
                 ),
             },
+            "permit.expire-session" => {
+                let Some(session_id) = payload.session_id.as_deref() else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "CompanionProtocolViolation",
+                        "SessionNotFound",
+                        frame_limits,
+                    );
+                };
+                let Some(companion) = state.companions.get(session_id) else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "ApplicationError",
+                        "SessionNotFound",
+                        frame_limits,
+                    );
+                };
+                match companion.lock() {
+                    Ok(mut companion) => {
+                        companion.expire_permits_for_diagnostic();
+                        response_writer.write_ok(
+                            request_id,
+                            "diagnostics.test",
+                            serde_json::json!({"status": "permits_expired"}),
+                            frame_limits,
+                        )
+                    }
+                    Err(_) => response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "ApplicationError",
+                        "CompanionUnavailable",
+                        frame_limits,
+                    ),
+                }
+            }
             "worker.block-next-action" => match state.supervisor.lock() {
                 Ok(mut supervisor) => {
                     supervisor.block_next_action_until_cancelled_for_diagnostic();
@@ -1131,6 +1175,17 @@ fn run_daemon() {
         std::env::var("QUALIGENCE_COMPANION_TEST_DIAGNOSTICS")
             .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
+    }
+
+    fn test_permit_ttl_ms() -> u64 {
+        if !test_diagnostics_enabled() {
+            return 30_000;
+        }
+        std::env::var("QUALIGENCE_COMPANION_TEST_PERMIT_TTL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(30_000)
     }
 
     fn target_deadlines_are_valid(target: &AppTarget) -> bool {

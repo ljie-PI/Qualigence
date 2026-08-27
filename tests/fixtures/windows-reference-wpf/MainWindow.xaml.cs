@@ -57,9 +57,9 @@ public partial class MainWindow : Window
     {
         foreach (var item in RoleCombo.Items)
         {
-            if (item is ComboBoxItem comboBoxItem && string.Equals(comboBoxItem.Content?.ToString(), role, StringComparison.Ordinal))
+            if (item is ListBoxItem listBoxItem && string.Equals(listBoxItem.Content?.ToString(), role, StringComparison.Ordinal))
             {
-                RoleCombo.SelectedItem = comboBoxItem;
+                RoleCombo.SelectedItem = listBoxItem;
                 return;
             }
         }
@@ -68,7 +68,7 @@ public partial class MainWindow : Window
     private void OnSubmit(object sender, RoutedEventArgs e)
     {
         // Normal-risk state change: append the typed username and selected role to the results.
-        var role = (RoleCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? RoleCombo.Text;
+        var role = (RoleCombo.SelectedItem as ListBoxItem)?.Content?.ToString() ?? string.Empty;
         ResultsList.Items.Add($"submitted:{UsernameEdit.Text}:{role}");
     }
 

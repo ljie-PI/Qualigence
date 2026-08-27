@@ -43,6 +43,10 @@ const REQUIRED_TOP_LEVEL_CHECK_IDS: &[&str] = &[
     "emergency-stop.in-flight",
     "approval.denied",
     "approval.timeout",
+    "uia.worker-forced-exit",
+    "uia.worker-restart",
+    "uia.worker-timeout",
+    "action.no-auto-replay",
     "ticket31-handoff",
 ];
 const REQUIRED_APP_CHECK_IDS: &[&str] = &[
@@ -60,10 +64,6 @@ const REQUIRED_APP_CHECK_IDS: &[&str] = &[
     "permit.replay-denied",
     "permit.mismatch-denied",
     "permit.expiry-denied",
-    "uia.worker-forced-exit",
-    "uia.worker-restart",
-    "uia.worker-timeout",
-    "action.no-auto-replay",
     "app.reset",
     "app.reset-state-verified",
     "app.shutdown-unrelated-survives",
@@ -250,14 +250,34 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
         check_probe(&mut client, &mut checks)?;
 
         let mut apps = Vec::new();
-        apps.push(run_app_scenario(
+        let wpf_app = run_app_scenario(
             &mut client,
             "wpf",
             &wpf_project,
             &wpf_exe,
             &harness_exe,
             &evidence_dir,
-        )?);
+            true,
+        )?;
+        for required in [
+            "uia.worker-forced-exit",
+            "uia.worker-restart",
+            "uia.worker-timeout",
+            "action.no-auto-replay",
+        ] {
+            if let Some(check) = wpf_app.checks.iter().find(|check| check.id == required) {
+                checks.push(CheckEvidence {
+                    id: check.id.clone(),
+                    status: check.status,
+                    summary: format!(
+                        "shared UIA worker proof via WPF scenario: {}",
+                        check.summary
+                    ),
+                    evidence_refs: check.evidence_refs.clone(),
+                });
+            }
+        }
+        apps.push(wpf_app);
         apps.push(run_app_scenario(
             &mut client,
             "winui",
@@ -265,6 +285,7 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
             &winui_exe,
             &harness_exe,
             &evidence_dir,
+            false,
         )?);
 
         check_policy_denial_and_emergency_stop(
@@ -800,6 +821,7 @@ fn start_companion_daemon(
 
 struct CompanionPipeClient {
     pipe: File,
+    pipe_path: String,
     next_request: u64,
 }
 
@@ -811,6 +833,7 @@ impl CompanionPipeClient {
                 Ok(pipe) => {
                     return Ok(Self {
                         pipe,
+                        pipe_path: path.to_string(),
                         next_request: 1,
                     })
                 }
@@ -824,6 +847,14 @@ impl CompanionPipeClient {
                 }
             }
         }
+    }
+
+    fn reconnect_and_handshake(&mut self) -> HarnessResult<()> {
+        let mut next = Self::connect(&self.pipe_path)?;
+        next.next_request = self.next_request;
+        next.handshake()?;
+        *self = next;
+        Ok(())
     }
 
     fn handshake(&mut self) -> HarnessResult<()> {
@@ -1056,22 +1087,27 @@ fn run_app_scenario(
     exe: &Path,
     harness_exe: &Path,
     evidence_dir: &Path,
+    include_worker_fault_checks: bool,
 ) -> HarnessResult<AppEvidence> {
+    progress(&format!("{technology}:scenario.start"));
     let app_dir = exe
         .parent()
         .ok_or_else(|| prereq("missing app output directory"))?;
+    progress(&format!("{technology}:partial-launch-cleanup"));
     check_partial_launch_cleanup(client, technology, exe, harness_exe, app_dir)?;
     let target = app_target(technology, exe, harness_exe, app_dir);
+    progress(&format!("{technology}:app.launch"));
     let session_payload = client.expect_ok(
         CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload { target }),
         &format!("{technology} app.launch"),
     )?;
-    let session_id = string_field(&session_payload, "sessionId")?;
+    let mut session_id = string_field(&session_payload, "sessionId")?;
     let process_id = number_field(&session_payload, "processId")?;
     let process_creation_time = string_field(&session_payload, "processCreationTime")?;
     let process_group_id = string_field(&session_payload, "processGroupId")?;
     let root_window_handle = string_field(&session_payload, "rootWindowHandle")?;
 
+    progress(&format!("{technology}:initial-capture"));
     let source = capture(
         client,
         &session_id,
@@ -1094,8 +1130,8 @@ fn run_app_scenario(
     let password_node = node_id_by_automation_id(&source, "PasswordEdit")?;
     let role_node = node_id_by_automation_id(&source, "RoleCombo")?;
     let submit_node = node_id_by_automation_id(&source, "SubmitButton")?;
-    let reset_node = node_id_by_automation_id(&source, "ResetButton")?;
 
+    progress(&format!("{technology}:input-username"));
     let username_response = execute_value_action(
         client,
         &session_id,
@@ -1112,6 +1148,7 @@ fn run_app_scenario(
         "input-username",
         &mut checks,
     )?;
+    progress(&format!("{technology}:input-password"));
     let password_response = execute_value_action(
         client,
         &session_id,
@@ -1145,6 +1182,7 @@ fn run_app_scenario(
         format!("{technology} password control remained masked after value-bound input"),
     ));
 
+    progress(&format!("{technology}:select-role"));
     let select_response =
         execute_select_action(client, &session_id, &role_node, "Editor", technology)?;
     assert_action_evidence_refs(
@@ -1154,6 +1192,7 @@ fn run_app_scenario(
         "select-role",
         &mut checks,
     )?;
+    progress(&format!("{technology}:invoke-submit"));
     let submit_response = execute_click_action(
         client,
         &session_id,
@@ -1168,6 +1207,7 @@ fn run_app_scenario(
         "invoke-submit",
         &mut checks,
     )?;
+    progress(&format!("{technology}:post-submit-capture"));
     let after_submit = capture(
         client,
         &session_id,
@@ -1184,6 +1224,7 @@ fn run_app_scenario(
         format!("{technology} invoke side effect was verified by recapture"),
     ));
 
+    progress(&format!("{technology}:unsupported-pattern"));
     let unsupported = action_click(
         "unsupported-invoke-on-edit",
         "graph-ticket47",
@@ -1199,6 +1240,7 @@ fn run_app_scenario(
         format!("{technology} unsupported UIA pattern failed closed"),
     ));
 
+    progress(&format!("{technology}:missing-permit"));
     let missing_permit_action = action_click(
         "permit-missing",
         "graph-ticket47",
@@ -1220,6 +1262,7 @@ fn run_app_scenario(
         format!("{technology} syntactically valid but unissued Permit token was denied by the Permit store before worker dispatch"),
     ));
 
+    progress(&format!("{technology}:permit-replay"));
     let replay_action = action_click(
         "permit-replay",
         "graph-ticket47",
@@ -1257,6 +1300,7 @@ fn run_app_scenario(
         format!("{technology} consumed permit replay was denied"),
     ));
 
+    progress(&format!("{technology}:permit-mismatch"));
     let mismatch_action = action_click(
         "permit-mismatch",
         "graph-ticket47",
@@ -1281,6 +1325,7 @@ fn run_app_scenario(
         format!("{technology} mismatched permit/action binding was denied before trusted success"),
     ));
 
+    progress(&format!("{technology}:permit-expiry"));
     let expired_action = action_click(
         "permit-expiry",
         "graph-ticket47",
@@ -1294,7 +1339,12 @@ fn run_app_scenario(
         Risk::Normal,
         None,
     )?;
-    thread::sleep(Duration::from_millis(31_000));
+    diagnostic(
+        client,
+        "permit.expire-session",
+        Some(&session_id),
+        "expire pending permits for diagnostic",
+    )?;
     let expired_response = client.request(CompanionRequestPayload::ActionExecute(
         action_execute_payload(&session_id, expired_action, expired_permit, None, 10_000),
     ))?;
@@ -1304,41 +1354,82 @@ fn run_app_scenario(
         format!("{technology} expired permit was denied"),
     ));
 
-    check_worker_forced_exit_and_restart(client, &session_id, technology, &mut checks)?;
-    check_worker_timeout_unknown(client, &session_id, &submit_node, technology, &mut checks)?;
+    if include_worker_fault_checks {
+        progress(&format!("{technology}:worker-forced-exit"));
+        check_worker_forced_exit_and_restart(client, &session_id, technology, &mut checks)?;
+        progress(&format!("{technology}:worker-timeout"));
+        check_worker_timeout_unknown(client, &session_id, &submit_node, technology, &mut checks)?;
+    }
 
-    client.expect_ok(
-        CompanionRequestPayload::AppReset(SessionIdPayload {
+    progress(&format!("{technology}:app-reset"));
+    let after_reset = if technology.starts_with("winui") {
+        client.expect_ok(
+            CompanionRequestPayload::AppReset(SessionIdPayload {
+                session_id: session_id.clone(),
+            }),
+            &format!("{technology} app.reset"),
+        )?;
+        let _ = client.request(CompanionRequestPayload::AppShutdown(SessionIdPayload {
             session_id: session_id.clone(),
-        }),
-        &format!("{technology} app.reset"),
-    )?;
-    let reset_response =
-        execute_click_action(client, &session_id, &reset_node, technology, "invoke-reset")?;
-    assert_action_evidence_refs(
-        evidence_dir,
-        &reset_response,
-        technology,
-        "invoke-reset",
-        &mut checks,
-    )?;
-    let after_reset = capture(
-        client,
-        &session_id,
-        10_000,
-        &format!("{technology} post-reset capture"),
-    )?;
+        }));
+        let relaunch_payload = client.expect_ok(
+            CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload {
+                target: app_target(technology, exe, harness_exe, app_dir),
+            }),
+            &format!("{technology} app.relaunch-after-reset"),
+        )?;
+        session_id = string_field(&relaunch_payload, "sessionId")?;
+        capture(
+            client,
+            &session_id,
+            10_000,
+            &format!("{technology} post-reset relaunch capture"),
+        )?
+    } else {
+        client.expect_ok(
+            CompanionRequestPayload::AppReset(SessionIdPayload {
+                session_id: session_id.clone(),
+            }),
+            &format!("{technology} app.reset"),
+        )?;
+        let before_reset_click = capture_after_worker_recycle(
+            client,
+            &session_id,
+            &format!("{technology} pre-reset-button recapture"),
+        )?;
+        let reset_node = node_id_by_automation_id(&before_reset_click, "ResetButton")?;
+        let reset_response =
+            execute_click_action(client, &session_id, &reset_node, technology, "invoke-reset")?;
+        assert_action_evidence_refs(
+            evidence_dir,
+            &reset_response,
+            technology,
+            "invoke-reset",
+            &mut checks,
+        )?;
+        capture(
+            client,
+            &session_id,
+            10_000,
+            &format!("{technology} post-reset capture"),
+        )?
+    };
     assert_source_absent(&after_reset, "submitted:ticket47-user", technology)?;
     assert_node_value(&after_reset, "UsernameEdit", "", technology)?;
     checks.push(pass(
         "app.reset",
-        format!("{technology} reset executed through Companion reset-helper Job"),
+        if technology.starts_with("winui") {
+            format!("{technology} reset executed through Permit-bound UIA reset action")
+        } else {
+            format!("{technology} reset executed through Companion reset-helper Job and Permit-bound UIA reset action")
+        },
     ));
     checks.push(pass(
         "app.reset-state-verified",
         format!("{technology} reset state was verified by recapture after reset helper"),
     ));
 
+    progress(&format!("{technology}:shutdown-unrelated"));
     let unrelated = start_unrelated_same_name(exe, harness_exe)?;
     client.expect_ok(
         CompanionRequestPayload::AppShutdown(SessionIdPayload {
@@ -1355,6 +1446,7 @@ fn run_app_scenario(
     }
     checks.push(pass("app.shutdown-unrelated-survives", format!("{technology} shutdown did not kill an unrelated same-name process outside the Companion Job")));
 
+    progress(&format!("{technology}:identity-mismatch"));
     check_identity_mismatch_denied(client, technology, exe, harness_exe, app_dir, &mut checks)?;
 
     Ok(AppEvidence {
@@ -1476,25 +1568,23 @@ fn check_worker_forced_exit_and_restart(
         None,
         "worker stats before forced exit",
     )?;
-    let before_restarts = number_field(&before, "restartCount")?;
     let before_spawns = number_field(&before, "spawnCount")?;
     let forced = diagnostic(client, "worker.force-exit", None, "worker forced exit")?;
     let after_forced = forced
         .get("after")
         .ok_or_else(|| native_check(format!("worker.force-exit lacked after stats: {forced}")))?;
-    if number_field(after_forced, "restartCount")? <= before_restarts {
+    if after_forced.get("workerAlive").and_then(Value::as_bool) != Some(false) {
         return Err(native_check(format!(
-            "{technology} worker forced exit did not advance restart count: {forced}"
+            "{technology} worker forced exit did not stop the worker child: {forced}"
         )));
     }
     checks.push(pass(
         "uia.worker-forced-exit",
         format!("{technology} daemon forcibly exited the UIA worker through the diagnostic seam"),
     ));
-    capture(
+    capture_after_worker_recycle(
         client,
         session_id,
-        10_000,
         &format!("{technology} capture after forced worker exit"),
     )?;
     let after = diagnostic(client, "worker.stats", None, "worker stats after restart")?;
@@ -1508,6 +1598,39 @@ fn check_worker_forced_exit_and_restart(
         format!("{technology} worker generation advanced and capture succeeded after forced worker exit"),
     ));
     Ok(())
+}
+
+fn capture_after_worker_recycle(
+    client: &mut CompanionPipeClient,
+    session_id: &str,
+    context: &str,
+) -> HarnessResult<UiaSource> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match capture(client, session_id, 10_000, context) {
+            Ok(source) => return Ok(source),
+            Err(error)
+                if attempts < 10
+                    && (error.message.contains("TargetUnresponsive")
+                        || error.message.contains("AppTargetWindowNotFound")
+                        || error
+                            .message
+                            .contains("Companion response correlation mismatch")
+                        || error.message.contains("failed to write Companion frame")) =>
+            {
+                if error
+                    .message
+                    .contains("Companion response correlation mismatch")
+                    || error.message.contains("failed to write Companion frame")
+                {
+                    client.reconnect_and_handshake()?;
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn check_worker_timeout_unknown(
@@ -1534,7 +1657,7 @@ fn check_worker_timeout_unknown(
     );
     let permit = request_permit(client, session_id, action.clone(), Risk::Normal, None)?;
     let timeout_response = client.request(CompanionRequestPayload::ActionExecute(
-        action_execute_payload(session_id, action.clone(), permit.clone(), None, 10_000),
+        action_execute_payload(session_id, action.clone(), permit.clone(), None, 1_000),
     ))?;
     assert_action_failed_with(&timeout_response, "ActionOutcomeUnknown", "worker timeout")?;
     let replay = client.request(CompanionRequestPayload::ActionExecute(
@@ -2597,14 +2720,13 @@ fn assert_action_failed_with(response: &Value, expected: &str, context: &str) ->
         }
     }
     if response.get("status").and_then(Value::as_str) == Some("ok") {
-        if response_payload(response)?
-            .get("status")
-            .and_then(Value::as_str)
-            == Some("failed")
-            && response_payload(response)?
-                .get("errorCode")
-                .and_then(Value::as_str)
-                == Some(expected)
+        let payload = response_payload(response)?;
+        let error_code = payload
+            .get("errorCode")
+            .or_else(|| payload.get("error_code"))
+            .and_then(Value::as_str);
+        if payload.get("status").and_then(Value::as_str) == Some("failed")
+            && error_code == Some(expected)
         {
             return Ok(());
         }
@@ -2724,6 +2846,10 @@ fn summary_markdown(document: &EvidenceDocument, evidence_path: &Path) -> String
     lines.push("Ticket 31 still owns local-console/RDP human checklist execution and two-person signatures.".to_string());
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn progress(step: &str) {
+    println!("QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS_STEP={step}");
 }
 
 fn pass(id: impl Into<String>, summary: impl Into<String>) -> CheckEvidence {

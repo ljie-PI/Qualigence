@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Title = "Reference App";
         LoadInitialState();
     }
 
@@ -56,9 +57,9 @@ public sealed partial class MainWindow : Window
     {
         foreach (var item in RoleCombo.Items)
         {
-            if (item is ComboBoxItem comboBoxItem && string.Equals(comboBoxItem.Content?.ToString(), role, StringComparison.Ordinal))
+            if (item is ListViewItem listViewItem && string.Equals(listViewItem.Content?.ToString(), role, StringComparison.Ordinal))
             {
-                RoleCombo.SelectedItem = comboBoxItem;
+                RoleCombo.SelectedItem = listViewItem;
                 return;
             }
         }
@@ -66,7 +67,7 @@ public sealed partial class MainWindow : Window
 
     private void OnSubmit(object sender, RoutedEventArgs e)
     {
-        var role = (RoleCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? string.Empty;
+        var role = (RoleCombo.SelectedItem as ListViewItem)?.Content?.ToString() ?? string.Empty;
         ResultsList.Items.Add($"submitted:{UsernameEdit.Text}:{role}");
     }
 
