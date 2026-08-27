@@ -1202,10 +1202,34 @@ fn run_app_scenario(
     )?;
     validate_reference_capture(technology, &source, &mut checks)?;
 
-    let username_node = node_id_by_automation_id(&source, "UsernameEdit")?;
-    let password_node = node_id_by_automation_id(&source, "PasswordEdit")?;
-    let role_node = node_id_by_automation_id(&source, "RoleCombo")?;
-    let submit_node = node_id_by_automation_id(&source, "SubmitButton")?;
+    let mut username_node = node_id_by_automation_id(&source, "UsernameEdit")?;
+    let mut password_node = node_id_by_automation_id(&source, "PasswordEdit")?;
+    let mut role_node = node_id_by_automation_id(&source, "RoleCombo")?;
+    let mut submit_node = node_id_by_automation_id(&source, "SubmitButton")?;
+
+    if include_worker_fault_checks {
+        progress(&format!("{technology}:worker-forced-exit"));
+        let after_worker_restart =
+            check_worker_forced_exit_and_restart(client, &session_id, technology, &mut checks)?;
+        let worker_submit_node = node_id_by_automation_id(&after_worker_restart, "SubmitButton")?;
+        progress(&format!("{technology}:worker-timeout"));
+        check_worker_timeout_unknown(
+            client,
+            &session_id,
+            &worker_submit_node,
+            technology,
+            &mut checks,
+        )?;
+        let after_worker_faults = capture_after_worker_recycle(
+            client,
+            &session_id,
+            &format!("{technology} capture after worker fault checks"),
+        )?;
+        username_node = node_id_by_automation_id(&after_worker_faults, "UsernameEdit")?;
+        password_node = node_id_by_automation_id(&after_worker_faults, "PasswordEdit")?;
+        role_node = node_id_by_automation_id(&after_worker_faults, "RoleCombo")?;
+        submit_node = node_id_by_automation_id(&after_worker_faults, "SubmitButton")?;
+    }
 
     progress(&format!("{technology}:input-username"));
     let username_response = execute_value_action(
@@ -1430,28 +1454,6 @@ fn run_app_scenario(
         format!("{technology} expired permit was denied"),
     ));
 
-    if include_worker_fault_checks {
-        progress(&format!("{technology}:worker-forced-exit"));
-        let after_worker_restart = check_worker_forced_exit_and_restart(
-            client,
-            &mut session_id,
-            technology,
-            exe,
-            harness_exe,
-            app_dir,
-            &mut checks,
-        )?;
-        let worker_submit_node = node_id_by_automation_id(&after_worker_restart, "SubmitButton")?;
-        progress(&format!("{technology}:worker-timeout"));
-        check_worker_timeout_unknown(
-            client,
-            &session_id,
-            &worker_submit_node,
-            technology,
-            &mut checks,
-        )?;
-    }
-
     progress(&format!("{technology}:app-reset"));
     let after_reset = if technology.starts_with("winui") {
         client.expect_ok(
@@ -1653,11 +1655,8 @@ fn validate_lifecycle_evidence(technology: &str, evidence: &Value) -> HarnessRes
 
 fn check_worker_forced_exit_and_restart(
     client: &mut CompanionPipeClient,
-    session_id: &mut String,
+    session_id: &str,
     technology: &str,
-    exe: &Path,
-    harness_exe: &Path,
-    app_dir: &Path,
     checks: &mut Vec<CheckEvidence>,
 ) -> HarnessResult<UiaSource> {
     let before = diagnostic(
@@ -1680,29 +1679,11 @@ fn check_worker_forced_exit_and_restart(
         "uia.worker-forced-exit",
         format!("{technology} daemon forcibly exited the UIA worker through the diagnostic seam"),
     ));
-    let restarted_source = if technology.starts_with("winui") {
-        let _ = client.request(CompanionRequestPayload::AppShutdown(SessionIdPayload {
-            session_id: session_id.clone(),
-        }));
-        let payload = client.expect_ok(
-            CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload {
-                target: app_target(technology, exe, harness_exe, app_dir),
-            }),
-            &format!("{technology} app.relaunch-after-worker-forced-exit"),
-        )?;
-        *session_id = string_field(&payload, "sessionId")?;
-        capture_after_worker_recycle(
-            client,
-            session_id,
-            &format!("{technology} capture after forced worker exit relaunch"),
-        )?
-    } else {
-        capture_after_worker_recycle(
-            client,
-            session_id,
-            &format!("{technology} capture after forced worker exit"),
-        )?
-    };
+    let restarted_source = capture_after_worker_recycle(
+        client,
+        session_id,
+        &format!("{technology} capture after forced worker exit"),
+    )?;
     let after = diagnostic(client, "worker.stats", None, "worker stats after restart")?;
     if number_field(&after, "spawnCount")? <= before_spawns {
         return Err(native_check(format!(
@@ -1711,11 +1692,7 @@ fn check_worker_forced_exit_and_restart(
     }
     checks.push(pass(
         "uia.worker-restart",
-        if technology.starts_with("winui") {
-            format!("{technology} worker generation advanced and a relaunched WinUI app captured successfully after forced worker exit")
-        } else {
-            format!("{technology} worker generation advanced and capture succeeded after forced worker exit")
-        },
+        format!("{technology} worker generation advanced and same-session capture succeeded after forced worker exit"),
     ));
     Ok(restarted_source)
 }
