@@ -26,6 +26,10 @@ import {
 import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures.js";
 import { observationGraphV1 } from "../../helpers/observation-graph-v1.js";
 
+function isPromiseOwnerValidation(functionValue: unknown): boolean {
+  return typeof functionValue === "function" && functionValue.name === "validateSensitivePromiseOwnerRegistryInPage";
+}
+
 function allowedPermit(): ExecutionPermit {
   return ExecutionPermit.fromAllowedDecision({
     status: "allowed",
@@ -1000,12 +1004,14 @@ describe("Playwright resolve + execute against real Chromium", () => {
   it("blocks a delayed cross-origin redirect before the next observation can escape", async () => {
     const crossOriginContent = "private cross-origin account data";
     let currentUrl = fixture.url;
-    const evaluate = vi.fn(async () => ({
-      candidates: currentUrl === fixture.url
-        ? [{ role: "button", name: "Continue" }]
-        : [{ role: "button", name: crossOriginContent }],
-      viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
-    }));
+    const evaluate = vi.fn(async (functionValue: unknown) => isPromiseOwnerValidation(functionValue)
+      ? { status: "ok" }
+      : {
+        candidates: currentUrl === fixture.url
+          ? [{ role: "button", name: "Continue" }]
+          : [{ role: "button", name: crossOriginContent }],
+        viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+      });
     const title = vi.fn(async () => currentUrl === fixture.url ? "Safe page" : crossOriginContent);
     const screenshot = vi.fn(async () => new TextEncoder().encode(
       currentUrl === fixture.url ? "safe screenshot" : crossOriginContent,
@@ -1077,7 +1083,7 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(result).toMatchObject({ status: "blocked", errorCode: "OriginViolation" });
     expect(clickEffect).toHaveBeenCalledOnce();
     expect(modelContexts).toHaveLength(1);
-    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(evaluate).toHaveBeenCalledTimes(5);
     expect(title).toHaveBeenCalledTimes(1);
     expect(screenshot).toHaveBeenCalledTimes(1);
     expect(trace.filter((event) => event.stage === "observation")).toHaveLength(1);
@@ -1100,10 +1106,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
     session = new PlaywrightBrowserSession(options(), { launch: vi.fn() } as unknown as BrowserLauncher);
     session.withPage = async (operation) => operation({
       url: () => currentUrl,
-      evaluate: async () => ({
-        candidates: [{ role: "button", name: "Continue" }],
-        viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
-      }),
+      evaluate: async (functionValue: unknown) => isPromiseOwnerValidation(functionValue)
+        ? { status: "ok" }
+        : {
+          candidates: [{ role: "button", name: "Continue" }],
+          viewport: { width: 1280, height: 720, devicePixelRatio: 1 },
+        },
       title: async () => "Safe page",
       screenshot: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
       getByRole: () => ({

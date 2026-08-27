@@ -10,6 +10,10 @@ import {
   SENSITIVE_EVIDENCE_STATE_PROPERTY,
   SENSITIVE_SHADOW_ROOTS_PROPERTY,
   type PreparedSensitiveEvidenceRecord,
+  type SensitiveEvidenceMaskRefreshRequest,
+  type SensitiveEvidencePageStateSnapshot,
+  type SensitiveEvidenceScanRecord,
+  type SensitiveMaskSnapshotEntry,
 } from "./sensitive-evidence-authority.js";
 
 export type WebTargetErrorCode =
@@ -82,15 +86,25 @@ function validateSensitivePromiseOwnerRegistryInPage(input: {
   readonly runtimeRegistryProperty: string;
   readonly maxPromiseOwners: number;
 }): { readonly status: "ok" | "failed"; readonly reason?: string } {
-  type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
+  type RuntimeAuthorityValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
   type RuntimeRegistry = {
-    readonly validatePromiseOwners?: (maxPromiseOwners: number) => PromiseOwnerValidationResult;
+    readonly validatePromiseOwners?: (maxPromiseOwners: number) => RuntimeAuthorityValidationResult;
+    readonly validateShadowRootAuthority?: () => RuntimeAuthorityValidationResult;
     promiseOwnerValidationFailed?: boolean;
+    shadowRootAuthorityFailed?: boolean;
   };
   const registry = (globalThis as unknown as Record<string, RuntimeRegistry | undefined>)[input.runtimeRegistryProperty];
   if (registry === undefined) return { status: "ok" };
+  const validateShadowRootAuthority = registry.validateShadowRootAuthority;
+  if (typeof validateShadowRootAuthority !== "function") return fail(registry, "missing-shadow-root-validator", "shadow");
+  try {
+    const shadowResult = validateShadowRootAuthority();
+    if (shadowResult.status !== "ok") return fail(registry, shadowResult.reason ?? "shadow-root-authority-failed", "shadow");
+  } catch {
+    return fail(registry, "shadow-root-inspection-threw", "shadow");
+  }
   const validatePromiseOwners = registry.validatePromiseOwners;
-  if (typeof validatePromiseOwners !== "function") return fail(registry, "missing-validator");
+  if (typeof validatePromiseOwners !== "function") return fail(registry, "missing-validator", "promise");
   try {
     const result = validatePromiseOwners(input.maxPromiseOwners);
     if (result.status !== "ok") {
@@ -103,12 +117,20 @@ function validateSensitivePromiseOwnerRegistryInPage(input: {
     }
     return result;
   } catch {
-    return fail(registry, "inspection-threw");
+    return fail(registry, "inspection-threw", "promise");
   }
 
-  function fail(target: RuntimeRegistry, reason: string): { readonly status: "failed"; readonly reason: string } {
+  function fail(
+    target: RuntimeRegistry,
+    reason: string,
+    authority: "promise" | "shadow",
+  ): { readonly status: "failed"; readonly reason: string } {
     try {
-      target.promiseOwnerValidationFailed = true;
+      if (authority === "shadow") {
+        target.shadowRootAuthorityFailed = true;
+      } else {
+        target.promiseOwnerValidationFailed = true;
+      }
     } catch {
       // Best effort only: validation must fail closed even if page-visible debug
       // fields are immutable or accessor-backed.
@@ -159,15 +181,75 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly resolvedMethodOwners: Readonly<Record<PromiseMethodName, ResolvedMethodOwnerSnapshot>>;
     };
     type PromiseOwnerValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
+    type NativeDomAuthority = {
+      readonly arrayFrom: typeof Array.from;
+      readonly arrayIsArray: typeof Array.isArray;
+      readonly htmlCollectionItem: (index: number) => Element | null;
+      readonly htmlCollectionLengthGet: (() => number) | undefined;
+      readonly htmlOptionsCollectionItem: (index: number) => HTMLOptionElement | null;
+      readonly htmlOptionsCollectionLengthGet: (() => number) | undefined;
+      readonly nodeListItem: (index: number) => Node | null;
+      readonly nodeListLengthGet: (() => number) | undefined;
+      readonly objectDefineProperty: typeof Object.defineProperty;
+      readonly reflectApply: typeof Reflect.apply;
+      readonly stringIncludes: typeof String.prototype.includes;
+      readonly stringNormalize: typeof String.prototype.normalize;
+      readonly stringReplace: typeof String.prototype.replace;
+      readonly stringToLowerCase: typeof String.prototype.toLowerCase;
+      readonly stringTrim: typeof String.prototype.trim;
+      readonly weakMap: WeakMapConstructor;
+      readonly weakMapGet: typeof WeakMap.prototype.get;
+      readonly weakMapSet: typeof WeakMap.prototype.set;
+      readonly cssStyleDeclarationGetPropertyValue: typeof CSSStyleDeclaration.prototype.getPropertyValue;
+      readonly documentGetElementById: typeof Document.prototype.getElementById;
+      readonly documentQuerySelector: typeof Document.prototype.querySelector;
+      readonly documentQuerySelectorAll: typeof Document.prototype.querySelectorAll;
+      readonly documentTitleGet: (() => string) | undefined;
+      readonly documentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll;
+      readonly elementClosest: typeof Element.prototype.closest;
+      readonly elementGetAttribute: typeof Element.prototype.getAttribute;
+      readonly elementGetClientRects: typeof Element.prototype.getClientRects;
+      readonly elementHasAttribute: typeof Element.prototype.hasAttribute;
+      readonly elementQuerySelectorAll: typeof Element.prototype.querySelectorAll;
+      readonly elementRemoveAttribute: typeof Element.prototype.removeAttribute;
+      readonly elementSetAttribute: typeof Element.prototype.setAttribute;
+      readonly elementShadowRootGet: (() => ShadowRoot | null) | undefined;
+      readonly elementTagNameGet: (() => string) | undefined;
+      readonly htmlElementHiddenGet: (() => boolean) | undefined;
+      readonly htmlInputElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlInputElementValueGet: (() => string) | undefined;
+      readonly htmlOptionElementLabelGet: (() => string) | undefined;
+      readonly htmlOptionElementTextGet: (() => string) | undefined;
+      readonly htmlOptionElementValueGet: (() => string) | undefined;
+      readonly htmlSelectElementOptionsGet: (() => HTMLOptionsCollection) | undefined;
+      readonly htmlSelectElementSelectedOptionsGet: (() => HTMLCollectionOf<HTMLOptionElement>) | undefined;
+      readonly htmlSelectElementValueGet: (() => string) | undefined;
+      readonly htmlTextAreaElementPlaceholderGet: (() => string) | undefined;
+      readonly htmlTextAreaElementValueGet: (() => string) | undefined;
+      readonly nodeChildNodesGet: (() => NodeListOf<ChildNode>) | undefined;
+      readonly nodeContains: typeof Node.prototype.contains;
+      readonly nodeGetRootNode: typeof Node.prototype.getRootNode;
+      readonly nodeParentElementGet: (() => HTMLElement | null) | undefined;
+      readonly nodeTextContentGet: (() => string | null) | undefined;
+      readonly characterDataDataGet: (() => string) | undefined;
+      readonly shadowRootHostGet: (() => Element) | undefined;
+      readonly shadowRootModeGet: (() => ShadowRootMode) | undefined;
+      readonly windowGetComputedStyle: typeof window.getComputedStyle;
+    };
     type SensitiveRuntimeRegistry = {
-      readonly roots: ShadowRoot[];
+      readonly roots: readonly ShadowRoot[];
       readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
+      readonly nativeDom?: NativeDomAuthority;
       readonly promiseOwners?: readonly PromiseOwnerRecord[];
       shadowRootOverflow: boolean;
       readonly promiseOwnerOverflow?: boolean;
       readonly promiseOwnerValidationFailed?: boolean;
       readonly validatePromiseOwners?: (maxPromiseOwners: number) => PromiseOwnerValidationResult;
-      readonly originalAttachShadow: typeof Element.prototype.attachShadow;
+      readonly retainSensitiveSchedulerEpoch?: (epoch: SensitiveSchedulerEpoch) => void;
+      readonly sensitiveSchedulerRegistrationCount?: (epoch: SensitiveSchedulerEpoch) => number;
+      readonly sensitiveSchedulerRetirementStatus?: () => "retired" | "pending" | "unavailable";
+      readonly validateShadowRootAuthority?: () => PromiseOwnerValidationResult;
+      readonly shadowRootAuthorityFailed?: boolean;
       readonly originalAddEventListener: typeof EventTarget.prototype.addEventListener;
       readonly originalSetTimeout: typeof window.setTimeout;
       readonly originalSetInterval: typeof window.setInterval;
@@ -190,6 +272,13 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       inSchedulerCallback?: boolean;
       poisoned?: boolean;
       processSchedulerCallback?: () => void;
+    };
+    type SensitiveSchedulerEpochAuthority = {
+      schedulerRegistrations: number;
+      pendingSchedulerCallbacks: number;
+      retainedSchedulerCallbacks: number;
+      inSchedulerCallback: boolean;
+      poisoned: boolean;
     };
     type SensitiveRuntimeState = {
       active?: SensitiveSchedulerEpoch | null;
@@ -221,14 +310,121 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeObjectDefineProperty: typeof Object.defineProperty = Object.defineProperty;
     const nativeObjectFreeze: typeof Object.freeze = Object.freeze;
     const nativeObjectGetOwnPropertyDescriptor: typeof Object.getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+    const nativeNodeListItem: (index: number) => Node | null = NodeList.prototype.item;
+    const nativeNodeListLengthGet = nativeObjectGetOwnPropertyDescriptor(NodeList.prototype, "length")?.get;
+    const nativeHTMLCollectionItem: (index: number) => Element | null = HTMLCollection.prototype.item;
+    const nativeHTMLCollectionLengthGet = nativeObjectGetOwnPropertyDescriptor(HTMLCollection.prototype, "length")?.get;
+    const nativeHTMLOptionsCollectionItem: (index: number) => HTMLOptionElement | null = HTMLOptionsCollection.prototype.item ?? HTMLCollection.prototype.item;
+    const nativeHTMLOptionsCollectionLengthGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionsCollection.prototype, "length")?.get ?? nativeHTMLCollectionLengthGet;
     const nativeObjectGetPrototypeOf: typeof Object.getPrototypeOf = Object.getPrototypeOf;
     const nativeObjectSetPrototypeOf: typeof Object.setPrototypeOf = Object.setPrototypeOf;
     const nativeObjectPrototypeHasOwnProperty: typeof Object.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
     const nativeReflectApply: typeof Reflect.apply = Reflect.apply;
     const nativeReflectDefineProperty: typeof Reflect.defineProperty = Reflect.defineProperty;
+    const nativeReflectGet: typeof Reflect.get = Reflect.get;
+    const nativeStringPrototypeIncludes: typeof String.prototype.includes = String.prototype.includes;
+    const nativeStringPrototypeNormalize: typeof String.prototype.normalize = String.prototype.normalize;
+    const nativeStringPrototypeReplace: typeof String.prototype.replace = String.prototype.replace;
+    const nativeStringPrototypeToLowerCase: typeof String.prototype.toLowerCase = String.prototype.toLowerCase;
+    const nativeStringPrototypeTrim: typeof String.prototype.trim = String.prototype.trim;
     const nativeReflectDeleteProperty: typeof Reflect.deleteProperty = Reflect.deleteProperty;
     const nativeReflectSet: typeof Reflect.set = Reflect.set;
     const nativeReflectSetPrototypeOf: typeof Reflect.setPrototypeOf = Reflect.setPrototypeOf;
+    const NativeWeakMap: WeakMapConstructor = WeakMap;
+    const nativeWeakMapPrototypeGet: typeof WeakMap.prototype.get = WeakMap.prototype.get;
+    const nativeWeakMapPrototypeSet: typeof WeakMap.prototype.set = WeakMap.prototype.set;
+    const nativeCssStyleDeclarationGetPropertyValue: typeof CSSStyleDeclaration.prototype.getPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
+    const nativeDocumentGetElementById: typeof Document.prototype.getElementById = Document.prototype.getElementById;
+    const nativeDocumentQuerySelector: typeof Document.prototype.querySelector = Document.prototype.querySelector;
+    const nativeDocumentQuerySelectorAll: typeof Document.prototype.querySelectorAll = Document.prototype.querySelectorAll;
+    const nativeDocumentTitleGet = nativeObjectGetOwnPropertyDescriptor(Document.prototype, "title")?.get;
+    const nativeDocumentFragmentQuerySelectorAll: typeof DocumentFragment.prototype.querySelectorAll = DocumentFragment.prototype.querySelectorAll;
+    const nativeElementAttachShadow: typeof Element.prototype.attachShadow = Element.prototype.attachShadow;
+    const nativeElementClosest: typeof Element.prototype.closest = Element.prototype.closest;
+    const nativeElementGetAttribute: typeof Element.prototype.getAttribute = Element.prototype.getAttribute;
+    const nativeElementGetClientRects: typeof Element.prototype.getClientRects = Element.prototype.getClientRects;
+    const nativeElementHasAttribute: typeof Element.prototype.hasAttribute = Element.prototype.hasAttribute;
+    const nativeElementQuerySelectorAll: typeof Element.prototype.querySelectorAll = Element.prototype.querySelectorAll;
+    const nativeElementRemoveAttribute: typeof Element.prototype.removeAttribute = Element.prototype.removeAttribute;
+    const nativeElementSetAttribute: typeof Element.prototype.setAttribute = Element.prototype.setAttribute;
+    const nativeElementShadowRootGet = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "shadowRoot")?.get;
+    const nativeElementTagNameGet = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "tagName")?.get;
+    const nativeHTMLElementHiddenGet = nativeObjectGetOwnPropertyDescriptor(HTMLElement.prototype, "hidden")?.get;
+    const nativeHTMLInputElementPlaceholderGet = nativeObjectGetOwnPropertyDescriptor(HTMLInputElement.prototype, "placeholder")?.get;
+    const nativeHTMLInputElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.get;
+    const nativeHTMLOptionElementLabelGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "label")?.get;
+    const nativeHTMLOptionElementTextGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "text")?.get;
+    const nativeHTMLOptionElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionElement.prototype, "value")?.get;
+    const nativeHTMLSelectElementOptionsGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "options")?.get;
+    const nativeHTMLSelectElementSelectedOptionsGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedOptions")?.get;
+    const nativeHTMLSelectElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.get;
+    const nativeHTMLTextAreaElementPlaceholderGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "placeholder")?.get;
+    const nativeHTMLTextAreaElementValueGet = nativeObjectGetOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.get;
+    const nativeNodeChildNodesGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "childNodes")?.get;
+    const nativeNodeContains: typeof Node.prototype.contains = Node.prototype.contains;
+    const nativeNodeGetRootNode: typeof Node.prototype.getRootNode = Node.prototype.getRootNode;
+    const nativeNodeParentElementGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "parentElement")?.get;
+    const nativeNodeTextContentGet = nativeObjectGetOwnPropertyDescriptor(Node.prototype, "textContent")?.get;
+    const nativeCharacterDataDataGet = nativeObjectGetOwnPropertyDescriptor(CharacterData.prototype, "data")?.get;
+    const nativeShadowRootHostGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "host")?.get;
+    const nativeShadowRootModeGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "mode")?.get;
+    const nativeWindowGetComputedStyle: typeof window.getComputedStyle = window.getComputedStyle;
+    const NativeProxy: ProxyConstructor = Proxy;
+    const nativeDomAuthority = nativeObjectFreeze({
+      arrayFrom: Array.from,
+      arrayIsArray: Array.isArray,
+      htmlCollectionItem: nativeHTMLCollectionItem,
+      htmlCollectionLengthGet: nativeHTMLCollectionLengthGet,
+      htmlOptionsCollectionItem: nativeHTMLOptionsCollectionItem,
+      htmlOptionsCollectionLengthGet: nativeHTMLOptionsCollectionLengthGet,
+      nodeListItem: nativeNodeListItem,
+      nodeListLengthGet: nativeNodeListLengthGet,
+      objectDefineProperty: nativeObjectDefineProperty,
+      reflectApply: nativeReflectApply,
+      stringIncludes: nativeStringPrototypeIncludes,
+      stringNormalize: nativeStringPrototypeNormalize,
+      stringReplace: nativeStringPrototypeReplace,
+      stringToLowerCase: nativeStringPrototypeToLowerCase,
+      stringTrim: nativeStringPrototypeTrim,
+      weakMap: NativeWeakMap,
+      weakMapGet: nativeWeakMapPrototypeGet,
+      weakMapSet: nativeWeakMapPrototypeSet,
+      cssStyleDeclarationGetPropertyValue: nativeCssStyleDeclarationGetPropertyValue,
+      documentGetElementById: nativeDocumentGetElementById,
+      documentQuerySelector: nativeDocumentQuerySelector,
+      documentQuerySelectorAll: nativeDocumentQuerySelectorAll,
+      documentTitleGet: nativeDocumentTitleGet,
+      documentFragmentQuerySelectorAll: nativeDocumentFragmentQuerySelectorAll,
+      elementClosest: nativeElementClosest,
+      elementGetAttribute: nativeElementGetAttribute,
+      elementGetClientRects: nativeElementGetClientRects,
+      elementHasAttribute: nativeElementHasAttribute,
+      elementQuerySelectorAll: nativeElementQuerySelectorAll,
+      elementRemoveAttribute: nativeElementRemoveAttribute,
+      elementSetAttribute: nativeElementSetAttribute,
+      elementShadowRootGet: nativeElementShadowRootGet,
+      elementTagNameGet: nativeElementTagNameGet,
+      htmlElementHiddenGet: nativeHTMLElementHiddenGet,
+      htmlInputElementPlaceholderGet: nativeHTMLInputElementPlaceholderGet,
+      htmlInputElementValueGet: nativeHTMLInputElementValueGet,
+      htmlOptionElementLabelGet: nativeHTMLOptionElementLabelGet,
+      htmlOptionElementTextGet: nativeHTMLOptionElementTextGet,
+      htmlOptionElementValueGet: nativeHTMLOptionElementValueGet,
+      htmlSelectElementOptionsGet: nativeHTMLSelectElementOptionsGet,
+      htmlSelectElementSelectedOptionsGet: nativeHTMLSelectElementSelectedOptionsGet,
+      htmlSelectElementValueGet: nativeHTMLSelectElementValueGet,
+      htmlTextAreaElementPlaceholderGet: nativeHTMLTextAreaElementPlaceholderGet,
+      htmlTextAreaElementValueGet: nativeHTMLTextAreaElementValueGet,
+      nodeChildNodesGet: nativeNodeChildNodesGet,
+      nodeContains: nativeNodeContains,
+      nodeGetRootNode: nativeNodeGetRootNode,
+      nodeParentElementGet: nativeNodeParentElementGet,
+      nodeTextContentGet: nativeNodeTextContentGet,
+      characterDataDataGet: nativeCharacterDataDataGet,
+      shadowRootHostGet: nativeShadowRootHostGet,
+      shadowRootModeGet: nativeShadowRootModeGet,
+      windowGetComputedStyle: nativeWindowGetComputedStyle,
+    });
     const intrinsicAuthorityFailed = [
       nativeArrayIsArray,
       nativeArrayPrototypeFind,
@@ -237,6 +433,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeArrayPrototypePush,
       nativeArrayPrototypeSlice,
       nativeArrayPrototypeSplice,
+      nativeNodeListItem,
+      nativeNodeListLengthGet,
+      nativeHTMLCollectionItem,
+      nativeHTMLCollectionLengthGet,
+      nativeHTMLOptionsCollectionItem,
+      nativeHTMLOptionsCollectionLengthGet,
       NativeSet,
       nativeSetPrototypeAdd,
       nativeSetPrototypeHas,
@@ -250,21 +452,88 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeObjectPrototypeHasOwnProperty,
       nativeReflectApply,
       nativeReflectDefineProperty,
+      nativeReflectGet,
+      nativeStringPrototypeIncludes,
+      nativeStringPrototypeNormalize,
+      nativeStringPrototypeReplace,
+      nativeStringPrototypeToLowerCase,
+      nativeStringPrototypeTrim,
       nativeReflectDeleteProperty,
       nativeReflectSet,
       nativeReflectSetPrototypeOf,
+      NativeWeakMap,
+      nativeWeakMapPrototypeGet,
+      nativeWeakMapPrototypeSet,
+      nativeCssStyleDeclarationGetPropertyValue,
+      nativeDocumentGetElementById,
+      nativeDocumentQuerySelector,
+      nativeDocumentQuerySelectorAll,
+      nativeDocumentFragmentQuerySelectorAll,
+      nativeElementClosest,
+      nativeElementGetAttribute,
+      nativeElementGetClientRects,
+      nativeElementHasAttribute,
+      nativeElementQuerySelectorAll,
+      nativeElementRemoveAttribute,
+      nativeElementSetAttribute,
+      nativeElementAttachShadow,
+      nativeNodeGetRootNode,
+      nativeWindowGetComputedStyle,
+      NativeProxy,
+      nativeDomAuthority.arrayFrom,
+      nativeDomAuthority.arrayIsArray,
+      nativeDomAuthority.htmlCollectionItem,
+      nativeDomAuthority.htmlCollectionLengthGet,
+      nativeDomAuthority.htmlOptionsCollectionItem,
+      nativeDomAuthority.htmlOptionsCollectionLengthGet,
+      nativeDomAuthority.nodeListItem,
+      nativeDomAuthority.nodeListLengthGet,
+      nativeDomAuthority.objectDefineProperty,
+      nativeDomAuthority.reflectApply,
+      nativeDomAuthority.stringIncludes,
+      nativeDomAuthority.stringNormalize,
+      nativeDomAuthority.stringReplace,
+      nativeDomAuthority.stringToLowerCase,
+      nativeDomAuthority.stringTrim,
+      nativeDomAuthority.weakMap,
+      nativeDomAuthority.weakMapGet,
+      nativeDomAuthority.weakMapSet,
+      nativeDomAuthority.cssStyleDeclarationGetPropertyValue,
+      nativeDomAuthority.documentTitleGet,
+      nativeDomAuthority.elementShadowRootGet,
+      nativeDomAuthority.elementTagNameGet,
+      nativeDomAuthority.htmlElementHiddenGet,
+      nativeDomAuthority.htmlInputElementPlaceholderGet,
+      nativeDomAuthority.htmlInputElementValueGet,
+      nativeDomAuthority.htmlOptionElementLabelGet,
+      nativeDomAuthority.htmlOptionElementTextGet,
+      nativeDomAuthority.htmlOptionElementValueGet,
+      nativeDomAuthority.htmlSelectElementOptionsGet,
+      nativeDomAuthority.htmlSelectElementSelectedOptionsGet,
+      nativeDomAuthority.htmlSelectElementValueGet,
+      nativeDomAuthority.htmlTextAreaElementPlaceholderGet,
+      nativeDomAuthority.htmlTextAreaElementValueGet,
+      nativeDomAuthority.nodeChildNodesGet,
+      nativeDomAuthority.nodeContains,
+      nativeDomAuthority.nodeParentElementGet,
+      nativeDomAuthority.nodeTextContentGet,
+      nativeDomAuthority.characterDataDataGet,
+      nativeDomAuthority.shadowRootHostGet,
+      nativeDomAuthority.shadowRootModeGet,
     ].some((fn) => typeof fn !== "function");
     const win = window as unknown as Record<string, SensitiveRuntimeRegistry | undefined>;
     if (win[input.shadowRootsProperty] !== undefined) return;
     const notifySensitiveEvidenceMutation = (window as unknown as Record<string, unknown>)[input.mutationNotificationFunction];
     const promiseOwnerRecords: PromiseOwnerRecord[] = [];
+    const schedulerEpochAuthority = new NativeWeakMap<SensitiveSchedulerEpoch, SensitiveSchedulerEpochAuthority>();
+    const retainedSensitiveSchedulerEpochs: SensitiveSchedulerEpoch[] = [];
+    const trackedShadowRoots: ShadowRoot[] = [];
+    let shadowRootOverflow = false;
     let promiseOwnerOverflow = false;
     let promiseOwnerValidationFailed = intrinsicAuthorityFailed;
-    const registry: SensitiveRuntimeRegistry = {
-      roots: [],
+    let shadowRootAuthorityFailed = intrinsicAuthorityFailed;
+    const registry = {
       listenerTargets: [],
-      shadowRootOverflow: false,
-      originalAttachShadow: Element.prototype.attachShadow,
       originalAddEventListener: EventTarget.prototype.addEventListener,
       originalSetTimeout: window.setTimeout,
       originalSetInterval: window.setInterval,
@@ -273,8 +542,20 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       originalPromiseThen: Promise.prototype.then,
       originalPromiseCatch: Promise.prototype.catch,
       originalPromiseFinally: Promise.prototype.finally,
-    };
+    } as unknown as SensitiveRuntimeRegistry;
     nativeObjectDefineProperties(registry, {
+      roots: {
+        configurable: false,
+        enumerable: false,
+        get: shadowRootSnapshot,
+        set: replaceShadowRootSnapshot,
+      },
+      shadowRootOverflow: {
+        configurable: false,
+        enumerable: false,
+        get: () => shadowRootOverflow,
+        set: setShadowRootOverflow,
+      },
       promiseOwners: {
         configurable: false,
         enumerable: false,
@@ -290,11 +571,46 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
         enumerable: false,
         get: () => promiseOwnerValidationFailed,
       },
+      nativeDom: {
+        configurable: false,
+        enumerable: false,
+        value: nativeDomAuthority,
+        writable: false,
+      },
       validatePromiseOwners: {
         configurable: false,
         enumerable: false,
         value: validatePromiseOwnerRecords,
         writable: false,
+      },
+      retainSensitiveSchedulerEpoch: {
+        configurable: false,
+        enumerable: false,
+        value: retainSensitiveSchedulerEpoch,
+        writable: false,
+      },
+      sensitiveSchedulerRegistrationCount: {
+        configurable: false,
+        enumerable: false,
+        value: sensitiveSchedulerRegistrationCount,
+        writable: false,
+      },
+      sensitiveSchedulerRetirementStatus: {
+        configurable: false,
+        enumerable: false,
+        value: sensitiveSchedulerRetirementStatus,
+        writable: false,
+      },
+      validateShadowRootAuthority: {
+        configurable: false,
+        enumerable: false,
+        value: validateShadowRootAuthority,
+        writable: false,
+      },
+      shadowRootAuthorityFailed: {
+        configurable: false,
+        enumerable: false,
+        get: () => shadowRootAuthorityFailed,
       },
     });
     nativeObjectDefineProperty(win, input.shadowRootsProperty, {
@@ -303,25 +619,30 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       value: registry,
       writable: false,
     });
-    Element.prototype.attachShadow = function attachShadow(init: ShadowRootInit): ShadowRoot {
-      const root = nativeReflectApply(registry.originalAttachShadow, this, [init]) as ShadowRoot;
+    const trackedAttachShadow = function attachShadow(this: Element, init: ShadowRootInit): ShadowRoot {
+      const root = nativeReflectApply(nativeElementAttachShadow, this, [init]) as ShadowRoot;
       const state = sensitiveState();
       const active = state === undefined ? undefined : currentSensitiveEpoch(state);
       if (init.mode === "closed" && state !== undefined && active !== undefined) {
         poison(state, active);
       }
-      if (!arrayIncludes(registry.roots, root)) {
-        if (registry.roots.length >= input.maxShadowRoots) {
-          registry.shadowRootOverflow = true;
-          if (state !== undefined && active !== undefined) {
-            poison(state, active);
-          }
-          return root;
-        }
-        arrayPush(registry.roots, root);
-      }
+      registerShadowRoot(root, state, active);
       return root;
     };
+    const attachShadowGetter = function attachShadow(): typeof Element.prototype.attachShadow {
+      return trackedAttachShadow;
+    };
+    const attachShadowSetter = function attachShadow(_value: unknown): void {
+      latchShadowRootAuthorityFailure();
+    };
+    if (!nativeReflectDefineProperty(Element.prototype, "attachShadow", {
+      configurable: false,
+      enumerable: false,
+      get: attachShadowGetter,
+      set: attachShadowSetter,
+    })) {
+      latchShadowRootAuthorityFailure();
+    }
     EventTarget.prototype.addEventListener = function addEventListener(
       type: string,
       listener: EventListenerOrEventListenerObject | null,
@@ -710,6 +1031,116 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
 
     function sensitiveState(): SensitiveRuntimeState | undefined {
       return (window as unknown as Record<string, SensitiveRuntimeState | undefined>)[input.evidenceStateProperty];
+    }
+
+    function latchShadowRootAuthorityFailure(): void {
+      shadowRootAuthorityFailed = true;
+      const state = sensitiveState();
+      const active = state === undefined ? undefined : currentSensitiveEpoch(state);
+      if (state !== undefined) state.poisoned = true;
+      if (state !== undefined && active !== undefined) poison(state, active);
+    }
+
+    function registerShadowRoot(
+      root: ShadowRoot,
+      state: SensitiveRuntimeState | undefined,
+      active: SensitiveSchedulerEpoch | undefined,
+    ): void {
+      if (arrayIncludes(trackedShadowRoots, root)) return;
+      if (trackedShadowRoots.length >= input.maxShadowRoots) {
+        shadowRootOverflow = true;
+        if (state !== undefined) state.poisoned = true;
+        if (state !== undefined && active !== undefined) poison(state, active);
+        return;
+      }
+      arrayPush(trackedShadowRoots, root);
+    }
+
+    function shadowRootSnapshot(): readonly ShadowRoot[] {
+      const snapshot: ShadowRoot[] = [];
+      for (let index = 0; index < trackedShadowRoots.length; index += 1) {
+        snapshot[index] = trackedShadowRoots[index]!;
+      }
+      return new NativeProxy(snapshot, shadowRootSnapshotHandler);
+    }
+
+    function replaceShadowRootSnapshot(_value: unknown): void {
+      latchShadowRootAuthorityFailure();
+    }
+
+    function setShadowRootOverflow(_value: unknown): void {
+      shadowRootOverflow = true;
+      latchShadowRootAuthorityFailure();
+    }
+
+    function shadowRootSnapshotMutationAttempt(): unknown {
+      latchShadowRootAuthorityFailure();
+      return undefined;
+    }
+
+    function isShadowRootSnapshotMutator(property: string | symbol): boolean {
+      return property === "copyWithin" ||
+        property === "fill" ||
+        property === "pop" ||
+        property === "push" ||
+        property === "reverse" ||
+        property === "shift" ||
+        property === "sort" ||
+        property === "splice" ||
+        property === "unshift";
+    }
+
+    const shadowRootSnapshotHandler: ProxyHandler<ShadowRoot[]> = nativeObjectFreeze({
+      get(target: ShadowRoot[], property: string | symbol, receiver: unknown): unknown {
+        if (isShadowRootSnapshotMutator(property)) return shadowRootSnapshotMutationAttempt;
+        return nativeReflectGet(target, property, receiver);
+      },
+      set(): boolean {
+        latchShadowRootAuthorityFailure();
+        return true;
+      },
+      defineProperty(_target: ShadowRoot[], property: string | symbol): boolean {
+        latchShadowRootAuthorityFailure();
+        return property !== "length";
+      },
+      deleteProperty(_target: ShadowRoot[], property: string | symbol): boolean {
+        latchShadowRootAuthorityFailure();
+        return property !== "length";
+      },
+      setPrototypeOf(): boolean {
+        latchShadowRootAuthorityFailure();
+        return false;
+      },
+      preventExtensions(): boolean {
+        latchShadowRootAuthorityFailure();
+        return false;
+      },
+    });
+
+    function validateShadowRootAuthority(): PromiseOwnerValidationResult {
+      const descriptor = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "attachShadow");
+      const rootsDescriptor = nativeObjectGetOwnPropertyDescriptor(registry, "roots");
+      const overflowDescriptor = nativeObjectGetOwnPropertyDescriptor(registry, "shadowRootOverflow");
+      if (
+        shadowRootAuthorityFailed ||
+        shadowRootOverflow ||
+        descriptor === undefined ||
+        descriptor.configurable !== false ||
+        descriptor.get !== attachShadowGetter ||
+        descriptor.set !== attachShadowSetter ||
+        rootsDescriptor === undefined ||
+        rootsDescriptor.configurable !== false ||
+        rootsDescriptor.get !== shadowRootSnapshot ||
+        rootsDescriptor.set !== replaceShadowRootSnapshot ||
+        overflowDescriptor === undefined ||
+        overflowDescriptor.configurable !== false ||
+        overflowDescriptor.get === undefined ||
+        overflowDescriptor.set !== setShadowRootOverflow
+      ) {
+        latchShadowRootAuthorityFailure();
+        return { status: "failed", reason: "shadow-root-authority-mutated" };
+      }
+      return { status: "ok" };
     }
 
     function registerPromiseMethodAuthority(
@@ -1124,15 +1555,60 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       }
     }
 
+    function schedulerAuthority(epoch: SensitiveSchedulerEpoch): SensitiveSchedulerEpochAuthority {
+      const existing = nativeReflectApply(nativeWeakMapPrototypeGet as (...args: unknown[]) => SensitiveSchedulerEpochAuthority | undefined, schedulerEpochAuthority, [epoch]) as SensitiveSchedulerEpochAuthority | undefined;
+      if (existing !== undefined) return existing;
+      const created: SensitiveSchedulerEpochAuthority = {
+        schedulerRegistrations: typeof epoch.schedulerRegistrations === "number" ? epoch.schedulerRegistrations : 0,
+        pendingSchedulerCallbacks: typeof epoch.pendingSchedulerCallbacks === "number" ? epoch.pendingSchedulerCallbacks : 0,
+        retainedSchedulerCallbacks: typeof epoch.retainedSchedulerCallbacks === "number" ? epoch.retainedSchedulerCallbacks : 0,
+        inSchedulerCallback: epoch.inSchedulerCallback === true,
+        poisoned: epoch.poisoned === true,
+      };
+      nativeReflectApply(nativeWeakMapPrototypeSet as (...args: unknown[]) => WeakMap<SensitiveSchedulerEpoch, SensitiveSchedulerEpochAuthority>, schedulerEpochAuthority, [epoch, created]);
+      return created;
+    }
+
+    function mirrorSchedulerAuthority(epoch: SensitiveSchedulerEpoch, authority: SensitiveSchedulerEpochAuthority): void {
+      epoch.schedulerRegistrations = authority.schedulerRegistrations;
+      epoch.pendingSchedulerCallbacks = authority.pendingSchedulerCallbacks;
+      epoch.retainedSchedulerCallbacks = authority.retainedSchedulerCallbacks;
+      epoch.inSchedulerCallback = authority.inSchedulerCallback;
+      epoch.poisoned = authority.poisoned;
+    }
+
+    function retainSensitiveSchedulerEpoch(epoch: SensitiveSchedulerEpoch): void {
+      schedulerAuthority(epoch);
+      if (!arrayIncludes(retainedSensitiveSchedulerEpochs, epoch)) {
+        arrayPush(retainedSensitiveSchedulerEpochs, epoch);
+      }
+    }
+
+    function sensitiveSchedulerRegistrationCount(epoch: SensitiveSchedulerEpoch): number {
+      return schedulerAuthority(epoch).schedulerRegistrations;
+    }
+
+    function sensitiveSchedulerRetirementStatus(): "retired" | "pending" | "unavailable" {
+      for (let index = 0; index < retainedSensitiveSchedulerEpochs.length; index += 1) {
+        const epoch = retainedSensitiveSchedulerEpochs[index]!;
+        const authority = schedulerAuthority(epoch);
+        if (authority.poisoned || epoch.poisoned === true) return "unavailable";
+        if (authority.pendingSchedulerCallbacks > 0) return "pending";
+      }
+      return "retired";
+    }
+
     function countSensitiveSchedulerRegistration(): SensitiveSchedulerEpoch | undefined {
       const state = sensitiveState();
       if (state === undefined) return undefined;
       const epoch = currentSensitiveEpoch(state);
       if (epoch === undefined) return undefined;
+      const authority = schedulerAuthority(epoch);
       state.schedulerSessionRegistrations = (state.schedulerSessionRegistrations ?? 0) + 1;
-      epoch.schedulerRegistrations = (epoch.schedulerRegistrations ?? 0) + 1;
+      authority.schedulerRegistrations += 1;
+      mirrorSchedulerAuthority(epoch, authority);
       if (
-        epoch.schedulerRegistrations > input.maxSchedulerRegistrationsPerEpoch ||
+        authority.schedulerRegistrations > input.maxSchedulerRegistrationsPerEpoch ||
         state.schedulerSessionRegistrations > input.maxSchedulerRegistrationsPerSession
       ) {
         poison(state, epoch);
@@ -1189,7 +1665,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     }
 
     function beginPendingSchedulerCallback(epoch: SensitiveSchedulerEpoch, settles: boolean, retainObjectResult: boolean): PendingSchedulerCallback {
-      epoch.pendingSchedulerCallbacks = (epoch.pendingSchedulerCallbacks ?? 0) + 1;
+      const authority = schedulerAuthority(epoch);
+      authority.pendingSchedulerCallbacks += 1;
+      mirrorSchedulerAuthority(epoch, authority);
       return { settled: false, settles, retainObjectResult, retainedAfterReturn: false };
     }
 
@@ -1201,8 +1679,10 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       return function sensitiveSchedulerCallback(this: unknown): unknown {
         "use strict";
         const args = nativeReflectApply(nativeArrayPrototypeSlice, arguments, []) as any[];
-        const previous = epoch.inSchedulerCallback === true;
-        epoch.inSchedulerCallback = true;
+        const authority = schedulerAuthority(epoch);
+        const previous = authority.inSchedulerCallback;
+        authority.inSchedulerCallback = true;
+        mirrorSchedulerAuthority(epoch, authority);
         let callbackResult: unknown;
         let callbackCompleted = false;
         try {
@@ -1210,11 +1690,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
           callbackCompleted = true;
           return callbackResult;
         } finally {
-          epoch.inSchedulerCallback = previous;
+          authority.inSchedulerCallback = previous;
           if (callbackCompleted && pending.retainObjectResult && isObjectLike(callbackResult)) {
             pending.retainedAfterReturn = true;
-            epoch.retainedSchedulerCallbacks = (epoch.retainedSchedulerCallbacks ?? 0) + 1;
+            authority.retainedSchedulerCallbacks += 1;
           }
+          mirrorSchedulerAuthority(epoch, authority);
           processSchedulerCallbackEpoch(epoch);
           queuePendingSchedulerSettle(epoch, pending);
         }
@@ -1252,11 +1733,13 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     function settlePendingSchedulerCallback(epoch: SensitiveSchedulerEpoch | undefined, pending: PendingSchedulerCallback): void {
       if (epoch === undefined || !pending.settles || pending.settled) return;
       pending.settled = true;
+      const authority = schedulerAuthority(epoch);
       if (pending.retainedAfterReturn) {
-        epoch.retainedSchedulerCallbacks = Math.max(0, (epoch.retainedSchedulerCallbacks ?? 0) - 1);
+        authority.retainedSchedulerCallbacks = Math.max(0, authority.retainedSchedulerCallbacks - 1);
         pending.retainedAfterReturn = false;
       }
-      epoch.pendingSchedulerCallbacks = Math.max(0, (epoch.pendingSchedulerCallbacks ?? 0) - 1);
+      authority.pendingSchedulerCallbacks = Math.max(0, authority.pendingSchedulerCallbacks - 1);
+      mirrorSchedulerAuthority(epoch, authority);
     }
 
     function isObjectLike(value: unknown): value is object {
@@ -1271,13 +1754,18 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
 
     function currentSensitiveEpoch(state: SensitiveRuntimeState): SensitiveSchedulerEpoch | undefined {
       const active = state.active;
-      return active !== undefined && active !== null
-        ? active
-        : state.retainedSchedulerEpochs === undefined
-          ? undefined
-          : arrayFind(state.retainedSchedulerEpochs, (candidate) =>
-            candidate.inSchedulerCallback === true || (candidate.retainedSchedulerCallbacks ?? 0) > 0,
-          );
+      if (active !== undefined && active !== null) return active;
+      const retained = arrayFind(retainedSensitiveSchedulerEpochs, (candidate) => {
+        const authority = schedulerAuthority(candidate);
+        return authority.inSchedulerCallback || authority.retainedSchedulerCallbacks > 0;
+      });
+      if (retained !== undefined) return retained;
+      return state.retainedSchedulerEpochs === undefined
+        ? undefined
+        : arrayFind(state.retainedSchedulerEpochs, (candidate) => {
+          const authority = schedulerAuthority(candidate);
+          return authority.inSchedulerCallback || authority.retainedSchedulerCallbacks > 0;
+        });
     }
 
     function processSchedulerCallbackEpoch(epoch: SensitiveSchedulerEpoch): void {
@@ -1291,7 +1779,9 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
 
     function poison(state: SensitiveRuntimeState, epoch: SensitiveSchedulerEpoch): void {
       state.poisoned = true;
-      epoch.poisoned = true;
+      const authority = schedulerAuthority(epoch);
+      authority.poisoned = true;
+      mirrorSchedulerAuthority(epoch, authority);
     }
   }, {
     shadowRootsProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
@@ -1375,6 +1865,7 @@ export class PlaywrightBrowserSession {
   private sensitiveEvidenceUnavailable = false;
   private activeSensitiveDispatch: PreparedSensitiveEvidenceRecord | undefined;
   private pendingSensitiveCapture = false;
+  private readonly pendingSensitiveCaptureMarkers = new Set<string>();
   private readonly configuredTargetUrl: string;
   private readonly configuredExpectedOrigin: string;
 
@@ -1630,20 +2121,24 @@ export class PlaywrightBrowserSession {
   completeSensitiveEvidenceRecord(
     prepared: PreparedSensitiveEvidenceRecord,
     observedForms: readonly string[],
+    maskSnapshot: readonly SensitiveMaskSnapshotEntry[],
   ): void {
     this.assertNavigationGeneration(prepared.navigationGeneration);
-    const result = this.sensitiveEvidence.complete(prepared, observedForms);
+    const result = this.sensitiveEvidence.complete(prepared, observedForms, maskSnapshot);
     this.cancelSensitiveEvidenceDispatch(prepared);
     if (result.status === "failed") {
       this.markSensitiveEvidenceUnavailable();
       return;
     }
     this.pendingSensitiveCapture = true;
+    this.pendingSensitiveCaptureMarkers.clear();
+    this.pendingSensitiveCaptureMarkers.add(prepared.markerId);
   }
 
   markSensitiveEvidenceUnavailable(): void {
     this.activeSensitiveDispatch = undefined;
     this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
     this.sensitiveEvidenceUnavailable = true;
   }
 
@@ -1680,25 +2175,102 @@ export class PlaywrightBrowserSession {
     return this.pendingSensitiveCapture;
   }
 
+  sensitiveMaskSnapshot(): readonly SensitiveMaskSnapshotEntry[] {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.maskSnapshot();
+  }
+
+  sensitiveEvidenceScanRecords(): readonly SensitiveEvidenceScanRecord[] {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.scanRecords();
+  }
+
+  pendingSensitiveMaskRefreshRequests(snapshot: SensitiveEvidencePageStateSnapshot): readonly SensitiveEvidenceMaskRefreshRequest[] {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture) return [];
+    const requests = this.sensitiveEvidence.pendingMaskRefreshRequests(snapshot, [...this.pendingSensitiveCaptureMarkers]);
+    if (requests === undefined) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return requests;
+  }
+
+  refreshPendingSensitiveMaskSnapshot(markerId: string, maskSnapshot: readonly SensitiveMaskSnapshotEntry[]): void {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture || !this.pendingSensitiveCaptureMarkers.has(markerId)) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    if (!this.sensitiveEvidence.refreshPendingMaskSnapshot(markerId, maskSnapshot)) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+  }
+
+  validatePendingSensitivePageState(snapshot: SensitiveEvidencePageStateSnapshot): void {
+    this.assertSensitiveEvidenceAvailable();
+    if (!this.pendingSensitiveCapture) return;
+    if (!this.sensitiveEvidence.validatePendingPageState(snapshot, [...this.pendingSensitiveCaptureMarkers])) {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+  }
+
+  sensitiveMaskIdBelongsToAuthority(maskId: string | undefined): boolean {
+    this.assertSensitiveEvidenceAvailable();
+    return this.sensitiveEvidence.hasSensitiveMaskId(maskId);
+  }
+
   completeSensitiveEvidenceCapture(): void {
     this.assertSensitiveEvidenceAvailable();
     this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
+  }
+
+  private resetSensitiveEvidenceForNavigation(): void {
+    this.sensitiveEvidence.clear();
+    this.sensitiveEvidenceUnavailable = false;
+    this.activeSensitiveDispatch = undefined;
+    this.pendingSensitiveCapture = false;
+    this.pendingSensitiveCaptureMarkers.clear();
   }
 
   redactSensitiveTargetField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
+    sensitiveMaskId?: string,
   ): string {
     this.assertSensitiveEvidenceAvailable();
-    return this.sensitiveEvidence.redactField(sensitiveTargetIds, value);
+    const result = this.sensitiveEvidence.redactField(sensitiveTargetIds, value, sensitiveMaskId);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
+  }
+
+  redactSensitiveAccessibleNameField(
+    sensitiveTargetIds: readonly string[] | undefined,
+    value: string,
+    sensitiveMaskId?: string,
+  ): string {
+    this.assertSensitiveEvidenceAvailable();
+    const result = this.sensitiveEvidence.redactMetadataField(sensitiveTargetIds, value, sensitiveMaskId);
+    if (result.status === "unavailable") {
+      this.markSensitiveEvidenceUnavailable();
+      throw sensitiveEvidenceUnavailable();
+    }
+    return result.value;
   }
 
   redactSensitiveTitleField(
     sensitiveTargetIds: readonly string[] | undefined,
     value: string,
+    sensitiveMaskId?: string,
   ): string {
     this.assertSensitiveEvidenceAvailable();
-    const result = this.sensitiveEvidence.redactFieldWithStatus(sensitiveTargetIds, value);
+    const result = this.sensitiveEvidence.redactMetadataField(sensitiveTargetIds, value, sensitiveMaskId);
     if (result.status === "unavailable") {
       this.markSensitiveEvidenceUnavailable();
       throw sensitiveEvidenceUnavailable();
@@ -1762,6 +2334,7 @@ export class PlaywrightBrowserSession {
         if (frame !== page.mainFrame()) return;
         this.invalidateObservations();
         this.navigationGeneration += 1;
+        this.resetSensitiveEvidenceForNavigation();
         try {
           if (!this.isTargetOrigin(frame.url())) this.crossOriginNavigationCount += 1;
         } catch {
@@ -1959,10 +2532,7 @@ export class PlaywrightBrowserSession {
     if (context) {
       await context.close().catch(record);
     }
-    this.sensitiveEvidence.clear();
-    this.sensitiveEvidenceUnavailable = false;
-    this.activeSensitiveDispatch = undefined;
-    this.pendingSensitiveCapture = false;
+    this.resetSensitiveEvidenceForNavigation();
 
     const browser = this.browser;
     this.browser = undefined;

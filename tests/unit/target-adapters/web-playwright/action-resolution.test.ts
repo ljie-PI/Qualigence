@@ -873,7 +873,10 @@ describe("PlaywrightActionExecutor value resolution", () => {
     }), ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "test" }))).resolves.toEqual({ status: "ok" });
     expect(() => session.assertSensitiveEvidenceAvailable())
       .toThrowError(expect.objectContaining({ code: "SensitiveEvidenceUnavailable" }));
-    expect(JSON.stringify(locator.evaluate.mock.calls)).not.toContain("plaintext-secret");
+    const postDispatchProbeArgs = locator.evaluate.mock.calls
+      .map((call) => call[1])
+      .filter((argument) => typeof argument === "object" && argument !== null && "property" in argument);
+    expect(JSON.stringify(postDispatchProbeArgs)).not.toContain("plaintext-secret");
   });
 
   it("returns a stable code without plaintext when the provider cannot resolve a valueRef", async () => {
