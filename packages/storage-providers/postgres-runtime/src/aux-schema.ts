@@ -97,6 +97,38 @@ export async function markPostgresAuxSchemaCurrent<Database extends object>(
   `.execute(db);
 }
 
+export async function restorePostgresAuxSchemaRuntimePrivileges<Database extends object>(
+  db: AuxSchemaConnection<Database>,
+  roles: { readonly server: string; readonly worker: string },
+): Promise<void> {
+  assertSafeIdentifier(roles.server, "server role");
+  assertSafeIdentifier(roles.worker, "worker role");
+  const serverRole = sql.ref(roles.server);
+  const workerRole = sql.ref(roles.worker);
+  for (const table of AUX_TABLES) {
+    const ref = sql.table(table.name);
+    await sql`alter table ${ref} enable row level security`.execute(db);
+    await sql`alter table ${ref} force row level security`.execute(db);
+    await sql`drop policy if exists tenant_isolation on ${ref}`.execute(db);
+    await sql`
+      create policy tenant_isolation on ${ref}
+        to ${serverRole}
+        using (tenant_id = current_setting('app.tenant_id', true))
+        with check (tenant_id = current_setting('app.tenant_id', true))
+    `.execute(db);
+    await sql`revoke all on table ${ref} from public`.execute(db);
+    await sql`revoke all on table ${ref} from ${serverRole}`.execute(db);
+    await sql`revoke all on table ${ref} from ${workerRole}`.execute(db);
+    await sql`grant select, insert, update, delete on table ${ref} to ${serverRole}`.execute(db);
+  }
+}
+
+function assertSafeIdentifier(value: string, label: string): void {
+  if (!/^[a-z_][a-z0-9_]*$/.test(value)) {
+    malformed(`unsafe ${label}: ${JSON.stringify(value)}`);
+  }
+}
+
 async function assertTable<Database extends object>(
   db: AuxSchemaConnection<Database>,
   table: AuxTableSpec,

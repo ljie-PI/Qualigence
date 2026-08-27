@@ -93,6 +93,7 @@ describe("Admin CLI backup index authority", () => {
         restore,
       },
       allowNonEmptyTarget: true,
+      ensureRuntimeRoles: async () => undefined,
     })).rejects.toMatchObject({ code: "RestoreTargetMismatch" });
     expect(restore).not.toHaveBeenCalled();
   });
@@ -105,6 +106,7 @@ describe("Admin CLI backup index authority", () => {
     await expect(runRestore(config(backupDir), {
       pgTool: { dump: async () => undefined, restore },
       allowNonEmptyTarget: true,
+      ensureRuntimeRoles: async () => undefined,
     })).rejects.toMatchObject({ code: "RestoreSchemaMismatch" });
 
     expect(restore).not.toHaveBeenCalled();
@@ -168,6 +170,7 @@ describe("Admin CLI backup index authority", () => {
     await expect(runRestore(config(backupDir), {
       pgTool: { dump: async () => undefined, restore },
       allowNonEmptyTarget: true,
+      ensureRuntimeRoles: async () => undefined,
       readSchemaVersion: async () => 9,
       putObject,
     })).rejects.toMatchObject({ code: "RestoreSchemaMismatch" });
@@ -192,6 +195,7 @@ describe("Admin CLI backup index authority", () => {
     await expect(runRestore(config(backupDir), {
       pgTool: { dump: async () => undefined, restore },
       allowNonEmptyTarget: true,
+      ensureRuntimeRoles: async () => undefined,
       readSchemaVersion: async () => 8,
       restoreRuntimePrivileges: async () => undefined,
       putObject,

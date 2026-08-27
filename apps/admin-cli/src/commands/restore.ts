@@ -8,7 +8,7 @@ import {
   tenantOwnedTableNames,
   tenantOwnedTableNamesThroughVersion,
 } from "@qualigence/relational-kysely";
-import { readSchemaVersion } from "@qualigence/postgres-runtime";
+import { ensurePostgresRuntimeRoles, readSchemaVersion, restorePostgresRuntimePrivileges } from "@qualigence/postgres-runtime";
 import type { SelfHostedAdminConfig } from "./../config.js";
 import { AdminCliError } from "./../errors.js";
 import type { PgToolRunner } from "./../pg-tools.js";
@@ -39,6 +39,7 @@ export interface RestoreDeps {
   /** Skip the empty-target guard (used only when restoring into a scratch DB). */
   readonly allowNonEmptyTarget?: boolean;
   readonly readSchemaVersion?: typeof readSchemaVersion;
+  readonly ensureRuntimeRoles?: () => Promise<void>;
   readonly restoreRuntimePrivileges?: () => Promise<void>;
   readonly putObject?: (key: string, bytes: Uint8Array) => Promise<void>;
   readonly getObject?: (key: string) => Promise<Uint8Array>;
@@ -106,6 +107,15 @@ export async function runRestore(
       await assertEmptyTarget(config, s3Client, deps.enumerateObjects);
     }
 
+    await (deps.ensureRuntimeRoles ?? (() => ensurePostgresRuntimeRoles({
+      admin: config.postgres.admin,
+      roles: {
+        server: config.postgres.server,
+        worker: config.postgres.worker,
+      },
+      acquireMigrationLock: false,
+    })))();
+
     // 4. Restore the database dump, then re-upload every object's real bytes.
     await deps.pgTool.restore(config.postgres.admin, {
       inFile: join(config.backupDir, BACKUP_DATABASE_DUMP),
@@ -126,7 +136,16 @@ export async function runRestore(
       });
     }
 
-    await (deps.restoreRuntimePrivileges ?? (() => restoreRuntimePrivileges(config)))();
+    await (deps.restoreRuntimePrivileges ?? (() => restorePostgresRuntimePrivileges({
+      admin: config.postgres.admin,
+      roles: {
+        server: config.postgres.server,
+        worker: config.postgres.worker,
+      },
+      acquireMigrationLock: false,
+      tableNames: tenantOwnedTableNamesThroughVersion(restoredSchemaVersion),
+      includeAuxSchema: restoredSchemaVersion === SUPPORTED_SCHEMA_VERSION,
+    })))();
 
     for (const object of index.objects) {
       const bytes = await readFile(join(config.backupDir, BACKUP_OBJECTS_DIR, object.relativePath));
@@ -241,29 +260,6 @@ function abortReason(signal: AbortSignal): string {
   const reason: unknown = signal.reason;
   if (reason instanceof Error) return reason.message;
   return reason === undefined ? "aborted" : String(reason);
-}
-
-async function restoreRuntimePrivileges(config: SelfHostedAdminConfig): Promise<void> {
-  assertIdentifier(config.postgres.server.name, "server role");
-  assertIdentifier(config.postgres.worker.name, "worker role");
-  const client = new Client(config.postgres.admin);
-  await client.connect();
-  try {
-    await client.query(`GRANT USAGE ON SCHEMA public TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
-    await client.query(`GRANT SELECT ON TABLE public.schema_migrations, public.schema_components TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
-    await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${config.postgres.server.name}`);
-    await client.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
-  } finally {
-    await client.end();
-  }
-}
-
-const SIMPLE_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
-
-function assertIdentifier(value: string, label: string): void {
-  if (!SIMPLE_IDENTIFIER.test(value)) {
-    throw new AdminCliError("ConfigInvalid", `unsafe ${label}: ${JSON.stringify(value)}`);
-  }
 }
 
 async function assertTenantIntegrity(

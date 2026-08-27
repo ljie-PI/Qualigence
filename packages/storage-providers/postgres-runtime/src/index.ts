@@ -2,6 +2,8 @@ export {
   createPostgresRuntime,
   migratePostgres,
   provisionPostgres,
+  ensurePostgresRuntimeRoles,
+  restorePostgresRuntimePrivileges,
   readSchemaVersion,
   assertPostgresSchemaCurrent,
   acquirePostgresMigrationLock,
@@ -42,6 +44,7 @@ export { createTenantSchema, createTenantSchemaTables } from "./postgres-schema.
 export {
   assertPostgresAuxSchema,
   markPostgresAuxSchemaCurrent,
+  restorePostgresAuxSchemaRuntimePrivileges,
 } from "./aux-schema.js";
 export { PostgresReviewTaskRepository } from "./postgres-review-task-repository.js";
 export { PostgresRunnerControlStore } from "./postgres-runner-control-store.js";

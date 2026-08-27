@@ -16,7 +16,7 @@ import {
   POSTGRES_MIGRATION_LOCK_KEY,
   type TenantTransactionProvider,
 } from "./tenant-transaction.js";
-import { assertPostgresAuxSchema } from "./aux-schema.js";
+import { assertPostgresAuxSchema, restorePostgresAuxSchemaRuntimePrivileges } from "./aux-schema.js";
 import { PostgresSchemaError } from "./postgres-schema-error.js";
 
 const { Pool } = pg;
@@ -275,6 +275,47 @@ export async function provisionPostgres(
         : { acquireLock: input.acquireMigrationLock }),
     });
     await applyRowLevelSecurity(db, roleNames);
+  } finally {
+    await db.destroy();
+  }
+}
+
+export async function ensurePostgresRuntimeRoles(
+  input: ProvisionPostgresInput,
+): Promise<void> {
+  const db = createKysely(input.admin);
+  try {
+    await createRuntimeRoles(db, {
+      database: input.admin.database,
+      server: input.roles.server,
+      worker: input.roles.worker,
+    });
+  } finally {
+    await db.destroy();
+  }
+}
+
+export async function restorePostgresRuntimePrivileges(
+  input: ProvisionPostgresInput & {
+    readonly tableNames?: readonly string[];
+    readonly includeAuxSchema?: boolean;
+  },
+): Promise<void> {
+  const db = createKysely(input.admin);
+  try {
+    await createRuntimeRoles(db, {
+      database: input.admin.database,
+      server: input.roles.server,
+      worker: input.roles.worker,
+    });
+    const roleNames: PostgresRuntimeRoles = {
+      server: input.roles.server.name,
+      worker: input.roles.worker.name,
+    };
+    await applyRowLevelSecurity(db, roleNames, input.tableNames);
+    if (input.includeAuxSchema === true) {
+      await restorePostgresAuxSchemaRuntimePrivileges(db, roleNames);
+    }
   } finally {
     await db.destroy();
   }

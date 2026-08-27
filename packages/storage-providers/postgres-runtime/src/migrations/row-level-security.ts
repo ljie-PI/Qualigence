@@ -43,13 +43,17 @@ export async function applyRowLevelSecurity(
   const serverRole = sql.ref(roles.server);
   const workerRole = sql.ref(roles.worker);
 
+  await sql`revoke create on schema public from public, ${serverRole}, ${workerRole}`.execute(db);
   await sql`grant usage on schema public to ${serverRole}, ${workerRole}`.execute(
     db,
   );
+  await sql`revoke all on table ${sql.table("schema_migrations")} from public, ${serverRole}, ${workerRole}`.execute(db);
+  await sql`revoke all on table ${sql.table("schema_components")} from public, ${serverRole}, ${workerRole}`.execute(db);
   await sql`grant select on table ${sql.table("schema_migrations")} to ${serverRole}, ${workerRole}`.execute(
     db,
   );
   await sql`grant select on table ${sql.table("schema_components")} to ${serverRole}, ${workerRole}`.execute(db);
+  await sql`revoke all on all functions in schema public from public, ${serverRole}, ${workerRole}`.execute(db);
 
   const selected = tableNames === undefined ? undefined : new Set(tableNames);
   const hasTable = (table: string): boolean => selected === undefined || selected.has(table);
@@ -67,6 +71,7 @@ export async function applyRowLevelSecurity(
         with check (tenant_id = current_setting('app.tenant_id', true))
     `.execute(db);
 
+    await sql`revoke all on table ${ref} from public, ${serverRole}, ${workerRole}`.execute(db);
     await sql`grant select, insert, update, delete on table ${ref} to ${serverRole}`.execute(
       db,
     );
