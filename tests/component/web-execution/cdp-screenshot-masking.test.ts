@@ -673,6 +673,102 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when page code clears, replaces, or mutates the exposed closed-shadow root registry", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+    expect(Buffer.concat(session.artifactsFor(firstGraph.graphId).map((artifact) => Buffer.from(artifact.bytes))).toString("utf8"))
+      .not.toContain(SECRET);
+
+    let tamperResult: {
+      readonly rootCountBefore: number;
+      readonly cleared: boolean;
+      readonly mutated: boolean;
+      readonly pushed: boolean;
+      readonly replaced: boolean;
+    } | undefined;
+    await session.withPage(async (page) => {
+      tamperResult = await page.evaluate((secret) => {
+        type ShadowRuntimeRegistry = {
+          roots?: unknown[];
+        };
+        type MutableElement = HTMLElement & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          attachShadow(init: { readonly mode: "open" | "closed" }): { append(node: unknown): void };
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as {
+          readonly Array: typeof Array;
+          readonly Object: typeof Object;
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+          __qualigenceSensitiveShadowRoots?: ShadowRuntimeRegistry;
+        };
+        const reflected = host.document.createElement("div");
+        reflected.id = "closed-shadow-roots-registry-tamper";
+        reflected.setAttribute("data-qualigence-observe", "true");
+        host.Object.assign(reflected.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "260px",
+          minHeight: "28px",
+          background: "white",
+          color: "blue",
+        });
+        const root = reflected.attachShadow({ mode: "closed" });
+        const text = host.document.createElement("span");
+        text.textContent = secret;
+        root.append(text);
+        host.document.body.append(reflected);
+
+        const registry = host.__qualigenceSensitiveShadowRoots;
+        if (registry === undefined || !host.Array.isArray(registry.roots)) throw new Error("Missing shadow root registry.");
+        const roots = registry.roots;
+        const rootCountBefore = roots.length;
+        let cleared = false;
+        let mutated = false;
+        let pushed = false;
+        let replaced = false;
+        try {
+          roots.length = 0;
+          cleared = true;
+        } catch {
+          cleared = true;
+        }
+        try {
+          roots[0] = undefined;
+          mutated = true;
+        } catch {
+          mutated = true;
+        }
+        try {
+          roots.push(undefined);
+          pushed = true;
+        } catch {
+          pushed = true;
+        }
+        try {
+          registry.roots = [];
+          replaced = true;
+        } catch {
+          replaced = true;
+        }
+        return { rootCountBefore, cleared, mutated, pushed, replaced };
+      }, SECRET);
+    });
+    expect(tamperResult).toEqual({ rootCountBefore: 1, cleared: true, mutated: true, pushed: true, replaced: true });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when a page reuses a retired same-record marker on a new unmasked visible valueRef element", async () => {
     const observer = await enterSecret();
     const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });

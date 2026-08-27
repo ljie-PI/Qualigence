@@ -651,6 +651,163 @@ describe("production valueRef browser execution", () => {
     }
   }, 90_000);
 
+  it("fails closed when page code clears, replaces, or mutates the exposed closed-shadow root registry", async () => {
+    const shadowSecret = "ticket45-closed-shadow-registry-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 380px; height: 260px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #shadow-registry-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #shadow-registry-mirror { position: absolute; left: 30px; top: 120px; width: 240px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Shadow Registry Secret <input id="shadow-registry-secret" aria-label="Shadow Registry Secret" /></label>
+        <div id="shadow-registry-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('shadow-registry-secret');
+          const mirror = document.getElementById('shadow-registry-mirror');
+          input.addEventListener('input', () => {
+            document.title = input.value;
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 closed Shadow DOM registry tamper"),
+    });
+
+    const session = new PlaywrightBrowserSession({
+      url: fixture.url,
+      expectedOrigin: fixture.origin,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      allowedOrigins: [fixture.origin],
+    });
+    const logs: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs[logs.length] = String(chunk);
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs[logs.length] = String(chunk);
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      await session.start();
+      const observer = new PlaywrightObserver(session);
+      const resolver = new PlaywrightActionResolver(session);
+      let graph = await observer.capture({ ...e2eJob("closed-shadow-roots"), target: { kind: "web", url: fixture.url } });
+      const target = targetNode(graph, "textbox", "Shadow Registry Secret");
+      const executor = new PlaywrightActionExecutor(session, { resolve: async () => shadowSecret });
+      const action = await resolver.resolve({ kind: "input", target: { nodeId: target.id }, valueRef: "ticket45.shadowRegistry", reason: "ticket45 shadow roots" }, graph);
+      await expect(executor.execute(action, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+
+      graph = await observer.capture({ ...e2eJob("closed-shadow-roots"), target: { kind: "web", url: fixture.url } });
+      const firstArtifacts = await session.artifactsFor(graph.graphId);
+      assertArtifactJsonRedacted(firstArtifacts, [shadowSecret], ["[redacted]"]);
+      expect(Buffer.from(pngArtifact(firstArtifacts).bytes).toString("utf8")).not.toContain(shadowSecret);
+
+      let tamperResult: {
+        readonly rootCountBefore: number;
+        readonly cleared: boolean;
+        readonly mutated: boolean;
+        readonly pushed: boolean;
+        readonly replaced: boolean;
+      } | undefined;
+      await session.withPage(async (page) => {
+        tamperResult = await page.evaluate((input) => {
+          type ShadowRuntimeRegistry = {
+            roots?: unknown[];
+          };
+          type MutableElement = HTMLElement & {
+            id: string;
+            textContent: string | null;
+            readonly style: Record<string, string>;
+            attachShadow(init: { readonly mode: "open" | "closed" }): { append(node: unknown): void };
+            setAttribute(name: string, value: string): void;
+          };
+          const host = globalThis as unknown as Record<string, unknown> & {
+            readonly Array: typeof Array;
+            readonly Object: typeof Object;
+            readonly document: {
+              createElement(tagName: string): MutableElement;
+              readonly body: { append(element: unknown): void };
+            };
+          };
+          const reflected = host.document.createElement("div");
+          reflected.id = "closed-shadow-roots-registry-reflection";
+          reflected.setAttribute("data-qualigence-observe", "true");
+          host.Object.assign(reflected.style, {
+            position: "absolute",
+            left: "30px",
+            top: "170px",
+            width: "280px",
+            minHeight: "28px",
+            background: "white",
+            color: "blue",
+          });
+          const root = reflected.attachShadow({ mode: "closed" });
+          const span = host.document.createElement("span");
+          span.textContent = input.secret;
+          root.append(span);
+          host.document.body.append(reflected);
+
+          const registry = host[input.registryProperty] as ShadowRuntimeRegistry | undefined;
+          if (registry === undefined || !host.Array.isArray(registry.roots)) throw new Error("Missing shadow root registry.");
+          const roots = registry.roots;
+          const rootCountBefore = roots.length;
+          let cleared = false;
+          let mutated = false;
+          let pushed = false;
+          let replaced = false;
+          try {
+            roots.length = 0;
+            cleared = true;
+          } catch {
+            cleared = true;
+          }
+          try {
+            roots[0] = undefined;
+            mutated = true;
+          } catch {
+            mutated = true;
+          }
+          try {
+            roots.push(undefined);
+            pushed = true;
+          } catch {
+            pushed = true;
+          }
+          try {
+            registry.roots = [];
+            replaced = true;
+          } catch {
+            replaced = true;
+          }
+          return { rootCountBefore, cleared, mutated, pushed, replaced };
+        }, {
+          registryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
+          secret: shadowSecret,
+        });
+      });
+      expect(tamperResult).toEqual({ rootCountBefore: 1, cleared: true, mutated: true, pushed: true, replaced: true });
+
+      await expect(observer.capture({ ...e2eJob("closed-shadow-roots"), target: { kind: "web", url: fixture.url } }))
+        .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+      expect(() => session.artifactsFor("run-closed-shadow-roots:observation:3"))
+        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+      expect(JSON.stringify(logs)).not.toContain(shadowSecret);
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      await session.close();
+    }
+  }, 90_000);
+
   it("fails closed when a later same-page reflection appears after a retired sensitive capture", async () => {
     const reflectedSecret = "ticket45-retired-reflection-secret";
     fixture = await startFixtureServer({

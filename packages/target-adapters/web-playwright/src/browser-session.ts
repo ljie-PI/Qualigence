@@ -237,7 +237,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       readonly windowGetComputedStyle: typeof window.getComputedStyle;
     };
     type SensitiveRuntimeRegistry = {
-      readonly roots: ShadowRoot[];
+      readonly roots: readonly ShadowRoot[];
       readonly listenerTargets: { readonly type: string; readonly target: EventTarget; readonly listener: EventListenerOrEventListenerObject }[];
       readonly nativeDom?: NativeDomAuthority;
       readonly promiseOwners?: readonly PromiseOwnerRecord[];
@@ -321,6 +321,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeObjectPrototypeHasOwnProperty: typeof Object.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
     const nativeReflectApply: typeof Reflect.apply = Reflect.apply;
     const nativeReflectDefineProperty: typeof Reflect.defineProperty = Reflect.defineProperty;
+    const nativeReflectGet: typeof Reflect.get = Reflect.get;
     const nativeStringPrototypeIncludes: typeof String.prototype.includes = String.prototype.includes;
     const nativeStringPrototypeNormalize: typeof String.prototype.normalize = String.prototype.normalize;
     const nativeStringPrototypeReplace: typeof String.prototype.replace = String.prototype.replace;
@@ -368,6 +369,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeShadowRootHostGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "host")?.get;
     const nativeShadowRootModeGet = nativeObjectGetOwnPropertyDescriptor(ShadowRoot.prototype, "mode")?.get;
     const nativeWindowGetComputedStyle: typeof window.getComputedStyle = window.getComputedStyle;
+    const NativeProxy: ProxyConstructor = Proxy;
     const nativeDomAuthority = nativeObjectFreeze({
       arrayFrom: Array.from,
       arrayIsArray: Array.isArray,
@@ -450,6 +452,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeObjectPrototypeHasOwnProperty,
       nativeReflectApply,
       nativeReflectDefineProperty,
+      nativeReflectGet,
       nativeStringPrototypeIncludes,
       nativeStringPrototypeNormalize,
       nativeStringPrototypeReplace,
@@ -476,6 +479,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeElementAttachShadow,
       nativeNodeGetRootNode,
       nativeWindowGetComputedStyle,
+      NativeProxy,
       nativeDomAuthority.arrayFrom,
       nativeDomAuthority.arrayIsArray,
       nativeDomAuthority.htmlCollectionItem,
@@ -523,13 +527,13 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const promiseOwnerRecords: PromiseOwnerRecord[] = [];
     const schedulerEpochAuthority = new NativeWeakMap<SensitiveSchedulerEpoch, SensitiveSchedulerEpochAuthority>();
     const retainedSensitiveSchedulerEpochs: SensitiveSchedulerEpoch[] = [];
+    const trackedShadowRoots: ShadowRoot[] = [];
+    let shadowRootOverflow = false;
     let promiseOwnerOverflow = false;
     let promiseOwnerValidationFailed = intrinsicAuthorityFailed;
     let shadowRootAuthorityFailed = intrinsicAuthorityFailed;
-    const registry: SensitiveRuntimeRegistry = {
-      roots: [],
+    const registry = {
       listenerTargets: [],
-      shadowRootOverflow: false,
       originalAddEventListener: EventTarget.prototype.addEventListener,
       originalSetTimeout: window.setTimeout,
       originalSetInterval: window.setInterval,
@@ -538,8 +542,20 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       originalPromiseThen: Promise.prototype.then,
       originalPromiseCatch: Promise.prototype.catch,
       originalPromiseFinally: Promise.prototype.finally,
-    };
+    } as unknown as SensitiveRuntimeRegistry;
     nativeObjectDefineProperties(registry, {
+      roots: {
+        configurable: false,
+        enumerable: false,
+        get: shadowRootSnapshot,
+        set: replaceShadowRootSnapshot,
+      },
+      shadowRootOverflow: {
+        configurable: false,
+        enumerable: false,
+        get: () => shadowRootOverflow,
+        set: setShadowRootOverflow,
+      },
       promiseOwners: {
         configurable: false,
         enumerable: false,
@@ -610,18 +626,7 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       if (init.mode === "closed" && state !== undefined && active !== undefined) {
         poison(state, active);
       }
-      const hostWindow = this.ownerDocument.defaultView;
-      const rootRegistry = (hostWindow as unknown as Record<string, SensitiveRuntimeRegistry | undefined> | null)?.[input.shadowRootsProperty] ?? registry;
-      if (!arrayIncludes(rootRegistry.roots, root)) {
-        if (rootRegistry.roots.length >= input.maxShadowRoots) {
-          rootRegistry.shadowRootOverflow = true;
-          if (state !== undefined && active !== undefined) {
-            poison(state, active);
-          }
-          return root;
-        }
-        arrayPush(rootRegistry.roots, root);
-      }
+      registerShadowRoot(root, state, active);
       return root;
     };
     const attachShadowGetter = function attachShadow(): typeof Element.prototype.attachShadow {
@@ -1036,17 +1041,104 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       if (state !== undefined && active !== undefined) poison(state, active);
     }
 
+    function registerShadowRoot(
+      root: ShadowRoot,
+      state: SensitiveRuntimeState | undefined,
+      active: SensitiveSchedulerEpoch | undefined,
+    ): void {
+      if (arrayIncludes(trackedShadowRoots, root)) return;
+      if (trackedShadowRoots.length >= input.maxShadowRoots) {
+        shadowRootOverflow = true;
+        if (state !== undefined) state.poisoned = true;
+        if (state !== undefined && active !== undefined) poison(state, active);
+        return;
+      }
+      arrayPush(trackedShadowRoots, root);
+    }
+
+    function shadowRootSnapshot(): readonly ShadowRoot[] {
+      const snapshot: ShadowRoot[] = [];
+      for (let index = 0; index < trackedShadowRoots.length; index += 1) {
+        snapshot[index] = trackedShadowRoots[index]!;
+      }
+      return new NativeProxy(snapshot, shadowRootSnapshotHandler);
+    }
+
+    function replaceShadowRootSnapshot(_value: unknown): void {
+      latchShadowRootAuthorityFailure();
+    }
+
+    function setShadowRootOverflow(_value: unknown): void {
+      shadowRootOverflow = true;
+      latchShadowRootAuthorityFailure();
+    }
+
+    function shadowRootSnapshotMutationAttempt(): unknown {
+      latchShadowRootAuthorityFailure();
+      return undefined;
+    }
+
+    function isShadowRootSnapshotMutator(property: string | symbol): boolean {
+      return property === "copyWithin" ||
+        property === "fill" ||
+        property === "pop" ||
+        property === "push" ||
+        property === "reverse" ||
+        property === "shift" ||
+        property === "sort" ||
+        property === "splice" ||
+        property === "unshift";
+    }
+
+    const shadowRootSnapshotHandler: ProxyHandler<ShadowRoot[]> = nativeObjectFreeze({
+      get(target: ShadowRoot[], property: string | symbol, receiver: unknown): unknown {
+        if (isShadowRootSnapshotMutator(property)) return shadowRootSnapshotMutationAttempt;
+        return nativeReflectGet(target, property, receiver);
+      },
+      set(): boolean {
+        latchShadowRootAuthorityFailure();
+        return true;
+      },
+      defineProperty(_target: ShadowRoot[], property: string | symbol): boolean {
+        latchShadowRootAuthorityFailure();
+        return property !== "length";
+      },
+      deleteProperty(_target: ShadowRoot[], property: string | symbol): boolean {
+        latchShadowRootAuthorityFailure();
+        return property !== "length";
+      },
+      setPrototypeOf(): boolean {
+        latchShadowRootAuthorityFailure();
+        return false;
+      },
+      preventExtensions(): boolean {
+        latchShadowRootAuthorityFailure();
+        return false;
+      },
+    });
+
     function validateShadowRootAuthority(): PromiseOwnerValidationResult {
       const descriptor = nativeObjectGetOwnPropertyDescriptor(Element.prototype, "attachShadow");
+      const rootsDescriptor = nativeObjectGetOwnPropertyDescriptor(registry, "roots");
+      const overflowDescriptor = nativeObjectGetOwnPropertyDescriptor(registry, "shadowRootOverflow");
       if (
         shadowRootAuthorityFailed ||
+        shadowRootOverflow ||
         descriptor === undefined ||
         descriptor.configurable !== false ||
         descriptor.get !== attachShadowGetter ||
-        descriptor.set !== attachShadowSetter
+        descriptor.set !== attachShadowSetter ||
+        rootsDescriptor === undefined ||
+        rootsDescriptor.configurable !== false ||
+        rootsDescriptor.get !== shadowRootSnapshot ||
+        rootsDescriptor.set !== replaceShadowRootSnapshot ||
+        overflowDescriptor === undefined ||
+        overflowDescriptor.configurable !== false ||
+        overflowDescriptor.get === undefined ||
+        overflowDescriptor.set !== setShadowRootOverflow
       ) {
         latchShadowRootAuthorityFailure();
-        return { status: "failed", reason: "attach-shadow-authority-mutated" };
+        return { status: "failed", reason: "shadow-root-authority-mutated" };
       }
       return { status: "ok" };
     }

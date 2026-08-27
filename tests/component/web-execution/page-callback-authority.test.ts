@@ -202,11 +202,14 @@ describe("page callback authority inventory", () => {
     }
   });
 
-  it("does not expose original attachShadow authority to page code", () => {
+  it("does not expose original attachShadow authority or mutable closed-shadow roots to page code", () => {
     const source = sources.get("browser-session.ts")!;
     expect(source).toContain("validateShadowRootAuthority");
     expect(source).toContain("nativeElementAttachShadow");
+    expect(source).toContain("trackedShadowRoots");
+    expect(source).toContain("get: shadowRootSnapshot");
     expect(source).not.toContain("originalAttachShadow");
+    expect(source).not.toContain("roots: []");
   });
 
   it("rejects sensitive callbacks that read security-relevant DOM state through mutable ambient APIs", () => {
