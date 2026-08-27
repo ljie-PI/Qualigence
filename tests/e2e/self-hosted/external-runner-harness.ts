@@ -17,7 +17,6 @@ const PASS_MARKER = "qualigence-external-runner-acceptance:pass";
 const REPO_ROOT = process.cwd();
 const COMPOSE_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", "compose.yaml");
 const COMPOSE_ENV_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", ".env.example");
-const COMPOSE_SECRETS_DIR = join(REPO_ROOT, "deployments", "self-hosted", "compose", "secrets");
 const API_ISSUER = "https://issuer.example.com";
 const API_AUDIENCE = "qualigence-self-hosted";
 const TENANT_CLAIM = "https://qualigence.example/tenant";
@@ -60,6 +59,7 @@ interface HarnessContext {
   readonly workDir: string;
   readonly overrideFile: string;
   readonly runnerDataDir: string;
+  readonly secretsDir: string;
   readonly proxyPort: number;
   readonly runnerGrpcPort: number;
   readonly proxyCaPem: string;
@@ -67,7 +67,6 @@ interface HarnessContext {
   readonly runnerServer: PemPair;
   readonly runnerClient: RunnerClientMaterial;
   readonly jwt: TestJwtIssuer;
-  readonly secrets: SecretBackup;
   readonly modelServer: Awaited<ReturnType<typeof startModelServer>>;
 }
 
@@ -79,10 +78,6 @@ interface RunnerClientMaterial extends PemPair {
   readonly certPath: string;
   readonly keyPath: string;
   readonly caPath: string;
-}
-
-interface SecretBackup {
-  readonly entries: readonly { readonly path: string; readonly previous?: Buffer }[];
 }
 
 interface CommandEnvelope<T> {
@@ -319,7 +314,6 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
     }
     if (ctx !== undefined) {
       await compose(ctx, ["down", "-v", "--remove-orphans", "--timeout", "10"], 180_000).catch(() => undefined);
-      await restoreHarnessSecrets(ctx.secrets).catch(() => undefined);
       ctx.modelServer.close();
       await rm(ctx.workDir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -329,6 +323,7 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
 async function createHarnessContext(): Promise<HarnessContext> {
   const workDir = await mkdtemp(join(tmpdir(), "qualigence-external-runner-"));
   const runnerDataDir = join(workDir, "runner-data");
+  const secretsDir = join(workDir, "secrets");
   await mkdir(runnerDataDir, { recursive: true });
   const [runnerGrpcPort, proxyPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const jwt = createJwtIssuer();
@@ -338,7 +333,6 @@ async function createHarnessContext(): Promise<HarnessContext> {
   const proxyCa = createRunnerCa("Qualigence self-hosted proxy acceptance CA");
   const proxy = mintServerCertificate(proxyCa, "localhost");
   const modelServer = await startModelServer();
-  const secrets = await backupSecretFiles();
   const projectName = `qualigence-ext-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
 
   await writeFile(join(workDir, "runner-ca.crt"), runnerCa.certPem, "utf8");
@@ -355,6 +349,7 @@ async function createHarnessContext(): Promise<HarnessContext> {
     workDir,
     overrideFile: join(workDir, "compose.override.yaml"),
     runnerDataDir,
+    secretsDir,
     proxyPort,
     runnerGrpcPort,
     proxyCaPem: proxyCa.certPem,
@@ -362,13 +357,12 @@ async function createHarnessContext(): Promise<HarnessContext> {
     runnerServer,
     runnerClient,
     jwt,
-    secrets,
     modelServer,
   };
 }
 
 async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
-  await mkdir(COMPOSE_SECRETS_DIR, { recursive: true });
+  await mkdir(ctx.secretsDir, { recursive: true });
   const secretValues: Record<string, string> = {
     pg_admin_password: "qualigence_admin_pw",
     pg_server_password: "qualigence_server_pw",
@@ -397,36 +391,14 @@ async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
   };
 
   for (const [name, value] of Object.entries(secretValues)) {
-    await writeFile(join(COMPOSE_SECRETS_DIR, secretFileName(name)), value, "utf8");
+    await writeFile(join(ctx.secretsDir, secretFileName(name)), value, "utf8");
   }
-}
-
-async function backupSecretFiles(): Promise<SecretBackup> {
-  const entries = await Promise.all(Object.values(SECRET_FILE_NAMES).map(async (fileName) => {
-    const path = join(COMPOSE_SECRETS_DIR, fileName);
-    try {
-      return { path, previous: await readFile(path) };
-    } catch {
-      return { path };
-    }
-  }));
-  return { entries };
 }
 
 function secretFileName(name: string): string {
   const fileName = SECRET_FILE_NAMES[name];
   if (fileName === undefined) throw new Error(`Unknown Compose secret ${name}`);
   return fileName;
-}
-
-async function restoreHarnessSecrets(backup: SecretBackup): Promise<void> {
-  for (const entry of backup.entries) {
-    if (entry.previous === undefined) {
-      await rm(entry.path, { force: true });
-      continue;
-    }
-    await writeFile(entry.path, entry.previous);
-  }
 }
 
 async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
@@ -871,7 +843,19 @@ try {
     "    ports: !override",
     `      - \"127.0.0.1:${ctx.proxyPort}:443\"`,
     "",
+    ...composeSecretOverrides(ctx),
+    "",
   ].join("\n"), "utf8");
+}
+
+function composeSecretOverrides(ctx: HarnessContext): readonly string[] {
+  return [
+    "secrets:",
+    ...Object.entries(SECRET_FILE_NAMES).flatMap(([name, fileName]) => [
+      `  ${name}:`,
+      `    file: \"${composePath(join(ctx.secretsDir, fileName))}\"`,
+    ]),
+  ];
 }
 
 async function createProject(apiBaseUrl: string, ca: string, token: string): Promise<ProjectDto> {
