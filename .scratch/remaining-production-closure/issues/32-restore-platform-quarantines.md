@@ -2,7 +2,7 @@
 
 **What to build:** Remove the four temporary Windows quarantines and prove each behavior on both Windows and Linux without sleeps, platform shortcuts, or silent skips.
 
-**Blocked by:** 15 — Complete LS-11 backup, restore, and acceptance; 21 — Run the real Reference Model benchmark; 31 — Complete Windows native acceptance.
+**Blocked by:** 31 — Complete Windows native acceptance.
 
 **Status:** ready-for-agent
 
@@ -101,3 +101,7 @@ Record base and reviewed SHAs in `## Comments`. Every review covers the four com
 | Duplicate test/restart on either platform | `started` per isolated fixture | Same passing behavior | No leaked process, DB handle, browser, or key fixture crosses tests | Replay is isolated and deterministic | Repeated platform job evidence |
 | Platform/Chromium/ACL tooling is unavailable | `not_started` | Stable non-zero infrastructure block | No skipped acceptance artifact | Retry only after provisioning required infrastructure | Failed job with stable reason, zero skip conversion |
 | Test report/artifact write fails after behavior ran | `outcome_unknown` for release evidence | Platform acceptance fails | No valid named platform artifact exists | Rerun the whole four-test platform Gate; do not reconstruct success manually | Missing/invalid artifact blocks downstream release |
+
+## Comments
+
+- update - 2026-08-27: Tickets 15 and 21 are resolved. Ticket 32 remains blocked only by Ticket 31 human Windows native acceptance.
