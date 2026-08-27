@@ -14,10 +14,7 @@ const REQUIRED_TOP_LEVEL_CHECK_IDS = [
   "emergency-stop.in-flight",
   "approval.denied",
   "approval.timeout",
-  "uia.worker-forced-exit",
-  "uia.worker-restart",
-  "uia.worker-timeout",
-  "action.no-auto-replay",
+  "ipc.inflight-malformed-fail-closed",
   "ticket31-handoff",
 ];
 
@@ -36,6 +33,10 @@ const REQUIRED_APP_CHECK_IDS = [
   "permit.replay-denied",
   "permit.mismatch-denied",
   "permit.expiry-denied",
+  "uia.worker-forced-exit",
+  "uia.worker-restart",
+  "uia.worker-timeout",
+  "action.no-auto-replay",
   "app.reset",
   "app.reset-state-verified",
   "app.shutdown-unrelated-survives",

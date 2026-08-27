@@ -43,10 +43,7 @@ const REQUIRED_TOP_LEVEL_CHECK_IDS: &[&str] = &[
     "emergency-stop.in-flight",
     "approval.denied",
     "approval.timeout",
-    "uia.worker-forced-exit",
-    "uia.worker-restart",
-    "uia.worker-timeout",
-    "action.no-auto-replay",
+    "ipc.inflight-malformed-fail-closed",
     "ticket31-handoff",
 ];
 const REQUIRED_APP_CHECK_IDS: &[&str] = &[
@@ -64,6 +61,10 @@ const REQUIRED_APP_CHECK_IDS: &[&str] = &[
     "permit.replay-denied",
     "permit.mismatch-denied",
     "permit.expiry-denied",
+    "uia.worker-forced-exit",
+    "uia.worker-restart",
+    "uia.worker-timeout",
+    "action.no-auto-replay",
     "app.reset",
     "app.reset-state-verified",
     "app.shutdown-unrelated-survives",
@@ -248,9 +249,16 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
         let mut client =
             check_malformed_ipc_rejected_and_daemon_survives(&daemon.pipe_path, &mut checks)?;
         check_probe(&mut client, &mut checks)?;
+        check_inflight_malformed_ipc_fails_closed(
+            &companion_exe,
+            &harness_exe,
+            &cert_fingerprint,
+            &wpf_exe,
+            &mut checks,
+        )?;
 
         let mut apps = Vec::new();
-        let wpf_app = run_app_scenario(
+        apps.push(run_app_scenario(
             &mut client,
             "wpf",
             &wpf_project,
@@ -258,26 +266,7 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
             &harness_exe,
             &evidence_dir,
             true,
-        )?;
-        for required in [
-            "uia.worker-forced-exit",
-            "uia.worker-restart",
-            "uia.worker-timeout",
-            "action.no-auto-replay",
-        ] {
-            if let Some(check) = wpf_app.checks.iter().find(|check| check.id == required) {
-                checks.push(CheckEvidence {
-                    id: check.id.clone(),
-                    status: check.status,
-                    summary: format!(
-                        "shared UIA worker proof via WPF scenario: {}",
-                        check.summary
-                    ),
-                    evidence_refs: check.evidence_refs.clone(),
-                });
-            }
-        }
-        apps.push(wpf_app);
+        )?);
         apps.push(run_app_scenario(
             &mut client,
             "winui",
@@ -285,7 +274,7 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
             &winui_exe,
             &harness_exe,
             &evidence_dir,
-            false,
+            true,
         )?);
 
         check_policy_denial_and_emergency_stop(
@@ -1080,6 +1069,93 @@ fn check_malformed_ipc_rejected_and_daemon_survives(
     Ok(client)
 }
 
+fn check_inflight_malformed_ipc_fails_closed(
+    companion_exe: &Path,
+    harness_exe: &Path,
+    cert_fingerprint: &str,
+    exe: &Path,
+    checks: &mut Vec<CheckEvidence>,
+) -> HarnessResult<()> {
+    let pipe_prefix = format!(
+        "qualigence-ticket47-inflight-malformed-{}",
+        std::process::id()
+    );
+    let mut daemon = start_companion_daemon(
+        companion_exe,
+        harness_exe,
+        &pipe_prefix,
+        cert_fingerprint,
+        ApprovalMode::Approved,
+    )?;
+    let mut client = CompanionPipeClient::connect(&daemon.pipe_path)?;
+    client.handshake()?;
+    let app_dir = exe
+        .parent()
+        .ok_or_else(|| prereq("missing app output directory"))?;
+    let payload = client.expect_ok(
+        CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload {
+            target: app_target("inflight-malformed", exe, harness_exe, app_dir),
+        }),
+        "in-flight malformed app.launch",
+    )?;
+    let session_id = string_field(&payload, "sessionId")?;
+    let source = capture(
+        &mut client,
+        &session_id,
+        10_000,
+        "in-flight malformed capture",
+    )?;
+    let submit_node = node_id_by_automation_id(&source, "SubmitButton")?;
+    diagnostic(
+        &mut client,
+        "worker.block-next-action",
+        None,
+        "configure malformed in-flight worker block diagnostic",
+    )?;
+    let action = action_click(
+        "malformed-inflight-action",
+        "graph-ticket47",
+        &submit_node,
+        Some("Invoke"),
+    );
+    let permit = request_permit(&mut client, &session_id, action.clone(), Risk::Normal, None)?;
+    let _action_request_id = client.send_request(CompanionRequestPayload::ActionExecute(
+        action_execute_payload(&session_id, action, permit, None, 10_000),
+    ))?;
+    thread::sleep(Duration::from_millis(50));
+    client
+        .pipe
+        .write_all(&((MAX_FRAME_BYTES as u32) + 1).to_be_bytes())
+        .map_err(|e| {
+            companion_error(format!(
+                "failed to write in-flight malformed IPC frame: {e}"
+            ))
+        })?;
+    match client.request(CompanionRequestPayload::CompanionProbe(
+        companion::ipc::dto::CompanionCapabilityProbeRequest {
+            target_adapter: "desktop-windows-uia".to_string(),
+            observation_extension: "uia/v1".to_string(),
+        },
+    )) {
+        Ok(response) => {
+            return Err(native_check(format!(
+                "malformed in-flight IPC connection was still accepted: {response}"
+            )))
+        }
+        Err(_) => {}
+    }
+    let mut fresh = CompanionPipeClient::connect(&daemon.pipe_path)?;
+    fresh.handshake()?;
+    let mut probe_checks = Vec::new();
+    check_probe(&mut fresh, &mut probe_checks)?;
+    daemon.shutdown();
+    checks.push(pass(
+        "ipc.inflight-malformed-fail-closed",
+        "Oversized malformed IPC during an in-flight action closed that connection before later frames were accepted, while a fresh authenticated connection could proceed",
+    ));
+    Ok(())
+}
+
 fn run_app_scenario(
     client: &mut CompanionPipeClient,
     technology: &str,
@@ -1356,9 +1432,24 @@ fn run_app_scenario(
 
     if include_worker_fault_checks {
         progress(&format!("{technology}:worker-forced-exit"));
-        check_worker_forced_exit_and_restart(client, &session_id, technology, &mut checks)?;
+        let after_worker_restart = check_worker_forced_exit_and_restart(
+            client,
+            &mut session_id,
+            technology,
+            exe,
+            harness_exe,
+            app_dir,
+            &mut checks,
+        )?;
+        let worker_submit_node = node_id_by_automation_id(&after_worker_restart, "SubmitButton")?;
         progress(&format!("{technology}:worker-timeout"));
-        check_worker_timeout_unknown(client, &session_id, &submit_node, technology, &mut checks)?;
+        check_worker_timeout_unknown(
+            client,
+            &session_id,
+            &worker_submit_node,
+            technology,
+            &mut checks,
+        )?;
     }
 
     progress(&format!("{technology}:app-reset"));
@@ -1419,14 +1510,18 @@ fn run_app_scenario(
     checks.push(pass(
         "app.reset",
         if technology.starts_with("winui") {
-            format!("{technology} reset executed through Permit-bound UIA reset action")
+            format!("{technology} reset executed through Companion app.reset, then relaunch and capture verified the restored state")
         } else {
             format!("{technology} reset executed through Companion reset-helper Job and Permit-bound UIA reset action")
         },
     ));
     checks.push(pass(
         "app.reset-state-verified",
-        format!("{technology} reset state was verified by recapture after reset helper"),
+        if technology.starts_with("winui") {
+            format!("{technology} reset state was verified by relaunch capture after Companion app.reset")
+        } else {
+            format!("{technology} reset state was verified by recapture after reset helper")
+        },
     ));
 
     progress(&format!("{technology}:shutdown-unrelated"));
@@ -1558,10 +1653,13 @@ fn validate_lifecycle_evidence(technology: &str, evidence: &Value) -> HarnessRes
 
 fn check_worker_forced_exit_and_restart(
     client: &mut CompanionPipeClient,
-    session_id: &str,
+    session_id: &mut String,
     technology: &str,
+    exe: &Path,
+    harness_exe: &Path,
+    app_dir: &Path,
     checks: &mut Vec<CheckEvidence>,
-) -> HarnessResult<()> {
+) -> HarnessResult<UiaSource> {
     let before = diagnostic(
         client,
         "worker.stats",
@@ -1582,11 +1680,29 @@ fn check_worker_forced_exit_and_restart(
         "uia.worker-forced-exit",
         format!("{technology} daemon forcibly exited the UIA worker through the diagnostic seam"),
     ));
-    capture_after_worker_recycle(
-        client,
-        session_id,
-        &format!("{technology} capture after forced worker exit"),
-    )?;
+    let restarted_source = if technology.starts_with("winui") {
+        let _ = client.request(CompanionRequestPayload::AppShutdown(SessionIdPayload {
+            session_id: session_id.clone(),
+        }));
+        let payload = client.expect_ok(
+            CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload {
+                target: app_target(technology, exe, harness_exe, app_dir),
+            }),
+            &format!("{technology} app.relaunch-after-worker-forced-exit"),
+        )?;
+        *session_id = string_field(&payload, "sessionId")?;
+        capture_after_worker_recycle(
+            client,
+            session_id,
+            &format!("{technology} capture after forced worker exit relaunch"),
+        )?
+    } else {
+        capture_after_worker_recycle(
+            client,
+            session_id,
+            &format!("{technology} capture after forced worker exit"),
+        )?
+    };
     let after = diagnostic(client, "worker.stats", None, "worker stats after restart")?;
     if number_field(&after, "spawnCount")? <= before_spawns {
         return Err(native_check(format!(
@@ -1595,9 +1711,13 @@ fn check_worker_forced_exit_and_restart(
     }
     checks.push(pass(
         "uia.worker-restart",
-        format!("{technology} worker generation advanced and capture succeeded after forced worker exit"),
+        if technology.starts_with("winui") {
+            format!("{technology} worker generation advanced and a relaunched WinUI app captured successfully after forced worker exit")
+        } else {
+            format!("{technology} worker generation advanced and capture succeeded after forced worker exit")
+        },
     ));
-    Ok(())
+    Ok(restarted_source)
 }
 
 fn capture_after_worker_recycle(

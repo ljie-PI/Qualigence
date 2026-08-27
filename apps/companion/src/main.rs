@@ -371,7 +371,7 @@ fn run_daemon() {
                 Ok(event) => event,
                 Err(error) => {
                     action_threads.retain(|handle| !handle.is_finished());
-                    if !action_threads.is_empty() {
+                    if !action_threads.is_empty() && error.is_deferable_while_in_flight() {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }

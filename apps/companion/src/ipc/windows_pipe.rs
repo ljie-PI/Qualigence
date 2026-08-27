@@ -19,7 +19,7 @@ use std::ptr::{null, null_mut};
 use crate::clock::Clock;
 use crate::ipc::dto::{CompanionRequest, CompanionRequestPayload};
 use crate::ipc::security::{CertificateHandshakeError, CertificateHandshakeVerifier};
-use crate::ipc::server::{BoundedRequestProcessor, FrameLimits, RequestProcessError};
+use crate::ipc::server::{BoundedRequestProcessor, FrameError, FrameLimits, RequestProcessError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
@@ -302,6 +302,18 @@ impl NativePipeRequestError {
             Self::Request(error) => error.stable_code(),
             Self::Handshake(_) => "CompanionIdentityRejected",
         }
+    }
+
+    /// Only transport IO failures are safe to defer briefly while an admitted
+    /// action/capture response is still being written by a worker thread. Any
+    /// decoded protocol, handshake, authentication, admission, malformed,
+    /// oversized, truncated, or flooded request must still fail closed
+    /// immediately, even while action threads are in flight.
+    pub fn is_deferable_while_in_flight(&self) -> bool {
+        matches!(
+            self,
+            Self::Request(RequestProcessError::Frame(FrameError::Io))
+        )
     }
 }
 
