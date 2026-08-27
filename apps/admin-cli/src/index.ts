@@ -41,8 +41,11 @@ export {
   BACKUP_DATABASE_DUMP,
   BACKUP_INDEX_FILE,
   BACKUP_OBJECTS_DIR,
+  backupTargetBinding,
   canonicalizeIndex,
+  databaseTargetSha256,
   objectRelativePath,
+  objectStoreTargetSha256,
   parseIndex,
   sha256Hex,
   tenantsFromKeys,
@@ -50,6 +53,7 @@ export {
   type BackupIndexV1,
   type BackupObjectRecord,
   type BackupDatabaseRecord,
+  type BackupTargetBinding,
   type MigrationBackupBinding,
 } from "./backup/backup-index.js";
 export {

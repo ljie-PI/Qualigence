@@ -34,7 +34,7 @@ import pg from "pg";
 const { Client, Pool } = pg;
 const BUCKET = "qualigence-artifacts";
 const OLD_SCHEMA_VERSION = 1;
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 15;
 const MIGRATION_INVOCATION_ID = "ticket-36-forward-upgrade";
 const SERVER_ROLE = "qualigence_server";
 const SERVER_PASSWORD = "server_pw";
@@ -213,7 +213,15 @@ interface SeededObject {
   readonly sha256: string;
 }
 
-describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real PostgreSQL + MinIO)", () => {
+describe("Self-hosted backup/restore E2E (real PostgreSQL + MinIO)", () => {
+  function requireDocker(): void {
+    if (!dockerAvailable()) {
+      throw Object.assign(new Error("DockerUnavailable: Self-hosted backup/restore E2E requires Docker"), {
+        code: "DockerUnavailable",
+      });
+    }
+  }
+
   let pgFixture: PostgresFixture;
   let minio: StartedMinio;
   let s3Client: S3Client;
@@ -358,18 +366,27 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     };
   }
 
-  async function wipeDatabase(): Promise<void> {
+  async function wipeDatabase(options: { readonly dropRuntimeRoles?: boolean } = {}): Promise<void> {
     const client = new Client(pgFixture.adminConfig);
     await client.connect();
     try {
       await client.query("DROP SCHEMA public CASCADE");
       await client.query("CREATE SCHEMA public");
+      if (options.dropRuntimeRoles === true) {
+        await client.query(`REVOKE ALL PRIVILEGES ON DATABASE ${pgFixture.adminConfig.database} FROM ${SERVER_ROLE}`);
+        await client.query(`REVOKE ALL PRIVILEGES ON DATABASE ${pgFixture.adminConfig.database} FROM ${WORKER_ROLE}`);
+        await client.query(`DROP OWNED BY ${SERVER_ROLE}`);
+        await client.query(`DROP OWNED BY ${WORKER_ROLE}`);
+        await client.query(`DROP ROLE IF EXISTS ${SERVER_ROLE}`);
+        await client.query(`DROP ROLE IF EXISTS ${WORKER_ROLE}`);
+      }
     } finally {
       await client.end().catch(() => undefined);
     }
   }
 
   beforeAll(async () => {
+    requireDocker();
     pgFixture = await setupOldSchemaFixture();
     minio = await startMinio();
     s3Client = new S3Client({
@@ -466,13 +483,21 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
         runBackup(backupConfig, { pgTool, s3Client, migration: binding }),
     });
     expect(migration.action).toBe("migrated");
-    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    expect(migration.appliedVersions).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(migration.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(await migrationVersions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(await readSchemaVersion(pgFixture.adminConfig)).toBe(CURRENT_SCHEMA_VERSION);
     const afterMigration = await persistenceSnapshot();
     expect(afterMigration).toEqual(expectedSnapshot);
     expect(afterMigration).toEqual(beforeMigration);
+
+    const currentBackup = await runBackup(baseConfig(), { pgTool, s3Client });
+    await wipeDatabase({ dropRuntimeRoles: true });
+    await emptyBucket(s3Client, BUCKET);
+    await expect(serverCanReadSchemaVersion()).resolves.toBe(false);
+    const currentRestore = await runRestore(baseConfig({ backupDir: currentBackup.directory }), { pgTool, s3Client });
+    expect(currentRestore.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    await assertRuntimePrivilegesAfterCurrentRestore();
 
     expect(migration.backupDirectory).toBeDefined();
     goodBackupDir = migration.backupDirectory!;
@@ -514,7 +539,7 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
     const afterCleanRestore = await persistenceSnapshot();
     expect(afterCleanRestore).toEqual(expectedSnapshot);
     expect(afterCleanRestore).toEqual(beforeMigration);
-  }, 240_000);
+  }, 420_000);
 
   it("refuses to restore a backup whose object bytes were corrupted, before mutating the target", async () => {
     const pgTool = dockerExecPgToolRunner(pgFixture.container.id);
@@ -574,6 +599,39 @@ describe.skipIf(!dockerAvailable())("Self-hosted backup/restore E2E (real Postgr
       return result.rows;
     } finally {
       await client.end().catch(() => undefined);
+    }
+  }
+
+  async function serverCanReadSchemaVersion(): Promise<boolean> {
+    const client = new Client(pgFixture.serverConfig);
+    try {
+      await client.connect();
+      await client.query("SELECT count(*) FROM schema_migrations");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
+
+  async function assertRuntimePrivilegesAfterCurrentRestore(): Promise<void> {
+    const server = new Client(pgFixture.serverConfig);
+    await server.connect();
+    try {
+      await expect(server.query("SELECT count(*) FROM schema_migrations")).resolves.toBeDefined();
+      await expect(server.query("INSERT INTO schema_migrations (version, name, applied_at) VALUES (999, 'forbidden', now()::text)")).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await server.end().catch(() => undefined);
+    }
+
+    const worker = new Client(pgFixture.workerConfig);
+    await worker.connect();
+    try {
+      await expect(worker.query("SELECT count(*) FROM execution_runs")).rejects.toMatchObject({ code: "42501" });
+      await expect(worker.query("SELECT * FROM public.server_claim_intelligence_result_wakeups('worker-test', 1000, 1)")).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await worker.end().catch(() => undefined);
     }
   }
 

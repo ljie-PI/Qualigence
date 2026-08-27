@@ -1,4 +1,5 @@
 import {
+  CreateBucketCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -42,6 +43,32 @@ export function createS3Client(config: S3Config): S3Client {
 /** Confirm the bucket exists and is reachable (used by `doctor`). */
 export async function headBucket(client: S3Client, bucket: string): Promise<void> {
   await client.send(new HeadBucketCommand({ Bucket: bucket }));
+}
+
+/** Ensure the configured restore bucket exists before empty-target validation. */
+export async function ensureBucket(client: S3Client, bucket: string): Promise<void> {
+  try {
+    await headBucket(client, bucket);
+    return;
+  } catch (error) {
+    if (!isMissingBucket(error)) throw error;
+  }
+  try {
+    await client.send(new CreateBucketCommand({ Bucket: bucket }));
+  } catch (error) {
+    if (!isBucketAlreadyExists(error)) throw error;
+  }
+  await headBucket(client, bucket);
+}
+
+function isMissingBucket(error: unknown): boolean {
+  const candidate = error as { readonly name?: string; readonly Code?: string; readonly $metadata?: { readonly httpStatusCode?: number } };
+  return candidate.name === "NotFound" || candidate.Code === "NoSuchBucket" || candidate.$metadata?.httpStatusCode === 404;
+}
+
+function isBucketAlreadyExists(error: unknown): boolean {
+  const candidate = error as { readonly name?: string; readonly Code?: string };
+  return candidate.name === "BucketAlreadyOwnedByYou" || candidate.name === "BucketAlreadyExists" || candidate.Code === "BucketAlreadyOwnedByYou" || candidate.Code === "BucketAlreadyExists";
 }
 
 /** Enumerate every object in the bucket, following continuation tokens. */

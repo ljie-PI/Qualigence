@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import pg from "pg";
@@ -14,6 +14,7 @@ import {
   BACKUP_DATABASE_DUMP,
   BACKUP_INDEX_FILE,
   BACKUP_OBJECTS_DIR,
+  backupTargetBinding,
   canonicalizeIndex,
   objectRelativePath,
   parseIndex,
@@ -33,6 +34,10 @@ export interface BackupDeps {
   readonly logger?: StructuredLogger;
   readonly metrics?: MetricsRegistry;
   readonly migration?: MigrationBackupBinding;
+  /** Stable per-command invocation id; defaults to a fresh UUID. */
+  readonly invocationId?: string;
+  /** Pre-dispatch cancel/timeout signal. A pre-aborted signal publishes no success evidence. */
+  readonly abortSignal?: AbortSignal;
   readonly acquireLease?: (config: SelfHostedAdminConfig["postgres"]["admin"]) => Promise<{ release(): Promise<void> }>;
   readonly withSnapshot?: typeof withExportedSnapshot;
   readonly readObject?: (key: string) => Promise<Uint8Array>;
@@ -78,10 +83,10 @@ export async function runBackup(
   const objectCounter = metrics.counter("backup_objects_total", "objects copied during backup");
   const byteCounter = metrics.counter("backup_object_bytes_total", "object bytes copied during backup");
 
+  assertNotAborted(deps.abortSignal);
   const createdAt = now();
-  const invocationSuffix = deps.migration === undefined
-    ? ""
-    : `-${sha256Hex(new TextEncoder().encode(deps.migration.invocationId)).slice(0, 12)}`;
+  const invocationId = deps.invocationId ?? deps.migration?.invocationId ?? randomUUID();
+  const invocationSuffix = `-${sha256Hex(new TextEncoder().encode(invocationId)).slice(0, 12)}`;
   const slug = `${createdAt.replace(/[:.]/g, "-")}${invocationSuffix}`;
   const finalDir = join(config.backupDir, slug);
   const stagingDir = join(config.backupDir, `.staging-${slug}`);
@@ -134,6 +139,7 @@ export async function runBackup(
 
     const index: BackupIndexV1 = {
       version: "backup-index/v1",
+      invocationId,
       createdAt,
       productVersion: config.productVersion,
       database: {
@@ -144,6 +150,7 @@ export async function runBackup(
         schemaVersion: snapshot.schemaVersion,
         snapshotId: snapshot.snapshotId,
       },
+      target: backupTargetBinding(config),
       objects,
       tenants: tenantsFromKeys(objects.map((object) => object.key)),
       objectCount: objects.length,
@@ -235,6 +242,20 @@ async function withExportedSnapshot<T>(
     }
     await client.end().catch(() => undefined);
   }
+}
+
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new AdminCliError("BackupCancelled", "backup was cancelled before dispatch", {
+      details: { reason: abortReason(signal) },
+    });
+  }
+}
+
+function abortReason(signal: AbortSignal): string {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason.message;
+  return reason === undefined ? "aborted" : String(reason);
 }
 
 async function hashFile(path: string): Promise<{ sha256: string; size: number }> {

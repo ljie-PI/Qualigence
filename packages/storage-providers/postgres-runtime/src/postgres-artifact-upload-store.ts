@@ -26,7 +26,7 @@ export class PostgresArtifactManifestStore implements ArtifactManifestStore {
       .where("artifact_id", "=", manifest.artifactId)
       .executeTakeFirst();
     if (existing !== undefined) return "duplicate";
-    await this.db
+    const inserted = await this.db
       .insertInto("artifact_manifests")
       .values({
         tenant_id: this.tenantId,
@@ -39,8 +39,30 @@ export class PostgresArtifactManifestStore implements ArtifactManifestStore {
         size_bytes: manifest.size,
         created_at: manifest.createdAt,
       })
-      .execute();
-    return "accepted";
+      .onConflict((oc) => oc.doNothing())
+      .returning("artifact_id")
+      .executeTakeFirst();
+    if (inserted !== undefined) return "accepted";
+
+    const duplicate = await this.db
+      .selectFrom("artifact_manifests")
+      .select(["artifact_id", "run_id", "kind", "media_type", "relative_path", "sha256", "size_bytes", "created_at"])
+      .where("tenant_id", "=", this.tenantId)
+      .where("artifact_id", "=", manifest.artifactId)
+      .executeTakeFirst();
+    if (
+      duplicate !== undefined &&
+      duplicate.run_id === manifest.runId &&
+      duplicate.kind === manifest.kind &&
+      duplicate.media_type === manifest.mediaType &&
+      duplicate.relative_path === manifest.relativePath &&
+      duplicate.sha256 === manifest.sha256 &&
+      duplicate.size_bytes === manifest.size &&
+      duplicate.created_at === manifest.createdAt
+    ) {
+      return "duplicate";
+    }
+    throw new Error(`Artifact manifest ${manifest.artifactId} conflicts with durable state`);
   }
 
   async listForRun(runId: RunId): Promise<readonly ArtifactManifest[]> {

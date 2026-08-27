@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Kysely, PostgresDialect, sql } from "kysely";
 import pg from "pg";
 import {
@@ -17,7 +17,7 @@ import type { SelfHostedAdminConfig } from "./../config.js";
 import { AdminCliError } from "./../errors.js";
 import { SpawnPgToolRunner } from "../pg-tools.js";
 import { runBackup, type BackupResult } from "./backup.js";
-import { verifyBackupDirectory } from "../backup/backup-index.js";
+import { databaseTargetSha256, verifyBackupDirectory } from "../backup/backup-index.js";
 
 const { Pool } = pg;
 
@@ -58,9 +58,7 @@ export async function runMigrate(
   deps: MigrateDeps = {},
 ): Promise<MigrateResult> {
   const invocationId = deps.invocationId ?? randomUUID();
-  const targetDatabaseSha256 = createHash("sha256")
-    .update(`${config.postgres.admin.host.toLowerCase()}:${config.postgres.admin.port}/${config.postgres.admin.database}`)
-    .digest("hex");
+  const targetDatabaseSha256 = databaseTargetSha256(config.postgres.admin);
   const backupInput: MigrationBackupInput = {
     invocationId,
     targetDatabaseSha256,

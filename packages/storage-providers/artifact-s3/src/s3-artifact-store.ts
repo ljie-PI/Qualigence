@@ -92,9 +92,9 @@ function assertSafeSegment(
 /**
  * Content-addressed artifact store backed by an S3-compatible object store.
  *
- * Objects are keyed `<tenant>/<project>/<run>/<sha256-prefix>/<sha256>` so that
- * identical bytes are stored idempotently only inside their authorized tenant /
- * project / Run scope and cross-tenant references cannot collide. Writes put
+ * Objects are keyed `<tenant>/<project>/<run>/<artifact-id>/<sha256-prefix>/<sha256>` so that
+ * logical Artifact manifests have distinct storage paths inside their authorized
+ * tenant / project / Run scope and cross-tenant references cannot collide. Writes put
  * the object first, then re-read its metadata (HEAD) to confirm size and hash
  * before a manifest is returned; a manifest therefore never references bytes
  * that are not durably present and verified.
@@ -122,7 +122,7 @@ export class S3ArtifactStore implements ArtifactStore {
 
     const sha256 = sha256Hex(request.bytes);
     const size = request.bytes.length;
-    const key = this.objectKey(sha256, request.runId);
+    const key = this.objectKey(sha256, request.runId, request.artifactId);
 
     try {
       await this.client.send(
@@ -227,8 +227,9 @@ export class S3ArtifactStore implements ArtifactStore {
     }
   }
 
-  private objectKey(sha256: string, runId: string): string {
-    return `${this.tenantId}/${this.projectId}/${runId}/${sha256.slice(0, 2)}/${sha256}`;
+  private objectKey(sha256: string, runId: string, artifactId: string): string {
+    assertSafeSegment("name", artifactId);
+    return `${this.tenantId}/${this.projectId}/${runId}/${artifactId}/${sha256.slice(0, 2)}/${sha256}`;
   }
 
   private assertManifestScope(manifest: ArtifactManifest): void {

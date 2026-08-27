@@ -106,10 +106,10 @@ dependency against retained or recreated named volumes before Server startup.
 
 Backups are **byte-complete** for the currently wired PostgreSQL and S3 object
 contracts: a consistent PostgreSQL snapshot plus the real bytes of every S3
-object, content-addressed and checksummed in a signed index. Until the LS-11
-closure promotes all Evidence APIs and backup/restore coverage, operators must
-also preserve the Ticket 12 `artifactdata` and `skill_signing_data` named volumes
-with their host-level volume backup process.
+object, content-addressed and checksummed in a target-bound index. Operators
+must preserve the `backups`, `artifactdata`, and `skill_signing_data` named
+volumes according to the same retention policy; `restore` revalidates the
+PostgreSQL dump and every copied S3 object before it reports success.
 
 ```sh
 # Consistent point-in-time backup into the `backups` volume.
@@ -126,12 +126,14 @@ docker compose run --rm backup
 
 # --- Disaster recovery: restore into a clean environment ---
 docker compose down                       # stop app containers
-docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata \
-  qualigence-self-hosted_artifactdata qualigence-self-hosted_skill_signing_data
+# Keep backups, artifactdata, and skill_signing_data. Recreate only the DB and
+# object-store backing volumes for a clean target.
+docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata
 docker compose up -d postgres minio        # empty DB + object store
-docker compose run --rm restore            # verifies every byte before mutating,
-                                           # then restores DB + objects and
-                                           # re-verifies byte-for-byte
+# restore provisions the configured empty object bucket if miniodata was recreated,
+# verifies every backup byte before mutating, then restores DB + objects and
+# re-verifies byte-for-byte.
+docker compose run --rm restore
 docker compose run --rm doctor
 docker compose up -d
 ```

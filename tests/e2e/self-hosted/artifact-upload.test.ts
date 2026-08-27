@@ -200,7 +200,7 @@ describe("Self-hosted Artifact upload acceptance", () => {
         sha256: sha256(artifactBytes),
         size: artifactBytes.length,
       });
-      expect(manifests[0]!.relativePath).toBe(`${TENANT_ID}/${PROJECT_ID}/${sha256(artifactBytes).slice(0, 2)}/${sha256(artifactBytes)}`);
+      expect(manifests[0]!.relativePath).toBe(`${TENANT_ID}/${PROJECT_ID}/${RUN_ID}/${ARTIFACT_ID}/${sha256(artifactBytes).slice(0, 2)}/${sha256(artifactBytes)}`);
       await expect(s3Store(TENANT_ID, PROJECT_ID).read(manifests[0]!)).resolves.toEqual(artifactBytes);
       await expect(uploadSnapshot()).resolves.toMatchObject({
         status: "verified",

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import {
+  backupTargetBinding,
   canonicalizeIndex,
   parseIndex,
   runMigrate,
@@ -67,10 +68,11 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     readonly invocationId: string;
     readonly targetDatabaseSha256: string;
     readonly targetSchemaVersion: number;
-  }) {
+  }, backupConfig: SelfHostedAdminConfig = config()) {
     const directory = join(backupDir, input.invocationId);
     const index = {
         version: "backup-index/v1" as const,
+        invocationId: input.invocationId,
         createdAt: "2026-08-20T00:00:00.000Z",
         productVersion: "ticket-02-test",
         database: {
@@ -81,6 +83,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
           schemaVersion: 0,
           snapshotId: "snapshot-1",
         },
+        target: backupTargetBinding(backupConfig),
         objects: [],
         tenants: [],
         objectCount: 0,
@@ -98,23 +101,23 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     const calls: string[] = [];
     const result = await runMigrate(config(), {
       invocationId: "invocation-1",
-      runBackup: async (_config, input) => {
+      runBackup: async (backupConfig, input) => {
         calls.push(`backup:${input.invocationId}:${input.targetSchemaVersion}`);
-        return backupResult(input);
+        return backupResult(input, backupConfig);
       },
       migrate: async (input) => {
         calls.push("migrate");
-        return { fromVersion: 0, toVersion: 14, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] };
+        return { fromVersion: 0, toVersion: 15, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] };
       },
     });
 
-    expect(calls).toEqual(["backup:invocation-1:14", "migrate"]);
+    expect(calls).toEqual(["backup:invocation-1:15", "migrate"]);
     expect(result.action).toBe("provisioned");
-    expect(result).toMatchObject({ schemaVersion: 14, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] });
+    expect(result).toMatchObject({ schemaVersion: 15, appliedVersions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] });
   });
 
   it("leaves committed data intact and the schema resumable after an injected step failure", async () => {
-    await runMigrate(config(), { invocationId: "seed", runBackup: async (_config, input) => backupResult(input) });
+    await runMigrate(config(), { invocationId: "seed", runBackup: async (backupConfig, input) => backupResult(input, backupConfig) });
     const client = new Client(config().postgres.admin);
     await client.connect();
     await client.query("delete from schema_migrations where version > 3");
@@ -137,7 +140,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     await expect(
       runMigrate(config(), {
         invocationId: "failure",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
         afterStepSchema: ({ version }) => {
           if (version === 5) throw new Error("injected failure");
         },
@@ -171,12 +174,12 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     try {
       await expect(runMigrate(isolatedConfig, {
         invocationId: "aux-failure",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
         provisionAuxSchema: async () => {
           throw new Error("injected auxiliary schema failure");
         },
       })).rejects.toThrow("injected auxiliary schema failure");
-      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(14);
+      expect(await readSchemaVersion(isolatedConfig.postgres.admin)).toBe(15);
       await expect(assertPostgresSchemaCurrent(
         isolatedConfig.postgres.admin,
         isolatedConfig.postgres.server.name,
@@ -186,7 +189,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
 
       const repaired = await runMigrate(isolatedConfig, {
         invocationId: "aux-retry",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
       });
       expect(repaired.action).toBe("migrated");
       await expect(assertPostgresSchemaCurrent(
@@ -204,7 +207,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     try {
       await runMigrate(isolatedConfig, {
         invocationId: "aux-guard-seed",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
       });
       const serverConfig = runtimeConfig(isolatedConfig, "server");
       const workerConfig = runtimeConfig(isolatedConfig, "worker");
@@ -253,7 +256,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     try {
       await runMigrate(isolatedConfig, {
         invocationId: "aux-worker-authority-seed",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
       });
       const admin = new Client(isolatedConfig.postgres.admin);
       await admin.connect();
@@ -306,7 +309,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
 
       await expect(runMigrate(isolatedConfig, {
         invocationId: "aux-malformed",
-        runBackup: async (_config, input) => backupResult(input),
+        runBackup: async (backupConfig, input) => backupResult(input, backupConfig),
       })).rejects.toMatchObject({ code: "SchemaMalformed" });
 
       const verify = new Client(isolatedConfig.postgres.admin);
@@ -327,9 +330,11 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
   it("rejects malformed durable backup byte records and totals", () => {
     const valid = {
       version: "backup-index/v1" as const,
+      invocationId: "index-test",
       createdAt: "2026-08-20T00:00:00.000Z",
       productVersion: "ticket-02-test",
       database: { dumpFile: "database.dump", format: "custom" as const, sizeBytes: 4, sha256: "a".repeat(64), schemaVersion: 0, snapshotId: "snapshot-1" },
+      target: { databaseSha256: "c".repeat(64), objectStoreSha256: "d".repeat(64) },
       objects: [], tenants: [], objectCount: 0, totalObjectBytes: 0,
       migration: { invocationId: "index-test", targetDatabaseSha256: "b".repeat(64), targetSchemaVersion: 7 },
     };

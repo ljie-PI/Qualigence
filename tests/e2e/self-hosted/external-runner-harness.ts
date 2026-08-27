@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
 import { createRunnerCa, mintClientCertificate, type PemPair } from "../../helpers/runner-identity-pki.js";
 
 const execFileAsync = promisify(execFile);
@@ -16,7 +17,6 @@ const PASS_MARKER = "qualigence-external-runner-acceptance:pass";
 const REPO_ROOT = process.cwd();
 const COMPOSE_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", "compose.yaml");
 const COMPOSE_ENV_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", ".env.example");
-const COMPOSE_SECRETS_DIR = join(REPO_ROOT, "deployments", "self-hosted", "compose", "secrets");
 const API_ISSUER = "https://issuer.example.com";
 const API_AUDIENCE = "qualigence-self-hosted";
 const TENANT_CLAIM = "https://qualigence.example/tenant";
@@ -26,6 +26,11 @@ const PROJECT_ID = "external-runner-project";
 const RUNNER_ID = "runner-external-acceptance";
 const MODEL_NAME = "qualigence-external-runner-acceptance-model";
 const COMPLETION_TIMEOUT_MS = 180_000;
+const LS11_PRODUCT_SKILL_ID = "ls11-compose-skill";
+const LS11_PRODUCT_REVIEW_TASK_ID = "ls11-compose-review-task";
+const LS11_PRODUCT_ARTIFACT_ID = "ls11-compose-artifact";
+const LS11_PRODUCT_ARTIFACT_TEXT_PREFIX = "ls11 restored compose product-surface artifact evidence";
+const ARTIFACT_CHUNK_SIZE_BYTES = 256 * 1024;
 const SECRET_FILE_NAMES: Readonly<Record<string, string>> = {
   pg_admin_password: "pg_admin_password",
   pg_server_password: "pg_server_password",
@@ -54,6 +59,7 @@ interface HarnessContext {
   readonly workDir: string;
   readonly overrideFile: string;
   readonly runnerDataDir: string;
+  readonly secretsDir: string;
   readonly proxyPort: number;
   readonly runnerGrpcPort: number;
   readonly proxyCaPem: string;
@@ -61,7 +67,6 @@ interface HarnessContext {
   readonly runnerServer: PemPair;
   readonly runnerClient: RunnerClientMaterial;
   readonly jwt: TestJwtIssuer;
-  readonly secrets: SecretBackup;
   readonly modelServer: Awaited<ReturnType<typeof startModelServer>>;
 }
 
@@ -73,10 +78,6 @@ interface RunnerClientMaterial extends PemPair {
   readonly certPath: string;
   readonly keyPath: string;
   readonly caPath: string;
-}
-
-interface SecretBackup {
-  readonly entries: readonly { readonly path: string; readonly previous?: Buffer }[];
 }
 
 interface CommandEnvelope<T> {
@@ -156,6 +157,27 @@ interface TraceEventDto {
   readonly payloadHash: string;
 }
 
+interface ArtifactMetadataDto {
+  readonly artifactId: string;
+  readonly runId: string;
+  readonly kind: string;
+  readonly mediaType: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly downloadAllowed: boolean;
+}
+
+interface RestoredProductSurfaceFixture {
+  readonly skillId: string;
+  readonly caseId: string;
+  readonly reviewTaskId: string;
+  readonly runId: string;
+  readonly artifactId: string;
+  readonly artifactText: string;
+  readonly artifactSha256: string;
+  readonly artifactSize: number;
+}
+
 interface ListEnvelope<T> {
   readonly items: readonly T[];
 }
@@ -167,6 +189,14 @@ interface TestJwtIssuer {
 }
 
 export async function runRepositoryExternalRunnerHarness(): Promise<string> {
+  return runRepositoryExternalRunnerHarnessInternal({ restoreBeforePass: false });
+}
+
+export async function runRepositoryRestoredExternalRunnerHarness(): Promise<string> {
+  return runRepositoryExternalRunnerHarnessInternal({ restoreBeforePass: true });
+}
+
+async function runRepositoryExternalRunnerHarnessInternal(options: { readonly restoreBeforePass: boolean }): Promise<string> {
   const output: string[] = [];
   let ctx: HarnessContext | undefined;
   let runner: ChildProcessWithoutNullStreams | undefined;
@@ -212,10 +242,54 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
       throw new Error("ExternalRunnerAcceptanceFailed: scheduled Run id was missing");
     }
 
-    const evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+    let evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+    const externalRunnerArtifactIds = [...evidence.run.evidenceRefs];
+    if (externalRunnerArtifactIds.length === 0) {
+      throw new Error("ExternalRunnerAcceptanceFailed: external Runner produced no artifact refs before product-surface seeding");
+    }
     output.push(`harness:run=${evidence.run.runId}`);
     output.push(`harness:traceEvents=${evidence.trace.length}`);
     output.push(`harness:artifactRefs=${evidence.run.evidenceRefs.length}`);
+    output.push(`harness:externalRunnerArtifacts=${externalRunnerArtifactIds.join(",")}`);
+
+    const productSurface = options.restoreBeforePass
+      ? await seedRestoredProductSurface(ctx, runId)
+      : undefined;
+    if (productSurface !== undefined) {
+      output.push(`harness:productSurfaceCase=${productSurface.caseId}`);
+      output.push(`harness:productSurfaceArtifact=${productSurface.artifactId}`);
+    }
+
+    if (options.restoreBeforePass) {
+      const backupDir = await runComposeBackup(ctx);
+      output.push(`harness:backup=${backupDir}`);
+      await stopChild(runner);
+      runner = undefined;
+      await compose(ctx, ["stop", "server", "worker", "console", "proxy"], 120_000);
+      await wipeComposeRestoreTarget(ctx);
+      await runComposeRestore(ctx, backupDir);
+      output.push("harness:restore=complete");
+      await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
+      await waitForStackReadiness(ctx);
+      evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+      const artifactProof = await assertRestoredExternalRunnerArtifactsDurable(
+        ctx,
+        evidence.run,
+        externalRunnerArtifactIds,
+        productSurface?.artifactId,
+      );
+      const productProof = await assertRestoredProductSurface(apiBaseUrl, ctx.proxyCaPem, token, productSurface);
+      output.push(`harness:restoredMission=${evidence.mission.missionId}`);
+      output.push(`harness:restoredRun=${evidence.run.runId}`);
+      output.push(`harness:restoredTraceEvents=${evidence.trace.length}`);
+      output.push(`harness:restoredArtifactRefs=${evidence.run.evidenceRefs.length}`);
+      output.push(`harness:restoredExternalRunnerArtifacts=${artifactProof.count}`);
+      output.push(`harness:restoredArtifactBytes=${artifactProof.totalSize}`);
+      output.push(`harness:restoredProductSkill=${productProof.skillState}`);
+      output.push(`harness:restoredProductReview=${productProof.reviewStatus}`);
+      output.push(`harness:restoredProductEvidenceBytes=${productProof.artifactSize}`);
+    }
+
     output.push(`${PASS_MARKER} ${JSON.stringify({
       projectId: project.projectId,
       missionId: mission.missionId,
@@ -224,7 +298,8 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
       missionStatus: evidence.mission.status,
       traceEvents: evidence.trace.length,
       artifactRefs: evidence.run.evidenceRefs.length,
-      runnerPid: runner.pid,
+      restored: options.restoreBeforePass,
+      runnerPid: runner?.pid,
     })}`);
     return `${output.join("\n")}\n`;
   } catch (error) {
@@ -239,7 +314,6 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
     }
     if (ctx !== undefined) {
       await compose(ctx, ["down", "-v", "--remove-orphans", "--timeout", "10"], 180_000).catch(() => undefined);
-      await restoreHarnessSecrets(ctx.secrets).catch(() => undefined);
       ctx.modelServer.close();
       await rm(ctx.workDir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -249,15 +323,16 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
 async function createHarnessContext(): Promise<HarnessContext> {
   const workDir = await mkdtemp(join(tmpdir(), "qualigence-external-runner-"));
   const runnerDataDir = join(workDir, "runner-data");
+  const secretsDir = join(workDir, "secrets");
   await mkdir(runnerDataDir, { recursive: true });
   const [runnerGrpcPort, proxyPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const jwt = createJwtIssuer();
   const runnerCa = createRunnerCa("Qualigence external Runner acceptance CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
   const runnerClient = mintClientMaterial(runnerCa, workDir);
-  const proxy = createSelfSignedServerCertificate("localhost");
+  const proxyCa = createRunnerCa("Qualigence self-hosted proxy acceptance CA");
+  const proxy = mintServerCertificate(proxyCa, "localhost");
   const modelServer = await startModelServer();
-  const secrets = await backupSecretFiles();
   const projectName = `qualigence-ext-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
 
   await writeFile(join(workDir, "runner-ca.crt"), runnerCa.certPem, "utf8");
@@ -274,20 +349,20 @@ async function createHarnessContext(): Promise<HarnessContext> {
     workDir,
     overrideFile: join(workDir, "compose.override.yaml"),
     runnerDataDir,
+    secretsDir,
     proxyPort,
     runnerGrpcPort,
-    proxyCaPem: proxy.certPem,
+    proxyCaPem: proxyCa.certPem,
     runnerCa,
     runnerServer,
     runnerClient,
     jwt,
-    secrets,
     modelServer,
   };
 }
 
 async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
-  await mkdir(COMPOSE_SECRETS_DIR, { recursive: true });
+  await mkdir(ctx.secretsDir, { recursive: true });
   const secretValues: Record<string, string> = {
     pg_admin_password: "qualigence_admin_pw",
     pg_server_password: "qualigence_server_pw",
@@ -316,36 +391,14 @@ async function writeHarnessSecrets(ctx: HarnessContext): Promise<void> {
   };
 
   for (const [name, value] of Object.entries(secretValues)) {
-    await writeFile(join(COMPOSE_SECRETS_DIR, secretFileName(name)), value, "utf8");
+    await writeFile(join(ctx.secretsDir, secretFileName(name)), value, "utf8");
   }
-}
-
-async function backupSecretFiles(): Promise<SecretBackup> {
-  const entries = await Promise.all(Object.values(SECRET_FILE_NAMES).map(async (fileName) => {
-    const path = join(COMPOSE_SECRETS_DIR, fileName);
-    try {
-      return { path, previous: await readFile(path) };
-    } catch {
-      return { path };
-    }
-  }));
-  return { entries };
 }
 
 function secretFileName(name: string): string {
   const fileName = SECRET_FILE_NAMES[name];
   if (fileName === undefined) throw new Error(`Unknown Compose secret ${name}`);
   return fileName;
-}
-
-async function restoreHarnessSecrets(backup: SecretBackup): Promise<void> {
-  for (const entry of backup.entries) {
-    if (entry.previous === undefined) {
-      await rm(entry.path, { force: true });
-      continue;
-    }
-    await writeFile(entry.path, entry.previous);
-  }
 }
 
 async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
@@ -392,6 +445,327 @@ try {
 }
 console.log("external-runner-harness:database-provisioned");
 `.replace("__RUNNER_FINGERPRINT__", ctx.runnerClient.fingerprintSha256).replace("__RUNNER_URI_SAN__", ctx.runnerClient.uriSan).replace("__RUNNER_NOT_AFTER__", ctx.runnerClient.certificateNotAfter), "utf8");
+  await writeFile(join(ctx.workDir, "admin-tools.Dockerfile"), `
+FROM ${nodeRuntimeImage()} AS node-runtime
+FROM postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+`, "utf8");
+  await writeFile(join(ctx.workDir, "seed-ls11-product-surface.mjs"), `
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { createPostgresRuntime, PostgresSelfHostedKmsKeyStore, PostgresSkillStore } from "file:///workspace/packages/storage-providers/postgres-runtime/dist/index.js";
+import { createS3ArtifactClient, S3ArtifactStore } from "file:///workspace/packages/storage-providers/artifact-s3/dist/index.js";
+import { SelfHostedKms } from "file:///workspace/packages/storage-providers/kms-self-hosted/dist/index.js";
+import { bundlePayloadContentSha256 } from "file:///workspace/packages/core-modules/skill/dist/index.js";
+
+const require = createRequire("file:///workspace/package.json");
+const runId = process.argv[2];
+if (typeof runId !== "string" || runId.length === 0) throw new Error("runId is required");
+const tenantId = ${JSON.stringify(TENANT_ID)};
+const projectId = ${JSON.stringify(PROJECT_ID)};
+const skillId = ${JSON.stringify(LS11_PRODUCT_SKILL_ID)};
+const reviewTaskId = ${JSON.stringify(LS11_PRODUCT_REVIEW_TASK_ID)};
+const artifactId = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_ID)};
+const artifactTextPrefix = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_TEXT_PREFIX)};
+const artifactText = artifactTextPrefix + ":" + runId + ":" + artifactId;
+const now = "2026-08-27T00:10:00.000Z";
+const serverPassword = (await readFile("/run/secrets/pg_server_password", "utf8")).trim();
+const s3AccessKeyId = (await readFile("/run/secrets/s3_access_key_id", "utf8")).trim();
+const s3SecretAccessKey = (await readFile("/run/secrets/s3_secret_access_key", "utf8")).trim();
+const rootKey = Buffer.from((await readFile("/run/secrets/kms_root_key", "utf8")).trim(), "base64");
+const serverConnection = { host: "postgres", port: 5432, database: "qualigence", user: "qualigence_server", password: serverPassword };
+const provider = createPostgresRuntime(serverConnection);
+const bytes = Buffer.from(artifactText, "utf8");
+const artifactSha256 = createHash("sha256").update(bytes).digest("hex");
+try {
+  await provider.withTenant(tenantId, async ({ db: tenantDb }) => {
+    const store = new PostgresSkillStore(tenantDb, tenantId);
+    const recording = {
+      recordingId: "ls11-compose-skill-rec",
+      projectId,
+      targetId: "external-runner-target",
+      targetVersion: "1",
+      observationSchemaEpoch: "pre-v1",
+      startedAt: now,
+      completedAt: now,
+      steps: [{ ordinal: 1, beforeGraphRef: "graph-before", intent: { kind: "click", target: { purpose: "submit" } }, resolvedNode: { role: "button", name: "Submit", purpose: "submit", sourceNodeId: "node-submit" }, outcome: { status: "ok" }, afterGraphRef: "graph-after", checkpoint: { requiredClaims: ["submitted"], stateFingerprint: "fp" } }],
+      sourceTraceRefs: [runId],
+    };
+    const skillVersion = (version, state) => {
+      const value = {
+        skillId,
+        version,
+        state,
+        projectId,
+        targetScope: { targetId: "external-runner-target", allowedOrigins: ["https://example.com"] },
+        parameters: [],
+        steps: [{ stepId: "step-1", intent: { kind: "click", target: { purpose: "submit" } }, preconditions: [], checkpoint: [{ kind: "claim_satisfied", claimId: "submitted" }], recovery: "stop", sourceNodeId: "node-submit" }],
+        sourceRecordingIds: [recording.recordingId],
+        observationSchemaEpoch: "pre-v1",
+        locatorSchemaVersion: "semantic-locator/v1",
+        compilerVersion: "skill-compiler/v1",
+        contentSha256: "will-be-overwritten",
+      };
+      return { ...value, contentSha256: bundlePayloadContentSha256(value) };
+    };
+    await store.saveRecording(recording);
+    await store.saveSkillVersion({ version: skillVersion(1, "draft"), expectedVersion: 0, sourceRecording: recording });
+    await store.saveSkillVersion({ version: skillVersion(2, "candidate"), expectedVersion: 1, sourceRecording: recording });
+    await store.saveSkillVersion({ version: skillVersion(3, "verified"), expectedVersion: 2, sourceRecording: recording });
+  });
+
+  const seeded = await provider.withTenant(tenantId, async ({ db }) => {
+    const job = await db
+      .selectFrom("mission_job_attempts as attempt")
+      .innerJoin("execution_jobs as job", (join) => join
+        .onRef("job.tenant_id", "=", "attempt.tenant_id")
+        .onRef("job.job_id", "=", "attempt.logical_job_id")
+        .onRef("job.mission_id", "=", "attempt.mission_id")
+        .onRef("job.mission_revision", "=", "attempt.mission_revision"))
+      .select(["job.test_case_id as caseId", "attempt.runner_job_id as runnerJobId"])
+      .where("attempt.run_id", "=", runId)
+      .executeTakeFirst();
+    if (job === undefined) throw new Error("no restored-product job found for run " + runId);
+    const caseId = job.caseId;
+    const runnerJobId = job.runnerJobId;
+
+    const artifactStore = new S3ArtifactStore({
+      client: createS3ArtifactClient({ region: "us-east-1", endpoint: "http://minio:9000", accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey, forcePathStyle: true }),
+      bucket: "qualigence-artifacts",
+      tenantId,
+      projectId,
+      clock: { now: () => now },
+    });
+    const artifact = await artifactStore.write({ artifactId, runId, name: "ls11-compose.txt", kind: "log", mediaType: "text/plain", bytes });
+
+    const kms = new SelfHostedKms({ rootKey, keyStore: new PostgresSelfHostedKmsKeyStore(provider), now: () => now });
+    const profile = await kms.encryptionProfile({ tenantId, caseId, region: "self-hosted", purpose: "investigation" });
+    const protectedHeader = {
+      schemaVersion: profile.aadSchemaVersion,
+      capsuleId: artifact.artifactId,
+      profileId: profile.profileId,
+      payloadSchemaVersion: "evidence-capsule/v1",
+      tenantId,
+      caseId,
+      recipient: profile.recipient,
+      region: profile.region,
+      purpose: profile.purpose,
+      policyId: profile.policyId,
+      contentEncryptionAlgorithm: profile.contentEncryptionAlgorithm,
+      keyWrappingAlgorithm: profile.keyWrappingAlgorithm,
+      wrappingKeyId: profile.wrappingKeyId,
+      plaintextSha256: artifact.sha256,
+      plaintextBytes: artifact.size,
+      createdAt: artifact.createdAt,
+      expiresAt: profile.expiresAt,
+    };
+
+    await db.insertInto("investigation_cases").values({
+      tenant_id: tenantId,
+      case_id: caseId,
+      finding_id: "ls11-compose-finding",
+      project_id: projectId,
+      status: "needs_human",
+      version: 1,
+      plan_revision: 1,
+      budget_json: "{}",
+      usage_json: "{}",
+      bug_episode_id: null,
+      created_at: now,
+      updated_at: now,
+    }).onConflict((oc) => oc.columns(["tenant_id", "case_id"]).doNothing()).execute();
+    await db.insertInto("review_tasks").values({
+      tenant_id: tenantId,
+      task_id: reviewTaskId,
+      case_id: caseId,
+      status: "open",
+      reason: "ls11 restored compose acceptance",
+      priority: "high",
+      evidence_completeness: "complete",
+      assignee_id: null,
+      version: 1,
+      created_at: now,
+      updated_at: now,
+    }).onConflict((oc) => oc.columns(["tenant_id", "task_id"]).doNothing()).execute();
+    await db.insertInto("artifact_manifests").values({
+      tenant_id: tenantId,
+      artifact_id: artifact.artifactId,
+      run_id: artifact.runId,
+      kind: artifact.kind,
+      media_type: artifact.mediaType,
+      relative_path: artifact.relativePath,
+      sha256: artifact.sha256,
+      size_bytes: artifact.size,
+      created_at: artifact.createdAt,
+    }).onConflict((oc) => oc.columns(["tenant_id", "artifact_id"]).doNothing()).execute();
+    await db.insertInto("artifact_upload_manifests").values({
+      tenant_id: tenantId,
+      artifact_id: artifact.artifactId,
+      project_id: projectId,
+      run_id: artifact.runId,
+      job_id: runnerJobId,
+      size_bytes: artifact.size,
+      sha256: artifact.sha256,
+      media_type: artifact.mediaType,
+      sensitivity: "sensitive",
+      chunk_size_bytes: ${ARTIFACT_CHUNK_SIZE_BYTES},
+      total_chunks: 1,
+      registered_by_runner_id: ${JSON.stringify(RUNNER_ID)},
+      registered_lease_epoch: 1,
+      status: "verified",
+      relative_path: artifact.relativePath,
+      created_at: artifact.createdAt,
+      verified_at: artifact.createdAt,
+    }).onConflict((oc) => oc.columns(["tenant_id", "artifact_id"]).doNothing()).execute();
+    await db.insertInto("evidence_encryption_profiles").values({
+      tenant_id: tenantId,
+      profile_id: profile.profileId,
+      case_id: profile.caseId,
+      recipient: profile.recipient,
+      region: profile.region,
+      purpose: profile.purpose,
+      policy_id: profile.policyId,
+      wrapping_key_id: profile.wrappingKeyId,
+      wrapping_public_key_pem: profile.wrappingPublicKeyPem,
+      content_encryption_algorithm: profile.contentEncryptionAlgorithm,
+      key_wrapping_algorithm: profile.keyWrappingAlgorithm,
+      aad_schema_version: profile.aadSchemaVersion,
+      allowed_entry_kinds_json: JSON.stringify(profile.allowedEntryKinds),
+      maximum_entry_bytes: profile.maximumEntryBytes,
+      maximum_plaintext_bytes: profile.maximumPlaintextBytes,
+      maximum_ciphertext_bytes: profile.maximumCiphertextBytes,
+      expires_at: profile.expiresAt,
+      created_at: artifact.createdAt,
+    }).onConflict((oc) => oc.columns(["tenant_id", "profile_id"]).doNothing()).execute();
+    await db.insertInto("evidence_capsule_manifests").values({
+      tenant_id: tenantId,
+      capsule_id: artifact.artifactId,
+      revision: 1,
+      parent_revision: null,
+      profile_id: profile.profileId,
+      payload_schema_version: "evidence-capsule/v1",
+      aad_schema_version: profile.aadSchemaVersion,
+      case_id: profile.caseId,
+      recipient: profile.recipient,
+      region: profile.region,
+      purpose: profile.purpose,
+      policy_id: profile.policyId,
+      content_encryption_algorithm: profile.contentEncryptionAlgorithm,
+      key_wrapping_algorithm: profile.keyWrappingAlgorithm,
+      wrapping_key_id: profile.wrappingKeyId,
+      plaintext_sha256: artifact.sha256,
+      plaintext_bytes: artifact.size,
+      ciphertext_sha256: artifact.sha256,
+      ciphertext_bytes: artifact.size,
+      ciphertext: Buffer.from(bytes),
+      wrapped_dek_base64: "wrapped",
+      nonce_base64: "nonce",
+      auth_tag_base64: "tag",
+      protected_header_json: JSON.stringify(protectedHeader),
+      revocation_state: "active",
+      revoked_at: null,
+      revoked_reason: null,
+      lifecycle_state: "active",
+      lifecycle_updated_at: artifact.createdAt,
+      deleted_at: null,
+      last_lifecycle_error: null,
+      created_at: artifact.createdAt,
+      expires_at: profile.expiresAt,
+    }).onConflict((oc) => oc.columns(["tenant_id", "capsule_id", "revision"]).doNothing()).execute();
+
+
+
+    return { caseId, runnerJobId, artifact };
+  });
+  console.log("ls11-product-surface:" + JSON.stringify({ skillId, caseId: seeded.caseId, reviewTaskId, runId, artifactId, artifactText, artifactSha256, artifactSize: bytes.length }));
+} finally {
+  await provider.close();
+}
+`, "utf8");
+  await writeFile(join(ctx.workDir, "verify-ls11-external-artifacts.mjs"), `
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createPostgresRuntime } from "file:///workspace/packages/storage-providers/postgres-runtime/dist/index.js";
+import { createS3ArtifactClient, S3ArtifactStore } from "file:///workspace/packages/storage-providers/artifact-s3/dist/index.js";
+
+const runId = process.argv[2];
+const artifactIds = JSON.parse(process.argv[3] ?? "[]");
+if (typeof runId !== "string" || runId.length === 0) throw new Error("runId is required");
+if (!Array.isArray(artifactIds) || artifactIds.length === 0 || artifactIds.some((id) => typeof id !== "string" || id.length === 0)) {
+  throw new Error("artifact ids are required");
+}
+const tenantId = ${JSON.stringify(TENANT_ID)};
+const projectId = ${JSON.stringify(PROJECT_ID)};
+const serverPassword = (await readFile("/run/secrets/pg_server_password", "utf8")).trim();
+const s3AccessKeyId = (await readFile("/run/secrets/s3_access_key_id", "utf8")).trim();
+const s3SecretAccessKey = (await readFile("/run/secrets/s3_secret_access_key", "utf8")).trim();
+const provider = createPostgresRuntime({ host: "postgres", port: 5432, database: "qualigence", user: "qualigence_server", password: serverPassword });
+const artifactStore = new S3ArtifactStore({
+  client: createS3ArtifactClient({ region: "us-east-1", endpoint: "http://minio:9000", accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey, forcePathStyle: true }),
+  bucket: "qualigence-artifacts",
+  tenantId,
+  projectId,
+  clock: { now: () => "2026-08-27T00:20:00.000Z" },
+});
+try {
+  const result = await provider.withTenant(tenantId, async ({ db }) => {
+    const rows = await db
+      .selectFrom("artifact_manifests as artifact")
+      .innerJoin("artifact_upload_manifests as upload", (join) => join
+        .onRef("upload.tenant_id", "=", "artifact.tenant_id")
+        .onRef("upload.artifact_id", "=", "artifact.artifact_id")
+        .onRef("upload.run_id", "=", "artifact.run_id")
+        .onRef("upload.relative_path", "=", "artifact.relative_path"))
+      .select([
+        "artifact.artifact_id as artifactId",
+        "artifact.run_id as runId",
+        "artifact.kind as kind",
+        "artifact.media_type as mediaType",
+        "artifact.relative_path as relativePath",
+        "artifact.sha256 as sha256",
+        "artifact.size_bytes as size",
+        "artifact.created_at as createdAt",
+        "upload.status as uploadStatus",
+        "upload.project_id as projectId",
+      ])
+      .where("artifact.run_id", "=", runId)
+      .where("artifact.artifact_id", "in", artifactIds)
+      .execute();
+    if (rows.length !== new Set(artifactIds).size) {
+      throw new Error("missing restored artifact manifests: expected " + artifactIds.length + ", got " + rows.length);
+    }
+    let totalSize = 0;
+    const sha256s = [];
+    for (const row of rows) {
+      if (row.projectId !== projectId || row.uploadStatus !== "verified") {
+        throw new Error("artifact " + row.artifactId + " upload metadata mismatch");
+      }
+      const manifest = {
+        artifactId: row.artifactId,
+        runId: row.runId,
+        kind: row.kind,
+        mediaType: row.mediaType,
+        relativePath: row.relativePath,
+        sha256: row.sha256,
+        size: Number(row.size),
+        createdAt: row.createdAt,
+      };
+      const bytes = await artifactStore.read(manifest);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (bytes.length !== manifest.size || digest !== manifest.sha256) {
+        throw new Error("artifact " + row.artifactId + " restored bytes mismatch");
+      }
+      totalSize += bytes.length;
+      sha256s.push(manifest.sha256);
+    }
+    return { count: rows.length, totalSize, sha256s };
+  });
+  console.log("ls11-external-artifacts:" + JSON.stringify(result));
+} finally {
+  await provider.close();
+}
+`, "utf8");
   await writeFile(ctx.overrideFile, [
     "services:",
     "  server-volume-permissions:",
@@ -405,6 +779,28 @@ console.log("external-runner-harness:database-provisioned");
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
     "    command: !override []",
+    "  backup:",
+    `    image: qualigence/admin-tools:${ctx.projectName}`,
+    "    build:",
+    `      context: \"${composePath(ctx.workDir)}\"`,
+    "      dockerfile: admin-tools.Dockerfile",
+    "    working_dir: /workspace",
+    "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
+    "    command: !override [\"backup\"]",
+    "    volumes:",
+    `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    "      - backups:/var/lib/qualigence/backups",
+    "  restore:",
+    `    image: qualigence/admin-tools:${ctx.projectName}`,
+    "    build:",
+    `      context: \"${composePath(ctx.workDir)}\"`,
+    "      dockerfile: admin-tools.Dockerfile",
+    "    working_dir: /workspace",
+    "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
+    "    command: !override [\"restore\"]",
+    "    volumes:",
+    `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    "      - backups:/var/lib/qualigence/backups",
     "  server:",
     `    image: ${nodeRuntimeImage()}`,
     "    build: !reset null",
@@ -447,7 +843,19 @@ console.log("external-runner-harness:database-provisioned");
     "    ports: !override",
     `      - \"127.0.0.1:${ctx.proxyPort}:443\"`,
     "",
+    ...composeSecretOverrides(ctx),
+    "",
   ].join("\n"), "utf8");
+}
+
+function composeSecretOverrides(ctx: HarnessContext): readonly string[] {
+  return [
+    "secrets:",
+    ...Object.entries(SECRET_FILE_NAMES).flatMap(([name, fileName]) => [
+      `  ${name}:`,
+      `    file: \"${composePath(join(ctx.secretsDir, fileName))}\"`,
+    ]),
+  ];
 }
 
 async function createProject(apiBaseUrl: string, ca: string, token: string): Promise<ProjectDto> {
@@ -630,6 +1038,229 @@ async function waitForDurableEvidence(
     }
     return undefined;
   }, COMPLETION_TIMEOUT_MS, 2_000, "ExternalRunnerAcceptanceFailed: timed out waiting for Mission/Run/Trace/Artifact completion");
+}
+
+async function seedRestoredProductSurface(
+  ctx: HarnessContext,
+  runId: string,
+): Promise<RestoredProductSurfaceFixture> {
+  const { stdout } = await compose(ctx, [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "node",
+    "server",
+    "/harness/seed-ls11-product-surface.mjs",
+    runId,
+  ], 180_000);
+  const seedLine = stdout.split(/\r?\n/).find((line) => line.startsWith("ls11-product-surface:"));
+  if (seedLine === undefined) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: product surface seed did not report fixture ids\n${stdout}`);
+  }
+  const parsed = JSON.parse(seedLine.slice("ls11-product-surface:".length)) as Partial<RestoredProductSurfaceFixture>;
+  if (
+    parsed.skillId !== LS11_PRODUCT_SKILL_ID ||
+    typeof parsed.caseId !== "string" ||
+    parsed.caseId.length === 0 ||
+    parsed.reviewTaskId !== LS11_PRODUCT_REVIEW_TASK_ID ||
+    parsed.runId !== runId ||
+    parsed.artifactId !== LS11_PRODUCT_ARTIFACT_ID ||
+    typeof parsed.artifactText !== "string" ||
+    !parsed.artifactText.startsWith(`${LS11_PRODUCT_ARTIFACT_TEXT_PREFIX}:`) ||
+    parsed.artifactSha256 !== sha256(parsed.artifactText) ||
+    parsed.artifactSize !== Buffer.byteLength(parsed.artifactText)
+  ) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: product surface seed returned unexpected ids ${JSON.stringify(parsed)}`);
+  }
+  return parsed as RestoredProductSurfaceFixture;
+}
+
+async function runComposeBackup(ctx: HarnessContext): Promise<string> {
+  const { stdout } = await compose(ctx, ["run", "--rm", "backup"], 240_000);
+  const backupLine = stdout.split(/\r?\n/).find((line) => line.startsWith("backup: "));
+  if (backupLine === undefined) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: backup command did not report a backup directory\n${stdout}`);
+  }
+  return backupLine.slice("backup: ".length).trim();
+}
+
+async function wipeComposeRestoreTarget(ctx: HarnessContext): Promise<void> {
+  await compose(ctx, [
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "-U",
+    "qualigence_owner",
+    "-d",
+    "qualigence",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-c",
+    "DROP SCHEMA public CASCADE; CREATE SCHEMA public; REVOKE ALL PRIVILEGES ON DATABASE qualigence FROM qualigence_server; REVOKE ALL PRIVILEGES ON DATABASE qualigence FROM qualigence_worker; DROP OWNED BY qualigence_server; DROP OWNED BY qualigence_worker; DROP ROLE IF EXISTS qualigence_server; DROP ROLE IF EXISTS qualigence_worker;",
+  ], 120_000);
+  await compose(ctx, [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/sh",
+    "minio-bucket",
+    "-ec",
+    [
+      'access_key="$(cat /run/secrets/s3_access_key_id)"',
+      'secret_key="$(cat /run/secrets/s3_secret_access_key)"',
+      'mc alias set qualigence http://minio:9000 "$access_key" "$secret_key"',
+      "mc rm --recursive --force qualigence/qualigence-artifacts || true",
+      "mc rb --force qualigence/qualigence-artifacts || true",
+    ].join("; "),
+  ], 120_000);
+}
+
+async function runComposeRestore(ctx: HarnessContext, backupDir: string): Promise<void> {
+  await runCommand("docker", [
+    "compose",
+    "-p",
+    ctx.projectName,
+    "--env-file",
+    COMPOSE_ENV_FILE,
+    "-f",
+    COMPOSE_FILE,
+    "-f",
+    ctx.overrideFile,
+    "run",
+    "--rm",
+    "-e",
+    `ADMIN_BACKUP_DIR=${backupDir}`,
+    "restore",
+  ], {
+    timeout: 300_000,
+    env: composeEnv(ctx),
+  });
+}
+
+async function assertRestoredExternalRunnerArtifactsDurable(
+  ctx: HarnessContext,
+  run: RunDto,
+  externalRunnerArtifactIds: readonly string[],
+  seededFixtureArtifactId: string | undefined,
+): Promise<{ readonly count: number; readonly totalSize: number; readonly sha256s: readonly string[] }> {
+  const distinctExternalIds = [...new Set(externalRunnerArtifactIds)];
+  if (distinctExternalIds.length === 0) {
+    throw new Error("ExternalRunnerAcceptanceFailed: no pre-seed external Runner artifact ids were captured");
+  }
+  if (seededFixtureArtifactId !== undefined && distinctExternalIds.includes(seededFixtureArtifactId)) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: pre-seed external Runner artifact ids included seeded fixture artifact ${seededFixtureArtifactId}`);
+  }
+  for (const artifactId of distinctExternalIds) {
+    if (!run.evidenceRefs.includes(artifactId)) {
+      throw new Error(`ExternalRunnerAcceptanceFailed: restored run is missing pre-seed external Runner artifact ${artifactId}`);
+    }
+  }
+
+  const { stdout } = await compose(ctx, [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "node",
+    "server",
+    "/harness/verify-ls11-external-artifacts.mjs",
+    run.runId,
+    JSON.stringify(distinctExternalIds),
+  ], 180_000);
+  const proofLine = stdout.split(/\r?\n/).find((line) => line.startsWith("ls11-external-artifacts:"));
+  if (proofLine === undefined) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: external artifact verifier did not report proof
+${stdout}`);
+  }
+  const parsed = JSON.parse(proofLine.slice("ls11-external-artifacts:".length)) as Partial<{ readonly count: number; readonly totalSize: number; readonly sha256s: readonly string[] }>;
+  if (
+    parsed.count !== distinctExternalIds.length ||
+    typeof parsed.totalSize !== "number" ||
+    parsed.totalSize <= 0 ||
+    !Array.isArray(parsed.sha256s) ||
+    parsed.sha256s.length !== distinctExternalIds.length ||
+    parsed.sha256s.some((sha256) => typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256))
+  ) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: external artifact verifier returned invalid proof ${JSON.stringify(parsed)}`);
+  }
+  return parsed as { readonly count: number; readonly totalSize: number; readonly sha256s: readonly string[] };
+}
+
+
+async function assertRestoredProductSurface(
+  apiBaseUrl: string,
+  ca: string,
+  token: string,
+  fixture: RestoredProductSurfaceFixture | undefined,
+): Promise<{ readonly skillState: string; readonly reviewStatus: string; readonly artifactSize: number }> {
+  if (fixture === undefined) {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored product surface fixture was not seeded before backup");
+  }
+  const consoleClient = new PublicApiClient({
+    baseUrl: apiBaseUrl.replace(/\/v1$/, ""),
+    accessToken: () => token,
+    fetch: consoleFetch(ca),
+  });
+
+  const skill = await consoleClient.getSkill(fixture.skillId);
+  if (skill.state !== "verified") {
+    throw new Error(`ExternalRunnerAcceptanceFailed: restored Skill ${fixture.skillId} was ${skill.state}, expected verified before transition`);
+  }
+  const deprecated = await consoleClient.deprecateSkill(fixture.skillId, {
+    expectedVersion: skill.version,
+    reason: "LS-11 restored Compose acceptance transition",
+  }, { idempotencyKey: "ls11-compose-skill-deprecate" });
+  if (deprecated.resource.state !== "deprecated") {
+    throw new Error(`ExternalRunnerAcceptanceFailed: restored Skill ${fixture.skillId} did not transition through Public API`);
+  }
+  const skillHistory = await consoleClient.listSkillVersions(fixture.skillId);
+  if (!skillHistory.items.some((item) => item.version === deprecated.resource.version && item.state === "deprecated")) {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored Skill transition was not readable through the Console API client");
+  }
+
+  const investigation = await consoleClient.getInvestigation(fixture.caseId);
+  if (investigation.caseId !== fixture.caseId || investigation.status !== "needs_human") {
+    throw new Error(`ExternalRunnerAcceptanceFailed: restored Investigation mismatch ${JSON.stringify(investigation)}`);
+  }
+  const investigations = await consoleClient.listInvestigations();
+  if (!investigations.items.some((item) => item.caseId === fixture.caseId)) {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored Investigation was not listed through the Console API client");
+  }
+
+  const tasks = await consoleClient.listReviewTasks();
+  const task = tasks.items.find((item) => item.taskId === fixture.reviewTaskId);
+  if (task === undefined || task.status !== "open") {
+    throw new Error(`ExternalRunnerAcceptanceFailed: restored Review task was not open through the Console API client`);
+  }
+  const claimed = await consoleClient.claimReviewTask(fixture.reviewTaskId, {
+    expectedVersion: task.version,
+    reviewerId: "ls11-compose-reviewer",
+  }, { idempotencyKey: "ls11-compose-review-claim" });
+  const resolved = await consoleClient.resolveReviewTask(fixture.reviewTaskId, {
+    expectedVersion: claimed.resource.version,
+    reviewerId: "ls11-compose-reviewer",
+    disposition: "confirmed",
+    evidenceRefs: [fixture.artifactId],
+  }, { idempotencyKey: "ls11-compose-review-resolve" });
+  if (resolved.resource.status !== "resolved") {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored Review task did not resolve through the Console API client");
+  }
+
+  const metadata = await getJson<ArtifactMetadataDto>(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${fixture.runId}/artifacts/${fixture.artifactId}?purpose=investigation`);
+  if (
+    metadata.artifactId !== fixture.artifactId ||
+    metadata.mediaType !== "text/plain" ||
+    metadata.size !== fixture.artifactSize ||
+    metadata.sha256 !== fixture.artifactSha256 ||
+    metadata.downloadAllowed !== true
+  ) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: restored Evidence metadata mismatch ${JSON.stringify(metadata)}`);
+  }
+  const bytes = await getBytes(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${metadata.runId}/artifacts/${fixture.artifactId}/bytes?purpose=investigation`);
+  if (bytes.toString("utf8") !== fixture.artifactText || bytes.length !== fixture.artifactSize || sha256Bytes(bytes) !== fixture.artifactSha256) {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored Evidence bytes were not readable through Public API with the expected content/hash");
+  }
+  return { skillState: deprecated.resource.state, reviewStatus: resolved.resource.status, artifactSize: bytes.length };
 }
 
 async function waitForStackReadiness(ctx: HarnessContext): Promise<void> {
@@ -857,6 +1488,42 @@ async function getJson<T>(apiBaseUrl: string, ca: string, token: string, path: s
   }, undefined);
 }
 
+async function getBytes(apiBaseUrl: string, ca: string, token: string, path: string): Promise<Buffer> {
+  const response = await httpsBinary(`${apiBaseUrl}${path}`, ca, {
+    method: "GET",
+    headers: { authorization: `Bearer ${token}` },
+  }, undefined);
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: GET ${apiBaseUrl}${path} returned ${response.status}: ${response.body.toString("utf8")}`);
+  }
+  return response.body;
+}
+
+function consoleFetch(ca: string): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+    const headers = new Headers(init?.headers);
+    const requestHeaders: Record<string, string> = {};
+    for (const [key, value] of headers.entries()) requestHeaders[key] = value;
+    let body: string | undefined;
+    if (typeof init?.body === "string") {
+      body = init.body;
+    } else if (init?.body !== undefined && init.body !== null) {
+      throw new Error("ExternalRunnerAcceptanceFailed: Console API client sent an unsupported request body type");
+    }
+    const response = await httpsBinary(url, ca, {
+      method: init?.method as RequestOptions["method"] | undefined,
+      headers: requestHeaders,
+    }, body);
+    const responseHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(response.headers)) {
+      if (typeof value === "string") responseHeaders[key] = value;
+      else if (Array.isArray(value)) responseHeaders[key] = value.join(", ");
+    }
+    return new Response(response.body, { status: response.status, headers: responseHeaders });
+  }) as typeof fetch;
+}
+
 async function httpsJson<T>(url: string, ca: string, options: RequestOptions | undefined, body: string | undefined): Promise<T> {
   const response = await httpsText(url, ca, options, body);
   const parsed = response.body.length === 0 ? undefined : JSON.parse(response.body);
@@ -872,6 +1539,16 @@ async function httpsText(
   options: RequestOptions | undefined,
   body: string | undefined,
 ): Promise<{ readonly status: number; readonly body: string }> {
+  const response = await httpsBinary(url, ca, options, body);
+  return { status: response.status, body: response.body.toString("utf8") };
+}
+
+async function httpsBinary(
+  url: string,
+  ca: string,
+  options: RequestOptions | undefined,
+  body: string | undefined,
+): Promise<{ readonly status: number; readonly body: Buffer; readonly headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolveRequest, rejectRequest) => {
     const request = httpsRequest(url, {
       ...options,
@@ -882,7 +1559,11 @@ async function httpsText(
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-      response.on("end", () => resolveRequest({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("end", () => resolveRequest({
+        status: response.statusCode ?? 0,
+        body: Buffer.concat(chunks),
+        headers: response.headers,
+      }));
     });
     request.on("error", rejectRequest);
     request.on("timeout", () => {
@@ -1157,6 +1838,10 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
 }
 
 function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Bytes(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
