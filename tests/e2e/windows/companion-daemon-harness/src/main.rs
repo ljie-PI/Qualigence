@@ -149,6 +149,17 @@ struct CheckEvidence {
     evidence_refs: Vec<String>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AppSessionEvidence {
+    label: String,
+    session_id: String,
+    process_id: u64,
+    process_creation_time: String,
+    process_group_id: String,
+    root_window_handle: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppEvidence {
@@ -160,6 +171,7 @@ struct AppEvidence {
     process_creation_time: String,
     process_group_id: String,
     root_window_handle: String,
+    sessions: Vec<AppSessionEvidence>,
     capture_node_count: usize,
     checks: Vec<CheckEvidence>,
 }
@@ -1178,10 +1190,11 @@ fn run_app_scenario(
         &format!("{technology} app.launch"),
     )?;
     let mut session_id = string_field(&session_payload, "sessionId")?;
-    let process_id = number_field(&session_payload, "processId")?;
-    let process_creation_time = string_field(&session_payload, "processCreationTime")?;
-    let process_group_id = string_field(&session_payload, "processGroupId")?;
-    let root_window_handle = string_field(&session_payload, "rootWindowHandle")?;
+    let mut process_id = number_field(&session_payload, "processId")?;
+    let mut process_creation_time = string_field(&session_payload, "processCreationTime")?;
+    let mut process_group_id = string_field(&session_payload, "processGroupId")?;
+    let mut root_window_handle = string_field(&session_payload, "rootWindowHandle")?;
+    let mut session_records = vec![app_session_evidence("initial", &session_payload)?];
 
     progress(&format!("{technology}:initial-capture"));
     let source = capture(
@@ -1462,9 +1475,12 @@ fn run_app_scenario(
             }),
             &format!("{technology} app.reset"),
         )?;
-        let _ = client.request(CompanionRequestPayload::AppShutdown(SessionIdPayload {
-            session_id: session_id.clone(),
-        }));
+        client.expect_ok(
+            CompanionRequestPayload::AppShutdown(SessionIdPayload {
+                session_id: session_id.clone(),
+            }),
+            &format!("{technology} app.shutdown-before-reset-relaunch"),
+        )?;
         let relaunch_payload = client.expect_ok(
             CompanionRequestPayload::AppLaunch(companion::ipc::dto::AppLaunchPayload {
                 target: app_target(technology, exe, harness_exe, app_dir),
@@ -1472,6 +1488,11 @@ fn run_app_scenario(
             &format!("{technology} app.relaunch-after-reset"),
         )?;
         session_id = string_field(&relaunch_payload, "sessionId")?;
+        process_id = number_field(&relaunch_payload, "processId")?;
+        process_creation_time = string_field(&relaunch_payload, "processCreationTime")?;
+        process_group_id = string_field(&relaunch_payload, "processGroupId")?;
+        root_window_handle = string_field(&relaunch_payload, "rootWindowHandle")?;
+        session_records.push(app_session_evidence("reset-relaunch", &relaunch_payload)?);
         capture(
             client,
             &session_id,
@@ -1555,8 +1576,20 @@ fn run_app_scenario(
         process_creation_time,
         process_group_id,
         root_window_handle,
+        sessions: session_records,
         capture_node_count: source.nodes.len(),
         checks,
+    })
+}
+
+fn app_session_evidence(label: &str, payload: &Value) -> HarnessResult<AppSessionEvidence> {
+    Ok(AppSessionEvidence {
+        label: label.to_string(),
+        session_id: string_field(payload, "sessionId")?,
+        process_id: number_field(payload, "processId")?,
+        process_creation_time: string_field(payload, "processCreationTime")?,
+        process_group_id: string_field(payload, "processGroupId")?,
+        root_window_handle: string_field(payload, "rootWindowHandle")?,
     })
 }
 
@@ -3109,6 +3142,14 @@ mod tests {
                 process_creation_time: "time".to_string(),
                 process_group_id: "group".to_string(),
                 root_window_handle: "0x1".to_string(),
+                sessions: vec![AppSessionEvidence {
+                    label: "initial".to_string(),
+                    session_id: "session-1".to_string(),
+                    process_id: 1,
+                    process_creation_time: "time".to_string(),
+                    process_group_id: "group".to_string(),
+                    root_window_handle: "0x1".to_string(),
+                }],
                 capture_node_count: 1,
                 checks: app_checks,
             }],
