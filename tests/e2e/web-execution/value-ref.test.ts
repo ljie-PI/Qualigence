@@ -1182,6 +1182,226 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).toContain("SensitiveEvidenceUnavailable");
   }, 90_000);
 
+  it("fails closed through Runner Spool when a current mask belongs to the wrong sensitive record", async () => {
+    const firstSecret = "ticket45-runner-spool-first-record-secret";
+    const secondSecret = "ticket45-runner-spool-second-record-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 380px; height: 260px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #wrong-record-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #wrong-record-mirror { position: absolute; left: 30px; top: 120px; width: 260px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Wrong Record Secret <input id="wrong-record-secret" aria-label="Wrong Record Secret" /></label>
+        <div id="wrong-record-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('wrong-record-secret');
+          const mirror = document.getElementById('wrong-record-mirror');
+          input.addEventListener('input', () => {
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 wrong-record mask"),
+    });
+
+    const root = await mkdtemp(join(tmpdir(), "qualigence-ticket45-wrong-record-spool-"));
+    roots.push(root);
+    await writeFile(join(root, "secret.txt"), secondSecret, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      await chmod(join(root, "secret.txt"), 0o600);
+    }
+    const configFile = join(root, "values.json");
+    await writeFile(configFile, JSON.stringify({ "profile.wrongRecordSecret": "secret.txt" }));
+    const valueProvider = await FileActionValueProvider.open({ root, configFile });
+    const spoolFile = join(root, "runner-spool.db");
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
+
+    modelServer = createServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as {
+        readonly messages: readonly { readonly content: string }[];
+        readonly response_format: { readonly json_schema: { readonly name: string } };
+      };
+      const operation = body.response_format.json_schema.name;
+      const output = operation === "execution_verification"
+        ? { status: "passed", summary: "not expected after wrong-record reflection", claims: [] }
+        : decisionFrom(body.messages.at(-1)?.content ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        id: `chatcmpl-ticket45-wrong-record-${Date.now()}`,
+        model: "ticket-45-model",
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }));
+    });
+    modelServer.listen(0, "127.0.0.1");
+    await once(modelServer, "listening");
+    const modelAddress = modelServer.address();
+    if (modelAddress === null || typeof modelAddress === "string") throw new Error("Expected model listener.");
+
+    const logs: string[] = [];
+    const batches: ExecutionEventBatch[] = [];
+    const spooledEvents: ExecutionEventBatch["events"][number][] = [];
+    const completions: ExecutionCompletion[] = [];
+    const capturedArtifacts: CapturedArtifact[] = [];
+    let seededFirstRecord = false;
+    let wrongRecordTampered = false;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const session: RunnerSession = {
+      welcome: {
+        sessionId: "session-ticket45-wrong-record-spool",
+        resumeToken: "resume-ticket45-wrong-record-spool",
+        selectedProtocolMajor: 1,
+        serverVersion: "test",
+        heartbeatIntervalMs: 10_000,
+        leaseDurationMs: 60_000,
+        traceBatchMaximumEvents: 100,
+        traceBatchMaximumBytes: 1_000_000,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 1_000_000,
+      },
+      nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+      accept: async (offerId: string): Promise<ExecutionJobLease> => ({
+        jobId: offerId.replace("offer", "job"),
+        runId: offerId.replace("offer", "run"),
+        leaseToken: `lease-${offerId}`,
+        leaseEpoch: 1,
+        expiresAt: "2099-08-21T00:00:00.000Z",
+      }),
+      renew: async () => { throw new Error("Unexpected lease renewal"); },
+      submit: async (batch: ExecutionEventBatch) => {
+        spooledEvents.push(...await spool!.pending(batch.runId, batch.firstSequenceNumber, {
+          maximumEvents: 100,
+          maximumBytes: 1_000_000,
+        }));
+        batches.push(batch);
+        return {
+          batchId: batch.batchId,
+          runId: batch.runId,
+          nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+        };
+      },
+      complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
+      close: async () => undefined,
+    };
+
+    class WrongRecordMaskTargetAdapter extends HookedWebTargetAdapter {
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        const internals = this as unknown as HookedAdapterInternals;
+        if (!seededFirstRecord) {
+          seededFirstRecord = true;
+          const initial = await super.capture(job, signal);
+          const resolver = new PlaywrightActionResolver(internals.session);
+          const executor = new PlaywrightActionExecutor(internals.session, { resolve: async () => firstSecret });
+          const firstTarget = targetNode(initial, "textbox", "Wrong Record Secret");
+          const firstAction = await resolver.resolve({ kind: "input", target: { nodeId: firstTarget.id }, valueRef: "ticket45.first", reason: "seed first record" }, initial);
+          await expect(executor.execute(firstAction, ExecutionPermit.fromAllowedDecision({ status: "allowed", reason: "ticket45" }))).resolves.toEqual({ status: "ok" });
+          const seeded = await super.capture(job, signal);
+          capturedArtifacts.push(...await super.captureArtifacts(seeded.graphId));
+          return seeded;
+        }
+        if (!wrongRecordTampered) {
+          await internals.session.withPage(async (page) => {
+            await page.evaluate((input) => {
+              const host = globalThis as unknown as Record<string, unknown> & {
+                readonly Object: typeof Object;
+                readonly document: { getElementById(id: string): { textContent: string | null } | null };
+              };
+              const state = host[input.stateProperty] as {
+                readonly records?: readonly { readonly markerId: string }[];
+              } | undefined;
+              const activeMarker = state?.records?.[0]?.markerId;
+              const mirror = host.document.getElementById("wrong-record-mirror");
+              if (mirror === null || activeMarker === undefined) throw new Error("Missing mirror or active sensitive record.");
+              mirror.textContent = input.secret;
+              const targetIds = (mirror as unknown as Record<string, unknown>)[input.targetIdsProperty] as unknown[] | undefined;
+              if (targetIds === undefined) throw new Error("Missing mirror target ids.");
+              targetIds.length = 0;
+              targetIds[targetIds.length] = activeMarker;
+            }, {
+              secret: firstSecret,
+              stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+              targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+            });
+          });
+          wrongRecordTampered = true;
+        }
+        const graph = await super.capture(job, signal);
+        capturedArtifacts.push(...await super.captureArtifacts(graph.graphId));
+        return graph;
+      }
+    }
+
+    const config: RunnerConfig = {
+      runnerId: "runner-ticket45-wrong-record-spool",
+      coreAddress: "unused",
+      authority: "unused",
+      tls: { ca: Buffer.alloc(0), cert: Buffer.alloc(0), key: Buffer.alloc(0) },
+      dataDir: root,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      model: {
+        baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
+        apiKey: "acceptance-api-key",
+        modelName: "ticket-45-model",
+        maximumTokensPerCall: 100,
+      },
+    };
+    const runtime = new RunnerOfferRuntime({
+      config,
+      session,
+      spool,
+      valueProvider,
+      createTarget: (targetOptions) => new WrongRecordMaskTargetAdapter(targetOptions, {}),
+    });
+
+    try {
+      await runtime.run(offer("input", "profile.wrongRecordSecret", "Wrong Record Secret", "textbox", "ticket45-wrong-record-spool"));
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    expect(seededFirstRecord).toBe(true);
+    expect(wrongRecordTampered).toBe(true);
+    expect(completions).toEqual([
+      { jobId: "job-ticket45-wrong-record-spool", runId: "run-ticket45-wrong-record-spool", status: "error", errorCode: "SensitiveEvidenceUnavailable" },
+    ]);
+    const trace = batches.flatMap((batch) => batch.events);
+    expect(trace.find((event) => event.runId === "run-ticket45-wrong-record-spool" && event.stage === "run_completed")?.payload)
+      .toMatchObject({ status: "error", errorCode: "SensitiveEvidenceUnavailable" });
+    for (const secret of [firstSecret, secondSecret]) {
+      expect(JSON.stringify(trace)).not.toContain(secret);
+      expect(JSON.stringify(spooledEvents)).not.toContain(secret);
+      expect(JSON.stringify(logs)).not.toContain(secret);
+    }
+    const artifactBytes = Buffer.concat(capturedArtifacts.map((artifact) => Buffer.from(artifact.bytes))).toString("utf8");
+    expect(artifactBytes).not.toContain(firstSecret);
+    expect(artifactBytes).not.toContain(secondSecret);
+    await spool.close();
+    spool = undefined;
+    const spoolText = (await readFile(spoolFile)).toString("utf8");
+    expect(spoolText).not.toContain(firstSecret);
+    expect(spoolText).not.toContain(secondSecret);
+    expect(spoolText).toContain("SensitiveEvidenceUnavailable");
+  }, 90_000);
+
   it("proves second-race failures write no valueRef plaintext through Runner Spool", async () => {
     const secondRaceSecret = "ticket45-runner-spool-second-race-secret";
     fixture = await startFixtureServer({

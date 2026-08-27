@@ -677,6 +677,12 @@ function collectPageObservation(
   type NativeDomAuthority = {
     readonly arrayFrom: typeof Array.from;
     readonly arrayIsArray: typeof Array.isArray;
+    readonly htmlCollectionItem: (index: number) => Element | null;
+    readonly htmlCollectionLengthGet: (() => number) | undefined;
+    readonly htmlOptionsCollectionItem: (index: number) => HTMLOptionElement | null;
+    readonly htmlOptionsCollectionLengthGet: (() => number) | undefined;
+    readonly nodeListItem: (index: number) => Node | null;
+    readonly nodeListLengthGet: (() => number) | undefined;
     readonly reflectApply: typeof Reflect.apply;
     readonly stringIncludes: typeof String.prototype.includes;
     readonly stringNormalize: typeof String.prototype.normalize;
@@ -717,6 +723,9 @@ function collectPageObservation(
   };
   const nativeDom = ((window as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.sensitiveShadowRootsProperty])?.nativeDom;
   if (nativeDom === undefined || typeof nativeDom.reflectApply !== "function" ||
+    typeof nativeDom.htmlCollectionItem !== "function" || typeof nativeDom.htmlCollectionLengthGet !== "function" ||
+    typeof nativeDom.htmlOptionsCollectionItem !== "function" || typeof nativeDom.htmlOptionsCollectionLengthGet !== "function" ||
+    typeof nativeDom.nodeListItem !== "function" || typeof nativeDom.nodeListLengthGet !== "function" ||
     typeof nativeDom.stringIncludes !== "function" || typeof nativeDom.stringNormalize !== "function" ||
     typeof nativeDom.stringReplace !== "function" || typeof nativeDom.stringToLowerCase !== "function" ||
     typeof nativeDom.stringTrim !== "function" ||
@@ -729,12 +738,39 @@ function collectPageObservation(
   const stringIncludes = (value: string, search: string): boolean => apply(dom.stringIncludes as (...args: never[]) => boolean, value, [search]);
   const stringToLowerCase = (value: string): string => apply(dom.stringToLowerCase as (...args: never[]) => string, value);
   const stringTrim = (value: string): string => apply(dom.stringTrim as (...args: never[]) => string, value);
-  const arrayFrom = <T>(items: ArrayLike<T>): T[] => {
-    const length = arrayLikeLength(items);
-    if (length === undefined) throw new Error("Untrusted array-like length.");
+  const assertCollectionLength = (length: unknown): number => {
+    if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+      throw new Error("Untrusted DOM collection length.");
+    }
+    return length;
+  };
+  const nodeListToArray = <T extends Node>(items: NodeList): T[] => {
+    const length = assertCollectionLength(apply(dom.nodeListLengthGet!, items));
     const result: T[] = [];
     for (let index = 0; index < length; index += 1) {
-      result[index] = items[index]!;
+      const item = apply(dom.nodeListItem, items, [index]);
+      if (item === null) throw new Error("Untrusted NodeList item.");
+      result[index] = item as T;
+    }
+    return result;
+  };
+  const htmlCollectionToArray = <T extends Element>(items: HTMLCollectionOf<T>): T[] => {
+    const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, items));
+    const result: T[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const item = apply(dom.htmlCollectionItem, items, [index]);
+      if (item === null) throw new Error("Untrusted HTMLCollection item.");
+      result[index] = item as T;
+    }
+    return result;
+  };
+  const htmlOptionsCollectionToArray = (items: HTMLOptionsCollection): HTMLOptionElement[] => {
+    const length = assertCollectionLength(apply(dom.htmlOptionsCollectionLengthGet!, items));
+    const result: HTMLOptionElement[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const item = apply(dom.htmlOptionsCollectionItem, items, [index]);
+      if (item === null) throw new Error("Untrusted HTMLOptionsCollection item.");
+      result[index] = item;
     }
     return result;
   };
@@ -743,20 +779,16 @@ function collectPageObservation(
       target[target.length] = items[index]!;
     }
   };
-  const arrayLikeLength = (items: { readonly length?: unknown }): number | undefined => {
-    const length = items.length;
-    return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
-  };
   const getAttribute = (element: Element, name: string): string | null => apply(dom.elementGetAttribute, element, [name]);
   const hasAttribute = (element: Element, name: string): boolean => apply(dom.elementHasAttribute, element, [name]);
   const setAttribute = (element: Element, name: string, value: string): void => { apply(dom.elementSetAttribute, element, [name, value]); };
-  const queryDocument = (selector: string): Element[] => arrayFrom(apply(dom.documentQuerySelectorAll, document, [selector]));
+  const queryDocument = (selector: string): Element[] => nodeListToArray(apply(dom.documentQuerySelectorAll, document, [selector]));
   const queryDocumentOne = (selector: string): Element | null => apply(dom.documentQuerySelector, document, [selector]);
-  const queryRoot = (root: ShadowRoot, selector: string): Element[] => arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+  const queryRoot = (root: ShadowRoot, selector: string): Element[] => nodeListToArray(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
   const closest = (element: Element, selector: string): Element | null => apply(dom.elementClosest, element, [selector]);
   const tagName = (element: Element): string => stringToLowerCase(apply(dom.elementTagNameGet!, element));
   const textContent = (node: Node): string => apply(dom.nodeTextContentGet!, node) ?? "";
-  const childNodes = (node: Node): ChildNode[] => arrayFrom(apply(dom.nodeChildNodesGet!, node));
+  const childNodes = (node: Node): ChildNode[] => nodeListToArray(apply(dom.nodeChildNodesGet!, node));
   const getRootNode = (node: Node): Node => apply(dom.nodeGetRootNode, node);
   const textData = (node: Text): string => apply(dom.characterDataDataGet!, node);
   const shadowRoot = (element: Element): ShadowRoot | null => apply(dom.elementShadowRootGet!, element);
@@ -767,7 +799,7 @@ function collectPageObservation(
   const textareaValue = (element: Element): string => apply(dom.htmlTextAreaElementValueGet!, element);
   const textareaPlaceholder = (element: Element): string => apply(dom.htmlTextAreaElementPlaceholderGet!, element);
   const selectValue = (element: Element): string => apply(dom.htmlSelectElementValueGet!, element);
-  const selectedOptions = (element: Element): HTMLOptionElement[] => arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, element));
+  const selectedOptions = (element: Element): HTMLOptionElement[] => htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, element));
   const optionText = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementTextGet!, option);
   const optionValue = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementValueGet!, option);
   const styleProperty = (style: CSSStyleDeclaration, name: string): string => apply(dom.cssStyleDeclarationGetPropertyValue, style, [name]);
@@ -845,7 +877,7 @@ function collectPageObservation(
       }
     }
     const elementId = getAttribute(element, "id") ?? "";
-    if (/^[A-Za-z][A-Za-z0-9_-]*$/.test(elementId)) {
+    if (isSafeLabelForId(elementId)) {
       const label = queryDocumentOne(`label[for="${elementId}"]`);
       const labelText = label === null ? "" : textContent(label);
       if (stringTrim(labelText) !== "") {
@@ -954,7 +986,7 @@ function collectPageObservation(
     let token = "";
     for (let index = 0; index < value.length; index += 1) {
       const character = value[index] ?? "";
-      if (character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f") {
+      if (isWhitespaceCharacter(character)) {
         if (token !== "") {
           result[result.length] = token;
           token = "";
@@ -965,6 +997,36 @@ function collectPageObservation(
     }
     if (token !== "") result[result.length] = token;
     return result;
+  }
+
+  function isSafeLabelForId(value: string): boolean {
+    if (value.length === 0 || !isAsciiLetter(value[0] ?? "")) return false;
+    for (let index = 1; index < value.length; index += 1) {
+      const character = value[index] ?? "";
+      if (!isAsciiLetter(character) && !isAsciiDigit(character) && character !== "_" && character !== "-") return false;
+    }
+    return true;
+  }
+
+  function isSafeMaskId(value: string): boolean {
+    if (value.length === 0) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index] ?? "";
+      if (!isAsciiLetter(character) && !isAsciiDigit(character) && character !== "_" && character !== "-") return false;
+    }
+    return true;
+  }
+
+  function isAsciiLetter(character: string): boolean {
+    return (character >= "A" && character <= "Z") || (character >= "a" && character <= "z");
+  }
+
+  function isAsciiDigit(character: string): boolean {
+    return character >= "0" && character <= "9";
+  }
+
+  function isWhitespaceCharacter(character: string): boolean {
+    return character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f";
   }
 
   function directText(element: Element): string {
@@ -1119,23 +1181,10 @@ function collectPageObservation(
     return elements;
   }
 
-  function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, pendingPageRecord: boolean): boolean {
-    if (hasSensitiveTargetId(ids, record.markerId)) {
-      if (pendingPageRecord || !isMaskableElement(element)) return true;
-      const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
-      if (maskId !== null && arrayHasString(record.maskIds, maskId)) return true;
-    }
-    return sensitiveElementCoveredByAnyTrustedMask(element);
-  }
-
-  function sensitiveElementCoveredByAnyTrustedMask(element: Element): boolean {
-    if (!isMaskableElement(element)) return false;
-    const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
-    if (maskId === null) return false;
-    for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
-      if (arrayHasString(hostSensitiveRecords[recordIndex]!.maskIds, maskId)) return true;
-    }
-    return false;
+  function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, _pendingPageRecord: boolean): boolean {
+    if (hasSensitiveTargetId(ids, record.markerId)) return true;
+    const maskId = isMaskableElement(element) ? getAttribute(element, input.sensitiveMaskIdAttribute) : null;
+    return maskId !== null && arrayHasString(record.maskIds, maskId);
   }
 
   function candidateFieldUnavailable(element: Element, ids: readonly string[], value: string): boolean {
@@ -1240,7 +1289,7 @@ function collectPageObservation(
           return failed();
         }
         const id = recordMaskIds[index];
-        if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) return failed();
+        if (typeof id !== "string" || !isSafeMaskId(id)) return failed();
         setAttribute(element, input.sensitiveMaskIdAttribute, id);
         const observedMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
         if (observedMaskId !== id) return failed();

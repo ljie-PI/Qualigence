@@ -744,6 +744,12 @@ async function beginPageSensitiveActionEpoch(
     type NativeDomAuthority = {
       readonly arrayFrom: typeof Array.from;
       readonly arrayIsArray: typeof Array.isArray;
+      readonly htmlCollectionItem: (index: number) => Element | null;
+      readonly htmlCollectionLengthGet: (() => number) | undefined;
+      readonly htmlOptionsCollectionItem: (index: number) => HTMLOptionElement | null;
+      readonly htmlOptionsCollectionLengthGet: (() => number) | undefined;
+      readonly nodeListItem: (index: number) => Node | null;
+      readonly nodeListLengthGet: (() => number) | undefined;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
       readonly stringIncludes: typeof String.prototype.includes;
@@ -915,6 +921,12 @@ async function beginPageSensitiveActionEpoch(
       const required = [
         candidate.arrayFrom,
         candidate.arrayIsArray,
+        candidate.htmlCollectionItem,
+        candidate.htmlCollectionLengthGet,
+        candidate.htmlOptionsCollectionItem,
+        candidate.htmlOptionsCollectionLengthGet,
+        candidate.nodeListItem,
+        candidate.nodeListLengthGet,
         candidate.objectDefineProperty,
         candidate.reflectApply,
         candidate.stringIncludes,
@@ -970,10 +982,6 @@ async function beginPageSensitiveActionEpoch(
       return apply(dom.stringNormalize as (...args: never[]) => string, value, [form]);
     }
 
-    function stringReplace(value: string, pattern: string | RegExp, replacement: string): string {
-      return apply(dom.stringReplace as (...args: never[]) => string, value, [pattern, replacement]);
-    }
-
     function stringToLowerCase(value: string): string {
       return apply(dom.stringToLowerCase as (...args: never[]) => string, value);
     }
@@ -982,19 +990,44 @@ async function beginPageSensitiveActionEpoch(
       return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
-    function arrayFrom<T>(items: ArrayLike<T>): T[] {
-      const length = arrayLikeLength(items);
-      if (length === undefined) throw new Error("Untrusted array-like length.");
+    function assertCollectionLength(length: unknown): number {
+      if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+        throw new Error("Untrusted DOM collection length.");
+      }
+      return length;
+    }
+
+    function nodeListToArray<T extends Node>(items: NodeList): T[] {
+      const length = assertCollectionLength(apply(dom.nodeListLengthGet!, items));
       const result: T[] = [];
       for (let index = 0; index < length; index += 1) {
-        result[index] = items[index]!;
+        const item = apply(dom.nodeListItem, items, [index]);
+        if (item === null) throw new Error("Untrusted NodeList item.");
+        result[index] = item as T;
       }
       return result;
     }
 
-    function arrayLikeLength(items: { readonly length?: unknown }): number | undefined {
-      const length = items.length;
-      return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
+    function htmlCollectionToArray<T extends Element>(items: HTMLCollectionOf<T>): T[] {
+      const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, items));
+      const result: T[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const item = apply(dom.htmlCollectionItem, items, [index]);
+        if (item === null) throw new Error("Untrusted HTMLCollection item.");
+        result[index] = item as T;
+      }
+      return result;
+    }
+
+    function htmlOptionsCollectionToArray(items: HTMLOptionsCollection): HTMLOptionElement[] {
+      const length = assertCollectionLength(apply(dom.htmlOptionsCollectionLengthGet!, items));
+      const result: HTMLOptionElement[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const item = apply(dom.htmlOptionsCollectionItem, items, [index]);
+        if (item === null) throw new Error("Untrusted HTMLOptionsCollection item.");
+        result[index] = item;
+      }
+      return result;
     }
 
     function createWeakMap<K extends object, V>(): WeakMap<K, V> {
@@ -1010,15 +1043,15 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function queryDocument(selector: string): Element[] {
-      return arrayFrom(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
+      return nodeListToArray(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
     }
 
     function queryRoot(root: ShadowRoot, selector: string): Element[] {
-      return arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+      return nodeListToArray(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
     }
 
     function queryDescendants(candidate: Element): Element[] {
-      return arrayFrom(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
+      return nodeListToArray(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
     }
 
     function getAttribute(candidate: Element, name: string): string | null {
@@ -1038,7 +1071,7 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function childNodes(node: Node): ChildNode[] {
-      return arrayFrom(apply(dom.nodeChildNodesGet!, node));
+      return nodeListToArray(apply(dom.nodeChildNodesGet!, node));
     }
 
     function textContent(node: Node): string {
@@ -1094,11 +1127,11 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function selectOptions(candidate: Element): HTMLOptionElement[] {
-      return arrayFrom(apply(dom.htmlSelectElementOptionsGet!, candidate));
+      return htmlOptionsCollectionToArray(apply(dom.htmlSelectElementOptionsGet!, candidate));
     }
 
     function selectedOptions(candidate: Element): HTMLOptionElement[] {
-      return arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
+      return htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
     }
 
     function optionValue(option: HTMLOptionElement): string {
@@ -1175,7 +1208,7 @@ async function beginPageSensitiveActionEpoch(
       const values: string[] = [];
       pushUniqueNonEmpty(values, source);
       if (actionKind === "input") {
-        const browserValue = stringReplace(stringReplace(source, /\r\n/g, "\n"), /\r/g, "\n");
+        const browserValue = normalizeBrowserLineBreaks(source);
         pushUniqueNonEmpty(values, browserValue);
         pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(browserValue));
       }
@@ -1449,7 +1482,7 @@ async function beginPageSensitiveActionEpoch(
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes: Node[] = [record.target];
-      appendArray(touchedNodes, arrayFrom(record.addedNodes));
+      appendArray(touchedNodes, nodeListToArray(record.addedNodes));
       const _forOfItems26 = touchedNodes;
       for (let _forOfIndex26 = 0; _forOfIndex26 < _forOfItems26.length; _forOfIndex26 += 1) {
         const node = _forOfItems26[_forOfIndex26]!;
@@ -1463,7 +1496,7 @@ async function beginPageSensitiveActionEpoch(
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        const _forOfItems27 = arrayFrom(record.addedNodes);
+        const _forOfItems27 = nodeListToArray(record.addedNodes);
         for (let _forOfIndex27 = 0; _forOfIndex27 < _forOfItems27.length; _forOfIndex27 += 1) {
           const node = _forOfItems27[_forOfIndex27]!;
           addNode(node, candidates);
@@ -1722,7 +1755,61 @@ async function beginPageSensitiveActionEpoch(
     }
 
     function normalizeVisibleSensitiveForm(value: string): string {
-      return stringTrim(stringReplace(stringNormalize(value, "NFC"), /\s+/g, " "));
+      return stringTrim(collapseWhitespace(stringNormalize(value, "NFC")));
+    }
+
+    function normalizeBrowserLineBreaks(value: string): string {
+      let result = "";
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        if (character === "\r") {
+          if (value[index + 1] === "\n") index += 1;
+          result += "\n";
+        } else {
+          result += character;
+        }
+      }
+      return result;
+    }
+
+    function collapseWhitespace(value: string): string {
+      let result = "";
+      let pendingSpace = false;
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        if (isWhitespaceCharacter(character)) {
+          pendingSpace = true;
+        } else {
+          if (pendingSpace && result !== "") result += " ";
+          result += character;
+          pendingSpace = false;
+        }
+      }
+      return result;
+    }
+
+    function safeMaskIdPart(value: string): string {
+      let result = "";
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        result += isAsciiMaskIdCharacter(character) ? character : "_";
+      }
+      return result;
+    }
+
+    function isAsciiMaskIdCharacter(character: string): boolean {
+      return (character >= "A" && character <= "Z") ||
+        (character >= "a" && character <= "z") ||
+        (character >= "0" && character <= "9") ||
+        character === "_" || character === "-";
+    }
+
+    function isWhitespaceCharacter(character: string): boolean {
+      return character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f" || character === "\v" ||
+        character === "\u00a0" || character === "\u1680" || character === "\u180e" || character === "\u2000" || character === "\u2001" ||
+        character === "\u2002" || character === "\u2003" || character === "\u2004" || character === "\u2005" || character === "\u2006" ||
+        character === "\u2007" || character === "\u2008" || character === "\u2009" || character === "\u200a" || character === "\u2028" ||
+        character === "\u2029" || character === "\u202f" || character === "\u205f" || character === "\u3000" || character === "\ufeff";
     }
 
     function carriesForm(value: string, form: string | readonly string[]): boolean {
@@ -1822,6 +1909,12 @@ async function endPageSensitiveActionEpoch(
     type NativeDomAuthority = {
       readonly arrayFrom: typeof Array.from;
       readonly arrayIsArray: typeof Array.isArray;
+      readonly htmlCollectionItem: (index: number) => Element | null;
+      readonly htmlCollectionLengthGet: (() => number) | undefined;
+      readonly htmlOptionsCollectionItem: (index: number) => HTMLOptionElement | null;
+      readonly htmlOptionsCollectionLengthGet: (() => number) | undefined;
+      readonly nodeListItem: (index: number) => Node | null;
+      readonly nodeListLengthGet: (() => number) | undefined;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
       readonly stringIncludes: typeof String.prototype.includes;
@@ -1925,6 +2018,12 @@ async function endPageSensitiveActionEpoch(
       const required = [
         candidate.arrayFrom,
         candidate.arrayIsArray,
+        candidate.htmlCollectionItem,
+        candidate.htmlCollectionLengthGet,
+        candidate.htmlOptionsCollectionItem,
+        candidate.htmlOptionsCollectionLengthGet,
+        candidate.nodeListItem,
+        candidate.nodeListLengthGet,
         candidate.objectDefineProperty,
         candidate.reflectApply,
         candidate.stringIncludes,
@@ -1982,10 +2081,6 @@ async function endPageSensitiveActionEpoch(
       return apply(dom.stringNormalize as (...args: never[]) => string, value, [form]);
     }
 
-    function stringReplace(value: string, pattern: string | RegExp, replacement: string): string {
-      return apply(dom.stringReplace as (...args: never[]) => string, value, [pattern, replacement]);
-    }
-
     function stringToLowerCase(value: string): string {
       return apply(dom.stringToLowerCase as (...args: never[]) => string, value);
     }
@@ -1994,19 +2089,44 @@ async function endPageSensitiveActionEpoch(
       return apply(dom.stringTrim as (...args: never[]) => string, value);
     }
 
-    function arrayFrom<T>(items: ArrayLike<T>): T[] {
-      const length = arrayLikeLength(items);
-      if (length === undefined) throw new Error("Untrusted array-like length.");
+    function assertCollectionLength(length: unknown): number {
+      if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+        throw new Error("Untrusted DOM collection length.");
+      }
+      return length;
+    }
+
+    function nodeListToArray<T extends Node>(items: NodeList): T[] {
+      const length = assertCollectionLength(apply(dom.nodeListLengthGet!, items));
       const result: T[] = [];
       for (let index = 0; index < length; index += 1) {
-        result[index] = items[index]!;
+        const item = apply(dom.nodeListItem, items, [index]);
+        if (item === null) throw new Error("Untrusted NodeList item.");
+        result[index] = item as T;
       }
       return result;
     }
 
-    function arrayLikeLength(items: { readonly length?: unknown }): number | undefined {
-      const length = items.length;
-      return typeof length === "number" && Number.isSafeInteger(length) && length >= 0 ? length : undefined;
+    function htmlCollectionToArray<T extends Element>(items: HTMLCollectionOf<T>): T[] {
+      const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, items));
+      const result: T[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const item = apply(dom.htmlCollectionItem, items, [index]);
+        if (item === null) throw new Error("Untrusted HTMLCollection item.");
+        result[index] = item as T;
+      }
+      return result;
+    }
+
+    function htmlOptionsCollectionToArray(items: HTMLOptionsCollection): HTMLOptionElement[] {
+      const length = assertCollectionLength(apply(dom.htmlOptionsCollectionLengthGet!, items));
+      const result: HTMLOptionElement[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const item = apply(dom.htmlOptionsCollectionItem, items, [index]);
+        if (item === null) throw new Error("Untrusted HTMLOptionsCollection item.");
+        result[index] = item;
+      }
+      return result;
     }
 
     function createWeakMap<K extends object, V>(): WeakMap<K, V> {
@@ -2022,15 +2142,15 @@ async function endPageSensitiveActionEpoch(
     }
 
     function queryDocument(selector: string): Element[] {
-      return arrayFrom(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
+      return nodeListToArray(apply(dom.documentQuerySelectorAll, element.ownerDocument, [selector]));
     }
 
     function queryRoot(root: ShadowRoot, selector: string): Element[] {
-      return arrayFrom(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
+      return nodeListToArray(apply(dom.documentFragmentQuerySelectorAll, root, [selector]));
     }
 
     function queryDescendants(candidate: Element): Element[] {
-      return arrayFrom(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
+      return nodeListToArray(apply(dom.elementQuerySelectorAll, candidate, ["*"]));
     }
 
     function getAttribute(candidate: Element, name: string): string | null {
@@ -2054,7 +2174,7 @@ async function endPageSensitiveActionEpoch(
     }
 
     function childNodes(node: Node): ChildNode[] {
-      return arrayFrom(apply(dom.nodeChildNodesGet!, node));
+      return nodeListToArray(apply(dom.nodeChildNodesGet!, node));
     }
 
     function textContent(node: Node): string {
@@ -2078,11 +2198,11 @@ async function endPageSensitiveActionEpoch(
     }
 
     function selectOptions(candidate: Element): HTMLOptionElement[] {
-      return arrayFrom(apply(dom.htmlSelectElementOptionsGet!, candidate));
+      return htmlOptionsCollectionToArray(apply(dom.htmlSelectElementOptionsGet!, candidate));
     }
 
     function selectedOptions(candidate: Element): HTMLOptionElement[] {
-      return arrayFrom(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
+      return htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
     }
 
     function inputValue(candidate: Element): string {
@@ -2220,7 +2340,7 @@ async function endPageSensitiveActionEpoch(
           return maskIds;
         }
         ordinal += 1;
-        const maskId = `qm-${stringReplace(epochToUpdate.markerId, /[^A-Za-z0-9_-]/g, "_")}-${ordinal}`;
+        const maskId = `qm-${safeMaskIdPart(epochToUpdate.markerId)}-${ordinal}`;
         setAttribute(candidate, input.maskAttribute, maskId);
         if (getAttribute(candidate, input.maskAttribute) !== maskId) {
           epochToUpdate.poisoned = true;
@@ -2341,7 +2461,7 @@ async function endPageSensitiveActionEpoch(
 
     function touchesUnprovableShadowRoot(record: MutationRecord): boolean {
       const touchedNodes: Node[] = [record.target];
-      appendArray(touchedNodes, arrayFrom(record.addedNodes));
+      appendArray(touchedNodes, nodeListToArray(record.addedNodes));
       const _forOfItems50 = touchedNodes;
       for (let _forOfIndex50 = 0; _forOfIndex50 < _forOfItems50.length; _forOfIndex50 += 1) {
         const node = _forOfItems50[_forOfIndex50]!;
@@ -2355,7 +2475,7 @@ async function endPageSensitiveActionEpoch(
       const candidates: Element[] = [];
       addNode(record.target, candidates);
       if (record.type === "childList") {
-        const _forOfItems51 = arrayFrom(record.addedNodes);
+        const _forOfItems51 = nodeListToArray(record.addedNodes);
         for (let _forOfIndex51 = 0; _forOfIndex51 < _forOfItems51.length; _forOfIndex51 += 1) {
           const node = _forOfItems51[_forOfIndex51]!;
           addNode(node, candidates);
@@ -2598,7 +2718,7 @@ async function endPageSensitiveActionEpoch(
       if (actionKind === "input" && (tagName(target) === "input" || tagName(target) === "textarea")) {
         const currentValue = fieldValue(target);
         pushUniqueNonEmpty(values, currentValue);
-        pushUniqueNonEmpty(values, stringReplace(stringReplace(currentValue, /\r\n/g, "\n"), /\r/g, "\n"));
+        pushUniqueNonEmpty(values, normalizeBrowserLineBreaks(currentValue));
         pushUniqueNonEmpty(values, normalizeVisibleSensitiveForm(currentValue));
       }
       if (actionKind === "select" && tagName(target) === "select") {
@@ -2630,7 +2750,61 @@ async function endPageSensitiveActionEpoch(
     }
 
     function normalizeVisibleSensitiveForm(value: string): string {
-      return stringTrim(stringReplace(stringNormalize(value, "NFC"), /\s+/g, " "));
+      return stringTrim(collapseWhitespace(stringNormalize(value, "NFC")));
+    }
+
+    function normalizeBrowserLineBreaks(value: string): string {
+      let result = "";
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        if (character === "\r") {
+          if (value[index + 1] === "\n") index += 1;
+          result += "\n";
+        } else {
+          result += character;
+        }
+      }
+      return result;
+    }
+
+    function collapseWhitespace(value: string): string {
+      let result = "";
+      let pendingSpace = false;
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        if (isWhitespaceCharacter(character)) {
+          pendingSpace = true;
+        } else {
+          if (pendingSpace && result !== "") result += " ";
+          result += character;
+          pendingSpace = false;
+        }
+      }
+      return result;
+    }
+
+    function safeMaskIdPart(value: string): string {
+      let result = "";
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index] ?? "";
+        result += isAsciiMaskIdCharacter(character) ? character : "_";
+      }
+      return result;
+    }
+
+    function isAsciiMaskIdCharacter(character: string): boolean {
+      return (character >= "A" && character <= "Z") ||
+        (character >= "a" && character <= "z") ||
+        (character >= "0" && character <= "9") ||
+        character === "_" || character === "-";
+    }
+
+    function isWhitespaceCharacter(character: string): boolean {
+      return character === " " || character === "\t" || character === "\n" || character === "\r" || character === "\f" || character === "\v" ||
+        character === "\u00a0" || character === "\u1680" || character === "\u180e" || character === "\u2000" || character === "\u2001" ||
+        character === "\u2002" || character === "\u2003" || character === "\u2004" || character === "\u2005" || character === "\u2006" ||
+        character === "\u2007" || character === "\u2008" || character === "\u2009" || character === "\u200a" || character === "\u2028" ||
+        character === "\u2029" || character === "\u202f" || character === "\u205f" || character === "\u3000" || character === "\ufeff";
     }
 
     function fieldValue(candidate: Element): string {

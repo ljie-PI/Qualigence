@@ -166,6 +166,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     type NativeDomAuthority = {
       readonly arrayFrom: typeof Array.from;
       readonly arrayIsArray: typeof Array.isArray;
+      readonly htmlCollectionItem: (index: number) => Element | null;
+      readonly htmlCollectionLengthGet: (() => number) | undefined;
+      readonly htmlOptionsCollectionItem: (index: number) => HTMLOptionElement | null;
+      readonly htmlOptionsCollectionLengthGet: (() => number) | undefined;
+      readonly nodeListItem: (index: number) => Node | null;
+      readonly nodeListLengthGet: (() => number) | undefined;
       readonly objectDefineProperty: typeof Object.defineProperty;
       readonly reflectApply: typeof Reflect.apply;
       readonly stringIncludes: typeof String.prototype.includes;
@@ -285,6 +291,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeObjectDefineProperty: typeof Object.defineProperty = Object.defineProperty;
     const nativeObjectFreeze: typeof Object.freeze = Object.freeze;
     const nativeObjectGetOwnPropertyDescriptor: typeof Object.getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+    const nativeNodeListItem: (index: number) => Node | null = NodeList.prototype.item;
+    const nativeNodeListLengthGet = nativeObjectGetOwnPropertyDescriptor(NodeList.prototype, "length")?.get;
+    const nativeHTMLCollectionItem: (index: number) => Element | null = HTMLCollection.prototype.item;
+    const nativeHTMLCollectionLengthGet = nativeObjectGetOwnPropertyDescriptor(HTMLCollection.prototype, "length")?.get;
+    const nativeHTMLOptionsCollectionItem: (index: number) => HTMLOptionElement | null = HTMLOptionsCollection.prototype.item ?? HTMLCollection.prototype.item;
+    const nativeHTMLOptionsCollectionLengthGet = nativeObjectGetOwnPropertyDescriptor(HTMLOptionsCollection.prototype, "length")?.get ?? nativeHTMLCollectionLengthGet;
     const nativeObjectGetPrototypeOf: typeof Object.getPrototypeOf = Object.getPrototypeOf;
     const nativeObjectSetPrototypeOf: typeof Object.setPrototypeOf = Object.setPrototypeOf;
     const nativeObjectPrototypeHasOwnProperty: typeof Object.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -339,6 +351,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
     const nativeDomAuthority = nativeObjectFreeze({
       arrayFrom: Array.from,
       arrayIsArray: Array.isArray,
+      htmlCollectionItem: nativeHTMLCollectionItem,
+      htmlCollectionLengthGet: nativeHTMLCollectionLengthGet,
+      htmlOptionsCollectionItem: nativeHTMLOptionsCollectionItem,
+      htmlOptionsCollectionLengthGet: nativeHTMLOptionsCollectionLengthGet,
+      nodeListItem: nativeNodeListItem,
+      nodeListLengthGet: nativeNodeListLengthGet,
       objectDefineProperty: nativeObjectDefineProperty,
       reflectApply: nativeReflectApply,
       stringIncludes: nativeStringPrototypeIncludes,
@@ -393,6 +411,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeArrayPrototypePush,
       nativeArrayPrototypeSlice,
       nativeArrayPrototypeSplice,
+      nativeNodeListItem,
+      nativeNodeListLengthGet,
+      nativeHTMLCollectionItem,
+      nativeHTMLCollectionLengthGet,
+      nativeHTMLOptionsCollectionItem,
+      nativeHTMLOptionsCollectionLengthGet,
       NativeSet,
       nativeSetPrototypeAdd,
       nativeSetPrototypeHas,
@@ -433,6 +457,12 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       nativeWindowGetComputedStyle,
       nativeDomAuthority.arrayFrom,
       nativeDomAuthority.arrayIsArray,
+      nativeDomAuthority.htmlCollectionItem,
+      nativeDomAuthority.htmlCollectionLengthGet,
+      nativeDomAuthority.htmlOptionsCollectionItem,
+      nativeDomAuthority.htmlOptionsCollectionLengthGet,
+      nativeDomAuthority.nodeListItem,
+      nativeDomAuthority.nodeListLengthGet,
       nativeDomAuthority.objectDefineProperty,
       nativeDomAuthority.reflectApply,
       nativeDomAuthority.stringIncludes,

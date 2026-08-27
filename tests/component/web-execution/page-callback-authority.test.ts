@@ -123,6 +123,10 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\bnew\s+WeakMap\b/g, label: "new WeakMap" },
   { pattern: /(^|[^.\w$])WeakMap\s*\(/g, label: "WeakMap(" },
   { pattern: /\bWeakMap\.prototype\b/g, label: "WeakMap.prototype" },
+  { pattern: /\bRegExp\.prototype\b/g, label: "RegExp.prototype" },
+  { pattern: /\[\s*Symbol\.replace\s*\]/g, label: "[Symbol.replace]" },
+  { pattern: /\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*\s*\.test\s*\(/g, label: "RegExp.prototype.test" },
+  { pattern: /\bstringReplace\s*\([^,\n]+,\s*\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*/g, label: "RegExp @@replace" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.tagName\b/g, label: ".tagName" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.value\b/g, label: ".value" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.textContent\b/g, label: ".textContent" },
@@ -157,6 +161,7 @@ const approvedComputedReadPatterns: readonly RegExp[] = [
   /^\[input\.[A-Za-z0-9_]+\]$/,
   /^\[[0-9]+\]$/,
   /^\[index\]$/,
+  /^\[index \+ 1\]$/,
   /^\[_forOfIndex\d+\]$/,
   /^\[elementIndex\]$/,
   /^\[recordIndex\]$/,
@@ -221,6 +226,10 @@ describe("page callback authority inventory", () => {
       const called = Element.prototype.getAttribute.call(target, 'title');
       const weak = new WeakMap();
       const weakCall = WeakMap.prototype.get.call(weak, target);
+      const regexCall = RegExp.prototype.test.call(/secret/, value);
+      const regexLiteral = /secret/.test(value);
+      const symbolReplace = /secret/[Symbol.replace](value, 'x');
+      const capturedReplace = stringReplace(value, /secret/g, 'x');
       const display = style.display;
       const visibility = style.visibility;
       const lower = value.toLowerCase();
@@ -258,6 +267,10 @@ describe("page callback authority inventory", () => {
       "getComputedStyle(",
       "new WeakMap",
       "WeakMap.prototype",
+      "RegExp.prototype",
+      "RegExp.prototype.test",
+      "[Symbol.replace]",
+      "RegExp @@replace",
       "style.display/visibility",
       "style.display/visibility",
       "mutable String.prototype method",

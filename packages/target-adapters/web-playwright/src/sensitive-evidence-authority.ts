@@ -218,6 +218,9 @@ export class SensitiveEvidenceAuthority {
       if (trustedMarkerIds.has(markerId)) {
         return { status: "redacted", value: REDACTED_SENSITIVE_TEXT };
       }
+      if (trustedMarkerIds.size > 0 || hasUnknownRecord || hasUnknownMaskId) {
+        return { status: "unavailable", value };
+      }
     }
 
     if (hasUnknownRecord || (carriesAnySensitiveForm && hasUnknownMaskId)) {
