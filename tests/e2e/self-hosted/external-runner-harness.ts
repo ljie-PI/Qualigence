@@ -335,7 +335,8 @@ async function createHarnessContext(): Promise<HarnessContext> {
   const runnerCa = createRunnerCa("Qualigence external Runner acceptance CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
   const runnerClient = mintClientMaterial(runnerCa, workDir);
-  const proxy = createSelfSignedServerCertificate("localhost");
+  const proxyCa = createRunnerCa("Qualigence self-hosted proxy acceptance CA");
+  const proxy = mintServerCertificate(proxyCa, "localhost");
   const modelServer = await startModelServer();
   const secrets = await backupSecretFiles();
   const projectName = `qualigence-ext-${process.pid}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
@@ -356,7 +357,7 @@ async function createHarnessContext(): Promise<HarnessContext> {
     runnerDataDir,
     proxyPort,
     runnerGrpcPort,
-    proxyCaPem: proxy.certPem,
+    proxyCaPem: proxyCa.certPem,
     runnerCa,
     runnerServer,
     runnerClient,
