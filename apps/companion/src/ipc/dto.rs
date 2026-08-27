@@ -476,6 +476,8 @@ pub enum CompanionRequestPayload {
     PermitRequest(PermitRequestPayload),
     #[serde(rename = "action.execute")]
     ActionExecute(ActionExecutePayload),
+    #[serde(rename = "diagnostics.test")]
+    TestDiagnostics(TestDiagnosticsPayload),
 }
 
 impl CompanionRequestPayload {
@@ -498,6 +500,7 @@ impl CompanionRequestPayload {
             "uia.capture" => Self::UiaCapture(serde_json::from_value(payload)?),
             "permit.request" => Self::PermitRequest(serde_json::from_value(payload)?),
             "action.execute" => Self::ActionExecute(serde_json::from_value(payload)?),
+            "diagnostics.test" => Self::TestDiagnostics(serde_json::from_value(payload)?),
             _ => {
                 return Err(serde_json::from_str::<serde_json::Value>(
                     "__unknown_companion_request_type__",
@@ -523,6 +526,7 @@ impl CompanionRequestPayload {
             Self::UiaCapture(_) => "uia.capture",
             Self::PermitRequest(_) => "permit.request",
             Self::ActionExecute(_) => "action.execute",
+            Self::TestDiagnostics(_) => "diagnostics.test",
         }
     }
 
@@ -545,12 +549,21 @@ impl CompanionRequestPayload {
             Self::UiaCapture(payload) => state.serialize_field("payload", payload),
             Self::PermitRequest(payload) => state.serialize_field("payload", payload),
             Self::ActionExecute(payload) => state.serialize_field("payload", payload),
+            Self::TestDiagnostics(payload) => state.serialize_field("payload", payload),
         }
     }
 
     pub fn is_handshake(&self) -> bool {
         matches!(self, Self::HandshakeBegin(_) | Self::HandshakeProve(_))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TestDiagnosticsPayload {
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

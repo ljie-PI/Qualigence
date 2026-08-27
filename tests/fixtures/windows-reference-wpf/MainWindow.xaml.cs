@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace WindowsReferenceWpf;
 
@@ -30,6 +31,7 @@ public partial class MainWindow : Window
     {
         var state = ReadState();
         UsernameEdit.Text = state.Username;
+        SelectRole(state.Role);
         ResultsList.Items.Clear();
         foreach (var item in state.Results)
         {
@@ -51,10 +53,23 @@ public partial class MainWindow : Window
         return new ReferenceState(string.Empty, "Viewer", Array.Empty<string>());
     }
 
+    private void SelectRole(string role)
+    {
+        foreach (var item in RoleCombo.Items)
+        {
+            if (item is ListBoxItem listBoxItem && string.Equals(listBoxItem.Content?.ToString(), role, StringComparison.Ordinal))
+            {
+                RoleCombo.SelectedItem = listBoxItem;
+                return;
+            }
+        }
+    }
+
     private void OnSubmit(object sender, RoutedEventArgs e)
     {
-        // Normal-risk state change: append the typed username to the results.
-        ResultsList.Items.Add($"submitted:{UsernameEdit.Text}");
+        // Normal-risk state change: append the typed username and selected role to the results.
+        var role = (RoleCombo.SelectedItem as ListBoxItem)?.Content?.ToString() ?? string.Empty;
+        ResultsList.Items.Add($"submitted:{UsernameEdit.Text}:{role}");
     }
 
     private void OnDeleteAll(object sender, RoutedEventArgs e)

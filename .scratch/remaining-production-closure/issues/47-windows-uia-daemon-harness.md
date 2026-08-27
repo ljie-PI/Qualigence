@@ -4,7 +4,7 @@
 
 **Blocked by:** 30 — Implement native UIA, Job Object, and Companion daemon.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Tracked scope
 
@@ -59,16 +59,16 @@ Hard exclusions: do not weaken Ticket 30 security behavior, do not make `tests/e
 
 ## Requirements
 
-- [ ] A documented command builds or locates a Windows executable suitable for `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS`.
-- [ ] The harness accepts exactly the WPF and WinUI project paths supplied by `tests/e2e/windows/companion-daemon.test.ts`, builds or locates the compiled apps, and fails with a stable non-zero error if prerequisites are missing.
-- [ ] The harness starts or attaches to the production Companion daemon path with `uiAccess=false`; TypeScript/Node must not directly execute UIA or manage target PIDs.
-- [ ] WPF and WinUI each pass launch, capture, supported action execution, value/selection/invoke coverage, password masking, reset, shutdown, and UIA worker restart evidence.
-- [ ] Permit binding/replay/expiry/mismatch, approval denial/timeout, Emergency Stop, worker timeout, malformed/bounded IPC, and unsupported-pattern failures are exercised through real IPC and produce stable evidence.
-- [ ] Job Object containment is proven from first instruction: create suspended, assign to Job, resume; shutdown/reset verify PID, creation time, image, and Job membership; unrelated same-name/PID-reuse processes are not killed.
-- [ ] Harness output includes machine-readable evidence paths/IDs and a concise human-readable summary that Ticket 31 operators can cite in the manual checklist without exposing secret plaintext.
-- [ ] Exit code `0` occurs only when all required native checks passed on real Windows 11 prerequisites. Missing Windows 11, .NET Desktop/Windows App SDK, harness dependency, certificate/key, Companion daemon, local interactive session, or required app fixture produces a stable non-zero prerequisite error.
-- [ ] The existing `corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` passes on a correctly provisioned Windows 11 machine with `QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` set to the built harness executable.
-- [ ] Ticket 31 remains responsible for signed local-console/RDP checklist evidence; this harness result alone is not release/native acceptance.
+- [x] A documented command builds or locates a Windows executable suitable for `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS`.
+- [x] The harness accepts exactly the WPF and WinUI project paths supplied by `tests/e2e/windows/companion-daemon.test.ts`, builds or locates the compiled apps, and fails with a stable non-zero error if prerequisites are missing.
+- [x] The harness starts or attaches to the production Companion daemon path with `uiAccess=false`; TypeScript/Node must not directly execute UIA or manage target PIDs.
+- [x] WPF and WinUI each pass launch, capture, supported action execution, value/selection/invoke coverage, password masking, reset, shutdown, and UIA worker restart evidence.
+- [x] Permit binding/replay/expiry/mismatch, approval denial/timeout, Emergency Stop, worker timeout, malformed/bounded IPC, and unsupported-pattern failures are exercised through real IPC and produce stable evidence.
+- [x] Job Object containment is proven from first instruction: create suspended, assign to Job, resume; shutdown/reset verify PID, creation time, image, and Job membership; unrelated same-name/PID-reuse processes are not killed.
+- [x] Harness output includes machine-readable evidence paths/IDs and a concise human-readable summary that Ticket 31 operators can cite in the manual checklist without exposing secret plaintext.
+- [x] Exit code `0` occurs only when all required native checks passed on real Windows 11 prerequisites. Missing Windows 11, .NET Desktop/Windows App SDK, harness dependency, certificate/key, Companion daemon, local interactive session, or required app fixture produces a stable non-zero prerequisite error.
+- [x] The existing `corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` passes on a correctly provisioned Windows 11 machine with `QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` set to the built harness executable.
+- [x] Ticket 31 remains responsible for signed local-console/RDP checklist evidence; this harness result alone is not release/native acceptance.
 
 ## Focused Gate
 
@@ -122,3 +122,47 @@ Record base/reviewed SHAs, harness build path, command output path/hash, focused
 ## Comments
 
 - start — Created by maintainer direction after Ticket 30 merged and Ticket 31 was found to require `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` without any repo-owned or provided harness path. This ticket owns the missing executable harness; Ticket 31 remains the human signed native acceptance gate.
+
+### start — 2026-08-27
+
+- Fixed base: `5a5dfa00601d9a24f56b707350b0b5e3574a37ee` (`main` after Ticket 45 merge); dedicated branch/worktree `ticket-47-windows-uia-daemon-harness` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-47`.
+- Dependency status: Ticket 30 is merged/resolved, so Ticket 47 is unblocked. Ticket 31 remains human-owned and blocked until this harness exists and real native evidence is produced.
+- Behavior Matrix applicability: complete Ticket 47 matrix is applicable. Rows cover supported Windows 11/native prerequisite pass, stable prerequisite failures, missing harness, Companion identity/daemon failures, contained launch, partial launch cleanup, UIA capture, worker hang/restart, permit/action denial paths, Emergency Stop, unrelated process/PID-reuse protection, evidence write failure, and timeout/cancel. No row is declared N/A at start, but native post-review acceptance requires a real local interactive Windows 11 environment.
+- Planned focused Gate: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario`, `CI=true corepack pnpm typecheck`, and `git diff --check`; add any package-local harness suite discovered during implementation.
+- Planned post-review acceptance after clean complete-matrix review: on real Windows 11 with native prerequisites, set `QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS=<built-harness-exe>`, then run `corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts`. A missing native environment remains a stable prerequisite failure and does not complete Ticket 47.
+
+### review1 core-fix evidence — 2026-08-27
+
+- Review1 Critical handshake blocker fixed: the harness now validates response correlation against the daemon's actual `handshake.challenge` and `handshake.accepted` response types while preserving request-id checks; harness unit coverage rejects the old request-type expectation.
+- Review1 Important worker-restart blocker addressed with a narrow env-gated Companion diagnostic seam (`QUALIGENCE_COMPANION_TEST_DIAGNOSTICS=true`) used only by the Ticket 47 harness. The harness now forces a real UIA worker child exit through the production supervisor, verifies restart count and spawn/generation advance, and recaptures through the daemon before recording `uia.worker-restart`.
+- Review1 approval-denial blocker fixed: the daemon supports an explicit test approval outcome mode, and the harness runs a separate denied-approval daemon path that proves a Destructive action receives no Permit and the target remains unchanged. ProductionForbidden policy denial remains separately recorded.
+- Review1 Job Object evidence strengthened: launch responses and diagnostics now expose env-gated lifecycle evidence for create-suspended → create-job → kill-on-close → assign-to-Job → resume → verified Job membership; the harness checks partial mismatched-image launch cleanup by process count and checks identity corruption causes capture/reset/shutdown denial.
+- Review1 action/reset evidence strengthened: supported input/password/select/invoke/reset paths now require Companion action evidence refs plus recapture of username value, password masking, selection/invoke side effect, and reset state before pass evidence is emitted.
+- Review1 evidence publication fixed: every run uses a unique evidence child directory, writes temp files first, refuses overwrite, marks invalid partial directories where possible, and atomically publishes the passing JSON only after the summary is written.
+- Validation after fixes: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test -p companion-daemon-harness`, `CI=true corepack pnpm typecheck`, and `git diff --check` passed. Native Windows post-review E2E remains pending a clean complete-matrix review and a real Windows 11 environment.
+
+### final — 2026-08-27
+
+- Reviewed code/test head: `4f793bab666523b7157f080d75bca69c4f552361`.
+- Complete-matrix review8 clean:
+  - Standards: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket47-review8/standards.md`
+  - Spec: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket47-review8/spec.md`
+- Focused Gate on reviewed head passed:
+  - `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`
+  - `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`
+  - `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario` — 3 tests passed.
+  - `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test -p companion-daemon-harness` — 6 tests passed.
+  - `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace` — full Rust workspace passed, including native named-pipe/Job Object/UIA worker suites.
+  - `CI=true corepack pnpm typecheck` passed.
+  - `git diff --check` passed.
+- Native Windows post-review E2E passed on the reviewed head:
+  - `QUALIGENCE_WINDOWS_UIA_TEST=true QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS=C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-47/target/debug/companion-daemon-harness.exe CI=true corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts` — 1 file / 1 test passed.
+  - Harness executable: `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-47/target/debug/companion-daemon-harness.exe`.
+  - Latest retained machine-readable harness evidence: `C:/Users/jieliu1/AppData/Local/Temp/qualigence-uia-harness/1787828231487-131028/windows-uia-daemon-harness-evidence.json`.
+  - Harness evidence records `status: passed`, `uiAccess: false`, Windows build `26200`, WPF and WinUI app evidence, per-app worker restart/timeout/no-auto-replay checks, malformed IPC fail-closed checks, Permit/approval/Emergency Stop checks, and file-backed action evidence refs.
+- Residual handoff: Ticket 31 remains human-owned. This automated harness result is only the prerequisite executable/evidence for operators; it does not satisfy local-console/RDP manual checklist execution, Section 16 security-veto review, Section 17 two-person signatures, or Section 18 `WindowsChecklistEvidence`.
+- Final evidence commit is documentation-only relative to reviewed code/test head. Pull request: pending creation.
+
+## Answer
+
+Completed Ticket 47: the repo now provides a real Windows-native `companion-daemon-harness.exe` accepted by `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS`. The harness builds/runs the WPF and WinUI reference apps, drives them through the production Companion daemon/native pipe/certificate proof/Permit/UIA worker/Job Object path, emits machine-readable and human-readable evidence, and fails closed on missing prerequisites. Ticket 31 remains responsible for signed human native acceptance.

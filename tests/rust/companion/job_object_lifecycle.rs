@@ -362,70 +362,79 @@ fn reset_failure_surfaces_error_and_preserves_session_authority() {
 
 #[test]
 fn reset_and_shutdown_require_exact_job_membership_before_side_effects() {
-    struct MembershipRejectingHost(FakeDesktopProcessHost);
-    impl DesktopProcessHost for MembershipRejectingHost {
+    struct MembershipDriftHost {
+        inner: FakeDesktopProcessHost,
+        reject_membership: bool,
+    }
+    impl DesktopProcessHost for MembershipDriftHost {
         fn create_suspended(
             &mut self,
             spec: &AppLaunchSpec,
         ) -> Result<HostProcess, LifecycleError> {
-            self.0.create_suspended(spec)
+            self.inner.create_suspended(spec)
         }
         fn create_job(
             &mut self,
         ) -> Result<companion::process::job_object::HostJob, LifecycleError> {
-            self.0.create_job()
+            self.inner.create_job()
         }
         fn set_kill_on_close(
             &mut self,
             job: companion::process::job_object::HostJob,
         ) -> Result<(), LifecycleError> {
-            self.0.set_kill_on_close(job)
+            self.inner.set_kill_on_close(job)
         }
         fn assign_to_job(
             &mut self,
             job: companion::process::job_object::HostJob,
             pid: u32,
         ) -> Result<(), LifecycleError> {
-            self.0.assign_to_job(job, pid)
+            self.inner.assign_to_job(job, pid)
         }
         fn resume(&mut self, pid: u32) -> Result<(), LifecycleError> {
-            self.0.resume(pid)
+            self.inner.resume(pid)
         }
         fn list_children(&self, pid: u32) -> Vec<HostProcess> {
-            self.0.list_children(pid)
+            self.inner.list_children(pid)
         }
         fn terminate_job(
             &mut self,
             job: companion::process::job_object::HostJob,
         ) -> Result<(), LifecycleError> {
-            self.0.terminate_job(job)
+            self.inner.terminate_job(job)
         }
         fn terminate_process(&mut self, pid: u32) -> Result<(), LifecycleError> {
-            self.0.terminate_process(pid)
+            self.inner.terminate_process(pid)
         }
         fn run_reset(&mut self, spec: &ResetSpec) -> Result<(), LifecycleError> {
-            self.0.run_reset(spec)
+            self.inner.run_reset(spec)
         }
         fn is_alive(&self, pid: u32, creation_time: &str) -> bool {
-            self.0.is_alive(pid, creation_time)
+            self.inner.is_alive(pid, creation_time)
         }
         fn root_window_handle(&self, pid: u32) -> Option<String> {
-            self.0.root_window_handle(pid)
+            self.inner.root_window_handle(pid)
         }
         fn verify_process_in_job(
             &self,
-            _job: companion::process::job_object::HostJob,
-            _pid: u32,
-            _creation_time: &str,
-            _expected_image_name: &str,
+            job: companion::process::job_object::HostJob,
+            pid: u32,
+            creation_time: &str,
+            expected_image_name: &str,
         ) -> bool {
-            false
+            !self.reject_membership
+                && self
+                    .inner
+                    .verify_process_in_job(job, pid, creation_time, expected_image_name)
         }
     }
 
-    let mut manager =
-        AppSessionManager::new(MembershipRejectingHost(FakeDesktopProcessHost::new()));
+    let mut manager = AppSessionManager::new(MembershipDriftHost {
+        inner: FakeDesktopProcessHost::new(),
+        reject_membership: false,
+    });
     manager.launch("sess-1", &spec()).expect("launch succeeds");
+    manager.host_mut().reject_membership = true;
 
     let reset = ResetSpec {
         command: "C:/Apps/reset.exe".into(),
@@ -436,7 +445,7 @@ fn reset_and_shutdown_require_exact_job_membership_before_side_effects() {
         manager.reset("sess-1", &reset),
         Err(LifecycleError::AppLifecycleUnsupported)
     );
-    assert!(manager.host().0.last_reset.is_none());
+    assert!(manager.host().inner.last_reset.is_none());
 
     assert_eq!(
         manager.shutdown("sess-1"),

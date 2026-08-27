@@ -27,6 +27,7 @@ pub struct AppSessionState {
     pub image_name: String,
     pub root_window_handle: String,
     pub window_selector: AppWindowSelector,
+    pub launch_steps: Vec<String>,
     allowed_child_image_names: Vec<String>,
     job: HostJob,
 }
@@ -94,7 +95,9 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         session_id: &str,
         spec: &AppLaunchSpec,
     ) -> Result<AppSessionState, LifecycleError> {
+        let mut launch_steps = Vec::new();
         let process = self.host.create_suspended(spec)?;
+        launch_steps.push("create_suspended".to_string());
         if !process
             .image_name
             .eq_ignore_ascii_case(&spec.expected_image_name)
@@ -104,7 +107,10 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
         }
 
         let job = match self.host.create_job() {
-            Ok(job) => job,
+            Ok(job) => {
+                launch_steps.push("create_job".to_string());
+                job
+            }
             Err(err) => {
                 let _ = self.host.terminate_process(process.pid);
                 return Err(err);
@@ -115,6 +121,7 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             let _ = self.host.terminate_job(job);
             return Err(err);
         }
+        launch_steps.push("set_kill_on_close".to_string());
 
         if let Err(err) = self.host.assign_to_job(job, process.pid) {
             // Clean up the suspended husk without ever resuming it, and surface
@@ -128,11 +135,24 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
                 other => Err(other),
             };
         }
+        launch_steps.push("assign_to_job".to_string());
 
         if let Err(err) = self.host.resume(process.pid) {
             let _ = self.host.terminate_job(job);
             return Err(err);
         }
+        launch_steps.push("resume".to_string());
+
+        if !self.host.verify_process_in_job(
+            job,
+            process.pid,
+            &process.creation_time,
+            &process.image_name,
+        ) {
+            let _ = self.host.terminate_job(job);
+            return Err(LifecycleError::AppLifecycleUnsupported);
+        }
+        launch_steps.push("verify_job_membership".to_string());
 
         let root_window_handle = match self
             .host
@@ -153,6 +173,7 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             image_name: process.image_name.clone(),
             root_window_handle,
             window_selector: spec.window_selector.clone(),
+            launch_steps,
             allowed_child_image_names: spec.allowed_child_image_names.clone(),
             job,
         };
@@ -205,6 +226,42 @@ impl<H: DesktopProcessHost> AppSessionManager<H> {
             .get(session_id)
             .map(|s| self.host.is_alive(s.pid, &s.creation_time))
             .unwrap_or(false)
+    }
+
+    pub fn diagnostic_evidence(
+        &self,
+        session_id: &str,
+    ) -> Result<serde_json::Value, LifecycleError> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or(LifecycleError::SessionNotFound)?;
+        let identity_verified = self.host.verify_process_in_job(
+            session.job,
+            session.pid,
+            &session.creation_time,
+            &session.image_name,
+        );
+        Ok(serde_json::json!({
+            "sessionId": session.session_id,
+            "processId": session.pid,
+            "processCreationTime": session.creation_time,
+            "imageName": session.image_name,
+            "processGroupId": session.process_group_id,
+            "rootWindowHandle": session.root_window_handle,
+            "launchSteps": session.launch_steps,
+            "jobMembershipVerified": identity_verified,
+            "identityVerified": identity_verified,
+        }))
+    }
+
+    pub fn corrupt_identity_for_test(&mut self, session_id: &str) -> Result<(), LifecycleError> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or(LifecycleError::SessionNotFound)?;
+        session.creation_time = format!("{}-ticket47-corrupted", session.creation_time);
+        Ok(())
     }
 
     /// Run the declared reset helper (explicit argv + timeout, own Job).

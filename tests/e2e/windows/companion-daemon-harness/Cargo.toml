@@ -1,0 +1,24 @@
+[package]
+name = "companion-daemon-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Repo-owned Windows 11 native Companion daemon acceptance harness for QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS."
+
+[dependencies]
+base64 = "0.22"
+companion = { path = "../../../../apps/companion" }
+hex = "0.4"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_StationsAndDesktops",
+] }

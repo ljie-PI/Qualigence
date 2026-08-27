@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 use crate::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerDiagnosticFault,
+    WorkerRequest, WorkerResponse,
 };
 
 /// A transport failure while talking to a worker child.
@@ -137,12 +138,30 @@ pub trait WorkerSpawner {
 }
 
 /// Owns the current worker and rebuilds it on any failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticWorkerFault {
+    TimeoutNextAction,
+    BlockNextActionUntilCancelled,
+}
+
+impl DiagnosticWorkerFault {
+    fn into_worker_fault(self) -> WorkerDiagnosticFault {
+        match self {
+            DiagnosticWorkerFault::TimeoutNextAction => WorkerDiagnosticFault::TimeoutAfterDispatch,
+            DiagnosticWorkerFault::BlockNextActionUntilCancelled => {
+                WorkerDiagnosticFault::BlockUntilCancelledAfterDispatch
+            }
+        }
+    }
+}
+
 pub struct UiaWorkerSupervisor<S: WorkerSpawner> {
     spawner: S,
     worker: Option<S::Handle>,
     restarts: u32,
     spawns: u32,
     cancellation: WorkerCancellation,
+    diagnostic_next_action_fault: Option<DiagnosticWorkerFault>,
 }
 
 impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
@@ -153,6 +172,7 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             restarts: 0,
             spawns: 0,
             cancellation: WorkerCancellation::default(),
+            diagnostic_next_action_fault: None,
         }
     }
 
@@ -173,6 +193,23 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
     /// Whether a live worker is currently held.
     pub fn worker_alive(&self) -> bool {
         self.worker.as_ref().map(|w| w.is_alive()).unwrap_or(false)
+    }
+
+    /// Force-terminate the current worker for the env-gated Ticket 47 native
+    /// acceptance harness. This exercises the same recycle path as timeout,
+    /// exit, or corrupt transport failures while leaving Companion/App Job
+    /// authority intact and making the next UIA request spawn a fresh child.
+    pub fn force_recycle_for_diagnostic(&mut self) {
+        self.recycle_worker();
+    }
+
+    pub fn force_next_action_timeout_for_diagnostic(&mut self) {
+        self.diagnostic_next_action_fault = Some(DiagnosticWorkerFault::TimeoutNextAction);
+    }
+
+    pub fn block_next_action_until_cancelled_for_diagnostic(&mut self) {
+        self.diagnostic_next_action_fault =
+            Some(DiagnosticWorkerFault::BlockNextActionUntilCancelled);
     }
 
     fn ensure_worker(&mut self) -> Result<&mut S::Handle, WorkerError> {
@@ -303,6 +340,10 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             target: target.clone(),
             action: action.clone(),
             value: value.cloned(),
+            diagnostic_fault: self
+                .diagnostic_next_action_fault
+                .take()
+                .map(DiagnosticWorkerFault::into_worker_fault),
         };
         let result = match self.dispatch_until(&req, deadline, cancellation) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),

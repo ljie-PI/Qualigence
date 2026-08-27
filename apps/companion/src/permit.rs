@@ -163,6 +163,15 @@ impl<C: Clock> PermitStore<C> {
     pub fn invalidate_all(&mut self) {
         self.entries.clear();
     }
+
+    /// Test-only diagnostic helper: force all pending Permits to be expired
+    /// without changing their tokens or bindings. Production code never calls
+    /// this; the daemon exposes it only behind the Ticket 47 diagnostics gate.
+    pub fn expire_all_for_diagnostic(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.expires_at_ms = 0;
+        }
+    }
 }
 
 fn token_hash(token: &str) -> String {

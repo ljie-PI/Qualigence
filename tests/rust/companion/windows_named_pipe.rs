@@ -1000,6 +1000,40 @@ DzQHpEk=
     }
 
     #[test]
+    fn only_transport_io_errors_are_deferred_while_actions_are_in_flight() {
+        assert!(
+            NativePipeRequestError::Request(RequestProcessError::Frame(FrameError::Io))
+                .is_deferable_while_in_flight()
+        );
+        assert!(!NativePipeRequestError::Request(RequestProcessError::Frame(
+            FrameError::Malformed
+        ))
+        .is_deferable_while_in_flight());
+        assert!(!NativePipeRequestError::Request(RequestProcessError::Frame(
+            FrameError::FrameTooLarge
+        ))
+        .is_deferable_while_in_flight());
+        assert!(!NativePipeRequestError::Request(RequestProcessError::Frame(
+            FrameError::Truncated
+        ))
+        .is_deferable_while_in_flight());
+        assert!(!NativePipeRequestError::Request(RequestProcessError::Frame(
+            FrameError::Overloaded
+        ))
+        .is_deferable_while_in_flight());
+        assert!(
+            !NativePipeRequestError::Request(RequestProcessError::Session(
+                companion::ipc::server::SessionAdmissionError::CompanionUnauthenticated
+            ))
+            .is_deferable_while_in_flight()
+        );
+        assert!(
+            !NativePipeRequestError::Handshake(CertificateHandshakeError::UnknownRunner)
+                .is_deferable_while_in_flight()
+        );
+    }
+
+    #[test]
     fn production_authenticode_signer_allowlist_accepts_and_rejects_signed_images() {
         assert_windows_11_or_newer().expect("Windows11Unavailable");
         let signed_image = signed_system_binary();

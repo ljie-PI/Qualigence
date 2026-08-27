@@ -16,7 +16,8 @@ use companion::process::job_object::AppWindowSelector;
 use companion::risk::Risk;
 use companion::uia::mapping::MASKED_VALUE;
 use companion::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerDiagnosticFault,
+    WorkerRequest, WorkerResponse,
 };
 use companion::uia::worker::{synthetic_source, SyntheticUiaCapture, UiaCapture};
 use companion::uia::worker_supervisor::{
@@ -365,6 +366,188 @@ fn emergency_stop_cancels_a_capture_already_waiting_on_the_worker() {
         supervisor.lock().expect("supervisor lock").restart_count(),
         1,
     );
+}
+
+struct DiagnosticTimeoutHandle {
+    requests: Arc<Mutex<Vec<WorkerRequest>>>,
+    alive: bool,
+}
+
+impl WorkerHandle for DiagnosticTimeoutHandle {
+    fn request(
+        &mut self,
+        req: &WorkerRequest,
+        _deadline: Duration,
+        _cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.requests.lock().expect("request log").push(req.clone());
+        self.alive = false;
+        Err(WorkerError::Timeout)
+    }
+
+    fn kill(&mut self) {
+        self.alive = false;
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+struct DiagnosticTimeoutSpawner {
+    requests: Arc<Mutex<Vec<WorkerRequest>>>,
+}
+
+impl WorkerSpawner for DiagnosticTimeoutSpawner {
+    type Handle = DiagnosticTimeoutHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(DiagnosticTimeoutHandle {
+            requests: Arc::clone(&self.requests),
+            alive: true,
+        })
+    }
+}
+
+#[test]
+fn diagnostic_timeout_fault_dispatches_execute_to_worker_before_unknown_outcome() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut supervisor = UiaWorkerSupervisor::new(DiagnosticTimeoutSpawner {
+        requests: Arc::clone(&requests),
+    });
+    supervisor.force_next_action_timeout_for_diagnostic();
+
+    assert_eq!(
+        supervisor.execute(
+            &target("sess-1"),
+            &click_action("act-diagnostic-timeout"),
+            None,
+            Duration::from_millis(50),
+        ),
+        Err(UiaError::ActionOutcomeUnknown)
+    );
+    assert_eq!(supervisor.restart_count(), 1);
+    let requests = requests.lock().expect("request log");
+    assert_eq!(requests.len(), 1);
+    match &requests[0] {
+        WorkerRequest::Execute {
+            diagnostic_fault, ..
+        } => assert_eq!(
+            *diagnostic_fault,
+            Some(WorkerDiagnosticFault::TimeoutAfterDispatch)
+        ),
+        other => panic!("expected execute request, got {other:?}"),
+    }
+}
+
+struct DiagnosticBlockingHandle {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<WorkerRequest>>>,
+    alive: bool,
+}
+
+impl WorkerHandle for DiagnosticBlockingHandle {
+    fn request(
+        &mut self,
+        req: &WorkerRequest,
+        _deadline: Duration,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<WorkerResponse, WorkerError> {
+        self.requests.lock().expect("request log").push(req.clone());
+        self.entered.store(true, Ordering::SeqCst);
+        while !cancellation.is_cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.kill();
+        Err(WorkerError::Cancelled)
+    }
+
+    fn kill(&mut self) {
+        self.alive = false;
+        self.killed.store(true, Ordering::SeqCst);
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive
+    }
+}
+
+struct DiagnosticBlockingSpawner {
+    entered: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<WorkerRequest>>>,
+}
+
+impl WorkerSpawner for DiagnosticBlockingSpawner {
+    type Handle = DiagnosticBlockingHandle;
+
+    fn spawn(&mut self) -> Result<Self::Handle, WorkerError> {
+        Ok(DiagnosticBlockingHandle {
+            entered: Arc::clone(&self.entered),
+            killed: Arc::clone(&self.killed),
+            requests: Arc::clone(&self.requests),
+            alive: true,
+        })
+    }
+}
+
+#[test]
+fn diagnostic_block_fault_dispatches_execute_to_worker_before_emergency_stop() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let supervisor = Arc::new(Mutex::new(UiaWorkerSupervisor::new(
+        DiagnosticBlockingSpawner {
+            entered: Arc::clone(&entered),
+            killed: Arc::clone(&killed),
+            requests: Arc::clone(&requests),
+        },
+    )));
+    let cancellation = supervisor
+        .lock()
+        .expect("supervisor lock")
+        .cancellation_handle();
+    supervisor
+        .lock()
+        .expect("supervisor lock")
+        .block_next_action_until_cancelled_for_diagnostic();
+
+    let action_supervisor = Arc::clone(&supervisor);
+    let action = std::thread::spawn(move || {
+        action_supervisor.lock().expect("supervisor lock").execute(
+            &target("sess-1"),
+            &click_action("act-diagnostic-block"),
+            None,
+            Duration::from_millis(5_000),
+        )
+    });
+
+    while !entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancellation.cancel_in_flight();
+
+    assert_eq!(
+        action.join().expect("action thread"),
+        Err(UiaError::EmergencyStopped)
+    );
+    assert!(killed.load(Ordering::SeqCst));
+    assert_eq!(
+        supervisor.lock().expect("supervisor lock").restart_count(),
+        1,
+    );
+    let requests = requests.lock().expect("request log");
+    assert_eq!(requests.len(), 1);
+    match &requests[0] {
+        WorkerRequest::Execute {
+            diagnostic_fault, ..
+        } => assert_eq!(
+            *diagnostic_fault,
+            Some(WorkerDiagnosticFault::BlockUntilCancelledAfterDispatch)
+        ),
+        other => panic!("expected execute request, got {other:?}"),
+    }
 }
 
 #[test]

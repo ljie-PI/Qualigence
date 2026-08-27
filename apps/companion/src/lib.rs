@@ -113,6 +113,13 @@ impl<C: Clock, A: Approver> Companion<C, A> {
         self.permits.invalidate_all();
     }
 
+    /// Test-only diagnostic helper: force pending Permits to expire while
+    /// preserving their one-use tokens and bindings. The daemon exposes this
+    /// only behind the Ticket 47 diagnostics gate.
+    pub fn expire_permits_for_diagnostic(&mut self) {
+        self.permits.expire_all_for_diagnostic();
+    }
+
     /// Explicitly begin a new Session, clearing the emergency latch. Only a
     /// deliberate operator action does this — never `resume`.
     pub fn reset_session(&mut self, new_session_id: impl Into<String>) {

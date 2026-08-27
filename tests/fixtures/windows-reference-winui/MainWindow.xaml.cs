@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Title = "Reference App";
         LoadInitialState();
     }
 
@@ -30,6 +31,7 @@ public sealed partial class MainWindow : Window
     {
         var state = ReadState();
         UsernameEdit.Text = state.Username;
+        SelectRole(state.Role);
         ResultsList.Items.Clear();
         foreach (var item in state.Results)
         {
@@ -51,9 +53,22 @@ public sealed partial class MainWindow : Window
         return new ReferenceState(string.Empty, "Viewer", Array.Empty<string>());
     }
 
+    private void SelectRole(string role)
+    {
+        foreach (var item in RoleCombo.Items)
+        {
+            if (item is ListViewItem listViewItem && string.Equals(listViewItem.Content?.ToString(), role, StringComparison.Ordinal))
+            {
+                RoleCombo.SelectedItem = listViewItem;
+                return;
+            }
+        }
+    }
+
     private void OnSubmit(object sender, RoutedEventArgs e)
     {
-        ResultsList.Items.Add($"submitted:{UsernameEdit.Text}");
+        var role = (RoleCombo.SelectedItem as ListViewItem)?.Content?.ToString() ?? string.Empty;
+        ResultsList.Items.Add($"submitted:{UsernameEdit.Text}:{role}");
     }
 
     private async void OnDeleteAll(object sender, RoutedEventArgs e)

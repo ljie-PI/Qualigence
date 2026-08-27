@@ -32,14 +32,15 @@
                      AutomationProperties.AutomationId="PasswordEdit"
                      AutomationProperties.Name="Password" />
 
-        <ComboBox Grid.Row="2"
+        <ListView Grid.Row="2"
                   x:Name="RoleCombo"
                   AutomationProperties.AutomationId="RoleCombo"
-                  AutomationProperties.Name="Role">
-            <ComboBoxItem Content="Viewer" />
-            <ComboBoxItem Content="Editor" />
-            <ComboBoxItem Content="Admin" />
-        </ComboBox>
+                  AutomationProperties.Name="Role"
+                  Height="84">
+            <ListViewItem Content="Viewer" />
+            <ListViewItem Content="Editor" />
+            <ListViewItem Content="Admin" />
+        </ListView>
 
         <Button Grid.Row="3"
                 x:Name="SubmitButton"

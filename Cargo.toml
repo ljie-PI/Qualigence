@@ -7,4 +7,4 @@
 # alongside the TypeScript Gate.
 [workspace]
 resolver = "2"
-members = ["apps/companion"]
+members = ["apps/companion", "tests/e2e/windows/companion-daemon-harness"]

@@ -9,13 +9,16 @@
 //! synthetic desktop tree so the worker loop, the supervisor restart logic and
 //! the payload mapping are all genuinely exercised cross-platform.
 
+use std::time::Duration;
+
 use crate::ipc::dto::{
     DesktopActionKind, DesktopPlaintextValue, ResolvedDesktopAction, WindowOperation,
 };
 use crate::process::job_object::AppWindowSelector;
 use crate::uia::mapping::{masked_value, role_for_control_type};
 use crate::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSessionTarget, UiaSource, UiaSourceNode,
+    ActionOutcomeReport, UiaError, UiaPatternDescriptor, UiaSessionTarget, UiaSource,
+    UiaSourceNode, WorkerDiagnosticFault,
 };
 
 /// The isolated UIA FFI seam. Implementations own native COM objects; the
@@ -259,7 +262,22 @@ pub fn run_worker_stdio<C: UiaCapture>(capture: &mut C) -> Result<(), UiaError> 
                 target,
                 action,
                 mut value,
+                diagnostic_fault,
             } => {
+                match diagnostic_fault {
+                    Some(
+                        WorkerDiagnosticFault::TimeoutAfterDispatch
+                        | WorkerDiagnosticFault::BlockUntilCancelledAfterDispatch,
+                    ) => {
+                        if let Some(value) = value.as_mut() {
+                            value.plaintext.clear();
+                        }
+                        loop {
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
+                    }
+                    None => {}
+                }
                 let response = match capture.execute(&target, &action, value.as_ref()) {
                     Ok(outcome) => crate::uia::protocol::WorkerResponse::Executed { outcome },
                     Err(error) => crate::uia::protocol::WorkerResponse::Error {

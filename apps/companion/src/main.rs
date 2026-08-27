@@ -273,16 +273,29 @@ fn run_daemon() {
                 self.companions
                     .entry(session_id.to_string())
                     .or_insert_with(|| {
-                        let approver = if std::env::var("QUALIGENCE_COMPANION_TEST_APPROVE_ALL")
-                            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-                            .unwrap_or(false)
-                        {
-                            ScriptedApprover::always(ApprovalOutcome::Approved)
-                        } else {
-                            ScriptedApprover::always(ApprovalOutcome::TimedOut)
-                        };
+                        let approver =
+                            match std::env::var("QUALIGENCE_COMPANION_TEST_APPROVAL_OUTCOME")
+                                .ok()
+                                .as_deref()
+                            {
+                                Some("approved") => {
+                                    ScriptedApprover::always(ApprovalOutcome::Approved)
+                                }
+                                Some("denied") => ScriptedApprover::always(ApprovalOutcome::Denied),
+                                Some("timeout") => {
+                                    ScriptedApprover::always(ApprovalOutcome::TimedOut)
+                                }
+                                _ if std::env::var("QUALIGENCE_COMPANION_TEST_APPROVE_ALL")
+                                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                                    .unwrap_or(false) =>
+                                {
+                                    ScriptedApprover::always(ApprovalOutcome::Approved)
+                                }
+                                _ => ScriptedApprover::always(ApprovalOutcome::TimedOut),
+                            };
                         let approval = ApprovalState::new(run_id.to_string(), approver);
-                        let permits = PermitStore::new(clock, 30_000);
+                        let permit_ttl_ms = test_permit_ttl_ms();
+                        let permits = PermitStore::new(clock, permit_ttl_ms);
                         Arc::new(Mutex::new(Companion::new(
                             session_id.to_string(),
                             approval,
@@ -357,6 +370,11 @@ fn run_daemon() {
             let event = match processor.process_next_request(&mut connection) {
                 Ok(event) => event,
                 Err(error) => {
+                    action_threads.retain(|handle| !handle.is_finished());
+                    if !action_threads.is_empty() && error.is_deferable_while_in_flight() {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
                     let _ = response_writer.write_error(
                         "unknown",
                         "companion.probe",
@@ -864,6 +882,9 @@ fn run_daemon() {
                 }));
                 Ok(())
             }
+            CompanionRequestPayload::TestDiagnostics(payload) => {
+                handle_test_diagnostics(state, payload, &request_id, &response_writer, frame_limits)
+            }
             CompanionRequestPayload::HandshakeBegin(_)
             | CompanionRequestPayload::HandshakeProve(_) => response_writer.write_error(
                 &request_id,
@@ -956,6 +977,215 @@ fn run_daemon() {
         if let Ok(mut supervisor) = state.supervisor.try_lock() {
             supervisor.cancel_in_flight();
         }
+    }
+
+    fn handle_test_diagnostics(
+        state: &mut DaemonState,
+        payload: companion::ipc::dto::TestDiagnosticsPayload,
+        request_id: &str,
+        response_writer: &SharedResponseWriter,
+        frame_limits: &FrameLimits,
+    ) -> Result<(), companion::ipc::server::FrameError> {
+        if !test_diagnostics_enabled() {
+            return response_writer.write_error(
+                request_id,
+                "diagnostics.test",
+                "CompanionProtocolViolation",
+                "DiagnosticsDisabled",
+                frame_limits,
+            );
+        }
+        match payload.command.as_str() {
+            "worker.stats" => response_writer.write_ok(
+                request_id,
+                "diagnostics.test",
+                worker_stats_payload(state),
+                frame_limits,
+            ),
+            "worker.force-exit" => {
+                let before = worker_stats_payload(state);
+                let after = match state.supervisor.lock() {
+                    Ok(mut supervisor) => {
+                        supervisor.force_recycle_for_diagnostic();
+                        serde_json::json!({
+                            "restartCount": supervisor.restart_count(),
+                            "spawnCount": supervisor.spawn_count(),
+                            "workerAlive": supervisor.worker_alive(),
+                        })
+                    }
+                    Err(_) => serde_json::json!({"error": "SupervisorUnavailable"}),
+                };
+                response_writer.write_ok(
+                    request_id,
+                    "diagnostics.test",
+                    serde_json::json!({
+                        "status": "forced_exit",
+                        "before": before,
+                        "after": after,
+                    }),
+                    frame_limits,
+                )
+            }
+            "worker.timeout-next-action" => match state.supervisor.lock() {
+                Ok(mut supervisor) => {
+                    supervisor.force_next_action_timeout_for_diagnostic();
+                    response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        serde_json::json!({"status": "next_action_timeout"}),
+                        frame_limits,
+                    )
+                }
+                Err(_) => response_writer.write_error(
+                    request_id,
+                    "diagnostics.test",
+                    "ApplicationError",
+                    "SupervisorUnavailable",
+                    frame_limits,
+                ),
+            },
+            "permit.expire-session" => {
+                let Some(session_id) = payload.session_id.as_deref() else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "CompanionProtocolViolation",
+                        "SessionNotFound",
+                        frame_limits,
+                    );
+                };
+                let Some(companion) = state.companions.get(session_id) else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "ApplicationError",
+                        "SessionNotFound",
+                        frame_limits,
+                    );
+                };
+                match companion.lock() {
+                    Ok(mut companion) => {
+                        companion.expire_permits_for_diagnostic();
+                        response_writer.write_ok(
+                            request_id,
+                            "diagnostics.test",
+                            serde_json::json!({"status": "permits_expired"}),
+                            frame_limits,
+                        )
+                    }
+                    Err(_) => response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "ApplicationError",
+                        "CompanionUnavailable",
+                        frame_limits,
+                    ),
+                }
+            }
+            "worker.block-next-action" => match state.supervisor.lock() {
+                Ok(mut supervisor) => {
+                    supervisor.block_next_action_until_cancelled_for_diagnostic();
+                    response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        serde_json::json!({"status": "next_action_blocked_until_cancelled"}),
+                        frame_limits,
+                    )
+                }
+                Err(_) => response_writer.write_error(
+                    request_id,
+                    "diagnostics.test",
+                    "ApplicationError",
+                    "SupervisorUnavailable",
+                    frame_limits,
+                ),
+            },
+            "session.evidence" => {
+                let Some(session_id) = payload.session_id.as_deref() else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "CompanionProtocolViolation",
+                        "MissingSessionId",
+                        frame_limits,
+                    );
+                };
+                match state.sessions.diagnostic_evidence(session_id) {
+                    Ok(value) => response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        value,
+                        frame_limits,
+                    ),
+                    Err(error) => response_writer.write_lifecycle_error(
+                        request_id,
+                        "diagnostics.test",
+                        error,
+                        frame_limits,
+                    ),
+                }
+            }
+            "session.corrupt-identity" => {
+                let Some(session_id) = payload.session_id.as_deref() else {
+                    return response_writer.write_error(
+                        request_id,
+                        "diagnostics.test",
+                        "CompanionProtocolViolation",
+                        "MissingSessionId",
+                        frame_limits,
+                    );
+                };
+                match state.sessions.corrupt_identity_for_test(session_id) {
+                    Ok(()) => response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        serde_json::json!({"status": "identity_corrupted", "sessionId": session_id}),
+                        frame_limits,
+                    ),
+                    Err(error) => response_writer.write_lifecycle_error(
+                        request_id,
+                        "diagnostics.test",
+                        error,
+                        frame_limits,
+                    ),
+                }
+            }
+            _ => response_writer.write_error(
+                request_id,
+                "diagnostics.test",
+                "CompanionProtocolViolation",
+                "UnknownDiagnosticCommand",
+                frame_limits,
+            ),
+        }
+    }
+
+    fn worker_stats_payload(state: &DaemonState) -> serde_json::Value {
+        match state.supervisor.lock() {
+            Ok(supervisor) => serde_json::json!({
+                "restartCount": supervisor.restart_count(),
+                "spawnCount": supervisor.spawn_count(),
+                "workerAlive": supervisor.worker_alive(),
+            }),
+            Err(_) => serde_json::json!({"error": "SupervisorUnavailable"}),
+        }
+    }
+
+    fn test_diagnostics_enabled() -> bool {
+        std::env::var("QUALIGENCE_COMPANION_TEST_DIAGNOSTICS")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    fn test_permit_ttl_ms() -> u64 {
+        if !test_diagnostics_enabled() {
+            return 30_000;
+        }
+        std::env::var("QUALIGENCE_COMPANION_TEST_PERMIT_TTL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(30_000)
     }
 
     fn target_deadlines_are_valid(target: &AppTarget) -> bool {
@@ -1075,14 +1305,32 @@ fn run_daemon() {
     }
 
     fn app_session_payload(session: &AppSessionState) -> serde_json::Value {
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "sessionId": session.session_id,
             "processId": session.pid,
             "processCreationTime": session.creation_time,
             "processGroupId": session.process_group_id,
             "rootWindowHandle": session.root_window_handle,
             "startedAt": now_string(),
-        })
+        });
+        if test_diagnostics_enabled() {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert(
+                    "lifecycleEvidence".to_string(),
+                    serde_json::json!({
+                        "launchSteps": session.launch_steps,
+                        "jobMembershipVerified": true,
+                        "identityVerified": true,
+                        "processIdentity": {
+                            "pid": session.pid,
+                            "creationTime": session.creation_time,
+                            "imageName": session.image_name,
+                        }
+                    }),
+                );
+            }
+        }
+        payload
     }
 
     fn lifecycle_done_payload(session_id: &str) -> serde_json::Value {
@@ -1171,13 +1419,8 @@ fn run_daemon() {
         outcome: ActionOutcomeReport,
         limits: &FrameLimits,
     ) -> Result<(), companion::ipc::server::FrameError> {
-        write_ok(
-            connection,
-            request_id,
-            "action.execute",
-            serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
-            limits,
-        )
+        let payload = serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null);
+        write_ok(connection, request_id, "action.execute", payload, limits)
     }
 
     fn write_lifecycle_error<W: Write>(
