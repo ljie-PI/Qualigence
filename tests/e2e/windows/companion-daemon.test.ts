@@ -11,6 +11,7 @@ const REQUIRED_TOP_LEVEL_CHECK_IDS = [
   "companion.probe",
   "policy.production-forbidden-denied",
   "emergency-stop.denies-new-actions",
+  "emergency-stop.in-flight",
   "approval.denied",
   "approval.timeout",
   "ticket31-handoff",
@@ -33,6 +34,8 @@ const REQUIRED_APP_CHECK_IDS = [
   "permit.expiry-denied",
   "uia.worker-forced-exit",
   "uia.worker-restart",
+  "uia.worker-timeout",
+  "action.no-auto-replay",
   "app.reset",
   "app.reset-state-verified",
   "app.shutdown-unrelated-survives",
@@ -61,8 +64,6 @@ describe("Windows Companion daemon native UIA E2E", () => {
       env: { ...process.env, CI: "true" },
       encoding: "utf8",
       windowsHide: true,
-      timeout: 15 * 60 * 1000,
-      killSignal: "SIGTERM",
     });
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
@@ -76,8 +77,8 @@ describe("Windows Companion daemon native UIA E2E", () => {
       schemaVersion?: string;
       status?: string;
       uiAccess?: boolean;
-      checks?: Array<{ id?: string; status?: string }>;
-      apps?: Array<{ technology?: string; checks?: Array<{ id?: string; status?: string }> }>;
+      checks?: Array<{ id?: string; status?: string; evidenceRefs?: string[] }>;
+      apps?: Array<{ technology?: string; checks?: Array<{ id?: string; status?: string; evidenceRefs?: string[] }> }>;
     };
     expect(evidence.schemaVersion).toBe("qualigence-windows-uia-daemon-harness/v1");
     expect(evidence.status).toBe("passed");
@@ -88,9 +89,19 @@ describe("Windows Companion daemon native UIA E2E", () => {
       expect(topLevelIds.has(id), `missing top-level harness evidence check ${id}`).toBe(true);
     }
     for (const app of evidence.apps ?? []) {
-      const appIds = new Set(app.checks?.filter((check) => check.status === "pass").map((check) => check.id));
+      const passedChecks = app.checks?.filter((check) => check.status === "pass") ?? [];
+      const appIds = new Set(passedChecks.map((check) => check.id));
       for (const id of REQUIRED_APP_CHECK_IDS) {
         expect(appIds.has(id), `missing ${app.technology ?? "app"} harness evidence check ${id}`).toBe(true);
+      }
+      const actionRefs = passedChecks.filter((check) => check.id === "action.evidence-refs").flatMap((check) => check.evidenceRefs ?? []);
+      expect(actionRefs.length, `${app.technology ?? "app"} did not publish action evidence refs`).toBeGreaterThan(0);
+      for (const ref of actionRefs) {
+        const [filePart, hashPart] = ref.split("#sha256:");
+        expect(filePart !== undefined && filePart.startsWith("file:"), `invalid action evidence ref ${ref}`).toBe(true);
+        expect(hashPart?.length, `invalid action evidence hash ${ref}`).toBe(64);
+        const artifactPath = filePart?.slice("file:".length) ?? "";
+        expect(existsSync(artifactPath), `missing action evidence artifact ${ref}`).toBe(true);
       }
     }
   });

@@ -2,7 +2,8 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Output, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,7 @@ const REQUIRED_TOP_LEVEL_CHECK_IDS: &[&str] = &[
     "companion.probe",
     "policy.production-forbidden-denied",
     "emergency-stop.denies-new-actions",
+    "emergency-stop.in-flight",
     "approval.denied",
     "approval.timeout",
     "ticket31-handoff",
@@ -60,6 +62,8 @@ const REQUIRED_APP_CHECK_IDS: &[&str] = &[
     "permit.expiry-denied",
     "uia.worker-forced-exit",
     "uia.worker-restart",
+    "uia.worker-timeout",
+    "action.no-auto-replay",
     "app.reset",
     "app.reset-state-verified",
     "app.shutdown-unrelated-survives",
@@ -140,6 +144,8 @@ struct CheckEvidence {
     id: String,
     status: &'static str,
     summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence_refs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -223,89 +229,99 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
 
     let evidence_dir = create_unique_evidence_dir()?;
 
-    let wpf_exe = build_reference_app(&wpf_project, "WindowsReferenceWpf.exe")?;
-    let winui_exe = build_reference_app(&winui_project, "WindowsReferenceWinUi.exe")?;
-    prepare_reference_state(&wpf_exe)?;
-    prepare_reference_state(&winui_exe)?;
+    let result = (|| {
+        let wpf_exe = build_reference_app(&wpf_project, "WindowsReferenceWpf.exe")?;
+        let winui_exe = build_reference_app(&winui_project, "WindowsReferenceWinUi.exe")?;
+        prepare_reference_state(&wpf_exe)?;
+        prepare_reference_state(&winui_exe)?;
 
-    let pipe_prefix = format!("qualigence-ticket47-{}", std::process::id());
-    let cert_fingerprint = fingerprint(ECDSA_CERT)?;
-    let mut daemon = start_companion_daemon(
-        &companion_exe,
-        &harness_exe,
-        &pipe_prefix,
-        &cert_fingerprint,
-        ApprovalMode::Approved,
-    )?;
-    let mut checks = Vec::new();
-    let mut client =
-        check_malformed_ipc_rejected_and_daemon_survives(&daemon.pipe_path, &mut checks)?;
-    check_probe(&mut client, &mut checks)?;
+        let pipe_prefix = format!("qualigence-ticket47-{}", std::process::id());
+        let cert_fingerprint = fingerprint(ECDSA_CERT)?;
+        let mut daemon = start_companion_daemon(
+            &companion_exe,
+            &harness_exe,
+            &pipe_prefix,
+            &cert_fingerprint,
+            ApprovalMode::Approved,
+        )?;
+        let mut checks = Vec::new();
+        let mut client =
+            check_malformed_ipc_rejected_and_daemon_survives(&daemon.pipe_path, &mut checks)?;
+        check_probe(&mut client, &mut checks)?;
 
-    let mut apps = Vec::new();
-    apps.push(run_app_scenario(
-        &mut client,
-        "wpf",
-        &wpf_project,
-        &wpf_exe,
-        &harness_exe,
-    )?);
-    apps.push(run_app_scenario(
-        &mut client,
-        "winui",
-        &winui_project,
-        &winui_exe,
-        &harness_exe,
-    )?);
+        let mut apps = Vec::new();
+        apps.push(run_app_scenario(
+            &mut client,
+            "wpf",
+            &wpf_project,
+            &wpf_exe,
+            &harness_exe,
+            &evidence_dir,
+        )?);
+        apps.push(run_app_scenario(
+            &mut client,
+            "winui",
+            &winui_project,
+            &winui_exe,
+            &harness_exe,
+            &evidence_dir,
+        )?);
 
-    check_policy_denial_and_emergency_stop(
-        &mut client,
-        &winui_project,
-        &winui_exe,
-        &harness_exe,
-        &mut checks,
-    )?;
+        check_policy_denial_and_emergency_stop(
+            &mut client,
+            &winui_project,
+            &winui_exe,
+            &harness_exe,
+            &evidence_dir,
+            &mut checks,
+        )?;
 
-    daemon.shutdown();
-    check_high_risk_approval_denial(
-        &companion_exe,
-        &harness_exe,
-        &cert_fingerprint,
-        &wpf_project,
-        &wpf_exe,
-        &mut checks,
-    )?;
-    check_high_risk_approval_timeout(
-        &companion_exe,
-        &harness_exe,
-        &cert_fingerprint,
-        &wpf_project,
-        &wpf_exe,
-        &mut checks,
-    )?;
+        daemon.shutdown();
+        check_high_risk_approval_denial(
+            &companion_exe,
+            &harness_exe,
+            &cert_fingerprint,
+            &wpf_project,
+            &wpf_exe,
+            &mut checks,
+        )?;
+        check_high_risk_approval_timeout(
+            &companion_exe,
+            &harness_exe,
+            &cert_fingerprint,
+            &wpf_project,
+            &wpf_exe,
+            &mut checks,
+        )?;
 
-    ensure_not_timed_out(started_at)?;
-    checks.push(pass("ticket31-handoff", "Harness result is an automated prerequisite only; Ticket 31 remains responsible for signed local-console/RDP checklist evidence"));
-    let document = EvidenceDocument {
-        schema_version: "qualigence-windows-uia-daemon-harness/v1",
-        status: "passed",
-        command_line: args,
-        companion_executable: companion_exe.display().to_string(),
-        harness_executable: harness_exe.display().to_string(),
-        companion_pipe: daemon.pipe_path.clone(),
-        ui_access: false,
-        machine: MachineEvidence {
-            os: env::consts::OS.to_string(),
-            session_name: env::var("SESSIONNAME").ok(),
-            windows_build: windows_build().ok().flatten(),
-            runner_id: RUNNER_ID,
-            certificate_sha256_fingerprint: cert_fingerprint,
-        },
-        checks,
-        apps,
-    };
-    assert_required_evidence(&document)?;
-    publish_evidence(&evidence_dir, &document)
+        ensure_not_timed_out(started_at)?;
+        checks.push(pass("ticket31-handoff", "Harness result is an automated prerequisite only; Ticket 31 remains responsible for signed local-console/RDP checklist evidence"));
+        let document = EvidenceDocument {
+            schema_version: "qualigence-windows-uia-daemon-harness/v1",
+            status: "passed",
+            command_line: args,
+            companion_executable: companion_exe.display().to_string(),
+            harness_executable: harness_exe.display().to_string(),
+            companion_pipe: daemon.pipe_path.clone(),
+            ui_access: false,
+            machine: MachineEvidence {
+                os: env::consts::OS.to_string(),
+                session_name: env::var("SESSIONNAME").ok(),
+                windows_build: windows_build().ok().flatten(),
+                runner_id: RUNNER_ID,
+                certificate_sha256_fingerprint: cert_fingerprint,
+            },
+            checks,
+            apps,
+        };
+        assert_required_evidence(&document)?;
+        publish_evidence(&evidence_dir, &document)
+    })();
+
+    if let Err(error) = &result {
+        mark_invalid_evidence(&evidence_dir, &format!("{}: {}", error.code, error.message));
+    }
+    result
 }
 
 fn run_id() -> String {
@@ -376,18 +392,19 @@ fn publish_evidence(evidence_dir: &Path, document: &EvidenceDocument) -> Harness
             evidence_tmp.display()
         )));
     }
-    if let Err(error) = fs::rename(&summary_tmp, &summary_path) {
-        mark_invalid_evidence(evidence_dir, &format!("summary publish failed: {error}"));
-        return Err(evidence_error(format!(
-            "cannot publish summary {}: {error}",
-            summary_path.display()
-        )));
-    }
     if let Err(error) = fs::rename(&evidence_tmp, &evidence_path) {
         mark_invalid_evidence(evidence_dir, &format!("evidence publish failed: {error}"));
         return Err(evidence_error(format!(
             "cannot publish evidence {}: {error}",
             evidence_path.display()
+        )));
+    }
+    if let Err(error) = fs::rename(&summary_tmp, &summary_path) {
+        let _ = fs::remove_file(&evidence_path);
+        mark_invalid_evidence(evidence_dir, &format!("summary publish failed: {error}"));
+        return Err(evidence_error(format!(
+            "cannot publish summary {}: {error}",
+            summary_path.display()
         )));
     }
     Ok(evidence_path)
@@ -446,10 +463,28 @@ fn ensure_supported_windows() -> HarnessResult<()> {
 }
 
 fn interactive_desktop_available() -> bool {
-    // SESSIONNAME catches the stable non-interactive service case before native
-    // side effects. Deeper locked-desktop detection remains platform-specific
-    // and is rechecked by the daemon/UIA calls before a pass can be published.
-    cfg!(windows)
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::StationsAndDesktops::{
+            CloseDesktop, OpenInputDesktop, SwitchDesktop, DESKTOP_READOBJECTS,
+            DESKTOP_SWITCHDESKTOP,
+        };
+
+        let desktop =
+            unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP) };
+        if desktop.is_null() {
+            return false;
+        }
+        let visible = unsafe { SwitchDesktop(desktop) != 0 };
+        unsafe {
+            CloseDesktop(desktop);
+        }
+        visible
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn windows_build() -> HarnessResult<Option<u32>> {
@@ -476,11 +511,44 @@ fn ensure_file(path: &Path, label: &str) -> HarnessResult<()> {
     }
 }
 
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+    label: &str,
+) -> HarnessResult<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| prereq(format!("{label} failed to start: {e}")))?;
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .map_err(|e| prereq(format!("{label} status check failed: {e}")))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|e| prereq(format!("{label} output collection failed: {e}")));
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(HarnessError {
+                code: "WindowsUiaHarnessTimeout",
+                message: format!("{label} exceeded {}s and was terminated", timeout.as_secs()),
+                exit: 15,
+            });
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn ensure_dotnet() -> HarnessResult<()> {
-    let output = Command::new("dotnet")
-        .arg("--info")
-        .output()
-        .map_err(|e| prereq(format!("dotnet --info failed to start: {e}")))?;
+    let mut command = Command::new("dotnet");
+    command.arg("--info");
+    let output = run_command_with_timeout(command, Duration::from_secs(30), "dotnet --info")?;
     if output.status.success() {
         Ok(())
     } else {
@@ -494,7 +562,8 @@ fn ensure_dotnet() -> HarnessResult<()> {
 }
 
 fn build_reference_app(project: &Path, expected_exe_name: &str) -> HarnessResult<PathBuf> {
-    let output = Command::new("dotnet")
+    let mut command = Command::new("dotnet");
+    command
         .args([
             "build",
             &project.display().to_string(),
@@ -502,14 +571,12 @@ fn build_reference_app(project: &Path, expected_exe_name: &str) -> HarnessResult
             "Release",
             "--nologo",
         ])
-        .env("CI", "true")
-        .output()
-        .map_err(|e| {
-            prereq(format!(
-                "dotnet build failed to start for {}: {e}",
-                project.display()
-            ))
-        })?;
+        .env("CI", "true");
+    let output = run_command_with_timeout(
+        command,
+        Duration::from_secs(5 * 60),
+        &format!("dotnet build {}", project.display()),
+    )?;
     if !output.status.success() {
         return Err(prereq(format!(
             "dotnet build failed for {} with status {:?}: {}{}",
@@ -679,11 +746,32 @@ fn start_companion_daemon(
         .stdout
         .take()
         .ok_or_else(|| companion_error("missing Companion stdout"))?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e| {
-        companion_error(format!("failed to read Companion daemon startup line: {e}"))
-    })?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let result = reader.read_line(&mut line).map(|_| line);
+        let _ = tx.send(result);
+    });
+    let line = match rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok(line)) => line,
+        Ok(Err(error)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(companion_error(format!(
+                "failed to read Companion daemon startup line: {error}"
+            )));
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(HarnessError {
+                code: "WindowsUiaHarnessTimeout",
+                message: "Companion daemon startup did not announce a pipe before timeout".into(),
+                exit: 15,
+            });
+        }
+    };
     if !line.contains("uiAccess=false") {
         return Err(companion_error(format!(
             "Companion daemon did not announce uiAccess=false: {}",
@@ -776,21 +864,39 @@ impl CompanionPipeClient {
         payload: CompanionRequestPayload,
         expected_type: &str,
     ) -> HarnessResult<Value> {
+        let request_id = self.send_request(payload)?;
+        self.read_response_expect_type(&request_id, expected_type, Duration::from_secs(30))
+    }
+
+    fn send_request(&mut self, payload: CompanionRequestPayload) -> HarnessResult<String> {
         let request = CompanionRequest {
             protocol_major: PROTOCOL_MAJOR,
             request_id: format!("ticket47-{}", self.next_request),
             payload,
         };
         self.next_request += 1;
-        let expected_request_id = request.request_id.clone();
+        let request_id = request.request_id.clone();
         let body = serde_json::to_vec(&request)
             .map_err(|e| companion_error(format!("failed to encode Companion request: {e}")))?;
         write_frame(&mut self.pipe, &body)?;
-        let response = read_frame(&mut self.pipe)?;
-        let value: Value = serde_json::from_slice(&response)
-            .map_err(|e| companion_error(format!("Companion returned malformed JSON: {e}")))?;
-        validate_response_envelope(&value, &expected_request_id, expected_type)?;
+        Ok(request_id)
+    }
+
+    fn read_response_expect_type(
+        &mut self,
+        expected_request_id: &str,
+        expected_type: &str,
+        timeout: Duration,
+    ) -> HarnessResult<Value> {
+        let value = self.read_response(timeout, expected_type)?;
+        validate_response_envelope(&value, expected_request_id, expected_type)?;
         Ok(value)
+    }
+
+    fn read_response(&mut self, timeout: Duration, context: &str) -> HarnessResult<Value> {
+        let response = read_frame_with_timeout(&self.pipe, timeout, context)?;
+        serde_json::from_slice(&response)
+            .map_err(|e| companion_error(format!("Companion returned malformed JSON: {e}")))
     }
 
     fn expect_ok(
@@ -862,6 +968,30 @@ fn read_frame(reader: &mut File) -> HarnessResult<Vec<u8>> {
     Ok(body)
 }
 
+fn read_frame_with_timeout(
+    reader: &File,
+    timeout: Duration,
+    context: &str,
+) -> HarnessResult<Vec<u8>> {
+    let mut cloned = reader.try_clone().map_err(|e| {
+        companion_error(format!(
+            "failed to clone Companion pipe for timed read: {e}"
+        ))
+    })?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(read_frame(&mut cloned));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => Err(HarnessError {
+            code: "WindowsUiaHarnessTimeout",
+            message: format!("timed out waiting for Companion {context} response"),
+            exit: 15,
+        }),
+    }
+}
+
 fn check_probe(
     client: &mut CompanionPipeClient,
     checks: &mut Vec<CheckEvidence>,
@@ -921,6 +1051,7 @@ fn run_app_scenario(
     project: &Path,
     exe: &Path,
     harness_exe: &Path,
+    evidence_dir: &Path,
 ) -> HarnessResult<AppEvidence> {
     let app_dir = exe
         .parent()
@@ -971,6 +1102,7 @@ fn run_app_scenario(
         "input-username",
     )?;
     assert_action_evidence_refs(
+        evidence_dir,
         &username_response,
         technology,
         "input-username",
@@ -986,6 +1118,7 @@ fn run_app_scenario(
         "input-password",
     )?;
     assert_action_evidence_refs(
+        evidence_dir,
         &password_response,
         technology,
         "input-password",
@@ -1010,7 +1143,13 @@ fn run_app_scenario(
 
     let select_response =
         execute_select_action(client, &session_id, &role_node, "Editor", technology)?;
-    assert_action_evidence_refs(&select_response, technology, "select-role", &mut checks)?;
+    assert_action_evidence_refs(
+        evidence_dir,
+        &select_response,
+        technology,
+        "select-role",
+        &mut checks,
+    )?;
     let submit_response = execute_click_action(
         client,
         &session_id,
@@ -1018,7 +1157,13 @@ fn run_app_scenario(
         technology,
         "invoke-submit",
     )?;
-    assert_action_evidence_refs(&submit_response, technology, "invoke-submit", &mut checks)?;
+    assert_action_evidence_refs(
+        evidence_dir,
+        &submit_response,
+        technology,
+        "invoke-submit",
+        &mut checks,
+    )?;
     let after_submit = capture(
         client,
         &session_id,
@@ -1065,10 +1210,10 @@ fn run_app_scenario(
             10_000,
         ),
     ))?;
-    assert_error_code(&missing, "ApplicationError", "missing permit")?;
+    assert_action_failed_with(&missing, "LocalPermitInvalid", "missing permit")?;
     checks.push(pass(
         "permit.missing-denied",
-        format!("{technology} action without a minted Permit was denied before worker dispatch"),
+        format!("{technology} syntactically valid but unissued Permit token was denied by the Permit store before worker dispatch"),
     ));
 
     let replay_action = action_click(
@@ -1156,6 +1301,7 @@ fn run_app_scenario(
     ));
 
     check_worker_forced_exit_and_restart(client, &session_id, technology, &mut checks)?;
+    check_worker_timeout_unknown(client, &session_id, &submit_node, technology, &mut checks)?;
 
     client.expect_ok(
         CompanionRequestPayload::AppReset(SessionIdPayload {
@@ -1165,7 +1311,13 @@ fn run_app_scenario(
     )?;
     let reset_response =
         execute_click_action(client, &session_id, &reset_node, technology, "invoke-reset")?;
-    assert_action_evidence_refs(&reset_response, technology, "invoke-reset", &mut checks)?;
+    assert_action_evidence_refs(
+        evidence_dir,
+        &reset_response,
+        technology,
+        "invoke-reset",
+        &mut checks,
+    )?;
     let after_reset = capture(
         client,
         &session_id,
@@ -1354,6 +1506,62 @@ fn check_worker_forced_exit_and_restart(
     Ok(())
 }
 
+fn check_worker_timeout_unknown(
+    client: &mut CompanionPipeClient,
+    session_id: &str,
+    node_id: &str,
+    technology: &str,
+    checks: &mut Vec<CheckEvidence>,
+) -> HarnessResult<()> {
+    let before = diagnostic(client, "worker.stats", None, "worker stats before timeout")?;
+    let before_restarts = number_field(&before, "restartCount")?;
+    let before_spawns = number_field(&before, "spawnCount")?;
+    diagnostic(
+        client,
+        "worker.timeout-next-action",
+        None,
+        "configure worker timeout diagnostic",
+    )?;
+    let action = action_click(
+        &format!("{technology}-worker-timeout"),
+        "graph-ticket47",
+        node_id,
+        Some("Invoke"),
+    );
+    let permit = request_permit(client, session_id, action.clone(), Risk::Normal, None)?;
+    let timeout_response = client.request(CompanionRequestPayload::ActionExecute(
+        action_execute_payload(session_id, action.clone(), permit.clone(), None, 10_000),
+    ))?;
+    assert_action_failed_with(&timeout_response, "ActionOutcomeUnknown", "worker timeout")?;
+    let replay = client.request(CompanionRequestPayload::ActionExecute(
+        action_execute_payload(session_id, action, permit, None, 10_000),
+    ))?;
+    assert_action_failed_with(&replay, "LocalPermitInvalid", "post-timeout replay")?;
+    capture(
+        client,
+        session_id,
+        10_000,
+        &format!("{technology} capture after timeout"),
+    )?;
+    let after = diagnostic(client, "worker.stats", None, "worker stats after timeout")?;
+    if number_field(&after, "restartCount")? <= before_restarts
+        || number_field(&after, "spawnCount")? <= before_spawns
+    {
+        return Err(native_check(format!(
+            "{technology} worker timeout did not advance restart/spawn counts: before {before}, after {after}"
+        )));
+    }
+    checks.push(pass(
+        "uia.worker-timeout",
+        format!("{technology} post-dispatch worker timeout returned ActionOutcomeUnknown while Companion/App Job survived and worker generation advanced"),
+    ));
+    checks.push(pass(
+        "action.no-auto-replay",
+        format!("{technology} consumed Permit was not automatically replayed after ActionOutcomeUnknown"),
+    ));
+    Ok(())
+}
+
 fn check_identity_mismatch_denied(
     client: &mut CompanionPipeClient,
     technology: &str,
@@ -1413,6 +1621,7 @@ fn check_policy_denial_and_emergency_stop(
     project: &Path,
     exe: &Path,
     harness_exe: &Path,
+    evidence_dir: &Path,
     checks: &mut Vec<CheckEvidence>,
 ) -> HarnessResult<()> {
     let app_dir = exe
@@ -1453,12 +1662,64 @@ fn check_policy_denial_and_emergency_stop(
         "ProductionForbidden action was denied by policy without Permit issuance",
     ));
 
-    client.expect_ok(
-        CompanionRequestPayload::SessionStop(companion::ipc::dto::RunIdPayload {
-            run_id: "run-ticket47".to_string(),
-        }),
-        "session.stop",
+    diagnostic(
+        client,
+        "worker.block-next-action",
+        None,
+        "configure in-flight emergency-stop diagnostic",
     )?;
+    let inflight_action = action_click(
+        "emergency-stop-inflight",
+        "graph-ticket47",
+        &delete_node,
+        Some("Invoke"),
+    );
+    let inflight_permit = request_permit(
+        client,
+        &session_id,
+        inflight_action.clone(),
+        Risk::Normal,
+        None,
+    )?;
+    let inflight_request_id = client.send_request(CompanionRequestPayload::ActionExecute(
+        action_execute_payload(&session_id, inflight_action, inflight_permit, None, 10_000),
+    ))?;
+    thread::sleep(Duration::from_millis(50));
+    let stop_request_id = client.send_request(CompanionRequestPayload::SessionStop(
+        companion::ipc::dto::RunIdPayload {
+            run_id: "run-ticket47".to_string(),
+        },
+    ))?;
+    let (stop_response, inflight_response) = read_correlated_pair(
+        client,
+        &stop_request_id,
+        "session.stop",
+        &inflight_request_id,
+        "action.execute",
+        Duration::from_secs(15),
+    )?;
+    if stop_response.get("status").and_then(Value::as_str) != Some("ok") {
+        return Err(native_check(format!(
+            "in-flight session.stop did not return ok: {stop_response}"
+        )));
+    }
+    assert_action_failed_with(
+        &inflight_response,
+        "EmergencyStopped",
+        "in-flight emergency stop",
+    )?;
+    let refs = persist_action_evidence(
+        evidence_dir,
+        "emergency-stop",
+        "in-flight-action",
+        &inflight_response,
+    )?;
+    checks.push(pass_with_refs(
+        "emergency-stop.in-flight",
+        "Emergency Stop cancelled an already-dispatched action without fabricating success",
+        refs,
+    ));
+
     let stopped = request_permit_response(
         client,
         &session_id,
@@ -1496,6 +1757,36 @@ fn check_policy_denial_and_emergency_stop(
         ),
     ));
     Ok(())
+}
+
+fn read_correlated_pair(
+    client: &mut CompanionPipeClient,
+    first_id: &str,
+    first_type: &str,
+    second_id: &str,
+    second_type: &str,
+    timeout: Duration,
+) -> HarnessResult<(Value, Value)> {
+    let mut first = None;
+    let mut second = None;
+    for _ in 0..2 {
+        let response = client.read_response(timeout, "correlated in-flight responses")?;
+        if response.get("requestId").and_then(Value::as_str) == Some(first_id) {
+            validate_response_envelope(&response, first_id, first_type)?;
+            first = Some(response);
+        } else if response.get("requestId").and_then(Value::as_str) == Some(second_id) {
+            validate_response_envelope(&response, second_id, second_type)?;
+            second = Some(response);
+        } else {
+            return Err(companion_error(format!(
+                "unexpected correlated response while waiting for {first_id}/{second_id}: {response}"
+            )));
+        }
+    }
+    Ok((
+        first.ok_or_else(|| companion_error(format!("missing response for {first_id}")))?,
+        second.ok_or_else(|| companion_error(format!("missing response for {second_id}")))?,
+    ))
 }
 
 fn check_high_risk_approval_denial(
@@ -1925,29 +2216,86 @@ fn execute_select_action(
 }
 
 fn assert_action_evidence_refs(
+    evidence_dir: &Path,
     response: &Value,
     technology: &str,
     action: &str,
     checks: &mut Vec<CheckEvidence>,
 ) -> HarnessResult<()> {
-    let refs = response
-        .get("actionEvidenceRefs")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            native_check(format!(
-                "{technology} {action} lacked actionEvidenceRefs: {response}"
-            ))
-        })?;
-    if refs.is_empty() || !refs.iter().all(|value| value.as_str().is_some()) {
+    if response.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(native_check(format!(
-            "{technology} {action} returned invalid actionEvidenceRefs: {response}"
+            "{technology} {action} did not return an action outcome: {response}"
         )));
     }
-    checks.push(pass(
+    let refs = persist_action_evidence(evidence_dir, technology, action, response)?;
+    checks.push(pass_with_refs(
         "action.evidence-refs",
-        format!("{technology} {action} returned Companion action evidence refs"),
+        format!("{technology} {action} produced durable harness action evidence refs"),
+        refs,
     ));
     Ok(())
+}
+
+fn persist_action_evidence(
+    evidence_dir: &Path,
+    technology: &str,
+    action: &str,
+    response: &Value,
+) -> HarnessResult<Vec<String>> {
+    let action_dir = evidence_dir.join("action-evidence");
+    fs::create_dir_all(&action_dir).map_err(|e| {
+        evidence_error(format!(
+            "cannot create action evidence directory {}: {e}",
+            action_dir.display()
+        ))
+    })?;
+    let file_name = format!(
+        "{}-{}.json",
+        sanitize_ref_component(technology),
+        sanitize_ref_component(action)
+    );
+    let path = action_dir.join(file_name);
+    let bytes = serde_json::to_vec_pretty(response)
+        .map_err(|e| evidence_error(format!("cannot serialize action evidence: {e}")))?;
+    if String::from_utf8_lossy(&bytes).contains(SECRET_PLAINTEXT) {
+        return Err(evidence_error(format!(
+            "{technology} {action} action evidence would contain secret plaintext"
+        )));
+    }
+    let digest = hex::encode(Sha256::digest(&bytes));
+    fs::write(&path, &bytes).map_err(|e| {
+        evidence_error(format!(
+            "cannot write action evidence {}: {e}",
+            path.display()
+        ))
+    })?;
+    let persisted = fs::read(&path).map_err(|e| {
+        evidence_error(format!(
+            "cannot verify action evidence {}: {e}",
+            path.display()
+        ))
+    })?;
+    let persisted_digest = hex::encode(Sha256::digest(&persisted));
+    if persisted_digest != digest {
+        return Err(evidence_error(format!(
+            "action evidence {} hash mismatch after write",
+            path.display()
+        )));
+    }
+    Ok(vec![format!("file:{}#sha256:{}", path.display(), digest)])
+}
+
+fn sanitize_ref_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn request_permit(
@@ -2035,19 +2383,35 @@ fn action_click(
 }
 
 fn missing_permit(session_id: &str, action: &ResolvedDesktopAction) -> LocalExecutionPermit {
+    let decision_id = format!("decision-{}", action.action_id);
+    let policy_id = "ticket47-native-policy".to_string();
+    let nonce_base64 = BASE64.encode(format!("missing-{}", action.action_id));
+    let expires_at = future_iso_like();
+    let risk = Risk::Normal;
+    let action_digest_sha256 = desktop_action_digest_sha256(
+        session_id,
+        "run-ticket47",
+        action,
+        &decision_id,
+        &policy_id,
+        risk,
+        &expires_at,
+        &nonce_base64,
+        None,
+    );
     LocalExecutionPermit {
         permit_token: "missing-ticket47-permit".to_string(),
-        nonce_base64: BASE64.encode(format!("missing-{}", action.action_id)),
+        nonce_base64,
         session_id: session_id.to_string(),
         run_id: "run-ticket47".to_string(),
         action_id: action.action_id.clone(),
-        action_digest_sha256: "0".repeat(64),
+        action_digest_sha256,
         graph_id: action.graph_id.clone(),
-        decision_id: format!("decision-{}", action.action_id),
-        policy_id: "ticket47-native-policy".to_string(),
-        risk: Risk::Normal,
+        decision_id,
+        policy_id,
+        risk,
         issued_at: future_iso_like(),
-        expires_at: future_iso_like(),
+        expires_at,
         value_binding: None,
     }
 }
@@ -2363,6 +2727,20 @@ fn pass(id: impl Into<String>, summary: impl Into<String>) -> CheckEvidence {
         id: id.into(),
         status: "pass",
         summary: summary.into(),
+        evidence_refs: Vec::new(),
+    }
+}
+
+fn pass_with_refs(
+    id: impl Into<String>,
+    summary: impl Into<String>,
+    evidence_refs: Vec<String>,
+) -> CheckEvidence {
+    CheckEvidence {
+        id: id.into(),
+        status: "pass",
+        summary: summary.into(),
+        evidence_refs,
     }
 }
 

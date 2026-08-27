@@ -1020,6 +1020,42 @@ fn run_daemon() {
                     frame_limits,
                 )
             }
+            "worker.timeout-next-action" => match state.supervisor.lock() {
+                Ok(mut supervisor) => {
+                    supervisor.force_next_action_timeout_for_diagnostic();
+                    response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        serde_json::json!({"status": "next_action_timeout"}),
+                        frame_limits,
+                    )
+                }
+                Err(_) => response_writer.write_error(
+                    request_id,
+                    "diagnostics.test",
+                    "ApplicationError",
+                    "SupervisorUnavailable",
+                    frame_limits,
+                ),
+            },
+            "worker.block-next-action" => match state.supervisor.lock() {
+                Ok(mut supervisor) => {
+                    supervisor.block_next_action_until_cancelled_for_diagnostic();
+                    response_writer.write_ok(
+                        request_id,
+                        "diagnostics.test",
+                        serde_json::json!({"status": "next_action_blocked_until_cancelled"}),
+                        frame_limits,
+                    )
+                }
+                Err(_) => response_writer.write_error(
+                    request_id,
+                    "diagnostics.test",
+                    "ApplicationError",
+                    "SupervisorUnavailable",
+                    frame_limits,
+                ),
+            },
             "session.evidence" => {
                 let Some(session_id) = payload.session_id.as_deref() else {
                     return response_writer.write_error(
@@ -1328,20 +1364,7 @@ fn run_daemon() {
         outcome: ActionOutcomeReport,
         limits: &FrameLimits,
     ) -> Result<(), companion::ipc::server::FrameError> {
-        let mut payload = serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null);
-        if test_diagnostics_enabled() {
-            if let Some(object) = payload.as_object_mut() {
-                object.insert(
-                    "actionEvidenceRefs".to_string(),
-                    serde_json::json!([format!("companion-ipc:{request_id}:action.execute")]),
-                );
-                object.insert("permitConsumed".to_string(), serde_json::Value::Bool(true));
-                object.insert(
-                    "completedAt".to_string(),
-                    serde_json::Value::String(now_string()),
-                );
-            }
-        }
+        let payload = serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null);
         write_ok(connection, request_id, "action.execute", payload, limits)
     }
 

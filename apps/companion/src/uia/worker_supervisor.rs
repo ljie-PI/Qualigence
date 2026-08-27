@@ -137,12 +137,19 @@ pub trait WorkerSpawner {
 }
 
 /// Owns the current worker and rebuilds it on any failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticWorkerFault {
+    TimeoutNextAction,
+    BlockNextActionUntilCancelled,
+}
+
 pub struct UiaWorkerSupervisor<S: WorkerSpawner> {
     spawner: S,
     worker: Option<S::Handle>,
     restarts: u32,
     spawns: u32,
     cancellation: WorkerCancellation,
+    diagnostic_next_action_fault: Option<DiagnosticWorkerFault>,
 }
 
 impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
@@ -153,6 +160,7 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             restarts: 0,
             spawns: 0,
             cancellation: WorkerCancellation::default(),
+            diagnostic_next_action_fault: None,
         }
     }
 
@@ -181,6 +189,15 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
     /// authority intact and making the next UIA request spawn a fresh child.
     pub fn force_recycle_for_diagnostic(&mut self) {
         self.recycle_worker();
+    }
+
+    pub fn force_next_action_timeout_for_diagnostic(&mut self) {
+        self.diagnostic_next_action_fault = Some(DiagnosticWorkerFault::TimeoutNextAction);
+    }
+
+    pub fn block_next_action_until_cancelled_for_diagnostic(&mut self) {
+        self.diagnostic_next_action_fault =
+            Some(DiagnosticWorkerFault::BlockNextActionUntilCancelled);
     }
 
     fn ensure_worker(&mut self) -> Result<&mut S::Handle, WorkerError> {
@@ -312,6 +329,11 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             action: action.clone(),
             value: value.cloned(),
         };
+        if let Some(fault) = self.diagnostic_next_action_fault.take() {
+            let result = self.dispatch_diagnostic_action_fault(fault, deadline, cancellation);
+            clear_request_plaintext(&mut req);
+            return result;
+        }
         let result = match self.dispatch_until(&req, deadline, cancellation) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
@@ -328,6 +350,34 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         };
         clear_request_plaintext(&mut req);
         result
+    }
+
+    fn dispatch_diagnostic_action_fault(
+        &mut self,
+        fault: DiagnosticWorkerFault,
+        deadline: &RequestDeadline,
+        cancellation: &WorkerCancellationCheckpoint,
+    ) -> Result<ActionOutcomeReport, UiaError> {
+        if self.ensure_worker().is_err() {
+            return Err(UiaError::WorkerUnavailable);
+        }
+        match fault {
+            DiagnosticWorkerFault::TimeoutNextAction => {
+                self.recycle_worker();
+                Err(UiaError::ActionOutcomeUnknown)
+            }
+            DiagnosticWorkerFault::BlockNextActionUntilCancelled => loop {
+                if cancellation.is_cancelled() {
+                    self.recycle_worker();
+                    return Err(UiaError::EmergencyStopped);
+                }
+                if deadline.remaining().is_err() {
+                    self.recycle_worker();
+                    return Err(UiaError::ActionOutcomeUnknown);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            },
+        }
     }
 }
 
