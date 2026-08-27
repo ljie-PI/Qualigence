@@ -4,7 +4,7 @@
 
 **Blocked by:** 30 — Implement native UIA, Job Object, and Companion daemon.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -122,3 +122,11 @@ Record base/reviewed SHAs, harness build path, command output path/hash, focused
 ## Comments
 
 - start — Created by maintainer direction after Ticket 30 merged and Ticket 31 was found to require `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` without any repo-owned or provided harness path. This ticket owns the missing executable harness; Ticket 31 remains the human signed native acceptance gate.
+
+### start — 2026-08-27
+
+- Fixed base: `5a5dfa00601d9a24f56b707350b0b5e3574a37ee` (`main` after Ticket 45 merge); dedicated branch/worktree `ticket-47-windows-uia-daemon-harness` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-47`.
+- Dependency status: Ticket 30 is merged/resolved, so Ticket 47 is unblocked. Ticket 31 remains human-owned and blocked until this harness exists and real native evidence is produced.
+- Behavior Matrix applicability: complete Ticket 47 matrix is applicable. Rows cover supported Windows 11/native prerequisite pass, stable prerequisite failures, missing harness, Companion identity/daemon failures, contained launch, partial launch cleanup, UIA capture, worker hang/restart, permit/action denial paths, Emergency Stop, unrelated process/PID-reuse protection, evidence write failure, and timeout/cancel. No row is declared N/A at start, but native post-review acceptance requires a real local interactive Windows 11 environment.
+- Planned focused Gate: `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo fmt --check`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo build --workspace`, `PATH=/q/.tools/Scoop/apps/rust/1.96.1/bin:$PATH cargo test --workspace --test companion_reference_app_scenario`, `CI=true corepack pnpm typecheck`, and `git diff --check`; add any package-local harness suite discovered during implementation.
+- Planned post-review acceptance after clean complete-matrix review: on real Windows 11 with native prerequisites, set `QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS=<built-harness-exe>`, then run `corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts`. A missing native environment remains a stable prerequisite failure and does not complete Ticket 47.
