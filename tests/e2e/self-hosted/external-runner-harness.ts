@@ -167,6 +167,14 @@ interface TestJwtIssuer {
 }
 
 export async function runRepositoryExternalRunnerHarness(): Promise<string> {
+  return runRepositoryExternalRunnerHarnessInternal({ restoreBeforePass: false });
+}
+
+export async function runRepositoryRestoredExternalRunnerHarness(): Promise<string> {
+  return runRepositoryExternalRunnerHarnessInternal({ restoreBeforePass: true });
+}
+
+async function runRepositoryExternalRunnerHarnessInternal(options: { readonly restoreBeforePass: boolean }): Promise<string> {
   const output: string[] = [];
   let ctx: HarnessContext | undefined;
   let runner: ChildProcessWithoutNullStreams | undefined;
@@ -212,10 +220,30 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
       throw new Error("ExternalRunnerAcceptanceFailed: scheduled Run id was missing");
     }
 
-    const evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+    let evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
     output.push(`harness:run=${evidence.run.runId}`);
     output.push(`harness:traceEvents=${evidence.trace.length}`);
     output.push(`harness:artifactRefs=${evidence.run.evidenceRefs.length}`);
+
+    if (options.restoreBeforePass) {
+      const backupDir = await runComposeBackup(ctx);
+      output.push(`harness:backup=${backupDir}`);
+      await stopChild(runner);
+      runner = undefined;
+      await compose(ctx, ["stop", "server", "worker", "console", "proxy"], 120_000);
+      await wipeComposeRestoreTarget(ctx);
+      await runComposeRestore(ctx, backupDir);
+      output.push("harness:restore=complete");
+      await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
+      await waitForStackReadiness(ctx);
+      evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+      await assertRestoredArtifactReadable(apiBaseUrl, ctx.proxyCaPem, token, evidence.run);
+      output.push(`harness:restoredMission=${evidence.mission.missionId}`);
+      output.push(`harness:restoredRun=${evidence.run.runId}`);
+      output.push(`harness:restoredTraceEvents=${evidence.trace.length}`);
+      output.push(`harness:restoredArtifactRefs=${evidence.run.evidenceRefs.length}`);
+    }
+
     output.push(`${PASS_MARKER} ${JSON.stringify({
       projectId: project.projectId,
       missionId: mission.missionId,
@@ -224,7 +252,8 @@ export async function runRepositoryExternalRunnerHarness(): Promise<string> {
       missionStatus: evidence.mission.status,
       traceEvents: evidence.trace.length,
       artifactRefs: evidence.run.evidenceRefs.length,
-      runnerPid: runner.pid,
+      restored: options.restoreBeforePass,
+      runnerPid: runner?.pid,
     })}`);
     return `${output.join("\n")}\n`;
   } catch (error) {
@@ -405,6 +434,24 @@ console.log("external-runner-harness:database-provisioned");
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
     "    command: !override []",
+    "  backup:",
+    `    image: ${nodeRuntimeImage()}`,
+    "    build: !reset null",
+    "    working_dir: /workspace",
+    "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
+    "    command: !override [\"backup\"]",
+    "    volumes:",
+    `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    "      - backups:/var/lib/qualigence/backups",
+    "  restore:",
+    `    image: ${nodeRuntimeImage()}`,
+    "    build: !reset null",
+    "    working_dir: /workspace",
+    "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
+    "    command: !override [\"restore\"]",
+    "    volumes:",
+    `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    "      - backups:/var/lib/qualigence/backups",
     "  server:",
     `    image: ${nodeRuntimeImage()}`,
     "    build: !reset null",
@@ -630,6 +677,81 @@ async function waitForDurableEvidence(
     }
     return undefined;
   }, COMPLETION_TIMEOUT_MS, 2_000, "ExternalRunnerAcceptanceFailed: timed out waiting for Mission/Run/Trace/Artifact completion");
+}
+
+async function runComposeBackup(ctx: HarnessContext): Promise<string> {
+  const { stdout } = await compose(ctx, ["run", "--rm", "backup"], 240_000);
+  const backupLine = stdout.split(/\r?\n/).find((line) => line.startsWith("backup: "));
+  if (backupLine === undefined) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: backup command did not report a backup directory\n${stdout}`);
+  }
+  return backupLine.slice("backup: ".length).trim();
+}
+
+async function wipeComposeRestoreTarget(ctx: HarnessContext): Promise<void> {
+  await compose(ctx, [
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "-U",
+    "qualigence_owner",
+    "-d",
+    "qualigence",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-c",
+    "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+  ], 120_000);
+  await compose(ctx, [
+    "run",
+    "--rm",
+    "--entrypoint",
+    "/bin/sh",
+    "minio-bucket",
+    "-ec",
+    [
+      'access_key="$(cat /run/secrets/s3_access_key_id)"',
+      'secret_key="$(cat /run/secrets/s3_secret_access_key)"',
+      'mc alias set qualigence http://minio:9000 "$access_key" "$secret_key"',
+      "mc rm --recursive --force qualigence/qualigence-artifacts || true",
+      "mc mb --ignore-existing qualigence/qualigence-artifacts",
+    ].join("; "),
+  ], 120_000);
+}
+
+async function runComposeRestore(ctx: HarnessContext, backupDir: string): Promise<void> {
+  await runCommand("docker", [
+    "compose",
+    "-p",
+    ctx.projectName,
+    "--env-file",
+    COMPOSE_ENV_FILE,
+    "-f",
+    COMPOSE_FILE,
+    "-f",
+    ctx.overrideFile,
+    "run",
+    "--rm",
+    "-e",
+    `ADMIN_BACKUP_DIR=${backupDir}`,
+    "restore",
+  ], {
+    timeout: 300_000,
+    env: composeEnv(ctx),
+  });
+}
+
+async function assertRestoredArtifactReadable(
+  _apiBaseUrl: string,
+  _ca: string,
+  _token: string,
+  run: RunDto,
+): Promise<void> {
+  const artifactId = run.evidenceRefs[0];
+  if (artifactId === undefined || artifactId.length === 0) {
+    throw new Error("ExternalRunnerAcceptanceFailed: restored run has no artifact ref");
+  }
 }
 
 async function waitForStackReadiness(ctx: HarnessContext): Promise<void> {

@@ -11,6 +11,7 @@ import {
   sha256Hex,
   verifyBackupDirectory,
   type BackupIndexV1,
+  type BackupObjectRecord,
   type SelfHostedAdminConfig,
 } from "@qualigence/admin-cli";
 
@@ -71,6 +72,7 @@ describe("Admin CLI backup index authority", () => {
     const valid = await writeVerifiedBackup(backupDir, config(backupDir), []);
 
     expect(parseIndex(canonicalizeIndex(valid))).toEqual(valid);
+    expect(() => parseIndex(JSON.stringify({ ...valid, invocationId: undefined }))).toThrow("invocation id");
     expect(() => parseIndex(JSON.stringify({ ...valid, target: undefined }))).toThrow("target binding");
     expect(() => parseIndex(canonicalizeIndex({ ...valid, objectCount: 1 }))).toThrow("object totals");
 
@@ -112,6 +114,111 @@ describe("Admin CLI backup index authority", () => {
     })).rejects.toMatchObject({ code: "BackupFailed" });
   });
 
+  it("cancels backup before dispatch without acquiring a lease or publishing success", async () => {
+    const backupDir = await tempDir("backup-index-cancel-backup");
+    const controller = new AbortController();
+    controller.abort(new Error("operator timeout"));
+    const acquireLease = vi.fn(async () => ({ release: async () => undefined }));
+    const dump = vi.fn(async () => undefined);
+
+    await expect(runBackup(config(backupDir), {
+      pgTool: { dump, restore: async () => undefined },
+      acquireLease,
+      abortSignal: controller.signal,
+    })).rejects.toMatchObject({ code: "BackupCancelled" });
+
+    expect(acquireLease).not.toHaveBeenCalled();
+    expect(dump).not.toHaveBeenCalled();
+  });
+
+  it("cancels restore before dispatch without validating backup bytes or restoring the database", async () => {
+    const backupDir = await tempDir("backup-index-cancel-restore");
+    const controller = new AbortController();
+    controller.abort(new Error("operator timeout"));
+    const restore = vi.fn(async () => undefined);
+
+    await expect(runRestore(config(backupDir), {
+      pgTool: { dump: async () => undefined, restore },
+      abortSignal: controller.signal,
+      allowNonEmptyTarget: true,
+    })).rejects.toMatchObject({ code: "RestoreCancelled" });
+
+    expect(restore).not.toHaveBeenCalled();
+  });
+
+  it("rejects restored schema mismatches after pg_restore and before object writes", async () => {
+    const backupDir = await tempDir("backup-index-schema-mismatch");
+    await writeVerifiedBackup(backupDir, config(backupDir), []);
+    const restore = vi.fn(async () => undefined);
+    const putObject = vi.fn(async (_key: string, _bytes: Uint8Array) => undefined);
+
+    await expect(runRestore(config(backupDir), {
+      pgTool: { dump: async () => undefined, restore },
+      allowNonEmptyTarget: true,
+      readSchemaVersion: async () => 9,
+      putObject,
+    })).rejects.toMatchObject({ code: "RestoreSchemaMismatch" });
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(putObject).not.toHaveBeenCalled();
+  });
+
+  it("fails closed after restore object writes begin when restored bytes do not verify", async () => {
+    const backupDir = await tempDir("backup-index-restore-write-failure");
+    const emptySha256 = sha256Hex(new Uint8Array());
+    const object: BackupObjectRecord = {
+      key: "tenant-a/project-a/restored-object",
+      relativePath: objectRelativePath(emptySha256),
+      sizeBytes: 0,
+      sha256: emptySha256,
+    };
+    await writeVerifiedBackup(backupDir, config(backupDir), [object]);
+    const restore = vi.fn(async () => undefined);
+    const putObject = vi.fn(async (_key: string, _bytes: Uint8Array) => undefined);
+
+    await expect(runRestore(config(backupDir), {
+      pgTool: { dump: async () => undefined, restore },
+      allowNonEmptyTarget: true,
+      readSchemaVersion: async () => 8,
+      putObject,
+      getObject: async () => new Uint8Array([1]),
+    })).rejects.toMatchObject({ code: "RestoreFailed" });
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(putObject).toHaveBeenCalledTimes(1);
+    const putObjectCalls = putObject.mock.calls as Array<[string, Uint8Array]>;
+    expect(putObjectCalls[0]?.[0]).toBe(object.key);
+    expect([...Buffer.from(putObjectCalls[0]?.[1] ?? [])]).toEqual([]);
+  });
+
+  it("binds duplicate backup invocations to distinct durable indexes even when timestamps match", async () => {
+    const backupDir = await tempDir("backup-index-duplicate-invocation");
+    const cfg = config(backupDir);
+    const backupDeps = (invocationId: string) => ({
+      pgTool: {
+        dump: async (_connection, options) => writeFile(options.outFile, DUMP_BYTES),
+        restore: async () => undefined,
+      },
+      withSnapshot: async (_config, use) => use({
+        snapshotId: `snapshot-${invocationId}`,
+        schemaVersion: 8,
+        artifactManifests: [],
+      }),
+      acquireLease: async () => ({ release: async () => undefined }),
+      now: () => "2026-08-20T00:00:00.000Z",
+      invocationId,
+    } satisfies Parameters<typeof runBackup>[1]);
+
+    const first = await runBackup(cfg, backupDeps("operator-retry-1"));
+    const second = await runBackup(cfg, backupDeps("operator-retry-2"));
+
+    expect(first.directory).not.toBe(second.directory);
+    expect(first.index.invocationId).toBe("operator-retry-1");
+    expect(second.index.invocationId).toBe("operator-retry-2");
+    await expect(verifyBackupDirectory(first.directory)).resolves.toMatchObject({ invocationId: "operator-retry-1" });
+    await expect(verifyBackupDirectory(second.directory)).resolves.toMatchObject({ invocationId: "operator-retry-2" });
+  });
+
   async function tempDir(name: string): Promise<string> {
     const dir = await mkdtemp(join(process.cwd(), `.tmp-${name}-`));
     directories.push(dir);
@@ -132,6 +239,7 @@ async function writeVerifiedBackup(
   }
   const index: BackupIndexV1 = {
     version: "backup-index/v1",
+    invocationId: "test-restore-invocation",
     createdAt: "2026-08-20T00:00:00.000Z",
     productVersion: cfg.productVersion,
     database: {

@@ -4,9 +4,11 @@ import pg from "pg";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { MetricsRegistry, StructuredLogger } from "@qualigence/observability";
 import {
+  SUPPORTED_SCHEMA_VERSION,
   tenantOwnedTableNames,
   tenantOwnedTableNamesThroughVersion,
 } from "@qualigence/relational-kysely";
+import { readSchemaVersion } from "@qualigence/postgres-runtime";
 import type { SelfHostedAdminConfig } from "./../config.js";
 import { AdminCliError } from "./../errors.js";
 import type { PgToolRunner } from "./../pg-tools.js";
@@ -32,8 +34,14 @@ export interface RestoreDeps {
   readonly s3Client?: S3Client;
   readonly logger?: StructuredLogger;
   readonly metrics?: MetricsRegistry;
+  /** Pre-dispatch cancel/timeout signal. A pre-aborted signal mutates no target. */
+  readonly abortSignal?: AbortSignal;
   /** Skip the empty-target guard (used only when restoring into a scratch DB). */
   readonly allowNonEmptyTarget?: boolean;
+  readonly readSchemaVersion?: typeof readSchemaVersion;
+  readonly putObject?: (key: string, bytes: Uint8Array) => Promise<void>;
+  readonly getObject?: (key: string) => Promise<Uint8Array>;
+  readonly enumerateObjects?: () => Promise<readonly { readonly key: string }[]>;
 }
 
 export interface RestoreVerification {
@@ -70,6 +78,7 @@ export async function runRestore(
   const ownsClient = deps.s3Client === undefined;
 
   try {
+    assertNotAborted(deps.abortSignal);
     const index = await verifyBackupDirectory(config.backupDir).catch((error) => {
       throw new AdminCliError("BackupIncomplete", "the backup failed byte verification", {
         cause: error,
@@ -91,7 +100,7 @@ export async function runRestore(
 
     // 3. Require an empty target unless explicitly restoring into a scratch DB.
     if (deps.allowNonEmptyTarget !== true) {
-      await assertEmptyTarget(config, s3Client);
+      await assertEmptyTarget(config, s3Client, deps.enumerateObjects);
     }
 
     // 4. Restore the database dump, then re-upload every object's real bytes.
@@ -99,14 +108,29 @@ export async function runRestore(
       inFile: join(config.backupDir, BACKUP_DATABASE_DUMP),
     });
 
+    const restoredSchemaVersion = await (deps.readSchemaVersion ?? readSchemaVersion)(config.postgres.admin);
+    if (
+      restoredSchemaVersion !== index.database.schemaVersion ||
+      restoredSchemaVersion < 1 ||
+      restoredSchemaVersion > SUPPORTED_SCHEMA_VERSION
+    ) {
+      throw new AdminCliError("RestoreSchemaMismatch", "restored database schema version does not match the backup index", {
+        details: {
+          expected: index.database.schemaVersion,
+          restored: restoredSchemaVersion,
+          supported: SUPPORTED_SCHEMA_VERSION,
+        },
+      });
+    }
+
     for (const object of index.objects) {
       const bytes = await readFile(join(config.backupDir, BACKUP_OBJECTS_DIR, object.relativePath));
-      await putObjectBytes(s3Client, config.s3.bucket, object.key, bytes);
+      await (deps.putObject ?? ((key, value) => putObjectBytes(s3Client, config.s3.bucket, key, value)))(object.key, bytes);
       restoredCounter.inc();
     }
 
     // 5. GET every restored object back and re-verify SHA-256/size.
-    const verification = await verifyRestoredObjects(config, index, s3Client);
+    const verification = await verifyRestoredObjects(config, index, s3Client, deps.getObject);
     if (verification.missing.length > 0 || verification.corrupt.length > 0) {
       throw new AdminCliError("RestoreFailed", "restored objects failed byte verification", {
         details: { missing: verification.missing, corrupt: verification.corrupt },
@@ -114,15 +138,15 @@ export async function runRestore(
     }
 
     // 6. Integrity: forced RLS + composite-key tables survived the restore.
-    await assertTenantIntegrity(config, index.database.schemaVersion);
+    await assertTenantIntegrity(config, restoredSchemaVersion);
 
     logger.info("restore complete", {
       restoredObjects: index.objectCount,
-      schemaVersion: index.database.schemaVersion,
+      schemaVersion: restoredSchemaVersion,
     });
     return {
       restoredObjects: index.objectCount,
-      schemaVersion: index.database.schemaVersion,
+      schemaVersion: restoredSchemaVersion,
       verification,
     };
   } finally {
@@ -136,13 +160,14 @@ async function verifyRestoredObjects(
   config: SelfHostedAdminConfig,
   index: BackupIndexV1,
   s3Client: S3Client,
+  getObject: ((key: string) => Promise<Uint8Array>) | undefined,
 ): Promise<RestoreVerification> {
   const missing: string[] = [];
   const corrupt: string[] = [];
   for (const object of index.objects) {
     let bytes: Uint8Array;
     try {
-      bytes = await getObjectBytes(s3Client, config.s3.bucket, object.key);
+      bytes = await (getObject ?? ((key) => getObjectBytes(s3Client, config.s3.bucket, key)))(object.key);
     } catch {
       missing.push(object.key);
       continue;
@@ -157,8 +182,9 @@ async function verifyRestoredObjects(
 async function assertEmptyTarget(
   config: SelfHostedAdminConfig,
   s3Client: S3Client,
+  enumerate: (() => Promise<readonly { readonly key: string }[]>) | undefined,
 ): Promise<void> {
-  const objects = await enumerateObjects(s3Client, config.s3.bucket);
+  const objects = await (enumerate ?? (() => enumerateObjects(s3Client, config.s3.bucket)))();
   if (objects.length > 0) {
     throw new AdminCliError("RestoreTargetNotEmpty", "the target object store bucket is not empty");
   }
@@ -185,6 +211,20 @@ async function assertEmptyTarget(
   } finally {
     await client.end().catch(() => undefined);
   }
+}
+
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new AdminCliError("RestoreCancelled", "restore was cancelled before dispatch", {
+      details: { reason: abortReason(signal) },
+    });
+  }
+}
+
+function abortReason(signal: AbortSignal): string {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason.message;
+  return reason === undefined ? "aborted" : String(reason);
 }
 
 async function assertTenantIntegrity(

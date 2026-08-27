@@ -72,6 +72,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
     const directory = join(backupDir, input.invocationId);
     const index = {
         version: "backup-index/v1" as const,
+        invocationId: input.invocationId,
         createdAt: "2026-08-20T00:00:00.000Z",
         productVersion: "ticket-02-test",
         database: {
@@ -329,6 +330,7 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
   it("rejects malformed durable backup byte records and totals", () => {
     const valid = {
       version: "backup-index/v1" as const,
+      invocationId: "index-test",
       createdAt: "2026-08-20T00:00:00.000Z",
       productVersion: "ticket-02-test",
       database: { dumpFile: "database.dump", format: "custom" as const, sizeBytes: 4, sha256: "a".repeat(64), schemaVersion: 0, snapshotId: "snapshot-1" },

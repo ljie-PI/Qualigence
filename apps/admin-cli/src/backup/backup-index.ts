@@ -46,6 +46,8 @@ export interface MigrationBackupBinding {
  */
 export interface BackupIndexV1 {
   readonly version: "backup-index/v1";
+  /** Operator invocation that produced this backup; prevents stale success reuse. */
+  readonly invocationId: string;
   readonly createdAt: string;
   readonly productVersion: string;
   readonly database: BackupDatabaseRecord;
@@ -80,6 +82,7 @@ export function canonicalizeIndex(index: BackupIndexV1): string {
   const sortedObjects = [...index.objects].sort((a, b) => a.key.localeCompare(b.key));
   const canonical = {
     version: index.version,
+    invocationId: index.invocationId,
     createdAt: index.createdAt,
     productVersion: index.productVersion,
     database: {
@@ -125,6 +128,9 @@ export function parseIndex(text: string): BackupIndexV1 {
   const candidate = raw as Partial<BackupIndexV1>;
   if (candidate.version !== "backup-index/v1") {
     throw new Error(`unsupported backup index version: ${String(candidate.version)}`);
+  }
+  if (typeof candidate.invocationId !== "string" || candidate.invocationId.length === 0) {
+    throw new Error("backup index is missing its invocation id");
   }
   if (candidate.database === undefined || candidate.target === undefined || !Array.isArray(candidate.objects)) {
     throw new Error("backup index is missing its database record, target binding, or objects");

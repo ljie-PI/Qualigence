@@ -5,8 +5,11 @@ export type AdminCliErrorCode =
   | "MigrationBlocked"
   | "BackupFailed"
   | "BackupIncomplete"
+  | "BackupCancelled"
   | "RestoreFailed"
   | "RestoreTargetMismatch"
+  | "RestoreSchemaMismatch"
+  | "RestoreCancelled"
   | "RestoreTargetNotEmpty"
   | "IntegrityViolation"
   | "PgToolFailed";

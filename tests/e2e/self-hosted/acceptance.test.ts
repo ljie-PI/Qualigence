@@ -12,7 +12,7 @@ import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
 import { MemoryTokenStore, type ConsoleSession } from "../../../apps/web-console/src/auth/memory-token-store.js";
 import { dockerAvailable } from "../../helpers/docker-container.js";
 import { setupServerFixture, type ServerFixture } from "../../helpers/server-fixture.js";
-import { runRepositoryExternalRunnerHarness } from "./external-runner-harness.js";
+import { runRepositoryRestoredExternalRunnerHarness } from "./external-runner-harness.js";
 
 const { Client } = pg;
 
@@ -33,16 +33,22 @@ describe("LS-11 self-hosted full product acceptance", () => {
     requireDocker();
   });
 
-  it("drives the restored Compose stack through Public API, Console routing, and an external Runner", async () => {
-    const stdout = await runRepositoryExternalRunnerHarness();
+  it("backs up, clean-restores, then drives the restored Compose stack through Public API, Console routing, and an external Runner", async () => {
+    const stdout = await runRepositoryRestoredExternalRunnerHarness();
     expect(stdout).toContain("qualigence-external-runner-acceptance:pass");
     expect(stdout).toContain("harness:mission=");
     expect(stdout).toContain("harness:run=");
     expect(stdout).toContain("harness:traceEvents=");
     expect(stdout).toContain("harness:artifactRefs=");
+    expect(stdout).toContain("harness:backup=");
+    expect(stdout).toContain("harness:restore=complete");
+    expect(stdout).toContain("harness:restoredMission=");
+    expect(stdout).toContain("harness:restoredRun=");
+    expect(stdout).toContain("harness:restoredTraceEvents=");
+    expect(stdout).toContain("harness:restoredArtifactRefs=");
   }, 1_200_000);
 
-  it("covers PRD, Test Plan, Mission, Skill, Investigation, Review and Evidence through the Console Public API client", async () => {
+  it("supplementally covers Skill, Investigation, Review and Evidence Public API behavior without serving as LS-11 Compose proof", async () => {
     const fx = await setupServerFixture();
     const store = new MemoryTokenStore();
     const client = new PublicApiClient({ baseUrl: fx.baseUrl, accessToken: () => store.accessToken() });
