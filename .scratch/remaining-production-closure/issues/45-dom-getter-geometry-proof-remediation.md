@@ -4,7 +4,7 @@
 
 **Blocked by:** 44 - Freeze first approved Promise owner snapshots.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -192,14 +192,14 @@ The real Chromium E2E must tamper with own/prototype form, attribute, text, styl
 
 ## Acceptance
 
-- [ ] Every page callback in Allowed Files is statically inventoried; unresolved callbacks/reads fail, and all sensitive DOM reads use validated captured native authority.
-- [ ] Page-owned/ambient getter and geometry tampering cannot authorize Graph or screenshot evidence.
-- [ ] Mask regions derive from CDP/backend-node layout authority with scroll, viewport, clipping, and device scale handled explicitly.
-- [ ] Independent fixture/CDP rectangle calculations and independent PNG decoding prove exact masked and unaffected pixels without reusing production conversion/mask logic.
-- [ ] One authority/geometry race causes exactly one full recapture; a second race is terminal with no third attempt and zero Graph/Artifact/log/Spool bytes.
-- [ ] All authority/geometry/PNG failures use `SensitiveEvidenceUnavailable`, retain the 256-region limit, and validate dimensions/allocation with safe-integer arithmetic.
-- [ ] Ticket 44 immutable Promise snapshots remain green but are not re-claimed as Ticket 45 acceptance.
-- [ ] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test/package head.
+- [x] Every page callback in Allowed Files is statically inventoried; unresolved callbacks/reads fail, and all sensitive DOM reads use validated captured native authority.
+- [x] Page-owned/ambient getter and geometry tampering cannot authorize Graph or screenshot evidence.
+- [x] Mask regions derive from CDP/backend-node layout authority with scroll, viewport, clipping, and device scale handled explicitly.
+- [x] Independent fixture/CDP rectangle calculations and independent PNG decoding prove exact masked and unaffected pixels without reusing production conversion/mask logic.
+- [x] One authority/geometry race causes exactly one full recapture; a second race is terminal with no third attempt and zero Graph/Artifact/log/Spool bytes.
+- [x] All authority/geometry/PNG failures use `SensitiveEvidenceUnavailable`, retain the 256-region limit, and validate dimensions/allocation with safe-integer arithmetic.
+- [x] Ticket 44 immutable Promise snapshots remain green but are not re-claimed as Ticket 45 acceptance.
+- [x] Focused Gate, typecheck, diff check, complete-matrix review, and exact Chromium E2E are clean on the final code/test/package head.
 
 ### review7 core-fix evidence — 2026-08-26
 
@@ -251,3 +251,24 @@ The real Chromium E2E must tamper with own/prototype form, attribute, text, styl
 - Added component and direct Chromium E2E regressions that create a wrapper-tracked closed shadow root containing valueRef plaintext, then clear, mutate, push to, and replace the exposed roots collection. Both paths assert `SensitiveEvidenceUnavailable` with no accepted follow-up Graph/Artifact; the E2E also asserts process logs do not contain the plaintext. Existing Runner/Spool terminal-failure E2E remains the in-scope Spool plaintext scan coverage for sensitive evidence unavailability paths.
 - Validation after fixes: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/page-callback-authority.test.ts tests/component/web-execution/cdp-screenshot-masking.test.ts` passed (6 files, 158 tests); `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` passed (1 file, 14 tests); `CI=true corepack pnpm typecheck` passed; `git diff --check` passed.
 - Matrix notes unchanged for non-core rows: explicit cancel/timeout-before/after-screenshot injection and external Artifact/Spool persistence-failure injection still have no dedicated in-scope hooks and remain `N/A`; existing Runner/Spool terminal-failure tests still cover adjacent zero-plaintext failure paths.
+
+### final — 2026-08-26
+
+- Reviewed code/test head: `4fe69824b411e58b3c4393f803245e1d9c3027e9`.
+- Complete-matrix review15 clean:
+  - Standards: `Q:/Qualigence/.pi-subagents/artifacts/outputs/33d8e577-bf3d-42a5-9099-8f72219e384d/ticket45-review15/standards.md`
+  - Spec: `Q:/Qualigence/.pi-subagents/artifacts/outputs/33d8e577-bf3d-42a5-9099-8f72219e384d/ticket45-review15/spec.md`
+- Final focused non-E2E Gate on the reviewed head passed: `CI=true corepack pnpm vitest run tests/unit/target-adapters/web-playwright/action-resolution.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts tests/component/web-execution/playwright-click.test.ts tests/component/web-execution/playwright-observation.test.ts tests/component/web-execution/page-callback-authority.test.ts tests/component/web-execution/cdp-screenshot-masking.test.ts` — 6 files / 158 tests.
+- Required post-review Chromium E2E passed on the reviewed head: `CI=true corepack pnpm vitest run tests/e2e/web-execution/value-ref.test.ts` — 1 file / 14 tests.
+- `CI=true corepack pnpm typecheck` passed on the reviewed head.
+- `git diff --check` passed on the reviewed head and before this documentation-only evidence commit.
+- Non-core matrix caveat retained: explicit cancel/timeout-before/after-screenshot and external Artifact/Spool persistence-failure rows have no direct in-scope fault-injection hook in the allowed Ticket 45 files; source ordering and adjacent terminal-failure tests were reviewed, and review15 classified these rows as N/A residuals rather than core blockers.
+- Final evidence commit is documentation-only relative to the reviewed code/test head. Pull request: pending creation.
+
+## Answer
+
+Completed Ticket 45: mutable DOM getter and geometry authority have been removed from sensitive evidence decisions. Page callbacks are statically inventoried; security-relevant DOM/String/collection/Shadow DOM operations use captured native authority; screenshot masking uses CDP/backend-node geometry with decoded-PNG pixel proof; bounded recapture is enforced; terminal authority/geometry/PNG failures return `SensitiveEvidenceUnavailable`; and real Chromium valueRef E2E covers tampering, recapture, second-race, Graph/Artifact/log/Spool plaintext absence, and the hardened Shadow DOM/metadata/reflection paths.
+
+Reviewed code/test head: `4fe69824b411e58b3c4393f803245e1d9c3027e9`.
+
+Final validation: focused non-E2E Gate, valueRef Chromium E2E, `corepack pnpm typecheck`, and `git diff --check` passed. Complete-matrix review15 has no Critical or Important core blockers.
