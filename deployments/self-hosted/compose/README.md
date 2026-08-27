@@ -126,12 +126,14 @@ docker compose run --rm backup
 
 # --- Disaster recovery: restore into a clean environment ---
 docker compose down                       # stop app containers
-docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata \
-  qualigence-self-hosted_artifactdata qualigence-self-hosted_skill_signing_data
+# Keep backups, artifactdata, and skill_signing_data. Recreate only the DB and
+# object-store backing volumes for a clean target.
+docker volume rm qualigence-self-hosted_pgdata qualigence-self-hosted_miniodata
 docker compose up -d postgres minio        # empty DB + object store
-docker compose run --rm restore            # verifies every byte before mutating,
-                                           # then restores DB + objects and
-                                           # re-verifies byte-for-byte
+# restore provisions the configured empty object bucket if miniodata was recreated,
+# verifies every backup byte before mutating, then restores DB + objects and
+# re-verifies byte-for-byte.
+docker compose run --rm restore
 docker compose run --rm doctor
 docker compose up -d
 ```

@@ -14,6 +14,7 @@ import { AdminCliError } from "./../errors.js";
 import type { PgToolRunner } from "./../pg-tools.js";
 import {
   createS3Client,
+  ensureBucket,
   enumerateObjects,
   getObjectBytes,
   putObjectBytes,
@@ -41,6 +42,7 @@ export interface RestoreDeps {
   readonly readSchemaVersion?: typeof readSchemaVersion;
   readonly ensureRuntimeRoles?: () => Promise<void>;
   readonly restoreRuntimePrivileges?: () => Promise<void>;
+  readonly ensureBucket?: () => Promise<void>;
   readonly putObject?: (key: string, bytes: Uint8Array) => Promise<void>;
   readonly getObject?: (key: string) => Promise<Uint8Array>;
   readonly enumerateObjects?: () => Promise<readonly { readonly key: string }[]>;
@@ -101,6 +103,8 @@ export async function runRestore(
         },
       });
     }
+
+    await (deps.ensureBucket ?? (() => ensureBucket(s3Client, config.s3.bucket)))();
 
     // 3. Require an empty target unless explicitly restoring into a scratch DB.
     if (deps.allowNonEmptyTarget !== true) {

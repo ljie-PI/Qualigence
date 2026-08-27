@@ -230,6 +230,9 @@ services:
     <<: [*node-image, *hardening]
     command: ["restore"]
     profiles: ["ops"]
+    depends_on:
+      minio:
+        condition: service_healthy
     environment: *admin-env
     secrets:
       - pg_admin_password

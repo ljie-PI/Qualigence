@@ -1126,7 +1126,7 @@ async function wipeComposeRestoreTarget(ctx: HarnessContext): Promise<void> {
       'secret_key="$(cat /run/secrets/s3_secret_access_key)"',
       'mc alias set qualigence http://minio:9000 "$access_key" "$secret_key"',
       "mc rm --recursive --force qualigence/qualigence-artifacts || true",
-      "mc mb --ignore-existing qualigence/qualigence-artifacts",
+      "mc rb --force qualigence/qualigence-artifacts || true",
     ].join("; "),
   ], 120_000);
 }
