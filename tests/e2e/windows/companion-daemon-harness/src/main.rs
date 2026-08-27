@@ -773,24 +773,28 @@ fn start_companion_daemon(
         }
     };
     if !line.contains("uiAccess=false") {
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(companion_error(format!(
             "Companion daemon did not announce uiAccess=false: {}",
             line.trim()
         )));
     }
-    let pipe_path = line
+    let Some(pipe_path) = line
         .split("listening on ")
         .nth(1)
         .and_then(|rest| rest.split(" (uiAccess=false)").next())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            companion_error(format!(
-                "could not parse Companion pipe path from: {}",
-                line.trim()
-            ))
-        })?
-        .to_string();
+        .map(ToOwned::to_owned)
+    else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(companion_error(format!(
+            "could not parse Companion pipe path from: {}",
+            line.trim()
+        )));
+    };
     Ok(CompanionDaemon { child, pipe_path })
 }
 

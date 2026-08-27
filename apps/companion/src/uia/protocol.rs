@@ -108,6 +108,20 @@ pub enum ActionOutcomeReport {
     Failed { error_code: String },
 }
 
+/// A Ticket 47-only diagnostic fault delivered inside a normal worker request.
+///
+/// These variants are only injected by the env-gated Companion diagnostics seam;
+/// they are part of the private daemon-to-worker protocol and never accepted from
+/// external Runner IPC. The worker receives the `Execute` request first, then
+/// hangs so the supervisor observes the same timeout/cancellation path used for
+/// real unresponsive UIA work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerDiagnosticFault {
+    TimeoutAfterDispatch,
+    BlockUntilCancelledAfterDispatch,
+}
+
 /// A request sent to the worker child. Bounded and framed identically to the IPC
 /// server transport.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +135,8 @@ pub enum WorkerRequest {
         action: ResolvedDesktopAction,
         #[serde(skip_serializing_if = "Option::is_none")]
         value: Option<DesktopPlaintextValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnostic_fault: Option<WorkerDiagnosticFault>,
     },
     Ping,
 }

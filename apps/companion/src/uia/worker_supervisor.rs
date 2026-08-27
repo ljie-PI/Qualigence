@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::ipc::dto::{DesktopPlaintextValue, ResolvedDesktopAction};
 use crate::uia::protocol::{
-    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerRequest, WorkerResponse,
+    ActionOutcomeReport, UiaError, UiaSessionTarget, UiaSource, WorkerDiagnosticFault,
+    WorkerRequest, WorkerResponse,
 };
 
 /// A transport failure while talking to a worker child.
@@ -141,6 +142,17 @@ pub trait WorkerSpawner {
 pub enum DiagnosticWorkerFault {
     TimeoutNextAction,
     BlockNextActionUntilCancelled,
+}
+
+impl DiagnosticWorkerFault {
+    fn into_worker_fault(self) -> WorkerDiagnosticFault {
+        match self {
+            DiagnosticWorkerFault::TimeoutNextAction => WorkerDiagnosticFault::TimeoutAfterDispatch,
+            DiagnosticWorkerFault::BlockNextActionUntilCancelled => {
+                WorkerDiagnosticFault::BlockUntilCancelledAfterDispatch
+            }
+        }
+    }
 }
 
 pub struct UiaWorkerSupervisor<S: WorkerSpawner> {
@@ -328,12 +340,11 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
             target: target.clone(),
             action: action.clone(),
             value: value.cloned(),
+            diagnostic_fault: self
+                .diagnostic_next_action_fault
+                .take()
+                .map(DiagnosticWorkerFault::into_worker_fault),
         };
-        if let Some(fault) = self.diagnostic_next_action_fault.take() {
-            let result = self.dispatch_diagnostic_action_fault(fault, deadline, cancellation);
-            clear_request_plaintext(&mut req);
-            return result;
-        }
         let result = match self.dispatch_until(&req, deadline, cancellation) {
             Ok(WorkerResponse::Executed { outcome }) => Ok(outcome),
             Ok(WorkerResponse::Error { message }) => Err(UiaError::Reported(message)),
@@ -350,34 +361,6 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         };
         clear_request_plaintext(&mut req);
         result
-    }
-
-    fn dispatch_diagnostic_action_fault(
-        &mut self,
-        fault: DiagnosticWorkerFault,
-        deadline: &RequestDeadline,
-        cancellation: &WorkerCancellationCheckpoint,
-    ) -> Result<ActionOutcomeReport, UiaError> {
-        if self.ensure_worker().is_err() {
-            return Err(UiaError::WorkerUnavailable);
-        }
-        match fault {
-            DiagnosticWorkerFault::TimeoutNextAction => {
-                self.recycle_worker();
-                Err(UiaError::ActionOutcomeUnknown)
-            }
-            DiagnosticWorkerFault::BlockNextActionUntilCancelled => loop {
-                if cancellation.is_cancelled() {
-                    self.recycle_worker();
-                    return Err(UiaError::EmergencyStopped);
-                }
-                if deadline.remaining().is_err() {
-                    self.recycle_worker();
-                    return Err(UiaError::ActionOutcomeUnknown);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            },
-        }
     }
 }
 
