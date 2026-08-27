@@ -85,6 +85,8 @@ export async function runRestore(
       });
     });
 
+    assertBackupSchemaSupported(index);
+
     const expectedTarget = backupTargetBinding(config);
     if (
       index.target.databaseSha256 !== expectedTarget.databaseSha256 ||
@@ -153,6 +155,17 @@ export async function runRestore(
     if (ownsClient) {
       s3Client.destroy();
     }
+  }
+}
+
+function assertBackupSchemaSupported(index: BackupIndexV1): void {
+  if (index.database.schemaVersion < 1 || index.database.schemaVersion > SUPPORTED_SCHEMA_VERSION) {
+    throw new AdminCliError("RestoreSchemaMismatch", "backup schema version is not supported by this restore binary", {
+      details: {
+        expected: index.database.schemaVersion,
+        supported: SUPPORTED_SCHEMA_VERSION,
+      },
+    });
   }
 }
 

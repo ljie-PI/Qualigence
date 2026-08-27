@@ -97,6 +97,19 @@ describe("Admin CLI backup index authority", () => {
     expect(restore).not.toHaveBeenCalled();
   });
 
+  it("rejects unsupported backup schema versions before database restore", async () => {
+    const backupDir = await tempDir("backup-index-unsupported-schema");
+    await writeVerifiedBackup(backupDir, config(backupDir), [], { schemaVersion: 99_999 });
+    const restore = vi.fn(async () => undefined);
+
+    await expect(runRestore(config(backupDir), {
+      pgTool: { dump: async () => undefined, restore },
+      allowNonEmptyTarget: true,
+    })).rejects.toMatchObject({ code: "RestoreSchemaMismatch" });
+
+    expect(restore).not.toHaveBeenCalled();
+  });
+
   it("rejects S3 bytes that do not match the snapshot-visible manifest", async () => {
     const backupDir = await tempDir("backup-index-mismatch");
     await expect(runBackup(config(backupDir), {
@@ -230,6 +243,7 @@ async function writeVerifiedBackup(
   directory: string,
   cfg: SelfHostedAdminConfig,
   objects: BackupIndexV1["objects"],
+  options: { readonly schemaVersion?: number } = {},
 ): Promise<BackupIndexV1> {
   await mkdir(join(directory, "objects"), { recursive: true });
   await writeFile(join(directory, "database.dump"), DUMP_BYTES);
@@ -247,7 +261,7 @@ async function writeVerifiedBackup(
       format: "custom",
       sizeBytes: DUMP_BYTES.length,
       sha256: DUMP_SHA256,
-      schemaVersion: 8,
+      schemaVersion: options.schemaVersion ?? 8,
       snapshotId: "snapshot-index",
     },
     target: backupTargetBinding(cfg),
