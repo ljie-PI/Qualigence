@@ -12,8 +12,10 @@ authoritative specification of the reference app's UI structure (controls,
 `AutomationId`s, control types, and the destructive/crash/reset capabilities the
 manual checklist exercises).
 
-They are **not** compiled or executed by this repository's automated test suite,
-which runs on Linux and has no .NET Desktop SDK, WPF runtime, or UIA provider.
+They are **not** compiled or executed by the repository's Linux automated test
+suite, which has no .NET Desktop SDK, WPF runtime, or UIA provider. Ticket 47's
+Windows-only daemon harness does compile and drive them on a correctly
+provisioned local interactive Windows 11 machine.
 
 ## 2. `reference-app.fixture.json` (machine-readable, USED by the Linux tests)
 
@@ -30,11 +32,19 @@ proves the software *logic* is correct end to end. It does **not** and cannot
 prove that a real UIA capture of the compiled app produces this exact tree — that
 is a separate manual step.
 
-## What still requires a real Windows 11 machine (manual, operator-performed)
+## What still requires a real Windows 11 machine
+
+The automated prerequisite is `target\\debug\\companion-daemon-harness.exe`, run
+through `tests/e2e/windows/companion-daemon.test.ts` with
+`QUALIGENCE_WINDOWS_UIA_TEST=true` and `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS`
+set to that executable. It builds this project, launches it through the
+production Companion daemon, captures it through real UIA, drives supported
+actions, and writes machine-readable evidence.
 
 See the `manualWindowsVerification` block in `reference-app.fixture.json` and
-`docs/testing/windows-m3-manual-checklist.md`. In short, a human must, on real
-Windows 11 hardware against the compiled app:
+`docs/testing/windows-m3-manual-checklist.md` for the remaining Ticket 31
+operator signoff. A human must, on real Windows 11 hardware against the compiled
+app:
 
 - Confirm a real UIA capture produces the `AutomationId`s / control types above.
 - Confirm the password field is captured **masked**, never in cleartext.
@@ -47,5 +57,5 @@ Windows 11 hardware against the compiled app:
 
 The signed result of that manual run is the `WindowsChecklistEvidence` record
 that `decideGraphFreeze` requires before Observation Graph v1 may move from
-`candidate` to `frozen`. This automated PR never produces that evidence and never
-reports `frozen`.
+`candidate` to `frozen`. The Ticket 47 harness produces only automated daemon
+prerequisite evidence; it never signs or reports `frozen`.
