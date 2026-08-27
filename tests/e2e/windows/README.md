@@ -32,9 +32,17 @@ Optional environment:
 
 - `QUALIGENCE_COMPANION_DAEMON`: override the production Companion daemon path.
   If unset, the harness locates `companion.exe` next to itself.
-- `QUALIGENCE_WINDOWS_UIA_HARNESS_EVIDENCE_DIR`: directory where the harness
-  writes `windows-uia-daemon-harness-evidence.json` and `summary.md`. If unset,
-  a new directory is created under `%TEMP%\qualigence-uia-harness\`.
+- `QUALIGENCE_WINDOWS_UIA_HARNESS_EVIDENCE_DIR`: base directory where the
+  harness creates a unique per-run child directory containing
+  `windows-uia-daemon-harness-evidence.json` and `summary.md`. Existing pass
+  artifacts are never overwritten.
+
+The harness starts Companion with the Ticket 47-only
+`QUALIGENCE_COMPANION_TEST_DIAGNOSTICS=true` environment flag. That flag is off
+by default and only enables diagnostic evidence needed to prove native acceptance
+matrix rows (worker generation/restart and app lifecycle identity checks); it
+does not bypass pipe identity, certificate proof, Permit consumption, UIA worker
+execution, or Job Object process ownership.
 
 The harness starts the production Companion daemon with `uiAccess=false`,
 authenticates over the native named pipe using the existing certificate

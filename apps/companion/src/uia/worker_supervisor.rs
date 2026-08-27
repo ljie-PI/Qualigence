@@ -175,6 +175,14 @@ impl<S: WorkerSpawner> UiaWorkerSupervisor<S> {
         self.worker.as_ref().map(|w| w.is_alive()).unwrap_or(false)
     }
 
+    /// Force-terminate the current worker for the env-gated Ticket 47 native
+    /// acceptance harness. This exercises the same recycle path as timeout,
+    /// exit, or corrupt transport failures while leaving Companion/App Job
+    /// authority intact and making the next UIA request spawn a fresh child.
+    pub fn force_recycle_for_diagnostic(&mut self) {
+        self.recycle_worker();
+    }
+
     fn ensure_worker(&mut self) -> Result<&mut S::Handle, WorkerError> {
         if self.worker.is_none() {
             let handle = self.spawner.spawn()?;
