@@ -4,7 +4,7 @@
 
 **Blocked by:** 14 — Complete OIDC, JWKS, metrics, and readiness.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Execution protocol:** Run the focused non-E2E Gate for implementation and review fixes, then complete-matrix scoped review before E2E. After at most five review rounds, a remaining core blocker sets this ticket to `needs-info`, blocks dependents, and requires a maintainer scope/ownership decision; do not create remediation tickets. Record only non-Critical advanced hardening as a GitHub Issue and do not implement it here. Under `## Comments`, record ticket-local `start` evidence (exact base SHA, matrix applicability, and planned Gates), `blocked` evidence only if work actually stops, and `final` evidence (reviewed head and clean Gate/E2E results); link the dedicated GitHub PR, merge commit, and any deferred GitHub Issues when available.
 
@@ -86,3 +86,11 @@ Run from a clean environment. The Gate must prove LS-11 backup/restore and the f
 - Every affected context listed above, especially verified DB/object backup/restore, Public API and Console ownership, protocol parity, tenant isolation, readiness, and Evidence authorization.
 - `apps/admin-cli/src/commands/backup.ts`, `apps/admin-cli/src/commands/restore.ts`, and `apps/admin-cli/src/commands/doctor.ts`.
 - `packages/contracts/public-api/src/v1.ts` plus the Public API/Console and backup-manager contracts named by the focused Gate; prerequisite tickets 02-14 provide the production contracts this acceptance verifies.
+
+### start — 2026-08-27
+
+- Fixed base: `5a5dfa00601d9a24f56b707350b0b5e3574a37ee` (`main` after Ticket 45 merge); dedicated branch/worktree `ticket-15-ls11-backup-restore-acceptance` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-15`.
+- Dependency status: Ticket 14 is merged/resolved, so Ticket 15 is unblocked.
+- Behavior Matrix applicability: complete Ticket 15 matrix is applicable. Rows cover target-bound backup, invalid config/prerequisite rejection, interrupted backup/restore, clean-target restore verification, malformed/stale/hash-invalid backups, duplicate invocation/restart, full product acceptance after restore, doctor/readiness/metrics/secrets/container checks, and final evidence authority. No matrix rows are declared N/A at start.
+- Planned focused Gate: `CI=true corepack pnpm vitest run tests/unit/admin-cli/backup-index.test.ts tests/component/local-launcher/backup-manager.test.ts`, then `CI=true corepack pnpm typecheck`, then `git diff --check`.
+- Planned post-review acceptance after clean complete-matrix review: `CI=true corepack pnpm vitest run tests/e2e/self-hosted/backup-restore.test.ts tests/e2e/self-hosted/acceptance.test.ts` from a clean self-hosted environment.
