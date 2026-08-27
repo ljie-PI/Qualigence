@@ -2,13 +2,13 @@
 
 **What to build:** Produce independently reviewed native Windows evidence for the complete Desktop Runner/Companion path.
 
-**Blocked by:** 47 — Provide Windows UIA daemon acceptance harness.
+**Blocked by:** None. Ticket 47 is resolved; this ticket remains human-owned (`ready-for-human`) for signed local-console/RDP native acceptance.
 
 **Status:** ready-for-human
 
 ## Tracked scope
 
-This ticket owns native acceptance and is intentionally human-owned. It remains `ready-for-human`: automation may prepare the environment and reports, but it cannot execute, attest, review, or sign the local-console/RDP checklist. The required automated native prerequisite is blocked until Ticket 47 provides a real `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` executable.
+This ticket owns native acceptance and is intentionally human-owned. It remains `ready-for-human`: automation may prepare the environment and reports, but it cannot execute, attest, review, or sign the local-console/RDP checklist. Ticket 47 resolved the required automated native harness prerequisite by providing a real `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` executable path.
 
 ## Migration
 
@@ -101,3 +101,4 @@ The ticket remains `ready-for-human` until a human claims execution and remains 
 ## Comments
 
 - blocked - 2026-08-26: Ticket 30 merged the production Companion daemon/UIA/Job Object implementation, but the required native daemon E2E prerequisite cannot run because no real `QUALIGENCE_WINDOWS_UIA_DAEMON_HARNESS` executable exists in the repo or environment. By maintainer direction, Ticket 47 now owns the missing harness. Ticket 31 remains human-owned and cannot proceed to signed local-console/RDP acceptance until Ticket 47 resolves and the automated native prerequisite passes on the exact reviewed commit.
+- update - 2026-08-27: Ticket 47 merged in PR #127 (`808fd0f639acafe2eb287456ea64a368db338219`) and provides the repo-owned Windows UIA daemon harness. Ticket 31 is no longer blocked by missing harness infrastructure, but remains `ready-for-human`; agents still cannot execute, attest, review, or sign the local-console/RDP checklist.
