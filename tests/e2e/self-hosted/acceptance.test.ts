@@ -215,7 +215,7 @@ async function seedInvestigationReviewAndEvidence(fx: ServerFixture, admin: Post
       `insert into execution_runs
         (tenant_id, run_id, job_id, target_kind, objective, status,
          next_sequence_number, created_at, completed_at, error_code)
-       values ('tenant-a','ls11-run','ls11-runner-job','web','ls11 acceptance','completed',1,now(),now(),null)`,
+       values ('tenant-a','ls11-run','ls11-runner-job','web','ls11 acceptance','passed',1,now(),now(),null)`,
     );
     await client.query(
       `insert into execution_jobs

@@ -125,6 +125,8 @@ export async function runRestore(
       });
     }
 
+    await restoreRuntimePrivileges(config);
+
     for (const object of index.objects) {
       const bytes = await readFile(join(config.backupDir, BACKUP_OBJECTS_DIR, object.relativePath));
       await (deps.putObject ?? ((key, value) => putObjectBytes(s3Client, config.s3.bucket, key, value)))(object.key, bytes);
@@ -238,6 +240,29 @@ function abortReason(signal: AbortSignal): string {
   const reason: unknown = signal.reason;
   if (reason instanceof Error) return reason.message;
   return reason === undefined ? "aborted" : String(reason);
+}
+
+async function restoreRuntimePrivileges(config: SelfHostedAdminConfig): Promise<void> {
+  assertIdentifier(config.postgres.server.name, "server role");
+  assertIdentifier(config.postgres.worker.name, "worker role");
+  const client = new Client(config.postgres.admin);
+  await client.connect();
+  try {
+    await client.query(`GRANT USAGE ON SCHEMA public TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
+    await client.query(`GRANT SELECT ON TABLE public.schema_migrations, public.schema_components TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
+    await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${config.postgres.server.name}`);
+    await client.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ${config.postgres.server.name}, ${config.postgres.worker.name}`);
+  } finally {
+    await client.end();
+  }
+}
+
+const SIMPLE_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+
+function assertIdentifier(value: string, label: string): void {
+  if (!SIMPLE_IDENTIFIER.test(value)) {
+    throw new AdminCliError("ConfigInvalid", `unsafe ${label}: ${JSON.stringify(value)}`);
+  }
 }
 
 async function assertTenantIntegrity(

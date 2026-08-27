@@ -30,7 +30,7 @@ const COMPLETION_TIMEOUT_MS = 180_000;
 const LS11_PRODUCT_SKILL_ID = "ls11-compose-skill";
 const LS11_PRODUCT_REVIEW_TASK_ID = "ls11-compose-review-task";
 const LS11_PRODUCT_ARTIFACT_ID = "ls11-compose-artifact";
-const LS11_PRODUCT_ARTIFACT_TEXT = "ls11 restored compose artifact evidence";
+const LS11_PRODUCT_ARTIFACT_TEXT_PREFIX = "ls11 restored compose product-surface artifact evidence";
 const ARTIFACT_CHUNK_SIZE_BYTES = 256 * 1024;
 const SECRET_FILE_NAMES: Readonly<Record<string, string>> = {
   pg_admin_password: "pg_admin_password",
@@ -474,6 +474,11 @@ try {
 }
 console.log("external-runner-harness:database-provisioned");
 `.replace("__RUNNER_FINGERPRINT__", ctx.runnerClient.fingerprintSha256).replace("__RUNNER_URI_SAN__", ctx.runnerClient.uriSan).replace("__RUNNER_NOT_AFTER__", ctx.runnerClient.certificateNotAfter), "utf8");
+  await writeFile(join(ctx.workDir, "admin-tools.Dockerfile"), `
+FROM ${nodeRuntimeImage()} AS node-runtime
+FROM postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+`, "utf8");
   await writeFile(join(ctx.workDir, "seed-ls11-product-surface.mjs"), `
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -491,7 +496,8 @@ const projectId = ${JSON.stringify(PROJECT_ID)};
 const skillId = ${JSON.stringify(LS11_PRODUCT_SKILL_ID)};
 const reviewTaskId = ${JSON.stringify(LS11_PRODUCT_REVIEW_TASK_ID)};
 const artifactId = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_ID)};
-const artifactText = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_TEXT)};
+const artifactTextPrefix = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_TEXT_PREFIX)};
+const artifactText = artifactTextPrefix + ":" + runId + ":" + artifactId;
 const now = "2026-08-27T00:10:00.000Z";
 const serverPassword = (await readFile("/run/secrets/pg_server_password", "utf8")).trim();
 const s3AccessKeyId = (await readFile("/run/secrets/s3_access_key_id", "utf8")).trim();
@@ -697,9 +703,55 @@ try {
       expires_at: profile.expiresAt,
     }).onConflict((oc) => oc.columns(["tenant_id", "capsule_id", "revision"]).doNothing()).execute();
 
+    const externalArtifacts = await db.selectFrom("artifact_manifests")
+      .select(["artifact_id", "sha256", "size_bytes", "created_at"])
+      .where("tenant_id", "=", tenantId)
+      .where("run_id", "=", runId)
+      .where("artifact_id", "!=", artifact.artifactId)
+      .execute();
+    for (const external of externalArtifacts) {
+      await db.insertInto("evidence_capsule_manifests").values({
+        tenant_id: tenantId,
+        capsule_id: external.artifact_id,
+        revision: 1,
+        parent_revision: null,
+        profile_id: profile.profileId,
+        payload_schema_version: "evidence-capsule/v1",
+        aad_schema_version: profile.aadSchemaVersion,
+        case_id: profile.caseId,
+        recipient: profile.recipient,
+        region: profile.region,
+        purpose: profile.purpose,
+        policy_id: profile.policyId,
+        content_encryption_algorithm: profile.contentEncryptionAlgorithm,
+        key_wrapping_algorithm: profile.keyWrappingAlgorithm,
+        wrapping_key_id: profile.wrappingKeyId,
+        plaintext_sha256: external.sha256,
+        plaintext_bytes: external.size_bytes,
+        ciphertext_sha256: external.sha256,
+        ciphertext_bytes: external.size_bytes,
+        ciphertext: Buffer.alloc(0),
+        wrapped_dek_base64: "wrapped",
+        nonce_base64: "nonce",
+        auth_tag_base64: "tag",
+        protected_header_json: JSON.stringify({ ...protectedHeader, capsuleId: external.artifact_id, plaintextSha256: external.sha256, plaintextBytes: external.size_bytes }),
+        revocation_state: "active",
+        revoked_at: null,
+        revoked_reason: null,
+        lifecycle_state: "active",
+        lifecycle_updated_at: external.created_at,
+        deleted_at: null,
+        last_lifecycle_error: null,
+        created_at: external.created_at,
+        expires_at: profile.expiresAt,
+      }).onConflict((oc) => oc.columns(["tenant_id", "capsule_id", "revision"]).doNothing()).execute();
+    }
+
     return { caseId, runnerJobId, artifact };
   });
   console.log("ls11-product-surface:" + JSON.stringify({ skillId, caseId: seeded.caseId, reviewTaskId, runId, artifactId, artifactText, artifactSha256, artifactSize: bytes.length }));
+} finally {
+  await provider.close();
 }
 `, "utf8");
   await writeFile(ctx.overrideFile, [
@@ -716,8 +768,10 @@ try {
     "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
     "    command: !override []",
     "  backup:",
-    `    image: ${nodeRuntimeImage()}`,
-    "    build: !reset null",
+    `    image: qualigence/admin-tools:${ctx.projectName}`,
+    "    build:",
+    `      context: \"${composePath(ctx.workDir)}\"`,
+    "      dockerfile: admin-tools.Dockerfile",
     "    working_dir: /workspace",
     "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
     "    command: !override [\"backup\"]",
@@ -725,8 +779,10 @@ try {
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     "      - backups:/var/lib/qualigence/backups",
     "  restore:",
-    `    image: ${nodeRuntimeImage()}`,
-    "    build: !reset null",
+    `    image: qualigence/admin-tools:${ctx.projectName}`,
+    "    build:",
+    `      context: \"${composePath(ctx.workDir)}\"`,
+    "      dockerfile: admin-tools.Dockerfile",
     "    working_dir: /workspace",
     "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
     "    command: !override [\"restore\"]",
@@ -985,9 +1041,10 @@ async function seedRestoredProductSurface(
     parsed.reviewTaskId !== LS11_PRODUCT_REVIEW_TASK_ID ||
     parsed.runId !== runId ||
     parsed.artifactId !== LS11_PRODUCT_ARTIFACT_ID ||
-    parsed.artifactText !== LS11_PRODUCT_ARTIFACT_TEXT ||
-    parsed.artifactSha256 !== sha256(LS11_PRODUCT_ARTIFACT_TEXT) ||
-    parsed.artifactSize !== Buffer.byteLength(LS11_PRODUCT_ARTIFACT_TEXT)
+    typeof parsed.artifactText !== "string" ||
+    !parsed.artifactText.startsWith(`${LS11_PRODUCT_ARTIFACT_TEXT_PREFIX}:`) ||
+    parsed.artifactSha256 !== sha256(parsed.artifactText) ||
+    parsed.artifactSize !== Buffer.byteLength(parsed.artifactText)
   ) {
     throw new Error(`ExternalRunnerAcceptanceFailed: product surface seed returned unexpected ids ${JSON.stringify(parsed)}`);
   }
@@ -995,7 +1052,7 @@ async function seedRestoredProductSurface(
 }
 
 async function runComposeBackup(ctx: HarnessContext): Promise<string> {
-  const { stdout } = await compose(ctx, ["run", "--rm", "backup"], 240_000);
+  const { stdout } = await compose(ctx, ["run", "--rm", "-e", "QUALIGENCE_TEST_ADMIN_DEBUG_ERRORS=true", "backup"], 240_000);
   const backupLine = stdout.split(/\r?\n/).find((line) => line.startsWith("backup: "));
   if (backupLine === undefined) {
     throw new Error(`ExternalRunnerAcceptanceFailed: backup command did not report a backup directory\n${stdout}`);
@@ -1016,7 +1073,7 @@ async function wipeComposeRestoreTarget(ctx: HarnessContext): Promise<void> {
     "-v",
     "ON_ERROR_STOP=1",
     "-c",
-    "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+    "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT USAGE ON SCHEMA public TO qualigence_server, qualigence_worker;",
   ], 120_000);
   await compose(ctx, [
     "run",
