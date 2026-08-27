@@ -248,9 +248,14 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
     }
 
     let evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
+    const externalRunnerArtifactIds = [...evidence.run.evidenceRefs];
+    if (externalRunnerArtifactIds.length === 0) {
+      throw new Error("ExternalRunnerAcceptanceFailed: external Runner produced no artifact refs before product-surface seeding");
+    }
     output.push(`harness:run=${evidence.run.runId}`);
     output.push(`harness:traceEvents=${evidence.trace.length}`);
     output.push(`harness:artifactRefs=${evidence.run.evidenceRefs.length}`);
+    output.push(`harness:externalRunnerArtifacts=${externalRunnerArtifactIds.join(",")}`);
 
     const productSurface = options.restoreBeforePass
       ? await seedRestoredProductSurface(ctx, runId)
@@ -272,13 +277,21 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
       await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
       await waitForStackReadiness(ctx);
       evidence = await waitForDurableEvidence(apiBaseUrl, ctx.proxyCaPem, token, mission.missionId, runId);
-      const artifactProof = await assertRestoredArtifactReadable(apiBaseUrl, ctx.proxyCaPem, token, evidence.run);
+      const artifactProof = await assertRestoredExternalRunnerArtifactsReadable(
+        apiBaseUrl,
+        ctx.proxyCaPem,
+        token,
+        evidence.run,
+        externalRunnerArtifactIds,
+        productSurface?.artifactId,
+      );
       const productProof = await assertRestoredProductSurface(apiBaseUrl, ctx.proxyCaPem, token, productSurface);
       output.push(`harness:restoredMission=${evidence.mission.missionId}`);
       output.push(`harness:restoredRun=${evidence.run.runId}`);
       output.push(`harness:restoredTraceEvents=${evidence.trace.length}`);
       output.push(`harness:restoredArtifactRefs=${evidence.run.evidenceRefs.length}`);
-      output.push(`harness:restoredArtifactBytes=${artifactProof.size}`);
+      output.push(`harness:restoredExternalRunnerArtifacts=${artifactProof.count}`);
+      output.push(`harness:restoredArtifactBytes=${artifactProof.totalSize}`);
       output.push(`harness:restoredProductSkill=${productProof.skillState}`);
       output.push(`harness:restoredProductReview=${productProof.reviewStatus}`);
       output.push(`harness:restoredProductEvidenceBytes=${productProof.artifactSize}`);
@@ -1044,25 +1057,40 @@ async function runComposeRestore(ctx: HarnessContext, backupDir: string): Promis
   });
 }
 
-async function assertRestoredArtifactReadable(
+async function assertRestoredExternalRunnerArtifactsReadable(
   apiBaseUrl: string,
   ca: string,
   token: string,
   run: RunDto,
-): Promise<{ readonly artifactId: string; readonly size: number; readonly sha256: string }> {
-  const artifactId = run.evidenceRefs[0];
-  if (artifactId === undefined || artifactId.length === 0) {
-    throw new Error("ExternalRunnerAcceptanceFailed: restored run has no artifact ref");
+  externalRunnerArtifactIds: readonly string[],
+  seededFixtureArtifactId: string | undefined,
+): Promise<{ readonly count: number; readonly totalSize: number; readonly sha256s: readonly string[] }> {
+  const distinctExternalIds = [...new Set(externalRunnerArtifactIds)];
+  if (distinctExternalIds.length === 0) {
+    throw new Error("ExternalRunnerAcceptanceFailed: no pre-seed external Runner artifact ids were captured");
   }
-  const metadata = await getJson<ArtifactMetadataDto>(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${run.runId}/artifacts/${artifactId}?purpose=investigation`);
-  if (metadata.artifactId !== artifactId || metadata.runId !== run.runId || metadata.size <= 0 || !/^[0-9a-f]{64}$/.test(metadata.sha256)) {
-    throw new Error(`ExternalRunnerAcceptanceFailed: restored artifact metadata mismatch ${JSON.stringify(metadata)}`);
+  if (seededFixtureArtifactId !== undefined && distinctExternalIds.includes(seededFixtureArtifactId)) {
+    throw new Error(`ExternalRunnerAcceptanceFailed: pre-seed external Runner artifact ids included seeded fixture artifact ${seededFixtureArtifactId}`);
   }
-  const bytes = await getBytes(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${run.runId}/artifacts/${artifactId}/bytes?purpose=investigation`);
-  if (bytes.length !== metadata.size || sha256Bytes(bytes) !== metadata.sha256) {
-    throw new Error(`ExternalRunnerAcceptanceFailed: restored artifact bytes failed metadata verification for ${artifactId}`);
+
+  let totalSize = 0;
+  const sha256s: string[] = [];
+  for (const artifactId of distinctExternalIds) {
+    if (!run.evidenceRefs.includes(artifactId)) {
+      throw new Error(`ExternalRunnerAcceptanceFailed: restored run is missing pre-seed external Runner artifact ${artifactId}`);
+    }
+    const metadata = await getJson<ArtifactMetadataDto>(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${run.runId}/artifacts/${artifactId}?purpose=investigation`);
+    if (metadata.artifactId !== artifactId || metadata.runId !== run.runId || metadata.size <= 0 || !/^[0-9a-f]{64}$/.test(metadata.sha256)) {
+      throw new Error(`ExternalRunnerAcceptanceFailed: restored external Runner artifact metadata mismatch ${JSON.stringify(metadata)}`);
+    }
+    const bytes = await getBytes(apiBaseUrl, ca, token, `/projects/${PROJECT_ID}/runs/${run.runId}/artifacts/${artifactId}/bytes?purpose=investigation`);
+    if (bytes.length !== metadata.size || sha256Bytes(bytes) !== metadata.sha256) {
+      throw new Error(`ExternalRunnerAcceptanceFailed: restored external Runner artifact bytes failed metadata verification for ${artifactId}`);
+    }
+    totalSize += bytes.length;
+    sha256s.push(metadata.sha256);
   }
-  return { artifactId, size: bytes.length, sha256: metadata.sha256 };
+  return { count: distinctExternalIds.length, totalSize, sha256s };
 }
 
 async function assertRestoredProductSurface(
