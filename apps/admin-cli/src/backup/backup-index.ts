@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { PgConnectionInfo } from "../pg-tools.js";
+import type { S3Config } from "../s3-ops.js";
 
 /** The verifiable digest + size of one byte stream captured by a backup. */
 export interface BackupObjectRecord {
@@ -22,6 +24,13 @@ export interface BackupDatabaseRecord {
   readonly snapshotId: string;
 }
 
+export interface BackupTargetBinding {
+  /** Stable non-secret hash of the intended PostgreSQL deployment identity. */
+  readonly databaseSha256: string;
+  /** Stable non-secret hash of the intended object-store endpoint/bucket. */
+  readonly objectStoreSha256: string;
+}
+
 export interface MigrationBackupBinding {
   readonly invocationId: string;
   readonly targetDatabaseSha256: string;
@@ -40,6 +49,8 @@ export interface BackupIndexV1 {
   readonly createdAt: string;
   readonly productVersion: string;
   readonly database: BackupDatabaseRecord;
+  /** Non-secret target binding: restore rejects a backup for another deployment. */
+  readonly target: BackupTargetBinding;
   readonly objects: readonly BackupObjectRecord[];
   /** Distinct tenants observed across the object keyspace, for a sanity check. */
   readonly tenants: readonly string[];
@@ -79,6 +90,10 @@ export function canonicalizeIndex(index: BackupIndexV1): string {
       schemaVersion: index.database.schemaVersion,
       snapshotId: index.database.snapshotId,
     },
+    target: {
+      databaseSha256: index.target.databaseSha256,
+      objectStoreSha256: index.target.objectStoreSha256,
+    },
     objects: sortedObjects.map((object) => ({
       key: object.key,
       relativePath: object.relativePath,
@@ -111,8 +126,8 @@ export function parseIndex(text: string): BackupIndexV1 {
   if (candidate.version !== "backup-index/v1") {
     throw new Error(`unsupported backup index version: ${String(candidate.version)}`);
   }
-  if (candidate.database === undefined || !Array.isArray(candidate.objects)) {
-    throw new Error("backup index is missing its database record or objects");
+  if (candidate.database === undefined || candidate.target === undefined || !Array.isArray(candidate.objects)) {
+    throw new Error("backup index is missing its database record, target binding, or objects");
   }
   if (
     candidate.database.dumpFile !== BACKUP_DATABASE_DUMP ||
@@ -124,6 +139,9 @@ export function parseIndex(text: string): BackupIndexV1 {
     candidate.database.snapshotId.length === 0
   ) {
     throw new Error("backup index has an invalid database record");
+  }
+  if (!isSha256(candidate.target.databaseSha256) || !isSha256(candidate.target.objectStoreSha256)) {
+    throw new Error("backup index has an invalid target binding");
   }
   const keys = new Set<string>();
   for (const object of candidate.objects) {
@@ -153,6 +171,33 @@ export function parseIndex(text: string): BackupIndexV1 {
     throw new Error("backup index has an invalid migration binding");
   }
   return candidate as BackupIndexV1;
+}
+
+export function databaseTargetSha256(connection: Pick<PgConnectionInfo, "host" | "port" | "database">): string {
+  return createHash("sha256")
+    .update(`${connection.host.toLowerCase()}:${connection.port}/${connection.database}`)
+    .digest("hex");
+}
+
+export function objectStoreTargetSha256(config: Pick<S3Config, "region" | "endpoint" | "bucket" | "forcePathStyle">): string {
+  return createHash("sha256")
+    .update([
+      config.region.toLowerCase(),
+      config.endpoint?.toLowerCase() ?? "",
+      config.bucket,
+      config.forcePathStyle ? "path-style" : "virtual-hosted",
+    ].join("\0"))
+    .digest("hex");
+}
+
+export function backupTargetBinding(config: {
+  readonly postgres: { readonly admin: Pick<PgConnectionInfo, "host" | "port" | "database"> };
+  readonly s3: Pick<S3Config, "region" | "endpoint" | "bucket" | "forcePathStyle">;
+}): BackupTargetBinding {
+  return {
+    databaseSha256: databaseTargetSha256(config.postgres.admin),
+    objectStoreSha256: objectStoreTargetSha256(config.s3),
+  };
 }
 
 export async function verifyBackupDirectory(directory: string): Promise<BackupIndexV1> {

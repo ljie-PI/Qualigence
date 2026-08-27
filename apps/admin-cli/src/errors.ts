@@ -6,6 +6,7 @@ export type AdminCliErrorCode =
   | "BackupFailed"
   | "BackupIncomplete"
   | "RestoreFailed"
+  | "RestoreTargetMismatch"
   | "RestoreTargetNotEmpty"
   | "IntegrityViolation"
   | "PgToolFailed";

@@ -19,6 +19,7 @@ import {
 import {
   BACKUP_DATABASE_DUMP,
   BACKUP_OBJECTS_DIR,
+  backupTargetBinding,
   sha256Hex,
   verifyBackupDirectory,
   type BackupIndexV1,
@@ -74,6 +75,19 @@ export async function runRestore(
         cause: error,
       });
     });
+
+    const expectedTarget = backupTargetBinding(config);
+    if (
+      index.target.databaseSha256 !== expectedTarget.databaseSha256 ||
+      index.target.objectStoreSha256 !== expectedTarget.objectStoreSha256
+    ) {
+      throw new AdminCliError("RestoreTargetMismatch", "backup target binding does not match this restore target", {
+        details: {
+          expected: expectedTarget,
+          actual: index.target,
+        },
+      });
+    }
 
     // 3. Require an empty target unless explicitly restoring into a scratch DB.
     if (deps.allowNonEmptyTarget !== true) {
