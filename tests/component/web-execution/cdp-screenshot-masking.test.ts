@@ -605,6 +605,66 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
+  it("fails closed when a page reuses a retired same-record marker on a new unmasked visible valueRef element", async () => {
+    const observer = await enterSecret();
+    const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(firstGraph)).not.toContain(SECRET);
+    expect(Buffer.concat(session.artifactsFor(firstGraph.graphId).map((artifact) => Buffer.from(artifact.bytes))).toString("utf8"))
+      .not.toContain(SECRET);
+
+    await session.withPage(async (page) => {
+      await page.evaluate((input) => {
+        type MutableElement = Element & {
+          id: string;
+          textContent: string | null;
+          readonly style: Record<string, string>;
+          setAttribute(name: string, value: string): void;
+        };
+        const host = globalThis as unknown as Record<string, unknown> & {
+          readonly Object: typeof Object;
+          readonly document: {
+            createElement(tagName: string): MutableElement;
+            readonly body: { append(element: unknown): void };
+          };
+        };
+        const state = host[input.stateProperty] as {
+          retiredRecords?: Array<{ markerId?: string }>;
+        } | undefined;
+        const markerId = state?.retiredRecords?.[0]?.markerId;
+        if (markerId === undefined) throw new Error("Missing retired sensitive marker.");
+        const forged = host.document.createElement("div");
+        forged.id = "forged-retired-marker-reflection";
+        forged.textContent = input.secret;
+        forged.setAttribute("data-qualigence-observe", "true");
+        Object.assign(forged.style, {
+          position: "absolute",
+          left: "40px",
+          top: "214px",
+          width: "260px",
+          height: "28px",
+          background: "white",
+          color: "blue",
+        });
+        host.Object.defineProperty(forged, input.targetIdsProperty, {
+          configurable: true,
+          enumerable: false,
+          value: [markerId],
+          writable: true,
+        });
+        host.document.body.append(forged);
+      }, {
+        stateProperty: "__qualigenceSensitiveEvidenceState",
+        targetIdsProperty: "__qualigenceSensitiveTargetIds",
+        secret: SECRET,
+      });
+    });
+
+    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-cdp-mask:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
   it("fails closed when page string prototype methods hide a later unmarked substring reflection", async () => {
     const observer = await enterSecret();
     const firstGraph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });

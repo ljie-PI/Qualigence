@@ -754,26 +754,6 @@ function collectPageObservation(
     }
     return result;
   };
-  const htmlCollectionToArray = <T extends Element>(items: HTMLCollectionOf<T>): T[] => {
-    const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, items));
-    const result: T[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const item = apply(dom.htmlCollectionItem, items, [index]);
-      if (item === null) throw new Error("Untrusted HTMLCollection item.");
-      result[index] = item as T;
-    }
-    return result;
-  };
-  const htmlOptionsCollectionToArray = (items: HTMLOptionsCollection): HTMLOptionElement[] => {
-    const length = assertCollectionLength(apply(dom.htmlOptionsCollectionLengthGet!, items));
-    const result: HTMLOptionElement[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const item = apply(dom.htmlOptionsCollectionItem, items, [index]);
-      if (item === null) throw new Error("Untrusted HTMLOptionsCollection item.");
-      result[index] = item;
-    }
-    return result;
-  };
   const appendArray = <T>(target: T[], items: readonly T[]): void => {
     for (let index = 0; index < items.length; index += 1) {
       target[target.length] = items[index]!;
@@ -799,7 +779,12 @@ function collectPageObservation(
   const textareaValue = (element: Element): string => apply(dom.htmlTextAreaElementValueGet!, element);
   const textareaPlaceholder = (element: Element): string => apply(dom.htmlTextAreaElementPlaceholderGet!, element);
   const selectValue = (element: Element): string => apply(dom.htmlSelectElementValueGet!, element);
-  const selectedOptions = (element: Element): HTMLOptionElement[] => htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, element));
+  const firstSelectedOption = (element: Element): HTMLOptionElement | undefined => {
+    const selected = apply(dom.htmlSelectElementSelectedOptionsGet!, element);
+    const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, selected));
+    if (length < 1) return undefined;
+    return (apply(dom.htmlCollectionItem, selected, [0]) as HTMLOptionElement | null) ?? undefined;
+  };
   const optionText = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementTextGet!, option);
   const optionValue = (option: HTMLOptionElement): string => apply(dom.htmlOptionElementValueGet!, option);
   const styleProperty = (style: CSSStyleDeclaration, name: string): string => apply(dom.cssStyleDeclarationGetPropertyValue, style, [name]);
@@ -966,7 +951,7 @@ function collectPageObservation(
     }
     if (isTag(element, "select")) {
       appendNonEmptyString(values, selectValue(element));
-      const selected = selectedOptions(element)[0];
+      const selected = firstSelectedOption(element);
       appendNonEmptyString(values, selected === undefined ? "" : optionText(selected));
     }
     const attributes = ["role", "aria-label", "title", "value"] as const;
@@ -1182,9 +1167,20 @@ function collectPageObservation(
   }
 
   function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, _pendingPageRecord: boolean): boolean {
-    if (hasSensitiveTargetId(ids, record.markerId)) return true;
-    const maskId = isMaskableElement(element) ? getAttribute(element, input.sensitiveMaskIdAttribute) : null;
-    return maskId !== null && arrayHasString(record.maskIds, maskId);
+    const hasTargetId = hasSensitiveTargetId(ids, record.markerId);
+    const maskable = isMaskableElement(element);
+    if (!maskable) return hasTargetId;
+    const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
+    if (maskId === null) return false;
+    if (arrayHasString(record.maskIds, maskId)) return true;
+    return hasTargetId && sensitiveMaskIdBelongsToAnyRecord(maskId);
+  }
+
+  function sensitiveMaskIdBelongsToAnyRecord(maskId: string): boolean {
+    for (let recordIndex = 0; recordIndex < hostSensitiveRecords.length; recordIndex += 1) {
+      if (arrayHasString(hostSensitiveRecords[recordIndex]!.maskIds, maskId)) return true;
+    }
+    return false;
   }
 
   function candidateFieldUnavailable(element: Element, ids: readonly string[], value: string): boolean {
@@ -1479,7 +1475,7 @@ function collectPageObservation(
         text = content;
       }
     } else if (isSensitiveTarget && isTag(element, "select")) {
-      const selected = selectedOptions(element)[0];
+      const selected = firstSelectedOption(element);
       const selectedText = selected === undefined ? "" : optionText(selected);
       if (stringTrim(selectedText) !== "") {
         text = selectedText;

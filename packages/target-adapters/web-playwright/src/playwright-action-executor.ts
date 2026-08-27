@@ -1134,6 +1134,13 @@ async function beginPageSensitiveActionEpoch(
       return htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
     }
 
+    function firstSelectedOption(candidate: Element): HTMLOptionElement | undefined {
+      const selected = apply(dom.htmlSelectElementSelectedOptionsGet!, candidate);
+      const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, selected));
+      if (length < 1) return undefined;
+      return (apply(dom.htmlCollectionItem, selected, [0]) as HTMLOptionElement | null) ?? undefined;
+    }
+
     function optionValue(option: HTMLOptionElement): string {
       return apply(dom.htmlOptionElementValueGet!, option);
     }
@@ -1673,7 +1680,7 @@ async function beginPageSensitiveActionEpoch(
       }
       if (tag === "select") {
         if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
-        const selectedOption = selectedOptions(candidate)[0];
+        const selectedOption = firstSelectedOption(candidate);
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values[values.length] = selectedText;
       }
@@ -2203,6 +2210,13 @@ async function endPageSensitiveActionEpoch(
 
     function selectedOptions(candidate: Element): HTMLOptionElement[] {
       return htmlCollectionToArray(apply(dom.htmlSelectElementSelectedOptionsGet!, candidate));
+    }
+
+    function firstSelectedOption(candidate: Element): HTMLOptionElement | undefined {
+      const selected = apply(dom.htmlSelectElementSelectedOptionsGet!, candidate);
+      const length = assertCollectionLength(apply(dom.htmlCollectionLengthGet!, selected));
+      if (length < 1) return undefined;
+      return (apply(dom.htmlCollectionItem, selected, [0]) as HTMLOptionElement | null) ?? undefined;
     }
 
     function inputValue(candidate: Element): string {
@@ -2835,7 +2849,7 @@ async function endPageSensitiveActionEpoch(
       }
       if (tag === "select") {
         if (fieldValue(candidate) !== "") values[values.length] = fieldValue(candidate);
-        const selectedOption = selectedOptions(candidate)[0];
+        const selectedOption = firstSelectedOption(candidate);
         const selectedText = selectedOption === undefined ? "" : optionText(selectedOption);
         if (selectedText !== "") values[values.length] = selectedText;
       }
@@ -2981,6 +2995,8 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
   return locator.evaluate((element, input) => {
     type NativeDomAuthority = {
       readonly arrayIsArray: typeof Array.isArray;
+      readonly htmlCollectionItem: (index: number) => Element | null;
+      readonly htmlCollectionLengthGet: (() => number) | undefined;
       readonly reflectApply: typeof Reflect.apply;
       readonly stringToLowerCase: typeof String.prototype.toLowerCase;
       readonly elementTagNameGet: (() => string) | undefined;
@@ -2993,7 +3009,9 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
     const dom = ((element.ownerDocument.defaultView as unknown as Record<string, { readonly nativeDom?: NativeDomAuthority } | undefined>)[input.runtimeRegistryProperty])?.nativeDom;
     if (dom === undefined || dom.elementTagNameGet === undefined || dom.htmlSelectElementValueGet === undefined ||
       dom.htmlSelectElementSelectedOptionsGet === undefined || dom.htmlOptionElementValueGet === undefined ||
-      dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" || typeof dom.reflectApply !== "function" || typeof dom.stringToLowerCase !== "function") {
+      dom.htmlOptionElementTextGet === undefined || typeof dom.arrayIsArray !== "function" ||
+      typeof dom.htmlCollectionItem !== "function" || typeof dom.htmlCollectionLengthGet !== "function" ||
+      typeof dom.reflectApply !== "function" || typeof dom.stringToLowerCase !== "function") {
       throw new Error("Sensitive select authority is unavailable.");
     }
     const sensitiveTargetIds = dom.arrayIsArray(ids) && allStrings(ids)
@@ -3010,8 +3028,13 @@ async function readSelectSensitiveForms(locator: Locator): Promise<SelectSensiti
     if ((dom.reflectApply(dom.stringToLowerCase, dom.reflectApply(dom.elementTagNameGet, element, []) as string, []) as string) !== "select") {
       throw new Error("Sensitive select target is not a select field.");
     }
-    const selectedOption = (dom.reflectApply(dom.htmlSelectElementSelectedOptionsGet, element, []) as HTMLCollectionOf<HTMLOptionElement>)[0];
-    if (selectedOption === undefined) {
+    const selectedOptions = dom.reflectApply(dom.htmlSelectElementSelectedOptionsGet, element, []) as HTMLCollectionOf<HTMLOptionElement>;
+    const selectedOptionsLength = dom.reflectApply(dom.htmlCollectionLengthGet, selectedOptions, []) as unknown;
+    if (typeof selectedOptionsLength !== "number" || !Number.isSafeInteger(selectedOptionsLength) || selectedOptionsLength < 1) {
+      throw new Error("Sensitive select target has no selected option.");
+    }
+    const selectedOption = dom.reflectApply(dom.htmlCollectionItem, selectedOptions, [0]) as HTMLOptionElement | null;
+    if (selectedOption === null) {
       throw new Error("Sensitive select target has no selected option.");
     }
     return {

@@ -1847,6 +1847,234 @@ describe("production valueRef browser execution", () => {
     expect(spoolText).toContain("SensitiveEvidenceUnavailable");
   }, 90_000);
 
+  it("fails closed through Runner Spool when a page reuses a retired marker on a new unmasked valueRef element", async () => {
+    const forgedMarkerSecret = "ticket45-runner-spool-forged-marker-secret";
+    fixture = await startFixtureServer({
+      "/": htmlDocument(`
+        <style>
+          html, body { margin: 0; width: 360px; height: 240px; font: 16px sans-serif; background: white; }
+          label { display: block; margin: 24px; }
+          #forged-marker-secret { position: absolute; left: 30px; top: 70px; width: 180px; height: 28px; background: white; color: blue; }
+          #forged-marker-mirror { position: absolute; left: 30px; top: 120px; width: 240px; height: 28px; background: white; color: blue; }
+        </style>
+        <label>Forged Marker Secret <input id="forged-marker-secret" aria-label="Forged Marker Secret" /></label>
+        <div id="forged-marker-mirror" data-qualigence-observe>pending</div>
+        <script>
+          const input = document.getElementById('forged-marker-secret');
+          const mirror = document.getElementById('forged-marker-mirror');
+          input.addEventListener('input', () => {
+            document.title = input.value;
+            mirror.textContent = input.value;
+          });
+        </script>
+      `, "Ticket 45 Runner forged retired marker"),
+    });
+
+    const root = await mkdtemp(join(tmpdir(), "qualigence-ticket45-forged-marker-spool-"));
+    roots.push(root);
+    await writeFile(join(root, "secret.txt"), forgedMarkerSecret, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      await chmod(join(root, "secret.txt"), 0o600);
+    }
+    const configFile = join(root, "values.json");
+    await writeFile(configFile, JSON.stringify({ "profile.forgedMarkerSecret": "secret.txt" }));
+    const valueProvider = await FileActionValueProvider.open({ root, configFile });
+    const spoolFile = join(root, "runner-spool.db");
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
+
+    modelServer = createServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as {
+        readonly messages: readonly { readonly content: string }[];
+        readonly response_format: { readonly json_schema: { readonly name: string } };
+      };
+      const operation = body.response_format.json_schema.name;
+      const output = operation === "execution_verification"
+        ? { status: "passed", summary: "not expected after forged marker reflection", claims: [] }
+        : decisionFrom(body.messages.at(-1)?.content ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        id: `chatcmpl-ticket45-forged-marker-${Date.now()}`,
+        model: "ticket-45-model",
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }));
+    });
+    modelServer.listen(0, "127.0.0.1");
+    await once(modelServer, "listening");
+    const modelAddress = modelServer.address();
+    if (modelAddress === null || typeof modelAddress === "string") throw new Error("Expected model listener.");
+
+    const logs: string[] = [];
+    const batches: ExecutionEventBatch[] = [];
+    const spooledEvents: ExecutionEventBatch["events"][number][] = [];
+    const completions: ExecutionCompletion[] = [];
+    const capturedArtifacts: CapturedArtifact[] = [];
+    let forgedMarkerTampered = false;
+    let captureCount = 0;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const session: RunnerSession = {
+      welcome: {
+        sessionId: "session-ticket45-forged-marker-spool",
+        resumeToken: "resume-ticket45-forged-marker-spool",
+        selectedProtocolMajor: 1,
+        serverVersion: "test",
+        heartbeatIntervalMs: 10_000,
+        leaseDurationMs: 60_000,
+        traceBatchMaximumEvents: 100,
+        traceBatchMaximumBytes: 1_000_000,
+        maximumInFlightBatches: 1,
+        maximumPendingWriteBytes: 1_000_000,
+      },
+      nextOffer: async () => { throw new Error("Unexpected nextOffer"); },
+      accept: async (offerId: string): Promise<ExecutionJobLease> => ({
+        jobId: offerId.replace("offer", "job"),
+        runId: offerId.replace("offer", "run"),
+        leaseToken: `lease-${offerId}`,
+        leaseEpoch: 1,
+        expiresAt: "2099-08-21T00:00:00.000Z",
+      }),
+      renew: async () => { throw new Error("Unexpected lease renewal"); },
+      submit: async (batch: ExecutionEventBatch) => {
+        spooledEvents.push(...await spool!.pending(batch.runId, batch.firstSequenceNumber, {
+          maximumEvents: 100,
+          maximumBytes: 1_000_000,
+        }));
+        batches.push(batch);
+        return {
+          batchId: batch.batchId,
+          runId: batch.runId,
+          nextExpectedSequenceNumber: batch.firstSequenceNumber + batch.events.length,
+        };
+      },
+      complete: async (_lease: ExecutionJobLease, completion: ExecutionCompletion) => { completions.push(completion); },
+      close: async () => undefined,
+    };
+
+    class ForgedMarkerTargetAdapter extends HookedWebTargetAdapter {
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        captureCount += 1;
+        const graph = await super.capture(job, signal);
+        capturedArtifacts.push(...await super.captureArtifacts(graph.graphId));
+        if (captureCount === 2) {
+          await (this as unknown as HookedAdapterInternals).session.withPage(async (page) => {
+            await page.evaluate((input) => {
+              type MutableElement = Element & {
+                id: string;
+                textContent: string | null;
+                readonly style: Record<string, string>;
+                setAttribute(name: string, value: string): void;
+              };
+              const host = globalThis as unknown as Record<string, unknown> & {
+                readonly Object: typeof Object;
+                readonly document: {
+                  createElement(tagName: string): MutableElement;
+                  readonly body: { append(element: unknown): void };
+                };
+              };
+              const state = host[input.stateProperty] as {
+                retiredRecords?: Array<{ markerId?: string }>;
+              } | undefined;
+              const markerId = state?.retiredRecords?.[0]?.markerId;
+              if (markerId === undefined) throw new Error("Missing retired sensitive marker.");
+              const reflected = host.document.createElement("div");
+              reflected.id = "runner-forged-retired-marker-reflection";
+              reflected.textContent = input.secret;
+              reflected.setAttribute("data-qualigence-observe", "true");
+              Object.assign(reflected.style, {
+                position: "absolute",
+                left: "30px",
+                top: "170px",
+                width: "280px",
+                height: "28px",
+                background: "white",
+                color: "blue",
+              });
+              host.Object.defineProperty(reflected, input.targetIdsProperty, {
+                configurable: true,
+                enumerable: false,
+                value: [markerId],
+                writable: true,
+              });
+              host.document.body.append(reflected);
+            }, {
+              secret: forgedMarkerSecret,
+              stateProperty: SENSITIVE_EVIDENCE_STATE_PROPERTY,
+              targetIdsProperty: SENSITIVE_TARGET_IDS_PROPERTY,
+            });
+          });
+          forgedMarkerTampered = true;
+          await super.capture(job, signal);
+          throw new Error("Expected forged retired-marker reflection to fail closed.");
+        }
+        return graph;
+      }
+    }
+
+    const config: RunnerConfig = {
+      runnerId: "runner-ticket45-forged-marker-spool",
+      coreAddress: "unused",
+      authority: "unused",
+      tls: { ca: Buffer.alloc(0), cert: Buffer.alloc(0), key: Buffer.alloc(0) },
+      dataDir: root,
+      headed: false,
+      navigationTimeoutMs: 15_000,
+      actionTimeoutMs: 10_000,
+      model: {
+        baseUrl: `http://127.0.0.1:${modelAddress.port}/v1`,
+        apiKey: "acceptance-api-key",
+        modelName: "ticket-45-model",
+        maximumTokensPerCall: 100,
+      },
+    };
+    const runtime = new RunnerOfferRuntime({
+      config,
+      session,
+      spool,
+      valueProvider,
+      createTarget: (targetOptions) => new ForgedMarkerTargetAdapter(targetOptions, {}),
+    });
+
+    try {
+      await runtime.run(offer("input", "profile.forgedMarkerSecret", "Forged Marker Secret", "textbox", "ticket45-forged-marker-spool"));
+    } catch (error) {
+      if (error instanceof Error && /browser.*(launch|executable)/i.test(error.message)) {
+        throw new Error("ChromiumUnavailable", { cause: error });
+      }
+      throw error;
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    expect(forgedMarkerTampered).toBe(true);
+    expect(completions).toEqual([
+      { jobId: "job-ticket45-forged-marker-spool", runId: "run-ticket45-forged-marker-spool", status: "error", errorCode: "SensitiveEvidenceUnavailable" },
+    ]);
+    const trace = batches.flatMap((batch) => batch.events);
+    expect(trace.find((event) => event.runId === "run-ticket45-forged-marker-spool" && event.stage === "run_completed")?.payload)
+      .toMatchObject({ status: "error", errorCode: "SensitiveEvidenceUnavailable" });
+    expect(JSON.stringify(trace)).not.toContain(forgedMarkerSecret);
+    expect(JSON.stringify(spooledEvents)).not.toContain(forgedMarkerSecret);
+    const artifactBytes = Buffer.concat(capturedArtifacts.map((artifact) => Buffer.from(artifact.bytes))).toString("utf8");
+    expect(artifactBytes).not.toContain(forgedMarkerSecret);
+    await spool.close();
+    spool = undefined;
+    const spoolText = (await readFile(spoolFile)).toString("utf8");
+    expect(JSON.stringify(logs)).not.toContain(forgedMarkerSecret);
+    expect(spoolText).not.toContain(forgedMarkerSecret);
+    expect(spoolText).toContain("SensitiveEvidenceUnavailable");
+  }, 90_000);
+
   it("fails closed when Promise owner descriptors/prototypes mutate, restore, and re-register at capture boundaries", async () => {
     fixture = await startFixtureServer({
       "/": htmlDocument(`

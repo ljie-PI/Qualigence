@@ -95,7 +95,7 @@ const callbackInventory: readonly CallbackInventoryEntry[] = [
     marker: "return locator.evaluate((element, input) =>",
     occurrence: 2,
     sensitiveDomAuthority: true,
-    authority: ["nativeDomAuthority", "dom.reflectApply", "dom.htmlSelectElementValueGet"],
+    authority: ["nativeDomAuthority", "dom.reflectApply", "dom.htmlSelectElementValueGet", "dom.htmlCollectionItem", "dom.htmlCollectionLengthGet"],
   },
   {
     id: "collectPageObservation",
@@ -125,8 +125,10 @@ const forbiddenSensitiveReadPatterns: readonly { readonly pattern: RegExp; reado
   { pattern: /\bWeakMap\.prototype\b/g, label: "WeakMap.prototype" },
   { pattern: /\bRegExp\.prototype\b/g, label: "RegExp.prototype" },
   { pattern: /\[\s*Symbol\.replace\s*\]/g, label: "[Symbol.replace]" },
+  { pattern: /(^|[=(:,]\s*)\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*/g, label: "RegExp literal" },
   { pattern: /\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*\s*\.test\s*\(/g, label: "RegExp.prototype.test" },
   { pattern: /\bstringReplace\s*\([^,\n]+,\s*\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*/g, label: "RegExp @@replace" },
+  { pattern: /\breflectApply\(\s*dom\.htmlSelectElementSelectedOptionsGet\b[\s\S]*?\)\s*\[[^\]\n]+\]/g, label: "selectedOptions direct index" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.tagName\b/g, label: ".tagName" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.value\b/g, label: ".value" },
   { pattern: /\b(?:candidate|target|element|node|root|option)\.textContent\b/g, label: ".textContent" },
@@ -228,8 +230,10 @@ describe("page callback authority inventory", () => {
       const weakCall = WeakMap.prototype.get.call(weak, target);
       const regexCall = RegExp.prototype.test.call(/secret/, value);
       const regexLiteral = /secret/.test(value);
+      const regexAlias = /secret/;
       const symbolReplace = /secret/[Symbol.replace](value, 'x');
       const capturedReplace = stringReplace(value, /secret/g, 'x');
+      const selectedOption = reflectApply(dom.htmlSelectElementSelectedOptionsGet, element, [])[0];
       const display = style.display;
       const visibility = style.visibility;
       const lower = value.toLowerCase();
@@ -268,9 +272,11 @@ describe("page callback authority inventory", () => {
       "new WeakMap",
       "WeakMap.prototype",
       "RegExp.prototype",
+      "RegExp literal",
       "RegExp.prototype.test",
       "[Symbol.replace]",
       "RegExp @@replace",
+      "selectedOptions direct index",
       "style.display/visibility",
       "style.display/visibility",
       "mutable String.prototype method",
