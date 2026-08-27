@@ -39,6 +39,7 @@ export interface RestoreDeps {
   /** Skip the empty-target guard (used only when restoring into a scratch DB). */
   readonly allowNonEmptyTarget?: boolean;
   readonly readSchemaVersion?: typeof readSchemaVersion;
+  readonly restoreRuntimePrivileges?: () => Promise<void>;
   readonly putObject?: (key: string, bytes: Uint8Array) => Promise<void>;
   readonly getObject?: (key: string) => Promise<Uint8Array>;
   readonly enumerateObjects?: () => Promise<readonly { readonly key: string }[]>;
@@ -125,7 +126,7 @@ export async function runRestore(
       });
     }
 
-    await restoreRuntimePrivileges(config);
+    await (deps.restoreRuntimePrivileges ?? (() => restoreRuntimePrivileges(config)))();
 
     for (const object of index.objects) {
       const bytes = await readFile(join(config.backupDir, BACKUP_OBJECTS_DIR, object.relativePath));

@@ -193,6 +193,7 @@ describe("Admin CLI backup index authority", () => {
       pgTool: { dump: async () => undefined, restore },
       allowNonEmptyTarget: true,
       readSchemaVersion: async () => 8,
+      restoreRuntimePrivileges: async () => undefined,
       putObject,
       getObject: async () => new Uint8Array([1]),
     })).rejects.toMatchObject({ code: "RestoreFailed" });
