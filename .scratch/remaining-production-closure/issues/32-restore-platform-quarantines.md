@@ -38,6 +38,7 @@ This is the complete edit scope, including the named post-review platform accept
 - `tests/component/web-execution/playwright-web-target.test.ts`
 - `tests/contract/kms-local/skill-signing.test.ts`
 - `apps/local-launcher/src/child-process-unit.ts`
+- `apps/local-launcher/src/process-supervisor.ts` — maintainer-approved 2026-08-28 scope extension, limited to the detached Launcher owned-process identity verification and TERM/grace/force/reap lifecycle evidence required by this ticket; no broad PID/name scan or termination, second identity system, or public contract change.
 - `packages/target-adapters/web-playwright/src/browser-session.ts`
 - `packages/storage-providers/kms-local/src/local-skill-signer.ts`
 - `tests/helpers/windows-file-acl.ts`
@@ -107,3 +108,4 @@ Record base and reviewed SHAs in `## Comments`. Every review covers the four com
 - update - 2026-08-27: Tickets 15 and 21 are resolved. Ticket 32 remains blocked only by Ticket 31 human Windows native acceptance.
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 32 is the immediate implementation frontier. It must still produce real zero-skip Windows/Linux automated evidence; Ticket 31 is deferred only as a final release/freeze dependency, not replaced or waived.
 - start - 2026-08-28: Fixed base `bb4d11b95098ce6bd604d3bc02d13f0fd798c334`; branch/worktree `ticket-32-restore-platform-quarantines` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-32`. Under the 2026-08-27 two-phase authority, Ticket 32 implementation and real zero-skip Windows/Linux automated evidence may complete before Ticket 31 human sign-off; Ticket 31 remains a final release/freeze dependency. Behavior Matrix: all 14 rows are applicable; no row is N/A. Planned focused Gate is the four named quarantine suites, required no-match `rg` check, typecheck, and diff check; post-review acceptance retains same-commit Windows/Linux zero-skip reports.
+- scope — 2026-08-28: Maintainer authorized `apps/local-launcher/src/process-supervisor.ts` for Ticket 32 review1 remediation. The edit is limited to making the production detached shutdown path preserve/verify owned-process identity before every signal and emit the required TERM/grace/force/reap lifecycle evidence. It must neither add a public contract nor use PID/name broad scans or terminate unrelated processes.
