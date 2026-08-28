@@ -95,6 +95,43 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
+  it("does not signal or record reaping for a direct child whose creation identity changed", async () => {
+    const dir = await scratchDir("direct-child-stale-identity");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const unit = new ChildProcessUnit({
+      name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE],
+      env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" },
+      logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready",
+      startupTimeoutMs: 5_000, shutdownGraceMs: 100,
+    });
+    await unit.start();
+    const pid = unit.pid() as number;
+    const internals = unit as unknown as {
+      currentIdentity: { readonly pid: number; readonly creationMarker: string; isCurrent(): boolean } | undefined;
+    };
+    internals.currentIdentity = { pid, creationMarker: "reused-test-marker", isCurrent: () => false };
+    const kill = vi.spyOn(process, "kill");
+
+    try {
+      await unit.stop();
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+
+    try {
+      expect(isPidAlive(pid)).toBe(true);
+      const events = (await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { event: string });
+      expect(events.map((event) => event.event)).toEqual(["runner:started", "runner:stop_requested"]);
+    } finally {
+      process.kill(pid, "SIGKILL");
+      await expect.poll(() => isPidAlive(pid), { timeout: 5_000 }).toBe(false);
+    }
+  });
+
   it("spawns a real process, reaches ready via its stdout event and stops cleanly", async () => {
     const dir = await scratchDir("ready");
     const port = await freePort();

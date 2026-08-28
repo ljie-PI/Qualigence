@@ -443,8 +443,10 @@ export class ChildProcessUnit {
       // Preserve the original coarse lifecycle evidence for callers while
       // recording the precise graceful/escalation boundaries as well.
       await this.recordLifecycle("stop_requested", pid);
-      await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
-      await this.recordLifecycle("reaped", pid);
+      const reaped = await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
+      if (reaped) {
+        await this.recordLifecycle("reaped", pid);
+      }
     }
     this.child = undefined;
     this.currentPid = undefined;
@@ -454,15 +456,15 @@ export class ChildProcessUnit {
   private async terminateChild(
     child: ChildProcess,
     onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const pid = child.pid;
-    if (pid === undefined) return;
-    await terminateProcess(
+    if (pid === undefined) return false;
+    return terminateProcess(
       pid,
       this.options.shutdownGraceMs,
       this.options.detached ?? false,
       onEvent,
-      () => this.child === child && child.pid === pid && child.exitCode === null && !this.childExited,
+      () => this.child === child && child.pid === pid && child.exitCode === null && !this.childExited && this.currentIdentity?.isCurrent() === true,
     );
   }
 

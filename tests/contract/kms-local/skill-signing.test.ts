@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ import type {
 } from "@qualigence/skill";
 import { readWindowsFileAcl } from "../../helpers/windows-file-acl.js";
 
-const aclReadFailure = vi.hoisted(() => ({ enabled: false }));
+const aclReadFailure = vi.hoisted(() => ({ enabled: false, replacementDir: undefined as string | undefined }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -23,6 +23,10 @@ vi.mock("node:child_process", async (importOriginal) => {
     ...original,
     execFileSync: (...args: Parameters<typeof original.execFileSync>) => {
       if (aclReadFailure.enabled && args[0] === "powershell.exe") {
+        if (aclReadFailure.replacementDir !== undefined) {
+          writeFileSync(join(aclReadFailure.replacementDir, "skill-signing.key"), "replacement private key");
+          writeFileSync(join(aclReadFailure.replacementDir, "skill-signing.pub"), "replacement public key");
+        }
         throw new Error("injected Windows ACL read failure");
       }
       return original.execFileSync(...args);
@@ -180,6 +184,24 @@ describe("LocalSkillSigner", () => {
 
     expect(existsSync(join(dataDir, "skill-signing.key"))).toBe(false);
     expect(existsSync(join(dataDir, "skill-signing.pub"))).toBe(false);
+  });
+
+  it("keeps replacement artifacts when Windows ACL setup fails during generation", () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    aclReadFailure.enabled = true;
+    aclReadFailure.replacementDir = dataDir;
+    try {
+      expect(() => LocalSkillSigner.open(dataDir)).toThrow(SkillSigningError);
+    } finally {
+      aclReadFailure.enabled = false;
+      aclReadFailure.replacementDir = undefined;
+    }
+
+    expect(readFileSync(join(dataDir, "skill-signing.key"), "utf8")).toBe("replacement private key");
+    expect(readFileSync(join(dataDir, "skill-signing.pub"), "utf8")).toBe("replacement public key");
   });
 
   it("reuses the same key across reopen", () => {

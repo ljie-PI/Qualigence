@@ -8,7 +8,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -61,24 +61,24 @@ export class LocalSkillSigner implements SkillSigner {
     const publicPath = join(dataDir, PUBLIC_KEY_FILE);
 
     let privatePem: string;
-    let generated = false;
+    let permissionsVerifiedDuringGeneration = false;
     try {
       privatePem = readFileSync(privatePath, "utf8");
     } catch (cause) {
       if (!isNotFound(cause)) {
         throw new SkillSigningError(`Private signing key ${privatePath} cannot be read.`, { cause });
       }
-      privatePem = generateAndPersist(dataDir, privatePath, publicPath);
-      generated = true;
+      if (process.platform === "win32") {
+        const generated = generateAndPersistWindows(dataDir, privatePath, publicPath);
+        privatePem = generated.privatePem;
+        permissionsVerifiedDuringGeneration = generated.permissionsVerified;
+      } else {
+        privatePem = generateAndPersist(dataDir, privatePath, publicPath);
+      }
     }
 
-    try {
-      ensurePrivateKeyPermissions(privatePath, generated);
-    } catch (cause) {
-      if (generated && process.platform === "win32") {
-        removeGeneratedKeyArtifacts(privatePath, publicPath);
-      }
-      throw cause;
+    if (!permissionsVerifiedDuringGeneration) {
+      ensurePrivateKeyPermissions(privatePath, false);
     }
 
     const privateKey = createPrivateKey(privatePem);
@@ -276,21 +276,101 @@ function isNotFound(cause: unknown): boolean {
     "code" in cause && (cause as { readonly code?: unknown }).code === "ENOENT";
 }
 
-function removeGeneratedKeyArtifacts(privatePath: string, publicPath: string): void {
-  const failures: unknown[] = [];
-  for (const path of [privatePath, publicPath]) {
+interface WindowsGeneratedKey {
+  readonly privatePem: string;
+  readonly permissionsVerified: boolean;
+}
+
+/**
+ * Keep a Windows key pair private to its initializer until its ACL has been
+ * applied and verified. The exclusive lock serializes LocalSkillSigner
+ * initializers; the staging directory means ACL failure never cleans up a
+ * fixed path which may now belong to another actor.
+ */
+function generateAndPersistWindows(
+  dataDir: string,
+  privatePath: string,
+  publicPath: string,
+): WindowsGeneratedKey {
+  const lockPath = join(dataDir, ".skill-signing.lock");
+  let lockFd: number;
+  try {
+    lockFd = openSync(lockPath, "wx", 0o600);
+  } catch (cause) {
+    throw new SkillSigningError("Signing key initialization is already in progress.", { cause });
+  }
+
+  try {
     try {
-      unlinkSync(path);
+      return { privatePem: readFileSync(privatePath, "utf8"), permissionsVerified: false };
     } catch (cause) {
       if (!isNotFound(cause)) {
-        failures.push(cause);
+        throw new SkillSigningError(`Private signing key ${privatePath} cannot be read.`, { cause });
+      }
+    }
+
+    const stagingDir = mkdtempSync(join(dataDir, ".skill-signing-stage-"));
+    const stagedPrivatePath = join(stagingDir, PRIVATE_KEY_FILE);
+    const stagedPublicPath = join(stagingDir, PUBLIC_KEY_FILE);
+    let privatePem: string | undefined;
+    let publicPem: string | undefined;
+    let privatePublished = false;
+    let publicPublished = false;
+    try {
+      const keyPair = generateKeyPairSync("ed25519");
+      privatePem = keyPair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+      publicPem = keyPair.publicKey.export({ format: "pem", type: "spki" }).toString();
+      writeFileSync(stagedPrivatePath, privatePem, { mode: 0o600 });
+      writeFileSync(stagedPublicPath, publicPem, { mode: 0o644 });
+      ensurePrivateKeyPermissions(stagedPrivatePath, true);
+      renameSync(stagedPrivatePath, privatePath);
+      privatePublished = true;
+      renameSync(stagedPublicPath, publicPath);
+      publicPublished = true;
+      return { privatePem, permissionsVerified: true };
+    } catch (cause) {
+      try {
+        if (privatePublished && privatePem !== undefined) {
+          removeOwnedGeneratedArtifact(privatePath, privatePem);
+        }
+        if (publicPublished && publicPem !== undefined) {
+          removeOwnedGeneratedArtifact(publicPath, publicPem);
+        }
+      } catch (cleanupCause) {
+        throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", {
+          cause: cleanupCause,
+        });
+      }
+      throw cause;
+    } finally {
+      try {
+        rmSync(stagingDir, { recursive: true, force: true });
+      } catch (cause) {
+        throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", { cause });
+      }
+    }
+  } finally {
+    closeSync(lockFd);
+    try {
+      unlinkSync(lockPath);
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        throw new SkillSigningError("Signing key initialization lock could not be removed.", { cause });
       }
     }
   }
-  if (failures.length > 0) {
-    throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", {
-      cause: new AggregateError(failures),
-    });
+}
+
+/** Remove a published artifact only when its exact generated contents remain. */
+function removeOwnedGeneratedArtifact(path: string, contents: string): void {
+  try {
+    if (readFileSync(path, "utf8") === contents) {
+      unlinkSync(path);
+    }
+  } catch (cause) {
+    if (!isNotFound(cause)) {
+      throw cause;
+    }
   }
 }
 
