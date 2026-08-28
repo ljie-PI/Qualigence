@@ -12,7 +12,7 @@ Ticket 32 owns the four quarantine fixes; ticket 34 owns release image/SBOM/prov
 
 ## Migration
 
-No relational migration is allocated; existing and allocated closure migrations and persisted product data are unchanged. CI adoption is additive: use Node 24, Corepack pnpm 11.7.0, frozen install, pinned Rust toolchain, and lock-hash caches. Missing Docker, Chromium, OpenSSL, Cargo, Windows, or signed native evidence must exit non-zero with a stable block code; it cannot become a skip or optional success.
+No relational migration is allocated; existing and allocated closure migrations and persisted product data are unchanged. CI adoption is additive: use Node 24, Corepack pnpm 11.7.0, frozen install, pinned Rust toolchain, and lock-hash caches. Missing Docker, Chromium, OpenSSL, Cargo, or Windows must exit non-zero with its stable infrastructure block code; it cannot become a skip or optional success. Under the approved two-phase authority, absent signed Ticket 31 evidence or real-provider Ticket 46 evidence is represented in the phase-1 `release-metadata` artifact as structured `release-blocked` metadata using `WindowsChecklistEvidenceUnavailable` and/or `RealProviderEvidenceUnavailable`; the metadata job may succeed only because it truthfully reports the block. Ticket 34 publication/manifest verification and Ticket 35 freeze validation must reject that blocked metadata, so it never constitutes release success. `Windows11Unavailable` remains reserved for a missing Windows 11 prerequisite, not a missing signed checklist.
 
 ## Affected contexts
 
@@ -45,8 +45,15 @@ This is the complete edit scope, including the post-review browser/CI acceptance
 - `tests/helpers/server-fixture.ts`
 - `tests/helpers/oidc-jwt.ts`
 - `tests/helpers/infrastructure-preflight.ts`
+- `apps/web-console/src/api/client.ts` — maintainer-approved 2026-08-28 scope extension, limited to existing Public API v1 Artifact metadata/authorized-byte client methods and reuse of existing PRD/Mission commands; no storage/KMS client or public contract change.
+- `apps/web-console/src/routes/router.tsx`
+- `apps/web-console/src/routes/query-keys.ts`
+- `apps/web-console/src/features/projects/project-page.tsx` — visible PRD ingestion control using the existing Public API command only.
+- `apps/web-console/src/features/missions/mission-page.tsx` — visible Mission start control using existing expected-version/idempotency command behavior only.
+- `apps/web-console/src/features/evidence/artifact-page.tsx` — new minimal visible Artifact metadata/authorized-download/denial surface; no new authorization model.
+- `tests/component/web-console/product-intake-pages.test.ts` — directly affected visible-control coverage.
 
-Ticket 33 may define `gate:release` only as the stable command entrypoint expected by tickets 34-35; release implementation files and publishing remain outside this scope.
+Ticket 33 may define `gate:release` only as the stable command entrypoint expected by tickets 34-35; release implementation files and publishing remain outside this scope. The Console extension is limited to rendered workflow requirements already in this ticket: no backend endpoint, DTO, persistence, KMS, direct storage, or authorization-policy change is authorized.
 
 ## Requirements
 
@@ -113,3 +120,5 @@ Record base and reviewed SHAs in `## Comments`. Review every workflow permission
 
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 33 remains implementation-blocked by Ticket 32, not by human/provider evidence. Its implementation PR must preserve explicit failing/blocking behavior for absent final evidence; Ticket 35 consumes the real final evidence after Ticket 31 and Ticket 46 complete.
 - start - 2026-08-28: Fixed base `c22c4650ffd7319e15ac27647859697d548989f4`; branch/worktree `ticket-33-browser-e2e-mandatory-ci` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-33`. Ticket 32 implementation is merged, satisfying this ticket's implementation dependency. Under the 2026-08-27 two-phase authority, complete Ticket 33 code/workflow/browser implementation and deterministic automated evidence may proceed, while Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence remain final release-resolution inputs, never synthetic substitutes. Behavior Matrix: all rows are applicable; none is N/A. Planned focused Gate: `tests/component/web-console/workflow.test.ts`, typecheck, diff check, plus workflow syntax/render validation; post-review browser E2E and exact reviewed commit CI artifacts remain required.
+- scope — 2026-08-28: Maintainer approved the smallest Console scope required for Ticket 33 rendered acceptance: existing Public API v1 client calls plus visible PRD ingestion, Mission start, and Artifact authorization route/page/control behavior in the explicitly listed Console files and direct component tests. This does not authorize backend/DTO/persistence/KMS/direct-storage/authorization-policy changes. Browser direct fetch/API-client substitution is prohibited for asserted user interactions.
+- authority — 2026-08-28: Maintainer clarified phase-1 `release-metadata`: it may succeed only by emitting a structured `release-blocked` report identifying absent Ticket 31/Ticket 46 evidence with `WindowsChecklistEvidenceUnavailable` / `RealProviderEvidenceUnavailable`. Such metadata is CI evidence of a block, not release success; Ticket 34/35 must reject it. `Windows11Unavailable` denotes only missing Windows 11 infrastructure.
