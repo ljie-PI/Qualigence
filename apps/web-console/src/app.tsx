@@ -36,18 +36,20 @@ export function App(): ReactNode {
   const servicesRef = useRef<ConsoleServices | undefined>(undefined);
   servicesRef.current ??= createConsoleServices();
   const services = servicesRef.current;
+  const callbackCompletionRef = useRef<Promise<boolean | undefined> | undefined>(undefined);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void services.oidc
-      .handleCallbackIfPresent()
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) {
-          setReady(true);
-        }
-      });
+    // StrictMode re-runs effects while retaining refs. Share this completion
+    // promise so one callback URL can consume its one-use code only once.
+    const completion = callbackCompletionRef.current ??= services.oidc.handleCallbackIfPresent()
+      .catch(() => undefined);
+    void completion.finally(() => {
+      if (!cancelled) {
+        setReady(true);
+      }
+    });
     return () => {
       cancelled = true;
     };

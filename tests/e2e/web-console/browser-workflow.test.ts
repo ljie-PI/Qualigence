@@ -88,7 +88,11 @@ describe("rendered Web Console browser workflow", () => {
         throw new Error(`Console did not render: ${browserErrors.join(" | ")}`);
       }
       await page.getByRole("button", { name: "Sign in with SSO" }).click();
-      await page.getByRole("heading", { name: "Projects" }).waitFor();
+      try {
+        await page.getByRole("heading", { name: "Projects" }).waitFor();
+      } catch {
+        throw new Error(`Console did not render after OIDC callback: ${browserErrors.join(" | ")}`);
+      }
       expect(page.url()).toBe(`${consoleUrl}/projects`);
       expect(await page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) }))).toMatchObject({ local: [] });
 
@@ -155,7 +159,15 @@ async function startConsoleProxy(config: () => Record<string, unknown>, apiBaseU
     try {
       const body = await readFile(join(dist, requested));
       if (requested === "index.html") {
-        const html = body.toString("utf8").replace("</head>", `<script src="/runtime-config.js"></script></head>`);
+        const runtimeConfig = config();
+        const oidc = runtimeConfig.oidc;
+        const oidcIssuer = typeof oidc === "object" && oidc !== null && typeof (oidc as { issuer?: unknown }).issuer === "string"
+          ? new URL((oidc as { issuer: string }).issuer).origin
+          : "'self'";
+        const csp = `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ${oidcIssuer}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
+        const html = body.toString("utf8")
+          .replace(/<meta\s+http-equiv="Content-Security-Policy"[\s\S]*?\/>/, "")
+          .replace("</head>", `<meta http-equiv="Content-Security-Policy" content="${csp}"><script src="/runtime-config.js"></script></head>`);
         response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(html);
       } else {
         const contentType = requested.endsWith(".js") ? "application/javascript" : requested.endsWith(".css") ? "text/css" : "application/octet-stream";

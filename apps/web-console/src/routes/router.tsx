@@ -74,6 +74,14 @@ const indexRoute = createRoute({
   },
 });
 
+const callbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/callback",
+  beforeLoad: () => {
+    throw redirect({ to: "/projects" });
+  },
+});
+
 const projectsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/projects",
@@ -193,6 +201,7 @@ const reviewTaskRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  callbackRoute,
   projectsRoute,
   projectDetailRoute,
   prdRevisionRoute,
