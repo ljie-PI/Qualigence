@@ -36,6 +36,7 @@ jobs:
           test -f .gate-evidence/gate-self-hosted/accepted.json
           cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence
           find gate-self-hosted -type f -print0 | sort -z | xargs -0 sha256sum > gate-self-hosted/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-self-hosted --report gate-self-hosted/gate-evidence/report.json --marker gate-self-hosted/gate-evidence/accepted.json --hashes gate-self-hosted/sha256.txt --receipt gate-self-hosted/receipt.json
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()

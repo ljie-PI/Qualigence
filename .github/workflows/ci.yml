@@ -77,6 +77,7 @@ jobs:
           cp -R .gate-evidence/gate-fast gate-linux/gate-fast
           cp -R .gate-evidence/gate-linux gate-linux/gate-linux
           find gate-linux -type f -print0 | sort -z | xargs -0 sha256sum > gate-linux/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-linux --report gate-linux/gate-linux/report.json --marker gate-linux/gate-linux/accepted.json --hashes gate-linux/sha256.txt --receipt gate-linux/receipt.json
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -116,6 +117,7 @@ jobs:
           node --experimental-strip-types tests/helpers/gate-evidence.ts accept --report .gate-evidence/browser-e2e/report.json --marker .gate-evidence/browser-e2e/accepted.json
           cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence
           find browser-e2e -type f -print0 | sort -z | xargs -0 sha256sum > browser-e2e/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate browser-e2e --report browser-e2e/gate-evidence/report.json --marker browser-e2e/gate-evidence/accepted.json --hashes browser-e2e/sha256.txt --receipt browser-e2e/receipt.json
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()

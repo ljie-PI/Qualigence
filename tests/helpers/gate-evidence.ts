@@ -6,6 +6,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 1_024;
+const MAX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
+const SHA256 = /^[a-f0-9]{64}$/i;
+
 export interface GateCounts {
   readonly passed: number;
   readonly failed: number;
@@ -32,6 +38,18 @@ export interface AcceptedGateMarker {
   readonly report: string;
   readonly reportSha256: string;
   readonly status: "accepted";
+}
+
+interface GateArtifactReceipt {
+  readonly schemaVersion: "qualigence-gate-artifact-receipt/v1";
+  readonly gate: string;
+  readonly commit: string;
+  readonly report: string;
+  readonly reportSha256: string;
+  readonly marker: string;
+  readonly markerSha256: string;
+  readonly hashManifest: string;
+  readonly hashManifestSha256: string;
 }
 
 export interface GateDelivery {
@@ -80,6 +98,14 @@ export function countsFromVitestJson(value: unknown): GateCounts {
   return { passed, failed, skipped, todo };
 }
 
+export function isGateReportAcceptable(report: GateReport): boolean {
+  return report.schemaVersion === "qualigence-gate-report/v1"
+    && report.status === "passed"
+    && report.counts.failed === 0
+    && report.counts.skipped === 0
+    && report.counts.todo === 0;
+}
+
 /** Verify only the reports selected by a declared Gate; unrelated repository tests are never inspected. */
 export function verifyGateDeliveries(expectedCommit: string, requiredGates: readonly string[], deliveries: readonly GateDelivery[]): readonly VerifiedGateDelivery[] {
   const verified: VerifiedGateDelivery[] = [];
@@ -98,7 +124,7 @@ export function verifyGateDeliveries(expectedCommit: string, requiredGates: read
     if (report === undefined || marker === undefined || delivery.reportSha256 === undefined) {
       throw new Error(`GateArtifactAcceptanceMissing: ${delivery.gate}/${delivery.artifactId}`);
     }
-    if (report.commit !== expectedCommit || report.gate !== delivery.gate || report.status !== "passed" || report.counts.failed !== 0 || report.counts.skipped !== 0) {
+    if (report.commit !== expectedCommit || report.gate !== delivery.gate || !isGateReportAcceptable(report)) {
       throw new Error(`GateArtifactReportInvalid: ${delivery.gate}/${delivery.artifactId}`);
     }
     if (marker.schemaVersion !== "qualigence-gate-accepted/v1" || marker.status !== "accepted" || marker.gate !== delivery.gate || marker.commit !== expectedCommit || marker.reportSha256 !== delivery.reportSha256) {
@@ -152,8 +178,16 @@ interface GithubArtifact {
   readonly id: number;
   readonly name: string;
   readonly expired?: boolean;
+  readonly size_in_bytes?: number;
+  readonly digest?: string;
   readonly archive_download_url: string;
   readonly workflow_run?: { readonly id: number; readonly head_sha: string };
+}
+
+interface ArchiveEntry {
+  readonly path: string;
+  readonly compressedBytes: number;
+  readonly bytes: number;
 }
 
 async function githubJson(url: string, token: string): Promise<unknown> {
@@ -163,36 +197,234 @@ async function githubJson(url: string, token: string): Promise<unknown> {
 }
 
 async function extractGateArtifact(artifact: GithubArtifact, token: string): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker">> {
+  if (artifact.size_in_bytes !== undefined && (!Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 0 || artifact.size_in_bytes > MAX_ARCHIVE_BYTES)) {
+    throw new Error(`GateArtifactArchiveSizeInvalid: ${artifact.name}/${artifact.id}`);
+  }
   const response = await fetch(artifact.archive_download_url, { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` } });
   if (!response.ok) throw new Error(`GateArtifactDownloadFailed: ${artifact.name}/${artifact.id}`);
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MAX_ARCHIVE_BYTES)) {
+    throw new Error(`GateArtifactArchiveSizeInvalid: ${artifact.name}/${artifact.id}`);
+  }
+  const archive = await readBoundedArchive(response, `${artifact.name}/${artifact.id}`);
+  return extractGateArtifactArchive({ gate: artifact.name, artifactId: artifact.id, archive, artifactDigest: artifact.digest });
+}
+
+async function readBoundedArchive(response: Response, identity: string): Promise<Uint8Array> {
+  if (response.body === null) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > MAX_ARCHIVE_BYTES) throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const archive = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    archive.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return archive;
+}
+
+/** Reads a real ZIP delivery only after validating the immutable GitHub digest and archive inventory. */
+export async function extractGateArtifactArchive(input: {
+  readonly gate: string;
+  readonly artifactId: string | number;
+  readonly archive: Uint8Array;
+  readonly artifactDigest: string | undefined;
+}): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker">> {
+  const identity = `${input.gate}/${input.artifactId}`;
+  if (input.archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
+  if (input.artifactDigest === undefined || !/^sha256:[a-f0-9]{64}$/i.test(input.artifactDigest)) throw new Error(`GateArtifactDigestMissing: ${identity}`);
+  const archiveHash = sha256(input.archive);
+  if (archiveHash !== input.artifactDigest.slice("sha256:".length).toLowerCase()) throw new Error(`GateArtifactDigestMismatch: ${identity}`);
+
+  const entries = zipEntries(input.archive, identity);
+  const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
   const directory = await mkdtemp(join(tmpdir(), "qualigence-gate-artifact-"));
   const archive = join(directory, "artifact.zip");
   try {
-    await writeFile(archive, Buffer.from(await response.arrayBuffer()));
-    const { stdout } = await promisify(execFile)("unzip", ["-Z1", archive], { maxBuffer: 1_048_576 });
-    const paths = stdout.split(/\r?\n/).filter(Boolean);
-    const reportPath = await matchingGateFile(directory, paths, artifact.name, "report.json");
-    const markerPath = await matchingGateFile(directory, paths, artifact.name, "accepted.json");
-    if (reportPath === undefined || markerPath === undefined) return { report: undefined, reportSha256: undefined, marker: undefined };
-    const [reportText, markerText, reportSha256] = await Promise.all([readFile(reportPath, "utf8"), readFile(markerPath, "utf8"), sha256File(reportPath)]);
-    return { report: JSON.parse(reportText) as GateReport, reportSha256, marker: JSON.parse(markerText) as AcceptedGateMarker };
+    await writeFile(archive, input.archive);
+    await assertUnzipAvailable(identity);
+    const receiptBytes = await readArchiveEntry(archive, entryByPath, "receipt.json", identity);
+    const receipt = parseReceipt(receiptBytes, input.gate, identity);
+    const reportPath = receipt.report;
+    const markerPath = receipt.marker;
+    const manifestPath = receipt.hashManifest;
+    const [reportBytes, markerBytes, manifestBytes] = await Promise.all([
+      readArchiveEntry(archive, entryByPath, reportPath, identity),
+      readArchiveEntry(archive, entryByPath, markerPath, identity),
+      readArchiveEntry(archive, entryByPath, manifestPath, identity),
+    ]);
+    if (sha256(reportBytes) !== receipt.reportSha256 || sha256(markerBytes) !== receipt.markerSha256 || sha256(manifestBytes) !== receipt.hashManifestSha256) {
+      throw new Error(`GateArtifactReceiptInvalid: ${identity}`);
+    }
+    const manifest = parseHashManifest(manifestBytes, identity);
+    assertManifestHash(manifest, reportPath, receipt.reportSha256, identity);
+    assertManifestHash(manifest, markerPath, receipt.markerSha256, identity);
+    const report = JSON.parse(Buffer.from(reportBytes).toString("utf8")) as GateReport;
+    const marker = JSON.parse(Buffer.from(markerBytes).toString("utf8")) as AcceptedGateMarker;
+    const declaredReportPath = resolveArchivePath(markerPath, marker.report, identity);
+    if (receipt.commit !== report.commit || receipt.commit !== marker.commit || declaredReportPath !== reportPath || marker.reportSha256 !== receipt.reportSha256) throw new Error(`GateArtifactMarkerInvalid: ${identity}`);
+    await verifyReportInputs(archive, entryByPath, reportPath, report, manifest, identity);
+    return { report, reportSha256: receipt.reportSha256, marker };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("GateArtifact")) throw error;
+    throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-async function matchingGateFile(directory: string, paths: readonly string[], gate: string, name: string): Promise<string | undefined> {
-  for (const entry of paths) {
-    if (!entry.endsWith(`/${name}`) && entry !== name) continue;
-    const path = join(directory, entry);
-    try {
-      const parsed = JSON.parse(await readFile(path, "utf8")) as { readonly gate?: unknown };
-      if (parsed.gate === gate) return path;
-    } catch {
-      // Ignore unrelated diagnostic JSON; only a parsed matching Gate file is evidence.
-    }
+function zipEntries(archive: Uint8Array, identity: string): readonly ArchiveEntry[] {
+  const end = findEndOfCentralDirectory(archive);
+  if (end < 0 || end + 22 > archive.byteLength) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
+  const entryCount = view.getUint16(end + 10, true);
+  const centralDirectoryBytes = view.getUint32(end + 12, true);
+  let offset = view.getUint32(end + 16, true);
+  if (entryCount === 0xffff || centralDirectoryBytes === 0xffffffff || offset === 0xffffffff || entryCount > MAX_ARCHIVE_ENTRIES || offset + centralDirectoryBytes > archive.byteLength) {
+    throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
   }
-  return undefined;
+  const paths = new Set<string>();
+  const entries: ArchiveEntry[] = [];
+  let totalBytes = 0;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > archive.byteLength || view.getUint32(offset, true) !== 0x02014b50) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+    const flags = view.getUint16(offset + 8, true);
+    const compressedBytes = view.getUint32(offset + 20, true);
+    const bytes = view.getUint32(offset + 24, true);
+    const nameBytes = view.getUint16(offset + 28, true);
+    const extraBytes = view.getUint16(offset + 30, true);
+    const commentBytes = view.getUint16(offset + 32, true);
+    const externalAttributes = view.getUint32(offset + 38, true);
+    const pathEnd = offset + 46 + nameBytes;
+    const next = pathEnd + extraBytes + commentBytes;
+    if (next > archive.byteLength || compressedBytes === 0xffffffff || bytes === 0xffffffff) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+    const path = Buffer.from(archive.subarray(offset + 46, pathEnd)).toString((flags & 0x0800) !== 0 ? "utf8" : "binary");
+    assertArchivePath(path, identity);
+    if ((flags & 0x0001) !== 0 || (externalAttributes >>> 16 & 0xf000) === 0xa000) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+    if (paths.has(path)) throw new Error(`GateArtifactArchiveAmbiguous: ${identity}`);
+    if (bytes > MAX_ARCHIVE_ENTRY_BYTES || totalBytes + bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
+    paths.add(path);
+    entries.push({ path, compressedBytes, bytes });
+    totalBytes += bytes;
+    offset = next;
+  }
+  if (offset !== view.getUint32(end + 16, true) + centralDirectoryBytes) throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+  return entries;
+}
+
+function findEndOfCentralDirectory(archive: Uint8Array): number {
+  for (let offset = archive.byteLength - 22; offset >= Math.max(0, archive.byteLength - 65_557); offset -= 1) {
+    if (archive[offset] === 0x50 && archive[offset + 1] === 0x4b && archive[offset + 2] === 0x05 && archive[offset + 3] === 0x06) return offset;
+  }
+  return -1;
+}
+
+function assertArchivePath(path: string, identity: string): void {
+  if (path.length === 0 || path.length > 512 || path.includes("\\") || path.includes("\0") || path.startsWith("/") || /^[a-z]:/i.test(path)) {
+    throw new Error(`GateArtifactArchivePathInvalid: ${identity}`);
+  }
+  const directory = path.endsWith("/");
+  const segments = (directory ? path.slice(0, -1) : path).split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) throw new Error(`GateArtifactArchivePathInvalid: ${identity}`);
+}
+
+async function assertUnzipAvailable(identity: string): Promise<void> {
+  try {
+    await promisify(execFile)("unzip", ["-v"], { maxBuffer: 16 * 1024 });
+  } catch {
+    throw new Error(`GateArtifactExtractionUnavailable: ${identity}`);
+  }
+}
+
+async function readArchiveEntry(archive: string, entries: ReadonlyMap<string, ArchiveEntry>, path: string, identity: string): Promise<Uint8Array> {
+  assertArchivePath(path, identity);
+  const entry = entries.get(path);
+  if (entry === undefined || path.endsWith("/")) throw new Error(`GateArtifactAcceptanceMissing: ${identity}`);
+  try {
+    const { stdout } = await promisify(execFile)("unzip", ["-p", archive, path], { encoding: "buffer", maxBuffer: MAX_ARCHIVE_ENTRY_BYTES + 1 });
+    const bytes = new Uint8Array(stdout);
+    if (bytes.byteLength !== entry.bytes || bytes.byteLength > MAX_ARCHIVE_ENTRY_BYTES) throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
+    return bytes;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("GateArtifact")) throw error;
+    throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
+  }
+}
+
+function parseReceipt(bytes: Uint8Array, gate: string, identity: string): GateArtifactReceipt {
+  let receipt: GateArtifactReceipt;
+  try { receipt = JSON.parse(Buffer.from(bytes).toString("utf8")) as GateArtifactReceipt; } catch { throw new Error(`GateArtifactReceiptInvalid: ${identity}`); }
+  if (receipt.schemaVersion !== "qualigence-gate-artifact-receipt/v1" || receipt.gate !== gate || !isCommit(receipt.commit)
+    || !safeRelativePath(receipt.report) || !safeRelativePath(receipt.marker) || !safeRelativePath(receipt.hashManifest)
+    || !SHA256.test(receipt.reportSha256) || !SHA256.test(receipt.markerSha256) || !SHA256.test(receipt.hashManifestSha256)) {
+    throw new Error(`GateArtifactReceiptInvalid: ${identity}`);
+  }
+  return receipt;
+}
+
+function parseHashManifest(bytes: Uint8Array, identity: string): ReadonlyMap<string, string> {
+  const entries = new Map<string, string>();
+  for (const line of Buffer.from(bytes).toString("utf8").split(/\r?\n/)) {
+    if (line.length === 0) continue;
+    const match = /^([a-f0-9]{64}) [ *](.+)$/i.exec(line);
+    if (match === null || !safeRelativePath(match[2]!)) throw new Error(`GateArtifactHashManifestInvalid: ${identity}`);
+    if (entries.has(match[2]!)) throw new Error(`GateArtifactHashManifestInvalid: ${identity}`);
+    entries.set(match[2]!, match[1]!.toLowerCase());
+  }
+  return entries;
+}
+
+function assertManifestHash(manifest: ReadonlyMap<string, string>, path: string, hash: string, identity: string): void {
+  if (manifest.get(path) !== hash.toLowerCase()) throw new Error(`GateArtifactHashManifestInvalid: ${identity}`);
+}
+
+async function verifyReportInputs(archive: string, entries: ReadonlyMap<string, ArchiveEntry>, reportPath: string, report: GateReport, manifest: ReadonlyMap<string, string>, identity: string): Promise<void> {
+  if (!Array.isArray(report.files)) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+  const filePaths = new Set<string>();
+  for (const file of report.files) {
+    if (!safeRelativePath(file.path) || !SHA256.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(`GateArtifactReportInvalid: ${identity}`);
+    }
+    const path = resolveArchivePath(reportPath, file.path, identity);
+    if (filePaths.has(path)) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+    filePaths.add(path);
+    assertManifestHash(manifest, path, file.sha256, identity);
+    const bytes = await readArchiveEntry(archive, entries, path, identity);
+    if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256.toLowerCase()) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+  }
+}
+
+function resolveArchivePath(fromPath: string, child: string, identity: string): string {
+  if (!safeRelativePath(child)) throw new Error(`GateArtifactArchivePathInvalid: ${identity}`);
+  const parent = fromPath.split("/").slice(0, -1);
+  const path = [...parent, ...child.split("/")].join("/");
+  if (!safeRelativePath(path)) throw new Error(`GateArtifactArchivePathInvalid: ${identity}`);
+  return path;
+}
+
+function safeRelativePath(path: unknown): path is string {
+  return typeof path === "string" && path.length > 0 && path.length <= 512 && !path.includes("\\") && !path.includes("\0")
+    && !path.startsWith("/") && !/^[a-z]:/i.test(path) && path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function isCommit(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{40}$/i.test(value);
+}
+
+function sha256(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function runGate(gate: string, reportPath: string, selection: readonly string[], command: readonly string[]): Promise<void> {
@@ -213,19 +445,17 @@ async function runGate(gate: string, reportPath: string, selection: readonly str
     command,
     selection,
     counts,
-    status: counts.failed === 0 && counts.skipped === 0 ? "passed" : "failed",
+    status: counts.failed === 0 && counts.skipped === 0 && counts.todo === 0 ? "passed" : "failed",
     environment: environment(),
     files: await hashesFor(dirname(reportPath), reportPath),
   };
   await writeAtomic(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  if (report.status !== "passed") process.exitCode = 1;
+  if (!isGateReportAcceptable(report)) process.exitCode = 1;
 }
 
 async function acceptGate(reportPath: string, markerPath: string): Promise<void> {
   const report = JSON.parse(await readFile(reportPath, "utf8")) as GateReport;
-  if (report.schemaVersion !== "qualigence-gate-report/v1" || report.status !== "passed" || report.counts.failed !== 0 || report.counts.skipped !== 0) {
-    throw new Error("GateReportNotAcceptable");
-  }
+  if (!isGateReportAcceptable(report)) throw new Error("GateReportNotAcceptable");
   const marker: AcceptedGateMarker = {
     schemaVersion: "qualigence-gate-accepted/v1",
     gate: report.gate,
@@ -235,6 +465,35 @@ async function acceptGate(reportPath: string, markerPath: string): Promise<void>
     status: "accepted",
   };
   await writeAtomic(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+}
+
+async function writeReceipt(gate: string, reportPath: string, markerPath: string, hashManifestPath: string, receiptPath: string): Promise<void> {
+  const [reportSha256, markerSha256, hashManifestSha256, report, marker] = await Promise.all([
+    sha256File(reportPath), sha256File(markerPath), sha256File(hashManifestPath), readFile(reportPath, "utf8"), readFile(markerPath, "utf8"),
+  ]);
+  const parsedReport = JSON.parse(report) as GateReport;
+  const parsedMarker = JSON.parse(marker) as AcceptedGateMarker;
+  if (!isGateReportAcceptable(parsedReport) || parsedMarker.reportSha256 !== reportSha256 || parsedMarker.report !== relative(dirname(markerPath), reportPath).replaceAll("\\", "/")) {
+    throw new Error("GateReceiptNotAcceptable");
+  }
+  const receipt: GateArtifactReceipt = {
+    schemaVersion: "qualigence-gate-artifact-receipt/v1",
+    gate,
+    commit: parsedReport.commit,
+    report: relative(dirname(receiptPath), reportPath).replaceAll("\\", "/"),
+    reportSha256,
+    marker: relative(dirname(receiptPath), markerPath).replaceAll("\\", "/"),
+    markerSha256,
+    hashManifest: relative(dirname(receiptPath), hashManifestPath).replaceAll("\\", "/"),
+    hashManifestSha256,
+  };
+  if (parsedReport.gate !== gate || parsedMarker.gate !== gate || parsedMarker.commit !== receipt.commit || !safeRelativePath(receipt.report) || !safeRelativePath(receipt.marker) || !safeRelativePath(receipt.hashManifest)) {
+    throw new Error("GateReceiptNotAcceptable");
+  }
+  const manifest = parseHashManifest(await readFile(hashManifestPath), `local/${gate}`);
+  assertManifestHash(manifest, receipt.report, receipt.reportSha256, `local/${gate}`);
+  assertManifestHash(manifest, receipt.marker, receipt.markerSha256, `local/${gate}`);
+  await writeAtomic(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
 }
 
 async function hashesFor(directory: string, reportPath: string): Promise<GateReport["files"]> {
@@ -274,8 +533,6 @@ function environment(): Record<string, string> {
 
 function runCommand(command: string, args: readonly string[], onOutput?: (chunk: string) => void): Promise<number> {
   return new Promise((resolve, reject) => {
-    // pnpm is a Windows .cmd shim; use the shell only on Windows so the same
-    // fixed Gate command is executable on local and hosted runners.
     const child = spawn(command, args, {
       stdio: onOutput === undefined ? "inherit" : ["ignore", "pipe", "inherit"],
       shell: process.platform === "win32",
@@ -322,6 +579,16 @@ async function main(): Promise<void> {
     const marker = argument(args, "--marker");
     if (report === undefined || marker === undefined) throw new Error("GateEvidenceArgumentsInvalid");
     await acceptGate(report, marker);
+    return;
+  }
+  if (mode === "receipt") {
+    const gate = argument(args, "--gate");
+    const report = argument(args, "--report");
+    const marker = argument(args, "--marker");
+    const hashes = argument(args, "--hashes");
+    const receipt = argument(args, "--receipt");
+    if (gate === undefined || report === undefined || marker === undefined || hashes === undefined || receipt === undefined) throw new Error("GateEvidenceArgumentsInvalid");
+    await writeReceipt(gate, report, marker, hashes, receipt);
     return;
   }
   if (mode === "verify-github") {
