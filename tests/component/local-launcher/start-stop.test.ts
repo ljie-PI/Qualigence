@@ -1,3 +1,4 @@
+import { X509Certificate } from "node:crypto";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -345,10 +346,11 @@ describe("LocalDoctor diagnostics", () => {
     expect(report.status).not.toBe("unhealthy");
   });
 
-  it("flags an expired certificate as a failure", async () => {
+  it("flags a truly expired certificate as a failure", async () => {
     const { dir, dbFile, artifactDir } = await makeDataDir("doctor-expired");
     const pki = createGrpcTestPki();
     const expired = pki.expiredClientFor("runner-local");
+    expect(Date.parse(new X509Certificate(expired.cert).validTo)).toBeLessThan(Date.now());
     const certFile = join(dir, "expired.crt");
     await writeFile(certFile, expired.cert);
 

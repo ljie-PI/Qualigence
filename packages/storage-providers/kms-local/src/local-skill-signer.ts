@@ -271,14 +271,13 @@ function ensurePrivateKeyPermissions(path: string, generated: boolean): void {
   try {
     if (generated) {
       const currentSid = readWindowsPrivateKeyAcl(path).currentSid;
-      execFileSync("icacls.exe", [
-        path,
-        "/inheritance:r",
-        "/grant:r",
-        `*${currentSid}:(F)`,
-        "*S-1-5-18:(F)",
-        "*S-1-5-32-544:(F)",
-      ], { stdio: "ignore", windowsHide: true });
+      execFileSync("icacls.exe", [path, "/inheritance:r"], { stdio: "ignore", windowsHide: true });
+      for (const sid of [currentSid, "S-1-5-18", "S-1-5-32-544"]) {
+        execFileSync("icacls.exe", [path, "/grant:r", `*${sid}:(F)`], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      }
     }
     const acl = readWindowsPrivateKeyAcl(path);
     const allowedSids = new Set([acl.currentSid, "S-1-5-18", "S-1-5-32-544"]);
@@ -308,7 +307,8 @@ function readWindowsPrivateKeyAcl(path: string): WindowsPrivateKeyAcl {
   const script = [
     `$path = ${quotedPath}`,
     "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "$rules = @(Get-Acl -LiteralPath $path | Select-Object -ExpandProperty Access | ForEach-Object {",
+    "$acl = [System.IO.File]::GetAccessControl($path)",
+    "$rules = @($acl.Access | ForEach-Object {",
     "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
     "})",
     "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",

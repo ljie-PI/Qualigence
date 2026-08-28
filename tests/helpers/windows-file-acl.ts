@@ -26,7 +26,8 @@ export async function readWindowsFileAcl(path: string): Promise<WindowsFileAcl> 
   const script = [
     `$path = ${JSON.stringify(path)}`,
     "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "$rules = @(Get-Acl -LiteralPath $path | Select-Object -ExpandProperty Access | ForEach-Object {",
+    "$acl = [System.IO.File]::GetAccessControl($path)",
+    "$rules = @($acl.Access | ForEach-Object {",
     "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
     "})",
     "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
