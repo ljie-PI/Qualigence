@@ -51,11 +51,19 @@ const environmentSchema = z.object({
     .string()
     .trim()
     .min(1, "QUALIGENCE_MODEL_NAME is required"),
-  QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL: z.coerce
-    .number()
-    .int()
-    .positive("QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL must be a positive integer")
-    .safe(),
+  QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL: z
+    .preprocess(
+      (value) => typeof value === "string" ? value.trim() : "",
+      z.string().regex(
+        /^[1-9][0-9]*$/,
+        "QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL must be a positive integer",
+      ),
+    )
+    .transform((value) => Number(value))
+    .refine(
+      Number.isSafeInteger,
+      "QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL must be a positive integer",
+    ),
   QUALIGENCE_DATA_DIR: z.string().trim().min(1).optional(),
 });
 

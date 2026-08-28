@@ -6,7 +6,10 @@ import {
 } from "../../../apps/local-launcher/src/process-supervisor.js";
 import { LauncherError } from "../../../apps/local-launcher/src/errors.js";
 import type { HealthCheck } from "@qualigence/local-control";
-import { terminateProcess } from "../../../apps/local-launcher/src/child-process-unit.js";
+import {
+  REAP_TIMEOUT_MS,
+  terminateProcess,
+} from "../../../apps/local-launcher/src/child-process-unit.js";
 
 /** An in-memory {@link ProcessUnit} used to drive supervisor orchestration. */
 class FakeProcessUnit implements ProcessUnit {
@@ -207,7 +210,7 @@ describe("terminateProcess", () => {
       await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
       expect(kill).toHaveBeenCalledWith(2_147_000_000, 0);
     } finally { kill.mockRestore(); }
-  }, 5_000);
+  }, REAP_TIMEOUT_MS + 5_000);
 
   it("terminates and reaps a real child process", async () => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {

@@ -1,16 +1,13 @@
-import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createScenarioWalkTestDoubleAgentFactory,
   runBenchmark,
   type BenchmarkStore,
   type ScenarioDefinition,
 } from "@qualigence/benchmark-runner";
 import {
-  groundTruthSha256,
-  manifestSha256,
-  referenceProfileSha256,
   type DetectionBenchmarkManifest,
   type GroundTruth,
   type ReferenceModelProfile,
@@ -117,6 +114,13 @@ class CrashAfterSafeCheckpointStore extends DelegatingBenchmarkStore {
 }
 
 class ConflictOnTerminalStore extends DelegatingBenchmarkStore {
+  runId: string | undefined;
+
+  override saveRun: BenchmarkStore["saveRun"] = async (run) => {
+    this.runId = run.runId;
+    await this.delegate.saveRun(run);
+  };
+
   override compareAndSetAttemptProgress: BenchmarkStore["compareAndSetAttemptProgress"] = async (update) => {
     if (update.phase === "terminal") {
       return { status: "conflict", current: await this.delegate.loadAttemptProgress(update.attemptId) };
@@ -134,6 +138,7 @@ describe("benchmark runner durable exploration progress", () => {
         groundTruth,
         scenarios: [scenario],
         store: crashing,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         createdAt: "2026-08-01T00:00:00.000Z",
       })).rejects.toThrow(/durable safe checkpoint/);
 
@@ -142,11 +147,18 @@ describe("benchmark runner durable exploration progress", () => {
         groundTruth,
         scenarios: [scenario],
         store,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         createdAt: "2026-08-01T00:00:00.000Z",
       });
 
-      expect(resumed.exitCode).toBe(0);
-      const attemptId = `${resumed.runId}:checkout-bug:1`;
+      expect(resumed.exitCode).toBe(1);
+      expect(resumed.report).toMatchObject({
+        profileStatus: "unverified",
+        gate: { status: "unverified" },
+      });
+      const persistedAttempts = await store.attemptsForRun(resumed.runId);
+      expect(persistedAttempts).toHaveLength(1);
+      const attemptId = persistedAttempts[0]!.attemptId;
       const progress = await store.loadAttemptProgress(attemptId);
       expect(progress).toMatchObject({
         attemptId,
@@ -162,7 +174,7 @@ describe("benchmark runner durable exploration progress", () => {
       expect(checkpoints).toEqual(expect.arrayContaining([
         expect.objectContaining({ terminalReason: "objective_satisfied" }) as ExplorationCheckpoint,
       ]));
-      await expect(store.attemptsForRun(resumed.runId)).resolves.toEqual([
+      expect(persistedAttempts).toEqual([
         expect.objectContaining({
           attemptId,
           findings: [{ defectId: "bug-1", confidence: "high" }],
@@ -179,10 +191,12 @@ describe("benchmark runner durable exploration progress", () => {
         groundTruth,
         scenarios: [scenario],
         store: conflicting,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         createdAt: "2026-08-01T00:00:00.000Z",
       })).rejects.toMatchObject({ code: "BenchmarkAttemptMatrixIncomplete" });
 
-      await expect(store.attemptsForRun(runIdFor(manifest, profile, groundTruth))).resolves.toEqual([]);
+      expect(conflicting.runId).toBeDefined();
+      await expect(store.attemptsForRun(conflicting.runId!)).resolves.toEqual([]);
     });
   });
 
@@ -193,9 +207,12 @@ describe("benchmark runner durable exploration progress", () => {
         groundTruth,
         scenarios: [scenario],
         store,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         createdAt: "2026-08-01T00:00:00.000Z",
       });
-      const attemptId = `${first.runId}:checkout-bug:1`;
+      const firstAttempts = await store.attemptsForRun(first.runId);
+      expect(firstAttempts).toHaveLength(1);
+      const attemptId = firstAttempts[0]!.attemptId;
       const before = await store.loadAttemptProgress(attemptId);
 
       const second = await runBenchmark({
@@ -203,6 +220,7 @@ describe("benchmark runner durable exploration progress", () => {
         groundTruth,
         scenarios: [scenario],
         store,
+        agentFactory: createScenarioWalkTestDoubleAgentFactory(),
         createdAt: "2026-08-01T00:00:00.000Z",
       });
       const after = await store.loadAttemptProgress(attemptId);
@@ -212,16 +230,6 @@ describe("benchmark runner durable exploration progress", () => {
     });
   });
 });
-
-function runIdFor(
-  inputManifest: DetectionBenchmarkManifest,
-  inputProfile: ReferenceModelProfile,
-  inputTruth: GroundTruth,
-): string {
-  return createHash("sha256")
-    .update(`${manifestSha256(inputManifest)}\u0000${referenceProfileSha256(inputProfile)}\u0000${groundTruthSha256(inputTruth)}`, "utf8")
-    .digest("hex");
-}
 
 async function withStore<T>(callback: (store: SqliteBenchmarkStore) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(process.cwd(), ".tmp-benchmark-runner-"));

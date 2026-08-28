@@ -6,6 +6,7 @@ function baseEnv(): NodeJS.ProcessEnv {
     QUALIGENCE_MODEL_BASE_URL: "https://models.test/v1",
     QUALIGENCE_MODEL_API_KEY: "sk-secret-value",
     QUALIGENCE_MODEL_NAME: "test-model",
+    QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL: "4096",
   };
 }
 
@@ -17,6 +18,7 @@ describe("loadConfig", () => {
         baseUrl: "https://models.test/v1",
         apiKey: "sk-secret-value",
         modelName: "test-model",
+        maximumTokensPerCall: 4096,
       },
       dataDir: "/data",
     });
@@ -31,6 +33,16 @@ describe("loadConfig", () => {
       expect(error).toBeInstanceOf(CliConfigError);
     }
   });
+
+  it.each([undefined, "not-a-number"])(
+    "rejects an invalid model token ceiling with a stable diagnostic: %s",
+    (maximumTokensPerCall) => {
+      expect(() => loadConfig({
+        ...baseEnv(),
+        QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL: maximumTokensPerCall,
+      })).toThrow("QUALIGENCE_MODEL_MAXIMUM_TOKENS_PER_CALL must be a positive integer");
+    },
+  );
 });
 
 describe("parseRunRequest", () => {

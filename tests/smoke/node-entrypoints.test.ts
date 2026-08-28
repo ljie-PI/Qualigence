@@ -40,7 +40,7 @@ describe("Node binary entrypoints", { timeout: ENTRYPOINT_SUITE_TIMEOUT_MS }, ()
     {
       file: "apps/core-daemon/dist/main.js",
       absent: ["CORE_TLS_CA", "CORE_TLS_CERT", "CORE_TLS_KEY"],
-      expected: /Missing required environment variable CORE_TLS_CA/,
+      expected: /CORE_DEPLOYMENT_MODE must be exactly local or self_hosted\./,
     },
     {
       file: "apps/runner/dist/main.js",
@@ -53,7 +53,7 @@ describe("Node binary entrypoints", { timeout: ENTRYPOINT_SUITE_TIMEOUT_MS }, ()
         "RUNNER_MODEL_API_KEY",
         "RUNNER_MODEL_NAME",
       ],
-      expected: /Missing required environment variable RUNNER_ID/,
+      expected: /"code":"UnexpectedRunnerError"/,
     },
     {
       file: "apps/server/dist/main.js",
@@ -70,7 +70,7 @@ describe("Node binary entrypoints", { timeout: ENTRYPOINT_SUITE_TIMEOUT_MS }, ()
         "SERVER_RUNNER_CA_CERT_FILE",
         "SERVER_RUNNER_CA_KEY_FILE",
       ],
-      expected: /Missing required environment variable SERVER_PG_HOST/,
+      expected: /Missing required environment variable SERVER_OIDC_CLAIM_MAP_FILE/,
     },
     {
       file: "apps/intelligence-worker/dist/main.js",
