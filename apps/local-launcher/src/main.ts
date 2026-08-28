@@ -24,6 +24,7 @@ import { loadLocalConfig, loadYaml, LocalConfigError } from "./config.js";
 import {
   ChildProcessUnit,
   terminateProcess,
+  type ProcessIdentity,
 } from "./child-process-unit.js";
 import { LocalDoctor } from "./doctor.js";
 import { LauncherError } from "./errors.js";
@@ -348,6 +349,7 @@ async function commandStart(
   const runner = buildRunnerUnit(ctx, env);
   const supervisor = new ProcessSupervisor({ version: VERSION, units: [core, runner] });
   let topology: RuntimeState | undefined;
+  let detachedSupervisorIdentity: ProcessIdentity | undefined;
   try {
     await supervisor.start();
     const finalReady = await new HealthClient(VERSION).coreHealth("127.0.0.1", ctx.config.core.httpPort ?? 50_556, "/health/ready");
@@ -355,8 +357,30 @@ async function commandStart(
     const corePid = core.pid();
     const runnerPid = runner.pid();
     if (corePid === undefined || runnerPid === undefined) throw new LauncherError("CoreUnhealthy", "a supervised process did not report a PID.");
+    const coreIdentity = core.identity();
+    const runnerIdentity = runner.identity();
+    if (coreIdentity === undefined || runnerIdentity === undefined) {
+      throw new LauncherError("SupervisorUnavailable", "owned Core or Runner process identity is unavailable");
+    }
     const startedAt = new Date().toISOString();
-    const supervisorPid = foreground ? process.pid : await handoffDetachedSupervisor({ dataDir: ctx.dataDir, corePid, runnerPid, coreHttpPort: ctx.config.core.httpPort ?? 50_556, startedAt, supervisorCredential: credentials.supervisor, shutdown: ctx.config.shutdown });
+    let supervisorPid: number;
+    if (foreground) {
+      supervisorPid = process.pid;
+    } else {
+      const handoff = await handoffDetachedSupervisor({
+        dataDir: ctx.dataDir,
+        corePid,
+        runnerPid,
+        coreIdentity,
+        runnerIdentity,
+        coreHttpPort: ctx.config.core.httpPort ?? 50_556,
+        startedAt,
+        supervisorCredential: credentials.supervisor,
+        shutdown: ctx.config.shutdown,
+      });
+      supervisorPid = handoff.pid;
+      detachedSupervisorIdentity = handoff.identity;
+    }
     topology = { supervisorPid, corePid, runnerPid, corePort: ctx.config.core.port, dataDir: ctx.dataDir, startedAt };
     await writeRuntimeState(topology);
     io.out("Qualigence Local is running.");
@@ -374,7 +398,22 @@ async function commandStart(
     credentials.destroy();
     let rollbackFailure: unknown;
     if (topology !== undefined && topology.supervisorPid !== process.pid) {
-      try { await terminateProcess(topology.supervisorPid, SHUTDOWN_GRACE_MS); } catch (failure) { rollbackFailure ??= failure; }
+      if (detachedSupervisorIdentity === undefined) {
+        rollbackFailure ??= new LauncherError("SupervisorUnavailable", "detached supervisor identity is unavailable for rollback");
+      } else {
+        try {
+          const reaped = await terminateProcess(
+            detachedSupervisorIdentity.pid,
+            SHUTDOWN_GRACE_MS,
+            false,
+            undefined,
+            () => detachedSupervisorIdentity!.isCurrent(),
+          );
+          if (!reaped) {
+            rollbackFailure ??= new LauncherError("SupervisorUnavailable", "detached supervisor identity changed before rollback");
+          }
+        } catch (failure) { rollbackFailure ??= failure; }
+      }
     }
     try { await supervisor.stop(); } catch (failure) { rollbackFailure ??= failure; }
     if (topology !== undefined && rollbackFailure === undefined) {

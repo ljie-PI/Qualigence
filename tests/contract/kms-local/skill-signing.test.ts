@@ -1,7 +1,8 @@
-import { statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalSkillSigner } from "@qualigence/kms-local";
 import {
   bundlePayloadContentSha256,
@@ -12,6 +13,26 @@ import type {
   SignedSkillBundle,
   UnsignedSkillBundle,
 } from "@qualigence/skill";
+import { readWindowsFileAcl } from "../../helpers/windows-file-acl.js";
+
+const aclReadFailure = vi.hoisted(() => ({ enabled: false, replacementDir: undefined as string | undefined }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...original,
+    execFileSync: (...args: Parameters<typeof original.execFileSync>) => {
+      if (aclReadFailure.enabled && args[0] === "powershell.exe") {
+        if (aclReadFailure.replacementDir !== undefined) {
+          writeFileSync(join(aclReadFailure.replacementDir, "skill-signing.key"), "replacement private key");
+          writeFileSync(join(aclReadFailure.replacementDir, "skill-signing.pub"), "replacement public key");
+        }
+        throw new Error("injected Windows ACL read failure");
+      }
+      return original.execFileSync(...args);
+    },
+  };
+});
 
 function payload(
   overrides: Partial<ProcedureSkillVersion> = {},
@@ -90,16 +111,98 @@ describe("LocalSkillSigner", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  // TODO(Task 21): remove this Windows quarantine after key protection is asserted with Windows ACLs and POSIX mode bits per platform.
-  it.skipIf(process.platform === "win32")(
-    "generates a user-only private key and a publishable keyId",
-    () => {
+  it("generates a private key protected for the current user and required system principals", async () => {
     const signer = LocalSkillSigner.open(dataDir);
     expect(signer.keyId).toMatch(/^[0-9a-f]{32}$/);
-    const mode = statSync(join(dataDir, "skill-signing.key")).mode & 0o777;
-    expect(mode).toBe(0o600);
-    },
-  );
+    const privateKeyPath = join(dataDir, "skill-signing.key");
+
+    if (process.platform !== "win32") {
+      const mode = statSync(privateKeyPath).mode & 0o777;
+      expect(mode).toBe(0o600);
+      return;
+    }
+
+    const acl = await readWindowsFileAcl(privateKeyPath);
+    const allowedSids = new Set([acl.currentSid, "S-1-5-18", "S-1-5-32-544"]);
+    expect(acl.rules).not.toHaveLength(0);
+    expect(acl.rules.every((rule) => !rule.inherited && allowedSids.has(rule.sid))).toBe(true);
+    expect(acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")).toBe(true);
+  });
+
+  it("fails closed and returns no signer when private-key permission verification fails", async () => {
+    LocalSkillSigner.open(dataDir);
+    const privateKeyPath = join(dataDir, "skill-signing.key");
+    if (process.platform === "win32") {
+      execFileSync("icacls.exe", [privateKeyPath, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore", windowsHide: true });
+    } else {
+      await chmod(privateKeyPath, 0o644);
+    }
+
+    expect(() => LocalSkillSigner.open(dataDir)).toThrow(SkillSigningError);
+    expect(existsSync(privateKeyPath)).toBe(true);
+    expect(existsSync(join(dataDir, "skill-signing.pub"))).toBe(true);
+  });
+
+  it("treats Windows key paths containing PowerShell metacharacters as inert data", async () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    let metacharacterDir: string;
+    try {
+      metacharacterDir = await mkdtemp(join(process.cwd(), ".tmp-kms-$($PID)-'`-"));
+    } catch {
+      // Windows filesystems that reject these otherwise valid filename characters
+      // cannot exercise this platform-specific regression path.
+      return;
+    }
+
+    try {
+      const signer = LocalSkillSigner.open(metacharacterDir);
+      const privateKeyPath = join(metacharacterDir, "skill-signing.key");
+      expect(signer.keyId).toMatch(/^[0-9a-f]{32}$/);
+      expect(existsSync(privateKeyPath)).toBe(true);
+
+      const acl = await readWindowsFileAcl(privateKeyPath);
+      expect(acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")).toBe(true);
+    } finally {
+      await rm(metacharacterDir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes newly generated key artifacts when the first Windows ACL read fails", () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    aclReadFailure.enabled = true;
+    try {
+      expect(() => LocalSkillSigner.open(dataDir)).toThrow(SkillSigningError);
+    } finally {
+      aclReadFailure.enabled = false;
+    }
+
+    expect(existsSync(join(dataDir, "skill-signing.key"))).toBe(false);
+    expect(existsSync(join(dataDir, "skill-signing.pub"))).toBe(false);
+  });
+
+  it("keeps replacement artifacts when Windows ACL setup fails during generation", () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    aclReadFailure.enabled = true;
+    aclReadFailure.replacementDir = dataDir;
+    try {
+      expect(() => LocalSkillSigner.open(dataDir)).toThrow(SkillSigningError);
+    } finally {
+      aclReadFailure.enabled = false;
+      aclReadFailure.replacementDir = undefined;
+    }
+
+    expect(readFileSync(join(dataDir, "skill-signing.key"), "utf8")).toBe("replacement private key");
+    expect(readFileSync(join(dataDir, "skill-signing.pub"), "utf8")).toBe("replacement public key");
+  });
 
   it("reuses the same key across reopen", () => {
     const first = LocalSkillSigner.open(dataDir).keyId;

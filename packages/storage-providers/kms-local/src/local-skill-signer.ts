@@ -7,7 +7,9 @@ import {
   verify as edVerify,
   type KeyObject,
 } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bundlePayloadContentSha256,
@@ -59,10 +61,24 @@ export class LocalSkillSigner implements SkillSigner {
     const publicPath = join(dataDir, PUBLIC_KEY_FILE);
 
     let privatePem: string;
+    let permissionsVerifiedDuringGeneration = false;
     try {
       privatePem = readFileSync(privatePath, "utf8");
-    } catch {
-      privatePem = generateAndPersist(dataDir, privatePath, publicPath);
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        throw new SkillSigningError(`Private signing key ${privatePath} cannot be read.`, { cause });
+      }
+      if (process.platform === "win32") {
+        const generated = generateAndPersistWindows(dataDir, privatePath, publicPath);
+        privatePem = generated.privatePem;
+        permissionsVerifiedDuringGeneration = generated.permissionsVerified;
+      } else {
+        privatePem = generateAndPersist(dataDir, privatePath, publicPath);
+      }
+    }
+
+    if (!permissionsVerifiedDuringGeneration) {
+      ensurePrivateKeyPermissions(privatePath, false);
     }
 
     const privateKey = createPrivateKey(privatePem);
@@ -253,4 +269,194 @@ function writeAtomic(
   const tmp = join(dataDir, `.${Math.random().toString(36).slice(2)}.tmp`);
   writeFileSync(tmp, contents, { mode });
   renameSync(tmp, target);
+}
+
+function isNotFound(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null &&
+    "code" in cause && (cause as { readonly code?: unknown }).code === "ENOENT";
+}
+
+interface WindowsGeneratedKey {
+  readonly privatePem: string;
+  readonly permissionsVerified: boolean;
+}
+
+/**
+ * Keep a Windows key pair private to its initializer until its ACL has been
+ * applied and verified. The exclusive lock serializes LocalSkillSigner
+ * initializers; the staging directory means ACL failure never cleans up a
+ * fixed path which may now belong to another actor.
+ */
+function generateAndPersistWindows(
+  dataDir: string,
+  privatePath: string,
+  publicPath: string,
+): WindowsGeneratedKey {
+  const lockPath = join(dataDir, ".skill-signing.lock");
+  let lockFd: number;
+  try {
+    lockFd = openSync(lockPath, "wx", 0o600);
+  } catch (cause) {
+    throw new SkillSigningError("Signing key initialization is already in progress.", { cause });
+  }
+
+  try {
+    try {
+      return { privatePem: readFileSync(privatePath, "utf8"), permissionsVerified: false };
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        throw new SkillSigningError(`Private signing key ${privatePath} cannot be read.`, { cause });
+      }
+    }
+
+    const stagingDir = mkdtempSync(join(dataDir, ".skill-signing-stage-"));
+    const stagedPrivatePath = join(stagingDir, PRIVATE_KEY_FILE);
+    const stagedPublicPath = join(stagingDir, PUBLIC_KEY_FILE);
+    let privatePem: string | undefined;
+    let publicPem: string | undefined;
+    let privatePublished = false;
+    let publicPublished = false;
+    try {
+      const keyPair = generateKeyPairSync("ed25519");
+      privatePem = keyPair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+      publicPem = keyPair.publicKey.export({ format: "pem", type: "spki" }).toString();
+      writeFileSync(stagedPrivatePath, privatePem, { mode: 0o600 });
+      writeFileSync(stagedPublicPath, publicPem, { mode: 0o644 });
+      ensurePrivateKeyPermissions(stagedPrivatePath, true);
+      renameSync(stagedPrivatePath, privatePath);
+      privatePublished = true;
+      renameSync(stagedPublicPath, publicPath);
+      publicPublished = true;
+      return { privatePem, permissionsVerified: true };
+    } catch (cause) {
+      try {
+        if (privatePublished && privatePem !== undefined) {
+          removeOwnedGeneratedArtifact(privatePath, privatePem);
+        }
+        if (publicPublished && publicPem !== undefined) {
+          removeOwnedGeneratedArtifact(publicPath, publicPem);
+        }
+      } catch (cleanupCause) {
+        throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", {
+          cause: cleanupCause,
+        });
+      }
+      throw cause;
+    } finally {
+      try {
+        rmSync(stagingDir, { recursive: true, force: true });
+      } catch (cause) {
+        throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", { cause });
+      }
+    }
+  } finally {
+    closeSync(lockFd);
+    try {
+      unlinkSync(lockPath);
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        throw new SkillSigningError("Signing key initialization lock could not be removed.", { cause });
+      }
+    }
+  }
+}
+
+/** Remove a published artifact only when its exact generated contents remain. */
+function removeOwnedGeneratedArtifact(path: string, contents: string): void {
+  try {
+    if (readFileSync(path, "utf8") === contents) {
+      unlinkSync(path);
+    }
+  } catch (cause) {
+    if (!isNotFound(cause)) {
+      throw cause;
+    }
+  }
+}
+
+function ensurePrivateKeyPermissions(path: string, generated: boolean): void {
+  if (process.platform !== "win32") {
+    const mode = statSync(path).mode & 0o777;
+    if (mode !== 0o600) {
+      throw new SkillSigningError(`Private signing key ${path} must have mode 0600.`);
+    }
+    return;
+  }
+
+  try {
+    if (generated) {
+      const currentSid = readWindowsPrivateKeyAcl(path).currentSid;
+      execFileSync("icacls.exe", [path, "/inheritance:r"], { stdio: "ignore", windowsHide: true });
+      for (const sid of [currentSid, "S-1-5-18", "S-1-5-32-544"]) {
+        execFileSync("icacls.exe", [path, "/grant:r", `*${sid}:(F)`], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      }
+    }
+    const acl = readWindowsPrivateKeyAcl(path);
+    const allowedSids = new Set([acl.currentSid, "S-1-5-18", "S-1-5-32-544"]);
+    const invalidRule = acl.rules.find((rule) => rule.inherited || !allowedSids.has(rule.sid));
+    if (invalidRule !== undefined) {
+      throw new Error(`unexpected ACL rule for ${invalidRule.sid}`);
+    }
+    if (!acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")) {
+      throw new Error("current user has no explicit allow ACL rule");
+    }
+  } catch (cause) {
+    throw new SkillSigningError(`Private signing key ${path} does not have the required Windows ACL.`, { cause });
+  }
+}
+
+interface WindowsPrivateKeyAcl {
+  readonly currentSid: string;
+  readonly rules: readonly {
+    readonly sid: string;
+    readonly access: "Allow" | "Deny";
+    readonly inherited: boolean;
+  }[];
+}
+
+const WINDOWS_ACL_REPORT_SCRIPT = [
+  "param([string]$path)",
+  "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+  "$acl = [System.IO.File]::GetAccessControl($path)",
+  "$rules = @($acl.Access | ForEach-Object {",
+  "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
+  "})",
+  "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
+].join("\n");
+
+function readWindowsPrivateKeyAcl(path: string): WindowsPrivateKeyAcl {
+  const scriptDir = mkdtempSync(join(tmpdir(), "qualigence-kms-acl-"));
+  const scriptPath = join(scriptDir, "read-acl.ps1");
+  let output: string;
+  try {
+    writeFileSync(scriptPath, WINDOWS_ACL_REPORT_SCRIPT, { mode: 0o600 });
+    output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", scriptPath, path], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  } finally {
+    rmSync(scriptDir, { recursive: true, force: true });
+  }
+  const parsed = JSON.parse(output) as {
+    readonly currentSid?: unknown;
+    readonly rules?: unknown;
+  };
+  if (typeof parsed.currentSid !== "string" || !Array.isArray(parsed.rules)) {
+    throw new Error("PowerShell returned an invalid ACL report");
+  }
+  const rules = parsed.rules.map((rule) => {
+    if (
+      typeof rule !== "object" || rule === null ||
+      typeof (rule as { sid?: unknown }).sid !== "string" ||
+      ((rule as { access?: unknown }).access !== "Allow" && (rule as { access?: unknown }).access !== "Deny") ||
+      typeof (rule as { inherited?: unknown }).inherited !== "boolean"
+    ) {
+      throw new Error("PowerShell returned an invalid ACL rule");
+    }
+    return rule as WindowsPrivateKeyAcl["rules"][number];
+  });
+  return { currentSid: parsed.currentSid, rules };
 }

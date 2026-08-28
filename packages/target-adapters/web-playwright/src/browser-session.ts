@@ -1,3 +1,4 @@
+import { type ChildProcess } from "node:child_process";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
@@ -18,6 +19,7 @@ import {
 
 export type WebTargetErrorCode =
   | "BrowserLaunchFailed"
+  | "BrowserCloseTimedOut"
   | "NavigationFailed"
   | "NavigationTimedOut"
   | "StaleObservation"
@@ -60,6 +62,7 @@ function completionStatus(code: WebTargetErrorCode): ExecutionTargetErrorStatus 
       return "blocked";
     case "SensitiveEvidenceUnavailable":
     case "BrowserLaunchFailed":
+    case "BrowserCloseTimedOut":
     case "NavigationFailed":
     case "NavigationTimedOut":
     case "ActionInfrastructureFailure":
@@ -1810,13 +1813,130 @@ export interface WebSessionOptions {
  * Playwright `Browser` type; it is only reachable through the package's
  * internal (test-only) entry point, never through the public product surface.
  */
+/** The finite time allowed for closing one repository-owned browser resource. */
+export const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+
+export interface BrowserProcessIdentity {
+  readonly pid: number;
+  isAlive(): boolean;
+}
+
+/**
+ * A browser plus the exact process started for it. This is a test-only
+ * lifecycle seam: it never exposes a Playwright object through the public
+ * adapter surface, but lets platform tests prove that closing the adapter
+ * reaps only the browser it launched.
+ */
+export interface BrowserLaunch {
+  readonly browser: Browser;
+  readonly process: BrowserProcessIdentity;
+  /** Internal test-only deadline override for failure-injection coverage. */
+  readonly closeTimeoutMs?: number;
+  /** Exact-owned fallback only; never receives an arbitrary PID. */
+  forceClose?(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export interface BrowserLauncher {
   launch(options: { readonly headless: boolean }): Promise<Browser>;
+  /** Optional internal lifecycle extension used by real-browser platform tests. */
+  launchWithLifecycle?(options: { readonly headless: boolean }): Promise<BrowserLaunch>;
 }
 
 export const chromiumLauncher: BrowserLauncher = {
-  launch: (options) => chromium.launch({ headless: options.headless }),
+  async launch(options): Promise<Browser> {
+    const launched = await this.launchWithLifecycle!(options);
+    return launched.browser;
+  },
+  async launchWithLifecycle(options): Promise<BrowserLaunch> {
+    const server = await chromium.launchServer({ headless: options.headless });
+    const child = server.process();
+    const pid = child.pid;
+    if (pid === undefined) {
+      await server.close().catch(() => undefined);
+      throw new Error("Chromium did not provide a process identity.");
+    }
+    try {
+      const browser = await chromium.connect(server.wsEndpoint());
+      return {
+        browser,
+        process: {
+          pid,
+          isAlive: () => child.exitCode === null && isPidAlive(pid),
+        },
+        async forceClose(): Promise<void> {
+          await forceCloseOwnedBrowserChild(child);
+        },
+        async close(): Promise<void> {
+          let firstError: Error | undefined;
+          const record = (error: unknown): void => {
+            if (firstError === undefined) firstError = error instanceof Error ? error : new Error(String(error));
+          };
+          // Close both exact resources concurrently so a hung Browser.close
+          // cannot delay closing the owned launch server beyond the deadline.
+          await Promise.all([
+            closeWithinDeadline(() => browser.close()).catch(record),
+            closeWithinDeadline(() => server.close()).catch(record),
+          ]);
+          if (firstError !== undefined) {
+            await forceCloseOwnedBrowserChild(child).catch(record);
+            throw firstError;
+          }
+        },
+      };
+    } catch (error) {
+      await closeWithinDeadline(() => server.close()).catch(async (closeError) => {
+        await forceCloseOwnedBrowserChild(child).catch(() => undefined);
+        throw closeError;
+      });
+      throw error;
+    }
+  },
 };
+
+/**
+ * Reap only the ChildProcess returned by this exact launchServer call. This
+ * deliberately has no PID/name lookup fallback, so timeout recovery cannot
+ * affect an unrelated Chromium process.
+ */
+async function forceCloseOwnedBrowserChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // The handle may have exited between the check and the exact-child kill.
+  }
+  await closeWithinDeadline(() => waitForChildExit(child));
+}
+
+function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    child.once("exit", () => resolve());
+    child.once("error", reject);
+  });
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function closeWithinDeadline(close: () => Promise<void>, timeoutMs = BROWSER_CLOSE_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new WebTargetError("BrowserCloseTimedOut", "Repository-owned browser close timed out."));
+    }, timeoutMs);
+    void close().then(
+      () => { clearTimeout(timeout); resolve(); },
+      (error: unknown) => { clearTimeout(timeout); reject(error); },
+    );
+  });
+}
 
 export function normalizeOrigin(url: string): string {
   return new URL(url).origin;
@@ -1850,6 +1970,7 @@ export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
   private browser: Browser | undefined;
+  private browserLaunch: BrowserLaunch | undefined;
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private operation: Promise<unknown> = Promise.resolve();
@@ -2301,7 +2422,14 @@ export class PlaywrightBrowserSession {
 
     let browser: Browser;
     try {
-      browser = await this.launcher.launch({ headless: !this.options.headed });
+      const launchWithLifecycle = this.launcher.launchWithLifecycle;
+      if (launchWithLifecycle !== undefined) {
+        const launched = await launchWithLifecycle.call(this.launcher, { headless: !this.options.headed });
+        browser = launched.browser;
+        this.browserLaunch = launched;
+      } else {
+        browser = await this.launcher.launch({ headless: !this.options.headed });
+      }
       this.browser = browser;
       signal?.throwIfAborted();
     } catch (error) {
@@ -2521,24 +2649,35 @@ export class PlaywrightBrowserSession {
         firstError = error instanceof Error ? error : new Error(String(error));
       }
     };
+    const recordUnlessClosedByOwner = (error: unknown): void => {
+      if (error instanceof Error && error.message.includes("Target page, context or browser has been closed")) return;
+      record(error);
+    };
 
     const page = this.page;
     this.page = undefined;
-    if (page) {
-      await page.close().catch(record);
-    }
     const context = this.context;
     this.context = undefined;
-    if (context) {
-      await context.close().catch(record);
-    }
-    this.resetSensitiveEvidenceForNavigation();
-
     const browser = this.browser;
     this.browser = undefined;
-    if (browser) {
-      await browser.close().catch(record);
-    }
+    const browserLaunch = this.browserLaunch;
+    this.browserLaunch = undefined;
+    this.resetSensitiveEvidenceForNavigation();
+
+    // Start every owned close before awaiting any one of them. A hung page or
+    // context close must not prevent disposal of the exact browser launch.
+    await Promise.all([
+      ...(page === undefined ? [] : [closeWithinDeadline(() => page.close()).catch(recordUnlessClosedByOwner)]),
+      ...(context === undefined ? [] : [closeWithinDeadline(() => context.close()).catch(recordUnlessClosedByOwner)]),
+      ...(browserLaunch !== undefined
+        ? [closeWithinDeadline(() => browserLaunch.close(), browserLaunch.closeTimeoutMs).catch(async (error) => {
+          record(error);
+          if (browserLaunch.forceClose !== undefined) {
+            await closeWithinDeadline(() => browserLaunch.forceClose!(), browserLaunch.closeTimeoutMs).catch(record);
+          }
+        })]
+        : browser === undefined ? [] : [closeWithinDeadline(() => browser.close()).catch(record)]),
+    ]);
     return firstError;
   }
 }

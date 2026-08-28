@@ -91,6 +91,43 @@ function signLeaf(
 const clientExt = (runnerId: string): string =>
   `extendedKeyUsage=clientAuth\nsubjectAltName=URI:runner://${runnerId}\n`;
 
+function signExpiredClientLeaf(ca: CaMaterial, runnerId: string): CertificateMaterial {
+  return withScratchDir((dir, openssl) => {
+    writeFileSync(join(dir, "ca.crt"), ca.cert);
+    writeFileSync(join(dir, "ca.key"), ca.key);
+    writeFileSync(join(dir, "index.txt"), "");
+    writeFileSync(join(dir, "serial"), "1000\n");
+    writeFileSync(join(dir, "ca.cnf"), [
+      "[ca]",
+      "default_ca = test_ca",
+      "[test_ca]",
+      "database = index.txt",
+      "serial = serial",
+      "new_certs_dir = .",
+      "certificate = ca.crt",
+      "private_key = ca.key",
+      "default_md = sha256",
+      "policy = policy_any",
+      "x509_extensions = client_ext",
+      "[policy_any]",
+      "commonName = supplied",
+      "[client_ext]",
+      "basicConstraints=critical,CA:FALSE",
+      "keyUsage=critical,digitalSignature",
+      "extendedKeyUsage=clientAuth",
+      `subjectAltName=URI:runner://${runnerId}`,
+      "",
+    ].join("\n"));
+    generateEcKey(openssl, "leaf.key");
+    openssl(["req", "-new", "-key", "leaf.key", "-subj", `/CN=${runnerId}`, "-out", "leaf.csr"]);
+    openssl([
+      "ca", "-batch", "-config", "ca.cnf", "-in", "leaf.csr", "-out", "leaf.crt", "-notext",
+      "-startdate", "20200101000000Z", "-enddate", "20200102000000Z",
+    ]);
+    return { key: readFileSync(join(dir, "leaf.key")), cert: readFileSync(join(dir, "leaf.crt")) };
+  });
+}
+
 export function createGrpcTestPki(): GrpcTestPki {
   const ca = createCa("Qualigence Test CA");
   const rogueCa = createCa("Rogue Test CA");
@@ -105,12 +142,7 @@ export function createGrpcTestPki(): GrpcTestPki {
     server,
     clientFor: (runnerId) =>
       signLeaf(ca, { subject: `/CN=${runnerId}`, ext: clientExt(runnerId), validity: ["-days", "2"] }),
-    expiredClientFor: (runnerId) =>
-      signLeaf(ca, {
-        subject: `/CN=${runnerId}`,
-        ext: clientExt(runnerId),
-        validity: ["-not_before", "20200101000000Z", "-not_after", "20200102000000Z"],
-      }),
+    expiredClientFor: (runnerId) => signExpiredClientLeaf(ca, runnerId),
     untrustedClientFor: (runnerId) =>
       signLeaf(rogueCa, { subject: `/CN=${runnerId}`, ext: clientExt(runnerId), validity: ["-days", "2"] }),
   };

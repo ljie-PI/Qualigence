@@ -1,0 +1,44 @@
+name: Ticket 32 Linux platform evidence
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ticket-32-linux-platform-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Record exact evidence commit before provisioning
+        shell: bash
+        run: |
+          mkdir -p ticket-32-platform-evidence
+          git rev-parse HEAD | tee ticket-32-platform-evidence/commit.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm build
+      - run: corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium
+      - name: Run restored Ticket 32 cases without quarantine markers
+        shell: bash
+        run: |
+          set -o pipefail
+          corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts 2>&1 | tee ticket-32-platform-evidence/vitest.txt
+          if rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests > ticket-32-platform-evidence/quarantine-markers.txt; then
+            exit 1
+          elif [ "$?" -ne 1 ]; then
+            exit 1
+          fi
+          printf 'no quarantine markers; rg exit 1\n' >> ticket-32-platform-evidence/quarantine-markers.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ticket-32-linux-platform-evidence-${{ github.sha }}
+          path: ticket-32-platform-evidence/
+          if-no-files-found: error

@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import type { HealthCheck } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
@@ -68,6 +68,73 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * A creation-bound process identity. It deliberately probes one known PID;
+ * it never searches by process name or scans the process table.
+ */
+export interface ProcessIdentity {
+  readonly pid: number;
+  readonly creationMarker: string;
+  isCurrent(): boolean;
+}
+
+/** A structured-clone-safe form used only by the detached Launcher handoff. */
+export interface ProcessIdentityEvidence {
+  readonly pid: number;
+  readonly creationMarker: string;
+}
+
+/**
+ * Capture the OS creation identity for a process which the caller already
+ * owns. An unsupported or unreadable platform fails closed: callers must not
+ * signal a PID that they cannot still bind to the original process.
+ */
+export function captureProcessIdentity(pid: number): ProcessIdentity | undefined {
+  const creationMarker = processCreationMarker(pid);
+  if (creationMarker === undefined) return undefined;
+  return {
+    pid,
+    creationMarker,
+    isCurrent: () => processCreationMarker(pid) === creationMarker,
+  };
+}
+
+export function processIdentityEvidence(identity: ProcessIdentity): ProcessIdentityEvidence {
+  return { pid: identity.pid, creationMarker: identity.creationMarker };
+}
+
+/** Rebind serialized handoff evidence to the one known PID, without scanning. */
+export function restoreProcessIdentity(evidence: ProcessIdentityEvidence): ProcessIdentity {
+  return {
+    ...evidence,
+    isCurrent: () => processCreationMarker(evidence.pid) === evidence.creationMarker,
+  };
+}
+
+function processCreationMarker(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      // Field 22 (index 19 after the state field) is the process start time in
+      // clock ticks. Split after the command's final ')' because comm may hold
+      // spaces or parentheses.
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
+      const afterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      const startTime = afterCommand[19];
+      return startTime === undefined ? undefined : `linux:${startTime}`;
+    }
+    if (process.platform === "win32") {
+      const output = execFileSync("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `(Get-Process -Id ${String(pid)} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
+      ], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return /^\d+$/.test(output) ? `win32:${output}` : undefined;
+    }
+  } catch {
+    // The process exited or its identity could not be read.
+  }
+  return undefined;
+}
+
 function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
   const targets = group && process.platform !== "win32" ? [-pid, pid] : [pid];
   for (const target of targets) {
@@ -84,25 +151,50 @@ function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
  * Terminate a process by pid: SIGTERM, wait up to `graceMs`, then SIGKILL, and
  * wait for the OS to reap it. Safe to call for an already-dead pid.
  */
+export type ProcessTerminationEvent =
+  | "graceful_stop_requested"
+  | "grace_expired"
+  | "force_stop_requested";
+
+/**
+ * Terminate a process by a graceful request, wait up to `graceMs`, then force
+ * termination and wait for the OS to reap it. The optional observer records
+ * semantic lifecycle boundaries rather than requiring callers to infer them
+ * from elapsed wall-clock time. Safe to call for an already-dead pid.
+ */
 export async function terminateProcess(
   pid: number,
   graceMs: number,
   group = false,
-): Promise<void> {
-  if (!isPidAlive(pid)) {
-    return;
+  onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
+  isOwned?: () => boolean,
+): Promise<boolean> {
+  const owned = (): boolean => isOwned?.() ?? true;
+  const ownedAndAlive = (): boolean => owned() && isPidAlive(pid);
+  const observedReaped = (): boolean => owned() && !isPidAlive(pid);
+  if (!ownedAndAlive()) {
+    return false;
+  }
+  await onEvent?.("graceful_stop_requested");
+  if (!ownedAndAlive()) {
+    return observedReaped();
   }
   if (process.platform === "win32") {
     await taskkill(pid, false);
     const softDeadline = Date.now() + graceMs;
     while (Date.now() < softDeadline) {
-      if (!isPidAlive(pid)) return;
+      if (!isPidAlive(pid)) return true;
       await sleepKeepAlive(20);
     }
+    if (!ownedAndAlive()) return observedReaped();
+    await onEvent?.("grace_expired");
+    if (!ownedAndAlive()) return observedReaped();
+    await onEvent?.("force_stop_requested");
+    if (!ownedAndAlive()) return observedReaped();
     await taskkill(pid, true);
     const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
     while (Date.now() < hardDeadline) {
-      if (!isPidAlive(pid)) return;
+      if (!isPidAlive(pid)) return true;
       await sleepKeepAlive(20);
     }
     throw new LauncherError("ProcessReapTimedOut", `process ${String(pid)} remained alive after forced termination`);
@@ -111,15 +203,20 @@ export async function terminateProcess(
   const softDeadline = Date.now() + graceMs;
   while (Date.now() < softDeadline) {
     if (!isPidAlive(pid)) {
-      return;
+      return true;
     }
     await sleepKeepAlive(20);
   }
+  if (!ownedAndAlive()) return observedReaped();
+  await onEvent?.("grace_expired");
+  if (!ownedAndAlive()) return observedReaped();
+  await onEvent?.("force_stop_requested");
+  if (!ownedAndAlive()) return observedReaped();
   killPid(pid, "SIGKILL", group);
   const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
   while (Date.now() < hardDeadline) {
     if (!isPidAlive(pid)) {
-      return;
+      return true;
     }
     await sleepKeepAlive(20);
   }
@@ -137,6 +234,7 @@ export class ChildProcessUnit {
   readonly name: string;
   private child: ChildProcess | undefined;
   private currentPid: number | undefined;
+  private currentIdentity: ProcessIdentity | undefined;
   private childExited = false;
   private stopping = false;
   private supervising = false;
@@ -158,11 +256,17 @@ export class ChildProcessUnit {
     return this.restarts;
   }
 
+  /** Creation identity captured while this unit still owns its child handle. */
+  identity(): ProcessIdentityEvidence | undefined {
+    return this.currentIdentity === undefined ? undefined : processIdentityEvidence(this.currentIdentity);
+  }
+
   isSupervising(): boolean {
     return this.supervising;
   }
 
   async start(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     this.stopping = false;
     this.exhausted = false;
     this.restarts = 0;
@@ -194,6 +298,7 @@ export class ChildProcessUnit {
     }
     this.child = child;
     this.currentPid = child.pid;
+    this.currentIdentity = child.pid === undefined ? undefined : captureProcessIdentity(child.pid);
     if (child.pid !== undefined) await this.recordLifecycle("started", child.pid);
     this.childExited = false;
     const fd3 = child.stdio[3];
@@ -203,19 +308,20 @@ export class ChildProcessUnit {
     }
 
     child.once("exit", () => {
-      this.childExited = true;
+      if (child === this.child) {
+        this.childExited = true;
+      }
       void this.handleUnexpectedExit(child);
     });
 
     try {
       await this.waitUntilReady(() => this.childExited, signal);
     } catch (error) {
-      if (this.currentPid !== undefined) {
-        await terminateProcess(
-          this.currentPid,
-          this.options.shutdownGraceMs,
-          this.options.detached ?? false,
-        );
+      const reaped = await this.terminateChild(child);
+      // terminateChild has independently observed the child gone even though
+      // Node may not have delivered its exit event to this handle yet.
+      if (reaped && child === this.child) {
+        this.childExited = true;
       }
       throw error;
     }
@@ -336,17 +442,62 @@ export class ChildProcessUnit {
   async stop(): Promise<void> {
     this.stopping = true;
     this.supervising = false;
+    const child = this.child;
     const pid = this.currentPid;
-    if (pid !== undefined) {
-      await this.recordLifecycle("stop_requested", pid);
-      await terminateProcess(pid, this.options.shutdownGraceMs, this.options.detached ?? false);
-      await this.recordLifecycle("reaped", pid);
+    if (child === undefined && pid === undefined) {
+      return;
     }
-    this.child = undefined;
-    this.currentPid = undefined;
+    if (child === undefined || pid === undefined) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process handle is unavailable for shutdown`);
+    }
+    if (this.childExited || child.exitCode !== null) {
+      await this.recordLifecycle("reaped", pid);
+      this.clearChild();
+      return;
+    }
+    if (this.currentIdentity?.isCurrent() !== true) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed before shutdown`);
+    }
+    // Preserve the original coarse lifecycle evidence for callers while
+    // recording the precise graceful/escalation boundaries as well.
+    await this.recordLifecycle("stop_requested", pid);
+    const reaped = await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
+    if (!reaped) {
+      // An owned ChildProcess exit event is independent terminal evidence. A
+      // failed identity probe while the handle may still be live is not.
+      if (this.childExited || child.exitCode !== null) {
+        await this.recordLifecycle("reaped", pid);
+        this.clearChild();
+        return;
+      }
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed during shutdown`);
+    }
+    await this.recordLifecycle("reaped", pid);
+    this.clearChild();
   }
 
-  private async recordLifecycle(event: "started" | "stop_requested" | "reaped", pid: number): Promise<void> {
+  private clearChild(): void {
+    this.child = undefined;
+    this.currentPid = undefined;
+    this.currentIdentity = undefined;
+  }
+
+  private async terminateChild(
+    child: ChildProcess,
+    onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
+  ): Promise<boolean> {
+    const pid = child.pid;
+    if (pid === undefined) return false;
+    return terminateProcess(
+      pid,
+      this.options.shutdownGraceMs,
+      this.options.detached ?? false,
+      onEvent,
+      () => this.child === child && child.pid === pid && child.exitCode === null && !this.childExited && this.currentIdentity?.isCurrent() === true,
+    );
+  }
+
+  private async recordLifecycle(event: "started" | "stop_requested" | ProcessTerminationEvent | "reaped", pid: number): Promise<void> {
     if (this.options.lifecycleLogFile === undefined) return;
     await appendFile(this.options.lifecycleLogFile, `${JSON.stringify({ event: `${this.name}:${event}`, pid, at: new Date().toISOString() })}\n`, "utf8").catch(() => undefined);
   }

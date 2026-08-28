@@ -1,14 +1,18 @@
+import { X509Certificate } from "node:crypto";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { SystemClock } from "@qualigence/shared-kernel";
 import {
   ChildProcessUnit,
   isPidAlive,
+  restoreProcessIdentity,
+  terminateProcess,
 } from "../../../apps/local-launcher/src/child-process-unit.js";
 import { HealthClient } from "../../../apps/local-launcher/src/health-client.js";
+import { PidProcessUnit } from "../../../apps/local-launcher/src/process-supervisor.js";
 import { LocalDoctor } from "../../../apps/local-launcher/src/doctor.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { LocalConfig } from "@qualigence/local-control";
@@ -62,6 +66,96 @@ function tcpProbe(host: string, port: number): () => Promise<boolean> {
 }
 
 describe("ChildProcessUnit lifecycle (real processes)", () => {
+  it("does not spawn or signal when cancellation occurs before start", async () => {
+    const dir = await scratchDir("cancel-before-start");
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before launch"));
+    const kill = vi.spyOn(process, "kill");
+    const unit = new ChildProcessUnit({
+      name: "core", unhealthyCode: "CoreUnhealthy", command: process.execPath, args: [FIXTURE],
+      env: { FAKE_MODE: "hang" }, logFile: join(dir, "core.log"), startupTimeoutMs: 100, shutdownGraceMs: 100,
+    });
+
+    try {
+      await expect(unit.start(controller.signal)).rejects.toThrow("cancelled before launch");
+      expect(kill).not.toHaveBeenCalled();
+      expect(unit.pid()).toBeUndefined();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it("does not signal a PID when serialized handoff identity is stale or reused", async () => {
+    const identity = restoreProcessIdentity({ pid: 424_242, creationMarker: "unowned-test-marker" });
+    const kill = vi.spyOn(process, "kill");
+    try {
+      await terminateProcess(identity.pid, 0, false, undefined, () => identity.isCurrent());
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it("rejects without signal or reaping and retains a direct child whose creation identity changed", async () => {
+    const dir = await scratchDir("direct-child-stale-identity");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const unit = new ChildProcessUnit({
+      name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE],
+      env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" },
+      logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready",
+      startupTimeoutMs: 5_000, shutdownGraceMs: 100,
+    });
+    await unit.start();
+    const pid = unit.pid() as number;
+    const internals = unit as unknown as {
+      currentIdentity: { readonly pid: number; readonly creationMarker: string; isCurrent(): boolean } | undefined;
+    };
+    const identity = internals.currentIdentity;
+    internals.currentIdentity = { pid, creationMarker: "reused-test-marker", isCurrent: () => false };
+    const kill = vi.spyOn(process, "kill");
+
+    try {
+      await expect(unit.stop()).rejects.toMatchObject({ code: "SupervisorUnavailable" });
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+
+    try {
+      expect(isPidAlive(pid)).toBe(true);
+      expect(unit.pid()).toBe(pid);
+      expect(unit.identity()).toMatchObject({ pid, creationMarker: "reused-test-marker" });
+      const events = (await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { event: string });
+      expect(events.map((event) => event.event)).toEqual(["runner:started"]);
+    } finally {
+      internals.currentIdentity = identity;
+      await unit.stop();
+      await expect.poll(() => isPidAlive(pid), { timeout: 5_000 }).toBe(false);
+    }
+  });
+
+  it("rejects a stale detached handoff identity for an unoccupied PID without signal or reaping", async () => {
+    const dir = await scratchDir("detached-stale-identity");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const pid = 2_147_000_000;
+    // Establish the test precondition before installing the zero-signal spy.
+    expect(isPidAlive(pid)).toBe(false);
+    const unit = new PidProcessUnit("runner", { pid, creationMarker: "stale-handoff-marker" }, lifecycleLogFile);
+    const kill = vi.spyOn(process, "kill");
+
+    try {
+      await expect(unit.stop()).rejects.toMatchObject({ code: "SupervisorUnavailable" });
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+
+    expect(await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").catch(() => "")).toBe("");
+  });
+
   it("spawns a real process, reaches ready via its stdout event and stops cleanly", async () => {
     const dir = await scratchDir("ready");
     const port = await freePort();
@@ -81,7 +175,9 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
 
     await unit.start();
     const pid = unit.pid();
+    const identity = unit.identity();
     expect(pid).toBeGreaterThan(0);
+    expect(identity).toMatchObject({ pid, creationMarker: expect.any(String) });
     expect(isPidAlive(pid as number)).toBe(true);
 
     await unit.stop();
@@ -126,11 +222,9 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
-  // TODO(Task 21): remove this Windows quarantine after lifecycle assertions use observable process events instead of minimum elapsed time.
-  it.skipIf(process.platform === "win32")(
-    "escalates SIGTERM to SIGKILL for a process that ignores SIGTERM",
-    async () => {
+  it("records graceful request, grace expiry, forced termination, and reap for a stubborn child", async () => {
     const dir = await scratchDir("stubborn");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
     const unit = new ChildProcessUnit({
       name: "runner",
       unhealthyCode: "RunnerUnhealthy",
@@ -138,6 +232,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
       args: [FIXTURE],
       env: { FAKE_MODE: "stubborn", FAKE_READY_EVENT: "runner.ready" },
       logFile: join(dir, "runner.log"),
+      lifecycleLogFile,
       readyEvent: "runner.ready",
       startupTimeoutMs: 5_000,
       shutdownGraceMs: 300,
@@ -146,12 +241,22 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
 
     await unit.start();
     const pid = unit.pid() as number;
-    const startedAt = Date.now();
     await unit.stop();
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(300);
+
+    const events = (await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; pid: number });
+    expect(events).toEqual([
+      expect.objectContaining({ event: "runner:started", pid }),
+      expect.objectContaining({ event: "runner:stop_requested", pid }),
+      expect.objectContaining({ event: "runner:graceful_stop_requested", pid }),
+      expect.objectContaining({ event: "runner:grace_expired", pid }),
+      expect.objectContaining({ event: "runner:force_stop_requested", pid }),
+      expect.objectContaining({ event: "runner:reaped", pid }),
+    ]);
     expect(isPidAlive(pid)).toBe(false);
-    },
-  );
+  });
 
   it("restarts a crashing process with bounded backoff, then gives up", async () => {
     const dir = await scratchDir("crash");
@@ -175,8 +280,8 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(unit.isSupervising()).toBe(false);
   });
 
-  it("records observable stop and reap events without clearing process identity early", async () => {
-    const dir = await scratchDir("lifecycle-events");
+  it("records only graceful request and reap for a SIGTERM-responsive child", async () => {
+    const dir = await scratchDir("graceful-lifecycle-events");
     const lifecycleLogFile = join(dir, "lifecycle.jsonl");
     const unit = new ChildProcessUnit({ name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" }, logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready", startupTimeoutMs: 5_000, shutdownGraceMs: 1_000 });
     cleanups.push(() => unit.stop());
@@ -184,11 +289,11 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     const pid = unit.pid();
     await unit.stop();
     const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
-    await expect(events).resolves.toEqual([
-      expect.objectContaining({ event: "runner:started", pid }),
-      expect.objectContaining({ event: "runner:stop_requested", pid }),
-      expect.objectContaining({ event: "runner:reaped", pid }),
-    ]);
+    const resolvedEvents = await events;
+    expect(resolvedEvents[0]).toEqual(expect.objectContaining({ event: "runner:started", pid }));
+    expect(resolvedEvents.findIndex((event) => event.event === "runner:stop_requested")).toBeGreaterThan(0);
+    expect(resolvedEvents.findIndex((event) => event.event === "runner:graceful_stop_requested")).toBeGreaterThan(0);
+    expect(resolvedEvents.at(-1)).toEqual(expect.objectContaining({ event: "runner:reaped", pid }));
     expect(unit.pid()).toBeUndefined();
   });
 });
@@ -302,10 +407,11 @@ describe("LocalDoctor diagnostics", () => {
     expect(report.status).not.toBe("unhealthy");
   });
 
-  it("flags an expired certificate as a failure", async () => {
+  it("flags a truly expired certificate as a failure", async () => {
     const { dir, dbFile, artifactDir } = await makeDataDir("doctor-expired");
     const pki = createGrpcTestPki();
     const expired = pki.expiredClientFor("runner-local");
+    expect(Date.parse(new X509Certificate(expired.cert).validTo)).toBeLessThan(Date.now());
     const certFile = join(dir, "expired.crt");
     await writeFile(certFile, expired.cert);
 
