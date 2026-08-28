@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import type { HealthCheck } from "@qualigence/local-control";
 import { LauncherError } from "./errors.js";
@@ -68,6 +68,50 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * A creation-bound process identity. It deliberately probes one known PID;
+ * it never searches by process name or scans the process table.
+ */
+export interface ProcessIdentity {
+  readonly pid: number;
+  isCurrent(): boolean;
+}
+
+/**
+ * Capture the OS creation identity for a process which the caller already
+ * owns. An unsupported or unreadable platform fails closed: callers must not
+ * signal a PID that they cannot still bind to the original process.
+ */
+export function captureProcessIdentity(pid: number): ProcessIdentity | undefined {
+  const marker = processCreationMarker(pid);
+  if (marker === undefined) return undefined;
+  return { pid, isCurrent: () => processCreationMarker(pid) === marker };
+}
+
+function processCreationMarker(pid: number): string | undefined {
+  try {
+    if (process.platform === "linux") {
+      // Field 22 (index 19 after the state field) is the process start time in
+      // clock ticks. Split after the command's final ')' because comm may hold
+      // spaces or parentheses.
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, "utf8");
+      const afterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      const startTime = afterCommand[19];
+      return startTime === undefined ? undefined : `linux:${startTime}`;
+    }
+    if (process.platform === "win32") {
+      const output = execFileSync("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `(Get-Process -Id ${String(pid)} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
+      ], { encoding: "utf8", windowsHide: true }).trim();
+      return /^\d+$/.test(output) ? `win32:${output}` : undefined;
+    }
+  } catch {
+    // The process exited or its identity could not be read.
+  }
+  return undefined;
+}
+
 function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
   const targets = group && process.platform !== "win32" ? [-pid, pid] : [pid];
   for (const target of targets) {
@@ -100,11 +144,16 @@ export async function terminateProcess(
   graceMs: number,
   group = false,
   onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
+  isOwned?: () => boolean,
 ): Promise<void> {
-  if (!isPidAlive(pid)) {
+  const ownedAndAlive = (): boolean => (isOwned?.() ?? true) && isPidAlive(pid);
+  if (!ownedAndAlive()) {
     return;
   }
   await onEvent?.("graceful_stop_requested");
+  if (!ownedAndAlive()) {
+    return;
+  }
   if (process.platform === "win32") {
     await taskkill(pid, false);
     const softDeadline = Date.now() + graceMs;
@@ -112,8 +161,11 @@ export async function terminateProcess(
       if (!isPidAlive(pid)) return;
       await sleepKeepAlive(20);
     }
+    if (!ownedAndAlive()) return;
     await onEvent?.("grace_expired");
+    if (!ownedAndAlive()) return;
     await onEvent?.("force_stop_requested");
+    if (!ownedAndAlive()) return;
     await taskkill(pid, true);
     const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
     while (Date.now() < hardDeadline) {
@@ -130,8 +182,11 @@ export async function terminateProcess(
     }
     await sleepKeepAlive(20);
   }
+  if (!ownedAndAlive()) return;
   await onEvent?.("grace_expired");
+  if (!ownedAndAlive()) return;
   await onEvent?.("force_stop_requested");
+  if (!ownedAndAlive()) return;
   killPid(pid, "SIGKILL", group);
   const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
   while (Date.now() < hardDeadline) {
@@ -180,6 +235,7 @@ export class ChildProcessUnit {
   }
 
   async start(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     this.stopping = false;
     this.exhausted = false;
     this.restarts = 0;
@@ -220,20 +276,16 @@ export class ChildProcessUnit {
     }
 
     child.once("exit", () => {
-      this.childExited = true;
+      if (child === this.child) {
+        this.childExited = true;
+      }
       void this.handleUnexpectedExit(child);
     });
 
     try {
       await this.waitUntilReady(() => this.childExited, signal);
     } catch (error) {
-      if (this.currentPid !== undefined) {
-        await terminateProcess(
-          this.currentPid,
-          this.options.shutdownGraceMs,
-          this.options.detached ?? false,
-        );
-      }
+      await this.terminateChild(child);
       throw error;
     }
   }
@@ -353,18 +405,29 @@ export class ChildProcessUnit {
   async stop(): Promise<void> {
     this.stopping = true;
     this.supervising = false;
+    const child = this.child;
     const pid = this.currentPid;
-    if (pid !== undefined) {
-      await terminateProcess(
-        pid,
-        this.options.shutdownGraceMs,
-        this.options.detached ?? false,
-        async (event) => this.recordLifecycle(event, pid),
-      );
+    if (child !== undefined && pid !== undefined) {
+      await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
       await this.recordLifecycle("reaped", pid);
     }
     this.child = undefined;
     this.currentPid = undefined;
+  }
+
+  private async terminateChild(
+    child: ChildProcess,
+    onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
+  ): Promise<void> {
+    const pid = child.pid;
+    if (pid === undefined) return;
+    await terminateProcess(
+      pid,
+      this.options.shutdownGraceMs,
+      this.options.detached ?? false,
+      onEvent,
+      () => this.child === child && child.pid === pid && child.exitCode === null && !this.childExited,
+    );
   }
 
   private async recordLifecycle(event: "started" | ProcessTerminationEvent | "reaped", pid: number): Promise<void> {

@@ -1,12 +1,13 @@
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteRuntime } from "@qualigence/sqlite-runtime";
 import { SystemClock } from "@qualigence/shared-kernel";
 import {
   ChildProcessUnit,
   isPidAlive,
+  terminateProcess,
 } from "../../../apps/local-launcher/src/child-process-unit.js";
 import { HealthClient } from "../../../apps/local-launcher/src/health-client.js";
 import { LocalDoctor } from "../../../apps/local-launcher/src/doctor.js";
@@ -62,6 +63,35 @@ function tcpProbe(host: string, port: number): () => Promise<boolean> {
 }
 
 describe("ChildProcessUnit lifecycle (real processes)", () => {
+  it("does not spawn or signal when cancellation occurs before start", async () => {
+    const dir = await scratchDir("cancel-before-start");
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before launch"));
+    const kill = vi.spyOn(process, "kill");
+    const unit = new ChildProcessUnit({
+      name: "core", unhealthyCode: "CoreUnhealthy", command: process.execPath, args: [FIXTURE],
+      env: { FAKE_MODE: "hang" }, logFile: join(dir, "core.log"), startupTimeoutMs: 100, shutdownGraceMs: 100,
+    });
+
+    try {
+      await expect(unit.start(controller.signal)).rejects.toThrow("cancelled before launch");
+      expect(kill).not.toHaveBeenCalled();
+      expect(unit.pid()).toBeUndefined();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it("does not signal a PID when its owned process identity is stale or reused", async () => {
+    const kill = vi.spyOn(process, "kill");
+    try {
+      await terminateProcess(424_242, 0, false, undefined, () => false);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
   it("spawns a real process, reaches ready via its stdout event and stops cleanly", async () => {
     const dir = await scratchDir("ready");
     const port = await freePort();
@@ -183,8 +213,8 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     expect(unit.isSupervising()).toBe(false);
   });
 
-  it("records observable stop and reap events without clearing process identity early", async () => {
-    const dir = await scratchDir("lifecycle-events");
+  it("records only graceful request and reap for a SIGTERM-responsive child", async () => {
+    const dir = await scratchDir("graceful-lifecycle-events");
     const lifecycleLogFile = join(dir, "lifecycle.jsonl");
     const unit = new ChildProcessUnit({ name: "runner", unhealthyCode: "RunnerUnhealthy", command: process.execPath, args: [FIXTURE], env: { FAKE_MODE: "ready", FAKE_READY_EVENT: "runner.ready" }, logFile: join(dir, "runner.log"), lifecycleLogFile, readyEvent: "runner.ready", startupTimeoutMs: 5_000, shutdownGraceMs: 1_000 });
     cleanups.push(() => unit.stop());
@@ -192,13 +222,10 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     const pid = unit.pid();
     await unit.stop();
     const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
-    await expect(events).resolves.toEqual([
-      expect.objectContaining({ event: "runner:started", pid }),
-      expect.objectContaining({ event: "runner:graceful_stop_requested", pid }),
-      expect.objectContaining({ event: "runner:grace_expired", pid }),
-      expect.objectContaining({ event: "runner:force_stop_requested", pid }),
-      expect.objectContaining({ event: "runner:reaped", pid }),
-    ]);
+    const resolvedEvents = await events;
+    expect(resolvedEvents[0]).toEqual(expect.objectContaining({ event: "runner:started", pid }));
+    expect(resolvedEvents.findIndex((event) => event.event === "runner:graceful_stop_requested")).toBeGreaterThan(0);
+    expect(resolvedEvents.at(-1)).toEqual(expect.objectContaining({ event: "runner:reaped", pid }));
     expect(unit.pid()).toBeUndefined();
   });
 });

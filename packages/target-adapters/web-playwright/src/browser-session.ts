@@ -18,6 +18,7 @@ import {
 
 export type WebTargetErrorCode =
   | "BrowserLaunchFailed"
+  | "BrowserCloseTimedOut"
   | "NavigationFailed"
   | "NavigationTimedOut"
   | "StaleObservation"
@@ -60,6 +61,7 @@ function completionStatus(code: WebTargetErrorCode): ExecutionTargetErrorStatus 
       return "blocked";
     case "SensitiveEvidenceUnavailable":
     case "BrowserLaunchFailed":
+    case "BrowserCloseTimedOut":
     case "NavigationFailed":
     case "NavigationTimedOut":
     case "ActionInfrastructureFailure":
@@ -1810,6 +1812,9 @@ export interface WebSessionOptions {
  * Playwright `Browser` type; it is only reachable through the package's
  * internal (test-only) entry point, never through the public product surface.
  */
+/** The finite time allowed for closing one repository-owned browser resource. */
+export const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+
 export interface BrowserProcessIdentity {
   readonly pid: number;
   isAlive(): boolean;
@@ -1824,6 +1829,8 @@ export interface BrowserProcessIdentity {
 export interface BrowserLaunch {
   readonly browser: Browser;
   readonly process: BrowserProcessIdentity;
+  /** Internal test-only deadline override for failure-injection coverage. */
+  readonly closeTimeoutMs?: number;
   close(): Promise<void>;
 }
 
@@ -1859,8 +1866,12 @@ export const chromiumLauncher: BrowserLauncher = {
           const record = (error: unknown): void => {
             if (firstError === undefined) firstError = error instanceof Error ? error : new Error(String(error));
           };
-          await browser.close().catch(record);
-          await server.close().catch(record);
+          // Close both exact resources concurrently so a hung Browser.close
+          // cannot delay closing the owned launch server beyond the deadline.
+          await Promise.all([
+            closeWithinDeadline(() => browser.close()).catch(record),
+            closeWithinDeadline(() => server.close()).catch(record),
+          ]);
           if (firstError !== undefined) throw firstError;
         },
       };
@@ -1878,6 +1889,18 @@ function isPidAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+function closeWithinDeadline(close: () => Promise<void>, timeoutMs = BROWSER_CLOSE_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new WebTargetError("BrowserCloseTimedOut", "Repository-owned browser close timed out."));
+    }, timeoutMs);
+    void close().then(
+      () => { clearTimeout(timeout); resolve(); },
+      (error: unknown) => { clearTimeout(timeout); reject(error); },
+    );
+  });
 }
 
 export function normalizeOrigin(url: string): string {
@@ -2591,28 +2614,30 @@ export class PlaywrightBrowserSession {
         firstError = error instanceof Error ? error : new Error(String(error));
       }
     };
+    const recordUnlessClosedByOwner = (error: unknown): void => {
+      if (error instanceof Error && error.message.includes("Target page, context or browser has been closed")) return;
+      record(error);
+    };
 
     const page = this.page;
     this.page = undefined;
-    if (page) {
-      await page.close().catch(record);
-    }
     const context = this.context;
     this.context = undefined;
-    if (context) {
-      await context.close().catch(record);
-    }
-    this.resetSensitiveEvidenceForNavigation();
-
     const browser = this.browser;
     this.browser = undefined;
     const browserLaunch = this.browserLaunch;
     this.browserLaunch = undefined;
-    if (browserLaunch !== undefined) {
-      await browserLaunch.close().catch(record);
-    } else if (browser !== undefined) {
-      await browser.close().catch(record);
-    }
+    this.resetSensitiveEvidenceForNavigation();
+
+    // Start every owned close before awaiting any one of them. A hung page or
+    // context close must not prevent disposal of the exact browser launch.
+    await Promise.all([
+      ...(page === undefined ? [] : [closeWithinDeadline(() => page.close()).catch(recordUnlessClosedByOwner)]),
+      ...(context === undefined ? [] : [closeWithinDeadline(() => context.close()).catch(recordUnlessClosedByOwner)]),
+      ...(browserLaunch !== undefined
+        ? [closeWithinDeadline(() => browserLaunch.close(), browserLaunch.closeTimeoutMs).catch(record)]
+        : browser === undefined ? [] : [closeWithinDeadline(() => browser.close()).catch(record)]),
+    ]);
     return firstError;
   }
 }

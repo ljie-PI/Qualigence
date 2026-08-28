@@ -11,6 +11,7 @@ import {
 } from "@qualigence/web-playwright";
 import {
   chromiumLauncher,
+  PlaywrightBrowserSession,
   type BrowserLaunch,
   type BrowserLauncher,
 } from "@qualigence/web-playwright/internal";
@@ -128,6 +129,46 @@ describe("PlaywrightWebTargetAdapter facade", () => {
 
     await expect(adapter.capture(job)).rejects.toBeInstanceOf(Error);
     await expect(adapter.captureArtifacts(observed.graphId)).rejects.toBeInstanceOf(Error);
+  });
+
+  it("closes only the acquired launch when browser setup partially fails", async () => {
+    const close = vi.fn(async () => undefined);
+    const browser = { newContext: vi.fn(async () => { throw new Error("context failed"); }) };
+    const launch: BrowserLaunch = {
+      browser: browser as never,
+      process: { pid: 424_242, isAlive: () => true },
+      close,
+    };
+    adapter = new PlaywrightWebTargetAdapter(options(), {
+      launch: vi.fn(async () => browser),
+      launchWithLifecycle: vi.fn(async () => launch),
+    } as unknown as BrowserLauncher);
+
+    await expect(adapter.start()).rejects.toMatchObject({ code: "NavigationFailed" });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a stable error when an owned browser close never settles", async () => {
+    const page = {
+      goto: vi.fn(async () => null), url: () => fixture.url, on: vi.fn(), close: vi.fn(async () => undefined),
+    };
+    const context = {
+      newPage: vi.fn(async () => page), setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), close: vi.fn(async () => undefined),
+    };
+    const browser = { newContext: vi.fn(async () => context) };
+    const launch: BrowserLaunch = {
+      browser: browser as never,
+      process: { pid: 424_243, isAlive: () => true },
+      closeTimeoutMs: 10,
+      close: vi.fn(() => new Promise<void>(() => undefined)),
+    };
+    const session = new PlaywrightBrowserSession(options(), {
+      launch: vi.fn(async () => browser), launchWithLifecycle: vi.fn(async () => launch),
+    } as unknown as BrowserLauncher);
+
+    await session.start();
+    await expect(session.close()).rejects.toMatchObject({ code: "BrowserCloseTimedOut" });
+    expect(launch.close).toHaveBeenCalledTimes(1);
   });
 
   it("rejects captureArtifacts for an unknown graph id", async () => {

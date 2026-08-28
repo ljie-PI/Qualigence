@@ -8,7 +8,7 @@ import { fork } from "node:child_process";
 import { appendFile, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:http";
-import { terminateProcess } from "./child-process-unit.js";
+import { captureProcessIdentity, terminateProcess, type ProcessIdentity } from "./child-process-unit.js";
 import { claimMatchingStopRequest, clearOwnedTopologyFiles, parseStopRequest, sameTopology } from "./runtime-state.js";
 
 /**
@@ -194,11 +194,28 @@ export function runDetachedSupervisor(): void {
 }
 
 class PidProcessUnit implements ProcessUnit {
+  private identity: ProcessIdentity | undefined;
+
   constructor(readonly name: string, private readonly processId: number, private readonly lifecycleLogFile: string) {}
-  async start(): Promise<void> {}
+
+  async start(): Promise<void> {
+    // The detached supervisor receives only a PID handoff, so bind it to the
+    // process creation identity before accepting shutdown responsibility.
+    // Failure to read that identity fails closed at stop time.
+    this.identity = captureProcessIdentity(this.processId);
+  }
+
   async stop(): Promise<void> {
-    await recordLifecycle(this.lifecycleLogFile, `${this.name}:stop_requested`, this.processId);
-    await terminateProcess(this.processId, 5_000, true);
+    const identity = this.identity;
+    if (identity !== undefined) {
+      await terminateProcess(
+        identity.pid,
+        5_000,
+        true,
+        async (event) => recordLifecycle(this.lifecycleLogFile, `${this.name}:${event}`, identity.pid),
+        () => identity.isCurrent(),
+      );
+    }
     await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, this.processId);
   }
   async readinessChecks(): Promise<readonly HealthCheck[]> { return []; }

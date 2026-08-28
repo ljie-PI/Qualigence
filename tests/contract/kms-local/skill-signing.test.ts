@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LocalSkillSigner } from "@qualigence/kms-local";
@@ -107,6 +108,18 @@ describe("LocalSkillSigner", () => {
     expect(acl.rules).not.toHaveLength(0);
     expect(acl.rules.every((rule) => !rule.inherited && allowedSids.has(rule.sid))).toBe(true);
     expect(acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")).toBe(true);
+  });
+
+  it("fails closed and returns no signer when private-key permission verification fails", async () => {
+    LocalSkillSigner.open(dataDir);
+    const privateKeyPath = join(dataDir, "skill-signing.key");
+    if (process.platform === "win32") {
+      execFileSync("icacls.exe", [privateKeyPath, "/grant", "*S-1-1-0:(R)"], { stdio: "ignore", windowsHide: true });
+    } else {
+      await chmod(privateKeyPath, 0o644);
+    }
+
+    expect(() => LocalSkillSigner.open(dataDir)).toThrow(SkillSigningError);
   });
 
   it("reuses the same key across reopen", () => {

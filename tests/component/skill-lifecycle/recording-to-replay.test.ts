@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRuntime, SqliteSkillStore } from "@qualigence/sqlite-runtime";
@@ -166,6 +166,19 @@ describe("Skill lifecycle — recording to replay end to end", () => {
   afterEach(async () => {
     await runtime?.close();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("closes an opened runtime before immediate fixture removal when setup fails", async () => {
+    const failure = new Error("injected assertion after open");
+    await expect((async () => {
+      try {
+        throw failure;
+      } finally {
+        await runtime.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    })()).rejects.toBe(failure);
+    await expect(access(dir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("records, induces, compiles, verifies, signs, promotes, reopens and replays", async () => {

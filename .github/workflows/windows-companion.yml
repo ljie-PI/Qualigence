@@ -1,0 +1,33 @@
+name: Ticket 32 Windows platform evidence
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ticket-32-windows-platform-evidence:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - name: Run restored Ticket 32 cases without quarantine markers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ticket-32-platform-evidence | Out-Null
+          git rev-parse HEAD | Tee-Object -FilePath ticket-32-platform-evidence/commit.txt
+          corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts 2>&1 | Tee-Object -FilePath ticket-32-platform-evidence/vitest.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests *> ticket-32-platform-evidence/quarantine-markers.txt
+          if ($LASTEXITCODE -ne 1) { exit 1 }
+          Add-Content -Path ticket-32-platform-evidence/quarantine-markers.txt -Value 'no quarantine markers; rg exit 1'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ticket-32-windows-platform-evidence-${{ github.sha }}
+          path: ticket-32-platform-evidence/
+          if-no-files-found: error
