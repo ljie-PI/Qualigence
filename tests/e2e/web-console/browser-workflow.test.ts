@@ -149,7 +149,8 @@ async function startConsoleProxy(config: () => Record<string, unknown>, apiBaseU
       const method = request.method ?? "GET";
       const init = method === "GET" || method === "HEAD"
         ? { method, headers }
-        : { method, headers, body: request };
+        // Node's fetch requires duplex mode when proxying a streamed request.
+        : { method, headers, body: request, duplex: "half" as const };
       const upstreamResponse = await fetch(target, init);
       response.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers));
       response.end(Buffer.from(await upstreamResponse.arrayBuffer()));

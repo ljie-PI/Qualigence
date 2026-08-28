@@ -68,7 +68,9 @@ export class PublicApiClient {
   constructor(options: PublicApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.accessToken = options.accessToken;
-    this.fetchImpl = options.fetch ?? fetch;
+    // Browser `fetch` is a Window member: keep that receiver for the default
+    // dependency while leaving an explicitly injected fetch untouched.
+    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   // ---- Projects & targets --------------------------------------------------
