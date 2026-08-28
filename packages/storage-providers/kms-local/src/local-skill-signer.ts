@@ -8,7 +8,8 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bundlePayloadContentSha256,
@@ -63,11 +64,22 @@ export class LocalSkillSigner implements SkillSigner {
     let generated = false;
     try {
       privatePem = readFileSync(privatePath, "utf8");
-    } catch {
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        throw new SkillSigningError(`Private signing key ${privatePath} cannot be read.`, { cause });
+      }
       privatePem = generateAndPersist(dataDir, privatePath, publicPath);
       generated = true;
     }
-    ensurePrivateKeyPermissions(privatePath, generated);
+
+    try {
+      ensurePrivateKeyPermissions(privatePath, generated);
+    } catch (cause) {
+      if (generated && process.platform === "win32") {
+        removeGeneratedKeyArtifacts(privatePath, publicPath);
+      }
+      throw cause;
+    }
 
     const privateKey = createPrivateKey(privatePem);
     const publicKey = createPublicKey(privateKey);
@@ -259,6 +271,29 @@ function writeAtomic(
   renameSync(tmp, target);
 }
 
+function isNotFound(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null &&
+    "code" in cause && (cause as { readonly code?: unknown }).code === "ENOENT";
+}
+
+function removeGeneratedKeyArtifacts(privatePath: string, publicPath: string): void {
+  const failures: unknown[] = [];
+  for (const path of [privatePath, publicPath]) {
+    try {
+      unlinkSync(path);
+    } catch (cause) {
+      if (!isNotFound(cause)) {
+        failures.push(cause);
+      }
+    }
+  }
+  if (failures.length > 0) {
+    throw new SkillSigningError("Newly generated signing key artifacts could not be removed.", {
+      cause: new AggregateError(failures),
+    });
+  }
+}
+
 function ensurePrivateKeyPermissions(path: string, generated: boolean): void {
   if (process.platform !== "win32") {
     const mode = statSync(path).mode & 0o777;
@@ -302,21 +337,29 @@ interface WindowsPrivateKeyAcl {
   }[];
 }
 
+const WINDOWS_ACL_REPORT_SCRIPT = [
+  "param([string]$path)",
+  "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+  "$acl = [System.IO.File]::GetAccessControl($path)",
+  "$rules = @($acl.Access | ForEach-Object {",
+  "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
+  "})",
+  "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
+].join("\n");
+
 function readWindowsPrivateKeyAcl(path: string): WindowsPrivateKeyAcl {
-  const quotedPath = JSON.stringify(path);
-  const script = [
-    `$path = ${quotedPath}`,
-    "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "$acl = [System.IO.File]::GetAccessControl($path)",
-    "$rules = @($acl.Access | ForEach-Object {",
-    "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
-    "})",
-    "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
-  ].join("; ");
-  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const scriptDir = mkdtempSync(join(tmpdir(), "qualigence-kms-acl-"));
+  const scriptPath = join(scriptDir, "read-acl.ps1");
+  let output: string;
+  try {
+    writeFileSync(scriptPath, WINDOWS_ACL_REPORT_SCRIPT, { mode: 0o600 });
+    output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", scriptPath, path], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  } finally {
+    rmSync(scriptDir, { recursive: true, force: true });
+  }
   const parsed = JSON.parse(output) as {
     readonly currentSid?: unknown;
     readonly rules?: unknown;
