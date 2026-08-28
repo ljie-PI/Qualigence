@@ -4,7 +4,7 @@
 
 **Blocked by:** None for implementation. **Final release-resolution dependency:** Ticket 31 signed Windows native acceptance.
 
-**Status:** claimed
+**Status:** resolved
 
 ## Tracked scope
 
@@ -51,16 +51,16 @@ The workflow files may change only to execute and retain Windows/Linux evidence 
 
 ## Requirements
 
-- [ ] Launcher termination proves observable TERM/grace/forced/reap events cross-platform.
-- [ ] SQLite reopened runtime cleanup closes every handle deterministically.
-- [ ] Browser process identity/lifecycle uses a repository-owned cross-platform seam.
-- [ ] Signing-key permissions prove POSIX mode and Windows ACL restrictions with zero skips.
-- [ ] `ChildProcessUnit` exposes observable process lifecycle events proving graceful termination request, grace expiry, forced termination request, and final reaping; elapsed time or “Windows exited quickly” is not escalation evidence.
-- [ ] Reopened `SqliteRuntime` ownership uses deterministic `try/finally` cleanup and awaits `close()` on success and every thrown path; the temporary directory is immediately removable on Windows.
-- [ ] Playwright captures only the launched browser identity through a repository-owned seam, closes it through adapter ownership, and proves it exited. `/proc` scans and termination of unrelated processes are forbidden.
-- [ ] POSIX retains the `0600` key assertion. Windows verifies the ACL permits the current user and only required system/administrator principals, and grants no broad Users/Everyone access.
-- [ ] `rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests` returns no matches and exit code 1; all four declarations are ordinary tests and execute rather than skip.
-- [ ] Separate Windows and Linux reports show all four cases passed with zero quarantine skip.
+- [x] Launcher termination proves observable TERM/grace/forced/reap events cross-platform.
+- [x] SQLite reopened runtime cleanup closes every handle deterministically.
+- [x] Browser process identity/lifecycle uses a repository-owned cross-platform seam.
+- [x] Signing-key permissions prove POSIX mode and Windows ACL restrictions with zero skips.
+- [x] `ChildProcessUnit` exposes observable process lifecycle events proving graceful termination request, grace expiry, forced termination request, and final reaping; elapsed time or “Windows exited quickly” is not escalation evidence.
+- [x] Reopened `SqliteRuntime` ownership uses deterministic `try/finally` cleanup and awaits `close()` on success and every thrown path; the temporary directory is immediately removable on Windows.
+- [x] Playwright captures only the launched browser identity through a repository-owned seam, closes it through adapter ownership, and proves it exited. `/proc` scans and termination of unrelated processes are forbidden.
+- [x] POSIX retains the `0600` key assertion. Windows verifies the ACL permits the current user and only required system/administrator principals, and grants no broad Users/Everyone access.
+- [x] `rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests` returns no matches and exit code 1; all four declarations are ordinary tests and execute rather than skip.
+- [x] Separate Windows and Linux reports show all four cases passed with zero quarantine skip.
 
 ## Focused Gate
 
@@ -113,3 +113,28 @@ Record base and reviewed SHAs in `## Comments`. Every review covers the four com
 - scope — 2026-08-28: Maintainer authorized `apps/local-launcher/src/process-supervisor.ts` for Ticket 32 review1 remediation. The edit is limited to making the production detached shutdown path preserve/verify owned-process identity before every signal and emit the required TERM/grace/force/reap lifecycle evidence. It must neither add a public contract nor use PID/name broad scans or terminate unrelated processes.
 - scope — 2026-08-28: Maintainer authorized `apps/local-launcher/src/main.ts` for Ticket 32 review2 remediation. The parent may capture originating Core/Runner child creation identity while it still owns the `ChildProcess` and pass it through the detached topology/handoff so rollback/shutdown revalidates that original identity. It must fail closed with zero signal and no false `reaped` record when identity is unavailable/mismatched; retain legacy `stop_requested` lifecycle evidence while adding precise graceful/grace/force/reap events.
 - scope — 2026-08-28: Maintainer authorized `tests/helpers/grpc-test-pki.ts` for Ticket 32 hosted-Linux remediation. The edit is limited to replacing unsupported `openssl x509 -not_before/-not_after` usage with a real expired client-leaf generation path compatible with GitHub Ubuntu and Windows OpenSSL. It must not change production mTLS/identity behavior, inject a verifier clock bypass, fake an expiration outcome, or change certificate acceptance semantics.
+
+### final — 2026-08-28
+
+- Reviewed code/test head: `766d78bd3e86cd5ac77800268a9405459473c4fa`; fixed base: `bb4d11b95098ce6bd604d3bc02d13f0fd798c334`.
+- Complete-matrix review11 clean:
+  - Standards: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket32-review11/standards.md`
+  - Spec: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket32-review11/spec.md`
+  - Both reports cover all 14 Behavior Matrix rows as `pass`; no Critical or Important code/test/workflow finding remained.
+- Final focused validation at the reviewed head passed:
+  - `CI=true corepack pnpm vitest run tests/component/local-launcher/start-stop.test.ts tests/component/skill-lifecycle/recording-to-replay.test.ts tests/component/web-execution/playwright-web-target.test.ts tests/contract/kms-local/skill-signing.test.ts --reporter=dot` — 4 files / 37 tests, zero skip.
+  - `CI=true corepack pnpm vitest run tests/conformance/runner-protocol/grpc-tls.test.ts tests/unit/target-adapters/web-playwright/browser-session.test.ts --reporter=dot` — 2 files / 23 tests.
+  - `CI=true corepack pnpm typecheck` and `git diff --check` passed.
+  - Required Task-21 quarantine-marker scan and the four-suite `it.skipIf`/`it.skip` scan both produced no output with expected exit code `1`.
+- Exact-head retained platform evidence:
+  - Linux: [run 33155961554](https://github.com/ljie-PI/Qualigence/actions/runs/33155961554), job `98798674051`, artifact `ticket-32-linux-platform-evidence-766d78bd3e86cd5ac77800268a9405459473c4fa` (ID `9679624869`, `sha256:17baaddde195ab24eebf00111abe61a437af5dcaa92f419db2b2602a39366bb3`). Its `commit.txt` equals the reviewed head; `vitest.txt` reports 4 files / 37 tests passed; marker report is `no quarantine markers; rg exit 1`.
+  - Windows: [run 33155961680](https://github.com/ljie-PI/Qualigence/actions/runs/33155961680), successful rerun job `98799569492`, artifact `ticket-32-windows-platform-evidence-766d78bd3e86cd5ac77800268a9405459473c4fa` (ID `9679755235`, `sha256:9f8b0fc6e17d1d140186561bde205721f65bc0889931cc054f7eb0fba079dc49`). Its `commit.txt` equals the reviewed head; `vitest.txt` reports 4 files / 37 tests passed; marker report is `no quarantine markers; rg exit 1`.
+- The artifact evidence is real platform execution, not a skip/fake substitute: both jobs installed required tools, built the workspace, provisioned Chromium, ran exactly the four restored suites, and failed closed on test/marker/artifact error. An earlier Windows attempt on this same head timed out in normal key generation under hosted contention; its successful rerun is separately identified above and is the accepted evidence.
+- Scope amendments were maintainer-authorized and recorded: detached process identity/handoff (`apps/local-launcher/src/process-supervisor.ts`, `apps/local-launcher/src/main.ts`) and hosted-compatible real expired gRPC test leaf (`tests/helpers/grpc-test-pki.ts`). No public/persisted contract or migration was added.
+- The unrelated unchanged Local Launcher readiness/unit timing observations were not credited as evidence and were not modified by this ticket; they reproduced at the fixed base before Ticket 32 lifecycle paths. Ticket 32's required focused and post-review platform Gates are clean.
+- Under the approved two-phase authority, Ticket 32 implementation and automated platform acceptance are complete and unblock Ticket 33 implementation. Ticket 31 signed human Windows evidence remains a final release/freeze dependency; no release or Graph v1 frozen claim is made here.
+- Final evidence commit is documentation-only relative to the reviewed code/test head. Pull request and merge evidence: pending creation.
+
+## Answer
+
+Completed Ticket 32: all four temporary Windows quarantines are restored as real Windows/Linux tests with zero skips. Local process shutdown now has identity-gated TERM/grace/force/reap evidence; SQLite cleanup closes every opened runtime; Playwright tracks and cleans only its exact launched browser; local signing keys enforce POSIX `0600` and strict SID-based Windows ACLs with fail-closed initialization. The ticket provides retained, same-commit Linux and Windows platform reports. Ticket 31 remains the separate human release/freeze acceptance prerequisite.
