@@ -4,7 +4,7 @@
 
 **Blocked by:** None for implementation. **Final release-resolution dependency:** Ticket 31 signed Windows native acceptance.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -106,3 +106,4 @@ Record base and reviewed SHAs in `## Comments`. Every review covers the four com
 
 - update - 2026-08-27: Tickets 15 and 21 are resolved. Ticket 32 remains blocked only by Ticket 31 human Windows native acceptance.
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 32 is the immediate implementation frontier. It must still produce real zero-skip Windows/Linux automated evidence; Ticket 31 is deferred only as a final release/freeze dependency, not replaced or waived.
+- start - 2026-08-28: Fixed base `bb4d11b95098ce6bd604d3bc02d13f0fd798c334`; branch/worktree `ticket-32-restore-platform-quarantines` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-32`. Under the 2026-08-27 two-phase authority, Ticket 32 implementation and real zero-skip Windows/Linux automated evidence may complete before Ticket 31 human sign-off; Ticket 31 remains a final release/freeze dependency. Behavior Matrix: all 14 rows are applicable; no row is N/A. Planned focused Gate is the four named quarantine suites, required no-match `rg` check, typecheck, and diff check; post-review acceptance retains same-commit Windows/Linux zero-skip reports.
