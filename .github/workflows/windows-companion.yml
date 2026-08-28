@@ -22,6 +22,7 @@ jobs:
           node-version: 24
       - run: corepack enable
       - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm build
       - run: corepack pnpm --filter @qualigence/web-playwright exec playwright install chromium
       - name: Run restored Ticket 32 cases without quarantine markers
         shell: pwsh
