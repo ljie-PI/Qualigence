@@ -18,6 +18,8 @@ export const queryKeys = {
     ["tenant", tenantId, "missions", missionId] as const,
   runs: (tenantId: string) => ["tenant", tenantId, "runs"] as const,
   run: (tenantId: string, runId: string) => ["tenant", tenantId, "runs", runId] as const,
+  artifact: (tenantId: string, projectId: string, runId: string, artifactId: string) =>
+    ["tenant", tenantId, "projects", projectId, "runs", runId, "artifacts", artifactId] as const,
   skills: (tenantId: string) => ["tenant", tenantId, "skills"] as const,
   skill: (tenantId: string, skillId: string) => ["tenant", tenantId, "skills", skillId] as const,
   skillVersions: (tenantId: string, skillId: string) => ["tenant", tenantId, "skills", skillId, "versions"] as const,

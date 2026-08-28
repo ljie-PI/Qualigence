@@ -42,3 +42,87 @@ jobs:
           name: ticket-32-linux-platform-evidence-${{ github.sha }}
           path: ticket-32-platform-evidence/
           if-no-files-found: error
+
+  gate-linux:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Run Linux Gate
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p gate-linux
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; } | tee gate-linux/environment.txt
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile 2>&1 | tee gate-linux/install.txt
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee gate-linux/chromium.txt
+          corepack pnpm gate:linux 2>&1 | tee gate-linux/command.txt
+          find gate-linux -type f -print0 | sort -z | xargs -0 sha256sum > gate-linux/sha256.txt
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gate-linux
+          path: gate-linux/
+          if-no-files-found: error
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Run rendered Chromium workflow
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p browser-e2e
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; docker --version; } | tee browser-e2e/environment.txt
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile 2>&1 | tee browser-e2e/install.txt
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee browser-e2e/chromium.txt
+          corepack pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts 2>&1 | tee browser-e2e/vitest.txt
+          find browser-e2e -type f -print0 | sort -z | xargs -0 sha256sum > browser-e2e/sha256.txt
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: browser-e2e
+          path: browser-e2e/
+          if-no-files-found: error
+
+  release-metadata:
+    needs: [gate-linux, browser-e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Write bounded phase-1 release block metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-metadata
+          commit="$(git rev-parse HEAD)"
+          printf '%s\n' "$commit" > release-metadata/commit.txt
+          cat > release-metadata/release-blocked.json <<EOF
+          {"status":"release-blocked","commit":"$commit","missingEvidence":["WindowsChecklistEvidenceUnavailable","RealProviderEvidenceUnavailable"],"note":"This successful report is phase-1 block evidence only. Tickets 34 and 35 must reject it for publishing or freeze."}
+          EOF
+          sha256sum release-metadata/commit.txt release-metadata/release-blocked.json > release-metadata/sha256.txt
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: release-metadata
+          path: release-metadata/
+          if-no-files-found: error

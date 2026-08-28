@@ -90,6 +90,9 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
   const [executable, setExecutable] = useState("C:\\Apps\\Reference\\Reference.exe");
   const [selectedTargetId, setSelectedTargetId] = useState<string | undefined>();
   const [conflict, setConflict] = useState<string | undefined>();
+  const [prdTitle, setPrdTitle] = useState("");
+  const [prdContent, setPrdContent] = useState("");
+  const [prdError, setPrdError] = useState<string | undefined>();
 
   const targets = useQuery({
     queryKey: queryKeys.targets(tenantId, projectId),
@@ -121,6 +124,22 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
         setConflict(`Target changed concurrently${typeof actual === "number" ? ` (current version ${actual})` : ""}. Reloaded current state.`);
         void queryClient.invalidateQueries({ queryKey: queryKeys.targets(tenantId, projectId) });
       } else setConflict(error instanceof Error ? error.message : "Target mutation failed");
+    },
+  });
+  const ingestPrd = useMutation({
+    mutationFn: () => api.ingestPrd(
+      projectId,
+      { title: prdTitle.trim(), content: prdContent },
+      { idempotencyKey: crypto.randomUUID() },
+    ),
+    onSuccess: () => {
+      setPrdTitle("");
+      setPrdContent("");
+      setPrdError(undefined);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.prdRevisions(tenantId, projectId) });
+    },
+    onError: (error: unknown) => {
+      setPrdError(error instanceof Error ? error.message : "PRD ingestion failed");
     },
   });
   const canCreate = session?.roles.some((role) => role === "admin" || role === "tester") ?? false;
@@ -161,6 +180,15 @@ export function ProjectDetailPage(props: { readonly projectId: string }): ReactN
       </DataState>
 
       <h2>PRD revisions</h2>
+      {canCreate ? <form className="inline-form" onSubmit={(event) => {
+        event.preventDefault();
+        if (prdTitle.trim().length > 0 && prdContent.trim().length > 0) ingestPrd.mutate();
+      }}>
+        <input aria-label="PRD title" value={prdTitle} onChange={(event) => setPrdTitle(event.target.value)} placeholder="PRD title" />
+        <textarea aria-label="PRD content" value={prdContent} onChange={(event) => setPrdContent(event.target.value)} placeholder="PRD content" />
+        <button type="submit" disabled={ingestPrd.isPending || prdTitle.trim().length === 0 || prdContent.trim().length === 0}>Ingest PRD</button>
+      </form> : null}
+      {prdError === undefined ? null : <p className="state state--error" role="alert">{prdError}</p>}
       <DataState
         isLoading={prds.isLoading}
         error={prds.error}

@@ -1,0 +1,36 @@
+name: Ticket 33 Self-hosted Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate-self-hosted:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Run Docker-backed Self-hosted Gate
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p gate-self-hosted
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; docker --version; docker compose version; } | tee gate-self-hosted/environment.txt
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile 2>&1 | tee gate-self-hosted/install.txt
+          corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
+          find gate-self-hosted -type f -print0 | sort -z | xargs -0 sha256sum > gate-self-hosted/sha256.txt
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gate-self-hosted
+          path: gate-self-hosted/
+          if-no-files-found: error

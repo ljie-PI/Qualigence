@@ -1,5 +1,6 @@
 import type {
   ApproveTestPlanBody,
+  ArtifactMetadataDto,
   ClaimReviewTaskBody,
   CommandEnvelope,
   CreateMissionBody,
@@ -194,6 +195,40 @@ export class PublicApiClient {
     );
   }
 
+  // ---- Evidence artifacts --------------------------------------------------
+
+  /**
+   * Reads authorized Artifact metadata through the public Evidence route. The
+   * caller supplies the immutable project/run/artifact identity explicitly;
+   * RunDto deliberately does not carry project identity.
+   */
+  async getArtifactMetadata(
+    projectId: string,
+    runId: string,
+    artifactId: string,
+  ): Promise<ArtifactMetadataDto> {
+    return this.request<ArtifactMetadataDto>(this.artifactPath(projectId, runId, artifactId));
+  }
+
+  /** Downloads only bytes authorized by the existing Evidence route. */
+  async downloadArtifact(
+    projectId: string,
+    runId: string,
+    artifactId: string,
+  ): Promise<Blob> {
+    const response = await this.requestResponse(this.artifactPath(projectId, runId, artifactId, "/bytes"));
+    return response.blob();
+  }
+
+  private artifactPath(
+    projectId: string,
+    runId: string,
+    artifactId: string,
+    suffix = "",
+  ): string {
+    return `/v1/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}${suffix}?purpose=investigation`;
+  }
+
   // ---- Skills --------------------------------------------------------------
 
   async listSkills(): Promise<ListEnvelope<SkillVersionDto>> {
@@ -274,6 +309,11 @@ export class PublicApiClient {
   // ---- Transport -----------------------------------------------------------
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const response = await this.requestResponse(path, options);
+    return (await response.json()) as T;
+  }
+
+  private async requestResponse(path: string, options: RequestOptions = {}): Promise<Response> {
     const headers: Record<string, string> = { accept: "application/json" };
     const token = this.accessToken();
     if (token !== undefined) {
@@ -292,7 +332,7 @@ export class PublicApiClient {
     if (!response.ok) {
       throw new ApiClientError(response.status, await this.readError(response));
     }
-    return (await response.json()) as T;
+    return response;
   }
 
   private async readError(response: Response): Promise<ErrorEnvelope> {
