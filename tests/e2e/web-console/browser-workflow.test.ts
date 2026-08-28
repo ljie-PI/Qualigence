@@ -109,7 +109,10 @@ describe("rendered Web Console browser workflow", () => {
       await page.getByRole("button", { name: "Ingest PRD" }).click();
       await page.getByRole("link", { name: "r1: Browser requirements" }).click();
 
-      const sourceRef = { prdId: "browser-journey", revision: 1, startOffset: 0, endOffset: requirement.length, quotedTextSha256: createHash("sha256").update(requirement).digest("hex") };
+      const prdId = await page.locator("dt", { hasText: "PRD ID" }).locator("..").locator("dd").textContent();
+      expect(prdId).toMatch(/^[0-9a-f-]{36}$/i);
+      if (prdId === null) throw new Error("Rendered PRD ID is missing");
+      const sourceRef = { prdId, revision: 1, startOffset: 0, endOffset: requirement.length, quotedTextSha256: createHash("sha256").update(requirement).digest("hex") };
       await page.getByLabel("Grounded Test Plan proposal JSON").fill(JSON.stringify({
         expectedClaims: [{ semanticKey: "checkout", statement: requirement, sourceRefs: [sourceRef], confidence: 1 }],
         testCases: [{ title: "Checkout", objective: "Verify checkout", preconditions: [], steps: [{ kind: "verify", claimSemanticKeys: ["checkout"] }], expectedClaimSemanticKeys: ["checkout"], sourceRefs: [sourceRef], priority: "high" }],
