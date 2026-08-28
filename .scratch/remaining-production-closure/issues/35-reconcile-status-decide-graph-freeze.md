@@ -2,13 +2,13 @@
 
 **What to build:** Reconcile the authoritative local tickets, architecture/contexts, merged GitHub PR/Issue evidence, and serialized Graph/native/release evidence, then deterministically decide whether Observation Graph v1 remains `candidate` or becomes `frozen`.
 
-**Blocked by:** 34 — Build minimal images, SBOM, provenance, and release manifest.
+**Blocked by:** 34 — Build minimal images, SBOM, provenance, and release manifest (implementation merge). **Final decision dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence, plus phase-2 Ticket 33/34 immutable CI/release artifacts.
 
 **Status:** ready-for-agent
 
 ## Tracked scope
 
-This ticket owns final closure reconciliation and the deterministic Graph freeze decision. Current closure state comes from tickets 01-35, durable architecture/contexts, current contracts and tests, checklists, merged GitHub PR/Issue records, and serialized evidence artifacts.
+This ticket owns final closure reconciliation and the deterministic Graph freeze decision. Current closure state comes from tickets 01-35, durable architecture/contexts, current contracts and tests, checklists, merged GitHub PR/Issue records, and serialized evidence artifacts. Under the 2026-08-27 two-phase authority, its parser/validator/candidate-decision implementation may start after Ticket 34 implementation merges and must honestly emit `candidate` for absent phase-2 evidence. It may not resolve the closure or emit `frozen` until Ticket 31 and Ticket 46 have completed their independent human/provider validation on the same selected integration candidate and Ticket 33/34 final artifacts validate.
 
 ## Migration
 
@@ -129,3 +129,7 @@ Record base/reviewed SHAs, evidence version, and decision artifact hash in `## C
 | Duplicate invocation with identical immutable inputs | `not_started` or atomic equivalent write | Same semantic `candidate`/`frozen` decision | No contradictory second decision | Idempotent; timestamp policy must not alter evidence validity | Byte/semantic determinism test |
 | Conflicting invocation for an already frozen version/commit | `not_started` | Stable conflict; no downgrade/overwrite | Existing immutable frozen decision retained | New release/version required through owning release process | Conflict test and retained hash |
 | README/checklist update fails after decision artifact write | `outcome_unknown` for public release status | Ticket/release remains incomplete; do not announce frozen | Decision artifact may exist but public acceptance is blocked until consistent reviewed commit | Reconcile docs on same ticket, rerun diff/focused review and final validation | Consistency check across artifact/README/checklist |
+
+## Comments
+
+- update - 2026-08-27: Maintainer authorized code-first closure. Ticket 35 implementation is ordered after Ticket 34, may test deterministic `candidate` behavior before human/provider evidence exists, and remains unresolved until phase-2 Ticket 31 + Ticket 46 evidence and final CI/release artifacts are valid. It is the sole final Graph/release convergence decision owner.
