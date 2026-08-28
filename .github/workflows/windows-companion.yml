@@ -33,6 +33,7 @@ jobs:
           rg -n 'TODO\(Task 21\): remove this Windows quarantine' tests *> ticket-32-platform-evidence/quarantine-markers.txt
           if ($LASTEXITCODE -ne 1) { exit 1 }
           Add-Content -Path ticket-32-platform-evidence/quarantine-markers.txt -Value 'no quarantine markers; rg exit 1'
+          exit 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
