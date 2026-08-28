@@ -317,7 +317,12 @@ export class ChildProcessUnit {
     try {
       await this.waitUntilReady(() => this.childExited, signal);
     } catch (error) {
-      await this.terminateChild(child);
+      const reaped = await this.terminateChild(child);
+      // terminateChild has independently observed the child gone even though
+      // Node may not have delivered its exit event to this handle yet.
+      if (reaped && child === this.child) {
+        this.childExited = true;
+      }
       throw error;
     }
   }
@@ -439,15 +444,39 @@ export class ChildProcessUnit {
     this.supervising = false;
     const child = this.child;
     const pid = this.currentPid;
-    if (child !== undefined && pid !== undefined) {
-      // Preserve the original coarse lifecycle evidence for callers while
-      // recording the precise graceful/escalation boundaries as well.
-      await this.recordLifecycle("stop_requested", pid);
-      const reaped = await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
-      if (reaped) {
-        await this.recordLifecycle("reaped", pid);
-      }
+    if (child === undefined && pid === undefined) {
+      return;
     }
+    if (child === undefined || pid === undefined) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process handle is unavailable for shutdown`);
+    }
+    if (this.childExited || child.exitCode !== null) {
+      await this.recordLifecycle("reaped", pid);
+      this.clearChild();
+      return;
+    }
+    if (this.currentIdentity?.isCurrent() !== true) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed before shutdown`);
+    }
+    // Preserve the original coarse lifecycle evidence for callers while
+    // recording the precise graceful/escalation boundaries as well.
+    await this.recordLifecycle("stop_requested", pid);
+    const reaped = await this.terminateChild(child, async (event) => this.recordLifecycle(event, pid));
+    if (!reaped) {
+      // An owned ChildProcess exit event is independent terminal evidence. A
+      // failed identity probe while the handle may still be live is not.
+      if (this.childExited || child.exitCode !== null) {
+        await this.recordLifecycle("reaped", pid);
+        this.clearChild();
+        return;
+      }
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed during shutdown`);
+    }
+    await this.recordLifecycle("reaped", pid);
+    this.clearChild();
+  }
+
+  private clearChild(): void {
     this.child = undefined;
     this.currentPid = undefined;
     this.currentIdentity = undefined;

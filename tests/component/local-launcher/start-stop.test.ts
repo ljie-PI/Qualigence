@@ -12,6 +12,7 @@ import {
   terminateProcess,
 } from "../../../apps/local-launcher/src/child-process-unit.js";
 import { HealthClient } from "../../../apps/local-launcher/src/health-client.js";
+import { PidProcessUnit } from "../../../apps/local-launcher/src/process-supervisor.js";
 import { LocalDoctor } from "../../../apps/local-launcher/src/doctor.js";
 import { createGrpcTestPki } from "../../helpers/grpc-test-pki.js";
 import type { LocalConfig } from "@qualigence/local-control";
@@ -95,7 +96,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
-  it("does not signal or record reaping for a direct child whose creation identity changed", async () => {
+  it("rejects without signal or reaping and retains a direct child whose creation identity changed", async () => {
     const dir = await scratchDir("direct-child-stale-identity");
     const lifecycleLogFile = join(dir, "lifecycle.jsonl");
     const unit = new ChildProcessUnit({
@@ -109,11 +110,12 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     const internals = unit as unknown as {
       currentIdentity: { readonly pid: number; readonly creationMarker: string; isCurrent(): boolean } | undefined;
     };
+    const identity = internals.currentIdentity;
     internals.currentIdentity = { pid, creationMarker: "reused-test-marker", isCurrent: () => false };
     const kill = vi.spyOn(process, "kill");
 
     try {
-      await unit.stop();
+      await expect(unit.stop()).rejects.toMatchObject({ code: "SupervisorUnavailable" });
       expect(kill).not.toHaveBeenCalled();
     } finally {
       kill.mockRestore();
@@ -121,15 +123,37 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
 
     try {
       expect(isPidAlive(pid)).toBe(true);
+      expect(unit.pid()).toBe(pid);
+      expect(unit.identity()).toMatchObject({ pid, creationMarker: "reused-test-marker" });
       const events = (await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8"))
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { event: string });
-      expect(events.map((event) => event.event)).toEqual(["runner:started", "runner:stop_requested"]);
+      expect(events.map((event) => event.event)).toEqual(["runner:started"]);
     } finally {
-      process.kill(pid, "SIGKILL");
+      internals.currentIdentity = identity;
+      await unit.stop();
       await expect.poll(() => isPidAlive(pid), { timeout: 5_000 }).toBe(false);
     }
+  });
+
+  it("rejects a stale detached handoff identity for an unoccupied PID without signal or reaping", async () => {
+    const dir = await scratchDir("detached-stale-identity");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
+    const pid = 2_147_000_000;
+    // Establish the test precondition before installing the zero-signal spy.
+    expect(isPidAlive(pid)).toBe(false);
+    const unit = new PidProcessUnit("runner", { pid, creationMarker: "stale-handoff-marker" }, lifecycleLogFile);
+    const kill = vi.spyOn(process, "kill");
+
+    try {
+      await expect(unit.stop()).rejects.toMatchObject({ code: "SupervisorUnavailable" });
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
+
+    expect(await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").catch(() => "")).toBe("");
   });
 
   it("spawns a real process, reaches ready via its stdout event and stops cleanly", async () => {

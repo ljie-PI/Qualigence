@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { request } from "node:http";
 import {
   captureProcessIdentity,
-  isPidAlive,
   restoreProcessIdentity,
   terminateProcess,
   type ProcessIdentity,
@@ -221,7 +220,10 @@ export function runDetachedSupervisor(): void {
     });
 }
 
-class PidProcessUnit implements ProcessUnit {
+// This remains internal to the detached-supervisor module (it is not exported
+// from the Local Launcher package entrypoint); exporting it here lets the
+// serialized-handoff ownership boundary be exercised directly.
+export class PidProcessUnit implements ProcessUnit {
   private readonly identity: ProcessIdentity;
 
   constructor(readonly name: string, evidence: ProcessIdentityEvidence, private readonly lifecycleLogFile: string) {
@@ -238,11 +240,10 @@ class PidProcessUnit implements ProcessUnit {
 
   async stop(): Promise<void> {
     const identity = this.identity;
+    // A serialized creation marker that no longer verifies is never terminal
+    // evidence, even when its PID is now unoccupied. The original process may
+    // have been replaced and exited while this supervisor lacked authority.
     if (!identity.isCurrent()) {
-      if (!isPidAlive(identity.pid)) {
-        await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, identity.pid);
-        return;
-      }
       throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed before shutdown`);
     }
     // Keep the original lifecycle contract for existing Local Launcher
