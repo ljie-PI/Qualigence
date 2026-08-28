@@ -7,7 +7,8 @@ import {
   verify as edVerify,
   type KeyObject,
 } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bundlePayloadContentSha256,
@@ -59,11 +60,14 @@ export class LocalSkillSigner implements SkillSigner {
     const publicPath = join(dataDir, PUBLIC_KEY_FILE);
 
     let privatePem: string;
+    let generated = false;
     try {
       privatePem = readFileSync(privatePath, "utf8");
     } catch {
       privatePem = generateAndPersist(dataDir, privatePath, publicPath);
+      generated = true;
     }
+    ensurePrivateKeyPermissions(privatePath, generated);
 
     const privateKey = createPrivateKey(privatePem);
     const publicKey = createPublicKey(privateKey);
@@ -253,4 +257,83 @@ function writeAtomic(
   const tmp = join(dataDir, `.${Math.random().toString(36).slice(2)}.tmp`);
   writeFileSync(tmp, contents, { mode });
   renameSync(tmp, target);
+}
+
+function ensurePrivateKeyPermissions(path: string, generated: boolean): void {
+  if (process.platform !== "win32") {
+    const mode = statSync(path).mode & 0o777;
+    if (mode !== 0o600) {
+      throw new SkillSigningError(`Private signing key ${path} must have mode 0600.`);
+    }
+    return;
+  }
+
+  try {
+    if (generated) {
+      const currentSid = readWindowsPrivateKeyAcl(path).currentSid;
+      execFileSync("icacls.exe", [
+        path,
+        "/inheritance:r",
+        "/grant:r",
+        `*${currentSid}:(F)`,
+        "*S-1-5-18:(F)",
+        "*S-1-5-32-544:(F)",
+      ], { stdio: "ignore", windowsHide: true });
+    }
+    const acl = readWindowsPrivateKeyAcl(path);
+    const allowedSids = new Set([acl.currentSid, "S-1-5-18", "S-1-5-32-544"]);
+    const invalidRule = acl.rules.find((rule) => rule.inherited || !allowedSids.has(rule.sid));
+    if (invalidRule !== undefined) {
+      throw new Error(`unexpected ACL rule for ${invalidRule.sid}`);
+    }
+    if (!acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")) {
+      throw new Error("current user has no explicit allow ACL rule");
+    }
+  } catch (cause) {
+    throw new SkillSigningError(`Private signing key ${path} does not have the required Windows ACL.`, { cause });
+  }
+}
+
+interface WindowsPrivateKeyAcl {
+  readonly currentSid: string;
+  readonly rules: readonly {
+    readonly sid: string;
+    readonly access: "Allow" | "Deny";
+    readonly inherited: boolean;
+  }[];
+}
+
+function readWindowsPrivateKeyAcl(path: string): WindowsPrivateKeyAcl {
+  const quotedPath = JSON.stringify(path);
+  const script = [
+    `$path = ${quotedPath}`,
+    "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    "$rules = @(Get-Acl -LiteralPath $path | Select-Object -ExpandProperty Access | ForEach-Object {",
+    "  [PSCustomObject]@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; access = [string]$_.AccessControlType; inherited = [bool]$_.IsInherited }",
+    "})",
+    "[PSCustomObject]@{ currentSid = $currentSid; rules = $rules } | ConvertTo-Json -Compress -Depth 3",
+  ].join("; ");
+  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  const parsed = JSON.parse(output) as {
+    readonly currentSid?: unknown;
+    readonly rules?: unknown;
+  };
+  if (typeof parsed.currentSid !== "string" || !Array.isArray(parsed.rules)) {
+    throw new Error("PowerShell returned an invalid ACL report");
+  }
+  const rules = parsed.rules.map((rule) => {
+    if (
+      typeof rule !== "object" || rule === null ||
+      typeof (rule as { sid?: unknown }).sid !== "string" ||
+      ((rule as { access?: unknown }).access !== "Allow" && (rule as { access?: unknown }).access !== "Deny") ||
+      typeof (rule as { inherited?: unknown }).inherited !== "boolean"
+    ) {
+      throw new Error("PowerShell returned an invalid ACL rule");
+    }
+    return rule as WindowsPrivateKeyAcl["rules"][number];
+  });
+  return { currentSid: parsed.currentSid, rules };
 }

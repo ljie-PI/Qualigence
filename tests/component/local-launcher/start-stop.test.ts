@@ -126,11 +126,9 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
-  // TODO(Task 21): remove this Windows quarantine after lifecycle assertions use observable process events instead of minimum elapsed time.
-  it.skipIf(process.platform === "win32")(
-    "escalates SIGTERM to SIGKILL for a process that ignores SIGTERM",
-    async () => {
+  it("records graceful request, grace expiry, forced termination, and reap for a stubborn child", async () => {
     const dir = await scratchDir("stubborn");
+    const lifecycleLogFile = join(dir, "lifecycle.jsonl");
     const unit = new ChildProcessUnit({
       name: "runner",
       unhealthyCode: "RunnerUnhealthy",
@@ -138,6 +136,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
       args: [FIXTURE],
       env: { FAKE_MODE: "stubborn", FAKE_READY_EVENT: "runner.ready" },
       logFile: join(dir, "runner.log"),
+      lifecycleLogFile,
       readyEvent: "runner.ready",
       startupTimeoutMs: 5_000,
       shutdownGraceMs: 300,
@@ -146,12 +145,21 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
 
     await unit.start();
     const pid = unit.pid() as number;
-    const startedAt = Date.now();
     await unit.stop();
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(300);
+
+    const events = (await (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; pid: number });
+    expect(events).toEqual([
+      expect.objectContaining({ event: "runner:started", pid }),
+      expect.objectContaining({ event: "runner:graceful_stop_requested", pid }),
+      expect.objectContaining({ event: "runner:grace_expired", pid }),
+      expect.objectContaining({ event: "runner:force_stop_requested", pid }),
+      expect.objectContaining({ event: "runner:reaped", pid }),
+    ]);
     expect(isPidAlive(pid)).toBe(false);
-    },
-  );
+  });
 
   it("restarts a crashing process with bounded backoff, then gives up", async () => {
     const dir = await scratchDir("crash");
@@ -186,7 +194,9 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
     await expect(events).resolves.toEqual([
       expect.objectContaining({ event: "runner:started", pid }),
-      expect.objectContaining({ event: "runner:stop_requested", pid }),
+      expect.objectContaining({ event: "runner:graceful_stop_requested", pid }),
+      expect.objectContaining({ event: "runner:grace_expired", pid }),
+      expect.objectContaining({ event: "runner:force_stop_requested", pid }),
       expect.objectContaining({ event: "runner:reaped", pid }),
     ]);
     expect(unit.pid()).toBeUndefined();

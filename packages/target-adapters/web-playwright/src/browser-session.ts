@@ -1810,13 +1810,75 @@ export interface WebSessionOptions {
  * Playwright `Browser` type; it is only reachable through the package's
  * internal (test-only) entry point, never through the public product surface.
  */
+export interface BrowserProcessIdentity {
+  readonly pid: number;
+  isAlive(): boolean;
+}
+
+/**
+ * A browser plus the exact process started for it. This is a test-only
+ * lifecycle seam: it never exposes a Playwright object through the public
+ * adapter surface, but lets platform tests prove that closing the adapter
+ * reaps only the browser it launched.
+ */
+export interface BrowserLaunch {
+  readonly browser: Browser;
+  readonly process: BrowserProcessIdentity;
+  close(): Promise<void>;
+}
+
 export interface BrowserLauncher {
   launch(options: { readonly headless: boolean }): Promise<Browser>;
+  /** Optional internal lifecycle extension used by real-browser platform tests. */
+  launchWithLifecycle?(options: { readonly headless: boolean }): Promise<BrowserLaunch>;
 }
 
 export const chromiumLauncher: BrowserLauncher = {
-  launch: (options) => chromium.launch({ headless: options.headless }),
+  async launch(options): Promise<Browser> {
+    const launched = await this.launchWithLifecycle!(options);
+    return launched.browser;
+  },
+  async launchWithLifecycle(options): Promise<BrowserLaunch> {
+    const server = await chromium.launchServer({ headless: options.headless });
+    const child = server.process();
+    const pid = child.pid;
+    if (pid === undefined) {
+      await server.close().catch(() => undefined);
+      throw new Error("Chromium did not provide a process identity.");
+    }
+    try {
+      const browser = await chromium.connect(server.wsEndpoint());
+      return {
+        browser,
+        process: {
+          pid,
+          isAlive: () => child.exitCode === null && isPidAlive(pid),
+        },
+        async close(): Promise<void> {
+          let firstError: Error | undefined;
+          const record = (error: unknown): void => {
+            if (firstError === undefined) firstError = error instanceof Error ? error : new Error(String(error));
+          };
+          await browser.close().catch(record);
+          await server.close().catch(record);
+          if (firstError !== undefined) throw firstError;
+        },
+      };
+    } catch (error) {
+      await server.close().catch(() => undefined);
+      throw error;
+    }
+  },
 };
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 export function normalizeOrigin(url: string): string {
   return new URL(url).origin;
@@ -1850,6 +1912,7 @@ export class PlaywrightBrowserSession {
   private state: SessionState = "new";
   private startPromise?: Promise<void>;
   private browser: Browser | undefined;
+  private browserLaunch: BrowserLaunch | undefined;
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private operation: Promise<unknown> = Promise.resolve();
@@ -2301,7 +2364,14 @@ export class PlaywrightBrowserSession {
 
     let browser: Browser;
     try {
-      browser = await this.launcher.launch({ headless: !this.options.headed });
+      const launchWithLifecycle = this.launcher.launchWithLifecycle;
+      if (launchWithLifecycle !== undefined) {
+        const launched = await launchWithLifecycle.call(this.launcher, { headless: !this.options.headed });
+        browser = launched.browser;
+        this.browserLaunch = launched;
+      } else {
+        browser = await this.launcher.launch({ headless: !this.options.headed });
+      }
       this.browser = browser;
       signal?.throwIfAborted();
     } catch (error) {
@@ -2536,7 +2606,11 @@ export class PlaywrightBrowserSession {
 
     const browser = this.browser;
     this.browser = undefined;
-    if (browser) {
+    const browserLaunch = this.browserLaunch;
+    this.browserLaunch = undefined;
+    if (browserLaunch !== undefined) {
+      await browserLaunch.close().catch(record);
+    } else if (browser !== undefined) {
       await browser.close().catch(record);
     }
     return firstError;

@@ -84,14 +84,27 @@ function killPid(pid: number, signal: NodeJS.Signals, group: boolean): void {
  * Terminate a process by pid: SIGTERM, wait up to `graceMs`, then SIGKILL, and
  * wait for the OS to reap it. Safe to call for an already-dead pid.
  */
+export type ProcessTerminationEvent =
+  | "graceful_stop_requested"
+  | "grace_expired"
+  | "force_stop_requested";
+
+/**
+ * Terminate a process by a graceful request, wait up to `graceMs`, then force
+ * termination and wait for the OS to reap it. The optional observer records
+ * semantic lifecycle boundaries rather than requiring callers to infer them
+ * from elapsed wall-clock time. Safe to call for an already-dead pid.
+ */
 export async function terminateProcess(
   pid: number,
   graceMs: number,
   group = false,
+  onEvent?: (event: ProcessTerminationEvent) => Promise<void>,
 ): Promise<void> {
   if (!isPidAlive(pid)) {
     return;
   }
+  await onEvent?.("graceful_stop_requested");
   if (process.platform === "win32") {
     await taskkill(pid, false);
     const softDeadline = Date.now() + graceMs;
@@ -99,6 +112,8 @@ export async function terminateProcess(
       if (!isPidAlive(pid)) return;
       await sleepKeepAlive(20);
     }
+    await onEvent?.("grace_expired");
+    await onEvent?.("force_stop_requested");
     await taskkill(pid, true);
     const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
     while (Date.now() < hardDeadline) {
@@ -115,6 +130,8 @@ export async function terminateProcess(
     }
     await sleepKeepAlive(20);
   }
+  await onEvent?.("grace_expired");
+  await onEvent?.("force_stop_requested");
   killPid(pid, "SIGKILL", group);
   const hardDeadline = Date.now() + REAP_TIMEOUT_MS;
   while (Date.now() < hardDeadline) {
@@ -338,15 +355,19 @@ export class ChildProcessUnit {
     this.supervising = false;
     const pid = this.currentPid;
     if (pid !== undefined) {
-      await this.recordLifecycle("stop_requested", pid);
-      await terminateProcess(pid, this.options.shutdownGraceMs, this.options.detached ?? false);
+      await terminateProcess(
+        pid,
+        this.options.shutdownGraceMs,
+        this.options.detached ?? false,
+        async (event) => this.recordLifecycle(event, pid),
+      );
       await this.recordLifecycle("reaped", pid);
     }
     this.child = undefined;
     this.currentPid = undefined;
   }
 
-  private async recordLifecycle(event: "started" | "stop_requested" | "reaped", pid: number): Promise<void> {
+  private async recordLifecycle(event: "started" | ProcessTerminationEvent | "reaped", pid: number): Promise<void> {
     if (this.options.lifecycleLogFile === undefined) return;
     await appendFile(this.options.lifecycleLogFile, `${JSON.stringify({ event: `${this.name}:${event}`, pid, at: new Date().toISOString() })}\n`, "utf8").catch(() => undefined);
   }

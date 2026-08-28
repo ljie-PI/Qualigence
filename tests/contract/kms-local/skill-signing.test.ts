@@ -12,6 +12,7 @@ import type {
   SignedSkillBundle,
   UnsignedSkillBundle,
 } from "@qualigence/skill";
+import { readWindowsFileAcl } from "../../helpers/windows-file-acl.js";
 
 function payload(
   overrides: Partial<ProcedureSkillVersion> = {},
@@ -90,16 +91,23 @@ describe("LocalSkillSigner", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  // TODO(Task 21): remove this Windows quarantine after key protection is asserted with Windows ACLs and POSIX mode bits per platform.
-  it.skipIf(process.platform === "win32")(
-    "generates a user-only private key and a publishable keyId",
-    () => {
+  it("generates a private key protected for the current user and required system principals", async () => {
     const signer = LocalSkillSigner.open(dataDir);
     expect(signer.keyId).toMatch(/^[0-9a-f]{32}$/);
-    const mode = statSync(join(dataDir, "skill-signing.key")).mode & 0o777;
-    expect(mode).toBe(0o600);
-    },
-  );
+    const privateKeyPath = join(dataDir, "skill-signing.key");
+
+    if (process.platform !== "win32") {
+      const mode = statSync(privateKeyPath).mode & 0o777;
+      expect(mode).toBe(0o600);
+      return;
+    }
+
+    const acl = await readWindowsFileAcl(privateKeyPath);
+    const allowedSids = new Set([acl.currentSid, "S-1-5-18", "S-1-5-32-544"]);
+    expect(acl.rules).not.toHaveLength(0);
+    expect(acl.rules.every((rule) => !rule.inherited && allowedSids.has(rule.sid))).toBe(true);
+    expect(acl.rules.some((rule) => rule.sid === acl.currentSid && rule.access === "Allow")).toBe(true);
+  });
 
   it("reuses the same key across reopen", () => {
     const first = LocalSkillSigner.open(dataDir).keyId;
