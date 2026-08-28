@@ -7,6 +7,7 @@ import { SystemClock } from "@qualigence/shared-kernel";
 import {
   ChildProcessUnit,
   isPidAlive,
+  restoreProcessIdentity,
   terminateProcess,
 } from "../../../apps/local-launcher/src/child-process-unit.js";
 import { HealthClient } from "../../../apps/local-launcher/src/health-client.js";
@@ -82,10 +83,11 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     }
   });
 
-  it("does not signal a PID when its owned process identity is stale or reused", async () => {
+  it("does not signal a PID when serialized handoff identity is stale or reused", async () => {
+    const identity = restoreProcessIdentity({ pid: 424_242, creationMarker: "unowned-test-marker" });
     const kill = vi.spyOn(process, "kill");
     try {
-      await terminateProcess(424_242, 0, false, undefined, () => false);
+      await terminateProcess(identity.pid, 0, false, undefined, () => identity.isCurrent());
       expect(kill).not.toHaveBeenCalled();
     } finally {
       kill.mockRestore();
@@ -111,7 +113,9 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
 
     await unit.start();
     const pid = unit.pid();
+    const identity = unit.identity();
     expect(pid).toBeGreaterThan(0);
+    expect(identity).toMatchObject({ pid, creationMarker: expect.any(String) });
     expect(isPidAlive(pid as number)).toBe(true);
 
     await unit.stop();
@@ -183,6 +187,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
       .map((line) => JSON.parse(line) as { event: string; pid: number });
     expect(events).toEqual([
       expect.objectContaining({ event: "runner:started", pid }),
+      expect.objectContaining({ event: "runner:stop_requested", pid }),
       expect.objectContaining({ event: "runner:graceful_stop_requested", pid }),
       expect.objectContaining({ event: "runner:grace_expired", pid }),
       expect.objectContaining({ event: "runner:force_stop_requested", pid }),
@@ -224,6 +229,7 @@ describe("ChildProcessUnit lifecycle (real processes)", () => {
     const events = (await import("node:fs/promises")).readFile(lifecycleLogFile, "utf8").then((text) => text.trim().split("\n").map((line) => JSON.parse(line) as { event: string; pid: number }));
     const resolvedEvents = await events;
     expect(resolvedEvents[0]).toEqual(expect.objectContaining({ event: "runner:started", pid }));
+    expect(resolvedEvents.findIndex((event) => event.event === "runner:stop_requested")).toBeGreaterThan(0);
     expect(resolvedEvents.findIndex((event) => event.event === "runner:graceful_stop_requested")).toBeGreaterThan(0);
     expect(resolvedEvents.at(-1)).toEqual(expect.objectContaining({ event: "runner:reaped", pid }));
     expect(unit.pid()).toBeUndefined();

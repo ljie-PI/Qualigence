@@ -1,3 +1,4 @@
+import { type ChildProcess } from "node:child_process";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { ExecutionTargetError, type ExecutionTargetErrorStatus } from "@qualigence/runner-kernel";
 import type { CapturedArtifact, LocatorDescriptor } from "./types.js";
@@ -1831,6 +1832,8 @@ export interface BrowserLaunch {
   readonly process: BrowserProcessIdentity;
   /** Internal test-only deadline override for failure-injection coverage. */
   readonly closeTimeoutMs?: number;
+  /** Exact-owned fallback only; never receives an arbitrary PID. */
+  forceClose?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -1861,6 +1864,9 @@ export const chromiumLauncher: BrowserLauncher = {
           pid,
           isAlive: () => child.exitCode === null && isPidAlive(pid),
         },
+        async forceClose(): Promise<void> {
+          await forceCloseOwnedBrowserChild(child);
+        },
         async close(): Promise<void> {
           let firstError: Error | undefined;
           const record = (error: unknown): void => {
@@ -1872,15 +1878,44 @@ export const chromiumLauncher: BrowserLauncher = {
             closeWithinDeadline(() => browser.close()).catch(record),
             closeWithinDeadline(() => server.close()).catch(record),
           ]);
-          if (firstError !== undefined) throw firstError;
+          if (firstError !== undefined) {
+            await forceCloseOwnedBrowserChild(child).catch(record);
+            throw firstError;
+          }
         },
       };
     } catch (error) {
-      await server.close().catch(() => undefined);
+      await closeWithinDeadline(() => server.close()).catch(async (closeError) => {
+        await forceCloseOwnedBrowserChild(child).catch(() => undefined);
+        throw closeError;
+      });
       throw error;
     }
   },
 };
+
+/**
+ * Reap only the ChildProcess returned by this exact launchServer call. This
+ * deliberately has no PID/name lookup fallback, so timeout recovery cannot
+ * affect an unrelated Chromium process.
+ */
+async function forceCloseOwnedBrowserChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // The handle may have exited between the check and the exact-child kill.
+  }
+  await closeWithinDeadline(() => waitForChildExit(child));
+}
+
+function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    child.once("exit", () => resolve());
+    child.once("error", reject);
+  });
+}
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -2635,7 +2670,12 @@ export class PlaywrightBrowserSession {
       ...(page === undefined ? [] : [closeWithinDeadline(() => page.close()).catch(recordUnlessClosedByOwner)]),
       ...(context === undefined ? [] : [closeWithinDeadline(() => context.close()).catch(recordUnlessClosedByOwner)]),
       ...(browserLaunch !== undefined
-        ? [closeWithinDeadline(() => browserLaunch.close(), browserLaunch.closeTimeoutMs).catch(record)]
+        ? [closeWithinDeadline(() => browserLaunch.close(), browserLaunch.closeTimeoutMs).catch(async (error) => {
+          record(error);
+          if (browserLaunch.forceClose !== undefined) {
+            await closeWithinDeadline(() => browserLaunch.forceClose!(), browserLaunch.closeTimeoutMs).catch(record);
+          }
+        })]
         : browser === undefined ? [] : [closeWithinDeadline(() => browser.close()).catch(record)]),
     ]);
     return firstError;

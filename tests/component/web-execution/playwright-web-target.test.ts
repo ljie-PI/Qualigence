@@ -156,10 +156,13 @@ describe("PlaywrightWebTargetAdapter facade", () => {
       newPage: vi.fn(async () => page), setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), close: vi.fn(async () => undefined),
     };
     const browser = { newContext: vi.fn(async () => context) };
+    let alive = true;
+    const forceClose = vi.fn(async () => { alive = false; });
     const launch: BrowserLaunch = {
       browser: browser as never,
-      process: { pid: 424_243, isAlive: () => true },
+      process: { pid: 424_243, isAlive: () => alive },
       closeTimeoutMs: 10,
+      forceClose,
       close: vi.fn(() => new Promise<void>(() => undefined)),
     };
     const session = new PlaywrightBrowserSession(options(), {
@@ -169,6 +172,8 @@ describe("PlaywrightWebTargetAdapter facade", () => {
     await session.start();
     await expect(session.close()).rejects.toMatchObject({ code: "BrowserCloseTimedOut" });
     expect(launch.close).toHaveBeenCalledTimes(1);
+    expect(forceClose).toHaveBeenCalledTimes(1);
+    expect(launch.process.isAlive()).toBe(false);
   });
 
   it("rejects captureArtifacts for an unknown graph id", async () => {

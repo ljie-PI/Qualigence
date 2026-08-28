@@ -8,7 +8,14 @@ import { fork } from "node:child_process";
 import { appendFile, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:http";
-import { captureProcessIdentity, terminateProcess, type ProcessIdentity } from "./child-process-unit.js";
+import {
+  captureProcessIdentity,
+  isPidAlive,
+  restoreProcessIdentity,
+  terminateProcess,
+  type ProcessIdentity,
+  type ProcessIdentityEvidence,
+} from "./child-process-unit.js";
 import { claimMatchingStopRequest, clearOwnedTopologyFiles, parseStopRequest, sameTopology } from "./runtime-state.js";
 
 /**
@@ -146,32 +153,50 @@ export class ProcessSupervisor {
 
 }
 
+export interface DetachedSupervisorHandoff {
+  readonly pid: number;
+  /** Exact identity retained by the parent for post-handoff rollback only. */
+  readonly identity: ProcessIdentity;
+}
+
 export function handoffDetachedSupervisor(input: {
     readonly dataDir: string;
     readonly corePid: number;
     readonly runnerPid: number;
+    readonly coreIdentity: ProcessIdentityEvidence;
+    readonly runnerIdentity: ProcessIdentityEvidence;
     readonly coreHttpPort: number;
     readonly startedAt: string;
     readonly supervisorCredential: Uint8Array;
     readonly shutdown: { readonly stopRequestPollIntervalMs: number; readonly stopRequestMaximumAgeMs: number; readonly drainTimeoutMs: number };
-}): Promise<number> {
+}): Promise<DetachedSupervisorHandoff> {
     return new Promise((resolve, reject) => {
       const entry = process.argv[1]; if (entry === undefined) { reject(new LauncherError("SupervisorUnavailable", "launcher entrypoint is unavailable")); return; }
       const child = fork(entry, ["__supervise"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const identity = child.pid === undefined ? undefined : captureProcessIdentity(child.pid);
+      if (identity === undefined) {
+        // Without an identity this parent must not later signal a PID which
+        // could have been reused. The Core/Runner units remain direct handles
+        // and are rolled back by the caller.
+        child.disconnect();
+        child.unref();
+        reject(new LauncherError("SupervisorUnavailable", "detached supervisor identity is unavailable"));
+        return;
+      }
       let settled = false;
       let timeout: NodeJS.Timeout;
       const fail = (error: LauncherError): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        const pid = child.pid;
-        void (pid === undefined ? Promise.resolve() : terminateProcess(pid, 0)).finally(() => reject(error));
+        void terminateProcess(identity.pid, 0, false, undefined, () => identity.isCurrent())
+          .finally(() => reject(error));
       };
       timeout = setTimeout(() => fail(new LauncherError("SupervisorUnavailable", "detached supervisor did not acknowledge handoff")), 10_000);
       child.once("message", (message) => {
         if (message !== "ready" || child.pid === undefined) return;
         if (settled) return;
-        settled = true; clearTimeout(timeout); child.disconnect(); child.unref(); resolve(child.pid);
+        settled = true; clearTimeout(timeout); child.disconnect(); child.unref(); resolve({ pid: child.pid, identity });
       });
       child.once("error", (error) => fail(new LauncherError("SupervisorUnavailable", "detached supervisor failed", { cause: error })));
       child.send({ ...input, supervisorCredential: Buffer.from(input.supervisorCredential).toString("base64url") });
@@ -183,7 +208,10 @@ export function runDetachedSupervisor(): void {
       void (async () => {
       const input = parseDetachedInput(value);
       const lifecycleLogFile = join(input.dataDir, "logs", "lifecycle.jsonl");
-      const units: ProcessUnit[] = [new PidProcessUnit("core", input.corePid, lifecycleLogFile), new PidProcessUnit("runner", input.runnerPid, lifecycleLogFile)];
+      const units: ProcessUnit[] = [
+        new PidProcessUnit("core", input.coreIdentity, lifecycleLogFile),
+        new PidProcessUnit("runner", input.runnerIdentity, lifecycleLogFile),
+      ];
       const supervisor = new ProcessSupervisor({ version: "0.1.0", units });
       await supervisor.start();
       process.send?.("ready");
@@ -194,29 +222,43 @@ export function runDetachedSupervisor(): void {
 }
 
 class PidProcessUnit implements ProcessUnit {
-  private identity: ProcessIdentity | undefined;
+  private readonly identity: ProcessIdentity;
 
-  constructor(readonly name: string, private readonly processId: number, private readonly lifecycleLogFile: string) {}
+  constructor(readonly name: string, evidence: ProcessIdentityEvidence, private readonly lifecycleLogFile: string) {
+    this.identity = restoreProcessIdentity(evidence);
+  }
 
   async start(): Promise<void> {
-    // The detached supervisor receives only a PID handoff, so bind it to the
-    // process creation identity before accepting shutdown responsibility.
-    // Failure to read that identity fails closed at stop time.
-    this.identity = captureProcessIdentity(this.processId);
+    // The parent captured this identity while it still owned the ChildProcess.
+    // Refuse handoff if the original process cannot be established here.
+    if (!this.identity.isCurrent()) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity is unavailable`);
+    }
   }
 
   async stop(): Promise<void> {
     const identity = this.identity;
-    if (identity !== undefined) {
-      await terminateProcess(
-        identity.pid,
-        5_000,
-        true,
-        async (event) => recordLifecycle(this.lifecycleLogFile, `${this.name}:${event}`, identity.pid),
-        () => identity.isCurrent(),
-      );
+    if (!identity.isCurrent()) {
+      if (!isPidAlive(identity.pid)) {
+        await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, identity.pid);
+        return;
+      }
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed before shutdown`);
     }
-    await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, this.processId);
+    // Keep the original lifecycle contract for existing Local Launcher
+    // consumers, alongside the precise termination boundaries below.
+    await recordLifecycle(this.lifecycleLogFile, `${this.name}:stop_requested`, identity.pid);
+    const reaped = await terminateProcess(
+      identity.pid,
+      5_000,
+      true,
+      async (event) => recordLifecycle(this.lifecycleLogFile, `${this.name}:${event}`, identity.pid),
+      () => identity.isCurrent(),
+    );
+    if (!reaped) {
+      throw new LauncherError("SupervisorUnavailable", `owned ${this.name} process identity changed during shutdown`);
+    }
+    await recordLifecycle(this.lifecycleLogFile, `${this.name}:reaped`, identity.pid);
   }
   async readinessChecks(): Promise<readonly HealthCheck[]> { return []; }
   async livenessChecks(): Promise<readonly HealthCheck[]> { return []; }
@@ -227,7 +269,8 @@ async function recordLifecycle(path: string, event: string, pid: number): Promis
 }
 
 interface DetachedInput {
-  readonly dataDir: string; readonly corePid: number; readonly runnerPid: number; readonly coreHttpPort: number;
+  readonly dataDir: string; readonly corePid: number; readonly runnerPid: number;
+  readonly coreIdentity: ProcessIdentityEvidence; readonly runnerIdentity: ProcessIdentityEvidence; readonly coreHttpPort: number;
   readonly startedAt: string; readonly supervisorCredential: string;
   readonly shutdown: { readonly stopRequestPollIntervalMs: number; readonly stopRequestMaximumAgeMs: number; readonly drainTimeoutMs: number };
 }
@@ -235,8 +278,17 @@ interface DetachedInput {
 function parseDetachedInput(value: unknown): DetachedInput {
   if (typeof value !== "object" || value === null) throw new Error("Invalid detached supervisor handoff.");
   const input = value as Partial<DetachedInput>;
-  if (typeof input.dataDir !== "string" || !Number.isSafeInteger(input.corePid) || !Number.isSafeInteger(input.runnerPid) || !Number.isSafeInteger(input.coreHttpPort) || typeof input.startedAt !== "string" || typeof input.supervisorCredential !== "string" || input.shutdown === undefined) throw new Error("Invalid detached supervisor handoff.");
+  const corePid = input.corePid;
+  const runnerPid = input.runnerPid;
+  if (typeof input.dataDir !== "string" || typeof corePid !== "number" || !Number.isSafeInteger(corePid) || typeof runnerPid !== "number" || !Number.isSafeInteger(runnerPid) || !identityMatchesPid(input.coreIdentity, corePid) || !identityMatchesPid(input.runnerIdentity, runnerPid) || !Number.isSafeInteger(input.coreHttpPort) || typeof input.startedAt !== "string" || typeof input.supervisorCredential !== "string" || input.shutdown === undefined) throw new Error("Invalid detached supervisor handoff.");
   return input as DetachedInput;
+}
+
+function identityMatchesPid(value: unknown, pid: number): value is ProcessIdentityEvidence {
+  return typeof value === "object" && value !== null &&
+    (value as Partial<ProcessIdentityEvidence>).pid === pid &&
+    typeof (value as Partial<ProcessIdentityEvidence>).creationMarker === "string" &&
+    ((value as Partial<ProcessIdentityEvidence>).creationMarker?.length ?? 0) > 0;
 }
 
 async function pollDetachedStop(supervisor: ProcessSupervisor, input: DetachedInput): Promise<void> {

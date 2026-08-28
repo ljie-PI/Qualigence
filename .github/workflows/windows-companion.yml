@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   ticket-32-windows-platform-evidence:
     runs-on: windows-latest
