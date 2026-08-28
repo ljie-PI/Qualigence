@@ -50,19 +50,37 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
+      # v4.2.3, reviewed immutable action commit.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~\AppData\Local\pnpm\store
+            ~\AppData\Local\ms-playwright
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: ${{ runner.os }}-pnpm-cargo-playwright-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
       - name: Run Windows and Rust Gate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force gate-windows-rust | Out-Null
           corepack enable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((node --version) -notmatch '^v24\.') { throw 'node version must be 24' }
           if ((corepack pnpm --version) -ne '11.7.0') { throw 'pnpm version must be 11.7.0' }
           if (Test-Path 'C:\Program Files\Git\usr\bin\openssl.exe') { $env:PATH = "C:\Program Files\Git\usr\bin;" + $env:PATH }
-          @("commit=$(git rev-parse HEAD)", "node=$(node --version)", "pnpm=$(corepack pnpm --version)", "rust=$(rustc --version)", "os=$([System.Environment]::OSVersion.VersionString)") | Set-Content gate-windows-rust/environment.txt
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts windows11 cargo openssl 2>&1 | Tee-Object gate-windows-rust/preflight.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @("commit=$(git rev-parse HEAD)", "node=$(node --version)", "pnpm=$(corepack pnpm --version)", "rust=$(rustc --version)", "openssl=$(openssl version)", "os=$([System.Environment]::OSVersion.VersionString)") | Set-Content gate-windows-rust/environment.txt
           corepack pnpm install --frozen-lockfile 2>&1 | Tee-Object gate-windows-rust/install.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup toolchain install 1.96.1 --profile minimal --component rustfmt 2>&1 | Tee-Object gate-windows-rust/rustup.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           corepack pnpm --filter @qualigence/web-playwright exec playwright install chromium 2>&1 | Tee-Object gate-windows-rust/chromium.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           corepack pnpm gate:windows 2>&1 | Tee-Object gate-windows-rust/command.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem gate-windows-rust -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content gate-windows-rust/sha256.txt
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

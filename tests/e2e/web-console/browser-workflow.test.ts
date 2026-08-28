@@ -5,6 +5,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join, normalize } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { LocalArtifactStore } from "@qualigence/artifact-fs";
+import { ARTIFACT_CHUNK_SIZE_BYTES } from "@qualigence/runner-protocol";
+import { PostgresSkillStore } from "@qualigence/postgres-runtime";
+import { bundlePayloadContentSha256, REQUIRED_REPLAY_ORACLES, type ProcedureSkillVersion, type SignedSkillBundle, type SkillEvaluation } from "@qualigence/skill";
+import type { RecordingSession } from "@qualigence/recording";
 import { PlaywrightBrowserSession, type BrowserLauncher } from "@qualigence/web-playwright/internal";
 import playwright from "../../../packages/target-adapters/web-playwright/node_modules/playwright/index.js";
 import { requireInfrastructure } from "../../helpers/infrastructure-preflight.js";
@@ -25,6 +30,7 @@ describe("rendered Web Console browser workflow", () => {
   let proxy: Server | undefined;
   let consoleUrl = "";
   let browser: PlaywrightBrowserSession | undefined;
+  let secondBrowser: PlaywrightBrowserSession | undefined;
   const browserErrors: string[] = [];
 
   beforeAll(async () => {
@@ -52,9 +58,17 @@ describe("rendered Web Console browser workflow", () => {
       tenantId: "tenant-a",
       roles: ["qa-admin"],
       jwt,
-      issueAccessToken: () => fixture!.token("tenant-a", ["admin"]),
+      issueAccessToken: (subject) => fixture!.token("tenant-a", ["admin"], { sub: subject }),
     });
     fixture = await setupServerFixture({ oidc: { issuer: oidc.issuer, jwt } });
+    await seedReviewTask(fixture, { tenantId: "tenant-a", taskId: "browser-review", caseId: "browser-case" });
+    await seedVerifiedSkill(fixture, { tenantId: "tenant-a", skillId: "browser-skill" });
+    await seedEvidenceArtifact(fixture, {
+      tenantId: "tenant-a", projectId: "browser-evidence-project", runId: "browser-evidence-run", artifactId: "browser-evidence-artifact", bytes: new TextEncoder().encode("browser-authorized-artifact"),
+    });
+    await seedEvidenceArtifact(fixture, {
+      tenantId: "tenant-b", projectId: "tenant-b-evidence-project", runId: "tenant-b-evidence-run", artifactId: "tenant-b-evidence-artifact", bytes: new TextEncoder().encode("tenant-b-secret-artifact"),
+    });
     const launcher: BrowserLauncher = {
       launch: (options) => playwright.chromium.launch({ ...options, args: ["--ignore-certificate-errors"] }),
     };
@@ -74,6 +88,7 @@ describe("rendered Web Console browser workflow", () => {
   }, 240_000);
 
   afterAll(async () => {
+    await secondBrowser?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
     await closeServer(proxy);
     await oidc?.stop().catch(() => undefined);
@@ -124,9 +139,156 @@ describe("rendered Web Console browser workflow", () => {
       await page.getByRole("button", { name: "Create Mission from snapshots" }).click();
       await page.getByRole("link", { name: "Open created Mission" }).click();
       await page.getByRole("button", { name: "Start Mission (v1)" }).click();
+      const runLink = page.locator('a[href^="/runs/"]').first();
+      await runLink.waitFor();
+      await runLink.click();
+      await page.getByRole("heading", { name: /^Run / }).waitFor();
+      await page.getByText("running", { exact: true }).waitFor();
+
+      await page.getByRole("link", { name: "Reviews" }).click();
+      await page.getByRole("link", { name: "browser-review" }).click();
+      await page.getByRole("button", { name: "Claim" }).waitFor();
+
+      secondBrowser = createBrowserSession(consoleUrl);
+      await secondBrowser.start();
+      await secondBrowser.withPage(async (secondPage) => {
+        await secondPage.getByRole("button", { name: "Sign in with SSO" }).click();
+        await secondPage.getByRole("heading", { name: "Projects" }).waitFor();
+        await secondPage.getByRole("link", { name: "Reviews" }).click();
+        await secondPage.getByRole("link", { name: "browser-review" }).click();
+        await secondPage.getByRole("button", { name: "Claim" }).click();
+        await secondPage.getByText("claimed", { exact: true }).waitFor();
+        await secondPage.getByText("browser-tester-2", { exact: true }).waitFor();
+      });
+      await page.getByRole("button", { name: "Claim" }).click();
+      await page.getByRole("alert").filter({ hasText: "Already changed by another reviewer (now version 2)." }).waitFor();
+      await page.getByText("browser-tester-2", { exact: true }).waitFor();
+
+      await page.getByRole("link", { name: "Skills" }).click();
+      await page.getByRole("link", { name: "browser-skill" }).click();
+      await page.getByText("verified", { exact: true }).waitFor();
+      await page.getByText("valid", { exact: true }).waitFor();
+      await page.getByText("passed", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Promote (v3)" }).click();
+      await page.getByText("promoted", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Deprecate (v4)" }).click();
+      await page.getByText("deprecated", { exact: true }).waitFor();
+      await page.getByText("revoked", { exact: true }).waitFor();
+
+      await page.getByRole("link", { name: "Missions" }).click();
+      await page.getByRole("link", { name: "evidence-mission-browser-evidence-project" }).click();
+      await page.getByRole("link", { name: "Artifact browser-evidence-artifact" }).click();
+      await page.getByText("Authorized", { exact: true }).waitFor();
+      const authorizedBytes = page.waitForResponse((response) => response.url().includes("/browser-evidence-artifact/bytes?") && response.status() === 200);
+      await page.getByRole("button", { name: "Download authorized Artifact" }).click();
+      expect((await authorizedBytes).headers()["content-length"]).toBe(String(Buffer.byteLength("browser-authorized-artifact")));
+      await page.getByRole("link", { name: "Save authorized Artifact" }).waitFor();
+      expect(await page.locator("body").textContent()).not.toContain("browser-authorized-artifact");
+
+      const deniedResponse = page.waitForResponse((response) => response.url().includes("/tenant-b-evidence-project/runs/tenant-b-evidence-run/artifacts/tenant-b-evidence-artifact?") && response.status() === 404);
+      await navigateConsoleRoute(page, "/projects/tenant-b-evidence-project/runs/tenant-b-evidence-run/artifacts/tenant-b-evidence-artifact");
+      await page.getByRole("alert").filter({ hasText: "Artifact is unavailable." }).waitFor();
+      expect(await (await deniedResponse).text()).not.toContain("tenant-b-secret-artifact");
+      expect(await page.locator("body").textContent()).not.toContain("tenant-b-secret-artifact");
     });
-  }, 90_000);
+  }, 120_000);
 });
+
+function createBrowserSession(consoleUrl: string): PlaywrightBrowserSession {
+  const launcher: BrowserLauncher = {
+    launch: (options) => playwright.chromium.launch({ ...options, args: ["--ignore-certificate-errors"] }),
+  };
+  return new PlaywrightBrowserSession({
+    url: consoleUrl,
+    expectedOrigin: consoleUrl,
+    allowedOrigins: [consoleUrl],
+    actionTimeoutMs: 20_000,
+    navigationTimeoutMs: 20_000,
+    headed: false,
+  }, launcher);
+}
+
+async function seedReviewTask(fixture: ServerFixture, input: { readonly tenantId: string; readonly taskId: string; readonly caseId: string }): Promise<void> {
+  await fixture.provider.withTenant(input.tenantId, async ({ db }) => {
+    await db.insertInto("review_tasks").values({
+      tenant_id: input.tenantId, task_id: input.taskId, case_id: input.caseId,
+      status: "open", reason: "browser review", priority: "high", evidence_completeness: "limited",
+      assignee_id: null, version: 1, created_at: "2026-08-28T00:00:00.000Z", updated_at: "2026-08-28T00:00:00.000Z",
+    } as never).execute();
+  });
+}
+
+const skillRecording: RecordingSession = {
+  recordingId: "browser-skill-rec", projectId: "browser-skill-project", targetId: "browser-skill-target", targetVersion: "1",
+  observationSchemaEpoch: "pre-v1", startedAt: "2026-08-28T00:00:00.000Z", completedAt: "2026-08-28T00:01:00.000Z",
+  steps: [{ ordinal: 1, beforeGraphRef: "browser-graph-before", intent: { kind: "click", target: { purpose: "save" } }, resolvedNode: { role: "button", name: "Save", purpose: "save", sourceNodeId: "browser-node-save" }, outcome: { status: "ok" }, afterGraphRef: "browser-graph-after", checkpoint: { requiredClaims: ["saved"], stateFingerprint: "browser-fingerprint" } }],
+  sourceTraceRefs: ["browser-skill-run"],
+};
+
+function skillVersion(skillId: string, version: number, state: ProcedureSkillVersion["state"]): ProcedureSkillVersion {
+  const base: ProcedureSkillVersion = {
+    skillId, version, state, projectId: skillRecording.projectId,
+    targetScope: { targetId: skillRecording.targetId, allowedOrigins: ["https://example.test"] },
+    parameters: [],
+    steps: [{ stepId: "browser-step", intent: { kind: "click", target: { purpose: "save" } }, preconditions: [], checkpoint: [{ kind: "claim_satisfied", claimId: "saved" }], recovery: "stop", sourceNodeId: "browser-node-save" }],
+    sourceRecordingIds: [skillRecording.recordingId], observationSchemaEpoch: "pre-v1", locatorSchemaVersion: "semantic-locator/v1", compilerVersion: "skill-compiler/v1", contentSha256: "uncomputed",
+  };
+  return { ...base, contentSha256: bundlePayloadContentSha256(base) };
+}
+
+async function seedVerifiedSkill(fixture: ServerFixture, input: { readonly tenantId: string; readonly skillId: string }): Promise<void> {
+  await fixture.provider.withTenant(input.tenantId, async ({ db }) => {
+    const store = new PostgresSkillStore(db, input.tenantId);
+    await store.saveRecording(skillRecording);
+    await store.saveSkillVersion({ version: skillVersion(input.skillId, 1, "draft"), expectedVersion: 0, sourceRecording: skillRecording });
+    await store.saveSkillVersion({ version: skillVersion(input.skillId, 2, "candidate"), expectedVersion: 1, sourceRecording: skillRecording });
+    const verified = skillVersion(input.skillId, 3, "verified");
+    await store.saveSkillVersion({ version: verified, expectedVersion: 2, sourceRecording: skillRecording });
+    const oracles = REQUIRED_REPLAY_ORACLES.map((oracle) => ({ oracle, status: "passed" as const }));
+    const [firstOracle, ...remainingOracles] = oracles;
+    if (firstOracle === undefined) throw new Error("Skill promotion requires at least one replay oracle");
+    const evaluation: SkillEvaluation = { evaluationId: `${input.skillId}-evaluation`, skillId: input.skillId, skillVersion: 3, oracles: [firstOracle, ...remainingOracles], outcome: "passed", signatureValid: true, createdAt: "2026-08-28T00:02:00.000Z" };
+    const bundle: SignedSkillBundle = await fixture.skillSigner.sign({ bundleId: `${input.skillId}-bundle`, skillId: input.skillId, skillVersion: 3, schemaVersion: "skill-bundle/v1", compilerVersion: verified.compilerVersion, contentSha256: verified.contentSha256, signerKeyId: fixture.skillSigner.keyId, signatureAlgorithm: "Ed25519", issuedAt: "2026-08-28T00:03:00.000Z", payload: verified });
+    await store.saveEvaluation(evaluation);
+    await store.saveBundle(bundle);
+  });
+}
+
+async function seedEvidenceArtifact(fixture: ServerFixture, input: { readonly tenantId: string; readonly projectId: string; readonly runId: string; readonly artifactId: string; readonly bytes: Uint8Array }): Promise<void> {
+  const store = new LocalArtifactStore(join(fixture.artifactDataDir, input.tenantId, input.projectId), { now: () => "2026-08-28T00:00:03.000Z" });
+  const manifest = await store.write({ artifactId: input.artifactId, runId: input.runId, name: `${input.artifactId}.txt`, kind: "log", mediaType: "text/plain", bytes: input.bytes });
+  const caseId = `browser-evidence-case-${input.projectId}`;
+  const profile = await fixture.evidenceKms.encryptionProfile({ tenantId: input.tenantId, caseId, region: "self-hosted", purpose: "investigation" });
+  const protectedHeader = { schemaVersion: profile.aadSchemaVersion, capsuleId: input.artifactId, profileId: profile.profileId, payloadSchemaVersion: "evidence-capsule/v1", tenantId: input.tenantId, caseId, recipient: profile.recipient, region: profile.region, purpose: profile.purpose, policyId: profile.policyId, contentEncryptionAlgorithm: profile.contentEncryptionAlgorithm, keyWrappingAlgorithm: profile.keyWrappingAlgorithm, wrappingKeyId: profile.wrappingKeyId, plaintextSha256: manifest.sha256, plaintextBytes: manifest.size, createdAt: manifest.createdAt, expiresAt: profile.expiresAt };
+  const missionId = `evidence-mission-${input.projectId}`;
+  const binding = { targetId: `evidence-target-${input.projectId}`, targetVersion: 1, targetSnapshotHash: `evidence-target-snapshot-${input.projectId}`, runnerId: `runner-${input.projectId}`, planVersion: 1, planSnapshotHash: `evidence-plan-snapshot-${input.projectId}`, configuration: { kind: "web", startUrl: "https://example.test/", allowedOrigins: ["https://example.test"], browser: "chromium" } };
+  const dispatch = { targetUrl: "https://example.test/", modelProfileId: "default", headed: false, navigationTimeoutMs: 30_000, actionTimeoutMs: 10_000, binding };
+  const compiled = { missionId, missionRevision: 1, projectId: input.projectId, planId: `evidence-plan-${input.projectId}`, planVersion: 1, planSnapshotHash: binding.planSnapshotHash, targetId: binding.targetId, targetVersion: binding.targetVersion, targetSnapshotHash: binding.targetSnapshotHash, executionPolicy: { policyId: "browser-evidence-policy", environment: "isolated_test", allowedOrigins: ["https://example.test"], allowedActionKinds: ["click"], maximumRisk: "Normal", explorationAllowed: false, issuedAt: "2026-08-28T00:00:00.000Z", expiresAt: "2026-08-28T00:00:30.000Z" }, jobs: [], compiledHash: `evidence-compiled-${input.projectId}` };
+  await fixture.provider.withTenant(input.tenantId, async ({ db }) => {
+    await db.insertInto("missions").values({ tenant_id: input.tenantId, mission_id: missionId, revision: 1, project_id: input.projectId, plan_id: `evidence-plan-${input.projectId}`, prd_id: `evidence-prd-${input.projectId}`, prd_revision: 1, target_id: binding.targetId, compiled_hash: compiled.compiledHash, status: "running", dispatch_json: JSON.stringify(dispatch), stop_on_blocked: 1 } as never).execute();
+    await db.insertInto("mission_revisions").values({ tenant_id: input.tenantId, mission_id: missionId, revision: 1, compiled_json: JSON.stringify(compiled), created_at: manifest.createdAt } as never).execute();
+    await db.insertInto("mission_scheduling_heads").values({ tenant_id: input.tenantId, mission_id: missionId, mission_revision: 1, version: 1, compiled_hash: compiled.compiledHash } as never).execute();
+    await db.insertInto("execution_jobs").values({ tenant_id: input.tenantId, job_id: `evidence-logical-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, test_case_id: caseId, objective: "Browser Evidence API read", required_capabilities_json: "[]", source_refs_json: "[]", snapshot_hash: `evidence-snapshot-${input.projectId}`, snapshot_json: "{}", idempotency_key: `evidence-logical-${input.projectId}`, status: "queued" } as never).execute();
+    await db.insertInto("execution_runs").values({ tenant_id: input.tenantId, run_id: input.runId, job_id: `evidence-runner-job-${input.projectId}`, target_kind: "web", objective: "Browser Evidence API read", status: "running", next_sequence_number: 1, created_at: "2026-08-28T00:00:00.000Z", completed_at: null, error_code: null } as never).execute();
+    await db.insertInto("mission_job_attempts").values({ tenant_id: input.tenantId, attempt_id: `evidence-attempt-${input.projectId}`, mission_id: `evidence-mission-${input.projectId}`, mission_revision: 1, logical_job_id: `evidence-logical-${input.projectId}`, runner_job_id: `evidence-runner-job-${input.projectId}`, run_id: input.runId, status: "accepted", created_at: "2026-08-28T00:00:00.000Z" } as never).execute();
+    await db.insertInto("artifact_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, run_id: manifest.runId, kind: manifest.kind, media_type: manifest.mediaType, relative_path: manifest.relativePath, sha256: manifest.sha256, size_bytes: manifest.size, created_at: manifest.createdAt } as never).execute();
+    await db.insertInto("artifact_upload_manifests").values({ tenant_id: input.tenantId, artifact_id: manifest.artifactId, project_id: input.projectId, run_id: manifest.runId, job_id: `evidence-runner-job-${input.projectId}`, size_bytes: manifest.size, sha256: manifest.sha256, media_type: manifest.mediaType, sensitivity: "sensitive", chunk_size_bytes: ARTIFACT_CHUNK_SIZE_BYTES, total_chunks: Math.ceil(manifest.size / ARTIFACT_CHUNK_SIZE_BYTES), registered_by_runner_id: `runner-${input.projectId}`, registered_lease_epoch: 1, status: "verified", relative_path: manifest.relativePath, created_at: manifest.createdAt, verified_at: manifest.createdAt } as never).execute();
+    await db.insertInto("evidence_encryption_profiles").values({ tenant_id: input.tenantId, profile_id: profile.profileId, case_id: profile.caseId, recipient: profile.recipient, region: profile.region, purpose: profile.purpose, policy_id: profile.policyId, wrapping_key_id: profile.wrappingKeyId, wrapping_public_key_pem: profile.wrappingPublicKeyPem, content_encryption_algorithm: profile.contentEncryptionAlgorithm, key_wrapping_algorithm: profile.keyWrappingAlgorithm, aad_schema_version: profile.aadSchemaVersion, allowed_entry_kinds_json: JSON.stringify(profile.allowedEntryKinds), maximum_entry_bytes: profile.maximumEntryBytes, maximum_plaintext_bytes: profile.maximumPlaintextBytes, maximum_ciphertext_bytes: profile.maximumCiphertextBytes, expires_at: profile.expiresAt, created_at: manifest.createdAt } as never).execute();
+    await db.insertInto("evidence_capsule_manifests").values({ tenant_id: input.tenantId, capsule_id: input.artifactId, revision: 1, parent_revision: null, profile_id: profile.profileId, payload_schema_version: "evidence-capsule/v1", aad_schema_version: profile.aadSchemaVersion, case_id: caseId, recipient: profile.recipient, region: profile.region, purpose: profile.purpose, policy_id: profile.policyId, content_encryption_algorithm: profile.contentEncryptionAlgorithm, key_wrapping_algorithm: profile.keyWrappingAlgorithm, wrapping_key_id: profile.wrappingKeyId, plaintext_sha256: manifest.sha256, plaintext_bytes: manifest.size, ciphertext_sha256: manifest.sha256, ciphertext_bytes: manifest.size, ciphertext: Buffer.from(input.bytes), wrapped_dek_base64: "test-wrapped-dek", nonce_base64: "test-nonce", auth_tag_base64: "test-tag", protected_header_json: JSON.stringify(protectedHeader), revocation_state: "active", revoked_at: null, revoked_reason: null, lifecycle_state: "active", lifecycle_updated_at: manifest.createdAt, deleted_at: null, last_lifecycle_error: null, created_at: manifest.createdAt, expires_at: profile.expiresAt } as never).execute();
+  });
+}
+
+async function navigateConsoleRoute(page: { evaluate<T, Arg>(pageFunction: (arg: Arg) => T | Promise<T>, arg: Arg): Promise<T> }, path: string): Promise<void> {
+  await page.evaluate((route) => {
+    const browser = globalThis as unknown as {
+      readonly history: { pushState(data: unknown, unused: string, url?: string): void };
+      readonly PopStateEvent: new (type: string) => object;
+      dispatchEvent(event: object): boolean;
+    };
+    browser.history.pushState(null, "", route);
+    browser.dispatchEvent(new browser.PopStateEvent("popstate"));
+  }, path);
+}
 
 async function buildConsoleDist(): Promise<void> {
   if (process.platform === "win32") {
@@ -159,7 +321,7 @@ async function startConsoleProxy(config: () => Record<string, unknown>, apiBaseU
       response.end(Buffer.from(await upstreamResponse.arrayBuffer()));
       return;
     }
-    const requested = path === "/" || path === "/auth/callback" ? "index.html" : normalize(path).replace(/^[/\\]+/, "");
+    const requested = path === "/" || !path.split("/").at(-1)?.includes(".") ? "index.html" : normalize(path).replace(/^[/\\]+/, "");
     try {
       const body = await readFile(join(dist, requested));
       if (requested === "index.html") {

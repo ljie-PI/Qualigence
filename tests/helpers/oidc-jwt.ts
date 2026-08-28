@@ -40,6 +40,7 @@ interface AuthorizationCode {
   readonly redirectUri: string;
   readonly nonce: string;
   readonly codeChallenge: string;
+  readonly subject: string;
 }
 
 function base64url(input: Buffer | string): string {
@@ -95,7 +96,8 @@ export async function startTestOidcProvider(input: {
   readonly clientId: string;
   readonly tenantId: string;
   readonly roles: readonly string[];
-  readonly issueAccessToken: () => string;
+  /** Receives the authenticated browser subject for a matching Server token. */
+  readonly issueAccessToken: (subject: string) => string;
   readonly jwt?: TestJwtIssuer;
 }): Promise<TestOidcProvider> {
   const directory = await mkdtemp(join(tmpdir(), "qualigence-test-oidc-"));
@@ -105,6 +107,7 @@ export async function startTestOidcProvider(input: {
   const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
   const jwt = input.jwt ?? createTestJwtIssuer();
   const codes = new Map<string, AuthorizationCode>();
+  let authorizationCount = 0;
   let server: Server | undefined;
   let issuer = "";
 
@@ -129,7 +132,8 @@ export async function startTestOidcProvider(input: {
         return;
       }
       const code = randomBytes(32).toString("base64url");
-      codes.set(code, { clientId, redirectUri, nonce, codeChallenge: challenge });
+      const subject = `browser-tester-${String(++authorizationCount)}`;
+      codes.set(code, { clientId, redirectUri, nonce, codeChallenge: challenge, subject });
       const callback = new URL(redirectUri);
       callback.searchParams.set("code", code);
       callback.searchParams.set("state", state);
@@ -151,8 +155,8 @@ export async function startTestOidcProvider(input: {
       }
       codes.delete(code);
       const now = Math.floor(Date.now() / 1000);
-      const idToken = jwt.sign({ iss: issuer, aud: transaction.clientId, sub: "browser-tester", iat: now, nbf: now - 5, exp: now + 300, nonce: transaction.nonce, "https://qualigence.example/tenant": input.tenantId, "https://qualigence.example/roles": input.roles });
-      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ access_token: input.issueAccessToken(), id_token: idToken, token_type: "Bearer", expires_in: 300 }));
+      const idToken = jwt.sign({ iss: issuer, aud: transaction.clientId, sub: transaction.subject, iat: now, nbf: now - 5, exp: now + 300, nonce: transaction.nonce, "https://qualigence.example/tenant": input.tenantId, "https://qualigence.example/roles": input.roles });
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ access_token: input.issueAccessToken(transaction.subject), id_token: idToken, token_type: "Bearer", expires_in: 300 }));
       return;
     }
     response.writeHead(404).end();

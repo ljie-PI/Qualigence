@@ -17,12 +17,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
+      # v4.2.3, reviewed immutable action commit.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ~/.local/share/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Run Docker-backed Self-hosted Gate
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           mkdir -p gate-self-hosted
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts docker 2>&1 | tee gate-self-hosted/preflight.txt
           { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; docker --version; docker compose version; } | tee gate-self-hosted/environment.txt
+          node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-self-hosted/install.txt
           corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
