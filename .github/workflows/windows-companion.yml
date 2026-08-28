@@ -81,7 +81,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           corepack pnpm gate:windows 2>&1 | Tee-Object gate-windows-rust/command.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-ChildItem gate-windows-rust -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content gate-windows-rust/sha256.txt
+          if (!(Test-Path .gate-evidence/gate-windows-rust/accepted.json)) { throw 'GateAcceptedMarkerMissing' }
+          Copy-Item -Recurse .gate-evidence/gate-windows-rust gate-windows-rust/gate-evidence
+          Get-ChildItem gate-windows-rust -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path)" } | Set-Content gate-windows-rust/sha256.txt
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()

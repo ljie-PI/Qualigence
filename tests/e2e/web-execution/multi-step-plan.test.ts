@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -14,7 +15,7 @@ import type {
 } from "@qualigence/runner-protocol";
 import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS, capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
-import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import { AesGcmSpoolCrypto, SqliteRunnerSpool } from "@qualigence/runner-spool";
 import {
   DeterministicExecutionBudget,
   type AgentContext,
@@ -104,7 +105,10 @@ describe("bounded multi-step production Web Runtime", () => {
     }));
     const valueProvider = await FileActionValueProvider.open({ root, configFile });
     const spoolFile = join(root, "runner-spool.db");
-    spool = await SqliteRunnerSpool.open({ databaseFile: spoolFile });
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
 
     const modelRequests: unknown[] = [];
     modelServer = createServer(async (request, response) => {
@@ -450,7 +454,10 @@ async function runBrowserFailure(testCase: BrowserFailureCase) {
   });
   const root = await mkdtemp(join(tmpdir(), "qualigence-ticket19-failure-"));
   roots.push(root);
-  spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "runner-spool.db") });
+  spool = await SqliteRunnerSpool.open({
+    databaseFile: join(root, "runner-spool.db"),
+    crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+  });
   const session = new PlaywrightBrowserSession({
     url: fixture.url,
     headed: false,

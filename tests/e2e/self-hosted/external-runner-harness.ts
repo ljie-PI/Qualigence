@@ -469,7 +469,9 @@ const reviewTaskId = ${JSON.stringify(LS11_PRODUCT_REVIEW_TASK_ID)};
 const artifactId = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_ID)};
 const artifactTextPrefix = ${JSON.stringify(LS11_PRODUCT_ARTIFACT_TEXT_PREFIX)};
 const artifactText = artifactTextPrefix + ":" + runId + ":" + artifactId;
-const now = "2026-08-27T00:10:00.000Z";
+// The profile must remain active for the real restored Server clock; this is
+// fixture metadata, not a product TTL or authorization-policy change.
+const now = new Date().toISOString();
 const serverPassword = (await readFile("/run/secrets/pg_server_password", "utf8")).trim();
 const s3AccessKeyId = (await readFile("/run/secrets/s3_access_key_id", "utf8")).trim();
 const s3SecretAccessKey = (await readFile("/run/secrets/s3_secret_access_key", "utf8")).trim();

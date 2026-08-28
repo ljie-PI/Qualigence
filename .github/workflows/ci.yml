@@ -72,6 +72,10 @@ jobs:
           corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee gate-linux/chromium.txt
           corepack pnpm gate:fast 2>&1 | tee gate-linux/fast-command.txt
           corepack pnpm gate:linux 2>&1 | tee gate-linux/command.txt
+          test -f .gate-evidence/gate-fast/accepted.json
+          test -f .gate-evidence/gate-linux/accepted.json
+          cp -R .gate-evidence/gate-fast gate-linux/gate-fast
+          cp -R .gate-evidence/gate-linux gate-linux/gate-linux
           find gate-linux -type f -print0 | sort -z | xargs -0 sha256sum > gate-linux/sha256.txt
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -108,7 +112,9 @@ jobs:
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee browser-e2e/install.txt
           corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee browser-e2e/chromium.txt
-          corepack pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts 2>&1 | tee browser-e2e/vitest.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts run --gate browser-e2e --report .gate-evidence/browser-e2e/report.json --selection tests/e2e/web-console/browser-workflow.test.ts -- corepack pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts 2>&1 | tee browser-e2e/vitest.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts accept --report .gate-evidence/browser-e2e/report.json --marker .gate-evidence/browser-e2e/accepted.json
+          cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence
           find browser-e2e -type f -print0 | sort -z | xargs -0 sha256sum > browser-e2e/sha256.txt
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -138,34 +144,9 @@ jobs:
           commit="$(git rev-parse HEAD)"
           test "$commit" = "$EXPECTED_COMMIT"
           printf '%s\n' "$commit" > release-metadata/commit.txt
-          cat > release-metadata/verify-gates.mjs <<'NODE'
-          import { writeFile } from "node:fs/promises";
-
-          const repository = process.env.GITHUB_REPOSITORY;
-          const token = process.env.GH_TOKEN;
-          const commit = process.env.EXPECTED_COMMIT;
-          if (!repository || !token || !commit) throw new Error("release metadata environment is incomplete");
-          const response = await fetch(`https://api.github.com/repos/${repository}/actions/artifacts?per_page=100`, {
-            headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" },
-          });
-          if (!response.ok) throw new Error(`artifact inventory request failed: ${response.status}`);
-          const payload = await response.json();
-          const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-          const required = ["gate-linux", "browser-e2e", "gate-windows-rust", "gate-self-hosted"];
-          const inventory = required.map((name) => {
-            const named = artifacts.filter((artifact) => artifact.name === name && artifact.expired !== true);
-            const matching = named.find((artifact) => artifact.workflow_run?.head_sha === commit);
-            return matching === undefined
-              ? { name, status: named.length === 0 ? "GateArtifactUnavailable" : "GateArtifactCommitMismatch", observedCommits: named.map((artifact) => artifact.workflow_run?.head_sha ?? null) }
-              : { name, status: "verified", artifactId: matching.id, workflowRunId: matching.workflow_run?.id ?? null, commit: matching.workflow_run?.head_sha, digest: matching.digest ?? null };
-          });
-          const blocked = inventory.filter((artifact) => artifact.status !== "verified" || artifact.digest === null);
-          await writeFile("release-metadata/gate-artifacts.json", `${JSON.stringify({ commit, status: blocked.length === 0 ? "verified" : "gate-blocked", artifacts: inventory }, null, 2)}\n`);
-          if (blocked.length !== 0) process.exitCode = 2;
-          NODE
           verified=false
           for attempt in $(seq 1 20); do
-            if node release-metadata/verify-gates.mjs; then verified=true; break; fi
+            if node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-metadata/gate-artifacts.json; then verified=true; break; fi
             sleep 30
           done
           test "$verified" = true

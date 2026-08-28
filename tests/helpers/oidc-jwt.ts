@@ -26,12 +26,17 @@ export interface TestJwtIssuer {
   sign(claims: Readonly<Record<string, unknown>>, header?: Readonly<Record<string, unknown>>): string;
 }
 
+export type TestOidcTokenMode = "valid" | "invalid-signature" | "invalid-nonce" | "invalid-tenant" | "invalid-role";
+
 export interface TestOidcProvider {
   readonly issuer: string;
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly jwksUri: string;
   readonly jwt: TestJwtIssuer;
+  /** Test-only redacted issuer ledger; it never retains codes, tokens, or claims. */
+  readonly audit: readonly { readonly event: "authorize" | "token"; readonly mode: TestOidcTokenMode; readonly outcome: "issued" | "rejected" }[];
+  setTokenMode(mode: TestOidcTokenMode): void;
   stop(): Promise<void>;
 }
 
@@ -107,6 +112,8 @@ export async function startTestOidcProvider(input: {
   const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
   const jwt = input.jwt ?? createTestJwtIssuer();
   const codes = new Map<string, AuthorizationCode>();
+  const audit: Array<{ event: "authorize" | "token"; mode: TestOidcTokenMode; outcome: "issued" | "rejected" }> = [];
+  let tokenMode: TestOidcTokenMode = "valid";
   let authorizationCount = 0;
   let server: Server | undefined;
   let issuer = "";
@@ -134,6 +141,7 @@ export async function startTestOidcProvider(input: {
       const code = randomBytes(32).toString("base64url");
       const subject = `browser-tester-${String(++authorizationCount)}`;
       codes.set(code, { clientId, redirectUri, nonce, codeChallenge: challenge, subject });
+      audit.push({ event: "authorize", mode: tokenMode, outcome: "issued" });
       const callback = new URL(redirectUri);
       callback.searchParams.set("code", code);
       callback.searchParams.set("state", state);
@@ -150,12 +158,28 @@ export async function startTestOidcProvider(input: {
       const calculated = createHash("sha256").update(verifier).digest("base64url");
       const verifierMatches = calculated.length === (transaction?.codeChallenge.length ?? 0) && transaction !== undefined && timingSafeEqual(Buffer.from(calculated), Buffer.from(transaction.codeChallenge));
       if (params.get("grant_type") !== "authorization_code" || transaction === undefined || params.get("client_id") !== transaction.clientId || params.get("redirect_uri") !== transaction.redirectUri || !verifierMatches) {
+        audit.push({ event: "token", mode: tokenMode, outcome: "rejected" });
         response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "invalid_grant" }));
         return;
       }
       codes.delete(code);
       const now = Math.floor(Date.now() / 1000);
-      const idToken = jwt.sign({ iss: issuer, aud: transaction.clientId, sub: transaction.subject, iat: now, nbf: now - 5, exp: now + 300, nonce: transaction.nonce, "https://qualigence.example/tenant": input.tenantId, "https://qualigence.example/roles": input.roles });
+      const claims = {
+        iss: issuer,
+        aud: transaction.clientId,
+        sub: transaction.subject,
+        iat: now,
+        nbf: now - 5,
+        exp: now + 300,
+        nonce: tokenMode === "invalid-nonce" ? "invalid-nonce" : transaction.nonce,
+        "https://qualigence.example/tenant": tokenMode === "invalid-tenant" ? "tenant-not-allowed" : input.tenantId,
+        "https://qualigence.example/roles": tokenMode === "invalid-role" ? ["not-a-console-role"] : input.roles,
+      };
+      const signed = jwt.sign(claims);
+      const idToken = tokenMode === "invalid-signature"
+        ? tamperJwtPayload(signed, (payload) => ({ ...payload, sub: "tampered-subject" }))
+        : signed;
+      audit.push({ event: "token", mode: tokenMode, outcome: "issued" });
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ access_token: input.issueAccessToken(transaction.subject), id_token: idToken, token_type: "Bearer", expires_in: 300 }));
       return;
     }
@@ -174,6 +198,10 @@ export async function startTestOidcProvider(input: {
     tokenEndpoint: `${issuer}token`,
     jwksUri: `${issuer}.well-known/jwks.json`,
     jwt,
+    audit,
+    setTokenMode(mode: TestOidcTokenMode) {
+      tokenMode = mode;
+    },
     async stop() {
       await new Promise<void>((resolve, reject) => server!.close((error) => error === undefined ? resolve() : reject(error)));
       await rm(directory, { recursive: true, force: true });

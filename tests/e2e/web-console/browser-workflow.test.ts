@@ -32,6 +32,8 @@ describe("rendered Web Console browser workflow", () => {
   let browser: PlaywrightBrowserSession | undefined;
   let secondBrowser: PlaywrightBrowserSession | undefined;
   const browserErrors: string[] = [];
+  const proxyAudit: Array<{ readonly method: string; readonly path: string; readonly outcome: "forwarded" | "before-timeout" | "after-timeout" }> = [];
+  const dispatchControl: ConsoleProxyDispatchControl = { mode: "normal", audit: proxyAudit };
 
   beforeAll(async () => {
     requireInfrastructure(["chromium", "openssl", "docker"]);
@@ -49,7 +51,7 @@ describe("rendered Web Console browser workflow", () => {
         allowedAlgorithms: ["RS256"],
         allowedTenants: ["tenant-a"],
       },
-    }), () => fixture?.baseUrl);
+    }), () => fixture?.baseUrl, dispatchControl);
     consoleUrl = serverUrl(proxy);
     const jwt = createTestJwtIssuer();
     oidc = await startTestOidcProvider({
@@ -138,22 +140,48 @@ describe("rendered Web Console browser workflow", () => {
       await page.getByLabel("Approved Target revision").selectOption("browser-target");
       await page.getByRole("button", { name: "Create Mission from snapshots" }).click();
       await page.getByRole("link", { name: "Open created Mission" }).click();
+      const missionId = (await page.getByRole("heading", { name: /^Mission / }).textContent())?.replace("Mission ", "");
+      if (missionId === undefined || missionId.length === 0) throw new Error("Created Mission ID is missing from rendered UI");
+
+      dispatchControl.mode = "before-timeout";
+      const beforeTimeout = page.waitForResponse((response) => response.url().endsWith(`/api/v1/missions/${missionId}/start`) && response.status() === 504);
       await page.getByRole("button", { name: "Start Mission (v1)" }).click();
-      const runLink = page.locator('a[href^="/runs/"]').first();
-      await runLink.waitFor();
-      await runLink.click();
-      await page.getByRole("heading", { name: /^Run / }).waitFor();
-      await page.getByText("running", { exact: true }).waitFor();
+      await beforeTimeout;
+      await page.getByRole("alert").waitFor();
+      expect(proxyAudit.filter((entry) => entry.path.endsWith(`/missions/${missionId}/start`) && entry.outcome === "before-timeout")).toHaveLength(1);
+      expect(proxyAudit.filter((entry) => entry.path.endsWith(`/missions/${missionId}/start`) && entry.outcome === "forwarded")).toHaveLength(0);
+
+      dispatchControl.mode = "after-timeout";
+      const afterTimeout = page.waitForResponse((response) => response.url().endsWith(`/api/v1/missions/${missionId}/start`) && response.status() === 504);
+      await page.getByRole("button", { name: "Start Mission (v1)" }).click();
+      await afterTimeout;
+      await page.getByRole("alert").waitFor();
+      expect(proxyAudit.filter((entry) => entry.path.endsWith(`/missions/${missionId}/start`) && entry.outcome === "after-timeout")).toHaveLength(1);
+      dispatchControl.mode = "normal";
+      // A fresh rendered session has no stale React-query cache. It visibly
+      // reauthenticates and navigates to the authoritative Mission/Run read;
+      // it never replays the unknown command.
+      secondBrowser = createBrowserSession(consoleUrl);
+      await secondBrowser.start();
+      await secondBrowser.withPage(async (reconciliationPage) => {
+        await reconciliationPage.getByRole("button", { name: "Sign in with SSO" }).click();
+        await reconciliationPage.getByRole("heading", { name: "Projects" }).waitFor();
+        await reconciliationPage.getByRole("link", { name: "Missions", exact: true }).click();
+        await reconciliationPage.getByRole("link", { name: missionId }).click();
+        const runLink = reconciliationPage.locator('a[href^="/runs/"]').first();
+        await runLink.waitFor();
+        expect(await reconciliationPage.locator('a[href^="/runs/"]').count()).toBe(1);
+        await runLink.click();
+        await reconciliationPage.getByRole("heading", { name: /^Run / }).waitFor();
+        await reconciliationPage.getByText("running", { exact: true }).waitFor();
+      });
+      expect(proxyAudit.filter((entry) => entry.path.endsWith(`/missions/${missionId}/start`) && entry.outcome === "after-timeout")).toHaveLength(1);
 
       await page.getByRole("link", { name: "Reviews" }).click();
       await page.getByRole("link", { name: "browser-review" }).click();
       await page.getByRole("button", { name: "Claim" }).waitFor();
 
-      secondBrowser = createBrowserSession(consoleUrl);
-      await secondBrowser.start();
       await secondBrowser.withPage(async (secondPage) => {
-        await secondPage.getByRole("button", { name: "Sign in with SSO" }).click();
-        await secondPage.getByRole("heading", { name: "Projects" }).waitFor();
         await secondPage.getByRole("link", { name: "Reviews" }).click();
         await secondPage.getByRole("link", { name: "browser-review" }).click();
         await secondPage.getByRole("button", { name: "Claim" }).click();
@@ -166,9 +194,9 @@ describe("rendered Web Console browser workflow", () => {
 
       await page.getByRole("link", { name: "Skills" }).click();
       await page.getByRole("link", { name: "browser-skill" }).click();
-      await page.getByText("verified", { exact: true }).waitFor();
-      await page.getByText("valid", { exact: true }).waitFor();
-      await page.getByText("passed", { exact: true }).waitFor();
+      await page.getByText("verified", { exact: true }).first().waitFor();
+      await page.getByText("valid", { exact: true }).first().waitFor();
+      await page.getByText("passed", { exact: true }).first().waitFor();
       await page.getByRole("button", { name: "Promote (v3)" }).click();
       await page.getByText("promoted", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Deprecate (v4)" }).click();
@@ -186,12 +214,48 @@ describe("rendered Web Console browser workflow", () => {
       expect(await page.locator("body").textContent()).not.toContain("browser-authorized-artifact");
 
       const deniedResponse = page.waitForResponse((response) => response.url().includes("/tenant-b-evidence-project/runs/tenant-b-evidence-run/artifacts/tenant-b-evidence-artifact?") && response.status() === 404);
+      // The existing SPA link/navigation seam keeps the authenticated in-memory
+      // session, allowing the real cross-tenant Public API denial to render.
       await navigateConsoleRoute(page, "/projects/tenant-b-evidence-project/runs/tenant-b-evidence-run/artifacts/tenant-b-evidence-artifact");
       await page.getByRole("alert").filter({ hasText: "Artifact is unavailable." }).waitFor();
       expect(await (await deniedResponse).text()).not.toContain("tenant-b-secret-artifact");
       expect(await page.locator("body").textContent()).not.toContain("tenant-b-secret-artifact");
+
+      // A hard browser navigation deliberately cannot retain an authorization
+      // token: it safely returns to Login and exposes no Artifact plaintext.
+      await secondBrowser!.withPage(async (hardReloadPage) => {
+        await hardReloadPage.goto(`${consoleUrl}/projects/tenant-b-evidence-project/runs/tenant-b-evidence-run/artifacts/tenant-b-evidence-artifact`);
+        await hardReloadPage.getByRole("button", { name: "Sign in with SSO" }).waitFor();
+        expect(await hardReloadPage.locator("body").textContent()).not.toContain("tenant-b-secret-artifact");
+        expect(await hardReloadPage.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) }))).toEqual({ local: [], session: [] });
+      });
     });
   }, 120_000);
+
+  it.each(["invalid-signature", "invalid-nonce", "invalid-tenant", "invalid-role"] as const)("fails %s OIDC visibly without browser storage or protected mutation", async (mode) => {
+    const invalidBrowser = createBrowserSession(consoleUrl);
+    oidc!.setTokenMode(mode);
+    const protectedMutationsBefore = proxyAudit.filter((entry) => entry.path.startsWith("/api/") && entry.method !== "GET" && entry.method !== "HEAD").length;
+    const auditBefore = oidc!.audit.length;
+    try {
+      await invalidBrowser.start();
+      await invalidBrowser.withPage(async (page) => {
+        await page.getByRole("button", { name: "Sign in with SSO" }).click();
+        await waitForIssuerAudit(() => oidc!.audit.length > auditBefore);
+        await page.getByRole("button", { name: "Sign in with SSO" }).waitFor();
+        expect(page.url()).toBe(`${consoleUrl}/auth/callback`);
+        expect(await page.evaluate(() => ({ local: Object.keys(localStorage), session: Object.keys(sessionStorage) }))).toEqual({ local: [], session: [] });
+      });
+      expect(oidc!.audit.slice(auditBefore)).toEqual(expect.arrayContaining([
+        { event: "authorize", mode, outcome: "issued" },
+        { event: "token", mode, outcome: "issued" },
+      ]));
+      expect(proxyAudit.filter((entry) => entry.path.startsWith("/api/") && entry.method !== "GET" && entry.method !== "HEAD").length).toBe(protectedMutationsBefore);
+    } finally {
+      oidc!.setTokenMode("valid");
+      await invalidBrowser.close().catch(() => undefined);
+    }
+  }, 60_000);
 });
 
 function createBrowserSession(consoleUrl: string): PlaywrightBrowserSession {
@@ -290,6 +354,19 @@ async function navigateConsoleRoute(page: { evaluate<T, Arg>(pageFunction: (arg:
   }, path);
 }
 
+interface ConsoleProxyDispatchControl {
+  mode: "normal" | "before-timeout" | "after-timeout";
+  readonly audit: Array<{ readonly method: string; readonly path: string; readonly outcome: "forwarded" | "before-timeout" | "after-timeout" }>;
+}
+
+async function waitForIssuerAudit(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("TestOidcIssuerAuditTimeout");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 async function buildConsoleDist(): Promise<void> {
   if (process.platform === "win32") {
     await execFileAsync("cmd.exe", ["/d", "/s", "/c", "corepack pnpm --filter @qualigence/web-console run build"], { timeout: 120_000 });
@@ -298,7 +375,11 @@ async function buildConsoleDist(): Promise<void> {
   await execFileAsync("corepack", ["pnpm", "--filter", "@qualigence/web-console", "run", "build"], { timeout: 120_000 });
 }
 
-async function startConsoleProxy(config: () => Record<string, unknown>, apiBaseUrl: () => string | undefined): Promise<Server> {
+async function startConsoleProxy(
+  config: () => Record<string, unknown>,
+  apiBaseUrl: () => string | undefined,
+  dispatch: ConsoleProxyDispatchControl,
+): Promise<Server> {
   const dist = join(process.cwd(), "apps/web-console/dist");
   const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
@@ -309,16 +390,29 @@ async function startConsoleProxy(config: () => Record<string, unknown>, apiBaseU
     if (path === "/api" || path.startsWith("/api/")) {
       const upstream = apiBaseUrl();
       if (upstream === undefined) return response.writeHead(503).end();
+      const method = request.method ?? "GET";
+      const isMissionStart = method === "POST" && /^\/api\/v1\/missions\/[^/]+\/start$/.test(path);
+      if (isMissionStart && dispatch.mode === "before-timeout") {
+        dispatch.audit.push({ method, path, outcome: "before-timeout" });
+        response.writeHead(504, { "content-type": "application/json" }).end(JSON.stringify({ code: "GatewayTimeout", safeMessage: "Mission start timed out safely.", correlationId: "test-proxy-timeout" }));
+        return;
+      }
       const target = `${upstream}${path.slice(4)}${new URL(request.url ?? "/", "http://localhost").search}`;
       const headers = Object.fromEntries(Object.entries(request.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-      const method = request.method ?? "GET";
       const init = method === "GET" || method === "HEAD"
         ? { method, headers }
         // Node's fetch requires duplex mode when proxying a streamed request.
         : { method, headers, body: request, duplex: "half" as const };
       const upstreamResponse = await fetch(target, init);
+      const body = Buffer.from(await upstreamResponse.arrayBuffer());
+      if (isMissionStart && dispatch.mode === "after-timeout") {
+        dispatch.audit.push({ method, path, outcome: "after-timeout" });
+        response.writeHead(504, { "content-type": "application/json" }).end(JSON.stringify({ code: "GatewayTimeout", safeMessage: "Mission start timed out safely.", correlationId: "test-proxy-timeout" }));
+        return;
+      }
+      dispatch.audit.push({ method, path, outcome: "forwarded" });
       response.writeHead(upstreamResponse.status, Object.fromEntries(upstreamResponse.headers));
-      response.end(Buffer.from(await upstreamResponse.arrayBuffer()));
+      response.end(body);
       return;
     }
     const requested = path === "/" || !path.split("/").at(-1)?.includes(".") ? "index.html" : normalize(path).replace(/^[/\\]+/, "");

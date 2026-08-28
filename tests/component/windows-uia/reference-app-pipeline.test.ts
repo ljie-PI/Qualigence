@@ -456,28 +456,3 @@ describe("Windows-UIA Reference App pipeline (Linux, synthetic UIA)", () => {
     expect(result).toEqual({ status: "passed" });
   });
 });
-
-/**
- * The checks below CANNOT run on Linux: they require a real Windows 11 host with
- * the .NET Desktop SDK, a real UIA provider, and the COMPILED WindowsReferenceWpf
- * / WindowsReferenceWinUi apps. They are gated behind an explicit opt-in env var
- * and a Windows platform check, so on Linux/CI they are SKIPPED (never silently
- * "passed" and never fabricated). A human operator runs them per
- * docs/testing/windows-m3-manual-checklist.md and records the signed evidence
- * that `decideGraphFreeze` requires.
- */
-const REAL_WINDOWS =
-  process.platform === "win32" && process.env.QUALIGENCE_WINDOWS_UIA_TEST === "true";
-
-describe.skipIf(!REAL_WINDOWS)(
-  "Windows-UIA Reference App pipeline (REAL Windows 11 hardware only)",
-  () => {
-    it("captures a real UIA tree from the compiled WPF reference app", () => {
-      // Intentionally not implemented in this automated PR: a human operator
-      // performs this on real Windows 11 hardware against the compiled app and
-      // records the result in the manual checklist. Reaching this body off
-      // Windows would be a bug — the guard above must keep it skipped.
-      throw new Error("real Windows 11 UIA capture must be run manually by an operator");
-    });
-  },
-);

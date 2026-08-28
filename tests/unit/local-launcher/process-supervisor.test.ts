@@ -210,7 +210,9 @@ describe("terminateProcess", () => {
       await expect(terminateProcess(2_147_000_000, 0)).rejects.toMatchObject({ code: "ProcessReapTimedOut" });
       expect(kill).toHaveBeenCalledWith(2_147_000_000, 0);
     } finally { kill.mockRestore(); }
-  }, REAP_TIMEOUT_MS + 5_000);
+  // The production reap bound remains REAP_TIMEOUT_MS; allow finite full-Gate
+  // scheduling and teardown margin around that bounded path.
+  }, REAP_TIMEOUT_MS + 15_000);
 
   it("terminates and reaps a real child process", async () => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {

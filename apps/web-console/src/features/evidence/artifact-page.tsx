@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useServices, useSession } from "../../auth/session-context.js";
@@ -18,18 +18,25 @@ export function ArtifactPage(props: {
   const { api } = useServices();
   const session = useSession();
   const tenantId = session?.tenantId ?? "";
-  const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
+  const artifactIdentity = useMemo(
+    () => `${props.projectId}/${props.runId}/${props.artifactId}`,
+    [props.projectId, props.runId, props.artifactId],
+  );
+  const [download, setDownload] = useState<{ readonly identity: string; readonly url: string } | undefined>();
+  useEffect(() => () => {
+    if (download !== undefined) URL.revokeObjectURL(download.url);
+  }, [download]);
+  useEffect(() => {
+    setDownload((current) => current?.identity === artifactIdentity ? current : undefined);
+  }, [artifactIdentity]);
   const artifact = useQuery({
     queryKey: queryKeys.artifact(tenantId, props.projectId, props.runId, props.artifactId),
     queryFn: () => api.getArtifactMetadata(props.projectId, props.runId, props.artifactId),
     enabled: session !== undefined,
   });
-  const download = useMutation({
+  const downloadMutation = useMutation({
     mutationFn: () => api.downloadArtifact(props.projectId, props.runId, props.artifactId),
-    onSuccess: (bytes) => {
-      if (downloadUrl !== undefined) URL.revokeObjectURL(downloadUrl);
-      setDownloadUrl(URL.createObjectURL(bytes));
-    },
+    onSuccess: (bytes) => setDownload({ identity: artifactIdentity, url: URL.createObjectURL(bytes) }),
   });
 
   const denied = artifact.error !== null && artifact.error !== undefined;
@@ -45,9 +52,9 @@ export function ArtifactPage(props: {
           ["SHA-256", artifact.data.sha256],
           ["Download", artifact.data.downloadAllowed ? "Authorized" : "Not authorized"],
         ]} />
-        {artifact.data.downloadAllowed ? <button type="button" onClick={() => download.mutate()} disabled={download.isPending}>Download authorized Artifact</button> : null}
-        {download.isError ? <p className="state state--error" role="alert">Artifact download is unavailable.</p> : null}
-        {downloadUrl === undefined ? null : <a href={downloadUrl} download={`artifact-${props.artifactId}`}>Save authorized Artifact</a>}
+        {artifact.data.downloadAllowed ? <button type="button" onClick={() => downloadMutation.mutate()} disabled={downloadMutation.isPending}>Download authorized Artifact</button> : null}
+        {downloadMutation.isError ? <p className="state state--error" role="alert">Artifact download is unavailable.</p> : null}
+        {download === undefined || download.identity !== artifactIdentity ? null : <a href={download.url} download={`artifact-${props.artifactId}`}>Save authorized Artifact</a>}
       </>}
     </DataState>}
   </section>;

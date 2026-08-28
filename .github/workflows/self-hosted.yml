@@ -33,6 +33,8 @@ jobs:
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-self-hosted/install.txt
           corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
+          test -f .gate-evidence/gate-self-hosted/accepted.json
+          cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence
           find gate-self-hosted -type f -print0 | sort -z | xargs -0 sha256sum > gate-self-hosted/sha256.txt
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

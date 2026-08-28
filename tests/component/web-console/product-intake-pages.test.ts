@@ -23,6 +23,8 @@ import { TargetRevisionSummary } from "../../../apps/web-console/src/features/pr
 import { TestPlanRevisionSummary } from "../../../apps/web-console/src/features/projects/prd-plan-page.js";
 // @ts-expect-error the Console owns JSX compilation for its source modules
 import { MissionRevisionSummary } from "../../../apps/web-console/src/features/missions/mission-page.js";
+// @ts-expect-error the Console owns JSX compilation for its source modules
+import { ArtifactPage } from "../../../apps/web-console/src/features/evidence/artifact-page.js";
 
 afterEach(cleanup);
 (globalThis as unknown as { window: { scrollTo: () => void } }).window.scrollTo = vi.fn();
@@ -151,6 +153,34 @@ describe("rendered product intake revisions", () => {
     await router.navigate({ to: "/projects/$projectId/runs/$runId/artifacts/$artifactId", params: { projectId: "project-1", runId: "run-1", artifactId: "hidden" } });
     expect((await screen.findByRole("alert")).textContent).toBe("Artifact is unavailable.");
     expect(screen.queryByText("Evidence artifact not found")).toBeNull();
+  });
+
+  it("revokes authorized Blob URLs when Artifact identity changes and on unmount", async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectURL = vi.fn().mockReturnValueOnce("blob:first").mockReturnValueOnce("blob:second");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+    const metadata = { artifactId: "artifact-1", runId: "run-1", kind: "screenshot", mediaType: "image/png", size: 3, sha256: "a".repeat(64), downloadAllowed: true };
+    const api = { getArtifactMetadata: vi.fn().mockResolvedValue(metadata), downloadArtifact: vi.fn().mockResolvedValue(new Blob(["ok"], { type: "image/png" })) };
+    try {
+      await renderConsole("/projects/project-1/runs/run-1/artifacts/artifact-1", api);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Download authorized Artifact" }));
+      await screen.findByRole("link", { name: "Save authorized Artifact" });
+      await router.navigate({ to: "/projects/$projectId/runs/$runId/artifacts/$artifactId", params: { projectId: "project-1", runId: "run-2", artifactId: "artifact-2" } });
+      await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:first"));
+      await user.click(await screen.findByRole("button", { name: "Download authorized Artifact" }));
+      await screen.findByRole("link", { name: "Save authorized Artifact" });
+      cleanup();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:second");
+    } finally {
+      if (originalCreate === undefined) delete (URL as { createObjectURL?: unknown }).createObjectURL;
+      else Object.defineProperty(URL, "createObjectURL", originalCreate);
+      if (originalRevoke === undefined) delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+      else Object.defineProperty(URL, "revokeObjectURL", originalRevoke);
+    }
   });
 
   it("renders Test Plan approval conflict details and reloads the current version", async () => {
