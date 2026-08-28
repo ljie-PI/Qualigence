@@ -28,11 +28,11 @@ export function loadRuntimeConfig(): ConsoleRuntimeConfig {
   if (browserWindow === undefined) {
     throw new Error("Browser runtime is unavailable");
   }
-  const meta = import.meta as ImportMeta & { readonly env: EnvironmentValues };
+  const meta = import.meta as ImportMeta & { readonly env?: EnvironmentValues };
   cached ??= resolveRuntimeConfig(
     browserWindow.__QUALIGENCE_CONFIG__,
     browserWindow.location.origin,
-    meta.env,
+    meta.env ?? {},
   );
   return cached;
 }
