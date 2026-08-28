@@ -1996,6 +1996,7 @@ async function endPageSensitiveActionEpoch(
     if (input.retainRecord) {
       active.forms = mergeSensitiveForms(active.forms, reflectedCandidateForms(element, input.kind));
       processCurrentSensitiveMatches(state, active);
+      bindSelectedSensitiveOptions(state, active, element, input.kind);
       const records = cloneArray(active.deferredRecords);
       appendArray(records, active.observer.takeRecords());
       active.deferredRecords = [];
@@ -2432,6 +2433,22 @@ async function endPageSensitiveActionEpoch(
       host[input.targetIdsProperty] = remaining;
     }
 
+    function bindSelectedSensitiveOptions(
+      stateToUpdate: BrowserSensitiveState,
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+      target: Element,
+      actionKind: "input" | "select",
+    ): void {
+      if (actionKind !== "select" || tagName(target) !== "select") return;
+      const options = selectedOptions(target);
+      for (let index = 0; index < options.length; index += 1) {
+        const option = options[index]!;
+        if (sensitiveMatches(option, epochToUpdate.forms).length === 0) continue;
+        classifyElement(stateToUpdate, epochToUpdate, option);
+        if (epochToUpdate.poisoned) return;
+      }
+    }
+
     function processCurrentSensitiveMatches(
       stateToUpdate: BrowserSensitiveState,
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
@@ -2703,7 +2720,7 @@ async function endPageSensitiveActionEpoch(
 
     function isMaskableElement(candidate: Element): boolean {
       const tag = tagName(candidate);
-      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
+      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style" && tag !== "option";
     }
 
     function nodeIdentity(stateToUpdate: BrowserSensitiveState, candidate: Element): string {

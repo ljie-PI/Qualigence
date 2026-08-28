@@ -1395,7 +1395,7 @@ function collectPageObservation(
 
   function isMaskableElement(element: Element): boolean {
     const tag = tagName(element);
-    return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
+    return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style" && tag !== "option";
   }
 
   function shadowRoots(): ShadowRoot[] {

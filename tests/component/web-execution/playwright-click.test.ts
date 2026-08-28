@@ -520,8 +520,11 @@ describe("Playwright resolve + execute against real Chromium", () => {
     expect(inputOutcome).toEqual({ status: "ok" });
     expect(selectOutcome).toEqual({ status: "ok" });
     const afterSelect = await observer.capture(job);
+    const clickAction = await resolver.resolve(click(nodeNamed(afterSelect, "Add to cart").id), afterSelect);
+    const clickOutcome = await executor.execute(clickAction, allowedPermit());
+    const afterClick = await observer.capture(job);
 
-    expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome]))
+    expect(JSON.stringify([inputAction, inputOutcome, selectAction, selectOutcome, clickAction, clickOutcome]))
       .not.toContain("private@example.test");
     expect(nodeNamed(afterInput, "Email").value).toBe("[redacted]");
     expect(afterInput.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
@@ -534,6 +537,12 @@ describe("Playwright resolve + execute against real Chromium", () => {
       .toBeGreaterThanOrEqual(2);
     expect(afterSelect.nodes.some((node) => node.name === "private@example.test:private-country-code" || node.value === "private@example.test:private-country-code"))
       .toBe(false);
+    expect(clickOutcome).toEqual({ status: "ok" });
+    expect(nodeNamed(afterClick, "Email")).toMatchObject({ value: "[redacted]" });
+    expect(nodeNamed(afterClick, "Country")).toMatchObject({ value: "[redacted]", text: "[redacted]" });
+    expect(JSON.stringify(afterClick)).not.toContain("private@example.test");
+    expect(JSON.stringify(afterClick)).not.toContain("private-country-code");
+    expect(JSON.stringify(afterClick)).not.toContain("Canada");
   });
 
   it("registers browser-normalized textarea newline forms against only the authorized target", async () => {
