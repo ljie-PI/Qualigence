@@ -2,13 +2,13 @@
 
 **What to build:** Add rendered Console product E2E and mandatory fast/Linux/Windows/Self-hosted Gate workflows with immutable action dependencies and named artifacts.
 
-**Blocked by:** 32 — Restore cross-platform quarantines.
+**Blocked by:** 32 — Restore cross-platform quarantines (implementation merge). **Final release-resolution dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence, consumed at final convergence.
 
 **Status:** ready-for-agent
 
 ## Tracked scope
 
-Ticket 32 owns the four quarantine fixes; ticket 34 owns release image/SBOM/provenance/manifest production. This ticket owns rendered browser acceptance, root non-release Gates, pinned mandatory platform jobs, infrastructure preflight, and named evidence upload.
+Ticket 32 owns the four quarantine fixes; ticket 34 owns release image/SBOM/provenance/manifest production. This ticket owns rendered browser acceptance, root non-release Gates, pinned mandatory platform jobs, infrastructure preflight, and named evidence upload. Under the 2026-08-27 two-phase authority, implementation begins only after Ticket 32 merges because both tickets change CI/Gate composition. Missing signed Ticket 31 or real-provider Ticket 46 evidence must remain an explicit final release block in the resulting Gate/metadata contract; it does not authorize a synthetic substitute or prevent this CI implementation from being completed and merged.
 
 ## Migration
 
@@ -108,3 +108,7 @@ Record base and reviewed SHAs in `## Comments`. Review every workflow permission
 | Job cancelled before product/Gate dispatch | `not_started` | Cancelled job, not success | No valid named Gate artifact | Rerun whole job | Absent success artifact |
 | Job cancelled/times out after side-effecting E2E dispatch | `outcome_unknown` | Failed/cancelled job | Partial artifact is not accepted | Recreate clean environment and rerun whole job; never infer success | Teardown/reconciliation and failed job |
 | Artifact upload/hash/terminal job-status write fails | `outcome_unknown` for release evidence | Job fails | No accepted named artifact, even if tests ran | Rerun complete job; do not hand-assemble success | Missing/mismatched artifact blocks release |
+
+## Comments
+
+- update - 2026-08-27: Maintainer authorized code-first closure. Ticket 33 remains implementation-blocked by Ticket 32, not by human/provider evidence. Its implementation PR must preserve explicit failing/blocking behavior for absent final evidence; Ticket 35 consumes the real final evidence after Ticket 31 and Ticket 46 complete.

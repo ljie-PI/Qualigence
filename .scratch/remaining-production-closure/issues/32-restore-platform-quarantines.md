@@ -2,13 +2,13 @@
 
 **What to build:** Remove the four temporary Windows quarantines and prove each behavior on both Windows and Linux without sleeps, platform shortcuts, or silent skips.
 
-**Blocked by:** 31 — Complete Windows native acceptance.
+**Blocked by:** None for implementation. **Final release-resolution dependency:** Ticket 31 signed Windows native acceptance.
 
 **Status:** ready-for-agent
 
 ## Tracked scope
 
-This ticket owns exactly the four temporary Windows cases identified by the quarantine markers and the smallest production seams needed to make those same cases deterministic on Windows and Linux.
+This ticket owns exactly the four temporary Windows cases identified by the quarantine markers and the smallest production seams needed to make those same cases deterministic on Windows and Linux. Under the 2026-08-27 two-phase authority, this implementation may start now and merge after its deterministic code/platform evidence is clean; Ticket 31 signed human acceptance remains a hard input to final release/freeze convergence, not a prerequisite to this ticket's code work.
 
 ## Migration
 
@@ -105,3 +105,4 @@ Record base and reviewed SHAs in `## Comments`. Every review covers the four com
 ## Comments
 
 - update - 2026-08-27: Tickets 15 and 21 are resolved. Ticket 32 remains blocked only by Ticket 31 human Windows native acceptance.
+- update - 2026-08-27: Maintainer authorized code-first closure. Ticket 32 is the immediate implementation frontier. It must still produce real zero-skip Windows/Linux automated evidence; Ticket 31 is deferred only as a final release/freeze dependency, not replaced or waived.

@@ -2,13 +2,13 @@
 
 **What to validate:** Run every closure validation that requires real LLM/model-provider credentials and network access, after implementation tickets have merged without embedding secrets or faking provider evidence.
 
-**Blocked by:** 21 — Run the real Reference Model benchmark; 33 — Make browser E2E mandatory in CI; 35 — Reconcile status and decide Graph v1 freeze.
+**Blocked by:** None for environment preparation. **Execution dependency:** selected final integration candidate after Tickets 32–35 implementation merges. **Final consumer:** Ticket 35 deterministic decision.
 
 **Status:** ready-for-human
 
 ## Tracked scope
 
-This ticket centralizes external LLM-provider acceptance that cannot run in the coding-agent environment because provider endpoint and API key are deployment secrets. It does not authorize fixture walkers, provider fakes, skipped repetitions, or synthetic evidence to satisfy release claims; it only defers those real-provider checks into one explicit human-operated validation pass.
+This ticket centralizes external LLM-provider acceptance that cannot run in the coding-agent environment because provider endpoint and API key are deployment secrets. It does not authorize fixture walkers, provider fakes, skipped repetitions, or synthetic evidence to satisfy release claims; it only defers those real-provider checks into one explicit human-operated validation pass. Ticket 21 is resolved; under the 2026-08-27 two-phase authority, credential/environment preparation may occur now, while the real-provider commands execute in parallel with Ticket 31 only after the final integration candidate is selected. Ticket 35 consumes the resulting immutable redacted evidence before any frozen/release conclusion.
 
 ## Provider environment inventory
 
@@ -60,3 +60,4 @@ Relevant provider-env code/tests found during inventory:
 ## Comments
 
 - start — Created by maintainer direction to consolidate LLM-provider credential/network validation. Current code tickets that require external LLM provider evidence may merge after code review and deterministic gates, while this ticket owns the deferred real-provider validation before final release claims.
+- update - 2026-08-27: Maintainer authorized code-first closure. Ticket 46 remains human-owned: prepare credentials/environment without recording secrets, then execute the two real-provider commands on the selected final integration candidate in parallel with Ticket 31. A provider/network/credential failure remains `needs-info` and blocks Ticket 35; it is never converted to a synthetic pass.

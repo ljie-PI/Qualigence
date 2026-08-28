@@ -2,13 +2,13 @@
 
 **What to build:** Produce deploy-only immutable application images and a verifiable release manifest binding every binary and Gate artifact to one commit.
 
-**Blocked by:** 33 — Deliver browser E2E and mandatory CI Gates.
+**Blocked by:** 33 — Deliver browser E2E and mandatory CI Gates (implementation merge). **Phase-2 release-artifact dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence. Ticket 35 consumes this ticket's immutable artifacts for the final deterministic decision.
 
 **Status:** ready-for-agent
 
 ## Tracked scope
 
-Ticket 33 owns mandatory CI/Gate artifacts; this ticket owns deploy-only image construction, SBOM/provenance/attestation, digest-only release Compose, release-manifest schema/generation/verification, and release workflow acceptance. Existing production readiness behavior is an input, not editable scope.
+Ticket 33 owns mandatory CI/Gate artifacts; this ticket owns deploy-only image construction, SBOM/provenance/attestation, digest-only release Compose, release-manifest schema/generation/verification, and release workflow acceptance. Under the 2026-08-27 two-phase authority, implementation, verifier tests, and non-publishing deterministic validation may complete after Ticket 33 merges. Actual registry publication, signed-manual-evidence binding, and immutable selected-version release-manifest generation occur only during phase 2 on the selected integration candidate; their absence is an explicit blocked release result, never a synthetic pass. Existing production readiness behavior is an input, not editable scope.
 
 ## Migration
 
@@ -113,3 +113,7 @@ Record base/reviewed SHAs in `## Comments`. Review Docker contexts, image conten
 | Manifest/SBOM write or upload fails | `outcome_unknown` | Release fails | Partial temp/output is not accepted; no published completion | Recompute all hashes and rerun atomic generation/upload | Missing/invalid artifact and no success marker |
 | Attestation service fails after image push | `outcome_unknown` | Release fails | Image digest may exist; manifest cannot validate without attestation | Retry attestation/release workflow against verified digest per official flow; no mutable tag fallback | Registry digest and absent attestation binding |
 | Release verifier succeeds | `started` only for reads/downloads; publication already occurred | `gate:release` passes | Valid manifest/reports retained as ticket-35 input | Reverification is read-only and must reproduce hashes | Successful verifier report and workflow run ID |
+
+## Comments
+
+- update - 2026-08-27: Maintainer authorized code-first closure. Ticket 34 implementation stays ordered after Ticket 33. BuildKit publication, final manifest/SBOM/provenance generation, and binding of Ticket 31/46 evidence are deferred to the integrated phase-2 release run; Ticket 35 validates those immutable outputs and makes no premature frozen/release claim.
