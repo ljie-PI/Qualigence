@@ -4,7 +4,7 @@
 
 **Blocked by:** 32 — Restore cross-platform quarantines (implementation merge). **Final release-resolution dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence, consumed at final convergence.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -112,3 +112,4 @@ Record base and reviewed SHAs in `## Comments`. Review every workflow permission
 ## Comments
 
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 33 remains implementation-blocked by Ticket 32, not by human/provider evidence. Its implementation PR must preserve explicit failing/blocking behavior for absent final evidence; Ticket 35 consumes the real final evidence after Ticket 31 and Ticket 46 complete.
+- start - 2026-08-28: Fixed base `c22c4650ffd7319e15ac27647859697d548989f4`; branch/worktree `ticket-33-browser-e2e-mandatory-ci` / `C:/Users/jieliu1/AppData/Local/Temp/pi-ticket-33`. Ticket 32 implementation is merged, satisfying this ticket's implementation dependency. Under the 2026-08-27 two-phase authority, complete Ticket 33 code/workflow/browser implementation and deterministic automated evidence may proceed, while Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence remain final release-resolution inputs, never synthetic substitutes. Behavior Matrix: all rows are applicable; none is N/A. Planned focused Gate: `tests/component/web-console/workflow.test.ts`, typecheck, diff check, plus workflow syntax/render validation; post-review browser E2E and exact reviewed commit CI artifacts remain required.
