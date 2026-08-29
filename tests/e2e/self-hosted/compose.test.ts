@@ -25,6 +25,7 @@ const composeEnv = {
   ...process.env,
   QUALIGENCE_OIDC_ISSUER: "https://issuer.example.com",
   QUALIGENCE_OIDC_AUDIENCE: "qualigence-self-hosted",
+  QUALIGENCE_OIDC_JWKS_URI: "https://issuer.example.com/.well-known/jwks.json",
   QUALIGENCE_MODEL_BASE_URL: "https://models.example.com/v1",
   QUALIGENCE_MODEL_NAME: "qualigence-analyst",
   QUALIGENCE_SERVER_PG_ROLE: "qualigence_server",
@@ -243,12 +244,10 @@ describe("Self-hosted Compose topology invariants", () => {
     }
   });
 
-  it("keeps the Worker healthcheck compatible with the pg CommonJS runtime package", () => {
+  it("keeps the Worker healthcheck on its readiness endpoint with safe diagnostics", () => {
     const workerHealthcheck = composeHealthcheckText(config.services.worker);
-    expect(workerHealthcheck).toContain("const {Client}=pg.default??pg");
+    expect(workerHealthcheck).toContain("http://127.0.0.1:8081/readyz");
     expect(workerHealthcheck).toContain("console.error(error&&error.stack?error.stack:String(error))");
-    expect(workerHealthcheck).toContain("http://minio:9000/minio/health/ready");
-    expect(workerHealthcheck).toContain("select 1");
   });
 
   it("applies CPU, memory, PID and log-rotation limits", () => {

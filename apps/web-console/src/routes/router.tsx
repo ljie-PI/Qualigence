@@ -12,6 +12,7 @@ import { ProjectDetailPage, ProjectListPage } from "../features/projects/project
 import { PrdRevisionPage, TestPlanPage } from "../features/projects/prd-plan-page.js";
 import { MissionDetailPage, MissionListPage } from "../features/missions/mission-page.js";
 import { RunDetailPage, RunListPage } from "../features/runs/run-page.js";
+import { ArtifactPage } from "../features/evidence/artifact-page.js";
 import { SkillDetailPage, SkillListPage } from "../features/skills/skill-page.js";
 import {
   InvestigationDetailPage,
@@ -68,6 +69,14 @@ const rootRoute = createRootRoute({ component: RootLayout });
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  beforeLoad: () => {
+    throw redirect({ to: "/projects" });
+  },
+});
+
+const callbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/callback",
   beforeLoad: () => {
     throw redirect({ to: "/projects" });
   },
@@ -136,6 +145,15 @@ const runDetailRoute = createRoute({
   },
 });
 
+const artifactRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/projects/$projectId/runs/$runId/artifacts/$artifactId",
+  component: function ArtifactRoute(): ReactNode {
+    const { projectId, runId, artifactId } = artifactRoute.useParams();
+    return <ArtifactPage projectId={projectId} runId={runId} artifactId={artifactId} />;
+  },
+});
+
 const skillsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/skills",
@@ -183,6 +201,7 @@ const reviewTaskRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  callbackRoute,
   projectsRoute,
   projectDetailRoute,
   prdRevisionRoute,
@@ -191,6 +210,7 @@ const routeTree = rootRoute.addChildren([
   missionDetailRoute,
   runsRoute,
   runDetailRoute,
+  artifactRoute,
   skillsRoute,
   skillDetailRoute,
   investigationsRoute,

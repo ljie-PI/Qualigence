@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   capabilities,
@@ -8,7 +9,11 @@ import {
   type ExecutionJobOffer,
 } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
-import { SqliteRunnerSpool, type RunnerSpool } from "@qualigence/runner-spool";
+import {
+  AesGcmSpoolCrypto,
+  SqliteRunnerSpool,
+  type RunnerSpool,
+} from "@qualigence/runner-spool";
 import {
   AllowAllRunnerPolicyGate,
   ScriptedDecisionProvider,
@@ -112,7 +117,10 @@ function offer(requiredCapabilities: readonly string[]): ExecutionJobOffer {
 let openSpools: SqliteRunnerSpool[] = [];
 
 async function newSpool(): Promise<RunnerSpool> {
-  const spool = await SqliteRunnerSpool.open({ databaseFile: ":memory:" });
+  const spool = await SqliteRunnerSpool.open({
+    databaseFile: ":memory:",
+    crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+  });
   openSpools.push(spool);
   return spool;
 }

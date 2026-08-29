@@ -38,6 +38,11 @@ const AUDIENCE = "qualigence-self-hosted";
 const TENANT_CLAIM = "https://qualigence.example/tenant";
 const ROLES_CLAIM = "https://qualigence.example/roles";
 
+export interface ServerFixtureOptions {
+  /** Browser OIDC tests provide a real local HTTPS issuer and matching key. */
+  readonly oidc?: { readonly issuer: string; readonly jwt: TestJwtIssuer };
+}
+
 export interface ServerFixture {
   readonly app: FastifyInstance;
   readonly baseUrl: string;
@@ -62,7 +67,7 @@ const fixedClock: Clock = { now: () => new Date().toISOString() };
  * aux), build the real Fastify server with an in-process OIDC issuer + Runner
  * CA, and listen on an ephemeral local port.
  */
-export async function setupServerFixture(): Promise<ServerFixture> {
+export async function setupServerFixture(options: ServerFixtureOptions = {}): Promise<ServerFixture> {
   const container = await startPostgres();
   const adminConfig = {
     host: container.host,
@@ -86,9 +91,10 @@ export async function setupServerFixture(): Promise<ServerFixture> {
     password: SERVER_PASSWORD,
   });
 
-  const jwt = createTestJwtIssuer("RS256");
+  const jwt = options.oidc?.jwt ?? createTestJwtIssuer("RS256");
+  const oidcIssuer = options.oidc?.issuer ?? ISSUER;
   const oidc = new OidcAuthenticator({
-    issuer: ISSUER,
+    issuer: oidcIssuer,
     audience: AUDIENCE,
     allowedAlgorithms: ["RS256"],
     jwks: new StaticJwksResolver([jwt.signingKey]),
@@ -183,7 +189,7 @@ export async function setupServerFixture(): Promise<ServerFixture> {
   ): string {
     return jwt.sign(
       standardClaims({
-        iss: ISSUER,
+        iss: oidcIssuer,
         aud: AUDIENCE,
         [TENANT_CLAIM]: tenantId,
         [ROLES_CLAIM]: roles.map((role) => roleMapReverse[role] ?? role),

@@ -49,6 +49,7 @@ export function PrdRevisionPage(props: {
           <DefinitionList
             items={[
               ["Title", prd.title],
+              ["PRD ID", prd.prdId],
               ["Revision", String(prd.revision)],
               ["Content SHA-256", prd.contentSha256],
               ["Ingested at", prd.ingestedAt],

@@ -23,6 +23,8 @@ import { TargetRevisionSummary } from "../../../apps/web-console/src/features/pr
 import { TestPlanRevisionSummary } from "../../../apps/web-console/src/features/projects/prd-plan-page.js";
 // @ts-expect-error the Console owns JSX compilation for its source modules
 import { MissionRevisionSummary } from "../../../apps/web-console/src/features/missions/mission-page.js";
+// @ts-expect-error the Console owns JSX compilation for its source modules
+import { ArtifactPage } from "../../../apps/web-console/src/features/evidence/artifact-page.js";
 
 afterEach(cleanup);
 (globalThis as unknown as { window: { scrollTo: () => void } }).window.scrollTo = vi.fn();
@@ -103,6 +105,82 @@ describe("rendered product intake revisions", () => {
     await user.click(screen.getByRole("button", { name: "Update Target revision" }));
     await waitFor(() => expect(createTarget).toHaveBeenCalledTimes(2));
     expect(createTarget.mock.calls[1]?.[1]).toMatchObject({ targetId: "target-1", expectedVersion: 4 });
+  });
+
+  it("ingests a PRD through the visible Project control and shows a safe mutation error", async () => {
+    const listPrdRevisions = vi.fn().mockResolvedValue({ items: [] });
+    const ingestPrd = vi.fn().mockResolvedValue({ resource: { prdId: "prd-1", revision: 1 } });
+    const api = { listTargets: vi.fn().mockResolvedValue({ items: [] }), listPrdRevisions, ingestPrd };
+    await renderConsole("/projects/project-1", api);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("PRD title"), "Checkout requirements");
+    await user.type(screen.getByLabelText("PRD content"), "Customers can pay.");
+    await user.click(screen.getByRole("button", { name: "Ingest PRD" }));
+    await waitFor(() => expect(ingestPrd).toHaveBeenCalledWith("project-1", { title: "Checkout requirements", content: "Customers can pay." }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    await waitFor(() => expect(listPrdRevisions).toHaveBeenCalledTimes(2));
+
+    ingestPrd.mockRejectedValueOnce(new Error("PRD intake unavailable"));
+    await user.type(screen.getByLabelText("PRD title"), "Retry");
+    await user.type(screen.getByLabelText("PRD content"), "Still a requirement.");
+    await user.click(screen.getByRole("button", { name: "Ingest PRD" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("PRD intake unavailable");
+  });
+
+  it("starts a Mission with its loaded version and reloads after a conflict", async () => {
+    const getMission = vi.fn().mockResolvedValue({ missionId: "mission-1", projectId: "project-1", revision: 1, targetId: "target-1", targetVersion: 1, targetSnapshotHash: "a".repeat(64), runnerId: "runner-1", planId: "plan-1", planVersion: 1, status: "approved", version: 4 });
+    const startMission = vi.fn().mockRejectedValue(conflict(5));
+    const api = { getMission, listRuns: vi.fn().mockResolvedValue({ items: [] }), startMission };
+    await renderConsole("/missions/mission-1", api);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Start Mission (v4)" }));
+    await waitFor(() => expect(startMission).toHaveBeenCalledWith("mission-1", { expectedVersion: 4 }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    expect((await screen.findByRole("alert")).textContent).toContain("current version 5");
+    await waitFor(() => expect(getMission).toHaveBeenCalledTimes(2));
+  });
+
+  it("renders authorized Artifact download and hides a NotFound Artifact behind a safe denial", async () => {
+    const metadata = { artifactId: "artifact-1", runId: "run-1", kind: "screenshot", mediaType: "image/png", size: 3, sha256: "a".repeat(64), downloadAllowed: true };
+    const downloadArtifact = vi.fn().mockResolvedValue(new Blob(["ok"], { type: "image/png" }));
+    const api = { getArtifactMetadata: vi.fn().mockResolvedValue(metadata), downloadArtifact };
+    await renderConsole("/projects/project-1/runs/run-1/artifacts/artifact-1", api);
+    const user = userEvent.setup();
+    expect(await screen.findByText("Authorized")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Download authorized Artifact" }));
+    await waitFor(() => expect(downloadArtifact).toHaveBeenCalledWith("project-1", "run-1", "artifact-1"));
+    expect(await screen.findByRole("link", { name: "Save authorized Artifact" })).toBeTruthy();
+
+    api.getArtifactMetadata.mockRejectedValueOnce(new ApiClientError(404, { code: "NotFound", safeMessage: "Evidence artifact not found", correlationId: "x" }));
+    await router.navigate({ to: "/projects/$projectId/runs/$runId/artifacts/$artifactId", params: { projectId: "project-1", runId: "run-1", artifactId: "hidden" } });
+    expect((await screen.findByRole("alert")).textContent).toBe("Artifact is unavailable.");
+    expect(screen.queryByText("Evidence artifact not found")).toBeNull();
+  });
+
+  it("revokes authorized Blob URLs when Artifact identity changes and on unmount", async () => {
+    const originalCreate = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevoke = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const createObjectURL = vi.fn().mockReturnValueOnce("blob:first").mockReturnValueOnce("blob:second");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+    const metadata = { artifactId: "artifact-1", runId: "run-1", kind: "screenshot", mediaType: "image/png", size: 3, sha256: "a".repeat(64), downloadAllowed: true };
+    const api = { getArtifactMetadata: vi.fn().mockResolvedValue(metadata), downloadArtifact: vi.fn().mockResolvedValue(new Blob(["ok"], { type: "image/png" })) };
+    try {
+      await renderConsole("/projects/project-1/runs/run-1/artifacts/artifact-1", api);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Download authorized Artifact" }));
+      await screen.findByRole("link", { name: "Save authorized Artifact" });
+      await router.navigate({ to: "/projects/$projectId/runs/$runId/artifacts/$artifactId", params: { projectId: "project-1", runId: "run-2", artifactId: "artifact-2" } });
+      await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:first"));
+      await user.click(await screen.findByRole("button", { name: "Download authorized Artifact" }));
+      await screen.findByRole("link", { name: "Save authorized Artifact" });
+      cleanup();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:second");
+    } finally {
+      if (originalCreate === undefined) delete (URL as { createObjectURL?: unknown }).createObjectURL;
+      else Object.defineProperty(URL, "createObjectURL", originalCreate);
+      if (originalRevoke === undefined) delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+      else Object.defineProperty(URL, "revokeObjectURL", originalRevoke);
+    }
   });
 
   it("renders Test Plan approval conflict details and reloads the current version", async () => {

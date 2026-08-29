@@ -17,11 +17,13 @@ import {
 import { main as serverMain } from "../../../apps/server/src/main.js";
 import type { ServerConfig } from "../../../apps/server/src/config.js";
 import { main as workerMain } from "../../../apps/intelligence-worker/src/main.js";
-import { dockerAvailable, startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
+import { startPostgres, type StartedPostgres } from "../../helpers/docker-container.js";
 
 const { Client } = pg;
 
-describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", () => {
+// Docker availability is enforced once by gate:self-hosted preflight. Direct
+// execution intentionally starts this suite and fails rather than skipping.
+describe("Admin CLI offline PostgreSQL migration", () => {
   let postgres: StartedPostgres;
   let backupDir: string;
 
@@ -32,7 +34,9 @@ describe.skipIf(!dockerAvailable())("Admin CLI offline PostgreSQL migration", ()
 
   afterAll(async () => {
     await postgres?.stop();
-    await rm(backupDir, { recursive: true, force: true });
+    if (backupDir !== undefined) {
+      await rm(backupDir, { recursive: true, force: true });
+    }
   });
 
   function config(): SelfHostedAdminConfig {

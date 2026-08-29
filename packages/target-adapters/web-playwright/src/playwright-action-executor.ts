@@ -640,7 +640,10 @@ async function collectSensitiveMaskSnapshot(
       if (seenMaskIds.has(maskId)) throw new Error("Sensitive mask snapshot is incomplete.");
       seenMaskIds.add(maskId);
       const nodeId = await uniqueCdpNodeIdForMask(cdp, maskId);
-      await cdp.send("DOM.getBoxModel", { nodeId });
+      // A classified element may legitimately be hidden until the observer's
+      // pre-screenshot revalidation. Backend identity is authoritative here;
+      // renderability is checked by the CDP geometry pass immediately before
+      // the screenshot, where one full recapture remains available for a race.
       const described = await cdp.send("DOM.describeNode", { nodeId }) as {
         readonly node?: { readonly backendNodeId?: number };
       };
@@ -894,6 +897,9 @@ async function beginPageSensitiveActionEpoch(
     state.active = activeEpoch;
     classifyElement(element, activeEpoch);
     observeSensitiveMutations(observer, element.ownerDocument);
+    // A pre-existing discovery overflow poisons evidence, not the native
+    // action. Its known bounded root snapshot remains observable so the page
+    // keeps normal callback/observer behavior.
     const observedShadowRoots = shadowRoots();
     for (let index = 0; index < observedShadowRoots.length; index += 1) {
       observeSensitiveMutations(observer, observedShadowRoots[index]!);
@@ -1628,11 +1634,14 @@ async function beginPageSensitiveActionEpoch(
       if (dom.arrayIsArray(current)) {
         if (!arrayHasString(current, markerId)) current[current.length] = markerId;
       } else {
+        // This is a temporary pre-dispatch marker. It is deliberately
+        // removable if permit authorization or cancellation prevents dispatch;
+        // successful completion hardens it before host authority is recorded.
         apply(dom.objectDefineProperty, Object, [host, input.targetIdsProperty, {
-          configurable: false,
+          configurable: true,
           enumerable: false,
           value: [markerId],
-          writable: false,
+          writable: true,
         }]);
       }
       if (!hasAttribute(candidate, input.maskAttribute)) {
@@ -1728,7 +1737,12 @@ async function beginPageSensitiveActionEpoch(
         shadowRootOverflow?: boolean;
       } | undefined;
       const noteOverflow = (): void => {
-        if (registry !== undefined) registry.shadowRootOverflow = true;
+        // The init-script closure may already have recorded this overflow.
+        // Rewriting its guarded diagnostic would falsely look like page-side
+        // authority tampering while the native action is being set up.
+        if (registry?.shadowRootOverflow !== true && registry !== undefined) {
+          registry.shadowRootOverflow = true;
+        }
         state.poisoned = true;
       };
       const addRoot = (root: ShadowRoot): boolean => {
@@ -1996,6 +2010,7 @@ async function endPageSensitiveActionEpoch(
     if (input.retainRecord) {
       active.forms = mergeSensitiveForms(active.forms, reflectedCandidateForms(element, input.kind));
       processCurrentSensitiveMatches(state, active);
+      bindSelectedSensitiveOptions(state, active, element, input.kind);
       const records = cloneArray(active.deferredRecords);
       appendArray(records, active.observer.takeRecords());
       active.deferredRecords = [];
@@ -2432,6 +2447,22 @@ async function endPageSensitiveActionEpoch(
       host[input.targetIdsProperty] = remaining;
     }
 
+    function bindSelectedSensitiveOptions(
+      stateToUpdate: BrowserSensitiveState,
+      epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
+      target: Element,
+      actionKind: "input" | "select",
+    ): void {
+      if (actionKind !== "select" || tagName(target) !== "select") return;
+      const options = selectedOptions(target);
+      for (let index = 0; index < options.length; index += 1) {
+        const option = options[index]!;
+        if (sensitiveMatches(option, epochToUpdate.forms).length === 0) continue;
+        classifyElement(stateToUpdate, epochToUpdate, option);
+        if (epochToUpdate.poisoned) return;
+      }
+    }
+
     function processCurrentSensitiveMatches(
       stateToUpdate: BrowserSensitiveState,
       epochToUpdate: NonNullable<BrowserSensitiveState["active"]>,
@@ -2703,7 +2734,7 @@ async function endPageSensitiveActionEpoch(
 
     function isMaskableElement(candidate: Element): boolean {
       const tag = tagName(candidate);
-      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
+      return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style" && tag !== "option";
     }
 
     function nodeIdentity(stateToUpdate: BrowserSensitiveState, candidate: Element): string {
@@ -2943,6 +2974,15 @@ async function markSensitiveTarget(
           if (markerId === input.markerId) found = true;
         }
         if (!found) current[current.length] = input.markerId;
+        // The epoch may have installed a reversible marker before permit
+        // dispatch. Once dispatch succeeds, freeze the exact marker list used
+        // by the host/CDP authority snapshot.
+        dom.reflectApply(dom.objectDefineProperty, Object, [host, input.property, {
+          configurable: false,
+          enumerable: false,
+          value: current,
+          writable: false,
+        }]);
         return;
       }
       if (current !== undefined) throw new Error("Sensitive target marker is unavailable.");

@@ -327,10 +327,14 @@ DzQHpEk=
             max_queue_depth: 4,
             max_concurrent_requests: 2,
         };
+        // Hosted Windows Gate: spawning signed PowerShell can exceed the suite's
+        // 2s connect default under cold CI load. Keep a documented finite bound;
+        // do not skip or weaken Authenticode/identity assertions.
+        const SIGNED_PROCESS_CONNECT_TIMEOUT_MS: u32 = 30_000;
         let config = NativePipeConfig {
             name_prefix: unique_prefix(),
             max_frame_bytes: limits.max_frame_bytes,
-            connect_timeout_ms: 2_000,
+            connect_timeout_ms: SIGNED_PROCESS_CONNECT_TIMEOUT_MS,
         };
         let (listener, path) = connected_listener(&config);
         let pipe_name = pipe_name_for_dotnet_client(&path);

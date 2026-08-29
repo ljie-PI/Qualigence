@@ -416,7 +416,7 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     ]);
   }, 60_000);
 
-  it("does not let a retired scheduler record poison later unrelated equal text", async () => {
+  it("fails closed for later untrusted host-known text after scheduler record retirement", async () => {
     const { observer, resolver, executor } = await wire("/post-capture-equal-text");
     const url = `${fixture.origin}/post-capture-equal-text`;
     const before = await observer.capture({ ...job, target: { kind: "web", url } });
@@ -436,9 +436,10 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
     await session.withPage((page) => page.locator("#late").evaluate((element, value) => {
       Reflect.set(element, "textContent", value);
     }, SECRET));
-    await expect(observer.capture({ ...job, target: { kind: "web", url } })).resolves.toEqual(expect.objectContaining({
-      graphId: expect.any(String),
-    }));
+    await expect(observer.capture({ ...job, target: { kind: "web", url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
+    expect(() => session.artifactsFor("run-shadow-scheduler:observation:3"))
+      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
   it("masks an open shadow root host when direct shadow text reflects sensitive content", async () => {
@@ -565,7 +566,7 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
   }, 60_000);
 
   it("poisons evidence on the 4,097th sensitive scheduler registration in a session", async () => {
-    const { observer, resolver, executor } = await wire("/session-overflow", "safe");
+    const { observer, resolver } = await wire("/session-overflow");
     const url = `${fixture.origin}/session-overflow`;
     for (let round = 0; round < 4; round += 1) {
       const before = await observer.capture({ ...job, target: { kind: "web", url } });
@@ -575,7 +576,8 @@ describe("Shadow DOM, scheduler, and Runner safe logs", () => {
         valueRef: `customer.email.${round}`,
         reason: "fill scheduler session bound",
       }, before);
-      await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+      const roundExecutor = new PlaywrightActionExecutor(session, { resolve: async () => `safe-${round}` });
+      await expect(roundExecutor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
       await session.withPage((page) => page.waitForTimeout(25));
     }
 

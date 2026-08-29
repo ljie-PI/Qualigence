@@ -132,7 +132,9 @@ export class OidcSession {
     private readonly config: OidcClientConfig,
     private readonly transient: TransientStore,
     private readonly idTokenVerifier: IdTokenVerifier,
-    private readonly fetchImpl: typeof fetch = fetch,
+    // Browser `fetch` is a Window member: preserve its receiver when the
+    // default dependency is later invoked from this session instance.
+    private readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
     private readonly now: () => number = () => Date.now(),
   ) {}
 

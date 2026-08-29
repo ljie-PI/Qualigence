@@ -1190,10 +1190,12 @@ describe("CDP screenshot masking", () => {
     const action = await resolver.resolve({ kind: "input", target: { nodeId: email.id }, valueRef: "customer.delayed", reason: "test" }, before);
 
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
-    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
-      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
-      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    const early = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(JSON.stringify(early)).not.toContain(delayedSecret);
+    await session.withPage((page) => page.waitForTimeout(125));
+    const after = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    expect(after.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    expect(JSON.stringify(after)).not.toContain(delayedSecret);
   }, 60_000);
 
   it("fails closed when marker attributes are reassigned to a non-sensitive backend node", async () => {
@@ -1227,7 +1229,7 @@ describe("CDP screenshot masking", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
-  it("fails closed when a classified region is hidden during host snapshot collection and later becomes visible", async () => {
+  it("masks a classified region that is hidden during host snapshot collection and later becomes visible", async () => {
     await fixture.close();
     fixture = await startFixtureServer({
       "/": htmlDocument(`
@@ -1263,10 +1265,11 @@ describe("CDP screenshot masking", () => {
         (element as unknown as { readonly style: { display: string } }).style.display = "block";
       });
     });
-    await expect(observer.capture({ ...job, target: { kind: "web", url: fixture.url } }))
-      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-    expect(() => session.artifactsFor("run-cdp-mask:observation:2"))
-      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    const expected = await expectedRectFromCdp(session, "#mirror");
+    const graph = await observer.capture({ ...job, target: { kind: "web", url: fixture.url } });
+    const image = decodePngRgba(pngArtifact(session.artifactsFor(graph.graphId)).bytes);
+    expect(pixelAt(image, expected.left, expected.top)).toEqual([0, 0, 0, 255]);
+    expect(JSON.stringify(graph)).not.toContain(SECRET);
   }, 60_000);
 
   it("fails closed when page script mutates active classifiedElements during the input event", async () => {

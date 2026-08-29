@@ -198,10 +198,10 @@ describe("DeterministicRunnerPolicyGate", () => {
     },
   );
 
-  it("admits only a non-expired HTTP(S) target in its explicit policy origins", () => {
+  it("admits a non-expired target and denies a Web target outside its explicit policy origins", () => {
     expect(DeterministicRunnerPolicyGate.admitJob(job(), { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "web", url: "https://evil.test/" } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied" });
-    expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "desktop", app: desktopAppTarget } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyDenied", message: "DesktopTargetUnsupported" });
+    expect(DeterministicRunnerPolicyGate.admitJob({ ...job(), target: { kind: "desktop", app: desktopAppTarget } }, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "allowed" });
     const { projectId: _projectId, ...projectless } = job();
     expect(DeterministicRunnerPolicyGate.admitJob(projectless, { now: () => Date.parse("2026-08-18T00:00:30.000Z") })).toMatchObject({ status: "denied", code: "PolicyMissing" });
   });

@@ -11,12 +11,14 @@ jobs:
   ticket-32-linux-platform-evidence:
     runs-on: ubuntu-latest
     steps:
+      # v4.6.0, reviewed immutable action commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Record exact evidence commit before provisioning
         shell: bash
         run: |
           mkdir -p ticket-32-platform-evidence
           git rev-parse HEAD | tee ticket-32-platform-evidence/commit.txt
+      # v6.1.0, reviewed immutable action commit.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
@@ -36,9 +38,163 @@ jobs:
             exit 1
           fi
           printf 'no quarantine markers; rg exit 1\n' >> ticket-32-platform-evidence/quarantine-markers.txt
+      # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: ticket-32-linux-platform-evidence-${{ github.sha }}
           path: ticket-32-platform-evidence/
+          if-no-files-found: error
+
+  gate-linux:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      # v4.2.3, reviewed immutable action commit.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-pnpm-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - name: Run Linux Gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf gate-linux .gate-evidence/gate-fast .gate-evidence/gate-linux
+          mkdir -p gate-linux
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts openssl 2>&1 | tee gate-linux/preflight.txt
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; rg --version; } | tee gate-linux/environment.txt
+          node --version | grep -Eq '^v24\.'
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile 2>&1 | tee gate-linux/install.txt
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee gate-linux/chromium.txt
+          corepack pnpm gate:fast 2>&1 | tee gate-linux/fast-command.txt
+          corepack pnpm gate:linux 2>&1 | tee gate-linux/command.txt
+          test -f .gate-evidence/gate-fast/accepted.json
+          test -f .gate-evidence/gate-linux/accepted.json
+          cp -R .gate-evidence/gate-fast gate-linux/gate-fast
+          cp -R .gate-evidence/gate-linux gate-linux/gate-linux
+          (cd gate-linux && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > gate-linux/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-linux --report gate-linux/gate-linux/report.json --marker gate-linux/gate-linux/accepted.json --hashes gate-linux/sha256.txt --receipt gate-linux/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p gate-linux
+          if [ -d .gate-evidence/gate-fast ] && [ ! -e gate-linux/gate-fast ]; then cp -R .gate-evidence/gate-fast gate-linux/gate-fast; fi
+          if [ -d .gate-evidence/gate-linux ] && [ ! -e gate-linux/gate-linux ]; then cp -R .gate-evidence/gate-linux gate-linux/gate-linux; fi
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gate-linux
+          path: gate-linux/
+          if-no-files-found: error
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      # v4.2.3, reviewed immutable action commit.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-pnpm-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Run rendered Chromium workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf browser-e2e .gate-evidence/browser-e2e
+          mkdir -p browser-e2e
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts openssl docker 2>&1 | tee browser-e2e/preflight.txt
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; docker --version; } | tee browser-e2e/environment.txt
+          node --version | grep -Eq '^v24\.'
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile 2>&1 | tee browser-e2e/install.txt
+          corepack pnpm build 2>&1 | tee browser-e2e/build.txt
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee browser-e2e/chromium.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts run --gate browser-e2e --report .gate-evidence/browser-e2e/report.json --selection tests/e2e/web-console/browser-workflow.test.ts -- pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts 2>&1 | tee browser-e2e/vitest.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts accept --report .gate-evidence/browser-e2e/report.json --marker .gate-evidence/browser-e2e/accepted.json
+          cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence
+          (cd browser-e2e && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > browser-e2e/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate browser-e2e --report browser-e2e/gate-evidence/report.json --marker browser-e2e/gate-evidence/accepted.json --hashes browser-e2e/sha256.txt --receipt browser-e2e/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p browser-e2e
+          if [ -d .gate-evidence/browser-e2e ] && [ ! -e browser-e2e/gate-evidence ]; then cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence; fi
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: browser-e2e
+          path: browser-e2e/
+          if-no-files-found: error
+
+  release-metadata:
+    needs: [gate-linux, browser-e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Verify immutable mandatory Gate artifacts and write phase-1 release block metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf release-metadata
+          mkdir -p release-metadata
+          commit="$(git rev-parse HEAD)"
+          test "$commit" = "$EXPECTED_COMMIT"
+          printf '%s\n' "$commit" > release-metadata/commit.txt
+          printf '%s\n' 'node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-metadata/gate-artifacts.json' > release-metadata/command.txt
+          corepack enable
+          node --version | grep -Eq '^v24\.'
+          test "$(corepack pnpm --version)" = 11.7.0
+          {
+            printf 'node=%s\n' "$(node --version)"
+            printf 'pnpm=%s\n' "$(corepack pnpm --version)"
+            printf 'git=%s\n' "$(git --version)"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+          } > release-metadata/environment.txt
+          verified=false
+          for attempt in $(seq 1 20); do
+            if node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-metadata/gate-artifacts.json; then verified=true; break; fi
+            sleep 30
+          done
+          test "$verified" = true
+          node --experimental-strip-types tests/helpers/gate-evidence.ts write-release-blocked --commit "$commit" --gate-artifacts release-metadata/gate-artifacts.json --output release-metadata/release-blocked.json
+          (cd release-metadata && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > release-metadata/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts release-metadata-receipt --directory release-metadata --receipt release-metadata/receipt.json
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: release-metadata
+          path: release-metadata/
           if-no-files-found: error

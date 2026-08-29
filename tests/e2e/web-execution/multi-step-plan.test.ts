@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -14,7 +15,7 @@ import type {
 } from "@qualigence/runner-protocol";
 import { WEB_OBSERVATION_V1_CAPABILITY_TOKENS, capabilities } from "@qualigence/runner-protocol";
 import type { RunnerSession } from "@qualigence/grpc-runner-protocol";
-import { SqliteRunnerSpool } from "@qualigence/runner-spool";
+import { AesGcmSpoolCrypto, SqliteRunnerSpool } from "@qualigence/runner-spool";
 import {
   DeterministicExecutionBudget,
   type AgentContext,
@@ -23,6 +24,7 @@ import {
   type RunnerPolicyGate,
 } from "@qualigence/runner-kernel";
 import { AllowAllRunnerPolicyGate } from "@qualigence/testkit";
+import { PlaywrightWebTargetAdapter } from "@qualigence/web-playwright";
 import {
   PlaywrightActionExecutor,
   PlaywrightActionResolver,
@@ -41,6 +43,7 @@ import {
 
 const EMAIL = "ticket19-private@example.test";
 const COUNTRY = "ticket19-private-country";
+const COUNTRY_TEXT = "Canada";
 const roots: string[] = [];
 let fixture: FixtureServer | undefined;
 let crossFixture: FixtureServer | undefined;
@@ -73,7 +76,7 @@ describe("bounded multi-step production Web Runtime", () => {
         <label>Country
           <select aria-label="Country">
             <option value="">Choose a country</option>
-            <option value="${COUNTRY}">Canada</option>
+            <option value="${COUNTRY}">${COUNTRY_TEXT}</option>
           </select>
         </label>
         <button type="button" aria-label="Submit">Submit</button>
@@ -104,7 +107,10 @@ describe("bounded multi-step production Web Runtime", () => {
     }));
     const valueProvider = await FileActionValueProvider.open({ root, configFile });
     const spoolFile = join(root, "runner-spool.db");
-    spool = await SqliteRunnerSpool.open({ databaseFile: spoolFile });
+    spool = await SqliteRunnerSpool.open({
+      databaseFile: spoolFile,
+      crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+    });
 
     const modelRequests: unknown[] = [];
     modelServer = createServer(async (request, response) => {
@@ -196,7 +202,42 @@ describe("bounded multi-step production Web Runtime", () => {
         maximumTokensPerCall: 100,
       },
     };
-    const runtime = new RunnerOfferRuntime({ config, session, spool, valueProvider });
+    const captureDiagnostics: Array<{
+      readonly capture: number;
+      readonly result: "accepted" | "SensitiveEvidenceUnavailable";
+      readonly pendingSensitiveCapture: boolean;
+      readonly hostRecordCount: number;
+      readonly hostMaskCount: number;
+    }> = [];
+    class DiagnosticWebTargetAdapter extends PlaywrightWebTargetAdapter {
+      override async capture(job: ExecutionJobOffer["job"], signal?: AbortSignal): Promise<ObservationGraphV1> {
+        const browserSession = (this as unknown as { readonly session: PlaywrightBrowserSession }).session;
+        try {
+          const graph = await super.capture(job, signal);
+          captureDiagnostics[captureDiagnostics.length] = safeCaptureDiagnostic(
+            captureDiagnostics.length + 1,
+            "accepted",
+            browserSession,
+          );
+          return graph;
+        } catch (error) {
+          if (!(error instanceof Error) || !hasSensitiveEvidenceUnavailableCode(error)) throw error;
+          captureDiagnostics[captureDiagnostics.length] = safeCaptureDiagnostic(
+            captureDiagnostics.length + 1,
+            "SensitiveEvidenceUnavailable",
+            browserSession,
+          );
+          throw error;
+        }
+      }
+    }
+    const runtime = new RunnerOfferRuntime({
+      config,
+      session,
+      spool,
+      valueProvider,
+      createTarget: (targetOptions) => new DiagnosticWebTargetAdapter(targetOptions),
+    });
 
     try {
       await runtime.run(offer());
@@ -210,6 +251,16 @@ describe("bounded multi-step production Web Runtime", () => {
       stderr.mockRestore();
     }
 
+    // This code-only diagnostic contains no page values, DOM, markers, screenshots,
+    // or evidence bytes. It identifies the first rejected observation boundary.
+    expect(captureDiagnostics).toEqual([
+      { capture: 1, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 0, hostMaskCount: 0 },
+      { capture: 2, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 0, hostMaskCount: 0 },
+      { capture: 3, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 1, hostMaskCount: 1 },
+      { capture: 4, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 2, hostMaskCount: 2 },
+      { capture: 5, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 2, hostMaskCount: 2 },
+      { capture: 6, result: "accepted", pendingSensitiveCapture: false, hostRecordCount: 2, hostMaskCount: 2 },
+    ]);
     expect(completions).toEqual([{ jobId: "job-multi-step", runId: "run-multi-step", status: "passed" }]);
     const trace = batches.flatMap((batch) => batch.events);
     expect(trace.filter((event) => event.stage === "run_completed")).toHaveLength(1);
@@ -227,8 +278,14 @@ describe("bounded multi-step production Web Runtime", () => {
     expect(trace.find((event) => event.stage === "action_executed" && event.stepIndex === 0))
       .toMatchObject({ payload: { status: "ok" } });
     const observations = trace.filter((event) => event.stage === "observation");
-    expect(observations[0]).toMatchObject({ stepIndex: 0, payload: { url: fixture.url } });
-    expect(observations[1]).toMatchObject({ stepIndex: 1, payload: { url: `${fixture.origin}/next` } });
+    expect(observations[0]).toMatchObject({
+      stepIndex: 0,
+      payload: { extensions: { "web/v1": { payload: { origin: fixture.origin, pathname: "/" } } } },
+    });
+    expect(observations[1]).toMatchObject({
+      stepIndex: 1,
+      payload: { extensions: { "web/v1": { payload: { origin: fixture.origin, pathname: "/next" } } } },
+    });
     expect(observations[1]?.payload.graphId).not.toBe(observations[0]?.payload.graphId);
     expect(finalObservation(trace).nodes.some((node) => node.name === "Completed" || node.value === "Completed")).toBe(true);
     expect(modelRequests).toHaveLength(6);
@@ -241,6 +298,8 @@ describe("bounded multi-step production Web Runtime", () => {
     ]).toString("utf8");
     expect(serializedEvidence).not.toContain(EMAIL);
     expect(serializedEvidence).not.toContain(COUNTRY);
+    expect(serializedEvidence).not.toContain(COUNTRY_TEXT);
+    expect(JSON.stringify(finalObservation(trace))).toContain("[redacted]");
   }, 60_000);
 });
 
@@ -450,7 +509,10 @@ async function runBrowserFailure(testCase: BrowserFailureCase) {
   });
   const root = await mkdtemp(join(tmpdir(), "qualigence-ticket19-failure-"));
   roots.push(root);
-  spool = await SqliteRunnerSpool.open({ databaseFile: join(root, "runner-spool.db") });
+  spool = await SqliteRunnerSpool.open({
+    databaseFile: join(root, "runner-spool.db"),
+    crypto: new AesGcmSpoolCrypto(randomBytes(32)),
+  });
   const session = new PlaywrightBrowserSession({
     url: fixture.url,
     headed: false,
@@ -666,6 +728,36 @@ function finalObservation(trace: readonly ExecutionEventBatch["events"][number][
   const event = trace.filter((candidate) => candidate.stage === "observation").at(-1);
   if (event?.stage !== "observation") throw new Error("Missing final observation.");
   return event.payload;
+}
+
+function safeCaptureDiagnostic(
+  capture: number,
+  result: "accepted" | "SensitiveEvidenceUnavailable",
+  session: PlaywrightBrowserSession,
+): {
+  readonly capture: number;
+  readonly result: "accepted" | "SensitiveEvidenceUnavailable";
+  readonly pendingSensitiveCapture: boolean;
+  readonly hostRecordCount: number;
+  readonly hostMaskCount: number;
+} {
+  const authority = (session as unknown as {
+    readonly sensitiveEvidence: {
+      scanRecords(): readonly unknown[];
+      maskSnapshot(): readonly unknown[];
+    };
+  }).sensitiveEvidence;
+  return {
+    capture,
+    result,
+    pendingSensitiveCapture: session.hasPendingSensitiveEvidenceCapture(),
+    hostRecordCount: authority.scanRecords().length,
+    hostMaskCount: authority.maskSnapshot().length,
+  };
+}
+
+function hasSensitiveEvidenceUnavailableCode(error: Error): boolean {
+  return (error as Error & { readonly code?: unknown }).code === "SensitiveEvidenceUnavailable";
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {

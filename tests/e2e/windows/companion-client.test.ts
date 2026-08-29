@@ -9,6 +9,7 @@ import {
   type CompanionProofSignature,
   type RunnerCertificateProofSigner,
 } from "@qualigence/desktop-windows-uia";
+import { desktopActionDigestSha256 } from "@qualigence/desktop-contracts";
 import type {
   AppTarget,
   LocalExecutionPermit,
@@ -173,11 +174,18 @@ function handleFrame(socket, frame) {
       writeFrame(socket, ok(request.requestId, "uia.capture", capturePayload(request.payload.sessionId)));
       break;
     case "permit.request":
+      const authorization = request.payload.request.authorization;
       writeFrame(socket, ok(request.requestId, "permit.request", {
         status: "approved",
         approvalId: request.payload.request.approvalId,
         decidedAt: "2026-08-26T00:00:02.000Z",
-        permit,
+        permit: {
+          ...permit,
+          nonceBase64: authorization.nonceBase64,
+          actionDigestSha256: authorization.actionDigestSha256,
+          decisionId: authorization.decisionId,
+          policyId: authorization.policyId,
+        },
       }));
       break;
     case "action.execute":
@@ -230,6 +238,8 @@ const permit = {
   actionId: "act-e2e",
   actionDigestSha256: "a".repeat(64),
   graphId: "graph-e2e",
+  decisionId: "decision-e2e",
+  policyId: "policy-e2e",
   risk: "Normal",
   issuedAt: "2026-08-26T00:00:02.000Z",
   expiresAt: "2026-08-26T00:05:02.000Z",
@@ -467,17 +477,32 @@ const action: ResolvedDesktopAction = {
   resolution: "semantic",
 };
 
+const authorization = {
+  decisionId: "decision-e2e",
+  policyId: "policy-e2e",
+  risk: "Normal" as const,
+  expiresAt: "2026-08-26T00:05:02.000Z",
+  nonceBase64: "dGlja2V0MjctcGVybWl0LW5vbmNl",
+};
+const actionDigestSha256 = desktopActionDigestSha256({
+  sessionId: "sess-e2e",
+  runId: "run-e2e",
+  action,
+  ...authorization,
+});
 const permit: LocalExecutionPermit = {
   permitToken: "dGlja2V0MjctcGVybWl0",
-  nonceBase64: "dGlja2V0MjctcGVybWl0LW5vbmNl",
+  nonceBase64: authorization.nonceBase64,
   sessionId: "sess-e2e",
   runId: "run-e2e",
   actionId: "act-e2e",
-  actionDigestSha256: "a".repeat(64),
+  actionDigestSha256,
   graphId: "graph-e2e",
-  risk: "Normal",
+  decisionId: authorization.decisionId,
+  policyId: authorization.policyId,
+  risk: authorization.risk,
   issuedAt: "2026-08-26T00:00:02.000Z",
-  expiresAt: "2026-08-26T00:05:02.000Z",
+  expiresAt: authorization.expiresAt,
 };
 
 const permitRequest: LocalPermitRequest = {
@@ -485,15 +510,9 @@ const permitRequest: LocalPermitRequest = {
   sessionId: "sess-e2e",
   runId: "run-e2e",
   action,
-  authorization: {
-    decisionId: "decision-e2e",
-    policyId: "policy-e2e",
-    actionDigestSha256: "a".repeat(64),
-    risk: "Normal",
-    expiresAt: "2026-08-26T00:05:02.000Z",
-  },
+  authorization: { ...authorization, actionDigestSha256 },
   safeSummary: "Click the Ticket 27 reference root node",
-  expiresAt: "2026-08-26T00:05:02.000Z",
+  expiresAt: authorization.expiresAt,
 };
 
 async function withFixture<T>(scenario: string, run: (handle: FixtureHandle) => Promise<T>): Promise<T> {

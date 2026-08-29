@@ -74,7 +74,7 @@ describe("Self-hosted Evidence API S3/KMS acceptance", () => {
     });
 
     expect(seeded.manifest.relativePath).toBe(
-      `${TENANT_A}/project-authorized/run-authorized/${seeded.manifest.sha256.slice(0, 2)}/${seeded.manifest.sha256}`,
+      `${TENANT_A}/project-authorized/run-authorized/artifact-authorized/${seeded.manifest.sha256.slice(0, 2)}/${seeded.manifest.sha256}`,
     );
     await expect(fx.liveStore(TENANT_A, "project-authorized").read(seeded.manifest)).resolves.toEqual(secret);
     await expect(kmsKeyVersionCount(fx, TENANT_A)).resolves.toBeGreaterThan(0);

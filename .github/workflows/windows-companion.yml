@@ -11,12 +11,14 @@ jobs:
   ticket-32-windows-platform-evidence:
     runs-on: windows-latest
     steps:
+      # v4.6.0, reviewed immutable action commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Record exact evidence commit before provisioning
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ticket-32-platform-evidence | Out-Null
           git rev-parse HEAD | Tee-Object -FilePath ticket-32-platform-evidence/commit.txt
+      # v6.1.0, reviewed immutable action commit.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
@@ -34,9 +36,97 @@ jobs:
           if ($LASTEXITCODE -ne 1) { exit 1 }
           Add-Content -Path ticket-32-platform-evidence/quarantine-markers.txt -Value 'no quarantine markers; rg exit 1'
           exit 0
+      # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: ticket-32-windows-platform-evidence-${{ github.sha }}
           path: ticket-32-platform-evidence/
+          if-no-files-found: error
+
+  gate-windows-rust:
+    runs-on: windows-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      # v4.2.3, reviewed immutable action commit.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~\AppData\Local\pnpm\store
+            ~\AppData\Local\ms-playwright
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: ${{ runner.os }}-pnpm-cargo-playwright-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Run Windows and Rust Gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item -Recurse -Force gate-windows-rust, .gate-evidence/gate-windows-rust -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force gate-windows-rust | Out-Null
+          corepack enable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((node --version) -notmatch '^v24\.') { throw 'node version must be 24' }
+          if ((corepack pnpm --version) -ne '11.7.0') { throw 'pnpm version must be 11.7.0' }
+          # Match rust-toolchain.toml and provision rustfmt before the root Gate.
+          # Any unavailable Rustup/toolchain/component state remains CargoUnavailable.
+          function Exit-CargoUnavailable {
+            [Console]::Error.WriteLine('CargoUnavailable')
+            exit 1
+          }
+          $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+          if ($null -eq $rustup) { Exit-CargoUnavailable }
+          try {
+            & $rustup.Path toolchain install 1.96.1 --profile minimal --component rustfmt *> gate-windows-rust/rustup.txt
+            $rustupExit = $LASTEXITCODE
+          } catch {
+            $rustupExit = 1
+          }
+          if ($rustupExit -ne 0) { Exit-CargoUnavailable }
+          $env:RUSTUP_TOOLCHAIN = '1.96.1'
+          $gitOpenSsl = 'C:\Program Files\Git\usr\bin\openssl.exe'
+          if (Test-Path -LiteralPath $gitOpenSsl) { $env:PATH = "$(Split-Path -Parent $gitOpenSsl);$env:PATH" }
+          # Hosted phase-1 runs on GitHub windows-latest (Windows Server caption). Ticket 31 remains the Windows 11 local-console/RDP Gate.
+          # Fail closed only for a true non-Windows host; keep CargoUnavailable/OpenSslUnavailable. Local package.json gate:windows still requires windows11.
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts windows cargo rustfmt openssl 2>&1 | Tee-Object gate-windows-rust/preflight.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @("commit=$(git rev-parse HEAD)", "node=$(node --version)", "pnpm=$(corepack pnpm --version)", "rust=$(rustc --version)", "rustfmt=$(cargo fmt --version)", "openssl=$(& $gitOpenSsl version)", "os=$([System.Environment]::OSVersion.VersionString)") | Set-Content gate-windows-rust/environment.txt
+          corepack pnpm install --frozen-lockfile 2>&1 | Tee-Object gate-windows-rust/install.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack pnpm build 2>&1 | Tee-Object gate-windows-rust/build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install chromium 2>&1 | Tee-Object gate-windows-rust/chromium.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts chromium 2>&1 | Tee-Object gate-windows-rust/chromium-preflight.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types tests/helpers/gate-evidence.ts run --gate gate-windows-rust --report .gate-evidence/gate-windows-rust/report.json --selection tests/e2e/windows/companion-client.test.ts --selection tests/e2e/windows/desktop-runner.test.ts --selection tests/e2e/windows/named-pipe-authority.test.ts --selection tests/contract/desktop --selection tests/component/windows-uia --selection tests/replay/windows-uia --selection tests/conformance/observation/windows-uia.test.ts -- pnpm vitest run tests/e2e/windows/companion-client.test.ts tests/e2e/windows/desktop-runner.test.ts tests/e2e/windows/named-pipe-authority.test.ts tests/contract/desktop tests/component/windows-uia tests/replay/windows-uia tests/conformance/observation/windows-uia.test.ts 2>&1 | Tee-Object gate-windows-rust/command.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack pnpm gate:companion 2>&1 | Tee-Object gate-windows-rust/companion.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types tests/helpers/gate-evidence.ts accept --report .gate-evidence/gate-windows-rust/report.json --marker .gate-evidence/gate-windows-rust/accepted.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path .gate-evidence/gate-windows-rust/accepted.json)) { throw 'GateAcceptedMarkerMissing' }
+          Copy-Item -Recurse .gate-evidence/gate-windows-rust gate-windows-rust/gate-evidence
+          $evidenceRoot = (Resolve-Path gate-windows-rust).Path
+          Get-ChildItem gate-windows-rust -File -Recurse | Where-Object { $_.Name -ne 'sha256.txt' } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($evidenceRoot.Length).TrimStart('\', '/').Replace('\', '/'))" } | Set-Content gate-windows-rust/sha256.txt
+          node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-windows-rust --report gate-windows-rust/gate-evidence/report.json --marker gate-windows-rust/gate-evidence/accepted.json --hashes gate-windows-rust/sha256.txt --receipt gate-windows-rust/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force gate-windows-rust | Out-Null
+          if ((Test-Path .gate-evidence/gate-windows-rust) -and -not (Test-Path gate-windows-rust/gate-evidence)) {
+            Copy-Item -Recurse .gate-evidence/gate-windows-rust gate-windows-rust/gate-evidence
+          }
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: gate-windows-rust
+          path: gate-windows-rust/
           if-no-files-found: error

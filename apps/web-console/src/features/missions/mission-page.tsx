@@ -1,7 +1,8 @@
 import type { MissionDto } from "@qualigence/public-api";
-import type { ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { ApiClientError } from "../../api/errors.js";
 import { useServices, useSession } from "../../auth/session-context.js";
 import { queryKeys } from "../../routes/query-keys.js";
 import { DataState, DefinitionList, StatusBadge } from "../../ui/components.js";
@@ -43,11 +44,44 @@ export function MissionDetailPage(props: { readonly missionId: string }): ReactN
   const { api } = useServices();
   const session = useSession();
   const tenantId = session?.tenantId ?? "";
+  const queryClient = useQueryClient();
+  const [startError, setStartError] = useState<string | undefined>();
   const mission = useQuery({
     queryKey: queryKeys.mission(tenantId, props.missionId),
     queryFn: () => api.getMission(props.missionId),
     enabled: session !== undefined,
   });
+  const runs = useQuery({
+    queryKey: queryKeys.runs(tenantId),
+    queryFn: () => api.listRuns(),
+    enabled: session !== undefined,
+  });
+  const start = useMutation({
+    mutationFn: () => {
+      if (mission.data === undefined) throw new Error("Mission is not loaded");
+      return api.startMission(
+        props.missionId,
+        { expectedVersion: mission.data.version },
+        { idempotencyKey: crypto.randomUUID() },
+      );
+    },
+    onSuccess: () => {
+      setStartError(undefined);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mission(tenantId, props.missionId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs(tenantId) });
+    },
+    onError: (error: unknown) => {
+      if (error instanceof ApiClientError && error.code === "VersionConflict") {
+        const actual = error.details?.actualVersion;
+        setStartError(`Mission changed concurrently${typeof actual === "number" ? ` (current version ${actual})` : ""}. Reloaded current state.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.mission(tenantId, props.missionId) });
+      } else {
+        setStartError(error instanceof Error ? error.message : "Mission start failed");
+      }
+    },
+  });
+  const canStart = session?.roles.some((role) => role === "admin" || role === "tester") ?? false;
+  const missionRuns = runs.data?.items.filter((run) => run.missionId === props.missionId) ?? [];
   return (
     <section>
       <p>
@@ -55,9 +89,20 @@ export function MissionDetailPage(props: { readonly missionId: string }): ReactN
       </p>
       <h1>Mission {props.missionId}</h1>
       <DataState isLoading={mission.isLoading} error={mission.error} isEmpty={mission.data === undefined}>
-        {mission.data !== undefined ? (
+        {mission.data !== undefined ? <>
           <MissionRevisionSummary mission={mission.data} />
-        ) : null}
+          {canStart && mission.data.status === "approved" ? <button type="button" onClick={() => start.mutate()} disabled={start.isPending}>Start Mission (v{mission.data.version})</button> : null}
+          {startError === undefined ? null : <p className="state state--error" role="alert">{startError}</p>}
+          {missionRuns.length === 0 ? null : <>
+            <h2>Runs</h2>
+            <ul className="resource-list">
+              {missionRuns.map((run) => <li key={run.runId}>
+                <Link to="/runs/$runId" params={{ runId: run.runId }}>{run.runId}</Link>
+                {run.evidenceRefs.map((artifactId) => <Link key={artifactId} to="/projects/$projectId/runs/$runId/artifacts/$artifactId" params={{ projectId: mission.data.projectId, runId: run.runId, artifactId }}>Artifact {artifactId}</Link>)}
+              </li>)}
+            </ul>
+          </>}
+        </> : null}
       </DataState>
     </section>
   );

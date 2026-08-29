@@ -71,6 +71,24 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
   );
 }
 
+function sameSensitiveMaskSnapshot(
+  left: readonly SensitiveMaskSnapshotEntry[],
+  right: readonly SensitiveMaskSnapshotEntry[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const first = left[index];
+    const second = right[index];
+    if (first === undefined || second === undefined ||
+      first.markerId !== second.markerId ||
+      first.maskId !== second.maskId ||
+      first.backendNodeId !== second.backendNodeId) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function captureScreenshotAttempt(
   page: Page,
   assertCaptureAuthority: () => void,
@@ -1166,14 +1184,38 @@ function collectPageObservation(
     return elements;
   }
 
-  function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, _pendingPageRecord: boolean): boolean {
+  function sensitiveElementCoveredByAuthority(element: Element, ids: readonly string[], record: SensitiveEvidenceScanRecord, pendingPageRecord: boolean): boolean {
     const hasTargetId = hasSensitiveTargetId(ids, record.markerId);
     const maskable = isMaskableElement(element);
     if (!maskable) return hasTargetId;
     const maskId = getAttribute(element, input.sensitiveMaskIdAttribute);
     if (maskId === null) return false;
     if (arrayHasString(record.maskIds, maskId)) return true;
+    // A scheduler callback can add a classified region while its capture is
+    // still pending. Permit this page-local pairing only until the immediate
+    // host/CDP refresh below validates and snapshots its backend node; it never
+    // authorizes an accepted Graph or PNG by itself.
+    if (pendingPageRecord && pendingMaskMatchesClassifiedElement(element, record.markerId, maskId)) return true;
     return hasTargetId && sensitiveMaskIdBelongsToAnyRecord(maskId);
+  }
+
+  function pendingMaskMatchesClassifiedElement(element: Element, markerId: string, maskId: string): boolean {
+    const state = (window as unknown as Record<string, unknown>)[input.sensitiveEvidenceStateProperty] as {
+      readonly records?: readonly {
+        readonly markerId: string;
+        readonly classifiedElements?: readonly Element[];
+        readonly classifiedMaskIds?: readonly string[];
+      }[];
+    } | undefined;
+    const record = findRecord(state?.records, markerId);
+    if (record === undefined || !dom.arrayIsArray(record.classifiedElements)) return false;
+    for (let index = 0; index < record.classifiedElements.length; index += 1) {
+      if (record.classifiedElements[index] !== element) continue;
+      return index < (record.classifiedMaskIds?.length ?? 0)
+        ? record.classifiedMaskIds?.[index] === maskId
+        : getAttribute(element, input.sensitiveMaskIdAttribute) === maskId;
+    }
+    return false;
   }
 
   function sensitiveMaskIdBelongsToAnyRecord(maskId: string): boolean {
@@ -1287,7 +1329,11 @@ function collectPageObservation(
       const elements = record.classifiedElements ?? [];
       const recordMaskIds = cloneStringArray(record.classifiedMaskIds);
       if (forms === undefined || !dom.arrayIsArray(elements) || recordMaskIds === undefined) return failed();
-      if (recordMaskIds.length !== elements.length) return failed();
+      // Scheduler callbacks may classify an additional element after the
+      // action epoch has closed. The callback itself installs its captured-DOM
+      // marker/mask; collect it here only for the pending host/CDP refresh.
+      // Missing or duplicate authority remains terminal below.
+      if (recordMaskIds.length > elements.length) return failed();
       if ((record.classifiedRegions?.length ?? elements.length) > input.maxMaskRegions) return failed();
       const classifiedElementMaskIds: (string | undefined)[] = [];
       const classifiedElementTargetIds: string[][] = [];
@@ -1299,15 +1345,26 @@ function collectPageObservation(
           return failed();
         }
         const id = recordMaskIds[index];
-        if (typeof id !== "string" || !isSafeMaskId(id)) return failed();
-        setAttribute(element, input.sensitiveMaskIdAttribute, id);
+        const pageMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
+        if (id === undefined) {
+          if (pageMaskId === undefined || !isSafeMaskId(pageMaskId)) return failed();
+          recordMaskIds[recordMaskIds.length] = pageMaskId;
+        } else if (!isSafeMaskId(id)) {
+          return failed();
+        } else {
+          // Reapply known pending masks through captured DOM authority before
+          // reading them back; page-overridden accessors cannot suppress it.
+          setAttribute(element, input.sensitiveMaskIdAttribute, id);
+        }
+        const resolvedMaskId = recordMaskIds[index];
+        if (typeof resolvedMaskId !== "string") return failed();
         const observedMaskId = getAttribute(element, input.sensitiveMaskIdAttribute) ?? undefined;
-        if (observedMaskId !== id) return failed();
+        if (observedMaskId !== resolvedMaskId) return failed();
         classifiedElementMaskIds[classifiedElementMaskIds.length] = observedMaskId;
         const targetIds = cloneStringArray((element as unknown as Record<string, unknown>)[input.sensitiveTargetIdsProperty]);
         if (targetIds === undefined) return failed();
         classifiedElementTargetIds[classifiedElementTargetIds.length] = targetIds;
-        pushUniqueString(maskIds, id);
+        pushUniqueString(maskIds, resolvedMaskId);
         if (maskIds.length > input.maxMaskRegions) return failed();
       }
       pageRecords[pageRecords.length] = {
@@ -1395,7 +1452,7 @@ function collectPageObservation(
 
   function isMaskableElement(element: Element): boolean {
     const tag = tagName(element);
-    return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style";
+    return tag !== "head" && tag !== "title" && tag !== "meta" && tag !== "script" && tag !== "style" && tag !== "option";
   }
 
   function shadowRoots(): ShadowRoot[] {
@@ -1406,7 +1463,10 @@ function collectPageObservation(
       shadowRootOverflow?: boolean;
     } | undefined;
     const noteOverflow = (): void => {
-      if (registry !== undefined) registry.shadowRootOverflow = true;
+      // The init-script closure tracks every attachShadow call. Observation
+      // enumeration must not write its guarded diagnostic surface: doing so
+      // turns an unrelated ordinary capture into a permanent authority
+      // mutation before any sensitive epoch begins.
     };
     const addRoot = (root: ShadowRoot): boolean => {
       if (arrayHasIdentity(roots, root)) return true;
@@ -1678,6 +1738,20 @@ export class PlaywrightObserver implements Observer {
         }
         assertCaptureAuthority();
         this.session.assertSensitiveEvidenceAvailable();
+        await refreshPendingMaskSnapshotFromPageState(
+          this.session,
+          page,
+          postScreenshotCheck.sensitivePageState,
+          assertCaptureAuthority,
+        );
+        // A delayed classified region appeared after this screenshot's CDP
+        // preflight. Discard these local bytes and perform the sole permitted
+        // complete recapture using its revalidated host/CDP binding.
+        if (!sameSensitiveMaskSnapshot(maskSnapshot, this.session.sensitiveMaskSnapshot())) {
+          if (attempt === 0) continue;
+          this.session.markSensitiveEvidenceUnavailable();
+          throw sensitiveEvidenceUnavailable();
+        }
         this.session.validatePendingSensitivePageState(postScreenshotCheck.sensitivePageState);
         let retirement: SensitiveEvidenceRetirement = "retired";
         if (this.session.hasPendingSensitiveEvidenceCapture()) {
