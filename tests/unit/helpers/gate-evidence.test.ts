@@ -487,4 +487,58 @@ describe("Gate evidence verifier", () => {
       expect(source, file).toMatch(/# v\d+\.\d+\.\d+, reviewed immutable action commit\./);
     }
   });
+
+  it("provisions ripgrep and workspace build before hosted Ticket 33 Gate tests", async () => {
+    const [ci, selfHosted, windows, namedPipe, readiness, harness] = await Promise.all([
+      readFile(".github/workflows/ci.yml", "utf8"),
+      readFile(".github/workflows/self-hosted.yml", "utf8"),
+      readFile(".github/workflows/windows-companion.yml", "utf8"),
+      readFile("tests/e2e/windows/named-pipe-authority.test.ts", "utf8"),
+      readFile("tests/e2e/self-hosted/readiness.test.ts", "utf8"),
+      readFile("tests/e2e/self-hosted/external-runner-harness.ts", "utf8"),
+    ]);
+    const linux = workflowJob(ci, "gate-linux");
+    const browser = workflowJob(ci, "browser-e2e");
+    const selfHostedJob = workflowJob(selfHosted, "gate-self-hosted");
+    const windowsJob = workflowJob(windows, "gate-windows-rust");
+
+    const rgInstall = linux.indexOf("sudo apt-get update && sudo apt-get install --yes ripgrep");
+    const rgVersion = linux.indexOf("rg --version");
+    const fast = linux.indexOf("corepack pnpm gate:fast");
+    expect(rgInstall).toBeGreaterThan(-1);
+    expect(rgVersion).toBeGreaterThan(rgInstall);
+    expect(fast).toBeGreaterThan(rgVersion);
+
+    const browserInstall = browser.indexOf("corepack pnpm install --frozen-lockfile");
+    const browserBuild = browser.indexOf("corepack pnpm build");
+    const browserVitest = browser.indexOf("pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts");
+    expect(browserBuild).toBeGreaterThan(browserInstall);
+    expect(browserVitest).toBeGreaterThan(browserBuild);
+
+    const selfInstall = selfHostedJob.indexOf("corepack pnpm install --frozen-lockfile");
+    const selfBuild = selfHostedJob.indexOf("corepack pnpm build");
+    const selfGate = selfHostedJob.indexOf("corepack pnpm gate:self-hosted");
+    expect(selfBuild).toBeGreaterThan(selfInstall);
+    expect(selfGate).toBeGreaterThan(selfBuild);
+
+    const windowsInstall = windowsJob.indexOf("corepack pnpm install --frozen-lockfile");
+    const windowsBuild = windowsJob.indexOf("corepack pnpm build");
+    const windowsVitest = windowsJob.indexOf("tests/helpers/gate-evidence.ts run --gate gate-windows-rust");
+    expect(windowsBuild).toBeGreaterThan(windowsInstall);
+    expect(windowsVitest).toBeGreaterThan(windowsBuild);
+
+    expect(namedPipe).toContain("const NAMED_PIPE_CARGO_TIMEOUT_MS = 900_000");
+    expect(namedPipe).toContain("timeout: NAMED_PIPE_CARGO_TIMEOUT_MS");
+    expect(namedPipe).toContain("NAMED_PIPE_CARGO_TIMEOUT_MS + 30_000");
+    expect(namedPipe).toContain("Windows11Unavailable");
+    expect(namedPipe).not.toMatch(/\bskipIf\b/);
+    expect(namedPipe).not.toMatch(/it\.skip|describe\.skip/);
+
+    expect(readiness).toContain("volumes: !override");
+    expect(readiness).toContain('join(REPO_ROOT, ".tmp-readiness-")');
+    expect(readiness).toContain('"--volume", `${composePath(ctx.workDir)}:/harness:ro`');
+    expect(harness).toContain("volumes: !override");
+    expect(harness).toContain('join(REPO_ROOT, ".tmp-external-runner-")');
+    expect(harness).toContain('"--volume", `${composePath(ctx.workDir)}:/harness:ro`');
+  });
 });

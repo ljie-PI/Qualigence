@@ -33,6 +33,7 @@ jobs:
           node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-self-hosted/install.txt
+          corepack pnpm build 2>&1 | tee gate-self-hosted/build.txt
           corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
           test -f .gate-evidence/gate-self-hosted/accepted.json
           cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence

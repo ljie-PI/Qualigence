@@ -97,6 +97,8 @@ jobs:
           @("commit=$(git rev-parse HEAD)", "node=$(node --version)", "pnpm=$(corepack pnpm --version)", "rust=$(rustc --version)", "rustfmt=$(cargo fmt --version)", "openssl=$(openssl version)", "os=$([System.Environment]::OSVersion.VersionString)") | Set-Content gate-windows-rust/environment.txt
           corepack pnpm install --frozen-lockfile 2>&1 | Tee-Object gate-windows-rust/install.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack pnpm build 2>&1 | Tee-Object gate-windows-rust/build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           corepack pnpm --filter @qualigence/web-playwright exec playwright install chromium 2>&1 | Tee-Object gate-windows-rust/chromium.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts chromium 2>&1 | Tee-Object gate-windows-rust/chromium-preflight.txt

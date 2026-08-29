@@ -4,7 +4,6 @@ import type { AddressInfo } from "node:net";
 import { request as httpsRequest } from "node:https";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -86,7 +85,7 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
     await ensureWorkspaceBuild();
     await compose(ctx, ["up", "-d", "postgres", "minio"], 180_000);
     await compose(ctx, ["run", "--rm", "minio-bucket"], 120_000);
-    await compose(ctx, ["run", "--rm", "migrate"], 180_000);
+    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "--volume", `${composePath(ctx.workDir)}:/harness:ro`, "migrate"], 180_000);
     await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
     await waitForStackReady(ctx);
   }, 900_000);
@@ -140,7 +139,7 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
 });
 
 async function createHarnessContext(): Promise<HarnessContext> {
-  const workDir = await mkdtemp(join(tmpdir(), "qualigence-readiness-e2e-"));
+  const workDir = await mkdtemp(join(REPO_ROOT, ".tmp-readiness-"));
   const [proxyPort, runnerGrpcPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const runnerCa = createRunnerCa("Qualigence readiness E2E Runner CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
@@ -211,7 +210,7 @@ console.log("readiness-e2e:database-provisioned");
     "  migrate:",
     `    image: ${NODE_RUNTIME_IMAGE}`,
     "    build: !reset null",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
@@ -223,7 +222,7 @@ console.log("readiness-e2e:database-provisioned");
     "    user: \"1000:1000\"",
     "    entrypoint: [\"/bin/sh\", \"-ec\"]",
     `    command: !override [\"node /harness/jwks-server.mjs & exec node /workspace/apps/server/dist/main.js\"]`,
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
@@ -242,12 +241,12 @@ console.log("readiness-e2e:database-provisioned");
     "    user: \"1000:1000\"",
     "    entrypoint: [\"node\", \"/workspace/apps/intelligence-worker/dist/main.js\"]",
     "    command: !override []",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     "  console:",
     "    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17",
     "    build: !reset null",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(join(REPO_ROOT, "apps", "web-console", "dist"))}:/srv:ro\"`,
     "  proxy:",
     "    ports: !override",

@@ -62,6 +62,7 @@ jobs:
             ~/.local/share/pnpm/store
             ~/.cache/ms-playwright
           key: ${{ runner.os }}-pnpm-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - name: Run Linux Gate
         shell: bash
         run: |
@@ -69,7 +70,7 @@ jobs:
           rm -rf gate-linux .gate-evidence/gate-fast .gate-evidence/gate-linux
           mkdir -p gate-linux
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts openssl 2>&1 | tee gate-linux/preflight.txt
-          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; } | tee gate-linux/environment.txt
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; rg --version; } | tee gate-linux/environment.txt
           node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-linux/install.txt
@@ -124,6 +125,7 @@ jobs:
           node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee browser-e2e/install.txt
+          corepack pnpm build 2>&1 | tee browser-e2e/build.txt
           corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee browser-e2e/chromium.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts run --gate browser-e2e --report .gate-evidence/browser-e2e/report.json --selection tests/e2e/web-console/browser-workflow.test.ts -- pnpm vitest run tests/e2e/web-console/browser-workflow.test.ts 2>&1 | tee browser-e2e/vitest.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts accept --report .gate-evidence/browser-e2e/report.json --marker .gate-evidence/browser-e2e/accepted.json

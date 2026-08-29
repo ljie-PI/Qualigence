@@ -4,7 +4,6 @@ import { request as httpsRequest, type RequestOptions } from "node:https";
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -211,7 +210,7 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
     await ensureWorkspaceBuild();
     await writeHarnessSecrets(ctx);
     await compose(ctx, ["up", "-d", "postgres", "minio"], 180_000);
-    await compose(ctx, ["run", "--rm", "migrate"], 180_000);
+    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "--volume", `${composePath(ctx.workDir)}:/harness:ro`, "migrate"], 180_000);
     await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
     await waitForStackReadiness(ctx);
 
@@ -321,7 +320,7 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
 }
 
 async function createHarnessContext(): Promise<HarnessContext> {
-  const workDir = await mkdtemp(join(tmpdir(), "qualigence-external-runner-"));
+  const workDir = await mkdtemp(join(REPO_ROOT, ".tmp-external-runner-"));
   const runnerDataDir = join(workDir, "runner-data");
   const secretsDir = join(workDir, "secrets");
   await mkdir(runnerDataDir, { recursive: true });
@@ -776,7 +775,7 @@ try {
     "  migrate:",
     `    image: ${nodeRuntimeImage()}`,
     "    build: !reset null",
-    `    volumes:`,
+    `    volumes: !override`,
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
@@ -789,7 +788,7 @@ try {
     "    working_dir: /workspace",
     "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
     "    command: !override [\"backup\"]",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     "      - backups:/var/lib/qualigence/backups",
     "  restore:",
@@ -800,7 +799,7 @@ try {
     "    working_dir: /workspace",
     "    entrypoint: [\"node\", \"/workspace/apps/admin-cli/dist/main.js\"]",
     "    command: !override [\"restore\"]",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     "      - backups:/var/lib/qualigence/backups",
     "  server:",
@@ -810,7 +809,7 @@ try {
     "    user: \"1000:1000\"",
     "    entrypoint: [\"/bin/sh\", \"-ec\"]",
     "    command: !override [\"node /harness/jwks-server.mjs & exec node /workspace/apps/server/dist/main.js\"]",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
@@ -827,7 +826,7 @@ try {
     "    user: \"1000:1000\"",
     "    entrypoint: [\"node\", \"/workspace/apps/intelligence-worker/dist/main.js\"]",
     "    command: !override []",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
     "    healthcheck:",
     "      test:",
@@ -839,7 +838,7 @@ try {
     "  console:",
     "    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17",
     "    build: !reset null",
-    "    volumes:",
+    "    volumes: !override",
     `      - \"${composePath(join(REPO_ROOT, "apps", "web-console", "dist"))}:/srv:ro\"`,
     "  proxy:",
     "    ports: !override",
