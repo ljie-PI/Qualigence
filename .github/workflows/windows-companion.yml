@@ -73,10 +73,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ((node --version) -notmatch '^v24\.') { throw 'node version must be 24' }
           if ((corepack pnpm --version) -ne '11.7.0') { throw 'pnpm version must be 11.7.0' }
-          # Match rust-toolchain.toml and install rustfmt before the root Gate
-          # preflight, so cargo fmt cannot fail later as an unclassified error.
-          rustup toolchain install 1.96.1 --profile minimal --component rustfmt 2>&1 | Tee-Object gate-windows-rust/rustup.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Match rust-toolchain.toml and provision rustfmt before the root Gate.
+          # Any unavailable Rustup/toolchain/component state remains CargoUnavailable.
+          function Exit-CargoUnavailable {
+            [Console]::Error.WriteLine('CargoUnavailable')
+            exit 1
+          }
+          $rustup = Get-Command rustup -ErrorAction SilentlyContinue
+          if ($null -eq $rustup) { Exit-CargoUnavailable }
+          try {
+            & $rustup.Path toolchain install 1.96.1 --profile minimal --component rustfmt *> gate-windows-rust/rustup.txt
+            $rustupExit = $LASTEXITCODE
+          } catch {
+            $rustupExit = 1
+          }
+          if ($rustupExit -ne 0) { Exit-CargoUnavailable }
           $env:RUSTUP_TOOLCHAIN = '1.96.1'
           if (Test-Path 'C:\Program Files\Git\usr\bin\openssl.exe') { $env:PATH = "C:\Program Files\Git\usr\bin;" + $env:PATH }
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts windows11 cargo rustfmt openssl 2>&1 | Tee-Object gate-windows-rust/preflight.txt

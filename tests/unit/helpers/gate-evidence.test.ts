@@ -334,4 +334,38 @@ describe("Gate evidence verifier", () => {
     expect(`${command.stdout}${command.stderr}`).toContain(RELEASE_VERIFIER_UNAVAILABLE);
     expect(`${command.stdout}${command.stderr}`).not.toContain("Missing script");
   });
+
+  it("pins the release receipt toolchain and classifies Rust provisioning failure before the Windows Gate", async () => {
+    const [ci, windows] = await Promise.all([
+      readFile(".github/workflows/ci.yml", "utf8"),
+      readFile(".github/workflows/windows-companion.yml", "utf8"),
+    ]);
+    const setupNode = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020";
+    const releaseJob = ci.slice(ci.indexOf("  release-metadata:"));
+    const setupNodeIndex = releaseJob.indexOf(setupNode);
+    const corepackIndex = releaseJob.indexOf("corepack enable");
+    const nodeCheckIndex = releaseJob.indexOf("node --version | grep -Eq '^v24\\.'");
+    const pnpmCheckIndex = releaseJob.indexOf('test "$(corepack pnpm --version)" = 11.7.0');
+    const helperIndex = releaseJob.lastIndexOf("node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github");
+    expect(releaseJob).toContain("node-version: 24");
+    expect(setupNodeIndex).toBeGreaterThan(-1);
+    expect(corepackIndex).toBeGreaterThan(setupNodeIndex);
+    expect(nodeCheckIndex).toBeGreaterThan(corepackIndex);
+    expect(pnpmCheckIndex).toBeGreaterThan(nodeCheckIndex);
+    expect(helperIndex).toBeGreaterThan(pnpmCheckIndex);
+
+    const rustupLookup = windows.indexOf("$rustup = Get-Command rustup -ErrorAction SilentlyContinue");
+    const missingRustup = windows.indexOf("if ($null -eq $rustup) { Exit-CargoUnavailable }");
+    const install = windows.indexOf("& $rustup.Path toolchain install 1.96.1 --profile minimal --component rustfmt *> gate-windows-rust/rustup.txt");
+    const caughtInstallFailure = windows.indexOf("} catch {\n            $rustupExit = 1");
+    const classifiedInstallFailure = windows.indexOf("if ($rustupExit -ne 0) { Exit-CargoUnavailable }");
+    const gate = windows.indexOf("corepack pnpm gate:windows");
+    expect(windows).toContain("[Console]::Error.WriteLine('CargoUnavailable')");
+    expect(rustupLookup).toBeGreaterThan(-1);
+    expect(missingRustup).toBeGreaterThan(rustupLookup);
+    expect(install).toBeGreaterThan(missingRustup);
+    expect(caughtInstallFailure).toBeGreaterThan(install);
+    expect(classifiedInstallFailure).toBeGreaterThan(caughtInstallFailure);
+    expect(gate).toBeGreaterThan(classifiedInstallFailure);
+  });
 });

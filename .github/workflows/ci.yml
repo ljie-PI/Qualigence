@@ -140,6 +140,10 @@ jobs:
     steps:
       # v4.6.0, reviewed immutable action commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
       - name: Verify immutable mandatory Gate artifacts and write phase-1 release block metadata
         shell: bash
         env:
@@ -154,6 +158,8 @@ jobs:
           printf '%s\n' "$commit" > release-metadata/commit.txt
           printf '%s\n' 'node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-metadata/gate-artifacts.json' > release-metadata/command.txt
           corepack enable
+          node --version | grep -Eq '^v24\.'
+          test "$(corepack pnpm --version)" = 11.7.0
           {
             printf 'node=%s\n' "$(node --version)"
             printf 'pnpm=%s\n' "$(corepack pnpm --version)"
