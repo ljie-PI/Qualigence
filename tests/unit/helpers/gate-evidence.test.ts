@@ -183,6 +183,16 @@ function extractionInput(archive: Uint8Array) {
   return { gate: "gate-linux", artifactId: 17, archive, artifactDigest: `sha256:${hash(archive)}` };
 }
 
+function workflowJob(source: string, name: string): string {
+  const header = `\n  ${name}:\n`;
+  const start = source.indexOf(header);
+  expect(start, `missing workflow job ${name}`).toBeGreaterThan(-1);
+  const from = start + 1;
+  const rest = source.slice(from + `  ${name}:\n`.length);
+  const next = rest.search(/\n  [A-Za-z0-9_-]+:\n/);
+  return next === -1 ? source.slice(from) : source.slice(from, from + `  ${name}:\n`.length + next);
+}
+
 describe("Gate evidence verifier", () => {
   it("counts only Vitest's selected JSON results", () => {
     expect(countsFromVitestJson({ numPassedTests: 7, numFailedTests: 0, numPendingTests: 1, numTodoTests: 2 })).toEqual({
@@ -367,5 +377,33 @@ describe("Gate evidence verifier", () => {
     expect(caughtInstallFailure).toBeGreaterThan(install);
     expect(classifiedInstallFailure).toBeGreaterThan(caughtInstallFailure);
     expect(gate).toBeGreaterThan(classifiedInstallFailure);
+  });
+
+  it("asserts Node 24 with a single-backslash pattern in every required Gate job", async () => {
+    const [ci, selfHosted, windows] = await Promise.all([
+      readFile(".github/workflows/ci.yml", "utf8"),
+      readFile(".github/workflows/self-hosted.yml", "utf8"),
+      readFile(".github/workflows/windows-companion.yml", "utf8"),
+    ]);
+    const linuxAssertion = "node --version | grep -Eq '^v24\\.'";
+    const linuxDoubleBackslash = "node --version | grep -Eq '^v24\\\\.'";
+    const windowsAssertion = "(node --version) -notmatch '^v24\\.'";
+    const linuxJobs: ReadonlyArray<readonly [string, string]> = [
+      ["gate-linux", workflowJob(ci, "gate-linux")],
+      ["browser-e2e", workflowJob(ci, "browser-e2e")],
+      ["release-metadata", workflowJob(ci, "release-metadata")],
+      ["gate-self-hosted", workflowJob(selfHosted, "gate-self-hosted")],
+    ];
+    for (const [name, job] of linuxJobs) {
+      expect(job, name).toContain(linuxAssertion);
+      expect(job, name).not.toContain(linuxDoubleBackslash);
+    }
+    const windowsJob = workflowJob(windows, "gate-windows-rust");
+    expect(windowsJob).toContain(windowsAssertion);
+    expect(windowsJob).not.toContain(linuxDoubleBackslash);
+    expect(ci).not.toContain(linuxDoubleBackslash);
+    expect(selfHosted).not.toContain(linuxDoubleBackslash);
+    expect(/^v24\./.test("v24.13.0")).toBe(true);
+    expect(/^v24\\./.test("v24.13.0")).toBe(false);
   });
 });

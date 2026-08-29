@@ -70,7 +70,7 @@ jobs:
           mkdir -p gate-linux
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts openssl 2>&1 | tee gate-linux/preflight.txt
           { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; } | tee gate-linux/environment.txt
-          node --version | grep -Eq '^v24\\.'
+          node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-linux/install.txt
           corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee gate-linux/chromium.txt
@@ -114,7 +114,7 @@ jobs:
           mkdir -p browser-e2e
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts openssl docker 2>&1 | tee browser-e2e/preflight.txt
           { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; openssl version; docker --version; } | tee browser-e2e/environment.txt
-          node --version | grep -Eq '^v24\\.'
+          node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee browser-e2e/install.txt
           corepack pnpm --filter @qualigence/web-playwright exec playwright install --with-deps chromium 2>&1 | tee browser-e2e/chromium.txt
