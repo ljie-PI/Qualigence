@@ -28,11 +28,13 @@ jobs:
           set -euo pipefail
           rm -rf gate-self-hosted .gate-evidence/gate-self-hosted
           mkdir -p gate-self-hosted
-          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts docker 2>&1 | tee gate-self-hosted/preflight.txt
-          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; docker --version; docker compose version; } | tee gate-self-hosted/environment.txt
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts docker openssl 2>&1 | tee gate-self-hosted/preflight.txt
+          { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; docker --version; docker compose version; openssl version; } | tee gate-self-hosted/environment.txt
           node --version | grep -Eq '^v24\.'
           test "$(corepack pnpm --version)" = 11.7.0
           corepack pnpm install --frozen-lockfile 2>&1 | tee gate-self-hosted/install.txt
+          corepack pnpm --filter @qualigence/web-playwright exec playwright install chromium 2>&1 | tee gate-self-hosted/chromium.txt
+          node --experimental-strip-types tests/helpers/infrastructure-preflight.ts chromium 2>&1 | tee gate-self-hosted/chromium-preflight.txt
           corepack pnpm build 2>&1 | tee gate-self-hosted/build.txt
           corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
           test -f .gate-evidence/gate-self-hosted/accepted.json

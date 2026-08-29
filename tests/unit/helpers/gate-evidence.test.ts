@@ -12,6 +12,7 @@ import {
   RELEASE_VERIFIER_UNAVAILABLE,
   selectGateDeliveries,
   verifyGateDeliveries,
+  verifyGithubGateArtifacts,
   writePhase1ReleaseBlockedMetadata,
   writePhase1ReleaseMetadataReceipt,
   type GateDelivery,
@@ -26,7 +27,7 @@ function report(gate: string): GateReport {
     "gate-linux": { command: ["pnpm", "vitest", "run", "--no-file-parallelism", "--maxWorkers=1", "tests/e2e/web-console", "tests/e2e/web-execution"], selection: ["tests/e2e/web-console", "tests/e2e/web-execution"] },
     "browser-e2e": { command: ["pnpm", "vitest", "run", "tests/e2e/web-console/browser-workflow.test.ts"], selection: ["tests/e2e/web-console/browser-workflow.test.ts"] },
     "gate-windows-rust": { command: ["pnpm", "vitest", "run", "tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"], selection: ["tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"] },
-    "gate-self-hosted": { command: ["pnpm", "vitest", "run", "tests/e2e/self-hosted"], selection: ["tests/e2e/self-hosted"] },
+    "gate-self-hosted": { command: ["pnpm", "vitest", "run", "--no-file-parallelism", "--maxWorkers=1", "tests/e2e/self-hosted"], selection: ["tests/e2e/self-hosted"] },
   };
   const expected = declaration[gate]!;
   return {
@@ -303,6 +304,41 @@ describe("Gate evidence verifier", () => {
     await expect(extractGateArtifactArchive(extractionInput(oversized))).rejects.toThrow("GateArtifactArchiveSizeInvalid");
   });
 
+  it("accepts a same-workflow Gate artifact after its producing job succeeds before the workflow run is terminal", async () => {
+    const archive = archiveFixture();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/actions/artifacts?per_page=100")) {
+        return new Response(JSON.stringify({
+          artifacts: [{
+            id: 17,
+            name: "gate-linux",
+            expired: false,
+            size_in_bytes: archive.byteLength,
+            digest: `sha256:${hash(archive)}`,
+            archive_download_url: "https://download.example/gate-linux.zip",
+            workflow_run: { id: 101, head_sha: "b".repeat(40) },
+          }],
+        }), { status: 200 });
+      }
+      if (url.endsWith("/actions/runs/101/jobs?per_page=100")) {
+        return new Response(JSON.stringify({ jobs: [{ name: "gate-linux", status: "completed", conclusion: "success" }] }), { status: 200 });
+      }
+      if (url === "https://download.example/gate-linux.zip") {
+        return new Response(archive, { status: 200, headers: { "content-length": String(archive.byteLength) } });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const selection = await verifyGithubGateArtifacts({ repository: "owner/repo", token: "token", commit: COMMIT, requiredGates: ["gate-linux"] });
+      expect(selection.deliveries).toHaveLength(1);
+      expect(selection.deliveries[0]).toMatchObject({ gate: "gate-linux", artifactId: 17, runId: 101, commit: COMMIT });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("binds phase-1 release-block metadata to verified delivery counts and a hash manifest", async () => {
     const directory = await mkdtemp(join(tmpdir(), "qualigence-release-metadata-"));
     try {
@@ -421,7 +457,11 @@ describe("Gate evidence verifier", () => {
     ]);
     const hostedJob = workflowJob(windows, "gate-windows-rust");
     expect(packageJson).toContain("infrastructure-preflight.ts windows11 chromium cargo rustfmt openssl");
+    expect(packageJson).toContain("infrastructure-preflight.ts docker openssl chromium");
+    expect(hostedJob).toContain("$gitOpenSsl = 'C:\\Program Files\\Git\\usr\\bin\\openssl.exe'");
+    expect(hostedJob).toContain("Test-Path -LiteralPath $gitOpenSsl");
     expect(hostedJob).toContain("infrastructure-preflight.ts windows cargo rustfmt openssl");
+    expect(hostedJob).toContain("openssl=$(& $gitOpenSsl version)");
     expect(hostedJob).toContain("infrastructure-preflight.ts chromium");
     expect(hostedJob).not.toContain("infrastructure-preflight.ts windows11");
     expect(hostedJob).toContain("tests/e2e/windows/companion-client.test.ts");
@@ -434,6 +474,12 @@ describe("Gate evidence verifier", () => {
     expect(hostedJob).toContain("corepack pnpm gate:companion");
     expect(hostedJob).not.toMatch(/continue-on-error:\s*true/);
     expect(hostedJob).not.toMatch(/\bskip\b/i);
+    expect(preflight).toContain('case "openssl":');
+    expect(preflight).toContain('if (process.platform === "win32") {');
+    expect(preflight).toContain('if (!existsSync(gitOpenSsl)) return "OpenSslUnavailable"');
+    expect(preflight).toContain('execFileSync(gitOpenSsl, ["version"]');
+    expect(preflight).toContain('execFileSync("openssl", ["version"]');
+    expect(preflight).toContain('execFileSync("docker", ["compose", "version"]');
     expect(preflight).toContain('case "windows":');
     expect(preflight).toContain('return process.platform === "win32" ? undefined : "Windows11Unavailable"');
     expect(preflight).toContain('case "windows11":');
@@ -451,10 +497,15 @@ describe("Gate evidence verifier", () => {
       readFile(".github/workflows/self-hosted.yml", "utf8"),
       readFile(".github/workflows/windows-companion.yml", "utf8"),
     ]);
+    const selfHostedJob = workflowJob(selfHosted, "gate-self-hosted");
+    expect(selfHostedJob).toContain("infrastructure-preflight.ts docker openssl");
+    expect(selfHostedJob).toContain("--filter @qualigence/web-playwright exec playwright install chromium");
+    expect(selfHostedJob).toContain("infrastructure-preflight.ts chromium");
+    expect(selfHostedJob).toContain("corepack pnpm gate:self-hosted");
     const jobs: ReadonlyArray<readonly [string, string, string, string]> = [
       ["gate-linux", workflowJob(ci, "gate-linux"), ".gate-evidence/gate-linux", "gate-linux/gate-linux"],
       ["browser-e2e", workflowJob(ci, "browser-e2e"), ".gate-evidence/browser-e2e", "browser-e2e/gate-evidence"],
-      ["gate-self-hosted", workflowJob(selfHosted, "gate-self-hosted"), ".gate-evidence/gate-self-hosted", "gate-self-hosted/gate-evidence"],
+      ["gate-self-hosted", selfHostedJob, ".gate-evidence/gate-self-hosted", "gate-self-hosted/gate-evidence"],
       ["gate-windows-rust", workflowJob(windows, "gate-windows-rust"), ".gate-evidence/gate-windows-rust", "gate-windows-rust/gate-evidence"],
     ];
     for (const [name, job, source, destination] of jobs) {

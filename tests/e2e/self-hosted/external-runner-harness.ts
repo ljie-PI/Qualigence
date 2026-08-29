@@ -990,6 +990,9 @@ function spawnExternalRunner(
       RUNNER_HEADED: "false",
     },
   });
+  child.stdout.on("data", (chunk) => {
+    process.stderr.write(`[external-runner] ${String(chunk)}`);
+  });
   child.stderr.on("data", (chunk) => {
     process.stderr.write(`[external-runner] ${String(chunk)}`);
   });

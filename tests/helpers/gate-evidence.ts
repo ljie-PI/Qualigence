@@ -140,6 +140,8 @@ interface DeclaredGate {
  * The receipt verifier accepts only these nonmanual Gate test invocations.
  * `gate-linux` deliberately runs serially: browser fixtures own process and
  * listener teardown, so no test file starts before the previous file settles.
+ * `gate-self-hosted` also runs serially because Docker Compose projects and
+ * external Runner/browser processes are resource-heavy integration fixtures.
  */
 const DECLARED_GATES: Readonly<Record<string, DeclaredGate>> = {
   "gate-fast": {
@@ -160,7 +162,7 @@ const DECLARED_GATES: Readonly<Record<string, DeclaredGate>> = {
   },
   "gate-self-hosted": {
     selection: ["tests/e2e/self-hosted"],
-    command: ["pnpm", "vitest", "run", "tests/e2e/self-hosted"],
+    command: ["pnpm", "vitest", "run", "--no-file-parallelism", "--maxWorkers=1", "tests/e2e/self-hosted"],
   },
 };
 
@@ -428,8 +430,12 @@ export async function verifyGithubGateArtifacts(input: {
   const deliveries: GateDelivery[] = [];
   for (const artifact of artifacts.artifacts ?? []) {
     const workflowRun = artifact.workflow_run;
-    // Only matching declared Gate artifacts for this commit are delivery history.
-    if (!input.requiredGates.includes(artifact.name) || workflowRun === undefined || workflowRun.head_sha !== input.commit) continue;
+    // Only matching declared Gate artifacts are delivery history. Pull-request
+    // workflow artifact inventory reports the branch head SHA, while each Gate
+    // report may intentionally bind the checked-out merge SHA via GITHUB_SHA.
+    // Validate the artifact's own report commit after extraction instead of
+    // pre-filtering on workflow_run.head_sha.
+    if (!input.requiredGates.includes(artifact.name) || workflowRun === undefined) continue;
     let runStatus = "unknown";
     let runConclusion: string | null = null;
     let extracted: Pick<GateDelivery, "report" | "reportSha256" | "marker" | "vitest" | "receiptSha256"> = {
@@ -437,9 +443,9 @@ export async function verifyGithubGateArtifacts(input: {
     };
     let invalidReason: string | undefined = artifact.expired === true ? `GateArtifactExpired: ${artifact.name}/${artifact.id}` : undefined;
     try {
-      const run = await githubJson(`https://api.github.com/repos/${input.repository}/actions/runs/${workflowRun.id}`, input.token) as { readonly status?: string; readonly conclusion?: string | null };
-      runStatus = run.status ?? "unknown";
-      runConclusion = run.conclusion ?? null;
+      const job = await githubGateJob(input.repository, input.token, workflowRun.id, artifact.name);
+      runStatus = job.status ?? "unknown";
+      runConclusion = job.conclusion ?? null;
       if (invalidReason === undefined && runStatus === "completed" && runConclusion === "success") extracted = await extractGateArtifact(artifact, input.token);
     } catch (error) {
       invalidReason = error instanceof Error ? error.message : String(error);
@@ -448,7 +454,7 @@ export async function verifyGithubGateArtifacts(input: {
       gate: artifact.name,
       artifactId: artifact.id,
       runId: workflowRun.id,
-      commit: workflowRun.head_sha,
+      commit: extracted.report?.commit ?? workflowRun.head_sha,
       runStatus,
       runConclusion,
       cancelled: runConclusion === "cancelled",
@@ -467,6 +473,19 @@ interface GithubArtifact {
   readonly digest?: string;
   readonly archive_download_url: string;
   readonly workflow_run?: { readonly id: number; readonly head_sha: string };
+}
+
+interface GithubJob {
+  readonly name?: string;
+  readonly status?: string;
+  readonly conclusion?: string | null;
+}
+
+async function githubGateJob(repository: string, token: string, runId: number, gate: string): Promise<GithubJob> {
+  const response = await githubJson(`https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs?per_page=100`, token) as { readonly jobs?: readonly GithubJob[] };
+  const job = (response.jobs ?? []).find((candidate) => candidate.name === gate);
+  if (job === undefined) throw new Error(`GateArtifactJobUnavailable: ${gate}/${runId}`);
+  return job;
 }
 
 interface ArchiveEntry {

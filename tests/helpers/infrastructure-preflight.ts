@@ -31,13 +31,21 @@ function check(requirement: string): InfrastructureCode | undefined {
       } catch { return "ChromiumUnavailable"; }
     case "openssl":
       try {
-        const executable = process.platform === "win32" && existsSync("C:\\Program Files\\Git\\usr\\bin\\openssl.exe")
-          ? "C:\\Program Files\\Git\\usr\\bin\\openssl.exe" : "openssl";
-        execFileSync(executable, ["version"], { stdio: "ignore", timeout: 10_000 });
+        const gitOpenSsl = "C:\\Program Files\\Git\\usr\\bin\\openssl.exe";
+        if (process.platform === "win32") {
+          if (!existsSync(gitOpenSsl)) return "OpenSslUnavailable";
+          execFileSync(gitOpenSsl, ["version"], { stdio: "ignore", timeout: 10_000 });
+          return undefined;
+        }
+        execFileSync("openssl", ["version"], { stdio: "ignore", timeout: 10_000 });
         return undefined;
       } catch { return "OpenSslUnavailable"; }
     case "docker":
-      try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 15_000 }); return undefined; } catch { return "DockerUnavailable"; }
+      try {
+        execFileSync("docker", ["info"], { stdio: "ignore", timeout: 15_000 });
+        execFileSync("docker", ["compose", "version"], { stdio: "ignore", timeout: 15_000 });
+        return undefined;
+      } catch { return "DockerUnavailable"; }
     case "cargo":
       try { execFileSync("cargo", ["--version"], { stdio: "ignore", timeout: 10_000 }); return undefined; } catch { return "CargoUnavailable"; }
     // `cargo fmt` is a required Gate operation, so cargo alone is insufficient.
