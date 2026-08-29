@@ -4,7 +4,7 @@ import { request as httpsRequest, type RequestOptions } from "node:https";
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
@@ -210,7 +210,7 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
     await ensureWorkspaceBuild();
     await writeHarnessSecrets(ctx);
     await compose(ctx, ["up", "-d", "postgres", "minio"], 180_000);
-    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "--volume", `${composePath(ctx.workDir)}:/harness:ro`, "migrate"], 180_000);
+    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "migrate"], 180_000);
     await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
     await waitForStackReadiness(ctx);
 
@@ -777,8 +777,7 @@ try {
     "    build: !reset null",
     `    volumes: !override`,
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
-    `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
-    "    entrypoint: [\"node\", \"/harness/bootstrap.mjs\"]",
+    `    entrypoint: ["node", "${workspaceHarnessFile(ctx.workDir, "bootstrap.mjs")}"]`,
     "    command: !override []",
     "  backup:",
     `    image: qualigence/admin-tools:${ctx.projectName}`,
@@ -808,10 +807,9 @@ try {
     "    working_dir: /workspace",
     "    user: \"1000:1000\"",
     "    entrypoint: [\"/bin/sh\", \"-ec\"]",
-    "    command: !override [\"node /harness/jwks-server.mjs & exec node /workspace/apps/server/dist/main.js\"]",
+    `    command: !override ["node ${workspaceHarnessFile(ctx.workDir, "jwks-server.mjs")} & exec node /workspace/apps/server/dist/main.js"]`,
     "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
-    `      - \"${composePath(ctx.workDir)}:/harness:ro\"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
     "      - skill_signing_data:/var/lib/qualigence/skill-signing",
     "    environment:",
@@ -1051,7 +1049,7 @@ async function seedRestoredProductSurface(
     "--entrypoint",
     "node",
     "server",
-    "/harness/seed-ls11-product-surface.mjs",
+    workspaceHarnessFile(ctx.workDir, "seed-ls11-product-surface.mjs"),
     runId,
   ], 180_000);
   const seedLine = stdout.split(/\r?\n/).find((line) => line.startsWith("ls11-product-surface:"));
@@ -1164,7 +1162,7 @@ async function assertRestoredExternalRunnerArtifactsDurable(
     "--entrypoint",
     "node",
     "server",
-    "/harness/verify-ls11-external-artifacts.mjs",
+    workspaceHarnessFile(ctx.workDir, "verify-ls11-external-artifacts.mjs"),
     run.runId,
     JSON.stringify(distinctExternalIds),
   ], 180_000);
@@ -1418,6 +1416,23 @@ function nodeRuntimeImage(): string {
 
 function composePath(path: string): string {
   return path.replaceAll("\\", "/");
+}
+
+function workspaceRelativeWorkDir(workDir: string): string {
+  const relativeWorkDir = composePath(relative(REPO_ROOT, workDir));
+  if (
+    relativeWorkDir.length === 0
+    || relativeWorkDir === "."
+    || relativeWorkDir.startsWith("../")
+    || relativeWorkDir.startsWith("/")
+  ) {
+    throw new Error(`Harness workDir must remain under REPO_ROOT for the /workspace bind; got ${workDir}`);
+  }
+  return relativeWorkDir;
+}
+
+function workspaceHarnessFile(workDir: string, fileName: string): string {
+  return `/workspace/${workspaceRelativeWorkDir(workDir)}/${fileName}`;
 }
 
 async function requireDocker(): Promise<void> {

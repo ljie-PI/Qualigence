@@ -489,11 +489,12 @@ describe("Gate evidence verifier", () => {
   });
 
   it("provisions ripgrep and workspace build before hosted Ticket 33 Gate tests", async () => {
-    const [ci, selfHosted, windows, namedPipe, readiness, harness] = await Promise.all([
+    const [ci, selfHosted, windows, namedPipe, namedPipeRust, readiness, harness] = await Promise.all([
       readFile(".github/workflows/ci.yml", "utf8"),
       readFile(".github/workflows/self-hosted.yml", "utf8"),
       readFile(".github/workflows/windows-companion.yml", "utf8"),
       readFile("tests/e2e/windows/named-pipe-authority.test.ts", "utf8"),
+      readFile("tests/rust/companion/windows_named_pipe.rs", "utf8"),
       readFile("tests/e2e/self-hosted/readiness.test.ts", "utf8"),
       readFile("tests/e2e/self-hosted/external-runner-harness.ts", "utf8"),
     ]);
@@ -534,11 +535,28 @@ describe("Gate evidence verifier", () => {
     expect(namedPipe).not.toMatch(/\bskipIf\b/);
     expect(namedPipe).not.toMatch(/it\.skip|describe\.skip/);
 
+    expect(namedPipeRust).toContain("fn real_signed_process_pid_image_and_signature_are_authorized_over_native_pipe");
+    expect(namedPipeRust).toContain("const SIGNED_PROCESS_CONNECT_TIMEOUT_MS: u32 = 30_000");
+    expect(namedPipeRust).toContain("connect_timeout_ms: SIGNED_PROCESS_CONNECT_TIMEOUT_MS");
+    expect(namedPipeRust).not.toMatch(/#\[ignore/);
+
     expect(readiness).toContain("volumes: !override");
     expect(readiness).toContain('join(REPO_ROOT, ".tmp-readiness-")');
-    expect(readiness).toContain('"--volume", `${composePath(ctx.workDir)}:/harness:ro`');
+    expect(readiness).toContain('"--volume", `${composePath(REPO_ROOT)}:/workspace:ro`');
+    expect(readiness).toContain('workspaceHarnessFile(ctx.workDir, "bootstrap.mjs")');
+    expect(readiness).toContain('workspaceHarnessFile(ctx.workDir, "jwks-server.mjs")');
+    expect(readiness).not.toContain("/harness");
+    expect(readiness).not.toMatch(/\bskipIf\b/);
+    expect(readiness).not.toMatch(/it\.skip|describe\.skip/);
     expect(harness).toContain("volumes: !override");
     expect(harness).toContain('join(REPO_ROOT, ".tmp-external-runner-")');
-    expect(harness).toContain('"--volume", `${composePath(ctx.workDir)}:/harness:ro`');
+    expect(harness).toContain('"--volume", `${composePath(REPO_ROOT)}:/workspace:ro`');
+    expect(harness).toContain('workspaceHarnessFile(ctx.workDir, "bootstrap.mjs")');
+    expect(harness).toContain('workspaceHarnessFile(ctx.workDir, "jwks-server.mjs")');
+    expect(harness).toContain('workspaceHarnessFile(ctx.workDir, "seed-ls11-product-surface.mjs")');
+    expect(harness).toContain('workspaceHarnessFile(ctx.workDir, "verify-ls11-external-artifacts.mjs")');
+    expect(harness).not.toContain("/harness");
+    expect(harness).not.toMatch(/\bskipIf\b/);
+    expect(harness).not.toMatch(/it\.skip|describe\.skip/);
   });
 });
