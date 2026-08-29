@@ -2,3 +2,6 @@
 .env
 secrets/*
 !secrets/README.md
+
+# Test-only Compose runtime binds generated beside this compose file.
+.e2e-runtime-*

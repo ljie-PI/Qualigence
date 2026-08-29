@@ -4,7 +4,7 @@ import { request as httpsRequest, type RequestOptions } from "node:https";
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { PublicApiClient } from "../../../apps/web-console/src/api/client.js";
@@ -14,8 +14,9 @@ const execFileAsync = promisify(execFile);
 
 const PASS_MARKER = "qualigence-external-runner-acceptance:pass";
 const REPO_ROOT = process.cwd();
-const COMPOSE_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", "compose.yaml");
-const COMPOSE_ENV_FILE = join(REPO_ROOT, "deployments", "self-hosted", "compose", ".env.example");
+const COMPOSE_DIR = join(REPO_ROOT, "deployments", "self-hosted", "compose");
+const COMPOSE_FILE = join(COMPOSE_DIR, "compose.yaml");
+const COMPOSE_ENV_FILE = join(COMPOSE_DIR, ".env.example");
 const API_ISSUER = "https://issuer.example.com";
 const API_AUDIENCE = "qualigence-self-hosted";
 const TENANT_CLAIM = "https://qualigence.example/tenant";
@@ -56,6 +57,8 @@ interface CommandResult {
 interface HarnessContext {
   readonly projectName: string;
   readonly workDir: string;
+  readonly runtimeDir: string;
+  readonly runtimeDirName: string;
   readonly overrideFile: string;
   readonly runnerDataDir: string;
   readonly secretsDir: string;
@@ -210,7 +213,7 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
     await ensureWorkspaceBuild();
     await writeHarnessSecrets(ctx);
     await compose(ctx, ["up", "-d", "postgres", "minio"], 180_000);
-    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "migrate"], 180_000);
+    await compose(ctx, ["run", "--rm", "migrate"], 180_000);
     await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
     await waitForStackReadiness(ctx);
 
@@ -315,12 +318,15 @@ async function runRepositoryExternalRunnerHarnessInternal(options: { readonly re
       await compose(ctx, ["down", "-v", "--remove-orphans", "--timeout", "10"], 180_000).catch(() => undefined);
       ctx.modelServer.close();
       await rm(ctx.workDir, { recursive: true, force: true }).catch(() => undefined);
+      await rm(ctx.runtimeDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 }
 
 async function createHarnessContext(): Promise<HarnessContext> {
   const workDir = await mkdtemp(join(REPO_ROOT, ".tmp-external-runner-"));
+  const runtimeDir = await mkdtemp(join(COMPOSE_DIR, ".e2e-runtime-"));
+  const runtimeDirName = basename(runtimeDir);
   const runnerDataDir = join(workDir, "runner-data");
   const secretsDir = join(workDir, "secrets");
   await mkdir(runnerDataDir, { recursive: true });
@@ -346,6 +352,8 @@ async function createHarnessContext(): Promise<HarnessContext> {
   return {
     projectName,
     workDir,
+    runtimeDir,
+    runtimeDirName,
     overrideFile: join(workDir, "compose.override.yaml"),
     runnerDataDir,
     secretsDir,
@@ -401,12 +409,12 @@ function secretFileName(name: string): string {
 }
 
 async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
-  await writeFile(join(ctx.workDir, "jwks-server.mjs"), [
+  await writeFile(join(ctx.runtimeDir, "jwks-server.mjs"), [
     "import { createServer } from 'node:http';",
     `const body = ${JSON.stringify(JSON.stringify(ctx.jwt.jwksDocument))};`,
     "createServer((_request, response) => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(body); }).listen(18082, '127.0.0.1');",
   ].join("\n"), "utf8");
-  await writeFile(join(ctx.workDir, "bootstrap.mjs"), `
+  await writeFile(join(ctx.runtimeDir, "bootstrap.mjs"), `
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { bootstrapServerDatabase } from "file:///workspace/apps/server/dist/index.js";
@@ -449,7 +457,7 @@ FROM ${nodeRuntimeImage()} AS node-runtime
 FROM postgres:17-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 `, "utf8");
-  await writeFile(join(ctx.workDir, "seed-ls11-product-surface.mjs"), `
+  await writeFile(join(ctx.runtimeDir, "seed-ls11-product-surface.mjs"), `
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -684,7 +692,7 @@ try {
   await provider.close();
 }
 `, "utf8");
-  await writeFile(join(ctx.workDir, "verify-ls11-external-artifacts.mjs"), `
+  await writeFile(join(ctx.runtimeDir, "verify-ls11-external-artifacts.mjs"), `
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createPostgresRuntime } from "file:///workspace/packages/storage-providers/postgres-runtime/dist/index.js";
@@ -777,7 +785,8 @@ try {
     "    build: !reset null",
     `    volumes: !override`,
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
-    `    entrypoint: ["node", "${workspaceHarnessFile(ctx.workDir, "bootstrap.mjs")}"]`,
+    `      - "./${ctx.runtimeDirName}/bootstrap.mjs:/bootstrap.mjs:ro"`,
+    `    entrypoint: ["node", "/bootstrap.mjs"]`,
     "    command: !override []",
     "  backup:",
     `    image: qualigence/admin-tools:${ctx.projectName}`,
@@ -807,9 +816,12 @@ try {
     "    working_dir: /workspace",
     "    user: \"1000:1000\"",
     "    entrypoint: [\"/bin/sh\", \"-ec\"]",
-    `    command: !override ["node ${workspaceHarnessFile(ctx.workDir, "jwks-server.mjs")} & exec node /workspace/apps/server/dist/main.js"]`,
+    `    command: !override ["node /jwks-server.mjs & exec node /workspace/apps/server/dist/main.js"]`,
     "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    `      - "./${ctx.runtimeDirName}/jwks-server.mjs:/jwks-server.mjs:ro"`,
+    `      - "./${ctx.runtimeDirName}/seed-ls11-product-surface.mjs:/seed-ls11-product-surface.mjs:ro"`,
+    `      - "./${ctx.runtimeDirName}/verify-ls11-external-artifacts.mjs:/verify-ls11-external-artifacts.mjs:ro"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
     "      - skill_signing_data:/var/lib/qualigence/skill-signing",
     "    environment:",
@@ -1049,7 +1061,7 @@ async function seedRestoredProductSurface(
     "--entrypoint",
     "node",
     "server",
-    workspaceHarnessFile(ctx.workDir, "seed-ls11-product-surface.mjs"),
+    "/seed-ls11-product-surface.mjs",
     runId,
   ], 180_000);
   const seedLine = stdout.split(/\r?\n/).find((line) => line.startsWith("ls11-product-surface:"));
@@ -1162,7 +1174,7 @@ async function assertRestoredExternalRunnerArtifactsDurable(
     "--entrypoint",
     "node",
     "server",
-    workspaceHarnessFile(ctx.workDir, "verify-ls11-external-artifacts.mjs"),
+    "/verify-ls11-external-artifacts.mjs",
     run.runId,
     JSON.stringify(distinctExternalIds),
   ], 180_000);
@@ -1416,23 +1428,6 @@ function nodeRuntimeImage(): string {
 
 function composePath(path: string): string {
   return path.replaceAll("\\", "/");
-}
-
-function workspaceRelativeWorkDir(workDir: string): string {
-  const relativeWorkDir = composePath(relative(REPO_ROOT, workDir));
-  if (
-    relativeWorkDir.length === 0
-    || relativeWorkDir === "."
-    || relativeWorkDir.startsWith("../")
-    || relativeWorkDir.startsWith("/")
-  ) {
-    throw new Error(`Harness workDir must remain under REPO_ROOT for the /workspace bind; got ${workDir}`);
-  }
-  return relativeWorkDir;
-}
-
-function workspaceHarnessFile(workDir: string, fileName: string): string {
-  return `/workspace/${workspaceRelativeWorkDir(workDir)}/${fileName}`;
 }
 
 async function requireDocker(): Promise<void> {

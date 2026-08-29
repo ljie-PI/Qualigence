@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { request as httpsRequest } from "node:https";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRunnerCa, type PemPair } from "../../helpers/runner-identity-pki.js";
@@ -39,6 +39,8 @@ const SECRET_FILE_NAMES: Readonly<Record<string, string>> = {
 interface HarnessContext {
   readonly projectName: string;
   readonly workDir: string;
+  readonly runtimeDir: string;
+  readonly runtimeDirName: string;
   readonly overrideFile: string;
   readonly proxyPort: number;
   readonly runnerGrpcPort: number;
@@ -85,7 +87,7 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
     await ensureWorkspaceBuild();
     await compose(ctx, ["up", "-d", "postgres", "minio"], 180_000);
     await compose(ctx, ["run", "--rm", "minio-bucket"], 120_000);
-    await compose(ctx, ["run", "--rm", "--volume", `${composePath(REPO_ROOT)}:/workspace:ro`, "migrate"], 180_000);
+    await compose(ctx, ["run", "--rm", "migrate"], 180_000);
     await compose(ctx, ["up", "-d", "server", "worker", "console", "proxy"], 240_000);
     await waitForStackReady(ctx);
   }, 900_000);
@@ -94,6 +96,7 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
     if (ctx !== undefined) {
       await compose(ctx, ["down", "-v", "--remove-orphans", "--timeout", "10"], 180_000).catch(() => undefined);
       await rm(ctx.workDir, { recursive: true, force: true }).catch(() => undefined);
+      await rm(ctx.runtimeDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }, 240_000);
 
@@ -140,6 +143,8 @@ describe("Self-hosted readiness E2E (real Docker Compose)", () => {
 
 async function createHarnessContext(): Promise<HarnessContext> {
   const workDir = await mkdtemp(join(REPO_ROOT, ".tmp-readiness-"));
+  const runtimeDir = await mkdtemp(join(COMPOSE_DIR, ".e2e-runtime-"));
+  const runtimeDirName = basename(runtimeDir);
   const [proxyPort, runnerGrpcPort] = await Promise.all([freeTcpPort(), freeTcpPort()]);
   const runnerCa = createRunnerCa("Qualigence readiness E2E Runner CA");
   const runnerServer = mintServerCertificate(runnerCa, "localhost");
@@ -155,6 +160,8 @@ async function createHarnessContext(): Promise<HarnessContext> {
   return {
     projectName,
     workDir,
+    runtimeDir,
+    runtimeDirName,
     overrideFile: join(workDir, "compose.override.yaml"),
     proxyPort,
     runnerGrpcPort,
@@ -167,7 +174,7 @@ async function createHarnessContext(): Promise<HarnessContext> {
 }
 
 async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
-  await writeFile(join(ctx.workDir, "jwks-server.mjs"), [
+  await writeFile(join(ctx.runtimeDir, "jwks-server.mjs"), [
     "import { createPublicKey, generateKeyPairSync } from 'node:crypto';",
     "import { createServer } from 'node:http';",
     "const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });",
@@ -175,7 +182,7 @@ async function writeComposeOverride(ctx: HarnessContext): Promise<void> {
     "const body = JSON.stringify({ keys: [{ ...jwk, kid: 'readiness-jwks-key', alg: 'RS256', use: 'sig' }] });",
     `createServer((_request, response) => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(body); }).listen(${JWKS_PORT}, '127.0.0.1');`,
   ].join("\n"), "utf8");
-  await writeFile(join(ctx.workDir, "bootstrap.mjs"), `
+  await writeFile(join(ctx.runtimeDir, "bootstrap.mjs"), `
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { bootstrapServerDatabase } from "file:///workspace/apps/server/dist/index.js";
@@ -212,7 +219,8 @@ console.log("readiness-e2e:database-provisioned");
     "    build: !reset null",
     "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
-    `    entrypoint: ["node", "${workspaceHarnessFile(ctx.workDir, "bootstrap.mjs")}"]`,
+    `      - "./${ctx.runtimeDirName}/bootstrap.mjs:/bootstrap.mjs:ro"`,
+    `    entrypoint: ["node", "/bootstrap.mjs"]`,
     "    command: !override []",
     "  server:",
     `    image: ${NODE_RUNTIME_IMAGE}`,
@@ -220,9 +228,10 @@ console.log("readiness-e2e:database-provisioned");
     "    working_dir: /workspace",
     "    user: \"1000:1000\"",
     "    entrypoint: [\"/bin/sh\", \"-ec\"]",
-    `    command: !override ["node ${workspaceHarnessFile(ctx.workDir, "jwks-server.mjs")} & exec node /workspace/apps/server/dist/main.js"]`,
+    `    command: !override ["node /jwks-server.mjs & exec node /workspace/apps/server/dist/main.js"]`,
     "    volumes: !override",
     `      - \"${composePath(REPO_ROOT)}:/workspace:ro\"`,
+    `      - "./${ctx.runtimeDirName}/jwks-server.mjs:/jwks-server.mjs:ro"`,
     "      - artifactdata:/var/lib/qualigence/artifacts",
     "      - skill_signing_data:/var/lib/qualigence/skill-signing",
     "    environment:",
@@ -621,23 +630,6 @@ function withOpenSslScratch<T>(run: (dir: string, openssl: (args: readonly strin
 
 function composePath(path: string): string {
   return path.replaceAll("\\", "/");
-}
-
-function workspaceRelativeWorkDir(workDir: string): string {
-  const relativeWorkDir = composePath(relative(REPO_ROOT, workDir));
-  if (
-    relativeWorkDir.length === 0
-    || relativeWorkDir === "."
-    || relativeWorkDir.startsWith("../")
-    || relativeWorkDir.startsWith("/")
-  ) {
-    throw new Error(`Harness workDir must remain under REPO_ROOT for the /workspace bind; got ${workDir}`);
-  }
-  return relativeWorkDir;
-}
-
-function workspaceHarnessFile(workDir: string, fileName: string): string {
-  return `/workspace/${workspaceRelativeWorkDir(workDir)}/${fileName}`;
 }
 
 function truncate(value: string, limit = 32_000): string {
