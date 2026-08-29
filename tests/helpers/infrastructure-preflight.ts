@@ -45,6 +45,10 @@ function check(requirement: string): InfrastructureCode | undefined {
     // rust-toolchain diagnostic is introduced.
     case "rustfmt":
       try { execFileSync("cargo", ["fmt", "--version"], { stdio: "ignore", timeout: 10_000 }); return undefined; } catch { return "CargoUnavailable"; }
+    // Hosted phase-1 Windows/Rust may run on GitHub windows-latest (Windows Server).
+    // Map only a true non-Windows host to the existing Windows infrastructure code.
+    case "windows":
+      return process.platform === "win32" ? undefined : "Windows11Unavailable";
     case "windows11":
       if (process.platform !== "win32") return "Windows11Unavailable";
       try {

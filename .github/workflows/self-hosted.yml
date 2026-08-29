@@ -38,6 +38,12 @@ jobs:
           cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence
           (cd gate-self-hosted && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > gate-self-hosted/sha256.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-self-hosted --report gate-self-hosted/gate-evidence/report.json --marker gate-self-hosted/gate-evidence/accepted.json --hashes gate-self-hosted/sha256.txt --receipt gate-self-hosted/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p gate-self-hosted
+          if [ -d .gate-evidence/gate-self-hosted ] && [ ! -e gate-self-hosted/gate-evidence ]; then cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence; fi
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()

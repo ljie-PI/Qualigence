@@ -369,14 +369,19 @@ describe("Gate evidence verifier", () => {
     const install = windows.indexOf("& $rustup.Path toolchain install 1.96.1 --profile minimal --component rustfmt *> gate-windows-rust/rustup.txt");
     const caughtInstallFailure = windows.indexOf("} catch {\n            $rustupExit = 1");
     const classifiedInstallFailure = windows.indexOf("if ($rustupExit -ne 0) { Exit-CargoUnavailable }");
-    const gate = windows.indexOf("corepack pnpm gate:windows");
+    const hostedPreflight = windows.indexOf("tests/helpers/infrastructure-preflight.ts windows cargo rustfmt openssl");
+    const hostedRun = windows.indexOf("tests/helpers/gate-evidence.ts run --gate gate-windows-rust");
+    const companion = windows.indexOf("corepack pnpm gate:companion");
     expect(windows).toContain("[Console]::Error.WriteLine('CargoUnavailable')");
     expect(rustupLookup).toBeGreaterThan(-1);
     expect(missingRustup).toBeGreaterThan(rustupLookup);
     expect(install).toBeGreaterThan(missingRustup);
     expect(caughtInstallFailure).toBeGreaterThan(install);
     expect(classifiedInstallFailure).toBeGreaterThan(caughtInstallFailure);
-    expect(gate).toBeGreaterThan(classifiedInstallFailure);
+    expect(hostedPreflight).toBeGreaterThan(classifiedInstallFailure);
+    expect(hostedRun).toBeGreaterThan(hostedPreflight);
+    expect(companion).toBeGreaterThan(hostedRun);
+    expect(windows).not.toContain("corepack pnpm gate:windows");
   });
 
   it("asserts Node 24 with a single-backslash pattern in every required Gate job", async () => {
@@ -405,5 +410,81 @@ describe("Gate evidence verifier", () => {
     expect(selfHosted).not.toContain(linuxDoubleBackslash);
     expect(/^v24\./.test("v24.13.0")).toBe(true);
     expect(/^v24\\./.test("v24.13.0")).toBe(false);
+  });
+
+  it("keeps local Windows 11 preflight while hosted Windows/Rust maps only non-Windows hosts", async () => {
+    const [windows, packageJson, preflight, helper] = await Promise.all([
+      readFile(".github/workflows/windows-companion.yml", "utf8"),
+      readFile("package.json", "utf8"),
+      readFile("tests/helpers/infrastructure-preflight.ts", "utf8"),
+      readFile("tests/helpers/gate-evidence.ts", "utf8"),
+    ]);
+    const hostedJob = workflowJob(windows, "gate-windows-rust");
+    expect(packageJson).toContain("infrastructure-preflight.ts windows11 chromium cargo rustfmt openssl");
+    expect(hostedJob).toContain("infrastructure-preflight.ts windows cargo rustfmt openssl");
+    expect(hostedJob).toContain("infrastructure-preflight.ts chromium");
+    expect(hostedJob).not.toContain("infrastructure-preflight.ts windows11");
+    expect(hostedJob).toContain("tests/e2e/windows/companion-client.test.ts");
+    expect(hostedJob).toContain("tests/e2e/windows/desktop-runner.test.ts");
+    expect(hostedJob).toContain("tests/e2e/windows/named-pipe-authority.test.ts");
+    expect(hostedJob).toContain("tests/contract/desktop");
+    expect(hostedJob).toContain("tests/component/windows-uia");
+    expect(hostedJob).toContain("tests/replay/windows-uia");
+    expect(hostedJob).toContain("tests/conformance/observation/windows-uia.test.ts");
+    expect(hostedJob).toContain("corepack pnpm gate:companion");
+    expect(hostedJob).not.toMatch(/continue-on-error:\s*true/);
+    expect(hostedJob).not.toMatch(/\bskip\b/i);
+    expect(preflight).toContain('case "windows":');
+    expect(preflight).toContain('return process.platform === "win32" ? undefined : "Windows11Unavailable"');
+    expect(preflight).toContain('case "windows11":');
+    expect(helper).toContain('"--reporter=dot"');
+    expect(helper).toContain('"--reporter=json"');
+    expect(helper).toContain("`--outputFile.json=${vitestPath}`");
+    expect(helper).toContain("writeGateStatus(\"run\", report)");
+    expect(helper).toContain("writeGateStatus(\"accept\", report)");
+    expect(helper).toContain("GateEvidence ${phase} gate=${report.gate} status=${report.status} commit=${report.commit} passed=${report.counts.passed} failed=${report.counts.failed} skipped=${report.counts.skipped} todo=${report.counts.todo}");
+  });
+
+  it("copies Gate evidence into diagnostic artifacts on failure without writing an accepted marker", async () => {
+    const [ci, selfHosted, windows] = await Promise.all([
+      readFile(".github/workflows/ci.yml", "utf8"),
+      readFile(".github/workflows/self-hosted.yml", "utf8"),
+      readFile(".github/workflows/windows-companion.yml", "utf8"),
+    ]);
+    const jobs: ReadonlyArray<readonly [string, string, string, string]> = [
+      ["gate-linux", workflowJob(ci, "gate-linux"), ".gate-evidence/gate-linux", "gate-linux/gate-linux"],
+      ["browser-e2e", workflowJob(ci, "browser-e2e"), ".gate-evidence/browser-e2e", "browser-e2e/gate-evidence"],
+      ["gate-self-hosted", workflowJob(selfHosted, "gate-self-hosted"), ".gate-evidence/gate-self-hosted", "gate-self-hosted/gate-evidence"],
+      ["gate-windows-rust", workflowJob(windows, "gate-windows-rust"), ".gate-evidence/gate-windows-rust", "gate-windows-rust/gate-evidence"],
+    ];
+    for (const [name, job, source, destination] of jobs) {
+      expect(job, name).toContain("name: Preserve Gate diagnostics");
+      expect(job, name).toMatch(/Preserve Gate diagnostics[\s\S]*if: always\(\)/);
+      expect(job, name).toContain(source);
+      expect(job, name).toContain(destination);
+      expect(job, name).toContain("if-no-files-found: error");
+      const preserveStart = job.indexOf("name: Preserve Gate diagnostics");
+      const uploadStart = job.lastIndexOf("uses: actions/upload-artifact@");
+      expect(preserveStart, name).toBeGreaterThan(-1);
+      expect(uploadStart, name).toBeGreaterThan(preserveStart);
+      const preserve = job.slice(preserveStart, uploadStart);
+      expect(preserve, name).not.toContain("gate-evidence.ts accept");
+      expect(preserve, name).not.toContain("accepted.json");
+      expect(preserve, name).not.toContain("receipt.json");
+    }
+  });
+
+  it("pins every third-party workflow action to a reviewed 40-character SHA", async () => {
+    const files = [".github/workflows/ci.yml", ".github/workflows/self-hosted.yml", ".github/workflows/windows-companion.yml"];
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      const uses = [...source.matchAll(/^\s+- uses: ([^\s]+)$/gm)].map((match) => match[1]!);
+      expect(uses.length, file).toBeGreaterThan(0);
+      for (const action of uses) {
+        expect(action, `${file} ${action}`).toMatch(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/);
+        expect(action, `${file} ${action}`).not.toMatch(/@v\d/);
+      }
+      expect(source, file).toMatch(/# v\d+\.\d+\.\d+, reviewed immutable action commit\./);
+    }
   });
 });

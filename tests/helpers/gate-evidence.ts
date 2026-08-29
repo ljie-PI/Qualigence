@@ -759,7 +759,7 @@ async function runGate(gate: string, reportPath: string, selection: readonly str
   await rm(evidenceDirectory, { recursive: true, force: true });
   await mkdir(evidenceDirectory, { recursive: true });
   const vitestPath = join(evidenceDirectory, "vitest.json");
-  const exitCode = await runCommand(command[0]!, [...command.slice(1), "--reporter=json", `--outputFile=${vitestPath}`]);
+  const exitCode = await runCommand(command[0]!, [...command.slice(1), "--reporter=dot", "--reporter=json", `--outputFile.json=${vitestPath}`]);
   let counts: GateCounts = { passed: 0, failed: 1, skipped: 0, todo: 0 };
   if (await exists(vitestPath)) {
     counts = countsFromVitestJson(JSON.parse(await readFile(vitestPath, "utf8")));
@@ -777,11 +777,19 @@ async function runGate(gate: string, reportPath: string, selection: readonly str
     files: await hashesFor(dirname(reportPath), reportPath),
   };
   await writeAtomic(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  writeGateStatus("run", report);
   if (!isGateReportAcceptable(report)) process.exitCode = 1;
+}
+
+function writeGateStatus(phase: "run" | "accept", report: GateReport): void {
+  process.stderr.write(
+    `GateEvidence ${phase} gate=${report.gate} status=${report.status} commit=${report.commit} passed=${report.counts.passed} failed=${report.counts.failed} skipped=${report.counts.skipped} todo=${report.counts.todo}\n`,
+  );
 }
 
 async function acceptGate(reportPath: string, markerPath: string): Promise<void> {
   const report = JSON.parse(await readFile(reportPath, "utf8")) as GateReport;
+  writeGateStatus("accept", report);
   if (!isDeclaredGateInvocation(report.gate, reportPath, report.selection, report.command) || !isGateReportAcceptable(report)) throw new Error("GateReportNotAcceptable");
   const vitestPath = join(dirname(reportPath), "vitest.json");
   const vitest = parseVitestCounts(await readFile(vitestPath), report.selection, `local/${report.gate}`);

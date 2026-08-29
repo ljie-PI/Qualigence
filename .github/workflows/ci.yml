@@ -82,6 +82,13 @@ jobs:
           cp -R .gate-evidence/gate-linux gate-linux/gate-linux
           (cd gate-linux && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > gate-linux/sha256.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-linux --report gate-linux/gate-linux/report.json --marker gate-linux/gate-linux/accepted.json --hashes gate-linux/sha256.txt --receipt gate-linux/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p gate-linux
+          if [ -d .gate-evidence/gate-fast ] && [ ! -e gate-linux/gate-fast ]; then cp -R .gate-evidence/gate-fast gate-linux/gate-fast; fi
+          if [ -d .gate-evidence/gate-linux ] && [ ! -e gate-linux/gate-linux ]; then cp -R .gate-evidence/gate-linux gate-linux/gate-linux; fi
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -123,6 +130,12 @@ jobs:
           cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence
           (cd browser-e2e && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > browser-e2e/sha256.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate browser-e2e --report browser-e2e/gate-evidence/report.json --marker browser-e2e/gate-evidence/accepted.json --hashes browser-e2e/sha256.txt --receipt browser-e2e/receipt.json
+      - name: Preserve Gate diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p browser-e2e
+          if [ -d .gate-evidence/browser-e2e ] && [ ! -e browser-e2e/gate-evidence ]; then cp -R .gate-evidence/browser-e2e browser-e2e/gate-evidence; fi
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
