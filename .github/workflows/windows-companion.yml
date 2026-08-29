@@ -11,12 +11,14 @@ jobs:
   ticket-32-windows-platform-evidence:
     runs-on: windows-latest
     steps:
+      # v4.6.0, reviewed immutable action commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Record exact evidence commit before provisioning
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ticket-32-platform-evidence | Out-Null
           git rev-parse HEAD | Tee-Object -FilePath ticket-32-platform-evidence/commit.txt
+      # v6.1.0, reviewed immutable action commit.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
@@ -34,6 +36,7 @@ jobs:
           if ($LASTEXITCODE -ne 1) { exit 1 }
           Add-Content -Path ticket-32-platform-evidence/quarantine-markers.txt -Value 'no quarantine markers; rg exit 1'
           exit 0
+      # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
