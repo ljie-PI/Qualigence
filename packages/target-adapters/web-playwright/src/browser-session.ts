@@ -88,6 +88,7 @@ function sensitiveEvidenceUnavailable(): WebTargetError {
 function validateSensitivePromiseOwnerRegistryInPage(input: {
   readonly runtimeRegistryProperty: string;
   readonly maxPromiseOwners: number;
+  readonly validateShadowAuthority: boolean;
 }): { readonly status: "ok" | "failed"; readonly reason?: string } {
   type RuntimeAuthorityValidationResult = { readonly status: "ok" | "failed"; readonly reason?: string };
   type RuntimeRegistry = {
@@ -98,13 +99,15 @@ function validateSensitivePromiseOwnerRegistryInPage(input: {
   };
   const registry = (globalThis as unknown as Record<string, RuntimeRegistry | undefined>)[input.runtimeRegistryProperty];
   if (registry === undefined) return { status: "ok" };
-  const validateShadowRootAuthority = registry.validateShadowRootAuthority;
-  if (typeof validateShadowRootAuthority !== "function") return fail(registry, "missing-shadow-root-validator", "shadow");
-  try {
-    const shadowResult = validateShadowRootAuthority();
-    if (shadowResult.status !== "ok") return fail(registry, shadowResult.reason ?? "shadow-root-authority-failed", "shadow");
-  } catch {
-    return fail(registry, "shadow-root-inspection-threw", "shadow");
+  if (input.validateShadowAuthority) {
+    const validateShadowRootAuthority = registry.validateShadowRootAuthority;
+    if (typeof validateShadowRootAuthority !== "function") return fail(registry, "missing-shadow-root-validator", "shadow");
+    try {
+      const shadowResult = validateShadowRootAuthority();
+      if (shadowResult.status !== "ok") return fail(registry, shadowResult.reason ?? "shadow-root-authority-failed", "shadow");
+    } catch {
+      return fail(registry, "shadow-root-inspection-threw", "shadow");
+    }
   }
   const validatePromiseOwners = registry.validatePromiseOwners;
   if (typeof validatePromiseOwners !== "function") return fail(registry, "missing-validator", "promise");
@@ -1126,7 +1129,6 @@ async function installSensitiveEvidenceRuntime(page: Page, mutationNotificationF
       const overflowDescriptor = nativeObjectGetOwnPropertyDescriptor(registry, "shadowRootOverflow");
       if (
         shadowRootAuthorityFailed ||
-        shadowRootOverflow ||
         descriptor === undefined ||
         descriptor.configurable !== false ||
         descriptor.get !== attachShadowGetter ||
@@ -2273,11 +2275,16 @@ export class PlaywrightBrowserSession {
     this.assertNavigationGeneration(navigationGeneration);
     this.assertPageTargetOrigin(page, navigationGeneration);
     this.assertSensitiveEvidenceAvailable();
+    // An unrelated discovery overflow must not reject an ordinary capture, but
+    // retain the page round-trip so Promise owner validation and its existing
+    // action/capture sequencing stay deterministic.
+    const validateShadowAuthority = this.pendingSensitiveCapture || this.sensitiveEvidence.scanRecords().length > 0;
     let result: { readonly status: "ok" | "failed"; readonly reason?: string };
     try {
       result = await page.evaluate(validateSensitivePromiseOwnerRegistryInPage, {
         runtimeRegistryProperty: SENSITIVE_SHADOW_ROOTS_PROPERTY,
         maxPromiseOwners: MAX_SENSITIVE_PROMISE_OWNER_REGISTRY_OWNERS,
+        validateShadowAuthority,
       });
     } catch {
       this.markSensitiveEvidenceUnavailable();
@@ -2350,11 +2357,18 @@ export class PlaywrightBrowserSession {
   }
 
   private resetSensitiveEvidenceForNavigation(): void {
+    // Records and page bindings are document-scoped. The unsafe latch is
+    // session-scoped: a navigation cannot re-authorize evidence after an
+    // observed owner/intrinsic authority failure.
     this.sensitiveEvidence.clear();
-    this.sensitiveEvidenceUnavailable = false;
     this.activeSensitiveDispatch = undefined;
     this.pendingSensitiveCapture = false;
     this.pendingSensitiveCaptureMarkers.clear();
+  }
+
+  private resetSensitiveEvidenceForSessionClose(): void {
+    this.resetSensitiveEvidenceForNavigation();
+    this.sensitiveEvidenceUnavailable = false;
   }
 
   redactSensitiveTargetField(
@@ -2662,7 +2676,7 @@ export class PlaywrightBrowserSession {
     this.browser = undefined;
     const browserLaunch = this.browserLaunch;
     this.browserLaunch = undefined;
-    this.resetSensitiveEvidenceForNavigation();
+    this.resetSensitiveEvidenceForSessionClose();
 
     // Start every owned close before awaiting any one of them. A hung page or
     // context close must not prevent disposal of the exact browser launch.

@@ -12,6 +12,7 @@ import { htmlDocument, startFixtureServer, type FixtureServer } from "./fixtures
 
 const SECRET = "reflect-secret@example.test";
 const SAFE_EQUAL = SECRET;
+const ORDINARY_TEXT = "ordinary post-retirement content";
 
 const job: AcceptedExecutionJob = {
   jobId: "job-reflected-secret",
@@ -543,7 +544,7 @@ describe("Playwright reflected sensitive evidence", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
-  it("leaves equal text introduced after a closed sensitive epoch ordinary", async () => {
+  it("fails closed for a later untrusted host-known light-DOM reflection after epoch retirement", async () => {
     const { observer, resolver, executor } = await wire("/post-epoch-equal");
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/post-epoch-equal` } });
     const action = await resolver.resolve({
@@ -557,6 +558,17 @@ describe("Playwright reflected sensitive evidence", () => {
     const reflected = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/post-epoch-equal` } });
     expect(reflected.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
 
+    await session.withPage((page) => page.evaluate((value) => {
+      const browser = globalThis as unknown as {
+        readonly document: { getElementById(id: string): { textContent: string } | null };
+      };
+      const element = browser.document.getElementById("late-equal");
+      if (element === null) throw new Error("Missing late equal fixture.");
+      element.textContent = value;
+    }, ORDINARY_TEXT));
+    const ordinary = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/post-epoch-equal` } });
+    expect(ordinary.nodes.some((node) => node.name === ORDINARY_TEXT || node.value === ORDINARY_TEXT)).toBe(true);
+
     await session.withPage((page) => page.evaluate((secret) => {
       const browser = globalThis as unknown as {
         readonly document: { getElementById(id: string): { textContent: string } | null };
@@ -565,10 +577,8 @@ describe("Playwright reflected sensitive evidence", () => {
       if (element === null) throw new Error("Missing late equal fixture.");
       element.textContent = secret;
     }, SECRET));
-
-    const afterEqual = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/post-epoch-equal` } });
-    expect(afterEqual.nodes.some((node) => node.name === SECRET || node.value === SECRET)).toBe(true);
-    expect(afterEqual.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/post-epoch-equal` } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
   }, 60_000);
 
   it("redacts a causally reflected document title before Graph and Artifact serialization", async () => {
@@ -686,7 +696,7 @@ describe("Playwright reflected sensitive evidence", () => {
     expect(nodeNamed(after, "Choice").value).toBeUndefined();
   }, 60_000);
 
-  it("fails evidence closed for scheduler-adjacent reflected matching content", async () => {
+  it("redacts scheduler-adjacent reflected matching content", async () => {
     const { observer, resolver, executor } = await wire("/async");
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/async` } });
     const action = await resolver.resolve({
@@ -698,14 +708,12 @@ describe("Playwright reflected sensitive evidence", () => {
 
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
     await session.withPage((page) => page.waitForTimeout(25));
-    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/async` } }))
-      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
-      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/async` } });
+    assertRedactedCapture(session, after);
   }, 60_000);
 
-  it.each(["/promise", "/queue-microtask"])(
-    "fails evidence closed for direct target %s reflected matching content",
+  it.each(["/promise", "/queue-microtask", "/delegated-property"])(
+    "redacts Ticket 41-authorized %s reflected matching content",
     async (path) => {
       const { observer, resolver, executor } = await wire(path);
       const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
@@ -717,17 +725,14 @@ describe("Playwright reflected sensitive evidence", () => {
       }, before);
 
       await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
-      await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } }))
-        .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-      expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
-        .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+      const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+      assertRedactedCapture(session, after);
     },
     60_000,
   );
 
   it.each([
     "/delegated",
-    "/delegated-property",
     "/delegated-inline",
     "/delegated-dynamic-focus",
     "/delegated-dynamic-dispatch",
@@ -752,7 +757,7 @@ describe("Playwright reflected sensitive evidence", () => {
     60_000,
   );
 
-  it("fails evidence closed for delegated document onchange reflected matching content", async () => {
+  it("redacts delegated document onchange reflected matching content", async () => {
     const { observer, resolver, executor } = await wire("/delegated-document-change");
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/delegated-document-change` } });
     const action = await resolver.resolve({
@@ -763,10 +768,8 @@ describe("Playwright reflected sensitive evidence", () => {
     }, before);
 
     await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
-    await expect(observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/delegated-document-change` } }))
-      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
-    expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
-      .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+    const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}/delegated-document-change` } });
+    assertRedactedCapture(session, after);
   }, 60_000);
 
   it("fails evidence closed for delegated document input reflected from a select action", async () => {
@@ -787,7 +790,7 @@ describe("Playwright reflected sensitive evidence", () => {
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
   }, 60_000);
 
-  it.each(["/shadow-open", "/shadow-closed", "/shadow-open-text", "/shadow-closed-text"])("fails evidence closed for %s reflected matching content", async (path) => {
+  it.each(["/shadow-closed", "/shadow-closed-text"])("fails evidence closed for %s reflected matching content", async (path) => {
     const { observer, resolver, executor } = await wire(path);
     const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
     const action = await resolver.resolve({
@@ -802,6 +805,21 @@ describe("Playwright reflected sensitive evidence", () => {
       .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
     expect(() => session.artifactsFor("run-reflected-secret:observation:2"))
       .toThrowError(expect.objectContaining({ code: "StaleObservation" }));
+  }, 60_000);
+
+  it.each(["/shadow-open", "/shadow-open-text"])("redacts %s reflected matching content", async (path) => {
+    const { observer, resolver, executor } = await wire(path);
+    const before = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+    const action = await resolver.resolve({
+      kind: "input",
+      target: { nodeId: nodeNamed(before, "Email").id },
+      valueRef: "customer.email",
+      reason: "open shadow reflect secret",
+    }, before);
+
+    await expect(executor.execute(action, allowedPermit())).resolves.toEqual({ status: "ok" });
+    const after = await observer.capture({ ...job, target: { kind: "web", url: `${fixture.origin}${path}` } });
+    assertRedactedCapture(session, after);
   }, 60_000);
 
   it.each(["/shadow-preexisting-equal-open", "/shadow-preexisting-equal-closed"])(
@@ -824,7 +842,7 @@ describe("Playwright reflected sensitive evidence", () => {
     60_000,
   );
 
-  it("leaves shadow-root equal text introduced after a closed sensitive epoch ordinary", async () => {
+  it("fails closed for a later untrusted host-known shadow reflection after epoch retirement", async () => {
     const { observer, resolver, executor } = await wire("/shadow-post-epoch-equal");
     const url = `${fixture.origin}/shadow-post-epoch-equal`;
     const before = await observer.capture({ ...job, target: { kind: "web", url } });
@@ -846,9 +864,8 @@ describe("Playwright reflected sensitive evidence", () => {
       if (typeof browser.setShadowEqualText !== "function") throw new Error("Missing shadow equal setter.");
       browser.setShadowEqualText(secret);
     }, SECRET));
-
-    const afterEqual = await observer.capture({ ...job, target: { kind: "web", url } });
-    expect(afterEqual.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+    await expect(observer.capture({ ...job, target: { kind: "web", url } }))
+      .rejects.toMatchObject({ code: "SensitiveEvidenceUnavailable" });
   }, 60_000);
 
   it("fails evidence closed when the DOM-to-screenshot window exposes matching content", async () => {
@@ -955,6 +972,16 @@ function nodeNamed(graph: ObservationGraphV1, name: string): ObservationGraphV1[
   const node = graph.nodes.find((candidate) => candidate.name === name);
   if (node === undefined) throw new Error(`Missing node named ${name}`);
   return node;
+}
+
+function assertRedactedCapture(session: PlaywrightBrowserSession, graph: ObservationGraphV1): void {
+  expect(graph.nodes.some((node) => node.name === "[redacted]" || node.value === "[redacted]")).toBe(true);
+  expect(JSON.stringify(graph)).not.toContain(SECRET);
+  const artifacts = session.artifactsFor(graph.graphId);
+  expect(artifacts.some((artifact) => artifact.mediaType === "image/png")).toBe(true);
+  const graphArtifact = artifacts.find((artifact) => artifact.mediaType === "application/json");
+  expect(graphArtifact).toBeDefined();
+  expect(new TextDecoder().decode(graphArtifact!.bytes)).not.toContain(SECRET);
 }
 
 async function pageSensitiveState(
