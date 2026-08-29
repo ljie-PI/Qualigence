@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ljie-PI/Qualigence/deployments/self-hosted/compose/release-manifest.schema.json",
+  "title": "Qualigence release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "version", "repository", "commit", "generatedAt", "images", "sbom", "gateEvidence", "gates", "windowsEvidence"],
+  "properties": {
+    "schemaVersion": { "const": "qualigence-release-manifest/v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application", "console"],
+      "properties": {
+        "application": { "$ref": "#/$defs/image" },
+        "console": { "$ref": "#/$defs/image" }
+      }
+    },
+    "sbom": { "$ref": "#/$defs/sbom" },
+    "gateEvidence": { "$ref": "#/$defs/gateEvidence" },
+    "gates": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "windowsEvidence": { "$ref": "#/$defs/windowsEvidence" },
+    "releaseCompose": { "$ref": "#/$defs/fileHash" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "digestReference": { "type": "string", "pattern": "^[^@]+@sha256:[a-f0-9]{64}$" },
+    "fileHash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "format"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "format": { "const": "spdx-json" }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "reference", "provenance"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "reference": { "$ref": "#/$defs/digestReference" },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attestationId", "bundle", "bundleSha256", "sbomAttestationId", "sbomBundle", "sbomBundleSha256"],
+          "properties": {
+            "attestationId": { "type": "string", "minLength": 1 },
+            "bundle": { "type": "string", "minLength": 1 },
+            "bundleSha256": { "$ref": "#/$defs/sha256" },
+            "sbomAttestationId": { "type": "string", "minLength": 1 },
+            "sbomBundle": { "type": "string", "minLength": 1 },
+            "sbomBundleSha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "gateEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schemaVersion", "commit", "status", "deliveries"],
+      "properties": {
+        "schemaVersion": { "const": "qualigence-release-gate-evidence/v1" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "status": { "const": "verified" },
+        "deliveries": { "type": "array", "minItems": 4 }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "artifactName", "artifactSha256", "commit", "runId", "artifactId", "reportSha256", "vitestSha256", "receiptSha256"],
+      "properties": {
+        "name": { "enum": ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"] },
+        "artifactName": { "type": "string", "minLength": 1 },
+        "artifactSha256": { "$ref": "#/$defs/sha256" },
+        "artifactPath": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "runId": { "type": "string", "minLength": 1 },
+        "artifactId": { "type": "string", "minLength": 1 },
+        "reportSha256": { "$ref": "#/$defs/sha256" },
+        "vitestSha256": { "$ref": "#/$defs/sha256" },
+        "receiptSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "windowsEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "commit", "signatures"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "signatures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["signer", "signedAt", "signatureSha256"],
+            "properties": {
+              "signer": { "type": "string", "minLength": 1 },
+              "signedAt": { "type": "string", "format": "date-time" },
+              "signatureSha256": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

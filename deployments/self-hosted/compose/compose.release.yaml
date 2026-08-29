@@ -1,0 +1,38 @@
+# Digest-only release overlay.
+# Use with the production topology after a release manifest is verified:
+#   docker compose -f compose.yaml -f compose.release.yaml config
+# The verifier renders the placeholders from the manifest's immutable image
+# references and rejects tags or non-sha256 references before this file is used.
+
+services:
+  migrate:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  doctor:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  backup:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  restore:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  server-volume-permissions:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  server:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  worker:
+    image: ${QUALIGENCE_RELEASE_APPLICATION_IMAGE:?set the digest-pinned application image}
+    build: !reset null
+
+  console:
+    image: ${QUALIGENCE_RELEASE_CONSOLE_IMAGE:?set the digest-pinned Console image}
+    build: !reset null

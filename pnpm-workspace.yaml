@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
   - "packages/*/*"
+injectWorkspacePackages: true
 allowBuilds:
   '@bufbuild/buf': true
   better-sqlite3: true

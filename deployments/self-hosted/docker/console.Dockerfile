@@ -34,5 +34,6 @@ RUN pnpm build
 # ---- Runtime: a lightweight static file server -------------------------------
 FROM caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17 AS runtime
 COPY --from=build /workspace/apps/web-console/dist /srv
+RUN find /srv -type f -name '*.map' -delete
 COPY deployments/self-hosted/docker/console.Caddyfile /etc/caddy/Caddyfile
 EXPOSE 8080

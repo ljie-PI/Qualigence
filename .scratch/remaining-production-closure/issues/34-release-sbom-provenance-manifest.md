@@ -4,7 +4,7 @@
 
 **Blocked by:** 33 — Deliver browser E2E and mandatory CI Gates (implementation merge). **Phase-2 release-artifact dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence. Ticket 35 consumes this ticket's immutable artifacts for the final deterministic decision.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -117,3 +117,4 @@ Record base/reviewed SHAs in `## Comments`. Review Docker contexts, image conten
 ## Comments
 
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 34 implementation stays ordered after Ticket 33. BuildKit publication, final manifest/SBOM/provenance generation, and binding of Ticket 31/46 evidence are deferred to the integrated phase-2 release run; Ticket 35 validates those immutable outputs and makes no premature frozen/release claim.
+- start - 2026-08-29: Claimed for implementation on branch `ticket-34-release-sbom-provenance-manifest` from fixed base `d85438e87cefd9be12d93875c1d748c173be5e9d` (Ticket 33 merge). Behavior Matrix applies as written above; implementation will preserve existing readiness state machines, fail closed for missing manual/provider evidence, and limit edits to the documented Ticket 34 release packaging, manifest, workflow, tests, README, and ticket evidence scope.
