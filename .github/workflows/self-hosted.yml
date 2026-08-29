@@ -26,6 +26,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf gate-self-hosted .gate-evidence/gate-self-hosted
           mkdir -p gate-self-hosted
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts docker 2>&1 | tee gate-self-hosted/preflight.txt
           { git rev-parse HEAD; node --version; corepack enable; corepack pnpm --version; docker --version; docker compose version; } | tee gate-self-hosted/environment.txt
@@ -35,7 +36,7 @@ jobs:
           corepack pnpm gate:self-hosted 2>&1 | tee gate-self-hosted/command.txt
           test -f .gate-evidence/gate-self-hosted/accepted.json
           cp -R .gate-evidence/gate-self-hosted gate-self-hosted/gate-evidence
-          find gate-self-hosted -type f -print0 | sort -z | xargs -0 sha256sum > gate-self-hosted/sha256.txt
+          (cd gate-self-hosted && find . -type f ! -name sha256.txt -printf '%P\0' | sort -z | xargs -0 sha256sum) > gate-self-hosted/sha256.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-self-hosted --report gate-self-hosted/gate-evidence/report.json --marker gate-self-hosted/gate-evidence/accepted.json --hashes gate-self-hosted/sha256.txt --receipt gate-self-hosted/receipt.json
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -63,6 +63,10 @@ export interface GateDelivery {
   readonly report: GateReport | undefined;
   readonly reportSha256: string | undefined;
   readonly marker: AcceptedGateMarker | undefined;
+  /** Present only after the receipt-bound, hashed Vitest JSON was parsed. */
+  readonly vitest: { readonly path: string; readonly sha256: string; readonly counts: GateCounts } | undefined;
+  readonly receiptSha256: string | undefined;
+  readonly invalidReason?: string;
 }
 
 export interface VerifiedGateDelivery {
@@ -71,7 +75,55 @@ export interface VerifiedGateDelivery {
   readonly runId: string | number;
   readonly commit: string;
   readonly reportSha256: string;
+  readonly vitestSha256: string;
+  readonly receiptSha256: string;
 }
+
+export interface RejectedGateDelivery {
+  readonly gate: string;
+  readonly artifactId: string | number;
+  readonly runId: string | number;
+  readonly commit: string;
+  readonly reason: string;
+}
+
+export interface GateDeliverySelection {
+  readonly deliveries: readonly VerifiedGateDelivery[];
+  readonly rejectedDeliveries: readonly RejectedGateDelivery[];
+}
+
+interface DeclaredGate {
+  readonly selection: readonly string[];
+  readonly command: readonly string[];
+}
+
+/**
+ * The receipt verifier accepts only these nonmanual Gate test invocations.
+ * `gate-linux` deliberately runs serially: browser fixtures own process and
+ * listener teardown, so no test file starts before the previous file settles.
+ */
+const DECLARED_GATES: Readonly<Record<string, DeclaredGate>> = {
+  "gate-fast": {
+    selection: ["tests/unit", "tests/replay", "tests/migration", "tests/property", "tests/smoke"],
+    command: ["pnpm", "vitest", "run", "tests/unit", "tests/replay", "tests/migration", "tests/property", "tests/smoke"],
+  },
+  "gate-linux": {
+    selection: ["tests/e2e/web-console", "tests/e2e/web-execution"],
+    command: ["pnpm", "vitest", "run", "--no-file-parallelism", "--maxWorkers=1", "tests/e2e/web-console", "tests/e2e/web-execution"],
+  },
+  "browser-e2e": {
+    selection: ["tests/e2e/web-console/browser-workflow.test.ts"],
+    command: ["pnpm", "vitest", "run", "tests/e2e/web-console/browser-workflow.test.ts"],
+  },
+  "gate-windows-rust": {
+    selection: ["tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"],
+    command: ["pnpm", "vitest", "run", "tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"],
+  },
+  "gate-self-hosted": {
+    selection: ["tests/e2e/self-hosted"],
+    command: ["pnpm", "vitest", "run", "tests/e2e/self-hosted"],
+  },
+};
 
 export function countsFromVitestJson(value: unknown): GateCounts {
   const root = asRecord(value, "Vitest JSON report");
@@ -101,41 +153,104 @@ export function countsFromVitestJson(value: unknown): GateCounts {
 export function isGateReportAcceptable(report: GateReport): boolean {
   return report.schemaVersion === "qualigence-gate-report/v1"
     && report.status === "passed"
+    && validCounts(report.counts)
+    && report.counts.passed > 0
     && report.counts.failed === 0
     && report.counts.skipped === 0
     && report.counts.todo === 0;
 }
 
-/** Verify only the reports selected by a declared Gate; unrelated repository tests are never inspected. */
+/** Verify only declared nonmanual Gate reports; unrelated artifacts never supply provenance. */
 export function verifyGateDeliveries(expectedCommit: string, requiredGates: readonly string[], deliveries: readonly GateDelivery[]): readonly VerifiedGateDelivery[] {
+  return selectGateDeliveries(expectedCommit, requiredGates, deliveries).deliveries;
+}
+
+/**
+ * Invalid terminal deliveries are retained as rejected history, but they never
+ * poison a later independent, receipt-valid success for the same commit/Gate.
+ */
+export function selectGateDeliveries(expectedCommit: string, requiredGates: readonly string[], deliveries: readonly GateDelivery[]): GateDeliverySelection {
+  assertRequiredGates(requiredGates);
   const verified: VerifiedGateDelivery[] = [];
+  const rejected: RejectedGateDelivery[] = [];
   const seenArtifactIds = new Set<string>();
   for (const delivery of deliveries) {
     const artifactIdentity = `${delivery.gate}:${String(delivery.artifactId)}`;
     if (seenArtifactIds.has(artifactIdentity)) throw new Error(`GateArtifactAmbiguous: duplicate artifact record ${artifactIdentity}`);
     seenArtifactIds.add(artifactIdentity);
     if (!requiredGates.includes(delivery.gate)) continue;
-    if (delivery.cancelled || delivery.runStatus !== "completed" || delivery.runConclusion !== "success") {
-      throw new Error(`GateArtifactTerminalStateInvalid: ${delivery.gate}/${delivery.artifactId}`);
+    const reason = deliveryInvalidReason(expectedCommit, delivery);
+    if (reason !== undefined) {
+      rejected.push({ gate: delivery.gate, artifactId: delivery.artifactId, runId: delivery.runId, commit: delivery.commit, reason });
+      continue;
     }
-    if (delivery.commit !== expectedCommit) throw new Error(`GateArtifactCommitMismatch: ${delivery.gate}/${delivery.artifactId}`);
-    const report = delivery.report;
-    const marker = delivery.marker;
-    if (report === undefined || marker === undefined || delivery.reportSha256 === undefined) {
-      throw new Error(`GateArtifactAcceptanceMissing: ${delivery.gate}/${delivery.artifactId}`);
-    }
-    if (report.commit !== expectedCommit || report.gate !== delivery.gate || !isGateReportAcceptable(report)) {
-      throw new Error(`GateArtifactReportInvalid: ${delivery.gate}/${delivery.artifactId}`);
-    }
-    if (marker.schemaVersion !== "qualigence-gate-accepted/v1" || marker.status !== "accepted" || marker.gate !== delivery.gate || marker.commit !== expectedCommit || marker.reportSha256 !== delivery.reportSha256) {
-      throw new Error(`GateArtifactMarkerInvalid: ${delivery.gate}/${delivery.artifactId}`);
-    }
-    verified.push({ gate: delivery.gate, artifactId: delivery.artifactId, runId: delivery.runId, commit: expectedCommit, reportSha256: delivery.reportSha256 });
+    verified.push({
+      gate: delivery.gate,
+      artifactId: delivery.artifactId,
+      runId: delivery.runId,
+      commit: expectedCommit,
+      reportSha256: delivery.reportSha256!,
+      vitestSha256: delivery.vitest!.sha256,
+      receiptSha256: delivery.receiptSha256!,
+    });
   }
   for (const gate of requiredGates) {
-    if (!verified.some((delivery) => delivery.gate === gate)) throw new Error(`GateArtifactUnavailable: ${gate}`);
+    if (!verified.some((delivery) => delivery.gate === gate)) {
+      const rejectedForGate = rejected.find((delivery) => delivery.gate === gate);
+      throw new GateDeliveryVerificationError(rejectedForGate?.reason ?? `GateArtifactUnavailable: ${gate}`, { deliveries: verified, rejectedDeliveries: rejected });
+    }
   }
-  return verified;
+  return { deliveries: verified, rejectedDeliveries: rejected };
+}
+
+class GateDeliveryVerificationError extends Error {
+  readonly selection: GateDeliverySelection;
+  constructor(message: string, selection: GateDeliverySelection) {
+    super(message);
+    this.selection = selection;
+  }
+}
+
+function deliveryInvalidReason(expectedCommit: string, delivery: GateDelivery): string | undefined {
+  const identity = `${delivery.gate}/${delivery.artifactId}`;
+  if (delivery.invalidReason !== undefined) return delivery.invalidReason;
+  if (delivery.cancelled || delivery.runStatus !== "completed" || delivery.runConclusion !== "success") return `GateArtifactTerminalStateInvalid: ${identity}`;
+  if (delivery.commit !== expectedCommit) return `GateArtifactCommitMismatch: ${identity}`;
+  const report = delivery.report;
+  const marker = delivery.marker;
+  if (report === undefined || marker === undefined || delivery.reportSha256 === undefined || delivery.vitest === undefined || delivery.receiptSha256 === undefined) return `GateArtifactAcceptanceMissing: ${identity}`;
+  if (report.commit !== expectedCommit || report.gate !== delivery.gate || !isDeclaredReport(report, delivery.gate) || !isGateReportAcceptable(report)) return `GateArtifactReportInvalid: ${identity}`;
+  if (!sameCounts(report.counts, delivery.vitest.counts) || !SHA256.test(delivery.vitest.sha256) || !SHA256.test(delivery.receiptSha256)) return `GateArtifactVitestInvalid: ${identity}`;
+  if (marker.schemaVersion !== "qualigence-gate-accepted/v1" || marker.status !== "accepted" || marker.gate !== delivery.gate || marker.commit !== expectedCommit || marker.reportSha256 !== delivery.reportSha256) return `GateArtifactMarkerInvalid: ${identity}`;
+  return undefined;
+}
+
+function assertRequiredGates(requiredGates: readonly string[]): void {
+  if (requiredGates.length === 0 || new Set(requiredGates).size !== requiredGates.length || requiredGates.some((gate) => DECLARED_GATES[gate] === undefined)) {
+    throw new Error("GateArtifactRequiredGateInvalid");
+  }
+}
+
+function isDeclaredReport(report: GateReport, gate: string): boolean {
+  const expected = DECLARED_GATES[gate];
+  return expected !== undefined && sameStrings(report.selection, expected.selection) && sameStrings(report.command, expected.command);
+}
+
+function isDeclaredGateInvocation(gate: string, reportPath: string, selection: readonly string[], command: readonly string[]): boolean {
+  const expectedPath = resolve(".gate-evidence", gate, "report.json");
+  return resolve(reportPath) === expectedPath && isDeclaredReport({ gate, selection, command } as GateReport, gate);
+}
+
+function sameStrings(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
+
+function validCounts(counts: GateCounts): boolean {
+  return [counts.passed, counts.failed, counts.skipped, counts.todo].every((value) => Number.isSafeInteger(value) && value >= 0);
+}
+
+function sameCounts(left: GateCounts, right: GateCounts): boolean {
+  return left.passed === right.passed && left.failed === right.failed && left.skipped === right.skipped && left.todo === right.todo;
 }
 
 export async function sha256File(path: string): Promise<string> {
@@ -152,26 +267,41 @@ export async function verifyGithubGateArtifacts(input: {
   readonly token: string;
   readonly commit: string;
   readonly requiredGates: readonly string[];
-}): Promise<readonly VerifiedGateDelivery[]> {
+}): Promise<GateDeliverySelection> {
+  assertRequiredGates(input.requiredGates);
   const artifacts = await githubJson(`https://api.github.com/repos/${input.repository}/actions/artifacts?per_page=100`, input.token) as { readonly artifacts?: readonly GithubArtifact[] };
   const deliveries: GateDelivery[] = [];
   for (const artifact of artifacts.artifacts ?? []) {
     const workflowRun = artifact.workflow_run;
-    if (!input.requiredGates.includes(artifact.name) || artifact.expired === true || workflowRun === undefined || workflowRun.head_sha !== input.commit) continue;
-    const run = await githubJson(`https://api.github.com/repos/${input.repository}/actions/runs/${workflowRun.id}`, input.token) as { readonly status?: string; readonly conclusion?: string | null };
-    const extracted = await extractGateArtifact(artifact, input.token);
+    // Only matching declared Gate artifacts for this commit are delivery history.
+    if (!input.requiredGates.includes(artifact.name) || workflowRun === undefined || workflowRun.head_sha !== input.commit) continue;
+    let runStatus = "unknown";
+    let runConclusion: string | null = null;
+    let extracted: Pick<GateDelivery, "report" | "reportSha256" | "marker" | "vitest" | "receiptSha256"> = {
+      report: undefined, reportSha256: undefined, marker: undefined, vitest: undefined, receiptSha256: undefined,
+    };
+    let invalidReason: string | undefined = artifact.expired === true ? `GateArtifactExpired: ${artifact.name}/${artifact.id}` : undefined;
+    try {
+      const run = await githubJson(`https://api.github.com/repos/${input.repository}/actions/runs/${workflowRun.id}`, input.token) as { readonly status?: string; readonly conclusion?: string | null };
+      runStatus = run.status ?? "unknown";
+      runConclusion = run.conclusion ?? null;
+      if (invalidReason === undefined && runStatus === "completed" && runConclusion === "success") extracted = await extractGateArtifact(artifact, input.token);
+    } catch (error) {
+      invalidReason = error instanceof Error ? error.message : String(error);
+    }
     deliveries.push({
       gate: artifact.name,
       artifactId: artifact.id,
       runId: workflowRun.id,
       commit: workflowRun.head_sha,
-      runStatus: run.status ?? "unknown",
-      runConclusion: run.conclusion ?? null,
-      cancelled: run.conclusion === "cancelled",
+      runStatus,
+      runConclusion,
+      cancelled: runConclusion === "cancelled",
       ...extracted,
+      ...(invalidReason === undefined ? {} : { invalidReason }),
     });
   }
-  return verifyGateDeliveries(input.commit, input.requiredGates, deliveries);
+  return selectGateDeliveries(input.commit, input.requiredGates, deliveries);
 }
 
 interface GithubArtifact {
@@ -196,7 +326,7 @@ async function githubJson(url: string, token: string): Promise<unknown> {
   return response.json();
 }
 
-async function extractGateArtifact(artifact: GithubArtifact, token: string): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker">> {
+async function extractGateArtifact(artifact: GithubArtifact, token: string): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker" | "vitest" | "receiptSha256">> {
   if (artifact.size_in_bytes !== undefined && (!Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 0 || artifact.size_in_bytes > MAX_ARCHIVE_BYTES)) {
     throw new Error(`GateArtifactArchiveSizeInvalid: ${artifact.name}/${artifact.id}`);
   }
@@ -241,7 +371,7 @@ export async function extractGateArtifactArchive(input: {
   readonly artifactId: string | number;
   readonly archive: Uint8Array;
   readonly artifactDigest: string | undefined;
-}): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker">> {
+}): Promise<Pick<GateDelivery, "report" | "reportSha256" | "marker" | "vitest" | "receiptSha256">> {
   const identity = `${input.gate}/${input.artifactId}`;
   if (input.archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error(`GateArtifactArchiveSizeInvalid: ${identity}`);
   if (input.artifactDigest === undefined || !/^sha256:[a-f0-9]{64}$/i.test(input.artifactDigest)) throw new Error(`GateArtifactDigestMissing: ${identity}`);
@@ -275,8 +405,8 @@ export async function extractGateArtifactArchive(input: {
     const marker = JSON.parse(Buffer.from(markerBytes).toString("utf8")) as AcceptedGateMarker;
     const declaredReportPath = resolveArchivePath(markerPath, marker.report, identity);
     if (receipt.commit !== report.commit || receipt.commit !== marker.commit || declaredReportPath !== reportPath || marker.reportSha256 !== receipt.reportSha256) throw new Error(`GateArtifactMarkerInvalid: ${identity}`);
-    await verifyReportInputs(archive, entryByPath, reportPath, report, manifest, identity);
-    return { report, reportSha256: receipt.reportSha256, marker };
+    const vitest = await verifyReportInputs(archive, entryByPath, reportPath, report, manifest, identity);
+    return { report, reportSha256: receipt.reportSha256, marker, vitest, receiptSha256: sha256(receiptBytes) };
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("GateArtifact")) throw error;
     throw new Error(`GateArtifactArchiveInvalid: ${identity}`);
@@ -390,20 +520,60 @@ function assertManifestHash(manifest: ReadonlyMap<string, string>, path: string,
   if (manifest.get(path) !== hash.toLowerCase()) throw new Error(`GateArtifactHashManifestInvalid: ${identity}`);
 }
 
-async function verifyReportInputs(archive: string, entries: ReadonlyMap<string, ArchiveEntry>, reportPath: string, report: GateReport, manifest: ReadonlyMap<string, string>, identity: string): Promise<void> {
-  if (!Array.isArray(report.files)) throw new Error(`GateArtifactReportInvalid: ${identity}`);
-  const filePaths = new Set<string>();
-  for (const file of report.files) {
-    if (!safeRelativePath(file.path) || !SHA256.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_ARCHIVE_ENTRY_BYTES) {
-      throw new Error(`GateArtifactReportInvalid: ${identity}`);
-    }
-    const path = resolveArchivePath(reportPath, file.path, identity);
-    if (filePaths.has(path)) throw new Error(`GateArtifactReportInvalid: ${identity}`);
-    filePaths.add(path);
-    assertManifestHash(manifest, path, file.sha256, identity);
-    const bytes = await readArchiveEntry(archive, entries, path, identity);
-    if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256.toLowerCase()) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+async function verifyReportInputs(archive: string, entries: ReadonlyMap<string, ArchiveEntry>, reportPath: string, report: GateReport, manifest: ReadonlyMap<string, string>, identity: string): Promise<NonNullable<GateDelivery["vitest"]>> {
+  if (!isDeclaredReport(report, report.gate) || !Array.isArray(report.files) || report.files.length !== 1) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+  const [file] = report.files;
+  if (file === undefined || file.path !== "vitest.json" || !SHA256.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_ARCHIVE_ENTRY_BYTES) {
+    throw new Error(`GateArtifactReportInvalid: ${identity}`);
   }
+  const path = resolveArchivePath(reportPath, file.path, identity);
+  assertManifestHash(manifest, path, file.sha256, identity);
+  const bytes = await readArchiveEntry(archive, entries, path, identity);
+  if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256.toLowerCase()) throw new Error(`GateArtifactReportInvalid: ${identity}`);
+  const counts = parseVitestCounts(bytes, report.selection, identity);
+  if (!sameCounts(report.counts, counts) || counts.passed === 0) throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+  return { path, sha256: file.sha256.toLowerCase(), counts };
+}
+
+function parseVitestCounts(bytes: Uint8Array, selection: readonly string[], identity: string): GateCounts {
+  let value: unknown;
+  try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error(`GateArtifactVitestInvalid: ${identity}`); }
+  const root = asRecord(value, "Vitest JSON report");
+  const counts: GateCounts = {
+    passed: strictCount(root.numPassedTests),
+    failed: strictCount(root.numFailedTests),
+    skipped: strictCount(root.numPendingTests),
+    todo: strictCount(root.numTodoTests),
+  };
+  const testResults = root.testResults;
+  if (!Array.isArray(testResults) || testResults.length === 0) throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+  const actual = { passed: 0, failed: 0, skipped: 0, todo: 0 };
+  const selected = new Set<string>();
+  for (const result of testResults) {
+    const test = asRecord(result, "Vitest test result");
+    const name = test.name;
+    if (typeof name !== "string") throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+    const normalizedName = name.replaceAll("\\", "/");
+    if (!selection.some((item) => normalizedName.includes(`/${item}/`) || normalizedName.endsWith(`/${item}`))) throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+    for (const item of selection) if (normalizedName.includes(`/${item}/`) || normalizedName.endsWith(`/${item}`)) selected.add(item);
+    if (!Array.isArray(test.assertionResults)) throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+    for (const assertion of test.assertionResults) {
+      switch (asRecord(assertion, "Vitest assertion").status) {
+        case "passed": actual.passed += 1; break;
+        case "failed": actual.failed += 1; break;
+        case "pending": case "skipped": actual.skipped += 1; break;
+        case "todo": actual.todo += 1; break;
+        default: throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+      }
+    }
+  }
+  if (!sameCounts(counts, actual) || selected.size !== selection.length) throw new Error(`GateArtifactVitestInvalid: ${identity}`);
+  return counts;
+}
+
+function strictCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("GateArtifactVitestInvalid");
+  return value;
 }
 
 function resolveArchivePath(fromPath: string, child: string, identity: string): string {
@@ -428,10 +598,12 @@ function sha256(value: Uint8Array): string {
 }
 
 async function runGate(gate: string, reportPath: string, selection: readonly string[], command: readonly string[]): Promise<void> {
-  if (selection.length === 0 || command.length === 0) throw new Error("GateEvidenceArgumentsInvalid");
-  await mkdir(dirname(reportPath), { recursive: true });
-  const vitestPath = join(dirname(reportPath), "vitest.json");
-  await rm(vitestPath, { force: true });
+  if (!isDeclaredGateInvocation(gate, reportPath, selection, command)) throw new Error("GateEvidenceArgumentsInvalid");
+  const evidenceDirectory = dirname(reportPath);
+  // A rerun cannot inherit a prior report, marker, hash, or Vitest output.
+  await rm(evidenceDirectory, { recursive: true, force: true });
+  await mkdir(evidenceDirectory, { recursive: true });
+  const vitestPath = join(evidenceDirectory, "vitest.json");
   const exitCode = await runCommand(command[0]!, [...command.slice(1), "--reporter=json", `--outputFile=${vitestPath}`]);
   let counts: GateCounts = { passed: 0, failed: 1, skipped: 0, todo: 0 };
   if (await exists(vitestPath)) {
@@ -455,7 +627,10 @@ async function runGate(gate: string, reportPath: string, selection: readonly str
 
 async function acceptGate(reportPath: string, markerPath: string): Promise<void> {
   const report = JSON.parse(await readFile(reportPath, "utf8")) as GateReport;
-  if (!isGateReportAcceptable(report)) throw new Error("GateReportNotAcceptable");
+  if (!isDeclaredGateInvocation(report.gate, reportPath, report.selection, report.command) || !isGateReportAcceptable(report)) throw new Error("GateReportNotAcceptable");
+  const vitestPath = join(dirname(reportPath), "vitest.json");
+  const vitest = parseVitestCounts(await readFile(vitestPath), report.selection, `local/${report.gate}`);
+  if (!sameCounts(report.counts, vitest)) throw new Error("GateReportNotAcceptable");
   const marker: AcceptedGateMarker = {
     schemaVersion: "qualigence-gate-accepted/v1",
     gate: report.gate,
@@ -473,7 +648,15 @@ async function writeReceipt(gate: string, reportPath: string, markerPath: string
   ]);
   const parsedReport = JSON.parse(report) as GateReport;
   const parsedMarker = JSON.parse(marker) as AcceptedGateMarker;
-  if (!isGateReportAcceptable(parsedReport) || parsedMarker.reportSha256 !== reportSha256 || parsedMarker.report !== relative(dirname(markerPath), reportPath).replaceAll("\\", "/")) {
+  const vitestPath = join(dirname(reportPath), "vitest.json");
+  const vitestBytes = await readFile(vitestPath);
+  const vitest = parseVitestCounts(vitestBytes, parsedReport.selection, `local/${gate}`);
+  const vitestFile = parsedReport.files[0];
+  if (!isDeclaredReport(parsedReport, gate) || !isGateReportAcceptable(parsedReport) || !sameCounts(parsedReport.counts, vitest)
+    || parsedReport.files.length !== 1 || vitestFile?.path !== "vitest.json" || vitestFile.sha256 !== sha256(vitestBytes)
+    || vitestFile.bytes !== vitestBytes.byteLength || parsedMarker.schemaVersion !== "qualigence-gate-accepted/v1" || parsedMarker.status !== "accepted"
+    || parsedMarker.gate !== gate || parsedMarker.commit !== parsedReport.commit || parsedMarker.reportSha256 !== reportSha256
+    || parsedMarker.report !== relative(dirname(markerPath), reportPath).replaceAll("\\", "/")) {
     throw new Error("GateReceiptNotAcceptable");
   }
   const receipt: GateArtifactReceipt = {
@@ -598,10 +781,12 @@ async function main(): Promise<void> {
     const commit = process.env.EXPECTED_COMMIT;
     if (report === undefined || repository === undefined || token === undefined || commit === undefined) throw new Error("GateEvidenceEnvironmentInvalid");
     try {
-      const deliveries = await verifyGithubGateArtifacts({ repository, token, commit, requiredGates: ["gate-linux", "browser-e2e", "gate-windows-rust", "gate-self-hosted"] });
-      await writeAtomic(report, `${JSON.stringify({ schemaVersion: "qualigence-release-gate-evidence/v1", commit, status: "verified", deliveries }, null, 2)}\n`);
+      const selection = await verifyGithubGateArtifacts({ repository, token, commit, requiredGates: ["gate-linux", "browser-e2e", "gate-windows-rust", "gate-self-hosted"] });
+      await writeAtomic(report, `${JSON.stringify({ schemaVersion: "qualigence-release-gate-evidence/v1", commit, status: "verified", deliveries: selection.deliveries, rejectedDeliveries: selection.rejectedDeliveries }, null, 2)}\n`);
     } catch (error) {
-      await writeAtomic(report, `${JSON.stringify({ schemaVersion: "qualigence-release-gate-evidence/v1", commit, status: "gate-blocked", reason: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
+      const rejectedDeliveries = error instanceof GateDeliveryVerificationError ? error.selection.rejectedDeliveries : [];
+      const deliveries = error instanceof GateDeliveryVerificationError ? error.selection.deliveries : [];
+      await writeAtomic(report, `${JSON.stringify({ schemaVersion: "qualigence-release-gate-evidence/v1", commit, status: "gate-blocked", reason: error instanceof Error ? error.message : String(error), deliveries, rejectedDeliveries }, null, 2)}\n`);
       throw error;
     }
     return;

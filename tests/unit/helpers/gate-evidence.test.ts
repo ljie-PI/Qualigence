@@ -4,6 +4,7 @@ import {
   countsFromVitestJson,
   extractGateArtifactArchive,
   isGateReportAcceptable,
+  selectGateDeliveries,
   verifyGateDeliveries,
   type GateDelivery,
   type GateReport,
@@ -13,12 +14,19 @@ const COMMIT = "a".repeat(40);
 const REQUIRED = ["gate-linux", "browser-e2e", "gate-windows-rust", "gate-self-hosted"] as const;
 
 function report(gate: string): GateReport {
+  const declaration: Record<string, { command: string[]; selection: string[] }> = {
+    "gate-linux": { command: ["pnpm", "vitest", "run", "--no-file-parallelism", "--maxWorkers=1", "tests/e2e/web-console", "tests/e2e/web-execution"], selection: ["tests/e2e/web-console", "tests/e2e/web-execution"] },
+    "browser-e2e": { command: ["pnpm", "vitest", "run", "tests/e2e/web-console/browser-workflow.test.ts"], selection: ["tests/e2e/web-console/browser-workflow.test.ts"] },
+    "gate-windows-rust": { command: ["pnpm", "vitest", "run", "tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"], selection: ["tests/e2e/windows/companion-client.test.ts", "tests/e2e/windows/desktop-runner.test.ts", "tests/e2e/windows/named-pipe-authority.test.ts", "tests/contract/desktop", "tests/component/windows-uia", "tests/replay/windows-uia", "tests/conformance/observation/windows-uia.test.ts"] },
+    "gate-self-hosted": { command: ["pnpm", "vitest", "run", "tests/e2e/self-hosted"], selection: ["tests/e2e/self-hosted"] },
+  };
+  const expected = declaration[gate]!;
   return {
     schemaVersion: "qualigence-gate-report/v1",
     gate,
     commit: COMMIT,
-    command: ["pnpm", "vitest", "run"],
-    selection: [`tests/${gate}`],
+    command: expected.command,
+    selection: expected.selection,
     counts: { passed: 3, failed: 0, skipped: 0, todo: 0 },
     status: "passed",
     environment: { node: "v24.0.0" },
@@ -47,6 +55,8 @@ function delivery(gate: string, suffix: string, overrides: Partial<GateDelivery>
       reportSha256: hash,
       status: "accepted",
     },
+    vitest: { path: "vitest.json", sha256: "c".repeat(64), counts: { passed: 3, failed: 0, skipped: 0, todo: 0 } },
+    receiptSha256: "d".repeat(64),
     ...overrides,
   };
 }
@@ -112,10 +122,17 @@ function hash(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function archiveFixture(options: { readonly extraEntries?: readonly ZipEntry[]; readonly reportContent?: Uint8Array; readonly receiptReportHash?: string } = {}): Uint8Array {
-  const vitest = Buffer.from('{"numPassedTests":1}\n');
+function archiveFixture(options: { readonly extraEntries?: readonly ZipEntry[]; readonly reportContent?: Uint8Array; readonly receiptReportHash?: string; readonly vitestContent?: Uint8Array; readonly omitVitest?: boolean } = {}): Uint8Array {
+  const vitest = options.vitestContent ?? Buffer.from(JSON.stringify({
+    numPassedTests: 2, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
+    testResults: [
+      { name: "/work/tests/e2e/web-console/workflow.test.ts", assertionResults: [{ status: "passed" }] },
+      { name: "/work/tests/e2e/web-execution/value-ref.test.ts", assertionResults: [{ status: "passed" }] },
+    ],
+  }));
   const expectedReport = Buffer.from(JSON.stringify({
     ...report("gate-linux"),
+    counts: { passed: 2, failed: 0, skipped: 0, todo: 0 },
     files: [{ path: "vitest.json", sha256: hash(vitest), bytes: vitest.byteLength }],
   }));
   const actualReport = options.reportContent ?? expectedReport;
@@ -149,7 +166,7 @@ function archiveFixture(options: { readonly extraEntries?: readonly ZipEntry[]; 
     { path: "sha256.txt", content: manifest },
     { path: "gate-evidence/report.json", content: actualReport },
     { path: "gate-evidence/accepted.json", content: marker },
-    { path: "gate-evidence/vitest.json", content: vitest },
+    ...(options.omitVitest ? [] : [{ path: "gate-evidence/vitest.json", content: vitest }]),
     ...(options.extraEntries ?? []),
   ]);
 }
@@ -188,9 +205,13 @@ describe("Gate evidence verifier", () => {
     expect(() => verifyGateDeliveries(COMMIT, REQUIRED, deliveries)).toThrow("GateArtifactUnavailable: browser-e2e");
   });
 
-  it("rejects wrong-SHA, skipped, and todo-only delivery reports at every acceptance boundary", () => {
+  it("rejects arbitrary selection/command, zero-work, wrong-SHA, skipped, and todo-only delivery reports at every acceptance boundary", () => {
     const valid = REQUIRED.map((gate, index) => delivery(gate, String(index)));
     expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), delivery("gate-linux", "wrong-sha", { commit: "b".repeat(40) })])).toThrow("GateArtifactCommitMismatch");
+    const arbitraryReport = { ...report("gate-linux"), command: ["pnpm", "vitest", "run", "tests/unit"] };
+    expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), delivery("gate-linux", "arbitrary", { report: arbitraryReport })])).toThrow("GateArtifactReportInvalid");
+    const zeroReport = { ...report("gate-linux"), counts: { passed: 0, failed: 0, skipped: 0, todo: 0 } };
+    expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), delivery("gate-linux", "zero", { report: zeroReport, vitest: { path: "vitest.json", sha256: "c".repeat(64), counts: zeroReport.counts } })])).toThrow("GateArtifactReportInvalid");
     const skippedReport = { ...report("gate-linux"), counts: { passed: 2, failed: 0, skipped: 1, todo: 0 }, status: "failed" as const };
     expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), delivery("gate-linux", "skipped", { report: skippedReport })])).toThrow("GateArtifactReportInvalid");
     const todoReport = { ...report("gate-linux"), counts: { passed: 2, failed: 0, skipped: 0, todo: 1 } };
@@ -198,7 +219,18 @@ describe("Gate evidence verifier", () => {
     expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), delivery("gate-linux", "todo", { report: todoReport })])).toThrow("GateArtifactReportInvalid");
   });
 
-  it("rejects cancellation after dispatch and upload, report-hash, or terminal-marker failures", () => {
+  it("preserves failed/cancelled delivery history while accepting a later separate receipt-valid same-SHA delivery", () => {
+    const valid = REQUIRED.map((gate, index) => delivery(gate, String(index)));
+    const failed = delivery("gate-linux", "failed", { runConclusion: "failure", invalidReason: "GateArtifactTerminalStateInvalid: gate-linux/failed" });
+    const cancelled = delivery("gate-linux", "cancelled", { cancelled: true, runConclusion: "cancelled" });
+    const selection = selectGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), failed, cancelled, delivery("gate-linux", "later-good")]);
+
+    expect(selection.deliveries.filter((item) => item.gate === "gate-linux")).toHaveLength(1);
+    expect(selection.deliveries.find((item) => item.gate === "gate-linux")?.artifactId).toBe("gate-linux-later-good");
+    expect(selection.rejectedDeliveries.map((item) => item.artifactId)).toEqual(["gate-linux-failed", "gate-linux-cancelled"]);
+  });
+
+  it("rejects cancellation after dispatch and upload, report-hash, malformed Vitest, or terminal-marker failures", async () => {
     const valid = REQUIRED.map((gate, index) => delivery(gate, String(index)));
     const cases: Array<[string, GateDelivery]> = [
       ["post-dispatch cancellation", delivery("gate-linux", "cancelled", { cancelled: true, runConclusion: "cancelled" })],
@@ -209,14 +241,22 @@ describe("Gate evidence verifier", () => {
     for (const [name, invalid] of cases) {
       expect(() => verifyGateDeliveries(COMMIT, REQUIRED, [...valid.filter((item) => item.gate !== "gate-linux"), invalid]), name).toThrow();
     }
+    await expect(extractGateArtifactArchive(extractionInput(archiveFixture({ omitVitest: true })))).rejects.toThrow("GateArtifactAcceptanceMissing");
+    await expect(extractGateArtifactArchive(extractionInput(archiveFixture({ vitestContent: Buffer.from("not json") })))).rejects.toThrow("GateArtifactVitestInvalid");
+    const mismatched = Buffer.from(JSON.stringify({ numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, testResults: [{ name: "/work/tests/e2e/web-console/workflow.test.ts", assertionResults: [{ status: "passed" }] }] }));
+    await expect(extractGateArtifactArchive(extractionInput(archiveFixture({ vitestContent: mismatched })))).rejects.toThrow("GateArtifactVitestInvalid");
   });
 
-  it("extracts and verifies a real ZIP receipt, report, marker, and report input", async () => {
-    const archive = archiveFixture();
-    const extracted = await extractGateArtifactArchive(extractionInput(archive));
-    expect(extracted.report?.gate).toBe("gate-linux");
-    expect(extracted.reportSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(extracted.marker?.status).toBe("accepted");
+  it("extracts and verifies fresh real ZIP receipts independently on sequential successful deliveries", async () => {
+    const first = archiveFixture();
+    const second = archiveFixture();
+    const firstExtracted = await extractGateArtifactArchive(extractionInput(first));
+    const secondExtracted = await extractGateArtifactArchive({ ...extractionInput(second), artifactId: 18 });
+    expect(firstExtracted.report?.gate).toBe("gate-linux");
+    expect(firstExtracted.reportSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(firstExtracted.marker?.status).toBe("accepted");
+    expect(secondExtracted.vitest?.counts.passed).toBe(2);
+    expect(secondExtracted.receiptSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("rejects tampered, absent, ambiguous, traversal, and oversized ZIP entries", async () => {

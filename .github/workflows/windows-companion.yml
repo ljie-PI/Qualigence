@@ -64,6 +64,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          Remove-Item -Recurse -Force gate-windows-rust, .gate-evidence/gate-windows-rust -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force gate-windows-rust | Out-Null
           corepack enable
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -84,7 +85,7 @@ jobs:
           if (!(Test-Path .gate-evidence/gate-windows-rust/accepted.json)) { throw 'GateAcceptedMarkerMissing' }
           Copy-Item -Recurse .gate-evidence/gate-windows-rust gate-windows-rust/gate-evidence
           $evidenceRoot = (Resolve-Path gate-windows-rust).Path
-          Get-ChildItem gate-windows-rust -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($evidenceRoot.Length).TrimStart('\', '/').Replace('\', '/'))" } | Set-Content gate-windows-rust/sha256.txt
+          Get-ChildItem gate-windows-rust -File -Recurse | Where-Object { $_.Name -ne 'sha256.txt' } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path.Substring($evidenceRoot.Length).TrimStart('\', '/').Replace('\', '/'))" } | Set-Content gate-windows-rust/sha256.txt
           node --experimental-strip-types tests/helpers/gate-evidence.ts receipt --gate gate-windows-rust --report gate-windows-rust/gate-evidence/report.json --marker gate-windows-rust/gate-evidence/accepted.json --hashes gate-windows-rust/sha256.txt --receipt gate-windows-rust/receipt.json
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
