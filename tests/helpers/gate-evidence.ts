@@ -12,6 +12,45 @@ const MAX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/i;
 
+/**
+ * Ticket 33's intentional phase-1 public release boundary. Ticket 34 replaces
+ * this with the actual read-only manifest verifier; it must not be mistaken for
+ * a release result before that successor exists.
+ */
+export const RELEASE_VERIFIER_UNAVAILABLE = "ReleaseVerifierUnavailable";
+export const PHASE1_RELEASE_METADATA_COMMAND = "node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-metadata/gate-artifacts.json";
+
+interface Phase1ReleaseMetadata {
+  readonly schemaVersion: "qualigence-phase1-release-metadata/v1";
+  readonly status: "release-blocked";
+  readonly commit: string;
+  readonly verifier: {
+    readonly status: "verified";
+    readonly verifiedDeliveryCount: number;
+    readonly rejectedDeliveryCount: number;
+  };
+  readonly missingEvidence: readonly ["WindowsChecklistEvidenceUnavailable", "RealProviderEvidenceUnavailable"];
+  readonly note: string;
+}
+
+interface Phase1ReleaseMetadataReceipt {
+  readonly schemaVersion: "qualigence-phase1-release-metadata-receipt/v1";
+  readonly status: "release-blocked";
+  readonly commit: string;
+  readonly command: string;
+  readonly commandSha256: string;
+  readonly environment: string;
+  readonly environmentSha256: string;
+  readonly gateArtifacts: string;
+  readonly gateArtifactsSha256: string;
+  readonly releaseBlocked: string;
+  readonly releaseBlockedSha256: string;
+  readonly hashManifest: string;
+  readonly hashManifestSha256: string;
+  readonly verifiedDeliveryCount: number;
+  readonly rejectedDeliveryCount: number;
+}
+
 export interface GateCounts {
   readonly passed: number;
   readonly failed: number;
@@ -255,6 +294,122 @@ function sameCounts(left: GateCounts, right: GateCounts): boolean {
 
 export async function sha256File(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+/** Writes the deliberately blocked phase-1 release record after Gate delivery verification. */
+export async function writePhase1ReleaseBlockedMetadata(input: {
+  readonly commit: string;
+  readonly gateArtifactsPath: string;
+  readonly outputPath: string;
+}): Promise<void> {
+  if (!isCommit(input.commit)) throw new Error("ReleaseMetadataNotAcceptable");
+  const gates = parseReleaseGateEvidence(await readFile(input.gateArtifactsPath), input.commit);
+  const metadata: Phase1ReleaseMetadata = {
+    schemaVersion: "qualigence-phase1-release-metadata/v1",
+    status: "release-blocked",
+    commit: input.commit,
+    verifier: {
+      status: "verified",
+      verifiedDeliveryCount: gates.deliveries.length,
+      rejectedDeliveryCount: gates.rejectedDeliveries.length,
+    },
+    missingEvidence: ["WindowsChecklistEvidenceUnavailable", "RealProviderEvidenceUnavailable"],
+    note: "Phase-1 block evidence only. Ticket 34's release verifier and Ticket 35's freeze validator must reject this record for publishing or freeze.",
+  };
+  await writeAtomic(input.outputPath, `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+/**
+ * Binds every phase-1 metadata input to the artifact manifest. The receipt is
+ * terminal evidence of a release block, never an accepted release manifest.
+ */
+export async function writePhase1ReleaseMetadataReceipt(input: {
+  readonly directory: string;
+  readonly receiptPath: string;
+}): Promise<void> {
+  const receipt = await phase1ReleaseMetadataReceipt(input.directory);
+  await writeAtomic(input.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+}
+
+async function phase1ReleaseMetadataReceipt(directory: string): Promise<Phase1ReleaseMetadataReceipt> {
+  const paths = {
+    command: join(directory, "command.txt"),
+    commit: join(directory, "commit.txt"),
+    environment: join(directory, "environment.txt"),
+    gateArtifacts: join(directory, "gate-artifacts.json"),
+    releaseBlocked: join(directory, "release-blocked.json"),
+    hashManifest: join(directory, "sha256.txt"),
+  };
+  const [command, commitText, environmentText, gateArtifacts, releaseBlocked, manifestBytes] = await Promise.all([
+    readFile(paths.command, "utf8"), readFile(paths.commit, "utf8"), readFile(paths.environment, "utf8"),
+    readFile(paths.gateArtifacts), readFile(paths.releaseBlocked), readFile(paths.hashManifest),
+  ]);
+  const commit = commitText.trim();
+  if (command.trim() !== PHASE1_RELEASE_METADATA_COMMAND || !isCommit(commit) || !validPhase1Environment(environmentText)) {
+    throw new Error("ReleaseMetadataNotAcceptable");
+  }
+  const gates = parseReleaseGateEvidence(gateArtifacts, commit);
+  const blocked = parsePhase1ReleaseBlocked(releaseBlocked, commit, gates.deliveries.length, gates.rejectedDeliveries.length);
+  const manifest = parseHashManifest(manifestBytes, "local/release-metadata");
+  for (const [relativePath, path] of [
+    ["command.txt", paths.command],
+    ["commit.txt", paths.commit],
+    ["environment.txt", paths.environment],
+    ["gate-artifacts.json", paths.gateArtifacts],
+    ["release-blocked.json", paths.releaseBlocked],
+  ] as const) {
+    assertManifestHash(manifest, relativePath, await sha256File(path), "local/release-metadata");
+  }
+  const hashManifestSha256 = sha256(manifestBytes);
+  return {
+    schemaVersion: "qualigence-phase1-release-metadata-receipt/v1",
+    status: "release-blocked",
+    commit,
+    command: "command.txt",
+    commandSha256: await sha256File(paths.command),
+    environment: "environment.txt",
+    environmentSha256: await sha256File(paths.environment),
+    gateArtifacts: "gate-artifacts.json",
+    gateArtifactsSha256: await sha256File(paths.gateArtifacts),
+    releaseBlocked: "release-blocked.json",
+    releaseBlockedSha256: await sha256File(paths.releaseBlocked),
+    hashManifest: "sha256.txt",
+    hashManifestSha256,
+    verifiedDeliveryCount: blocked.verifier.verifiedDeliveryCount,
+    rejectedDeliveryCount: blocked.verifier.rejectedDeliveryCount,
+  };
+}
+
+function parseReleaseGateEvidence(bytes: Uint8Array, commit: string): { readonly deliveries: readonly unknown[]; readonly rejectedDeliveries: readonly unknown[] } {
+  let value: unknown;
+  try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error("ReleaseMetadataNotAcceptable"); }
+  const record = asRecord(value, "release Gate evidence");
+  if (record.schemaVersion !== "qualigence-release-gate-evidence/v1" || record.commit !== commit || record.status !== "verified"
+    || !Array.isArray(record.deliveries) || !Array.isArray(record.rejectedDeliveries)) throw new Error("ReleaseMetadataNotAcceptable");
+  return { deliveries: record.deliveries, rejectedDeliveries: record.rejectedDeliveries };
+}
+
+function parsePhase1ReleaseBlocked(bytes: Uint8Array, commit: string, verifiedDeliveryCount: number, rejectedDeliveryCount: number): Phase1ReleaseMetadata {
+  let metadata: Phase1ReleaseMetadata;
+  try { metadata = JSON.parse(Buffer.from(bytes).toString("utf8")) as Phase1ReleaseMetadata; } catch { throw new Error("ReleaseMetadataNotAcceptable"); }
+  if (metadata.schemaVersion !== "qualigence-phase1-release-metadata/v1" || metadata.status !== "release-blocked" || metadata.commit !== commit
+    || metadata.verifier?.status !== "verified" || metadata.verifier.verifiedDeliveryCount !== verifiedDeliveryCount
+    || metadata.verifier.rejectedDeliveryCount !== rejectedDeliveryCount || metadata.missingEvidence?.length !== 2
+    || metadata.missingEvidence[0] !== "WindowsChecklistEvidenceUnavailable" || metadata.missingEvidence[1] !== "RealProviderEvidenceUnavailable") {
+    throw new Error("ReleaseMetadataNotAcceptable");
+  }
+  return metadata;
+}
+
+function validPhase1Environment(value: string): boolean {
+  const entries = new Map(value.trim().split(/\r?\n/).map((line) => {
+    const index = line.indexOf("=");
+    return [line.slice(0, index), line.slice(index + 1)];
+  }));
+  return ["node", "pnpm", "git", "runner_os", "runner_arch"].every((key) => {
+    const entry = entries.get(key);
+    return typeof entry === "string" && entry.length > 0;
+  });
 }
 
 /**
@@ -789,6 +944,26 @@ async function main(): Promise<void> {
       await writeAtomic(report, `${JSON.stringify({ schemaVersion: "qualigence-release-gate-evidence/v1", commit, status: "gate-blocked", reason: error instanceof Error ? error.message : String(error), deliveries, rejectedDeliveries }, null, 2)}\n`);
       throw error;
     }
+    return;
+  }
+  if (mode === "write-release-blocked") {
+    const commit = argument(args, "--commit");
+    const gateArtifacts = argument(args, "--gate-artifacts");
+    const output = argument(args, "--output");
+    if (commit === undefined || gateArtifacts === undefined || output === undefined) throw new Error("ReleaseMetadataArgumentsInvalid");
+    await writePhase1ReleaseBlockedMetadata({ commit, gateArtifactsPath: gateArtifacts, outputPath: output });
+    return;
+  }
+  if (mode === "release-metadata-receipt") {
+    const directory = argument(args, "--directory");
+    const receipt = argument(args, "--receipt");
+    if (directory === undefined || receipt === undefined) throw new Error("ReleaseMetadataArgumentsInvalid");
+    await writePhase1ReleaseMetadataReceipt({ directory, receiptPath: receipt });
+    return;
+  }
+  if (mode === "release-unavailable") {
+    process.stderr.write(`${RELEASE_VERIFIER_UNAVAILABLE}\n`);
+    process.exitCode = 1;
     return;
   }
   throw new Error("GateEvidenceModeInvalid");

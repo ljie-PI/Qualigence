@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   countsFromVitestJson,
   extractGateArtifactArchive,
   isGateReportAcceptable,
+  PHASE1_RELEASE_METADATA_COMMAND,
+  RELEASE_VERIFIER_UNAVAILABLE,
   selectGateDeliveries,
   verifyGateDeliveries,
+  writePhase1ReleaseBlockedMetadata,
+  writePhase1ReleaseMetadataReceipt,
   type GateDelivery,
   type GateReport,
 } from "../../helpers/gate-evidence.js";
@@ -283,5 +291,47 @@ describe("Gate evidence verifier", () => {
 
     const oversized = archiveFixture({ extraEntries: [{ path: "large.bin", content: Buffer.from("x"), declaredBytes: 33 * 1024 * 1024 }] });
     await expect(extractGateArtifactArchive(extractionInput(oversized))).rejects.toThrow("GateArtifactArchiveSizeInvalid");
+  });
+
+  it("binds phase-1 release-block metadata to verified delivery counts and a hash manifest", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "qualigence-release-metadata-"));
+    try {
+      const paths = {
+        command: join(directory, "command.txt"),
+        commit: join(directory, "commit.txt"),
+        environment: join(directory, "environment.txt"),
+        gateArtifacts: join(directory, "gate-artifacts.json"),
+        releaseBlocked: join(directory, "release-blocked.json"),
+        manifest: join(directory, "sha256.txt"),
+        receipt: join(directory, "receipt.json"),
+      };
+      await writeFile(paths.command, `${PHASE1_RELEASE_METADATA_COMMAND}\n`);
+      await writeFile(paths.commit, `${COMMIT}\n`);
+      await writeFile(paths.environment, "node=v24.13.0\npnpm=11.7.0\ngit=git version 2.52.0\nrunner_os=Linux\nrunner_arch=X64\n");
+      await writeFile(paths.gateArtifacts, JSON.stringify({
+        schemaVersion: "qualigence-release-gate-evidence/v1", commit: COMMIT, status: "verified", deliveries: [{ gate: "gate-linux" }, { gate: "browser-e2e" }], rejectedDeliveries: [{ gate: "gate-linux" }],
+      }));
+      await writePhase1ReleaseBlockedMetadata({ commit: COMMIT, gateArtifactsPath: paths.gateArtifacts, outputPath: paths.releaseBlocked });
+      const blocked = JSON.parse(await readFile(paths.releaseBlocked, "utf8"));
+      expect(blocked).toMatchObject({ status: "release-blocked", commit: COMMIT, verifier: { verifiedDeliveryCount: 2, rejectedDeliveryCount: 1 }, missingEvidence: ["WindowsChecklistEvidenceUnavailable", "RealProviderEvidenceUnavailable"] });
+      const manifestFiles: readonly (readonly [string, string])[] = [
+        ["command.txt", paths.command], ["commit.txt", paths.commit], ["environment.txt", paths.environment], ["gate-artifacts.json", paths.gateArtifacts], ["release-blocked.json", paths.releaseBlocked],
+      ];
+      const manifestEntries = await Promise.all(manifestFiles.map(async ([name, path]) => `${hash(await readFile(path))}  ${name}`));
+      await writeFile(paths.manifest, `${manifestEntries.join("\n")}\n`);
+      await writePhase1ReleaseMetadataReceipt({ directory, receiptPath: paths.receipt });
+      expect(JSON.parse(await readFile(paths.receipt, "utf8"))).toMatchObject({ status: "release-blocked", commit: COMMIT, verifiedDeliveryCount: 2, rejectedDeliveryCount: 1, command: "command.txt", hashManifest: "sha256.txt" });
+      await writeFile(paths.environment, "node=v24\n");
+      await expect(writePhase1ReleaseMetadataReceipt({ directory, receiptPath: paths.receipt })).rejects.toThrow("ReleaseMetadataNotAcceptable");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("emits the explicit phase-1 verifier block instead of a generic script failure", () => {
+    const command = spawnSync(process.execPath, ["--experimental-strip-types", "tests/helpers/gate-evidence.ts", "release-unavailable"], { cwd: process.cwd(), encoding: "utf8" });
+    expect(command.status).toBe(1);
+    expect(`${command.stdout}${command.stderr}`).toContain(RELEASE_VERIFIER_UNAVAILABLE);
+    expect(`${command.stdout}${command.stderr}`).not.toContain("Missing script");
   });
 });

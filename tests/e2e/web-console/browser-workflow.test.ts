@@ -198,7 +198,10 @@ describe("rendered Web Console browser workflow", () => {
       await page.getByText("valid", { exact: true }).first().waitFor();
       await page.getByText("passed", { exact: true }).first().waitFor();
       await page.getByRole("button", { name: "Promote (v3)" }).click();
-      await page.getByText("promoted", { exact: true }).waitFor();
+      const lifecycleState = page.locator(".definition-list__row")
+        .filter({ has: page.getByText("Lifecycle state", { exact: true }) })
+        .getByText("promoted", { exact: true });
+      await lifecycleState.waitFor({ state: "visible" });
       await page.getByRole("button", { name: "Deprecate (v4)" }).click();
       await page.getByText("deprecated", { exact: true }).waitFor();
       await page.getByText("revoked", { exact: true }).waitFor();

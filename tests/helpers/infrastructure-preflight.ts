@@ -40,6 +40,11 @@ function check(requirement: string): InfrastructureCode | undefined {
       try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 15_000 }); return undefined; } catch { return "DockerUnavailable"; }
     case "cargo":
       try { execFileSync("cargo", ["--version"], { stdio: "ignore", timeout: 10_000 }); return undefined; } catch { return "CargoUnavailable"; }
+    // `cargo fmt` is a required Gate operation, so cargo alone is insufficient.
+    // Keep the existing CargoUnavailable contract until a distinct approved
+    // rust-toolchain diagnostic is introduced.
+    case "rustfmt":
+      try { execFileSync("cargo", ["fmt", "--version"], { stdio: "ignore", timeout: 10_000 }); return undefined; } catch { return "CargoUnavailable"; }
     case "windows11":
       if (process.platform !== "win32") return "Windows11Unavailable";
       try {
