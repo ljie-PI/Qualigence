@@ -530,6 +530,13 @@ async function readEvidenceJson(
   reference: GraphFreezeEvidenceReference,
 ): Promise<unknown> {
   const bytes = await readEvidenceBytes(input, id, reference);
+  return parseEvidenceJsonBytes(bytes, id);
+}
+
+function parseEvidenceJsonBytes(
+  bytes: Buffer,
+  id: GraphFreezeEvidenceId,
+): unknown {
   try {
     return JSON.parse(bytes.toString("utf8"));
   } catch (error) {
@@ -1543,7 +1550,6 @@ async function validatePullRequest(
           !(
             path === "README.md" ||
             path.startsWith("docs/") ||
-            path.startsWith(".github/ISSUE_TEMPLATE/") ||
             path ===
               `artifacts/release/${input.version}/graph-freeze-decision.json`
           ),
@@ -3961,34 +3967,41 @@ export function setReleaseVerifierRunnerForTests(
 async function runSelectedReleaseVerifier(
   input: FinalizeGraphFreezeInput,
   manifestPath: string,
+  manifestBytes: Buffer,
 ): Promise<void> {
   const source = await repositoryFileAtCommit(
     input,
     "scripts/verify-release-manifest.mjs",
     "ReleaseManifestVerifierInvalid",
   );
+  const nonce = `${process.pid}-${randomUUID()}`;
   const verifierPath = join(
     dirname(manifestPath),
-    `.verify-release-manifest-${process.pid}-${randomUUID()}.mjs`,
+    `.verify-release-manifest-${nonce}.mjs`,
+  );
+  const manifestSnapshotPath = join(
+    dirname(manifestPath),
+    `.release-manifest-${nonce}.json`,
   );
   await writeFile(verifierPath, source.text, { encoding: "utf8", flag: "wx" });
-  const invocation: ReleaseVerifierInvocation = {
-    executable: process.execPath,
-    args: [
-      verifierPath,
-      "verify",
-      "--manifest",
-      manifestPath,
-      "--repository",
-      input.repository,
-      "--commit",
-      input.commit,
-    ],
-    cwd: input.repositoryRoot,
-    env: releaseVerifierEnvironment(),
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  };
   try {
+    await writeFile(manifestSnapshotPath, manifestBytes, { flag: "wx" });
+    const invocation: ReleaseVerifierInvocation = {
+      executable: process.execPath,
+      args: [
+        verifierPath,
+        "verify",
+        "--manifest",
+        manifestSnapshotPath,
+        "--repository",
+        input.repository,
+        "--commit",
+        input.commit,
+      ],
+      cwd: input.repositoryRoot,
+      env: releaseVerifierEnvironment(),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    };
     const runner = releaseVerifierRunnerForTests;
     if (runner === undefined) {
       await execFileAsync(invocation.executable, [...invocation.args], {
@@ -4002,7 +4015,10 @@ async function runSelectedReleaseVerifier(
       await runner(invocation);
     }
   } finally {
-    await rm(verifierPath, { force: true });
+    await Promise.all([
+      rm(verifierPath, { force: true }),
+      rm(manifestSnapshotPath, { force: true }),
+    ]);
   }
 }
 
@@ -4011,6 +4027,7 @@ async function validateReleaseManifestEvidence(
   input: FinalizeGraphFreezeInput,
   manifestPath: string,
   manifestReferenceValue: GraphFreezeEvidenceReference,
+  manifestBytes: Buffer,
 ): Promise<ReleaseManifestEvaluation> {
   const manifest = asRecord(value, "release manifest");
   if (manifest["schemaVersion"] !== "qualigence-release-manifest/v1") {
@@ -4053,7 +4070,7 @@ async function validateReleaseManifestEvidence(
   }
 
   try {
-    await runSelectedReleaseVerifier(input, manifestPath);
+    await runSelectedReleaseVerifier(input, manifestPath, manifestBytes);
   } catch (error) {
     if (
       input.signal?.aborted === true ||
@@ -4074,6 +4091,7 @@ async function validateReleaseManifestEvidence(
       `Ticket 34 release-manifest verification failed: ${errorMessage(error)}`,
     );
   }
+  await readEvidenceBytes(input, "release-manifest", manifestReferenceValue);
 
   const windows = asRecord(
     manifest["windowsEvidence"],
@@ -4319,16 +4337,18 @@ async function evaluateEvidence(
     return { capabilities };
   }
   try {
-    const value = await readEvidenceJson(
+    const manifestBytes = await readEvidenceBytes(
       input,
       "release-manifest",
       releaseReference,
     );
+    const value = parseEvidenceJsonBytes(manifestBytes, "release-manifest");
     const release = await validateReleaseManifestEvidence(
       value,
       input,
       resolve(input.repositoryRoot, ...releaseReference.path.split("/")),
       releaseReference,
+      manifestBytes,
     );
     replaceCapability(capabilities, "release-manifest", {
       status: "verified",

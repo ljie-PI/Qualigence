@@ -2593,6 +2593,41 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     expect(result.decision.signoff).toBeUndefined();
   });
 
+  it("rejects a release manifest changed after Ticket 34 verification", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-manifest-toctou-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const releaseManifest = await writeReleaseFixture(repositoryRoot, version);
+    const manifestPath = join(
+      repositoryRoot,
+      ...releaseManifest.path.split("/"),
+    );
+
+    const result = await withOfflineAttestationVerifier(
+      () =>
+        finalizeGraphFreezeFromEvidence(
+          finalizerInput(repositoryRoot, {
+            evidence: { releaseManifest },
+          }),
+        ),
+      async () => {
+        const manifest = mutableRecord(
+          JSON.parse(await readFile(manifestPath, "utf8")),
+          "release manifest",
+        );
+        manifest["generatedAt"] = "2026-08-29T01:00:00.000Z";
+        await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      },
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "EvidenceHashMismatch: release-manifest",
+    );
+    expect(result.decision.signoff).toBeUndefined();
+  });
+
   it.each([
     {
       name: "stale provider evidence",
