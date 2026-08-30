@@ -111,6 +111,7 @@ function githubClosureFixture() {
         remoteHead: head,
         mergeCommit,
         changedFiles: ["packages/observation-migration/src/index.ts"],
+        requiredChecks: ["focused-gate"],
         checks: [
           {
             name: "focused-gate",
@@ -143,15 +144,33 @@ function githubClosureFixture() {
     umbrellaIssue: 67,
     tickets,
     remediation,
+    integratedAcceptance: {
+      legacyTicket: 48,
+      issue: {
+        number: 181,
+        parentIssue: 67,
+        state: "open",
+        status: "claimed",
+        blockedBy: [35],
+      },
+      authority: "integrated-human-acceptance",
+      blocking: false,
+    },
     commitGraph: [
       {
         sha: FINALIZER_COMMIT,
         parents: tickets.map((ticket) => ticket.pullRequest.mergeCommit),
       },
-      ...tickets.map((ticket) => ({
-        sha: ticket.pullRequest.mergeCommit,
-        parents: [],
-      })),
+      ...tickets.flatMap((ticket) => [
+        {
+          sha: ticket.pullRequest.mergeCommit,
+          parents: [ticket.pullRequest.remoteHead],
+        },
+        {
+          sha: ticket.pullRequest.remoteHead,
+          parents: [],
+        },
+      ]),
     ],
   };
 }
@@ -568,7 +587,14 @@ afterEach(async () => {
   await Promise.all(
     fixtureRoots
       .splice(0)
-      .map((root) => rm(root, { recursive: true, force: true })),
+      .map((root) =>
+        rm(root, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 50,
+        }),
+      ),
   );
 });
 
@@ -1116,6 +1142,19 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       },
     },
     {
+      name: "omitted active migration inventory",
+      key: "candidateMigration",
+      filename: "candidate-migration.json",
+      code: "MigrationInventoryMismatch",
+      mutate: (evidence: Record<string, unknown>) => {
+        const inventory = evidence["inventory"];
+        if (!Array.isArray(inventory) || inventory.length < 2) {
+          throw new Error("migration fixture has no complete inventory");
+        }
+        inventory.pop();
+      },
+    },
+    {
       name: "unsupported Graph schema major",
       key: "graphConformance",
       filename: "graph-conformance.json",
@@ -1422,6 +1461,46 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         finalizerInput(repositoryRoot, { signal: controller.signal }),
       ),
     ).rejects.toMatchObject({ code: "FinalizationAborted" });
+    await expect(
+      readFile(
+        join(
+          repositoryRoot,
+          "artifacts",
+          "release",
+          "v0.1.0-candidate",
+          "graph-freeze-decision.json",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cancels a running Ticket 34 verifier without publishing a decision", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-verifier-cancel-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const releaseManifest = await writeReleaseFixture(
+      repositoryRoot,
+      "v0.1.0-candidate",
+    );
+    await writeFile(
+      join(repositoryRoot, "scripts", "verify-release-manifest.mjs"),
+      "setInterval(() => {}, 1_000);\n",
+    );
+    const controller = new AbortController();
+    const cancellation = setTimeout(() => controller.abort(), 50);
+    try {
+      await expect(
+        finalizeGraphFreezeFromEvidence(
+          finalizerInput(repositoryRoot, {
+            evidence: { releaseManifest },
+            signal: controller.signal,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "FinalizationAborted" });
+    } finally {
+      clearTimeout(cancellation);
+    }
     await expect(
       readFile(
         join(

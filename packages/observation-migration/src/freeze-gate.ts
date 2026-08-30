@@ -532,6 +532,7 @@ function validateCandidateMigrationEvidence(
       "commit",
       "generatedAt",
       "evidenceClass",
+      "inventory",
       "report",
     ],
     "candidate migration evidence",
@@ -545,6 +546,55 @@ function validateCandidateMigrationEvidence(
     );
   }
   assertBinding(evidence, input, "candidate migration evidence");
+  const inventory = requireArray(
+    evidence,
+    "inventory",
+    "candidate migration evidence",
+  );
+  if (inventory.length === 0) {
+    throw new EvidenceValidationError(
+      "MigrationInventoryInvalid",
+      "candidate migration inventory must contain every active pre-v1 asset",
+    );
+  }
+  const inventoryByIdentity = new Map<string, "observation" | "skill">();
+  for (const [index, value] of inventory.entries()) {
+    const item = asRecord(value, `candidate migration inventory ${index}`);
+    assertKeys(
+      item,
+      ["assetId", "assetKind", "sourceHash", "active"],
+      `candidate migration inventory ${index}`,
+    );
+    const assetId = requireString(
+      item,
+      "assetId",
+      `candidate migration inventory ${index}`,
+    );
+    const sourceHash = requireString(
+      item,
+      "sourceHash",
+      `candidate migration inventory ${index}`,
+    );
+    const assetKind = item["assetKind"];
+    const identity = `${assetId}\0${sourceHash}`;
+    if (
+      (assetKind !== "observation" && assetKind !== "skill") ||
+      item["active"] !== true ||
+      !/^[a-f0-9]{64}$/u.test(sourceHash)
+    ) {
+      throw new EvidenceValidationError(
+        "MigrationInventoryInvalid",
+        `${assetId} is not an active hash-bound Trace or Skill inventory item`,
+      );
+    }
+    if (inventoryByIdentity.has(identity)) {
+      throw new EvidenceValidationError(
+        "EvidenceDuplicate",
+        `candidate migration inventory ${identity} is duplicated`,
+      );
+    }
+    inventoryByIdentity.set(identity, assetKind);
+  }
   const report = asRecord(evidence["report"], "candidate migration report");
   if (
     report["version"] !== OBSERVATION_FREEZE_REPORT_VERSION ||
@@ -559,6 +609,7 @@ function validateCandidateMigrationEvidence(
   }
   const results = requireArray(report, "results", "candidate migration report");
   const seen = new Set<string>();
+  const classifiedInventory = new Set<string>();
   const counts = {
     migrated: 0,
     deprecated: 0,
@@ -582,14 +633,27 @@ function validateCandidateMigrationEvidence(
       "migratorVersion",
       `candidate migration result ${index}`,
     );
+    const inventoryIdentity = `${assetId}\0${sourceHash}`;
     const identity = `${assetId}\0${sourceHash}\0${migratorVersion}`;
-    if (seen.has(identity)) {
+    if (seen.has(identity) || classifiedInventory.has(inventoryIdentity)) {
       throw new EvidenceValidationError(
         "EvidenceDuplicate",
         `candidate migration result ${identity} is duplicated`,
       );
     }
     seen.add(identity);
+    classifiedInventory.add(inventoryIdentity);
+    const assetKind = inventoryByIdentity.get(inventoryIdentity);
+    if (
+      assetKind === undefined ||
+      result["assetKind"] !== assetKind ||
+      !migratorVersion.startsWith(OBSERVATION_MIGRATOR_VERSION)
+    ) {
+      throw new EvidenceValidationError(
+        "MigrationInventoryMismatch",
+        `${assetId} does not match the authoritative active inventory`,
+      );
+    }
     if (!/^[a-f0-9]{64}$/u.test(sourceHash)) {
       throw new EvidenceValidationError(
         "MigrationSourceHashInvalid",
@@ -620,7 +684,17 @@ function validateCandidateMigrationEvidence(
         `${assetId} is failed or lacks an explained non-migrated disposition`,
       );
     }
-    if (result["assetKind"] === "skill") {
+    if (
+      status === "migrated" &&
+      (typeof result["outputRef"] !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(result["outputRef"]))
+    ) {
+      throw new EvidenceValidationError(
+        "MigrationOutputInvalid",
+        `${assetId} has no immutable migrated output hash`,
+      );
+    }
+    if (assetKind === "skill") {
       for (const key of [
         "skillSourceHash",
         "skillAssetHash",
@@ -636,7 +710,36 @@ function validateCandidateMigrationEvidence(
           );
         }
       }
+      if (
+        typeof result["skillSourceHash"] !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(result["skillSourceHash"]) ||
+        typeof result["skillAssetHash"] !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(result["skillAssetHash"]) ||
+        typeof result["skillVersion"] !== "number" ||
+        !Number.isSafeInteger(result["skillVersion"]) ||
+        result["skillVersion"] < 1 ||
+        result["locatorSchemaVersion"] !== "semantic-locator/v1" ||
+        typeof result["skillCompilerVersion"] !== "string" ||
+        result["skillCompilerVersion"].trim() === "" ||
+        !Array.isArray(result["sourceTraceRefs"]) ||
+        result["sourceTraceRefs"].length === 0 ||
+        result["sourceTraceRefs"].some(
+          (reference) =>
+            typeof reference !== "string" || reference.trim() === "",
+        )
+      ) {
+        throw new EvidenceValidationError(
+          "MigrationSkillProvenanceInvalid",
+          `${assetId} has invalid Skill source/compiler/Trace provenance`,
+        );
+      }
     }
+  }
+  if (classifiedInventory.size !== inventoryByIdentity.size) {
+    throw new EvidenceValidationError(
+      "MigrationInventoryMismatch",
+      "candidate migration results omit active inventory assets",
+    );
   }
   const reportCounts = asRecord(report["counts"], "candidate migration counts");
   if (
@@ -955,6 +1058,7 @@ function validatePullRequest(
   value: unknown,
   ticket: number,
   input: FinalizeGraphFreezeInput,
+  graph: ReadonlyMap<string, readonly string[]>,
   ancestors: ReadonlySet<string>,
   seenPullRequests: Set<number>,
 ): void {
@@ -971,6 +1075,7 @@ function validatePullRequest(
       "remoteHead",
       "mergeCommit",
       "changedFiles",
+      "requiredChecks",
       "checks",
       "postReviewFiles",
     ],
@@ -1013,7 +1118,19 @@ function validatePullRequest(
       `${label} merge commit is not in the selected candidate ancestry`,
     );
   }
+  if (!commitAncestors(graph, mergeCommit).has(remoteHead)) {
+    throw new EvidenceValidationError(
+      "GithubRemoteHeadNotMerged",
+      `${label} merge commit does not contain its remote head`,
+    );
+  }
   if (reviewedHead !== remoteHead) {
+    if (!commitAncestors(graph, remoteHead).has(reviewedHead)) {
+      throw new EvidenceValidationError(
+        "GithubReviewedHeadMismatch",
+        `${label} remote head does not descend from its reviewed head`,
+      );
+    }
     const postReviewFiles = assertStringArray(
       pullRequest["postReviewFiles"],
       `${label}.postReviewFiles`,
@@ -1035,6 +1152,10 @@ function validatePullRequest(
     }
   }
   assertStringArray(pullRequest["changedFiles"], `${label}.changedFiles`);
+  const requiredChecks = assertStringArray(
+    pullRequest["requiredChecks"],
+    `${label}.requiredChecks`,
+  );
   const checks = requireArray(pullRequest, "checks", label);
   if (checks.length === 0) {
     throw new EvidenceValidationError(
@@ -1065,6 +1186,15 @@ function validatePullRequest(
       );
     }
   }
+  if (
+    checkNames.size !== requiredChecks.length ||
+    requiredChecks.some((name) => !checkNames.has(name))
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCheckMissing",
+      `${label} checks do not exactly cover its required check names`,
+    );
+  }
 }
 
 function validateGithubClosureEvidence(
@@ -1084,6 +1214,7 @@ function validateGithubClosureEvidence(
       "umbrellaIssue",
       "tickets",
       "remediation",
+      "integratedAcceptance",
       "commitGraph",
     ],
     "GitHub closure evidence",
@@ -1245,13 +1376,31 @@ function validateGithubClosureEvidence(
         `legacy Ticket ${legacyTicket} has duplicate dependencies`,
       );
     }
-    validatePullRequest(
-      ticket["pullRequest"],
-      legacyTicket,
-      input,
-      ancestors,
-      seenPullRequests,
-    );
+    if (issue["status"] === "resolved") {
+      if (ticket["pullRequest"] === undefined) {
+        throw new EvidenceValidationError(
+          "GithubPullRequestNotMerged",
+          `resolved legacy Ticket ${legacyTicket} has no merged pull request`,
+        );
+      }
+      validatePullRequest(
+        ticket["pullRequest"],
+        legacyTicket,
+        input,
+        graph,
+        ancestors,
+        seenPullRequests,
+      );
+    } else if (ticket["pullRequest"] !== undefined) {
+      validatePullRequest(
+        ticket["pullRequest"],
+        legacyTicket,
+        input,
+        graph,
+        ancestors,
+        seenPullRequests,
+      );
+    }
   }
   for (let legacyTicket = 1; legacyTicket <= 35; legacyTicket += 1) {
     if (!seenTickets.has(legacyTicket)) {
@@ -1339,6 +1488,46 @@ function validateGithubClosureEvidence(
         `legacy Ticket ${legacyTicket} status contradicts its classification`,
       );
     }
+  }
+
+  const integratedAcceptance = asRecord(
+    evidence["integratedAcceptance"],
+    "integrated Ticket 48 evidence",
+  );
+  assertKeys(
+    integratedAcceptance,
+    ["legacyTicket", "issue", "authority", "blocking"],
+    "integrated Ticket 48 evidence",
+  );
+  const integratedIssue = asRecord(
+    integratedAcceptance["issue"],
+    "integrated Ticket 48 issue",
+  );
+  assertKeys(
+    integratedIssue,
+    ["number", "parentIssue", "state", "status", "blockedBy"],
+    "integrated Ticket 48 issue",
+  );
+  const integratedBlockedBy = requireArray(
+    integratedIssue,
+    "blockedBy",
+    "integrated Ticket 48 issue",
+  );
+  if (
+    integratedAcceptance["legacyTicket"] !== 48 ||
+    integratedIssue["number"] !== 181 ||
+    integratedIssue["parentIssue"] !== 67 ||
+    integratedIssue["state"] !== "open" ||
+    integratedIssue["status"] !== "claimed" ||
+    integratedBlockedBy.length !== 1 ||
+    integratedBlockedBy[0] !== 35 ||
+    integratedAcceptance["authority"] !== "integrated-human-acceptance" ||
+    integratedAcceptance["blocking"] !== false
+  ) {
+    throw new EvidenceValidationError(
+      "GithubIntegratedAcceptanceInvalid",
+      "Ticket 48 must remain the claimed, non-substitutable final acceptance authority blocked by Ticket 35",
+    );
   }
 }
 
@@ -1796,6 +1985,14 @@ function verifierErrorCode(error: unknown): string {
   return "ReleaseManifestVerificationFailed";
 }
 
+function releaseVerifierEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  if (environment["NODE_ENV"] !== "test" || environment["VITEST"] !== "true") {
+    delete environment["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"];
+  }
+  return environment;
+}
+
 async function validateReleaseManifestEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
@@ -1862,11 +2059,27 @@ async function validateReleaseManifestEvidence(
       ],
       {
         cwd: input.repositoryRoot,
-        env: process.env,
+        env: releaseVerifierEnvironment(),
         maxBuffer: 4 * 1024 * 1024,
+        signal: input.signal,
+        timeout: 120_000,
       },
     );
   } catch (error) {
+    if (
+      input.signal?.aborted === true ||
+      (typeof error === "object" &&
+        error !== null &&
+        "killed" in error &&
+        error.killed === true)
+    ) {
+      throw new GraphFreezeFinalizationError(
+        "FinalizationAborted",
+        input.signal?.aborted === true
+          ? "Graph freeze finalization was cancelled during release verification"
+          : "Graph freeze finalization timed out during release verification",
+      );
+    }
     throw new EvidenceValidationError(
       verifierErrorCode(error),
       `Ticket 34 release-manifest verification failed: ${errorMessage(error)}`,
@@ -2061,6 +2274,9 @@ async function evaluateEvidence(
   try {
     await reconcileProviderBenchmarkIdentity(input, capabilities);
   } catch (error) {
+    if (error instanceof GraphFreezeFinalizationError) {
+      throw error;
+    }
     const code =
       error instanceof EvidenceValidationError
         ? error.code
@@ -2131,6 +2347,9 @@ async function evaluateEvidence(
     });
     return { capabilities, signoff: release.signoff };
   } catch (error) {
+    if (error instanceof GraphFreezeFinalizationError) {
+      throw error;
+    }
     const code =
       error instanceof EvidenceValidationError
         ? error.code
