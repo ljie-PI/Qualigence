@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const REPOSITORY_ROOT = resolve(dirname(SCRIPT_PATH), "..");
 
 const REQUIRED_GATES = ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"];
 const REQUIRED_SECURITY_VETO_ITEM_IDS = [
@@ -156,16 +158,12 @@ function assertRepoRelativePath(referencedPath, label) {
   return text;
 }
 
-function resolveManifestPath(manifestPath, referencedPath) {
-  const safePath = assertRepoRelativePath(referencedPath, "referenced path");
-  const repoRoot = process.cwd();
-  const manifestDir = dirname(resolve(manifestPath));
-  const candidates = [resolve(repoRoot, safePath), resolve(manifestDir, safePath)];
-  return candidates;
+function resolveRepositoryPath(referencedPath, label) {
+  return resolve(REPOSITORY_ROOT, assertRepoRelativePath(referencedPath, label));
 }
 
 function assertCanonicalReleaseManifestPath(manifestPath, version) {
-  const expected = resolve(process.cwd(), "artifacts", "release", version, "release-manifest.json");
+  const expected = resolve(REPOSITORY_ROOT, "artifacts", "release", version, "release-manifest.json");
   if (resolve(manifestPath) !== expected) {
     throw new ReleaseManifestError("CanonicalReleasePathInvalid", `manifest must be stored at artifacts/release/${version}/release-manifest.json`);
   }
@@ -176,7 +174,7 @@ function expectedGateArtifactPath(version, gateName) {
 }
 
 async function assertMaterializedGatePath(artifactPath, gateName) {
-  const repoRoot = resolve(process.cwd());
+  const repoRoot = REPOSITORY_ROOT;
   const relativePath = relative(repoRoot, artifactPath);
   if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
     throw new ReleaseManifestError("GateArtifactPathInvalid", `${gateName}.artifactPath must stay inside the repository`);
@@ -203,21 +201,21 @@ async function assertMaterializedGatePath(artifactPath, gateName) {
   }
 }
 
-async function verifyReferencedHash(manifestPath, referencedPath, expectedSha256, label) {
-  const candidates = resolveManifestPath(manifestPath, referencedPath);
-  for (const candidate of candidates) {
-    try {
-      const actual = await sha256File(candidate);
-      if (actual !== expectedSha256) {
-        throw new ReleaseManifestError("ReferencedHashMismatch", `${label} ${referencedPath} expected ${expectedSha256} but found ${actual}`);
-      }
-      return candidate;
-    } catch (error) {
-      if (error instanceof ReleaseManifestError) throw error;
-      if (error && error.code !== "ENOENT") throw error;
+async function verifyReferencedHash(referencedPath, expectedSha256, label) {
+  const candidate = resolveRepositoryPath(referencedPath, `${label} path`);
+  let actual;
+  try {
+    actual = await sha256File(candidate);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      throw new ReleaseManifestError("ReferencedFileMissing", `${label} file not found: ${referencedPath}`);
     }
+    throw error;
   }
-  throw new ReleaseManifestError("ReferencedFileMissing", `${label} file not found: ${referencedPath}`);
+  if (actual !== expectedSha256) {
+    throw new ReleaseManifestError("ReferencedHashMismatch", `${label} ${referencedPath} expected ${expectedSha256} but found ${actual}`);
+  }
+  return candidate;
 }
 
 function decodeBase64Json(value, label) {
@@ -420,11 +418,11 @@ async function verifyGateArchiveContents(archivePath, gate, commit) {
   if (Number.isSafeInteger(vitest.bytes) && vitest.bytes !== vitestBytes.byteLength) throw new ReleaseManifestError("GateArtifactVitestMismatch", `${gate.name} Vitest JSON byte count does not match report`);
 }
 
-async function verifyGateArtifactBytes(manifestPath, gate, commit) {
+async function verifyGateArtifactBytes(gate, commit) {
   if (gate.artifactPath === undefined) {
     throw new ReleaseManifestError("GateArtifactPathRequired", `${gate.name} requires a materialized artifactPath`);
   }
-  const artifactPath = resolveManifestPath(manifestPath, assertRepoRelativePath(gate.artifactPath, `${gate.name}.artifactPath`))[0];
+  const artifactPath = resolveRepositoryPath(gate.artifactPath, `${gate.name}.artifactPath`);
   await assertMaterializedGatePath(artifactPath, gate.name);
   const bytes = await readFile(artifactPath);
   assertZipArchive(bytes, `${gate.name} artifact`);
@@ -433,12 +431,12 @@ async function verifyGateArtifactBytes(manifestPath, gate, commit) {
   await verifyGateArchiveContents(artifactPath, gate, commit);
 }
 
-async function validateGateEvidenceReport(manifestPath, gateEvidence, commit) {
+async function validateGateEvidenceReport(gateEvidence, commit) {
   let report;
   const record = asObject(gateEvidence, "gateEvidence");
   if (record.path !== undefined) {
     assertKeys(record, ["path", "sha256"], "gateEvidence");
-    const reportPath = await verifyReferencedHash(manifestPath, assertRepoRelativePath(record.path, "gateEvidence.path"), assertSha256(record.sha256, "gateEvidence.sha256"), "Gate evidence report");
+    const reportPath = await verifyReferencedHash(assertRepoRelativePath(record.path, "gateEvidence.path"), assertSha256(record.sha256, "gateEvidence.sha256"), "Gate evidence report");
     report = asObject(await readJson(reportPath, "Gate evidence report"), "Gate evidence report");
   } else {
     report = record;
@@ -481,7 +479,7 @@ async function validateGateEvidenceReport(manifestPath, gateEvidence, commit) {
   return deliveries;
 }
 
-async function validateRequiredGates(manifestPath, version, gates, commit, verifiedGateDeliveries) {
+async function validateRequiredGates(version, gates, commit, verifiedGateDeliveries) {
   if (!Array.isArray(gates)) throw new ReleaseManifestError("GateArtifactsInvalid", "gates must be an array");
   const seen = new Set();
   const seenArtifactIds = new Set();
@@ -527,7 +525,7 @@ async function validateRequiredGates(manifestPath, version, gates, commit, verif
     if (verified.reportSha256 !== record.reportSha256) throw new ReleaseManifestError("GateArtifactMismatch", `${name} reportSha256 does not match verified report`);
     if (verified.vitestSha256 !== record.vitestSha256) throw new ReleaseManifestError("GateArtifactMismatch", `${name} vitestSha256 does not match verified report`);
     if (verified.receiptSha256 !== record.receiptSha256) throw new ReleaseManifestError("GateArtifactMismatch", `${name} receiptSha256 does not match verified report`);
-    await verifyGateArtifactBytes(manifestPath, record, commit);
+    await verifyGateArtifactBytes(record, commit);
   }
   for (const required of REQUIRED_GATES) {
     if (!seen.has(required)) throw new ReleaseManifestError("GateArtifactMissing", `missing gate ${required}`);
@@ -678,17 +676,17 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
   if (sbom.format !== "spdx-json") throw new ReleaseManifestError("SbomFormatInvalid", "sbom.format must be spdx-json");
   const sbomPath = assertRepoRelativePath(sbom.path, "sbom.path");
   const sbomSha256 = assertSha256(sbom.sha256, "sbom.sha256");
-  const sbomFile = await verifyReferencedHash(manifestPath, sbomPath, sbomSha256, "SBOM");
+  const sbomFile = await verifyReferencedHash(sbomPath, sbomSha256, "SBOM");
   const sbomJson = asObject(await readJson(sbomFile, "SBOM"), "SBOM");
   if (sbomJson.spdxVersion !== SPDX_SCHEMA_VERSION) {
     throw new ReleaseManifestError("SbomSchemaInvalid", `SBOM must be ${SPDX_SCHEMA_VERSION}`);
   }
   validateSbomBinding(sbomJson, { repository, commit, applicationReference: applicationImage.reference, consoleReference: consoleImage.reference });
 
-  const verifiedGateDeliveries = await validateGateEvidenceReport(manifestPath, manifest.gateEvidence, commit);
-  await validateRequiredGates(manifestPath, version, manifest.gates, commit, verifiedGateDeliveries);
+  const verifiedGateDeliveries = await validateGateEvidenceReport(manifest.gateEvidence, commit);
+  await validateRequiredGates(version, manifest.gates, commit, verifiedGateDeliveries);
   const windowsEvidence = validateWindowsEvidence(manifest.windowsEvidence, commit);
-  const windowsEvidencePath = await verifyReferencedHash(manifestPath, windowsEvidence.path, windowsEvidence.sha256, "Windows evidence");
+  const windowsEvidencePath = await verifyReferencedHash(windowsEvidence.path, windowsEvidence.sha256, "Windows evidence");
   const windowsPayload = extractWindowsEvidencePayload(await readFile(windowsEvidencePath));
   validateWindowsChecklistEvidence(windowsPayload.checklist, commit, windowsEvidence.signatures, windowsPayload.signatures);
 
@@ -697,7 +695,7 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
     assertKeys(releaseCompose, ["path", "sha256"], "releaseCompose");
     const composePath = assertRepoRelativePath(releaseCompose.path, "releaseCompose.path");
     const composeSha256 = assertSha256(releaseCompose.sha256, "releaseCompose.sha256");
-    await verifyReferencedHash(manifestPath, composePath, composeSha256, "release Compose");
+    await verifyReferencedHash(composePath, composeSha256, "release Compose");
   }
 
   const renderedCompose = renderCompose ? await renderReleaseCompose(manifest, renderCompose) : undefined;
@@ -705,7 +703,7 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
 }
 
 async function renderReleaseCompose(manifest, outputPath) {
-  const templatePath = resolve("deployments/self-hosted/compose/compose.release.yaml");
+  const templatePath = resolve(REPOSITORY_ROOT, "deployments/self-hosted/compose/compose.release.yaml");
   let content = await readFile(templatePath, "utf8");
   const application = manifest.images.application.reference;
   const consoleImage = manifest.images.console.reference;
@@ -866,7 +864,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (process.argv[1] === SCRIPT_PATH) {
   await main();
 }
 

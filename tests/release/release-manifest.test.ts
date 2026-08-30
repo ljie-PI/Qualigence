@@ -332,15 +332,15 @@ describe("release manifest verifier", () => {
     const { root, manifest } = await writeFixture();
     const canonicalPrefix = relative(process.cwd(), root).replaceAll("\\", "/");
     const alternateBase = join(process.cwd(), `.tmp-release-alternate-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-    const alternateRoot = join(alternateBase, manifest.version);
+    const alternateRoot = join(alternateBase, "artifacts", "release", manifest.version);
     fixtureRoots.push(alternateBase);
-    await mkdir(alternateBase, { recursive: true });
+    await mkdir(dirname(alternateRoot), { recursive: true });
     await rename(root, alternateRoot);
-    const alternatePrefix = relative(process.cwd(), alternateRoot).replaceAll("\\", "/");
+    const alternatePrefix = `artifacts/release/${manifest.version}`;
     const alternateManifest = JSON.parse(JSON.stringify(manifest).replaceAll(canonicalPrefix, alternatePrefix));
     const alternateManifestPath = join(alternateRoot, "release-manifest.json");
     await writeFile(alternateManifestPath, JSON.stringify(alternateManifest, null, 2) + "\n", "utf8");
-    await expect(runVerifier(alternateManifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("CanonicalReleasePathInvalid") });
+    await expect(runVerifier(alternateManifestPath, alternateBase)).rejects.toMatchObject({ stderr: expect.stringContaining("CanonicalReleasePathInvalid") });
   });
 
   it("accepts one immutable manifest that binds images, SBOM, Gates, and signed Windows evidence", async () => {

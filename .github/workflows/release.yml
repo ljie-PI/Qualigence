@@ -349,7 +349,7 @@ jobs:
           if-no-files-found: error
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}
           path: |
