@@ -39,7 +39,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 9 and 11.
 - Related contexts: `docs/contexts/product/CONTEXT.md`, `docs/contexts/intelligence/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/06-skill-version-management-loop.md`, `.scratch/remaining-production-closure/issues/07-durable-intelligence-leases-results.md`, `.scratch/remaining-production-closure/issues/10-self-hosted-run-trace-completion.md`, and `.scratch/remaining-production-closure/issues/15-ls11-backup-restore-acceptance.md`.
+- Tracked work: legacy Tickets 06 ([#138](https://github.com/ljie-PI/Qualigence/issues/138)), 07 ([#141](https://github.com/ljie-PI/Qualigence/issues/141)), 10 ([#144](https://github.com/ljie-PI/Qualigence/issues/144)), and 15 ([#155](https://github.com/ljie-PI/Qualigence/issues/155)).
 
 ## Verification
 

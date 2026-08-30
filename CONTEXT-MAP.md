@@ -13,4 +13,4 @@ Read one or more context documents before changing or reviewing the matching are
 | Compose, Server, Admin CLI, OIDC, backup, observability, release | `docs/contexts/deployment/CONTEXT.md` |
 | Desktop Target, Named Pipe, Companion, UIA, Job Object | `docs/contexts/windows/CONTEXT.md` |
 
-Cross-context changes must read every affected context. Current production-closure authority lives in `.scratch/remaining-production-closure/spec.md` and its tracked tickets.
+Cross-context changes must read every affected context. Current production-closure authority lives in GitHub umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) and its sub-issues.

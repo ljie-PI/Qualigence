@@ -41,7 +41,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.8, 6.2-6.5, and 7.
 - Related contexts: `docs/contexts/execution/CONTEXT.md`, `docs/contexts/protocol/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md` through `.scratch/remaining-production-closure/issues/31-windows-native-acceptance.md`, plus `.scratch/remaining-production-closure/issues/32-restore-platform-quarantines.md` and `.scratch/remaining-production-closure/issues/35-reconcile-status-decide-graph-freeze.md`.
+- Tracked work: legacy Tickets 26 ([#159](https://github.com/ljie-PI/Qualigence/issues/159)), 27 ([#160](https://github.com/ljie-PI/Qualigence/issues/160)), 28 ([#167](https://github.com/ljie-PI/Qualigence/issues/167)), 29 ([#168](https://github.com/ljie-PI/Qualigence/issues/168)), 30 ([#161](https://github.com/ljie-PI/Qualigence/issues/161)), 31 ([#164](https://github.com/ljie-PI/Qualigence/issues/164)), 32 ([#158](https://github.com/ljie-PI/Qualigence/issues/158)), and 35 ([#165](https://github.com/ljie-PI/Qualigence/issues/165)).
 - Checklists: `docs/testing/windows-m3-manual-checklist.md` and `docs/testing/observation-graph-v1-freeze-checklist.md`.
 
 ## Verification

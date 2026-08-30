@@ -5,8 +5,8 @@ AI-native Software Quality Intelligence
 
 - Open-source architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md`
 - Context map: `CONTEXT-MAP.md`
-- Current production-closure spec: `.scratch/remaining-production-closure/spec.md`
-- Current production-closure tickets: `.scratch/remaining-production-closure/issues/`
+- Current production-closure spec: GitHub umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67)
+- Current production-closure tickets: the native sub-issues of [#67](https://github.com/ljie-PI/Qualigence/issues/67)
 - Graph and Windows acceptance: `docs/testing/`
 
 The tracked tickets cover Community Local and Team Self-hosted through the Windows-first M3 closure. Merged GitHub pull requests/checks and serialized Gate artifacts are the evidence history; deferred advanced hardening is tracked as GitHub Issues.

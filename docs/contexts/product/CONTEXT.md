@@ -42,7 +42,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.1-5.5, 5.7, 5.9, and 9.1.
 - Related contexts: `docs/contexts/execution/CONTEXT.md`, `docs/contexts/protocol/CONTEXT.md`, `docs/contexts/storage/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/05-dispatch-mission-bound-runner.md`, `.scratch/remaining-production-closure/issues/06-skill-version-management-loop.md`, `.scratch/remaining-production-closure/issues/12-real-self-hosted-compose-runner-loop.md`, and `.scratch/remaining-production-closure/issues/15-ls11-backup-restore-acceptance.md`.
+- Tracked work: legacy Tickets 05 ([#139](https://github.com/ljie-PI/Qualigence/issues/139)), 06 ([#138](https://github.com/ljie-PI/Qualigence/issues/138)), 12 ([#142](https://github.com/ljie-PI/Qualigence/issues/142)), and 15 ([#155](https://github.com/ljie-PI/Qualigence/issues/155)).
 
 ## Verification
 

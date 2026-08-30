@@ -1,58 +1,47 @@
-# Issue Tracker: Local Markdown
+# Issue Tracker: GitHub
 
-Implementation issues and specs for this repo are tracked Markdown files under `.scratch/`. GitHub pull requests and GitHub Issues are not general request or triage surfaces. The sole exception is a deferred, non-blocking advanced-hardening finding produced by scoped review: create one GitHub Issue for that follow-up and do not implement it in the current ticket.
+New issues and specs for this repo live as GitHub Issues in `ljie-PI/Qualigence`. Use the `gh` CLI for issue operations.
 
 ## Conventions
 
-- One effort per directory: `.scratch/<feature-slug>/`.
-- The specification is `.scratch/<feature-slug>/spec.md`.
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`; never combine all tickets in one file.
-- Triage state is a `Status:` line near the top of each issue file. Use the role strings in `docs/agents/triage-labels.md`.
-- Comments and conversation history append under a `## Comments` heading.
+- Create: `gh issue create --title "..." --body "..."`.
+- Read: `gh issue view <number> --comments` and fetch labels when triage state matters.
+- List: `gh issue list --state open --json number,title,body,labels,comments` with appropriate label and state filters.
+- Comment: `gh issue comment <number> --body "..."`.
+- Apply or remove labels: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`.
+- Close: `gh issue close <number> --comment "..."`.
 
-When a skill says to publish tracked work, create or update the corresponding Markdown file instead of calling a remote issue tracker.
+Infer the repository from `git remote -v`; `gh` does this automatically inside the clone.
 
-When a skill says to fetch a ticket, read the referenced path. The user will normally provide either that path or its issue number.
+## Pull Requests as a Triage Surface
 
-## Closure Tasks
+**PRs as a request surface: no.** Set this to `yes` only if the repo later treats external pull requests as feature requests.
 
-The tracked umbrella spec and ticket files are the production-closure authority. Create or update a ticket when implementation work is planned or a core blocker stops its owning ticket. Do not create recursive local remediation tickets after review.
+GitHub shares one number space across issues and pull requests. Resolve an ambiguous `#42` with `gh pr view 42`, then fall back to `gh issue view 42`.
 
-Every closure issue must record:
+## Publishing and Fetching
 
-- Closure ticket and legacy allocation, when applicable.
-- A precise fixed point: base SHA and reviewed head SHA.
-- Affected context from `CONTEXT-MAP.md`.
-- Finding severity: Critical, Important, Minor, or Suggestion.
-- Source citation: plan, architecture, spec, contract, or Gate.
-- File and line reference when applicable.
-- Required fix, owner, status, fix commit, and verification command.
+When a skill says to publish tracked work, create a GitHub Issue. When it says to fetch a ticket, run `gh issue view <number> --comments`.
 
-## Review Findings
+## Production-Closure Authority
 
-`/code-review` has separate Standards and Spec axes. Every round reviews the complete applicable behavior matrix and whole diff. Critical findings block. Important findings block only when they violate explicit acceptance, an applicable existing architecture/security invariant, a public or persisted contract, a required Gate, or primary-workflow correctness/data integrity. After a core fix, rerun affected Gates and a fresh complete-matrix review.
+GitHub Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) contains the complete production-closure specification and is the umbrella for its 47 native sub-issues. Those issues preserve the legacy ticket number in their titles, full ticket bodies, completion evidence, triage state, and direct implementation dependencies.
 
-## Deferred Follow-ups
+Read the umbrella and complete selected sub-issue before closure work. Use the native sub-issue and dependency relationships for navigation; explicit phase-two or final-resolution dependencies remain authoritative in each issue body when representing them as native dependencies would create a cycle.
 
-Advanced hardening is a new threat model, environment, exhaustive defense-in-depth requirement, or protection beyond the current ticket and existing invariants. A Critical finding is always a core blocker. Non-Critical advanced hardening is non-blocking unless the user promotes it into scope.
+## Review Findings and Deferred Follow-ups
 
-For each deferred advanced-hardening finding:
+Critical findings block. Important findings block only when they violate explicit acceptance, an applicable architecture or security invariant, a public or persisted contract, a required Gate, or primary-workflow correctness or data integrity.
 
-- Create one GitHub Issue in `ljie-PI/Qualigence` after the scoped review.
-- Include source ticket, branch or PR, fixed/reviewed head SHA, severity/risk, authority citation, affected files/Gates, and acceptance criteria.
-- Do not add it as a blocker, change the current branch for it, or begin implementation automatically.
-- Keep core implementation tickets and their dependency graph in Local Markdown.
+Create one GitHub Issue for each deferred, non-blocking advanced-hardening finding. Include its source ticket, branch or pull request, fixed and reviewed head SHA, severity and risk, authority citation, affected files and Gates, and acceptance criteria. Do not implement it in the current ticket unless the user promotes it into scope.
 
-Never put secrets, PRD plaintext, raw evidence, tokens, certificates, connection strings, or customer identifiers in a local issue.
+## Wayfinding Operations
 
-## Wayfinding
+- Map: one issue labelled `wayfinder:map`, containing Notes, Decisions-so-far, and Fog.
+- Child: a GitHub sub-issue linked to the map and labelled `wayfinder:<type>` (`research`, `prototype`, `grilling`, or `task`). If sub-issues are unavailable, use a task list and put `Part of #<map>` at the top of the child.
+- Blocking: use native issue dependencies; if unavailable, maintain a `Blocked by: #<n>, #<n>` line.
+- Frontier: choose the first open child in map order that has no open blocker and no assignee.
+- Claim: `gh issue edit <n> --add-assignee @me` before work.
+- Resolve: comment with the answer, close the child, and append a context pointer to the map's Decisions-so-far.
 
-- Map: `.scratch/<effort>/map.md`.
-- Child ticket: `.scratch/<effort>/issues/<NN>-<slug>.md`.
-- `Type:` records `research`, `prototype`, `grilling`, or `task`.
-- `Status:` records the canonical triage role, or `claimed`/`resolved` for active wayfinding work.
-- `Blocked by: NN, NN` lists prerequisite tickets.
-- A ticket is unblocked when every listed blocker is `resolved`.
-- The frontier is the first numbered open, unblocked, unclaimed ticket under `.scratch/<effort>/issues/`.
-- Claim a ticket by setting `Status: claimed` before work.
-- Resolve it by adding `## Answer`, setting `Status: resolved`, and adding a context pointer to the map.
+Never put secrets, PRD plaintext, raw evidence, tokens, certificates, connection strings, or customer identifiers in an issue.

@@ -44,7 +44,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.5, 5.8, 7, 9.1, and 11.
 - Related contexts: `docs/contexts/product/CONTEXT.md`, `docs/contexts/protocol/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, and `docs/contexts/windows/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/05-dispatch-mission-bound-runner.md`, `.scratch/remaining-production-closure/issues/20-exploration-seed-checkpoint-budget.md`, `.scratch/remaining-production-closure/issues/21-real-reference-model-benchmark.md`, and `.scratch/remaining-production-closure/issues/28-dispatch-desktop-target-runtime.md`.
+- Tracked work: legacy Tickets 05 ([#139](https://github.com/ljie-PI/Qualigence/issues/139)), 20 ([#149](https://github.com/ljie-PI/Qualigence/issues/149)), 21 ([#148](https://github.com/ljie-PI/Qualigence/issues/148)), and 28 ([#167](https://github.com/ljie-PI/Qualigence/issues/167)).
 
 ## Verification
 

@@ -4,11 +4,11 @@
 
 ### Issue Tracker
 
-Implementation issues and specs are tracked Markdown under `.scratch/<feature>/`; deferred advanced-hardening review findings use GitHub Issues. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
+Issues and specs are tracked in GitHub Issues for `ljie-PI/Qualigence`; production closure uses umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) and its sub-issues. Before creating, reviewing, or resolving tracked work, read `docs/agents/issue-tracker.md`.
 
 ### Triage Labels
 
-Use the five canonical local issue status labels. See `docs/agents/triage-labels.md`.
+Use the five canonical GitHub issue labels. See `docs/agents/triage-labels.md`.
 
 ### Domain Docs
 
@@ -20,9 +20,9 @@ Before editing code, inspect the surrounding module and its callers, adapters, t
 
 ## Closure Work
 
-Before a closure task, read `.scratch/remaining-production-closure/spec.md`, the complete selected ticket, and every architecture/context reference named by that ticket. The tracked spec and tickets are the current execution authority; the coordinator or reviewer owns later ticket dependencies and authority changes.
+Before a closure task, read umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67), the complete selected sub-issue, and every architecture/context reference named by that issue. The umbrella spec and its sub-issues are the current execution authority; the coordinator or reviewer owns later ticket dependencies and authority changes.
 
-For stateful, side-effecting, concurrent, retrying, timeout-sensitive, or terminal work, freeze the applicable behavior matrix in the local ticket before editing; simple docs/static/leaf work may mark it `N/A`. Every `/code-review` round covers the complete matrix and whole code/test diff and reports every row as `pass | finding | N/A`.
+For stateful, side-effecting, concurrent, retrying, timeout-sensitive, or terminal work, freeze the applicable behavior matrix in the selected GitHub issue before editing; simple docs/static/leaf work may mark it `N/A`. Every `/code-review` round covers the complete matrix and whole code/test diff and reports every row as `pass | finding | N/A`.
 
 Create the non-draft pull request only after the documented focused Gate, `corepack pnpm typecheck`, `git diff --check`, complete-matrix `/code-review`, required E2E, and final status evidence are clean. The PR may add one final documentation-only evidence commit after the reviewed code head; verify its code/test diff is unchanged, then merge directly after required checks. Documentation-only tickets/commits do not run `/code-review` or product E2E; verify document consistency, authority/reference coverage, and `git diff --check`.
 
