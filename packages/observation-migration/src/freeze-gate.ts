@@ -1010,6 +1010,14 @@ const REQUIRED_REMEDIATION_ISSUES = [
   162, 176, 172, 170, 177, 174, 173, 175, 178, 180, 179, 171,
 ] as const;
 
+const REQUIRED_PROVIDER_VARIABLES = [
+  "QUALIGENCE_REFERENCE_MODEL_BASE_URL",
+  "QUALIGENCE_REFERENCE_MODEL_API_KEY",
+  "QUALIGENCE_LIVE_MODEL_SMOKE",
+  "QUALIGENCE_MODEL_NAME",
+  "QUALIGENCE_DATA_DIR",
+] as const;
+
 function requireSafeInteger(
   record: Record<string, unknown>,
   key: string,
@@ -1448,6 +1456,8 @@ function validateGithubClosureEvidence(
         "issue",
         "classification",
         "parentLegacyTicket",
+        "pullRequest",
+        "supersededBy",
         "blocking",
       ],
       "GitHub remediation ticket",
@@ -1497,11 +1507,45 @@ function validateGithubClosureEvidence(
     if (
       (classification === "resolved-remediation" &&
         (issue["state"] !== "closed" || issue["status"] !== "resolved")) ||
-      (classification === "superseded" && issue["status"] !== "superseded")
+      (classification === "deferred-advanced-hardening" &&
+        (issue["state"] !== "open" || issue["status"] !== "deferred")) ||
+      (classification === "superseded" &&
+        (issue["state"] !== "closed" ||
+          issue["status"] !== "superseded" ||
+          typeof item["supersededBy"] !== "number" ||
+          !Number.isSafeInteger(item["supersededBy"]) ||
+          item["supersededBy"] < 1 ||
+          item["supersededBy"] > 48 ||
+          item["supersededBy"] === legacyTicket))
     ) {
       throw new EvidenceValidationError(
         "GithubRemediationStatusInvalid",
         `legacy Ticket ${legacyTicket} status contradicts its classification`,
+      );
+    }
+    if (classification === "resolved-remediation") {
+      if (item["pullRequest"] === undefined) {
+        throw new EvidenceValidationError(
+          "GithubPullRequestNotMerged",
+          `resolved remediation Ticket ${legacyTicket} has no merged pull request`,
+        );
+      }
+      validatePullRequest(
+        item["pullRequest"],
+        legacyTicket,
+        input,
+        graph,
+        ancestors,
+        seenPullRequests,
+      );
+    } else if (item["pullRequest"] !== undefined) {
+      validatePullRequest(
+        item["pullRequest"],
+        legacyTicket,
+        input,
+        graph,
+        ancestors,
+        seenPullRequests,
       );
     }
   }
@@ -1597,7 +1641,7 @@ function validateProviderEvidence(
   );
   assertKeys(
     environment,
-    ["source", "redacted", "credentialVariables"],
+    ["source", "redacted", "requiredVariables"],
     "provider evidence.environment",
   );
   if (
@@ -1609,16 +1653,11 @@ function validateProviderEvidence(
       "provider evidence must be redacted Ticket 48 evidence",
     );
   }
-  const credentialVariables = assertStringArray(
-    environment["credentialVariables"],
-    "provider evidence.environment.credentialVariables",
+  assertStringArray(
+    environment["requiredVariables"],
+    "provider evidence.environment.requiredVariables",
+    { exact: REQUIRED_PROVIDER_VARIABLES },
   );
-  if (credentialVariables.length === 0) {
-    throw new EvidenceValidationError(
-      "ProviderEnvironmentInvalid",
-      "provider evidence must identify its redacted credential variables",
-    );
-  }
 
   const provider = asRecord(evidence["provider"], "provider evidence.provider");
   assertKeys(provider, ["id", "model"], "provider evidence.provider");

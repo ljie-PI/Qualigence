@@ -86,11 +86,31 @@ function gitSha(index: number): string {
   return index.toString(16).padStart(40, "0");
 }
 
+function closurePullRequest(legacyTicket: number, pullRequestNumber: number) {
+  const head = gitSha(100 + legacyTicket);
+  return {
+    number: pullRequestNumber,
+    url: `https://github.com/ljie-PI/Qualigence/pull/${pullRequestNumber}`,
+    state: "closed",
+    mergedAt: "2026-08-29T00:00:00.000Z",
+    reviewedHead: head,
+    remoteHead: head,
+    mergeCommit: gitSha(200 + legacyTicket),
+    changedFiles: ["packages/observation-migration/src/index.ts"],
+    requiredChecks: ["focused-gate"],
+    checks: [
+      {
+        name: "focused-gate",
+        conclusion: "success",
+        commit: head,
+      },
+    ],
+  };
+}
+
 function githubClosureFixture() {
   const tickets = CLOSURE_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 1;
-    const head = gitSha(100 + legacyTicket);
-    const mergeCommit = gitSha(200 + legacyTicket);
     return {
       legacyTicket,
       issue: {
@@ -102,38 +122,45 @@ function githubClosureFixture() {
         todoCompleted: 4,
         blockedBy: legacyTicket === 1 ? [] : [legacyTicket - 1],
       },
-      pullRequest: {
-        number: 300 + legacyTicket,
-        url: `https://github.com/ljie-PI/Qualigence/pull/${300 + legacyTicket}`,
-        state: "closed",
-        mergedAt: "2026-08-29T00:00:00.000Z",
-        reviewedHead: head,
-        remoteHead: head,
-        mergeCommit,
-        changedFiles: ["packages/observation-migration/src/index.ts"],
-        requiredChecks: ["focused-gate"],
-        checks: [
-          {
-            name: "focused-gate",
-            conclusion: "success",
-            commit: head,
-          },
-        ],
-      },
+      pullRequest: closurePullRequest(legacyTicket, 300 + legacyTicket),
     };
   });
-  const remediation = REMEDIATION_ISSUES.map((issueNumber, index) => ({
-    legacyTicket: index + 36,
-    issue: {
-      number: issueNumber,
-      parentIssue: 67,
-      state: "closed",
-      status: "resolved",
-    },
-    classification: "resolved-remediation",
-    parentLegacyTicket: 35,
-    blocking: false,
-  }));
+  const remediation = REMEDIATION_ISSUES.map((issueNumber, index) => {
+    const legacyTicket = index + 36;
+    if (legacyTicket === 46) {
+      return {
+        legacyTicket,
+        issue: {
+          number: issueNumber,
+          parentIssue: 67,
+          state: "closed",
+          status: "superseded",
+        },
+        classification: "superseded",
+        parentLegacyTicket: 35,
+        supersededBy: 48,
+        blocking: false,
+      };
+    }
+    return {
+      legacyTicket,
+      issue: {
+        number: issueNumber,
+        parentIssue: 67,
+        state: "closed",
+        status: "resolved",
+      },
+      classification: "resolved-remediation",
+      parentLegacyTicket: 35,
+      blocking: false,
+      pullRequest: closurePullRequest(legacyTicket, 400 + legacyTicket),
+    };
+  });
+  const remediationPullRequests = remediation.flatMap((item) =>
+    "pullRequest" in item && item.pullRequest !== undefined
+      ? [item.pullRequest]
+      : [],
+  );
   return {
     schemaVersion: "qualigence-github-closure-evidence/v1",
     repository: "ljie-PI/Qualigence",
@@ -159,7 +186,12 @@ function githubClosureFixture() {
     commitGraph: [
       {
         sha: FINALIZER_COMMIT,
-        parents: tickets.map((ticket) => ticket.pullRequest.mergeCommit),
+        parents: [
+          ...tickets.map((ticket) => ticket.pullRequest.mergeCommit),
+          ...remediationPullRequests.map(
+            (pullRequest) => pullRequest.mergeCommit,
+          ),
+        ],
       },
       ...tickets.flatMap((ticket) => [
         {
@@ -168,6 +200,16 @@ function githubClosureFixture() {
         },
         {
           sha: ticket.pullRequest.remoteHead,
+          parents: [],
+        },
+      ]),
+      ...remediationPullRequests.flatMap((pullRequest) => [
+        {
+          sha: pullRequest.mergeCommit,
+          parents: [pullRequest.remoteHead],
+        },
+        {
+          sha: pullRequest.remoteHead,
           parents: [],
         },
       ]),
@@ -910,6 +952,33 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
   });
 
+  it("rejects resolved remediation without merged PR evidence", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-remediation-pr-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    delete mutableRecord(githubClosure.remediation[0], "resolved remediation")[
+      "pullRequest"
+    ];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubPullRequestNotMerged: github-closure",
+    );
+  });
+
   it("accepts truthful superseded-ticket history bound to its replacement authority", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-github-superseded-"),
@@ -1017,6 +1086,33 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         "ProviderBenchmarkIdentityMismatch: benchmark",
         "ProviderBenchmarkIdentityMismatch: provider",
       ]),
+    );
+  });
+
+  it("rejects provider evidence without the exact Ticket 48 environment contract", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-provider-environment-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const provider = await readFixtureObject("provider.json");
+    mutableRecord(provider["environment"], "provider environment")[
+      "requiredVariables"
+    ] = ["OPENAI_API_KEY"];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "provider.json",
+      provider,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { provider: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "EvidenceSetInvalid: provider",
     );
   });
 

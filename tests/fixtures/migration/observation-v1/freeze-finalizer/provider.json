@@ -8,7 +8,13 @@
   "environment": {
     "source": "ticket-48",
     "redacted": true,
-    "credentialVariables": ["OPENAI_API_KEY"]
+    "requiredVariables": [
+      "QUALIGENCE_REFERENCE_MODEL_BASE_URL",
+      "QUALIGENCE_REFERENCE_MODEL_API_KEY",
+      "QUALIGENCE_LIVE_MODEL_SMOKE",
+      "QUALIGENCE_MODEL_NAME",
+      "QUALIGENCE_DATA_DIR"
+    ]
   },
   "provider": {
     "id": "openai-compatible",
